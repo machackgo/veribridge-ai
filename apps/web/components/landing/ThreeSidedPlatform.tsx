@@ -60,14 +60,20 @@ export function ThreeSidedPlatform() {
         </div>
 
         <div className="grid gap-6 md:grid-cols-3">
-          {platforms.map((platform) => (
+          {platforms.map((platform, index) => (
             <article
               key={platform.title}
               id={platform.id}
-              className="rounded-lg border border-slate-200 bg-white p-6 shadow-lg shadow-slate-900/5 transition hover:-translate-y-1 hover:shadow-xl"
+              className={`motion-lift motion-fade-up rounded-lg border border-slate-200 bg-white p-6 shadow-lg shadow-slate-900/5 hover:border-emerald-200 hover:shadow-xl ${
+                index === 1
+                  ? "motion-delay-100"
+                  : index === 2
+                    ? "motion-delay-200"
+                    : ""
+              }`}
             >
               <div
-                className={`mb-6 flex h-14 w-14 items-center justify-center rounded-lg ${platform.iconClass}`}
+                className={`motion-icon-tilt mb-6 flex h-14 w-14 items-center justify-center rounded-lg ${platform.iconClass}`}
               >
                 <platform.icon className="h-7 w-7 text-white" />
               </div>
@@ -92,10 +98,13 @@ export function ThreeSidedPlatform() {
 
               <a
                 href="#roadmap"
-                className="mt-6 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-4 font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-100"
+                className="mt-6 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-4 font-semibold text-slate-700 transition-all duration-300 hover:border-slate-300 hover:bg-slate-100"
               >
                 Learn More
-                <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                <ArrowRight
+                  className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-1"
+                  aria-hidden="true"
+                />
               </a>
             </article>
           ))}

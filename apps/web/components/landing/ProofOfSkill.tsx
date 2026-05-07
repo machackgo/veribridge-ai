@@ -36,10 +36,16 @@ export function ProofOfSkill() {
 
         <div className="grid items-center gap-12 lg:grid-cols-2">
           <div className="space-y-5">
-            {skillCards.map((card) => (
+            {skillCards.map((card, index) => (
               <article
                 key={card.skill}
-                className="rounded-lg border border-slate-200 bg-white p-6 shadow-lg shadow-slate-900/5"
+                className={`motion-lift motion-fade-up rounded-lg border border-slate-200 bg-white p-6 shadow-lg shadow-slate-900/5 hover:border-emerald-200 hover:shadow-xl ${
+                  index === 1
+                    ? "motion-delay-100"
+                    : index === 2
+                      ? "motion-delay-200"
+                      : ""
+                }`}
               >
                 <div className="mb-4 flex items-start justify-between gap-4">
                   <div>
@@ -48,7 +54,10 @@ export function ProofOfSkill() {
                         {card.skill}
                       </h3>
                       <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
-                        <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+                        <CheckCircle2
+                          className="motion-pulse-soft h-3 w-3"
+                          aria-hidden="true"
+                        />
                         Verified
                       </span>
                     </div>
@@ -64,26 +73,34 @@ export function ProofOfSkill() {
                     </div>
                   </div>
                   <LinkIcon
-                    className="h-5 w-5 shrink-0 text-slate-400"
+                    className="motion-icon-tilt h-5 w-5 shrink-0 text-slate-400"
                     aria-hidden="true"
                   />
                 </div>
 
-                <div className="h-1.5 rounded-full bg-slate-100">
-                  <div className="h-1.5 rounded-full bg-gradient-to-r from-emerald-500 to-indigo-500" />
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                  <div className="motion-shimmer h-1.5 rounded-full bg-gradient-to-r from-emerald-500 via-indigo-500 to-emerald-500" />
                 </div>
               </article>
             ))}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            {proofSources.map((source) => (
+            {proofSources.map((source, index) => (
               <article
                 key={source.label}
-                className="rounded-lg border border-slate-200 bg-white p-6 shadow-lg shadow-slate-900/5"
+                className={`motion-lift motion-fade-up rounded-lg border border-slate-200 bg-white p-6 shadow-lg shadow-slate-900/5 hover:shadow-xl ${
+                  index === 1
+                    ? "motion-delay-100"
+                    : index === 2
+                      ? "motion-delay-200"
+                      : index === 3
+                        ? "motion-delay-300"
+                        : ""
+                }`}
               >
                 <div
-                  className={`mb-4 flex h-12 w-12 items-center justify-center rounded-lg ${source.className}`}
+                  className={`motion-icon-tilt mb-4 flex h-12 w-12 items-center justify-center rounded-lg ${source.className}`}
                 >
                   <source.icon className="h-6 w-6 text-white" />
                 </div>

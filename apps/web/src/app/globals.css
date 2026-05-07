@@ -26,3 +26,145 @@ a {
 html {
   scroll-behavior: smooth;
 }
+
+@keyframes float-slow {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(0, -12px, 0) rotate(0.4deg);
+  }
+}
+
+@keyframes float-medium {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(0, -7px, 0) rotate(-0.6deg);
+  }
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.86;
+    transform: scale(1.025);
+  }
+}
+
+@keyframes glow {
+  0%,
+  100% {
+    box-shadow: 0 18px 40px rgb(16 185 129 / 0.16);
+  }
+  50% {
+    box-shadow: 0 22px 52px rgb(79 70 229 / 0.2);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 50%;
+  }
+  100% {
+    background-position: -200% 50%;
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.motion-float-slow {
+  animation: float-slow 6s ease-in-out infinite;
+}
+
+.motion-float-medium {
+  animation: float-medium 4.5s ease-in-out infinite;
+}
+
+.motion-pulse-soft {
+  animation: pulse-soft 3.8s ease-in-out infinite;
+}
+
+.motion-glow {
+  animation: glow 4.8s ease-in-out infinite;
+}
+
+.motion-fade-up {
+  animation: fade-up 0.7s ease-out both;
+}
+
+.motion-delay-100 {
+  animation-delay: 100ms;
+}
+
+.motion-delay-200 {
+  animation-delay: 200ms;
+}
+
+.motion-delay-300 {
+  animation-delay: 300ms;
+}
+
+.motion-delay-400 {
+  animation-delay: 400ms;
+}
+
+.motion-shimmer {
+  background-size: 220% 100%;
+  animation: shimmer 3.4s linear infinite;
+}
+
+.motion-lift {
+  transform: translateZ(0);
+  transition:
+    transform 240ms ease,
+    box-shadow 240ms ease,
+    border-color 240ms ease,
+    background-color 240ms ease;
+}
+
+.motion-lift:hover {
+  transform: translate3d(0, -4px, 0);
+}
+
+.motion-icon-tilt {
+  transition: transform 240ms ease;
+}
+
+.motion-lift:hover .motion-icon-tilt,
+.motion-icon-tilt:hover {
+  transform: rotate(4deg) scale(1.05);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .motion-lift:hover,
+  .motion-lift:hover .motion-icon-tilt,
+  .motion-icon-tilt:hover {
+    transform: none;
+  }
+}

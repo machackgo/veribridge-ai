@@ -38,7 +38,7 @@ export function Navbar() {
 
             <Link
               href="/dashboard"
-              className="inline-flex min-h-10 items-center rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white shadow-lg shadow-emerald-600/20 transition hover:bg-emerald-700"
+              className="motion-lift motion-glow inline-flex min-h-10 items-center rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white shadow-lg shadow-emerald-600/20 transition-all duration-300 hover:bg-emerald-700 hover:shadow-xl hover:shadow-emerald-600/30 active:translate-y-0"
             >
               Start Building Profile
             </Link>

@@ -36,9 +36,9 @@ export function AIWorkflow() {
           {workflowSteps.map((step, index) => (
             <article
               key={step.label}
-              className="relative rounded-lg border border-slate-200 bg-slate-50 p-5 text-center"
+              className="motion-lift relative rounded-lg border border-slate-200 bg-slate-50 p-5 text-center hover:border-emerald-200 hover:bg-white hover:shadow-lg"
             >
-              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-lg border border-slate-200 bg-white shadow-sm">
+              <div className="motion-icon-tilt motion-float-medium mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-lg border border-slate-200 bg-white shadow-sm">
                 <step.icon className="h-7 w-7 text-slate-700" />
               </div>
               <h3 className="text-sm font-semibold text-slate-950">

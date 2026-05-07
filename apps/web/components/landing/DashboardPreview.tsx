@@ -68,13 +68,23 @@ export function DashboardPreview() {
           {dashboardCards.map((card, index) => (
             <article
               key={card.title}
-              className={`rounded-lg border border-slate-200 bg-white p-6 shadow-lg shadow-slate-900/5 ${
+              className={`motion-lift motion-fade-up rounded-lg border border-slate-200 bg-white p-6 shadow-lg shadow-slate-900/5 hover:border-emerald-200 hover:shadow-xl ${
                 index === 4 ? "md:col-span-3" : ""
+              } ${
+                index === 1
+                  ? "motion-delay-100"
+                  : index === 2
+                    ? "motion-delay-200"
+                    : index === 3
+                      ? "motion-delay-300"
+                      : index === 4
+                        ? "motion-delay-400"
+                        : ""
               }`}
             >
               <div className="mb-4 flex items-start justify-between gap-4">
                 <div
-                  className={`flex h-14 w-14 items-center justify-center rounded-lg ${card.className}`}
+                  className={`motion-icon-tilt flex h-14 w-14 items-center justify-center rounded-lg ${card.className}`}
                 >
                   <card.icon className="h-7 w-7 text-white" />
                 </div>
@@ -97,9 +107,9 @@ export function DashboardPreview() {
                 <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
                   {scoreItems.map(([item, width]) => (
                     <div key={item}>
-                      <div className="mb-2 h-2 rounded-full bg-slate-100">
+                      <div className="mb-2 h-2 overflow-hidden rounded-full bg-slate-100">
                         <div
-                          className="h-2 rounded-full bg-gradient-to-r from-violet-500 to-indigo-500"
+                          className="motion-shimmer h-2 rounded-full bg-gradient-to-r from-violet-500 via-indigo-500 to-violet-500"
                           style={{ width }}
                         />
                       </div>
