@@ -1,8 +1,8 @@
-# CareerProof AI Student MVP Prompt Plan
+# VeriBridge AI Student MVP Prompt Plan
 
 ## Scope
 
-This document defines the AI prompt strategy for the CareerProof AI student MVP. It covers resume parsing, job description parsing, match analysis, student-safe resume tailoring, cover letter drafting, project suggestions, and hallucination safety checks.
+This document defines the AI prompt strategy for the VeriBridge AI student MVP. It covers resume parsing, job description parsing, match analysis, student-safe resume tailoring, cover letter drafting, project suggestions, and hallucination safety checks.
 
 The critical product rule is absolute:
 
@@ -956,7 +956,7 @@ Recommended launch thresholds:
 
 ## Human Approval Requirement Before Application Submission
 
-CareerProof AI must require explicit human approval before any application material is submitted or used externally.
+VeriBridge AI must require explicit human approval before any application material is submitted or used externally.
 
 Required approval checkpoints:
 

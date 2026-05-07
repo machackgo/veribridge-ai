@@ -28,7 +28,7 @@ export function FinalCTA() {
           </h2>
 
           <p className="text-xl text-slate-300 mb-12 max-w-2xl mx-auto">
-            Turn your resume, projects, and skills into a proof-backed profile that recruiters and universities trust
+            Turn your resume, projects, and skills into an evidence-backed career profile that recruiters and universities trust
           </p>
 
           <div className="flex flex-wrap gap-4 justify-center mb-16">

@@ -1,4 +1,4 @@
-# CareerProof AI Database Schema Plan
+# VeriBridge AI Database Schema Plan
 
 This document plans the PostgreSQL/Supabase schema for the student MVP. It is a planning artifact only; it does not define executable migrations.
 

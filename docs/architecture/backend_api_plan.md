@@ -1,8 +1,8 @@
-# CareerProof AI Backend API Plan
+# VeriBridge AI Backend API Plan
 
 ## Scope
 
-This document defines the planned FastAPI backend architecture for the CareerProof AI student MVP. It is a planning artifact only; backend implementation should happen in later tasks.
+This document defines the planned FastAPI backend architecture for the VeriBridge AI student MVP. It is a planning artifact only; backend implementation should happen in later tasks.
 
 The MVP backend should support:
 

@@ -1,0 +1,1135 @@
+"use client";
+
+import type { ReactNode } from "react";
+import { useState } from "react";
+import { DemoToast, useDemoToast } from "../ui/DemoToast";
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function PageHeader({
+  crumb,
+  title,
+  lede,
+  action,
+}: {
+  crumb: string;
+  title: ReactNode;
+  lede: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20 }}>
+      <div>
+        <div
+          style={{
+            fontFamily: "'JetBrains Mono',monospace",
+            fontSize: 11,
+            letterSpacing: "0.16em",
+            color: "var(--muted)",
+            textTransform: "uppercase",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: "var(--emerald)",
+              display: "inline-block",
+              animation: "recruiter-pulse 2s infinite",
+            }}
+          />
+          {crumb}
+        </div>
+        <h1
+          style={{
+            fontSize: 32,
+            fontWeight: 600,
+            letterSpacing: "-0.02em",
+            margin: "4px 0 4px",
+            color: "var(--ink)",
+          }}
+        >
+          {title}
+        </h1>
+        <p style={{ fontSize: 14, color: "var(--muted)", margin: 0, maxWidth: 680 }}>{lede}</p>
+      </div>
+      {action && <div style={{ display: "flex", gap: 8 }}>{action}</div>}
+    </div>
+  );
+}
+
+const card: React.CSSProperties = {
+  background: "var(--paper)",
+  border: "1px solid var(--line)",
+  borderRadius: 14,
+  padding: 20,
+};
+
+function Btn({ children, variant = "primary", style: extraStyle, onClick }: {
+  children: ReactNode;
+  variant?: "primary" | "secondary";
+  style?: React.CSSProperties;
+  onClick?: () => void;
+}) {
+  const base: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "9px 16px",
+    borderRadius: 8,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: "pointer",
+    border: "1px solid",
+    textDecoration: "none",
+  };
+  const styles: React.CSSProperties =
+    variant === "primary"
+      ? { ...base, background: "var(--ink)", color: "#fff", borderColor: "transparent" }
+      : { ...base, background: "transparent", color: "var(--ink-2)", borderColor: "var(--line)" };
+  return <button type="button" onClick={onClick} style={{ ...styles, ...extraStyle }}>{children}</button>;
+}
+
+function FilterChip({ children, active }: { children: ReactNode; active?: boolean }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "4px 10px",
+        borderRadius: 6,
+        fontSize: 12,
+        fontWeight: 500,
+        background: active ? "var(--indigo-soft)" : "var(--bg-2)",
+        color: active ? "var(--indigo)" : "var(--ink-2)",
+        border: `1px solid ${active ? "#c7d2fe" : "var(--line)"}`,
+        cursor: "pointer",
+      }}
+    >
+      {active && <span style={{ color: "var(--indigo)", fontWeight: 700 }}>×</span>}
+      {children}
+    </span>
+  );
+}
+
+function SwitchRow({
+  label,
+  sub,
+  defaultOn = true,
+  onToast,
+}: {
+  label: string;
+  sub?: string;
+  defaultOn?: boolean;
+  onToast?: (msg: string) => void;
+}) {
+  const [on, setOn] = useState(defaultOn);
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "10px 12px",
+        borderRadius: 8,
+        background: "var(--bg-2)",
+        marginBottom: 6,
+        gap: 12,
+      }}
+    >
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>{label}</div>
+        {sub && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{sub}</div>}
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        onClick={() => {
+          const next = !on;
+          setOn(next);
+          onToast?.(`${label}: ${next ? "enabled" : "disabled"}`);
+        }}
+        style={{
+          width: 38,
+          height: 22,
+          borderRadius: 99,
+          background: on ? "var(--emerald, #10b981)" : "var(--line, #e6e8ef)",
+          border: "none",
+          cursor: "pointer",
+          position: "relative",
+          flexShrink: 0,
+          transition: "background 0.15s",
+          outline: "none",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            top: 2,
+            left: on ? undefined : 2,
+            right: on ? 2 : undefined,
+            width: 18,
+            height: 18,
+            background: "#fff",
+            borderRadius: "50%",
+            boxShadow: "0 1px 3px rgba(0,0,0,.2)",
+            transition: "all 0.15s",
+            display: "block",
+          }}
+        />
+      </button>
+    </div>
+  );
+}
+
+// ── Candidate data ─────────────────────────────────────────────────────────
+
+const candidates = [
+  {
+    initials: "MR",
+    grad: "linear-gradient(135deg,#6366f1,#8b5cf6)",
+    name: "Maya Reyes",
+    school: "WPI · CS '26",
+    skills: ["Docker", "React", "Distributed Sys"],
+    visa: "F-1 OK",
+    visaTone: "indigo",
+    score: 94,
+  },
+  {
+    initials: "JK",
+    grad: "linear-gradient(135deg,#0ea5e9,#6366f1)",
+    name: "Jordan Kim",
+    school: "MIT · EECS '26",
+    skills: ["Python", "ML/Data", "Kubernetes"],
+    visa: "US Citizen",
+    visaTone: "emerald",
+    score: 91,
+  },
+  {
+    initials: "AS",
+    grad: "linear-gradient(135deg,#f59e0b,#ef4444)",
+    name: "Arjun Singh",
+    school: "CMU · SCS '26",
+    skills: ["Go", "System Design", "Postgres"],
+    visa: "F-1 OK",
+    visaTone: "indigo",
+    score: 88,
+  },
+  {
+    initials: "LP",
+    grad: "linear-gradient(135deg,#10b981,#0ea5e9)",
+    name: "Leila Pham",
+    school: "Stanford · CS '26",
+    skills: ["TypeScript", "GraphQL", "AWS"],
+    visa: "US Citizen",
+    visaTone: "emerald",
+    score: 86,
+  },
+];
+
+// ── Candidate list ─────────────────────────────────────────────────────────
+
+function CandidateList() {
+  return (
+    <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid var(--line)" }}>
+      {candidates.map((c, i) => (
+        <div
+          key={c.name}
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto 1fr auto auto auto",
+            gap: 14,
+            padding: "14px 12px",
+            borderBottom: i < candidates.length - 1 ? "1px solid var(--line)" : "none",
+            alignItems: "center",
+            cursor: "pointer",
+            transition: "background 0.12s",
+          }}
+          className="recruiter-row-hover"
+        >
+          {/* Avatar */}
+          <div
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: "50%",
+              background: c.grad,
+              display: "grid",
+              placeItems: "center",
+              fontWeight: 600,
+              fontSize: 13,
+              color: "#fff",
+              flexShrink: 0,
+            }}
+          >
+            {c.initials}
+          </div>
+          {/* Name + school + skills */}
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14, color: "var(--ink)", marginBottom: 2 }}>{c.name}</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 5 }}>{c.school}</div>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+              {c.skills.map((s) => (
+                <span
+                  key={s}
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 7px",
+                    borderRadius: 4,
+                    background: "var(--indigo-soft)",
+                    color: "var(--indigo)",
+                    fontWeight: 500,
+                  }}
+                >
+                  {s}
+                </span>
+              ))}
+            </div>
+          </div>
+          {/* Visa badge */}
+          <span
+            style={{
+              fontFamily: "'JetBrains Mono',monospace",
+              fontSize: 10,
+              padding: "3px 7px",
+              borderRadius: 5,
+              background: c.visaTone === "indigo" ? "var(--indigo-soft)" : "var(--emerald-soft)",
+              color: c.visaTone === "indigo" ? "var(--indigo)" : "#065f46",
+              fontWeight: 600,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {c.visa}
+          </span>
+          {/* Score */}
+          <div style={{ textAlign: "right" }}>
+            <div
+              style={{
+                fontFamily: "'JetBrains Mono',monospace",
+                fontSize: 18,
+                fontWeight: 700,
+                color: "var(--indigo)",
+              }}
+            >
+              {c.score}
+            </div>
+            <div style={{ fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em" }}>Match</div>
+          </div>
+          {/* Arrow */}
+          <span style={{ color: "var(--muted)", fontSize: 16 }}>→</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Candidate preview ──────────────────────────────────────────────────────
+
+function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
+  const maya = candidates[0];
+  const paStats = [
+    { label: "VeriBridge", value: "82" },
+    { label: "Match", value: "94%" },
+    { label: "Verified Skills", value: "18" },
+    { label: "Visa", value: "F-1 OK" },
+  ];
+  const skills = ["Docker · Production app · 3 sources", "Distributed Systems · A · WPI transcript", "React + TypeScript · 5 evidence", "Kubernetes · cert + coursework"];
+  const artifacts = [
+    { icon: "⌥", label: "GitHub", meta: "maya/proof-app · 2.1k LOC" },
+    { icon: "↗", label: "Deployed", meta: "proof-app.fly.dev · live" },
+    { icon: "▣", label: "Transcript", meta: "CS 4515 · A · WPI" },
+    { icon: "◇", label: "Cert", meta: "Docker Foundations · 2025" },
+  ];
+
+  return (
+    <div style={{ ...card, position: "sticky", top: 100, alignSelf: "start" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <div
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: "50%",
+            background: maya.grad,
+            display: "grid",
+            placeItems: "center",
+            fontWeight: 700,
+            fontSize: 18,
+            color: "#fff",
+            flexShrink: 0,
+          }}
+        >
+          {maya.initials}
+        </div>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)" }}>{maya.name}</div>
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>{maya.school}</div>
+          <span
+            style={{
+              display: "inline-block",
+              marginTop: 4,
+              fontSize: 10,
+              fontWeight: 600,
+              padding: "2px 7px",
+              borderRadius: 4,
+              background: "var(--emerald-soft)",
+              color: "#065f46",
+              fontFamily: "'JetBrains Mono',monospace",
+            }}
+          >
+            .edu Verified
+          </span>
+        </div>
+      </div>
+
+      {/* PA grid 2x2 */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+        {paStats.map(({ label, value }) => (
+          <div
+            key={label}
+            style={{
+              background: "var(--bg-2)",
+              borderRadius: 8,
+              padding: "10px 12px",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600, marginBottom: 4 }}>{label}</div>
+            <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 18, fontWeight: 700, color: "var(--ink)" }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Verified skills */}
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 8 }}>Verified Skills</div>
+      <div style={{ marginBottom: 14 }}>
+        {skills.map((s) => (
+          <div
+            key={s}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "7px 0",
+              borderBottom: "1px solid var(--line)",
+              fontSize: 12,
+              color: "var(--ink-2)",
+            }}
+          >
+            <span style={{ color: "var(--emerald)", fontWeight: 700 }}>✓</span>
+            {s}
+          </div>
+        ))}
+      </div>
+
+      {/* Proof artifacts */}
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 8 }}>Proof Artifacts</div>
+      <div style={{ marginBottom: 16 }}>
+        {artifacts.map(({ icon, label, meta }) => (
+          <div
+            key={label}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "7px 10px",
+              borderRadius: 7,
+              marginBottom: 4,
+              background: "var(--bg-2)",
+              fontSize: 12,
+            }}
+          >
+            <span style={{ fontSize: 14, width: 18, textAlign: "center" }}>{icon}</span>
+            <span style={{ fontWeight: 600, color: "var(--ink-2)", minWidth: 64 }}>{label}</span>
+            <span style={{ color: "var(--muted)" }}>{meta}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Actions */}
+      <div style={{ display: "flex", gap: 8 }}>
+        <Btn variant="secondary" onClick={() => onToast?.("Candidate saved to your lists (demo).")}>Save</Btn>
+        <Btn onClick={() => onToast?.("Invite sent — backend integration coming soon.")}>Send invite →</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Pipeline preview ───────────────────────────────────────────────────────
+
+const pipelineStages = [
+  {
+    label: "Sourced",
+    count: 18,
+    color: "#e0e7ff",
+    textColor: "var(--indigo)",
+    cards: [
+      { name: "Maya Reyes", meta: "WPI CS · score 94" },
+      { name: "Jordan Kim", meta: "MIT EECS · score 91" },
+    ],
+  },
+  {
+    label: "Contacted",
+    count: 10,
+    color: "#fef3c7",
+    textColor: "#92400e",
+    cards: [
+      { name: "Arjun Singh", meta: "CMU SCS · score 88" },
+    ],
+  },
+  {
+    label: "Interview",
+    count: 9,
+    color: "var(--emerald-soft)",
+    textColor: "#065f46",
+    cards: [
+      { name: "Leila Pham", meta: "Stanford CS · score 86" },
+    ],
+  },
+  {
+    label: "Offer",
+    count: 5,
+    color: "var(--purple-soft)",
+    textColor: "#5b21b6",
+    cards: [],
+  },
+];
+
+function PipelinePreview() {
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          color: "var(--muted)",
+          textTransform: "uppercase",
+          letterSpacing: "0.14em",
+          marginBottom: 10,
+        }}
+      >
+        Pipeline
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+        {pipelineStages.map((stage) => (
+          <div key={stage.label}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 8,
+              }}
+            >
+              <span style={{ fontWeight: 600, fontSize: 12, color: "var(--ink-2)" }}>{stage.label}</span>
+              <span
+                style={{
+                  fontFamily: "'JetBrains Mono',monospace",
+                  fontSize: 10,
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background: stage.color,
+                  color: stage.textColor,
+                  fontWeight: 700,
+                }}
+              >
+                {stage.count}
+              </span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {stage.cards.map((c) => (
+                <div
+                  key={c.name}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    background: "var(--paper)",
+                    border: "1px solid var(--line)",
+                    fontSize: 12,
+                  }}
+                >
+                  <div style={{ fontWeight: 600, color: "var(--ink)" }}>{c.name}</div>
+                  <div style={{ color: "var(--muted)", fontSize: 11 }}>{c.meta}</div>
+                </div>
+              ))}
+              {stage.cards.length === 0 && (
+                <div
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: "1px dashed var(--line)",
+                    fontSize: 11,
+                    color: "var(--muted)",
+                    textAlign: "center",
+                  }}
+                >
+                  Empty
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Main views ─────────────────────────────────────────────────────────────
+
+export function RecruiterOverview() {
+  const { show, msg } = useDemoToast();
+
+  const metrics = [
+    { label: "Active candidates", value: "2,847", detail: "+312 this week", color: "var(--indigo)" },
+    { label: "Profile views", value: "186", detail: "+24% vs last week", color: "var(--emerald)" },
+    { label: "In pipeline", value: "42", detail: "14 in interview", color: "var(--purple)" },
+    { label: "Trust score", value: "94", detail: "Top 5% verified recruiter", color: "var(--amber)" },
+  ];
+
+  return (
+    <div>
+      <DemoToast msg={msg} />
+      <PageHeader
+        crumb="Recruiter console"
+        title="Proof-backed candidate discovery"
+        lede="Search verified early-career talent by evidence, readiness, role fit, and student-controlled work authorization visibility."
+        action={
+          <>
+            <Btn variant="secondary" onClick={() => show("Export feature coming soon — backend integration required.")}>↓ Export</Btn>
+            <Btn onClick={() => show("Job post creation coming soon.")}>+ New job post</Btn>
+          </>
+        }
+      />
+
+      {/* Metric cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 20 }}>
+        {metrics.map((m) => (
+          <div key={m.label} style={{ ...card }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 6 }}>{m.label}</div>
+            <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 28, fontWeight: 700, color: m.color, lineHeight: 1 }}>{m.value}</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{m.detail}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Search bar */}
+      <div style={{ ...card, marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
+          <input
+            placeholder="Search by skill, school, role, or keyword..."
+            style={{
+              flex: 1,
+              padding: "10px 14px",
+              borderRadius: 8,
+              border: "1px solid var(--line)",
+              fontSize: 14,
+              background: "var(--bg-2)",
+              color: "var(--ink)",
+              outline: "none",
+            }}
+            readOnly
+          />
+          <Btn onClick={() => show("Search is demo mode — results shown above.")}>Search</Btn>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>Active filters:</span>
+          {["Docker", "Distributed Systems", "F-1 OK", "Class of 2026", "Score ≥ 75"].map((f) => (
+            <FilterChip key={f} active>{f}</FilterChip>
+          ))}
+          <FilterChip>+ Add filter</FilterChip>
+        </div>
+      </div>
+
+      {/* 2-col grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 20 }}>
+        <div style={card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em" }}>Proof-backed candidate cards</div>
+              <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)" }}>Candidate search</div>
+            </div>
+            <span
+              style={{
+                fontFamily: "'JetBrains Mono',monospace",
+                fontSize: 11,
+                padding: "3px 9px",
+                borderRadius: 5,
+                background: "var(--indigo-soft)",
+                color: "var(--indigo)",
+                fontWeight: 700,
+              }}
+            >
+              240 matches
+            </span>
+          </div>
+          <CandidateList />
+          <PipelinePreview />
+        </div>
+        <CandidatePreview onToast={show} />
+      </div>
+    </div>
+  );
+}
+
+export function RecruiterSearch() {
+  const { show, msg } = useDemoToast();
+
+  return (
+    <div>
+      <DemoToast msg={msg} />
+      <PageHeader
+        crumb="Recruiter console · Pipeline"
+        title="Pipeline"
+        lede="Track candidates from sourcing through offer. Drag to advance stages."
+        action={<Btn onClick={() => show("Add candidate — backend integration coming soon.")}>+ Add candidate</Btn>}
+      />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16 }}>
+        {pipelineStages.map((stage) => (
+          <div key={stage.label} style={card}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 14,
+              }}
+            >
+              <span style={{ fontWeight: 700, fontSize: 14, color: "var(--ink)" }}>{stage.label}</span>
+              <span
+                style={{
+                  fontFamily: "'JetBrains Mono',monospace",
+                  fontSize: 12,
+                  padding: "3px 8px",
+                  borderRadius: 5,
+                  background: stage.color,
+                  color: stage.textColor,
+                  fontWeight: 700,
+                }}
+              >
+                {stage.count}
+              </span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {candidates.slice(0, stage.count > 1 ? 3 : 1).map((c) => (
+                <div
+                  key={`${stage.label}-${c.name}`}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    background: "var(--bg-2)",
+                    border: "1px solid var(--line)",
+                  }}
+                >
+                  <div style={{ fontWeight: 600, fontSize: 13, color: "var(--ink)", marginBottom: 2 }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>{c.school} · score {c.score}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function RecruiterCandidates() {
+  const { show, msg } = useDemoToast();
+
+  const lists = [
+    { name: "Backend Engineers · Class of 2026", count: 14, updated: "2d ago" },
+    { name: "F-1 Visa · ML/Data", count: 8, updated: "1d ago" },
+    { name: "WPI · Distributed Systems", count: 6, updated: "5d ago" },
+  ];
+
+  return (
+    <div>
+      <DemoToast msg={msg} />
+      <PageHeader
+        crumb="Recruiter console · Saved Lists"
+        title="Saved Lists"
+        lede="Organize shortlisted candidates into reusable talent pools."
+        action={<Btn onClick={() => show("New list creation — backend integration coming soon.")}>+ New list</Btn>}
+      />
+      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 20 }}>
+        <div>
+          <div style={{ ...card, marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 14 }}>Your lists</div>
+            {lists.map((list, i) => (
+              <div
+                key={list.name}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "12px 0",
+                  borderBottom: i < lists.length - 1 ? "1px solid var(--line)" : "none",
+                  cursor: "pointer",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: "var(--ink)", marginBottom: 2 }}>{list.name}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{list.count} candidates · updated {list.updated}</div>
+                </div>
+                <span style={{ color: "var(--muted)", fontSize: 16 }}>→</span>
+              </div>
+            ))}
+          </div>
+          <div style={card}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 14 }}>Candidates in: Backend Engineers · Class of 2026</div>
+            <CandidateList />
+          </div>
+        </div>
+        <CandidatePreview onToast={show} />
+      </div>
+    </div>
+  );
+}
+
+export function RecruiterInvites() {
+  const { show, msg } = useDemoToast();
+
+  const threads = [
+    { name: "Maya Reyes", school: "WPI CS '26", preview: "Thanks for reaching out! I'm interested...", time: "2h ago", unread: true },
+    { name: "Jordan Kim", school: "MIT EECS '26", preview: "Would love to hear more about the role.", time: "1d ago", unread: false },
+    { name: "Arjun Singh", school: "CMU SCS '26", preview: "I have a few questions about the team...", time: "2d ago", unread: false },
+    { name: "Leila Pham", school: "Stanford CS '26", preview: "Following up on the interview schedule.", time: "3d ago", unread: false },
+  ];
+
+  return (
+    <div>
+      <DemoToast msg={msg} />
+      <PageHeader
+        crumb="Recruiter console · Messages"
+        title="Messages"
+        lede="Candidate conversations and interview scheduling."
+        action={<Btn onClick={() => show("New message — backend integration coming soon.")}>+ New message</Btn>}
+      />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 20 }}>
+        <div style={card}>
+          <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 14 }}>Conversations</div>
+          {threads.map((t, i) => (
+            <div
+              key={t.name}
+              style={{
+                display: "flex",
+                gap: 12,
+                padding: "12px 0",
+                borderBottom: i < threads.length - 1 ? "1px solid var(--line)" : "none",
+                cursor: "pointer",
+              }}
+            >
+              <div
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: "50%",
+                  background: candidates[i % candidates.length].grad,
+                  display: "grid",
+                  placeItems: "center",
+                  color: "#fff",
+                  fontWeight: 600,
+                  fontSize: 12,
+                  flexShrink: 0,
+                }}
+              >
+                {candidates[i % candidates.length].initials}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                  <span style={{ fontWeight: t.unread ? 700 : 600, fontSize: 13, color: "var(--ink)" }}>{t.name}</span>
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>{t.time}</span>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 1 }}>{t.school}</div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: t.unread ? "var(--ink-2)" : "var(--muted)",
+                    fontWeight: t.unread ? 500 : 400,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {t.preview}
+                </div>
+              </div>
+              {t.unread && (
+                <div
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: "var(--indigo)",
+                    alignSelf: "center",
+                    flexShrink: 0,
+                  }}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+        <div style={card}>
+          <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 4 }}>Maya Reyes</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 16 }}>WPI CS '26 · score 94</div>
+          <div
+            style={{
+              height: 280,
+              background: "var(--bg-2)",
+              borderRadius: 10,
+              padding: 16,
+              marginBottom: 14,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            <div
+              style={{
+                alignSelf: "flex-start",
+                background: "var(--paper)",
+                border: "1px solid var(--line)",
+                borderRadius: "12px 12px 12px 2px",
+                padding: "8px 12px",
+                fontSize: 13,
+                maxWidth: "80%",
+              }}
+            >
+              Hi Maya, I came across your VeriBridge profile — your Docker and distributed systems work is exactly what we need at Stripe. Are you open to a quick chat?
+            </div>
+            <div
+              style={{
+                alignSelf: "flex-end",
+                background: "var(--indigo)",
+                borderRadius: "12px 12px 2px 12px",
+                padding: "8px 12px",
+                fontSize: 13,
+                color: "#fff",
+                maxWidth: "80%",
+              }}
+            >
+              Thanks for reaching out! I&apos;m very interested — what does the timeline look like?
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              placeholder="Reply..."
+              style={{
+                flex: 1,
+                padding: "9px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--line)",
+                fontSize: 13,
+                background: "var(--bg-2)",
+                color: "var(--ink)",
+                outline: "none",
+              }}
+              readOnly
+            />
+            <Btn onClick={() => show("Message send — backend integration coming soon.")}>Send</Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function RecruiterCompany() {
+  const { show, msg } = useDemoToast();
+
+  const jobs = [
+    { title: "Backend Engineer, Intern", dept: "Platform", location: "NYC · Remote", visa: "H-1B friendly", applicants: 24, status: "Active" },
+    { title: "Full-Stack Engineer, New Grad", dept: "Payments", location: "SF · Hybrid", visa: "H-1B friendly", applicants: 18, status: "Active" },
+    { title: "Data Engineer, Intern", dept: "Data Science", location: "NYC", visa: "All visa types", applicants: 12, status: "Draft" },
+  ];
+
+  return (
+    <div>
+      <DemoToast msg={msg} />
+      <PageHeader
+        crumb="Recruiter console · Job Posts"
+        title="Job Posts"
+        lede="Manage your open roles and company profile visible to students."
+        action={<Btn onClick={() => show("Job post creation coming soon.")}>+ New job post</Btn>}
+      />
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 20 }}>
+        <div>
+          <div style={{ ...card, marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 14 }}>Active job posts</div>
+            {jobs.map((job, i) => (
+              <div
+                key={job.title}
+                style={{
+                  padding: "14px 0",
+                  borderBottom: i < jobs.length - 1 ? "1px solid var(--line)" : "none",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: "var(--ink)", marginBottom: 2 }}>{job.title}</div>
+                    <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
+                      {job.dept} · {job.location}
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          padding: "2px 7px",
+                          borderRadius: 4,
+                          background: "var(--emerald-soft)",
+                          color: "#065f46",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {job.visa}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          padding: "2px 7px",
+                          borderRadius: 4,
+                          background: job.status === "Active" ? "var(--indigo-soft)" : "var(--bg-2)",
+                          color: job.status === "Active" ? "var(--indigo)" : "var(--muted)",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {job.status}
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 20, fontWeight: 700, color: "var(--indigo)" }}>{job.applicants}</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>applicants</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{ ...card, marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 14 }}>Company profile</div>
+            {[
+              ["Company", "Stripe"],
+              ["Industry", "Fintech · Payments"],
+              ["Early talent hiring", "Backend, Full-stack, Platform"],
+              ["Locations", "NYC, SF, Remote"],
+              ["Visa friendliness", "89 / 100"],
+              ["H-1B sponsorship", "Strong signal"],
+            ].map(([k, v]) => (
+              <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--line)", fontSize: 13 }}>
+                <span style={{ color: "var(--muted)", fontWeight: 500 }}>{k}</span>
+                <span style={{ fontWeight: 600, color: "var(--ink)" }}>{v}</span>
+              </div>
+            ))}
+          </div>
+          <div style={card}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 8 }}>Recruiter trust score</div>
+            <div
+              style={{
+                height: 8,
+                borderRadius: 4,
+                background: "var(--bg-2)",
+                marginBottom: 6,
+                overflow: "hidden",
+              }}
+            >
+              <div style={{ width: "94%", height: "100%", borderRadius: 4, background: "var(--indigo)" }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)" }}>
+              <span>94 / 100</span>
+              <span>Top 5%</span>
+            </div>
+            <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 10, lineHeight: 1.6 }}>
+              Verified company identity, response rate, and job-post clarity improve student opt-in rates for sensitive visibility fields.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function RecruiterSettings() {
+  const { show, msg } = useDemoToast();
+
+  const sections: Array<{ title: string; items: Array<{ label: string; sub?: string; on: boolean }> }> = [
+    {
+      title: "Search defaults",
+      items: [
+        { label: "Require proof-backed skills", sub: "Only show candidates with verified evidence", on: true },
+        { label: "Hide non-consenting visa details", sub: "Student-controlled visibility is always respected", on: true },
+        { label: "Prioritize .edu verified profiles", sub: "Elevate institutionally-verified students", on: true },
+      ],
+    },
+    {
+      title: "Invite preferences",
+      items: [
+        { label: "Use student-first language", sub: "Frame invites around the student's goals", on: true },
+        { label: "Include role salary range", sub: "Salary transparency improves response rates", on: true },
+        { label: "Show visa compatibility only when opted in", sub: "Never expose visa details without student consent", on: true },
+      ],
+    },
+    {
+      title: "Notifications",
+      items: [
+        { label: "New high-match candidates", sub: "Alert when score ≥ 85 candidates appear", on: true },
+        { label: "Invite replies", sub: "Real-time when a student responds", on: true },
+        { label: "Pipeline follow-ups", sub: "Weekly digest of pending actions", on: false },
+      ],
+    },
+  ];
+
+  return (
+    <div>
+      <DemoToast msg={msg} />
+      <PageHeader
+        crumb="Recruiter console · Team & Billing"
+        title="Team & Billing"
+        lede="Manage your team seats, subscription, and recruiter preferences."
+      />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+        {sections.map((section) => (
+          <div key={section.title} style={card}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 14 }}>{section.title}</div>
+            {section.items.map((item) => (
+              <SwitchRow
+                key={item.label}
+                label={item.label}
+                sub={item.sub}
+                defaultOn={item.on}
+                onToast={show}
+              />
+            ))}
+          </div>
+        ))}
+        <div style={card}>
+          <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 8 }}>Privacy reminder</div>
+          <p style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.7 }}>
+            Recruiters should not see private visa/work authorization details unless the student opted in. Work authorization visibility is student-controlled.
+          </p>
+          <div
+            style={{
+              marginTop: 12,
+              padding: "10px 12px",
+              borderRadius: 8,
+              background: "var(--indigo-soft)",
+              border: "1px solid #c7d2fe",
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--indigo)",
+            }}
+          >
+            ✓ Compliant with recruiter policy
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

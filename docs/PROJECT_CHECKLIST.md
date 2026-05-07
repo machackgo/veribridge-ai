@@ -1,4 +1,4 @@
-# CareerProof AI Project Checklist
+# VeriBridge AI Project Checklist
 
 ## Foundation
 

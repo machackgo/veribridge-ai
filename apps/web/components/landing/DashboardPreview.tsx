@@ -35,7 +35,7 @@ const dashboardCards = [
   },
   {
     icon: Award,
-    title: "CareerProof Score",
+    title: "VeriBridge Score",
     description: "Your career readiness",
     stat: "92",
     statLabel: "Score",

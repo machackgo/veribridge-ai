@@ -1,4 +1,4 @@
-# CareerProof AI Documentation
+# VeriBridge AI Documentation
 
 This folder contains project documentation for architecture, roadmap planning, and implementation decisions.
 

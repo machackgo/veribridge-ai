@@ -1,21 +1,36 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f8fafc;
-  --foreground: #172033;
+  --background: #fafbfd;
+  --background-muted: #f1f3f8;
+  --paper: #ffffff;
+  --foreground: #0a0e1a;
+  --foreground-soft: #1f2a44;
+  --muted: #6b7280;
+  --line: #e6e8ef;
+  --line-strong: #d4d8e3;
+  --indigo: #4f46e5;
+  --indigo-soft: #eef0ff;
+  --emerald: #10b981;
+  --emerald-soft: #e6f7f1;
+  --purple: #8b5cf6;
+  --purple-soft: #f1ecff;
+  --amber: #d97706;
+  --rose: #f43f5e;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: Arial, Helvetica, sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 a {
@@ -25,6 +40,79 @@ a {
 
 html {
   scroll-behavior: smooth;
+}
+
+.vb-mono {
+  font-family:
+    "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.vb-glass {
+  background: color-mix(in srgb, var(--background) 82%, transparent);
+  border-color: color-mix(in srgb, var(--line) 72%, transparent);
+  backdrop-filter: saturate(180%) blur(16px);
+}
+
+.vb-card {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow:
+    0 1px 2px rgb(10 14 26 / 0.04),
+    0 1px 1px rgb(10 14 26 / 0.03);
+}
+
+.vb-card-lg {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow:
+    0 24px 60px -20px rgb(10 14 26 / 0.18),
+    0 12px 24px -12px rgb(10 14 26 / 0.1);
+}
+
+.vb-logo {
+  position: relative;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 7px;
+  background: linear-gradient(135deg, var(--foreground), #2a3050);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.15);
+}
+
+.vb-logo::after {
+  width: 6px;
+  height: 6px;
+  content: "";
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--indigo), var(--purple));
+  box-shadow: 0 0 12px rgb(79 70 229 / 0.7);
+}
+
+.vb-eyebrow {
+  font-family:
+    "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.vb-gradient-text {
+  background: linear-gradient(120deg, var(--indigo), var(--purple) 60%, var(--emerald));
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.vb-radial-stage {
+  background:
+    radial-gradient(900px 480px at 20% 10%, rgb(79 70 229 / 0.14), transparent 60%),
+    radial-gradient(800px 500px at 80% 30%, rgb(139 92 246 / 0.12), transparent 60%),
+    radial-gradient(700px 400px at 50% 90%, rgb(16 185 129 / 0.08), transparent 60%),
+    var(--background);
 }
 
 @keyframes float-slow {
@@ -167,4 +255,103 @@ html {
   .motion-icon-tilt:hover {
     transform: none;
   }
+}
+
+/* Prototype CSS variable aliases for inline-style compatibility */
+:root {
+  --bg: #fafbfd;
+  --bg-2: #f1f3f8;
+  --ink: #0a0e1a;
+  --ink-2: #1f2a44;
+  --line-2: #d4d8e3;
+  --amber-soft: #fef3e6;
+  --rose-soft: #fee4e9;
+  --shadow-sm: 0 1px 2px rgba(10,14,26,.04);
+  --shadow-md: 0 8px 20px -8px rgba(10,14,26,.10);
+  --shadow-lg: 0 24px 60px -20px rgba(10,14,26,.18);
+}
+
+/* Sidebar nav hover (non-active items) */
+.dash-nav-hover:hover {
+  background: var(--bg-2) !important;
+}
+
+/* Score card ring */
+.score-ring-bg { transform: rotate(-90deg); }
+
+@keyframes recruiter-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(16,185,129,.5); }
+  70% { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
+  100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+}
+
+/* Teal color vars */
+:root {
+  --teal: #0d9488;
+  --teal-soft: #e6f4f2;
+}
+
+/* Recruiter candidate row hover */
+.recruiter-row-hover:hover {
+  background: var(--bg-2) !important;
+}
+
+/* ── Card hover lift (dashboard cards) ── */
+.vb-card-hover {
+  transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
+}
+.vb-card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 12px 32px -8px rgba(10, 14, 26, 0.1),
+    0 4px 12px -4px rgba(10, 14, 26, 0.06);
+  border-color: var(--line-strong) !important;
+}
+
+/* ── Scroll reveal animation ── */
+@keyframes vb-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.vb-reveal {
+  animation: vb-reveal 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.vb-reveal-1 { animation-delay: 60ms; }
+.vb-reveal-2 { animation-delay: 120ms; }
+.vb-reveal-3 { animation-delay: 180ms; }
+.vb-reveal-4 { animation-delay: 240ms; }
+
+/* ── Button micro-interaction ── */
+.vb-btn-lift {
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+.vb-btn-lift:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(10, 14, 26, 0.15);
+}
+.vb-btn-lift:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+/* ── Sidebar active link: ensure text and icons are always white ── */
+[aria-current="page"] {
+  color: #fff !important;
+}
+[aria-current="page"] span {
+  color: #fff !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vb-card-hover { transition: none; }
+  .vb-card-hover:hover { transform: none; box-shadow: none; }
+  .vb-reveal { animation: none; opacity: 1; transform: none; }
+  .vb-btn-lift { transition: none; }
+  .vb-btn-lift:hover, .vb-btn-lift:active { transform: none; box-shadow: none; }
 }

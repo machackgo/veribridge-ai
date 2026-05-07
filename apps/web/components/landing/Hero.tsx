@@ -15,30 +15,35 @@ const verifiedSkills = [
 
 export function Hero() {
   return (
-    <section className="relative flex min-h-screen items-center overflow-hidden bg-gradient-to-br from-slate-50 via-indigo-50/50 to-emerald-50/40 px-6 pb-20 pt-32">
+    <section className="vb-radial-stage relative flex min-h-[calc(100vh-65px)] items-center overflow-hidden px-6 pb-24 pt-20">
       <div className="mx-auto grid max-w-7xl items-center gap-12 lg:grid-cols-[1.04fr_0.96fr]">
         <div>
-          <div className="motion-fade-up mb-6 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-white/80 px-4 py-2">
-            <Shield className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+          <div className="motion-fade-up vb-card mb-6 inline-flex items-center gap-2 rounded-full px-3 py-1.5">
+            <span className="grid h-5 w-5 place-items-center rounded-full bg-emerald-50">
+              <Shield className="h-3.5 w-3.5 text-emerald-700" aria-hidden="true" />
+            </span>
             <span className="text-sm font-medium text-slate-700">
               Verified .edu students only
             </span>
           </div>
 
-          <h1 className="motion-fade-up motion-delay-100 max-w-4xl text-5xl font-bold leading-[1.05] tracking-normal text-slate-950 sm:text-6xl">
-            Proof-backed career readiness for verified students
+          <h1 className="motion-fade-up motion-delay-100 max-w-4xl text-5xl font-semibold leading-[1.02] tracking-[-0.035em] text-slate-950 sm:text-6xl lg:text-[64px]">
+            Verified student talent, backed by{" "}
+            <span className="vb-gradient-text font-serif italic tracking-[-0.01em]">
+              real evidence.
+            </span>
           </h1>
 
-          <p className="motion-fade-up motion-delay-200 mt-6 max-w-2xl text-lg leading-8 text-slate-600">
-            CareerProof AI helps students turn resumes, projects, coursework,
-            and applications into verified career profiles recruiters and
-            universities can trust.
+          <p className="motion-fade-up motion-delay-200 mt-6 max-w-2xl text-[19px] leading-8 text-slate-700">
+            VeriBridge AI helps verified students turn projects, coursework,
+            resumes, and applications into evidence-backed career profiles
+            recruiters and universities can trust.
           </p>
 
           <div className="motion-fade-up motion-delay-300 mt-8 flex flex-col gap-4 sm:flex-row">
             <Link
               href="/dashboard"
-              className="motion-lift inline-flex min-h-12 items-center justify-center gap-2 rounded-md bg-emerald-600 px-6 font-semibold text-white shadow-xl shadow-emerald-600/20 transition-all duration-300 hover:bg-emerald-700 hover:shadow-2xl hover:shadow-emerald-600/30"
+              className="motion-lift inline-flex min-h-11 items-center justify-center gap-2 rounded-[10px] bg-[#0a0e1a] px-5 text-sm font-semibold text-white shadow-sm shadow-slate-900/10 transition-all duration-300 hover:shadow-xl hover:shadow-slate-900/15"
             >
               Start Building Profile
               <ArrowRight
@@ -48,17 +53,17 @@ export function Hero() {
             </Link>
             <a
               href="#platform"
-              className="motion-lift inline-flex min-h-12 items-center justify-center rounded-md border border-slate-300 bg-white px-6 font-semibold text-slate-700 shadow-sm transition-all duration-300 hover:border-slate-400 hover:text-slate-950 hover:shadow-lg"
+              className="motion-lift inline-flex min-h-11 items-center justify-center rounded-[10px] border border-slate-300 bg-white/75 px-5 text-sm font-semibold text-slate-800 shadow-sm backdrop-blur transition-all duration-300 hover:border-slate-500 hover:bg-white hover:text-slate-950"
             >
               View Platform
             </a>
           </div>
         </div>
 
-        <div className="motion-float-slow motion-glow transform-gpu rounded-lg border border-slate-200 bg-white/85 p-6 shadow-2xl shadow-slate-900/10 backdrop-blur">
+        <div className="motion-float-slow vb-card-lg transform-gpu bg-white/90 p-6 backdrop-blur">
           <div className="mb-6 flex items-center justify-between">
-            <h2 className="font-semibold text-slate-950">Career Dashboard</h2>
-            <span className="motion-pulse-soft rounded-md bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+            <h2 className="font-semibold tracking-[-0.01em] text-slate-950">Career Dashboard</h2>
+            <span className="motion-pulse-soft vb-mono rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-700">
               Active
             </span>
           </div>

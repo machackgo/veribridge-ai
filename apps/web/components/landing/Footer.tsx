@@ -25,10 +25,10 @@ export function Footer() {
               <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-500 to-indigo-600">
                 <Sparkles className="h-5 w-5 text-white" aria-hidden="true" />
               </span>
-              <span className="font-semibold text-white">CareerProof AI</span>
+              <span className="font-semibold text-white">VeriBridge AI</span>
             </div>
             <p className="text-sm leading-6 text-slate-400">
-              Proof-backed career readiness for verified students.
+              Verified student talent, backed by real evidence.
             </p>
           </div>
 
@@ -53,7 +53,7 @@ export function Footer() {
 
         <div className="flex flex-col items-center justify-between gap-4 border-t border-slate-800 pt-8 md:flex-row">
           <p className="text-sm text-slate-400">
-            © 2026 CareerProof AI. All rights reserved.
+            © 2026 VeriBridge AI. All rights reserved.
           </p>
           <div className="flex gap-6">
             {["Privacy", "Terms", "Security"].map((link) => (

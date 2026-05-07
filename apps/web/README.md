@@ -1,6 +1,6 @@
-# CareerProof AI Web
+# VeriBridge AI Web
 
-Next.js frontend for CareerProof AI.
+Next.js frontend for VeriBridge AI.
 
 ## Stack
 

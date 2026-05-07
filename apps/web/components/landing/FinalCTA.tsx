@@ -38,7 +38,7 @@ export function FinalCTA() {
         </h2>
 
         <p className="mx-auto mt-6 max-w-2xl text-xl leading-8 text-slate-300">
-          Turn your resume, projects, and skills into a proof-backed profile
+          Turn your resume, projects, and skills into an evidence-backed career profile
           recruiters and universities can trust.
         </p>
 

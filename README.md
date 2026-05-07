@@ -1,8 +1,8 @@
-# CareerProof AI
+# VeriBridge AI
 
-CareerProof AI is a production-oriented SaaS platform for helping students plan, prepare, and improve their career outcomes with AI-assisted workflows.
+VeriBridge AI helps verified students turn projects, coursework, resumes, and applications into evidence-backed career profiles recruiters and universities can trust.
 
-This repository is the initial monorepo for the CareerProof AI SaaS product. The frontend is scaffolded with Next.js, while the backend, shared package, infrastructure, and deeper product features are still intentionally lightweight.
+This repository is the initial monorepo for the VeriBridge AI SaaS product. The frontend is scaffolded with Next.js, while the backend, shared package, infrastructure, and deeper product features are still intentionally lightweight.
 
 ## Tech Stack
 

@@ -5,4 +5,6 @@ export { Footer } from "./Footer";
 export { Hero } from "./Hero";
 export { Navbar } from "./Navbar";
 export { ProofOfSkill } from "./ProofOfSkill";
+export { RolePreviews } from "./RolePreviews";
 export { ThreeSidedPlatform } from "./ThreeSidedPlatform";
+export { VisaIntelligence } from "./VisaIntelligence";

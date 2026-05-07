@@ -6,7 +6,7 @@ const platforms = [
     title: "Students",
     id: "students",
     description:
-      "Build verified career profiles backed by real projects, coursework, and skills.",
+      "Build evidence-backed career profiles from real projects, coursework, and skills.",
     features: [
       "Resume analysis",
       "Skill verification",
@@ -54,7 +54,7 @@ export function ThreeSidedPlatform() {
             One platform, three perspectives
           </h2>
           <p className="mt-4 text-lg leading-8 text-slate-600">
-            CareerProof AI connects students, recruiters, and universities
+            VeriBridge AI connects students, recruiters, and universities
             through verified career data.
           </p>
         </div>

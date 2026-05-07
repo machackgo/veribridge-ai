@@ -5,7 +5,7 @@ const platforms = [
   {
     icon: GraduationCap,
     title: 'Students',
-    description: 'Build verified career profiles backed by real projects, coursework, and skills. Stand out with proof-of-skill credentials.',
+    description: 'Build evidence-backed career profiles from real projects, coursework, and skills. Stand out with proof-of-skill credentials.',
     features: ['Resume Analysis', 'Skill Verification', 'Job Matching', 'Interview Prep'],
     gradient: 'from-emerald-500 to-emerald-600',
     bgGradient: 'from-emerald-500/10 to-emerald-600/5',
@@ -42,7 +42,7 @@ export function ThreeSidedPlatform() {
             One platform, three perspectives
           </h2>
           <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-            CareerProof AI connects students, recruiters, and universities through verified career data
+            VeriBridge AI connects students, recruiters, and universities through verified career data
           </p>
         </motion.div>
 

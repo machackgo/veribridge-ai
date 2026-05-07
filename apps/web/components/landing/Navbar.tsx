@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { Sparkles } from "lucide-react";
 
 const navItems = [
   { label: "Platform", href: "#platform" },
@@ -11,39 +10,33 @@ const navItems = [
 
 export function Navbar() {
   return (
-    <nav className="fixed inset-x-0 top-0 z-50 px-4 py-4 sm:px-6">
-      <div className="mx-auto max-w-7xl">
-        <div className="rounded-lg border border-slate-200/80 bg-white/90 px-4 py-3 shadow-lg shadow-slate-900/5 backdrop-blur-xl sm:px-6">
-          <div className="flex items-center justify-between gap-5">
-            <Link href="/" className="flex items-center gap-2">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-500 to-indigo-600">
-                <Sparkles className="h-5 w-5 text-white" aria-hidden="true" />
-              </span>
-              <span className="font-semibold text-slate-950">
-                CareerProof AI
-              </span>
-            </Link>
+    <nav className="vb-glass sticky inset-x-0 top-0 z-50 border-b">
+      <div className="mx-auto flex max-w-7xl items-center gap-6 px-5 py-3 sm:px-8">
+        <Link href="/" className="flex items-center gap-2 text-[15px] font-semibold tracking-[-0.01em]">
+          <span className="vb-logo" aria-hidden="true" />
+          <span className="text-slate-950">
+                VeriBridge AI
+          </span>
+        </Link>
 
-            <div className="hidden items-center gap-7 lg:flex">
-              {navItems.map((item) => (
-                <a
-                  key={item.label}
-                  href={item.href}
-                  className="text-sm font-medium text-slate-600 transition hover:text-slate-950"
-                >
-                  {item.label}
-                </a>
-              ))}
-            </div>
-
-            <Link
-              href="/dashboard"
-              className="motion-lift motion-glow inline-flex min-h-10 items-center rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white shadow-lg shadow-emerald-600/20 transition-all duration-300 hover:bg-emerald-700 hover:shadow-xl hover:shadow-emerald-600/30 active:translate-y-0"
+        <div className="hidden flex-1 items-center justify-center gap-1 lg:flex">
+          {navItems.map((item) => (
+            <a
+              key={item.label}
+              href={item.href}
+              className="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-600 transition hover:bg-white hover:text-slate-950"
             >
-              Start Building Profile
-            </Link>
-          </div>
+              {item.label}
+            </a>
+          ))}
         </div>
+
+        <Link
+          href="/dashboard"
+          className="motion-lift inline-flex min-h-10 items-center rounded-[10px] bg-[#0a0e1a] px-4 text-sm font-semibold text-white shadow-sm shadow-slate-900/10 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-slate-900/15"
+        >
+          Start Building Profile →
+        </Link>
       </div>
     </nav>
   );

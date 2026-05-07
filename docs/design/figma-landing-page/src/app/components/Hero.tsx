@@ -23,11 +23,11 @@ export function Hero() {
           </div>
 
           <h1 className="text-5xl md:text-6xl font-bold text-slate-900 leading-tight mb-6">
-            Proof-backed career readiness for verified students
+            Verified student talent, backed by real evidence.
           </h1>
 
           <p className="text-lg text-slate-600 mb-8 leading-relaxed">
-            CareerProof AI helps students turn resumes, projects, coursework, and applications into verified career profiles recruiters and universities can trust.
+            VeriBridge AI helps verified students turn projects, coursework, resumes, and applications into evidence-backed career profiles recruiters and universities can trust.
           </p>
 
           <div className="flex flex-wrap gap-4">
