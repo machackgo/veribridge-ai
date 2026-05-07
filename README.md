@@ -2,7 +2,7 @@
 
 CareerProof AI is a production-oriented SaaS platform for helping students plan, prepare, and improve their career outcomes with AI-assisted workflows.
 
-This repository is the initial monorepo scaffold. It is intentionally lightweight: the frontend, backend, shared package, infrastructure, and documentation folders are present, but application code has not been implemented yet.
+This repository is the initial monorepo for the CareerProof AI SaaS product. The frontend is scaffolded with Next.js, while the backend, shared package, infrastructure, and deeper product features are still intentionally lightweight.
 
 ## Tech Stack
 
@@ -33,11 +33,30 @@ careerproof-ai/
 
 ## Getting Started
 
-1. Review `.env.example` and create local environment files when app scaffolding begins.
+1. Review `.env.example` and create local environment files when app integrations begin.
 2. Place the roadmap file at `docs/roadmap/CareerProof_AI_12_Month_Roadmap.html`.
-3. Scaffold `apps/web` with Next.js when frontend work starts.
+3. Run the frontend locally from `apps/web`.
 4. Scaffold `apps/api` with FastAPI when backend work starts.
 5. Define the first Supabase schema migrations before implementing data-backed features.
+
+## Frontend Setup
+
+The frontend app lives in `apps/web` and uses Next.js with TypeScript, Tailwind CSS, and the App Router.
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000` to view the landing page.
+
+Useful frontend commands:
+
+```bash
+npm run lint
+npm run build
+```
 
 ## Development Principles
 
@@ -49,4 +68,4 @@ careerproof-ai/
 
 ## Current Status
 
-Initial project structure and documentation scaffold only. No production application code has been added yet.
+Initial project structure and frontend scaffold are in place. Authentication, backend APIs, database schema, and AI features have not been implemented yet.
