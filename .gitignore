@@ -51,3 +51,7 @@ pnpm-debug.log*
 # Temporary files
 tmp/
 temp/
+
+# Playwright test artifacts
+apps/web/playwright-report/
+apps/web/test-results/
