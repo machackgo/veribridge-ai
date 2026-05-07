@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Recruiter Console — CareerProof AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#fafbfd;--bg-2:#f1f3f8;--paper:#fff;--ink:#0a0e1a;--ink-2:#1f2a44;--muted:#6b7280;
+    --line:#e6e8ef;--line-2:#d4d8e3;
+    --teal:#0d9488;--teal-soft:#e6f4f2;--indigo:#4f46e5;--indigo-soft:#eef0ff;
+    --emerald:#10b981;--emerald-soft:#e6f7f1;--amber:#d97706;--rose:#f43f5e;--purple:#8b5cf6;
+    --shadow-sm:0 1px 2px rgba(10,14,26,.04);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  .mono{font-family:'JetBrains Mono',monospace}
+  a{color:inherit;text-decoration:none}
+
+  .nav{position:sticky;top:0;z-index:60;backdrop-filter:saturate(180%) blur(16px);background:rgba(250,251,253,.85);border-bottom:1px solid var(--line)}
+  .nav-inner{max-width:1480px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;gap:24px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px}
+  .brand .logo{width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,var(--ink),#2a3050);display:grid;place-items:center}
+  .brand .logo::after{content:"";width:6px;height:6px;border-radius:50%;background:linear-gradient(135deg,var(--teal),var(--indigo));box-shadow:0 0 12px rgba(13,148,136,.7)}
+  .nav-links{display:flex;gap:4px;flex:1;justify-content:center}
+  .nav-links a{font-size:14px;color:var(--ink-2);padding:8px 14px;border-radius:8px;font-weight:500}
+  .nav-links a:hover,.nav-links a.active{background:var(--paper);color:var(--ink)}
+  .nav-links a.active{box-shadow:var(--shadow-sm);border:1px solid var(--line)}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;cursor:pointer}
+  .btn-primary{background:var(--ink);color:#fff}
+  .btn-ghost{background:transparent;color:var(--ink-2);border-color:var(--line-2)}
+  .btn-teal{background:var(--teal);color:#fff}
+
+  .page{max-width:1480px;margin:0 auto;padding:32px 28px 80px;display:grid;grid-template-columns:260px 1fr;gap:28px}
+  .side{position:sticky;top:80px;align-self:start;background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px;height:fit-content}
+  .side .who{display:flex;align-items:center;gap:10px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:14px}
+  .avatar{width:36px;height:36px;border-radius:8px;background:#000;color:#fff;display:grid;place-items:center;font-weight:700;font-size:11px;letter-spacing:.04em;font-family:'JetBrains Mono',monospace}
+  .who .nm{font-weight:600;font-size:13px}
+  .who .em{font-size:11px;color:var(--muted)}
+  .who .badge{margin-top:4px;display:inline-flex;align-items:center;gap:4px;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--emerald);background:var(--emerald-soft);padding:2px 6px;border-radius:4px;font-weight:600}
+  .side .lab{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;margin:14px 0 8px}
+  .side a{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;font-size:13px;color:var(--ink-2)}
+  .side a.active{background:var(--ink);color:#fff;font-weight:500}
+  .side a:hover:not(.active){background:var(--bg-2)}
+  .side .count{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);background:var(--bg-2);padding:1px 6px;border-radius:4px}
+  .side a.active .count{background:rgba(255,255,255,.15);color:rgba(255,255,255,.8)}
+
+  .main h1{font-size:32px;font-weight:600;letter-spacing:-.02em;margin:0 0 4px}
+  .main .crumb{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;display:flex;align-items:center;gap:8px}
+  .main .crumb .pulse{width:6px;height:6px;border-radius:50%;background:var(--emerald);box-shadow:0 0 0 0 var(--emerald);animation:p 2s infinite}
+  @keyframes p{0%{box-shadow:0 0 0 0 rgba(16,185,129,.5)}70%{box-shadow:0 0 0 8px rgba(16,185,129,0)}100%{box-shadow:0 0 0 0 rgba(16,185,129,0)}}
+  .main .head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:20px}
+  .main .lede{font-size:14px;color:var(--muted);margin:6px 0 0;max-width:680px}
+  .head-actions{display:flex;gap:8px}
+
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px}
+  .card .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+  .card .h .t{font-weight:600;font-size:14px;letter-spacing:-.01em}
+  .card .h .a{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase}
+
+  /* metrics row */
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+  .metric .v{font-size:30px;font-weight:600;letter-spacing:-.02em;line-height:1}
+  .metric .lab{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;margin-bottom:8px}
+  .metric .delta{font-size:11px;color:var(--emerald);font-weight:600;margin-top:6px}
+  .metric.warn .delta{color:var(--amber)}
+
+  /* search bar */
+  .search-bar{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .search-input{flex:1;min-width:300px;display:flex;align-items:center;gap:8px;padding:9px 12px;background:var(--bg-2);border:1px solid var(--line);border-radius:9px;font-size:13px}
+  .search-input input{flex:1;border:0;background:transparent;outline:none;font:inherit;color:var(--ink)}
+  .chip{font-size:12px;padding:6px 11px;border-radius:8px;background:var(--bg-2);border:1px solid var(--line);font-weight:500;color:var(--ink-2);display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+  .chip.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .chip .x{opacity:.6;font-size:10px}
+  .chip-add{border-style:dashed;color:var(--muted)}
+
+  /* layout */
+  .work{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;align-items:start}
+
+  /* candidates */
+  .cand{display:flex;flex-direction:column;gap:0}
+  .c-row{display:grid;grid-template-columns:auto 1fr auto auto auto;gap:14px;align-items:center;padding:14px 12px;border-bottom:1px solid var(--line);cursor:pointer;border-radius:8px}
+  .c-row:hover{background:var(--bg-2)}
+  .c-row:last-child{border-bottom:0}
+  .c-row .av{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--teal),var(--indigo));color:#fff;display:grid;place-items:center;font-weight:600;font-size:13px;flex-shrink:0}
+  .c-row .nm{font-size:14px;font-weight:600;letter-spacing:-.005em}
+  .c-row .meta{font-size:11px;color:var(--muted);margin-top:2px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em}
+  .c-row .skills{display:flex;gap:4px;margin-top:6px}
+  .c-row .sk{font-size:10px;padding:2px 6px;background:var(--bg-2);border:1px solid var(--line);border-radius:4px;color:var(--ink-2);font-weight:500}
+  .c-row .sk.v{background:var(--emerald-soft);border-color:color-mix(in srgb,var(--emerald) 25%,transparent);color:var(--emerald);font-weight:600}
+  .c-row .sk.v::before{content:"✓ "}
+  .visa{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:3px 7px;border-radius:5px;font-weight:600}
+  .visa.us{background:var(--emerald-soft);color:var(--emerald)}
+  .visa.f1{background:var(--indigo-soft);color:var(--indigo)}
+  .score-mini{text-align:right}
+  .score-mini .v{font-weight:700;font-size:18px;color:var(--ink);font-family:'JetBrains Mono',monospace}
+  .score-mini .l{font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;font-weight:600;margin-top:2px}
+
+  /* candidate profile preview */
+  .preview{position:sticky;top:80px;align-self:start}
+  .preview-header{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+  .preview-header .av{width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--teal),var(--indigo));color:#fff;display:grid;place-items:center;font-weight:600;font-size:18px}
+  .preview-header h3{margin:0;font-size:18px;font-weight:600;letter-spacing:-.01em}
+  .preview-header .meta{font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.04em}
+  .preview .verified{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-family:'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--emerald);background:var(--emerald-soft);padding:3px 8px;border-radius:5px;font-weight:700;margin-top:6px}
+
+  .proof-list{display:flex;flex-direction:column;gap:8px}
+  .proof{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;padding:11px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2)}
+  .proof .ico{width:30px;height:30px;border-radius:7px;background:#fff;border:1px solid var(--line);display:grid;place-items:center;color:var(--ink-2);flex-shrink:0;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:11px}
+  .proof .ico.gh{background:#0a0e1a;color:#fff;border-color:#0a0e1a}
+  .proof .ico.tr{background:#fef3e6;color:var(--amber);border-color:color-mix(in srgb,var(--amber) 25%,transparent)}
+  .proof .ico.dp{background:var(--teal-soft);color:var(--teal);border-color:color-mix(in srgb,var(--teal) 25%,transparent)}
+  .proof .ico.cf{background:var(--purple);color:#fff;border-color:var(--purple)}
+  .proof .nm{font-size:13px;font-weight:600}
+  .proof .d{font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4}
+  .proof .v{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;color:var(--emerald);text-transform:uppercase;font-weight:700;align-self:center}
+
+  .preview-skills{display:flex;flex-wrap:wrap;gap:6px}
+  .preview-skills .pk{font-size:11px;padding:5px 9px;border-radius:5px;border:1px solid var(--line);background:var(--bg-2);font-weight:500}
+  .preview-skills .pk.v{background:var(--emerald-soft);border-color:color-mix(in srgb,var(--emerald) 25%,transparent);color:var(--emerald);font-weight:600}
+  .preview-skills .pk.v::before{content:"✓ ";font-weight:700}
+
+  .pa{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
+  .pa-cell{padding:10px;background:var(--bg-2);border:1px solid var(--line);border-radius:8px;text-align:center}
+  .pa-cell .l{font-size:9px;font-family:'JetBrains Mono',monospace;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+  .pa-cell .v{font-size:18px;font-weight:600;margin-top:3px;font-family:'JetBrains Mono',monospace;letter-spacing:-.01em}
+
+  .preview-actions{display:flex;gap:8px;margin-top:18px}
+  .preview-actions .btn{flex:1;justify-content:center}
+
+  /* pipeline */
+  .pipe{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:16px}
+  .pipe-col{background:var(--bg-2);border:1px solid var(--line);border-radius:9px;padding:10px}
+  .pipe-col .h{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;margin-bottom:8px;display:flex;justify-content:space-between;font-weight:600}
+  .pipe-col .h .n{color:var(--ink);background:#fff;border:1px solid var(--line);padding:1px 6px;border-radius:4px}
+  .pipe-card{background:#fff;border:1px solid var(--line);border-radius:7px;padding:9px 10px;margin-bottom:6px;font-size:12px}
+  .pipe-card .nm{font-weight:600}
+  .pipe-card .meta{font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.04em;margin-top:2px}
+
+  @media (max-width:1100px){.page{grid-template-columns:1fr}.side,.preview{position:static}.work{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="CareerProof Landing.html"><span class="logo"></span>CareerProof<span style="color:var(--muted);font-weight:500;margin-left:2px">AI</span></a>
+    <div class="nav-links">
+      <a href="CareerProof Landing.html#platform">Platform</a>
+      <a href="dashboard-student.html">Students</a>
+      <a class="active" href="dashboard-recruiter.html">Recruiters</a>
+      <a href="dashboard-university.html">Universities</a>
+      <a href="CareerProof_AI_12_Month_Roadmap.html">Roadmap</a>
+    </div>
+    <a class="btn btn-primary" href="#">Continue building →</a>
+  </div>
+</nav>
+
+<div class="page">
+  <aside class="side">
+    <div class="who">
+      <div class="avatar">S</div>
+      <div>
+        <div class="nm">Stripe</div>
+        <div class="em mono">recruiter@stripe.com</div>
+        <div class="badge">✓ Verified</div>
+      </div>
+    </div>
+    <div class="lab">Workspace</div>
+    <a class="active" href="#">▣ Search <span class="count">240</span></a>
+    <a href="#">★ Saved Lists <span class="count">8</span></a>
+    <a href="#">⚐ Pipeline <span class="count">42</span></a>
+    <a href="#">✉ Messages <span class="count">12</span></a>
+    <a href="#">▦ Job Posts <span class="count">5</span></a>
+    <div class="lab">Insights</div>
+    <a href="#">↗ Funnel</a>
+    <a href="#">◇ Trust score</a>
+    <div class="lab">Account</div>
+    <a href="#">⚙ Team &amp; billing</a>
+  </aside>
+
+  <main class="main">
+    <div class="head">
+      <div>
+        <div class="crumb"><span class="pulse"></span> Recruiter console · Search</div>
+        <h1>Find verified .edu talent.</h1>
+        <p class="lede">Every skill below is backed by GitHub commits, deployed projects, transcripts, or certifications. Visa filtering is built in.</p>
+      </div>
+      <div class="head-actions">
+        <button class="btn btn-ghost">Export shortlist</button>
+        <button class="btn btn-teal">+ New job post</button>
+      </div>
+    </div>
+
+    <div class="metrics">
+      <div class="card metric"><div class="lab">Active candidates</div><div class="v">2,847</div><div class="delta">↑ 312 this week</div></div>
+      <div class="card metric"><div class="lab">Profile views</div><div class="v">186</div><div class="delta">↑ 24% vs last week</div></div>
+      <div class="card metric"><div class="lab">In pipeline</div><div class="v">42</div><div class="delta">14 in interview</div></div>
+      <div class="card metric warn"><div class="lab">Trust score</div><div class="v">94</div><div class="delta">Top 5% · 1 follow-up due</div></div>
+    </div>
+
+    <div class="search-bar">
+      <div class="search-input">
+        <span style="color:var(--muted)">⌕</span>
+        <input value="Backend engineer · proof-of-Docker · senior CS"/>
+      </div>
+      <span class="chip active">Skill: Docker <span class="x">×</span></span>
+      <span class="chip active">Skill: Distributed Systems <span class="x">×</span></span>
+      <span class="chip active">Visa: F-1 OK <span class="x">×</span></span>
+      <span class="chip active">Class of 2026 <span class="x">×</span></span>
+      <span class="chip active">Score ≥ 75 <span class="x">×</span></span>
+      <span class="chip chip-add">+ Add filter</span>
+    </div>
+
+    <div class="work">
+      <div class="card">
+        <div class="h">
+          <span class="t">240 candidates · sorted by match score</span>
+          <span class="a">Showing 6 of 240</span>
+        </div>
+        <div class="cand">
+          <div class="c-row">
+            <div class="av">MR</div>
+            <div>
+              <div class="nm">Maya Reyes</div>
+              <div class="meta">WPI · CS '26 · Worcester, MA</div>
+              <div class="skills"><span class="sk v">Docker</span><span class="sk v">React</span><span class="sk v">PostgreSQL</span><span class="sk">Kubernetes</span></div>
+            </div>
+            <span class="visa f1">F-1 OK</span>
+            <div class="score-mini"><div class="v">94</div><div class="l">Match</div></div>
+            <span style="color:var(--muted)">→</span>
+          </div>
+          <div class="c-row">
+            <div class="av" style="background:linear-gradient(135deg,#f43f5e,#8b5cf6)">JC</div>
+            <div>
+              <div class="nm">Jordan Chen</div>
+              <div class="meta">MIT · CS '26 · Cambridge, MA</div>
+              <div class="skills"><span class="sk v">Distributed Systems</span><span class="sk v">Go</span><span class="sk v">gRPC</span><span class="sk">Rust</span></div>
+            </div>
+            <span class="visa us">US Citizen</span>
+            <div class="score-mini"><div class="v">91</div><div class="l">Match</div></div>
+            <span style="color:var(--muted)">→</span>
+          </div>
+          <div class="c-row">
+            <div class="av" style="background:linear-gradient(135deg,#10b981,#0d9488)">AP</div>
+            <div>
+              <div class="nm">Amara Patel</div>
+              <div class="meta">CMU · CS '26 · Pittsburgh, PA</div>
+              <div class="skills"><span class="sk v">Docker</span><span class="sk v">AWS</span><span class="sk v">Terraform</span><span class="sk">SRE</span></div>
+            </div>
+            <span class="visa f1">F-1 OK</span>
+            <div class="score-mini"><div class="v">89</div><div class="l">Match</div></div>
+            <span style="color:var(--muted)">→</span>
+          </div>
+          <div class="c-row">
+            <div class="av" style="background:linear-gradient(135deg,#d97706,#f43f5e)">DK</div>
+            <div>
+              <div class="nm">Devon Kim</div>
+              <div class="meta">Northeastern · CS '26 · Boston, MA</div>
+              <div class="skills"><span class="sk v">React</span><span class="sk v">Node</span><span class="sk v">PostgreSQL</span><span class="sk">Redis</span></div>
+            </div>
+            <span class="visa us">US Citizen</span>
+            <div class="score-mini"><div class="v">87</div><div class="l">Match</div></div>
+            <span style="color:var(--muted)">→</span>
+          </div>
+          <div class="c-row">
+            <div class="av" style="background:linear-gradient(135deg,#4f46e5,#0d9488)">SO</div>
+            <div>
+              <div class="nm">Sara Okonkwo</div>
+              <div class="meta">Brown · CS '26 · Providence, RI</div>
+              <div class="skills"><span class="sk v">Python</span><span class="sk v">PyTorch</span><span class="sk v">Docker</span><span class="sk">FastAPI</span></div>
+            </div>
+            <span class="visa f1">F-1 OK</span>
+            <div class="score-mini"><div class="v">85</div><div class="l">Match</div></div>
+            <span style="color:var(--muted)">→</span>
+          </div>
+          <div class="c-row">
+            <div class="av" style="background:linear-gradient(135deg,#8b5cf6,#4f46e5)">EG</div>
+            <div>
+              <div class="nm">Eli Garcia</div>
+              <div class="meta">WPI · CS '27 · Worcester, MA</div>
+              <div class="skills"><span class="sk v">TypeScript</span><span class="sk v">Next.js</span><span class="sk v">Docker</span><span class="sk">GraphQL</span></div>
+            </div>
+            <span class="visa us">US Citizen</span>
+            <div class="score-mini"><div class="v">82</div><div class="l">Match</div></div>
+            <span style="color:var(--muted)">→</span>
+          </div>
+        </div>
+
+        <div style="margin-top:18px">
+          <div class="h"><span class="t">Pipeline preview</span><a href="#" class="a" style="color:var(--teal)">Open pipeline →</a></div>
+          <div class="pipe">
+            <div class="pipe-col"><div class="h"><span>Sourced</span><span class="n">18</span></div><div class="pipe-card"><div class="nm">Maya Reyes</div><div class="meta">94 · WPI · F-1</div></div><div class="pipe-card"><div class="nm">Jordan Chen</div><div class="meta">91 · MIT · US</div></div></div>
+            <div class="pipe-col"><div class="h"><span>Contacted</span><span class="n">10</span></div><div class="pipe-card"><div class="nm">Amara Patel</div><div class="meta">89 · CMU · F-1</div></div><div class="pipe-card"><div class="nm">Devon Kim</div><div class="meta">87 · NEU · US</div></div></div>
+            <div class="pipe-col"><div class="h"><span>Interview</span><span class="n">9</span></div><div class="pipe-card"><div class="nm">Sara Okonkwo</div><div class="meta">85 · Brown · F-1</div></div><div class="pipe-card"><div class="nm">Eli Garcia</div><div class="meta">82 · WPI · US</div></div></div>
+            <div class="pipe-col"><div class="h"><span>Offer</span><span class="n">5</span></div><div class="pipe-card"><div class="nm">Liam Foster</div><div class="meta">88 · BU · US</div></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="preview">
+        <div class="card">
+          <div class="preview-header">
+            <div class="av">MR</div>
+            <div>
+              <h3>Maya Reyes</h3>
+              <div class="meta">WPI · CS '26 · GPA 3.84</div>
+              <div class="verified">✓ .edu Verified</div>
+            </div>
+          </div>
+
+          <div class="pa">
+            <div class="pa-cell"><div class="l">CareerProof</div><div class="v">82</div></div>
+            <div class="pa-cell"><div class="l">Match</div><div class="v" style="color:var(--emerald)">94%</div></div>
+            <div class="pa-cell"><div class="l">Verified Skills</div><div class="v">18</div></div>
+            <div class="pa-cell"><div class="l">Visa</div><div class="v" style="font-size:13px;color:var(--indigo)">F-1 OK</div></div>
+          </div>
+
+          <div style="margin-top:18px">
+            <div class="h" style="margin-bottom:10px"><span class="t" style="font-size:13px">Verified skills</span></div>
+            <div class="preview-skills">
+              <span class="pk v">Docker</span>
+              <span class="pk v">React</span>
+              <span class="pk v">PostgreSQL</span>
+              <span class="pk v">TypeScript</span>
+              <span class="pk v">Node.js</span>
+              <span class="pk v">Distributed Systems</span>
+              <span class="pk">Kubernetes</span>
+              <span class="pk">GraphQL</span>
+            </div>
+          </div>
+
+          <div style="margin-top:18px">
+            <div class="h" style="margin-bottom:10px"><span class="t" style="font-size:13px">Proof artifacts</span><span class="a">4 verified</span></div>
+            <div class="proof-list">
+              <div class="proof">
+                <div class="ico gh">GH</div>
+                <div><div class="nm">careerproof-eval</div><div class="d">Production Docker app · 4.2k LOC · 18 commits</div></div>
+                <div class="v">✓</div>
+              </div>
+              <div class="proof">
+                <div class="ico tr">Tx</div>
+                <div><div class="nm">CS 4515: Distributed Systems</div><div class="d">A · WPI Spring 2025 transcript</div></div>
+                <div class="v">✓</div>
+              </div>
+              <div class="proof">
+                <div class="ico dp">↑</div>
+                <div><div class="nm">project-flux.app</div><div class="d">Live deploy · React + Postgres · 90d uptime</div></div>
+                <div class="v">✓</div>
+              </div>
+              <div class="proof">
+                <div class="ico cf">Cf</div>
+                <div><div class="nm">AWS Cloud Practitioner</div><div class="d">Issued Mar 2025 · valid through 2028</div></div>
+                <div class="v">✓</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="preview-actions">
+            <button class="btn btn-ghost">Save</button>
+            <button class="btn btn-teal">Send invite →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

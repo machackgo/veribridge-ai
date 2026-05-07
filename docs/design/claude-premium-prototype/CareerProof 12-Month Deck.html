@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CareerProof AI — 12-Month Build Plan · Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="deck-stage.js"></script>
+<style>
+  :root{
+    --bg:#f6f7fb; --paper:#fff; --ink:#0f1729; --ink-2:#1f2a44; --muted:#5a6479;
+    --line:#e3e6ef; --line-2:#d4d8e3;
+    --indigo:#4f46e5; --indigo-50:#eef0ff; --indigo-100:#dde0ff;
+    --teal:#0d9488; --teal-50:#e6f4f2; --teal-100:#c7e6e2;
+    --amber:#b45309; --amber-50:#fdf3e3; --amber-100:#f3dfb3;
+    --rose:#9f1239; --rose-50:#fceaee; --rose-100:#f4cfd6;
+    --green:#15803d; --green-50:#e6f4ec; --green-100:#c9e3d3;
+    --slate:#334155;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#0a0b10;font-family:'Inter',system-ui,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+  deck-stage > section{
+    width:1920px;height:1080px;background:var(--bg);position:relative;overflow:hidden;
+    padding:64px 80px;display:flex;flex-direction:column;
+  }
+  .mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+
+  /* slide chrome */
+  .chrome{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--ink);padding-bottom:14px}
+  .chrome .left{display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+  .chrome .left .dot{width:8px;height:8px;border-radius:50%;background:var(--indigo)}
+  .chrome .left b{color:var(--ink);letter-spacing:.18em}
+  .chrome .right{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);letter-spacing:.16em;text-transform:uppercase}
+  .footer{position:absolute;left:80px;right:80px;bottom:32px;display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;border-top:1px solid var(--line);padding-top:14px}
+
+  /* generic */
+  .eyebrow{font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:.2em;color:var(--muted);text-transform:uppercase;margin-bottom:18px}
+  h1.title{font-size:84px;font-weight:700;letter-spacing:-.02em;margin:0;line-height:1.02;max-width:1400px}
+  h2.title{font-size:54px;font-weight:700;letter-spacing:-.015em;margin:0;line-height:1.05}
+  .lede{font-size:24px;color:var(--ink-2);max-width:1400px;line-height:1.45;margin-top:22px}
+  .lede.tight{font-size:20px;margin-top:14px}
+  .body{flex:1;margin-top:36px;display:flex;flex-direction:column}
+  .stamp{display:inline-flex;align-items:center;gap:10px;border:1px solid var(--ink);padding:8px 14px;font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.16em;text-transform:uppercase}
+  .stamp .dot{width:8px;height:8px;border-radius:50%;background:var(--indigo)}
+
+  /* SLIDE 1 — TITLE */
+  .s-title{justify-content:center}
+  .s-title .stack{display:flex;flex-direction:column;gap:28px;max-width:1500px}
+  .s-title .meta{display:grid;grid-template-columns:repeat(4,auto);gap:48px;margin-top:40px;font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .s-title .meta b{display:block;color:var(--ink);font-size:18px;letter-spacing:.04em;text-transform:none;margin-top:6px;font-weight:600;font-family:'Inter',sans-serif}
+  .ribbon{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  .ribbon span{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.14em;text-transform:uppercase;border:1px solid var(--ink);padding:6px 12px}
+
+  /* SLIDE 2 — PROBLEM */
+  .three-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;flex:1;align-content:start}
+  .pcol{background:var(--paper);border:1px solid var(--line);padding:32px;display:flex;flex-direction:column}
+  .pcol .role{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase}
+  .pcol h3{font-size:30px;font-weight:600;margin:8px 0 14px;letter-spacing:-.01em}
+  .pcol .pain{font-size:18px;line-height:1.5;color:var(--ink-2)}
+  .pcol .stat{margin-top:auto;padding-top:22px;border-top:1px solid var(--line);font-size:15px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.06em}
+  .pcol .stat b{color:var(--ink);font-size:24px;display:block;letter-spacing:0;font-family:'Inter',sans-serif}
+  .pcol.a{border-top:4px solid var(--indigo)}
+  .pcol.b{border-top:4px solid var(--teal)}
+  .pcol.c{border-top:4px solid var(--amber)}
+  .opportunity{margin-top:24px;border:1px solid var(--ink);background:var(--paper);padding:22px 28px;display:flex;justify-content:space-between;align-items:center;gap:30px}
+  .opportunity .l{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+  .opportunity .v{font-size:22px;font-weight:600;letter-spacing:-.01em;line-height:1.4;flex:1}
+
+  /* SLIDE 3 — PLATFORM OVERVIEW */
+  .triad-big{display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;flex:1}
+  .triad-big .card{background:var(--paper);border:1px solid var(--line);padding:34px;display:flex;flex-direction:column}
+  .triad-big .role{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+  .triad-big h3{font-size:36px;font-weight:600;margin:10px 0 4px}
+  .triad-big .sub{font-size:16px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.06em;text-transform:uppercase;margin-bottom:20px}
+  .triad-big ul{margin:0;padding-left:20px;font-size:18px;line-height:1.7;color:var(--ink-2)}
+  .triad-big .pill{margin-top:22px;font-family:'JetBrains Mono',monospace;font-size:13px;border:1px solid var(--line-2);padding:6px 12px;align-self:flex-start;letter-spacing:.1em;text-transform:uppercase;color:var(--ink)}
+  .triad-big .a{border-top:4px solid var(--indigo)}
+  .triad-big .b{border-top:4px solid var(--teal)}
+  .triad-big .c{border-top:4px solid var(--amber)}
+  .diff-band{margin-top:24px;background:var(--ink);color:#fff;padding:24px 32px;display:flex;align-items:center;gap:30px}
+  .diff-band .lab{font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:.2em;text-transform:uppercase;opacity:.7}
+  .diff-band .v{font-size:24px;font-weight:600;line-height:1.4;flex:1}
+
+  /* SLIDE 4 — MODULES */
+  .mod-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;flex:1}
+  .mod{background:var(--paper);border:1px solid var(--line);padding:26px;display:flex;flex-direction:column;border-top:4px solid var(--indigo)}
+  .mod.t{border-top-color:var(--teal)} .mod.a{border-top-color:var(--amber)} .mod.r{border-top-color:var(--rose)}
+  .mod .num{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);letter-spacing:.16em}
+  .mod h3{font-size:24px;font-weight:600;margin:6px 0 12px;letter-spacing:-.01em;line-height:1.15}
+  .mod ul{margin:0;padding-left:18px;font-size:15px;line-height:1.6;color:var(--ink-2)}
+  .mod .tag{margin-top:auto;padding-top:18px;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase}
+
+  /* SLIDE 5 — ARCHITECTURE */
+  .arch-stack{display:flex;flex-direction:column;background:var(--paper);border:1px solid var(--line);flex:1}
+  .arch-row{display:grid;grid-template-columns:180px 1fr;border-bottom:1px solid var(--line)}
+  .arch-row:last-child{border-bottom:0}
+  .arch-row .lbl{padding:14px 18px;background:#fbfbfd;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
+  .arch-row .lbl .num{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;color:var(--muted)}
+  .arch-row .lbl .nm{font-size:17px;font-weight:600;margin-top:3px;letter-spacing:-.01em}
+  .arch-row .lbl .nt{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.35}
+  .arch-row .nodes{padding:10px 14px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .anode{font-size:13px;background:#fff;border:1px solid var(--line-2);padding:6px 10px;line-height:1.2;font-weight:500}
+  .anode.i{border-left:3px solid var(--indigo)}
+  .anode.t{border-left:3px solid var(--teal)}
+  .anode.a{border-left:3px solid var(--amber)}
+  .anode.r{border-left:3px solid var(--rose)}
+  .anode.s{border-left:3px solid var(--slate)}
+
+  /* SLIDE 6 — DATA + AI WORKFLOW */
+  .flow-row{display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
+  .fnode{background:var(--paper);border:1px solid var(--line);padding:22px;min-height:170px;display:flex;flex-direction:column;border-top:4px solid var(--indigo)}
+  .fnode .step{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);letter-spacing:.16em}
+  .fnode .nm{font-size:20px;font-weight:600;margin:6px 0 8px;letter-spacing:-.01em;line-height:1.2}
+  .fnode .ds{font-size:14px;color:var(--ink-2);line-height:1.5}
+  .fnode.s2{border-top-color:var(--teal)} .fnode.s3{border-top-color:var(--amber)}
+  .fnode.s4{border-top-color:var(--rose)} .fnode.s5{border-top-color:var(--green)}
+  .fnode.s6{border-top-color:var(--slate)}
+  .loop-band{margin-top:20px;border:1px solid var(--ink);background:var(--paper);padding:20px 26px;display:flex;justify-content:space-between;align-items:center;gap:30px}
+  .loop-band .l{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase}
+  .loop-band .v{font-size:18px;line-height:1.5;color:var(--ink-2);flex:1}
+  .ai-band{margin-top:20px;background:var(--paper);border:1px solid var(--line);padding:22px 26px}
+  .ai-band .h{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;margin-bottom:14px}
+  .ai-row{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+  .aichip{border:1px solid var(--line-2);background:#fbfbfd;padding:10px 12px;font-size:14px;line-height:1.3;border-left:3px solid var(--teal)}
+  .aichip b{display:block;font-size:13px;font-family:'JetBrains Mono',monospace;color:var(--muted);letter-spacing:.14em;margin-bottom:3px;font-weight:500}
+
+  /* SLIDE 7 — ROADMAP */
+  .road{background:var(--paper);border:1px solid var(--line);flex:1;display:flex;flex-direction:column}
+  .road-axis{display:grid;grid-template-columns:repeat(12,1fr);border-bottom:1px solid var(--ink);background:#fbfbfd}
+  .road-axis .m{padding:12px 10px;border-right:1px solid var(--line);text-align:left}
+  .road-axis .m:last-child{border-right:0}
+  .road-axis .n{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);letter-spacing:.14em}
+  .road-axis .t{font-size:13px;font-weight:600;margin-top:2px;line-height:1.2}
+  .road-bars{flex:1;display:grid;grid-template-columns:repeat(12,1fr);position:relative}
+  .road-bars > .col{border-right:1px solid var(--line);padding:14px 8px;display:flex;flex-direction:column;gap:8px}
+  .road-bars > .col:last-child{border-right:0}
+  .rbar{font-size:13px;line-height:1.3;padding:8px 10px;border:1px solid;font-weight:500}
+  .rbar .h{font-weight:600}
+  .rbar .d{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);margin-top:2px;font-weight:400}
+  .rb-i{background:var(--indigo-50);border-color:var(--indigo-100)}
+  .rb-t{background:var(--teal-50);border-color:var(--teal-100)}
+  .rb-a{background:var(--amber-50);border-color:var(--amber-100)}
+  .rb-r{background:var(--rose-50);border-color:var(--rose-100)}
+  .rb-g{background:var(--green-50);border-color:var(--green-100)}
+  .gate{margin-top:auto;font-family:'JetBrains Mono',monospace;font-size:11px;background:var(--ink);color:#fff;padding:3px 7px;letter-spacing:.1em;align-self:flex-start;text-transform:uppercase}
+  .road-legend{display:flex;gap:24px;margin-top:18px;font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+  .road-legend span{display:inline-flex;align-items:center;gap:8px}
+  .road-legend i{display:inline-block;width:14px;height:14px;border:1px solid}
+  .lg-i{background:var(--indigo-50);border-color:var(--indigo-100)!important}
+  .lg-t{background:var(--teal-50);border-color:var(--teal-100)!important}
+  .lg-a{background:var(--amber-50);border-color:var(--amber-100)!important}
+  .lg-r{background:var(--rose-50);border-color:var(--rose-100)!important}
+  .lg-g{background:var(--green-50);border-color:var(--green-100)!important}
+
+  /* SLIDE 8 — NOW vs LATER */
+  .nl{display:grid;grid-template-columns:1fr 1fr;gap:24px;flex:1}
+  .nlcol{background:var(--paper);border:1px solid var(--line);padding:30px;display:flex;flex-direction:column}
+  .nlcol h3{font-size:30px;font-weight:600;margin:0;letter-spacing:-.01em}
+  .nlcol .tag{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);letter-spacing:.16em;text-transform:uppercase;margin-top:4px;margin-bottom:22px}
+  .nlcol .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px;flex:1}
+  .nlitem{font-size:15px;padding:9px 12px;border:1px solid var(--line-2);background:#fff;display:flex;gap:10px;align-items:center}
+  .nlitem .b{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted)}
+  .nlcol.now .nlitem{border-left:3px solid var(--indigo)}
+  .nlcol.later .nlitem{border-left:3px solid var(--amber)}
+
+  /* SLIDE 9 — SECURITY */
+  .sec-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;flex:1;align-content:start}
+  .seccard{background:var(--paper);border:1px solid var(--line);padding:24px;border-top:4px solid var(--rose);display:flex;flex-direction:column}
+  .seccard .num{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.16em;color:var(--muted)}
+  .seccard h3{font-size:22px;font-weight:600;margin:6px 0 10px;letter-spacing:-.01em;line-height:1.2}
+  .seccard .ds{font-size:14px;color:var(--ink-2);line-height:1.5}
+  .seccard .pill{margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:11px;border:1px solid var(--rose-100);background:var(--rose-50);color:var(--rose);padding:3px 8px;align-self:flex-start;letter-spacing:.12em;text-transform:uppercase}
+  .ferpa{margin-top:24px;background:var(--ink);color:#fff;padding:24px 32px;display:flex;justify-content:space-between;align-items:center;gap:30px}
+  .ferpa .lab{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.2em;text-transform:uppercase;opacity:.7}
+  .ferpa .v{font-size:20px;font-weight:500;line-height:1.5;flex:1}
+
+  /* SLIDE 10 — RISK */
+  .risk-table{background:var(--paper);border:1px solid var(--line);flex:1;overflow:hidden}
+  table.risk{width:100%;border-collapse:collapse;font-size:16px}
+  table.risk th{text-align:left;font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;padding:14px 16px;border-bottom:1px solid var(--ink);font-weight:500;background:#fbfbfd}
+  table.risk td{padding:14px 16px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.5}
+  table.risk tr:last-child td{border-bottom:0}
+  .rid{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:14px}
+  .sev{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.12em;padding:3px 8px;border:1px solid;text-transform:uppercase;display:inline-block}
+  .sev.h{background:var(--rose-50);border-color:var(--rose-100);color:var(--rose)}
+  .sev.m{background:var(--amber-50);border-color:var(--amber-100);color:#92400e}
+  .sev.l{background:var(--green-50);border-color:var(--green-100);color:var(--green)}
+
+  /* SLIDE 11 — TEAM */
+  .team5{display:grid;grid-template-columns:repeat(5,1fr);gap:18px;margin-top:24px}
+  .tcard{background:var(--paper);border:1px solid var(--line);border-top:4px solid var(--slate);padding:24px;display:flex;flex-direction:column}
+  .tcard .role{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase}
+  .tcard h3{font-size:21px;font-weight:600;margin:6px 0 10px;letter-spacing:-.01em;line-height:1.2}
+  .tcard .ds{font-size:14px;color:var(--ink-2);line-height:1.55}
+  .tcard .alloc{margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:12px;background:#f3f4f8;border:1px solid var(--line-2);padding:4px 9px;align-self:flex-start;letter-spacing:.1em}
+  .team-bottom{margin-top:24px;display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .tnote{background:var(--paper);border:1px solid var(--line);padding:22px 26px;font-size:16px;line-height:1.55;color:var(--ink-2)}
+  .tnote b{color:var(--ink);font-size:14px;font-family:'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;display:block;margin-bottom:8px;color:var(--muted)}
+
+  /* SLIDE 12 — NEXT STEPS */
+  .nxt-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:24px;flex:1}
+  .nxt-left{background:var(--paper);border:1px solid var(--line);padding:34px;display:flex;flex-direction:column;gap:14px}
+  .nxt-left h3{font-size:28px;font-weight:600;margin:0;letter-spacing:-.01em}
+  .nxt-step{display:grid;grid-template-columns:60px 1fr auto;gap:18px;align-items:center;padding:16px 0;border-bottom:1px solid var(--line)}
+  .nxt-step:last-child{border-bottom:0}
+  .nxt-step .n{font-family:'JetBrains Mono',monospace;font-size:24px;font-weight:600;color:var(--indigo)}
+  .nxt-step .h{font-size:19px;font-weight:600;letter-spacing:-.01em}
+  .nxt-step .d{font-size:15px;color:var(--muted);margin-top:2px;line-height:1.45}
+  .nxt-step .when{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;border:1px solid var(--line-2);padding:5px 10px}
+  .nxt-right{display:flex;flex-direction:column;gap:18px}
+  .nxt-card{background:var(--paper);border:1px solid var(--line);padding:24px;border-top:4px solid var(--indigo);flex:1}
+  .nxt-card.t{border-top-color:var(--teal)}
+  .nxt-card.a{border-top-color:var(--amber)}
+  .nxt-card .lab{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase}
+  .nxt-card h4{font-size:21px;font-weight:600;margin:6px 0 10px;letter-spacing:-.01em}
+  .nxt-card ul{margin:0;padding-left:18px;font-size:15px;line-height:1.65;color:var(--ink-2)}
+
+</style>
+</head>
+<body>
+
+<deck-stage>
+
+<!-- ============== SLIDE 1 — TITLE ============== -->
+<section class="s-title" data-screen-label="01 Title">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><span><b>CareerProof AI</b></span><span>· Architecture &amp; Roadmap</span></div>
+    <div class="right">v2.0 · Apr 2026</div>
+  </div>
+  <div class="body" style="justify-content:center">
+    <div class="stack">
+      <div class="stamp"><span class="dot"></span> Internal · WPI Mentor &amp; Advisor Review</div>
+      <div class="eyebrow" style="margin:0">CareerProof AI &nbsp;/&nbsp; Product Engineering</div>
+      <h1 class="title">CareerProof AI: Enterprise B2B2C SaaS Architecture &amp; 18-Month Build Plan</h1>
+      <p class="lede">A focused 12-month plan to ship the full three-sided platform — verified <span class="mono">.edu</span> students, recruiter marketplace, and university analytics — with proof-of-skill at the core.</p>
+      <div class="ribbon">
+        <span>B2B2C SaaS</span><span>3 User Sides</span><span>Proof-of-Skill</span><span>AI-Powered</span><span>Production Ready · M12</span>
+      </div>
+      <div class="meta">
+        <div>Document<b>ARC-002 / R1</b></div>
+        <div>Audience<b>WPI Mentors · Advisors</b></div>
+        <div>Owner<b>Product &amp; Eng. Lead</b></div>
+        <div>Status<b>Draft for Review</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============== SLIDE 2 — PROBLEM & OPPORTUNITY ============== -->
+<section data-screen-label="02 Problem &amp; Opportunity">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>02</b><span>Problem &amp; Opportunity</span></div>
+    <div class="right">Three Trust Gaps</div>
+  </div>
+  <div class="body">
+    <h2 class="title">Three trust gaps. One verified profile graph.</h2>
+    <p class="lede tight">Students, recruiters, and universities all want the same outcome — better-matched early-career hires — but each side is missing something the other two have. We close the loop.</p>
+    <div class="three-cols" style="margin-top:30px">
+      <div class="pcol a">
+        <div class="role">Student gap</div>
+        <h3>Career readiness</h3>
+        <p class="pain">Students don't know which roles they're ready for, what skills are missing, or how to prove what they actually know. Resumes flatten years of work into a page of bullets.</p>
+        <div class="stat">Self-reported readiness <b>≪ employer reality</b></div>
+      </div>
+      <div class="pcol b">
+        <div class="role">Recruiter gap</div>
+        <h3>Trust in early-career talent</h3>
+        <p class="pain">Recruiters can't verify resume claims at scale. GitHub, coursework, and portfolios sit in 5 different places. Visa-compatibility filtering is broken or manual.</p>
+        <div class="stat">Time-to-verify per candidate <b>10–30 min</b></div>
+      </div>
+      <div class="pcol c">
+        <div class="role">University gap</div>
+        <h3>Cohort-level analytics</h3>
+        <p class="pain">Career centers run on surveys. They can't see which majors are job-ready, where skill gaps are widening, or which employers are converting — privately and at the cohort level.</p>
+        <div class="stat">Outcome data lag <b>6–18 months</b></div>
+      </div>
+    </div>
+    <div class="opportunity">
+      <div class="l">Opportunity</div>
+      <div class="v">A verified <span class="mono">.edu</span> profile graph anchored on <b>proof-of-skill</b> — not claims — that all three sides depend on. The same data improves student outcomes, recruiter conversion, and university benchmarking.</div>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>02 / 12</div></div>
+</section>
+
+<!-- ============== SLIDE 3 — PLATFORM OVERVIEW ============== -->
+<section data-screen-label="03 Platform Overview">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>03</b><span>Platform Overview</span></div>
+    <div class="right">Three-Sided Marketplace</div>
+  </div>
+  <div class="body">
+    <h2 class="title">One platform, three sides, one verified profile.</h2>
+    <p class="lede tight">Each side has a distinct surface area, business model, and trust anchor — but they share the same proof-of-skill data plane.</p>
+    <div class="triad-big" style="margin-top:30px">
+      <div class="card a">
+        <div class="role">Side A · Primary user</div>
+        <h3>Students</h3>
+        <div class="sub">B2C · Free tier</div>
+        <ul>
+          <li>Verified <span class="mono">.edu</span> identity</li>
+          <li>AI-built proof-backed profile</li>
+          <li>Tailored applications &amp; cover letters</li>
+          <li>Readiness scoring &amp; project recs</li>
+          <li>Mock interview prep</li>
+          <li>Recruiter discovery (opt-in)</li>
+        </ul>
+        <span class="pill">Trust anchor · .edu</span>
+      </div>
+      <div class="card b">
+        <div class="role">Side B · B2B customer</div>
+        <h3>Recruiters</h3>
+        <div class="sub">B2B · Subscription</div>
+        <ul>
+          <li>Verified company profile</li>
+          <li>Faceted candidate search</li>
+          <li>Visa-compat filter built in</li>
+          <li>Evidence-backed profile view</li>
+          <li>Invitations &amp; pipeline tracking</li>
+          <li>Anti-ghosting trust score</li>
+        </ul>
+        <span class="pill">Trust anchor · Company verify</span>
+      </div>
+      <div class="card c">
+        <div class="role">Side C · Institutional B2B</div>
+        <h3>Universities</h3>
+        <div class="sub">B2B · Institutional</div>
+        <ul>
+          <li>Aggregate readiness analytics</li>
+          <li>Department-level skill gaps</li>
+          <li>Cohort employment outcomes</li>
+          <li>Recruiter engagement trends</li>
+          <li>k-anon &amp; FERPA-aware</li>
+          <li>Exportable reports</li>
+        </ul>
+        <span class="pill">Trust anchor · Institution + DPA</span>
+      </div>
+    </div>
+    <div class="diff-band">
+      <div class="lab">Differentiator</div>
+      <div class="v"><b>Proof over claims.</b> Every skill on a CareerProof profile carries evidence — GitHub commits, coursework, portfolio links, certifications, deployed projects. This is what powers recruiter trust, university benchmarking, and the AI scoring students get back.</div>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>03 / 12</div></div>
+</section>
+
+<!-- ============== SLIDE 4 — PRODUCT MODULES ============== -->
+<section data-screen-label="04 Product Modules">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>04</b><span>Product Modules</span></div>
+    <div class="right">~50 Application Modules · 4 Surfaces</div>
+  </div>
+  <div class="body">
+    <h2 class="title">Four surfaces. One coherent product.</h2>
+    <p class="lede tight">Each surface ships with a consistent design system, RBAC profile, and shared services underneath.</p>
+    <div class="mod-grid" style="margin-top:30px">
+      <div class="mod">
+        <div class="num">M-01</div>
+        <h3>Student Portal</h3>
+        <ul>
+          <li>.edu signup &amp; profile</li>
+          <li>Resume upload &amp; parsing</li>
+          <li>Job discovery &amp; tracker</li>
+          <li>Tailored bullets &amp; cover letters</li>
+          <li>Approval queue</li>
+          <li>Notification center</li>
+        </ul>
+        <div class="tag">Side A · Free tier</div>
+      </div>
+      <div class="mod t">
+        <div class="num">M-02</div>
+        <h3>Proof-of-Skill</h3>
+        <ul>
+          <li>Evidence model · 6 types</li>
+          <li>GitHub repo analyzer</li>
+          <li>Manual proof upload</li>
+          <li>Verified / unverified status</li>
+          <li>Proof cards on profile</li>
+          <li>Privacy controls</li>
+        </ul>
+        <div class="tag">Cross-cutting · Differentiator</div>
+      </div>
+      <div class="mod a">
+        <div class="num">M-03</div>
+        <h3>Recruiter Marketplace</h3>
+        <ul>
+          <li>Recruiter signup &amp; verification</li>
+          <li>Faceted candidate search</li>
+          <li>Visa-aware filtering</li>
+          <li>Invitations &amp; messaging</li>
+          <li>Saved lists &amp; analytics</li>
+          <li>Stripe billing &amp; plans</li>
+        </ul>
+        <div class="tag">Side B · Subscription</div>
+      </div>
+      <div class="mod r">
+        <div class="num">M-04</div>
+        <h3>University Dashboard</h3>
+        <ul>
+          <li>Aggregate readiness</li>
+          <li>Departmental skill gaps</li>
+          <li>Cohort employment outcomes</li>
+          <li>Employer engagement trends</li>
+          <li>Anonymized · k-anon enforced</li>
+          <li>Exportable reports</li>
+        </ul>
+        <div class="tag">Side C · Institutional</div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>04 / 12</div></div>
+</section>
+
+<!-- ============== SLIDE 5 — TECHNICAL ARCHITECTURE ============== -->
+<section data-screen-label="05 Technical Architecture">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>05</b><span>Technical Architecture</span></div>
+    <div class="right">8-Tier Layered View</div>
+  </div>
+  <div class="body" style="margin-top:18px">
+    <div class="arch-stack" style="max-height:880px">
+      <div class="arch-row">
+        <div class="lbl"><div class="num">L1 · CLIENTS</div><div class="nm">Frontend</div><div class="nt">Next.js 14 · Tailwind · shadcn/ui</div></div>
+        <div class="nodes">
+          <div class="anode i">Student Portal</div><div class="anode t">Recruiter Portal</div><div class="anode a">University Console</div><div class="anode r">Internal Admin</div><div class="anode">Marketing Site</div><div class="anode">Email Templates</div>
+        </div>
+      </div>
+      <div class="arch-row">
+        <div class="lbl"><div class="num">L2 · GATEWAY</div><div class="nm">API &amp; BFF</div><div class="nt">FastAPI · OpenAPI 3.1</div></div>
+        <div class="nodes">
+          <div class="anode">REST API · /v1</div><div class="anode">Auth Service</div><div class="anode">Webhooks</div><div class="anode">Rate Limiter</div><div class="anode">Edge Cache</div><div class="anode">Schema Contracts</div>
+        </div>
+      </div>
+      <div class="arch-row">
+        <div class="lbl"><div class="num">L3 · DOMAIN</div><div class="nm">Application Services</div><div class="nt">Bounded contexts · ~22 services</div></div>
+        <div class="nodes">
+          <div class="anode i">Identity &amp; .edu Verify</div><div class="anode i">Profile</div><div class="anode i">Resume</div><div class="anode i">Job Match</div><div class="anode i">Generation</div><div class="anode i">Approval Queue</div><div class="anode i">Tracker</div><div class="anode i">Proof-of-Skill</div><div class="anode i">Readiness</div><div class="anode i">Mock Interview</div><div class="anode t">Recruiter Search</div><div class="anode t">Invitations</div><div class="anode a">University Analytics</div><div class="anode a">Peer Benchmarking</div><div class="anode">Billing</div>
+        </div>
+      </div>
+      <div class="arch-row">
+        <div class="lbl"><div class="num">L4 · INTELLIGENCE</div><div class="nm">AI / ML Services</div><div class="nt">Model gateway · prompt registry</div></div>
+        <div class="nodes">
+          <div class="anode t">Resume Parser</div><div class="anode t">JD Parser</div><div class="anode t">GitHub Analyzer</div><div class="anode t">Skill Extraction</div><div class="anode t">Match Engine</div><div class="anode t">Skill-Gap Engine</div><div class="anode t">Readiness Scorer</div><div class="anode t">Generation Pipeline</div><div class="anode t">Interview Engine</div><div class="anode t">Vector Search</div><div class="anode t">Safety Guardrails</div><div class="anode t">Eval Harness</div>
+        </div>
+      </div>
+      <div class="arch-row">
+        <div class="lbl"><div class="num">L5 · WORKFLOW</div><div class="nm">Automation &amp; Jobs</div><div class="nt">n8n · workers · cron</div></div>
+        <div class="nodes">
+          <div class="anode">Job Discovery</div><div class="anode">Resume Pipeline</div><div class="anode">Email Digests</div><div class="anode">Recruiter Invites</div><div class="anode">Progress Reports</div><div class="anode">University Reports</div><div class="anode">Status Reminders</div><div class="anode">DLQ &amp; Retry</div>
+        </div>
+      </div>
+      <div class="arch-row">
+        <div class="lbl"><div class="num">L6 · DATA</div><div class="nm">Storage</div><div class="nt">Postgres · pgvector · audit ledger</div></div>
+        <div class="nodes">
+          <div class="anode a">Postgres / Supabase</div><div class="anode a">pgvector → Pinecone</div><div class="anode a">Object Storage</div><div class="anode a">Application Ledger</div><div class="anode a">Evidence Store</div><div class="anode a">Job Catalog</div><div class="anode a">Recruiter / Company</div><div class="anode a">University Cubes</div><div class="anode a">Consent Records</div><div class="anode a">Audit Log</div>
+        </div>
+      </div>
+      <div class="arch-row">
+        <div class="lbl"><div class="num">L7 · PLATFORM</div><div class="nm">Integrations &amp; Infra</div><div class="nt">Vercel · Cloud Run · Docker · CI/CD</div></div>
+        <div class="nodes">
+          <div class="anode">Job APIs</div><div class="anode">GitHub API</div><div class="anode">LLM APIs</div><div class="anode">Email Provider</div><div class="anode">Stripe</div><div class="anode">Calendar</div><div class="anode">CI / CD</div><div class="anode">Hosting</div><div class="anode">Observability</div><div class="anode">Secrets</div>
+        </div>
+      </div>
+      <div class="arch-row">
+        <div class="lbl"><div class="num">L8 · GOVERNANCE</div><div class="nm">Security &amp; Compliance</div><div class="nt">RBAC · consent · FERPA-aware</div></div>
+        <div class="nodes">
+          <div class="anode r">.edu Verification</div><div class="anode r">Recruiter Verify</div><div class="anode r">RBAC</div><div class="anode r">Consent Manager</div><div class="anode r">PII Vault</div><div class="anode r">Anonymization</div><div class="anode r">Audit Trail</div><div class="anode r">Retention</div><div class="anode r">Rate &amp; Abuse</div><div class="anode r">FERPA Posture</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>05 / 12</div></div>
+</section>
+
+<!-- ============== SLIDE 6 — DATA FLOW & AI WORKFLOW ============== -->
+<section data-screen-label="06 Data Flow &amp; AI Workflow">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>06</b><span>Data Flow &amp; AI Workflow</span></div>
+    <div class="right">End-to-End Loop</div>
+  </div>
+  <div class="body">
+    <h2 class="title">Input → AI → storage → surface → outcome → loop.</h2>
+    <p class="lede tight">A single canonical pipeline. Every model has a prompt-registry version, an offline eval set, and a learning loop fed by real outcomes.</p>
+
+    <div class="flow-row" style="margin-top:30px">
+      <div class="fnode">
+        <div class="step">01 · INPUT</div>
+        <div class="nm">Student inputs</div>
+        <div class="ds">Resume PDF · JD · GitHub · transcript · profile · target roles</div>
+      </div>
+      <div class="fnode s2">
+        <div class="step">02 · AI</div>
+        <div class="nm">Processing</div>
+        <div class="ds">Parsers · embeddings · match · gen · readiness · safety</div>
+      </div>
+      <div class="fnode s3">
+        <div class="step">03 · STORE</div>
+        <div class="nm">Persistence</div>
+        <div class="ds">Postgres · pgvector · object · evidence ledger · outcomes</div>
+      </div>
+      <div class="fnode s4">
+        <div class="step">04 · SURFACE</div>
+        <div class="nm">Approval queue</div>
+        <div class="ds">Match · resume · cover letter · gaps · projects · interview</div>
+      </div>
+      <div class="fnode s5">
+        <div class="step">05 · OUTCOME</div>
+        <div class="nm">Apply &amp; track</div>
+        <div class="ds">Status · interview · offer · rejection · notes</div>
+      </div>
+      <div class="fnode s6">
+        <div class="step">06 · LOOP</div>
+        <div class="nm">Learning loop</div>
+        <div class="ds">Outcomes feed re-ranker · scorer · generation · project recs</div>
+      </div>
+    </div>
+
+    <div class="ai-band">
+      <div class="h">AI / ML Workflow · Model Gateway View</div>
+      <div class="ai-row">
+        <div class="aichip"><b>A1 · INGEST</b>Resume / JD / Transcript / GitHub parsers</div>
+        <div class="aichip"><b>A2 · EMBED</b>Embeddings &amp; vector search · pgvector → Pinecone</div>
+        <div class="aichip"><b>A3 · MATCH</b>Match · gap · readiness engines</div>
+        <div class="aichip"><b>A4 · GENERATE</b>Resume · cover letter · projects · interview</div>
+        <div class="aichip"><b>A5 · SAFETY</b>PII · hallucination · bias · jailbreak</div>
+        <div class="aichip"><b>A6 · EVAL</b>Offline goldens · drift · canary models</div>
+      </div>
+    </div>
+
+    <div class="loop-band">
+      <div class="l">Outcome learning loop</div>
+      <div class="v">Edits, applications, interviews, rejections become training signal that re-ranks recommendations and recalibrates the readiness scorer.</div>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>06 / 12</div></div>
+</section>
+
+<!-- ============== SLIDE 7 — 12-MONTH ROADMAP ============== -->
+<section data-screen-label="07 12-Month Roadmap">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>07</b><span>12-Month Roadmap</span></div>
+    <div class="right">M1 → M12 · 12 Go/No-Go Gates</div>
+  </div>
+  <div class="body">
+    <h2 class="title">Twelve months. Twelve gates.</h2>
+    <p class="lede tight">Each month closes with a measurable go/no-go. Failing a gate triggers scope re-cut, not silent slippage.</p>
+
+    <div class="road" style="margin-top:24px">
+      <div class="road-axis">
+        <div class="m"><div class="n">M1</div><div class="t">Architecture</div></div>
+        <div class="m"><div class="n">M2</div><div class="t">Student Core</div></div>
+        <div class="m"><div class="n">M3</div><div class="t">AI Workflow</div></div>
+        <div class="m"><div class="n">M4</div><div class="t">Real Jobs</div></div>
+        <div class="m"><div class="n">M5</div><div class="t">Proof-of-Skill</div></div>
+        <div class="m"><div class="n">M6</div><div class="t">Readiness</div></div>
+        <div class="m"><div class="n">M7</div><div class="t">Interview</div></div>
+        <div class="m"><div class="n">M8</div><div class="t">Recruiter</div></div>
+        <div class="m"><div class="n">M9</div><div class="t">Marketplace</div></div>
+        <div class="m"><div class="n">M10</div><div class="t">University</div></div>
+        <div class="m"><div class="n">M11</div><div class="t">Network</div></div>
+        <div class="m"><div class="n">M12</div><div class="t">Launch</div></div>
+      </div>
+      <div class="road-bars">
+        <div class="col"><div class="rbar rb-i"><div class="h">Discovery</div><div class="d">PRD · schema · UX</div></div><div class="gate">G1 · Blueprint</div></div>
+        <div class="col"><div class="rbar rb-i"><div class="h">Onboarding</div><div class="d">.edu · profile · upload</div></div><div class="gate">G2 · Onboard</div></div>
+        <div class="col"><div class="rbar rb-t"><div class="h">AI app loop</div><div class="d">Match · CL · approve</div></div><div class="gate">G3 · Useful</div></div>
+        <div class="col"><div class="rbar rb-t"><div class="h">Real matching</div><div class="d">Tracker · visa · digest</div></div><div class="gate">G4 · Activity</div></div>
+        <div class="col"><div class="rbar rb-r"><div class="h">Proof-of-skill</div><div class="d">Evidence · GitHub</div></div><div class="gate">G5 · Trust</div></div>
+        <div class="col"><div class="rbar rb-t"><div class="h">Career intel</div><div class="d">Readiness · projects</div></div><div class="gate">G6 · Lift</div></div>
+        <div class="col"><div class="rbar rb-i"><div class="h">Interview prep</div><div class="d">Mock + polish</div></div><div class="gate">G7 · 50+</div></div>
+        <div class="col"><div class="rbar rb-a"><div class="h">Recruiter v1</div><div class="d">Search · invite</div></div><div class="gate">G8 · Pilots</div></div>
+        <div class="col"><div class="rbar rb-a"><div class="h">Monetization</div><div class="d">Stripe · plans</div></div><div class="gate">G9 · Paid</div></div>
+        <div class="col"><div class="rbar rb-g"><div class="h">University</div><div class="d">k-anon analytics</div></div><div class="gate">G10 · Confirmed</div></div>
+        <div class="col"><div class="rbar rb-g"><div class="h">Network</div><div class="d">Trust · benchmark</div></div><div class="gate">G11 · Useful+safe</div></div>
+        <div class="col"><div class="rbar rb-r"><div class="h">Hardening</div><div class="d">Pen test · launch</div></div><div class="gate">G12 · GA</div></div>
+      </div>
+    </div>
+    <div class="road-legend">
+      <span><i class="lg-i"></i>Foundation</span>
+      <span><i class="lg-t"></i>Intelligence</span>
+      <span><i class="lg-r"></i>Trust &amp; Proof</span>
+      <span><i class="lg-a"></i>Marketplace</span>
+      <span><i class="lg-g"></i>Network &amp; Scale</span>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>07 / 12</div></div>
+</section>
+
+<!-- ============== SLIDE 8 — BUILD NOW VS LATER ============== -->
+<section data-screen-label="08 Build Now vs Later">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>08</b><span>Build Now vs. Build Later</span></div>
+    <div class="right">Scope Discipline</div>
+  </div>
+  <div class="body">
+    <h2 class="title">Anything not on the left is intentionally deferred.</h2>
+    <p class="lede tight">"Build later" items are scaffolded behind feature flags during M12 but not shipped until post-12-month.</p>
+    <div class="nl" style="margin-top:30px">
+      <div class="nlcol now">
+        <h3>Build now · in the 12-month plan</h3>
+        <div class="tag">Critical path · M1 → M12</div>
+        <div class="grid">
+          <div class="nlitem"><span class="b">N01</span> .edu signup &amp; profile</div>
+          <div class="nlitem"><span class="b">N02</span> Resume upload + AI parser</div>
+          <div class="nlitem"><span class="b">N03</span> Match · gaps · explain</div>
+          <div class="nlitem"><span class="b">N04</span> Tailored resume bullets</div>
+          <div class="nlitem"><span class="b">N05</span> Cover letter generator</div>
+          <div class="nlitem"><span class="b">N06</span> Approval queue</div>
+          <div class="nlitem"><span class="b">N07</span> Real job discovery + tracker</div>
+          <div class="nlitem"><span class="b">N08</span> Visa-aware filtering</div>
+          <div class="nlitem"><span class="b">N09</span> GitHub analyzer</div>
+          <div class="nlitem"><span class="b">N10</span> Proof-of-skill layer</div>
+          <div class="nlitem"><span class="b">N11</span> Readiness · projects</div>
+          <div class="nlitem"><span class="b">N12</span> Mock interview engine</div>
+          <div class="nlitem"><span class="b">N13</span> Recruiter portal MVP</div>
+          <div class="nlitem"><span class="b">N14</span> Stripe + plans</div>
+          <div class="nlitem"><span class="b">N15</span> University analytics v1</div>
+          <div class="nlitem"><span class="b">N16</span> Peer benchmarking</div>
+          <div class="nlitem"><span class="b">N17</span> Recruiter trust score</div>
+          <div class="nlitem"><span class="b">N18</span> Reference graph v1</div>
+          <div class="nlitem"><span class="b">N19</span> Production hardening</div>
+          <div class="nlitem"><span class="b">N20</span> Monitoring + audit logs</div>
+        </div>
+      </div>
+      <div class="nlcol later">
+        <h3>Build later · post-12-month</h3>
+        <div class="tag">Deferred · scaffold only</div>
+        <div class="grid">
+          <div class="nlitem"><span class="b">L01</span> Pinecone / Weaviate tier</div>
+          <div class="nlitem"><span class="b">L02</span> Calendar / interview booking</div>
+          <div class="nlitem"><span class="b">L03</span> Enterprise SSO</div>
+          <div class="nlitem"><span class="b">L04</span> Public API / partners</div>
+          <div class="nlitem"><span class="b">L05</span> Recruiter ATS sync</div>
+          <div class="nlitem"><span class="b">L06</span> Multi-region active/active</div>
+          <div class="nlitem"><span class="b">L07</span> SOC 2 Type II</div>
+          <div class="nlitem"><span class="b">L08</span> Compliance automation</div>
+          <div class="nlitem"><span class="b">L09</span> Mobile native apps</div>
+          <div class="nlitem"><span class="b">L10</span> Alumni / continuing-ed</div>
+          <div class="nlitem"><span class="b">L11</span> Salary / comp data</div>
+          <div class="nlitem"><span class="b">L12</span> Tiered pricing</div>
+          <div class="nlitem"><span class="b">L13</span> Auto-apply agents</div>
+          <div class="nlitem"><span class="b">L14</span> 3rd-party assessments</div>
+          <div class="nlitem"><span class="b">L15</span> International expansion</div>
+          <div class="nlitem"><span class="b">L16</span> Enterprise admin tools</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>08 / 12</div></div>
+</section>
+
+<!-- ============== SLIDE 9 — SECURITY, PRIVACY, COMPLIANCE ============== -->
+<section data-screen-label="09 Security, Privacy &amp; Compliance">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>09</b><span>Security, Privacy &amp; Compliance</span></div>
+    <div class="right">RBAC · Consent · FERPA-aware</div>
+  </div>
+  <div class="body">
+    <h2 class="title">Privacy is the architecture, not a setting.</h2>
+    <p class="lede tight">Raw student data never leaves the consent envelope. Universities only see aggregate cubes computed against k-anon thresholds; recruiters only see profiles where the student has opted in.</p>
+    <div class="sec-grid" style="margin-top:30px">
+      <div class="seccard"><div class="num">SC-01</div><h3>.edu &amp; Recruiter Verification</h3><div class="ds">Domain-bound student identity · company-bound recruiter identity · artifact verification.</div><span class="pill">Identity</span></div>
+      <div class="seccard"><div class="num">SC-02</div><h3>Role-Based Access Control</h3><div class="ds">Four primary roles — student, recruiter, university, internal admin — enforced at API + DB layers.</div><span class="pill">RBAC</span></div>
+      <div class="seccard"><div class="num">SC-03</div><h3>Consent Manager</h3><div class="ds">Per-scope visibility · explicit recruiter discovery opt-in · revocation flows · UI mirrors policy.</div><span class="pill">Consent</span></div>
+      <div class="seccard"><div class="num">SC-04</div><h3>PII Vault &amp; Encryption</h3><div class="ds">Field-level encryption · KMS-managed keys · separation of audit and operational reads.</div><span class="pill">Encryption</span></div>
+      <div class="seccard"><div class="num">SC-05</div><h3>Anonymization</h3><div class="ds">k-anonymity thresholds · cohort floors · suppression rules · quarterly anonymization tests.</div><span class="pill">k-Anon</span></div>
+      <div class="seccard"><div class="num">SC-06</div><h3>Audit Log</h3><div class="ds">Append-only · WORM-style ledger · queryable · who-what-when on every read of student data.</div><span class="pill">Audit</span></div>
+      <div class="seccard"><div class="num">SC-07</div><h3>Retention &amp; Right-to-Erase</h3><div class="ds">TTL on every data class · student-driven erasure · cascading deletion across vector store.</div><span class="pill">Retention</span></div>
+      <div class="seccard"><div class="num">SC-08</div><h3>FERPA-Aware Posture</h3><div class="ds">Institutional DPA template · controls aligned to FERPA · default-private visa disclosure.</div><span class="pill">FERPA</span></div>
+    </div>
+    <div class="ferpa">
+      <div class="lab">Privacy boundary</div>
+      <div class="v">Three-sided does <b>not</b> mean three copies of the data. Aggregates, recruiter views, and student profiles are computed views over the same consent-gated source — with audit trails on every traversal.</div>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>09 / 12</div></div>
+</section>
+
+<!-- ============== SLIDE 10 — RISK REGISTER ============== -->
+<section data-screen-label="10 Risk Register">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>10</b><span>Risk Register &amp; Mitigations</span></div>
+    <div class="right">Reviewed Quarterly</div>
+  </div>
+  <div class="body">
+    <h2 class="title">Eyes-open risk, named owners, written mitigations.</h2>
+    <p class="lede tight">The top eight tracked risks for the 12-month plan. Reviewed at every gate; full register in the architecture document.</p>
+    <div class="risk-table" style="margin-top:24px">
+      <table class="risk">
+        <thead><tr><th style="width:70px">ID</th><th>Risk</th><th style="width:90px">Severity</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td class="rid">R-01</td><td>AI hallucinated experience inflates resumes / cover letters</td><td><span class="sev h">High</span></td><td>Grounded generation · evidence binding · approval queue gate · golden eval set</td></tr>
+          <tr><td class="rid">R-03</td><td>Cold-start: too few recruiters to match supply at M9</td><td><span class="sev h">High</span></td><td>Design-partner program · vertical launch (CS interns) · hand-curated invitations</td></tr>
+          <tr><td class="rid">R-04</td><td>Privacy regression — student data exposed via aggregates</td><td><span class="sev h">High</span></td><td>k-anon thresholds · cohort floors · suppression · quarterly tests</td></tr>
+          <tr><td class="rid">R-05</td><td>FERPA / institutional agreements block university launch</td><td><span class="sev m">Med</span></td><td>Counsel review at M1 · institutional DPA template · opt-in consent at student level</td></tr>
+          <tr><td class="rid">R-06</td><td>Job source TOS / scraping limits</td><td><span class="sev m">Med</span></td><td>Licensed APIs first (Adzuna/JSearch) · manual paste fallback · rate-limited workers</td></tr>
+          <tr><td class="rid">R-08</td><td>Visa-status mishandling harms international students</td><td><span class="sev h">High</span></td><td>Student-controlled disclosure · default-private · audited policy-aware ranking</td></tr>
+          <tr><td class="rid">R-10</td><td>Scope creep — recruiter or uni features bleed into student core</td><td><span class="sev m">Med</span></td><td>Hard gate review · feature freeze per month · build-now-vs-later contract</td></tr>
+          <tr><td class="rid">R-11</td><td>Solo execution risk if team plan slips</td><td><span class="sev h">High</span></td><td>18–24mo fallback plan · pre-defined scope-cut tree · AI-assist tooling baseline</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>10 / 12</div></div>
+</section>
+
+<!-- ============== SLIDE 11 — TEAM & RESOURCE ASSUMPTIONS ============== -->
+<section data-screen-label="11 Team &amp; Assumptions">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>11</b><span>Team &amp; Resource Assumptions</span></div>
+    <div class="right">5 Roles · WPI Mentor</div>
+  </div>
+  <div class="body">
+    <h2 class="title">What this plan costs.</h2>
+    <p class="lede tight">A focused team with AI-assisted dev tooling. Without that footprint the same scope is realistic over <b>18–24 months</b> for a solo builder.</p>
+    <div class="team5">
+      <div class="tcard"><div class="role">Role 01</div><h3>AI / ML + Backend Lead</h3><div class="ds">Owns architecture, AI services, prompt registry, eval harness, model gateway.</div><div class="alloc">FULL-TIME</div></div>
+      <div class="tcard"><div class="role">Role 02</div><h3>Frontend / Product Designer</h3><div class="ds">UI system, all student/recruiter/uni surfaces, design tokens, A11y, polish.</div><div class="alloc">FULL-TIME</div></div>
+      <div class="tcard"><div class="role">Role 03</div><h3>Full-stack / Backend Eng.</h3><div class="ds">Domain services, integrations, billing, jobs, queues, tracker, search.</div><div class="alloc">FULL-TIME</div></div>
+      <div class="tcard"><div class="role">Role 04</div><h3>Product / Business / Outreach</h3><div class="ds">Validation, beta program, recruiter ICP, university motion, GTM.</div><div class="alloc">FULL-TIME</div></div>
+      <div class="tcard"><div class="role">Role 05</div><h3>Mentor / Advisor</h3><div class="ds">WPI mentor, technical advisors, occasional product / privacy review.</div><div class="alloc">PART-TIME</div></div>
+    </div>
+    <div class="team-bottom">
+      <div class="tnote">
+        <b>AI-assisted dev tooling</b>
+        Claude Code · ChatGPT · Cursor · automated test generation. Treated as a force multiplier on Roles 01–03, not a replacement for them. Cost-tracked as a line item.
+      </div>
+      <div class="tnote">
+        <b>Solo-builder fallback</b>
+        Same scope realistically takes <b>18–24 months</b>. Cut order: defer recruiter trust → defer reference graph → defer university analytics → reduce interview engine to v0.
+      </div>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>11 / 12</div></div>
+</section>
+
+<!-- ============== SLIDE 12 — NEXT STEPS ============== -->
+<section data-screen-label="12 Next Steps">
+  <div class="chrome">
+    <div class="left"><span class="dot"></span><b>12</b><span>Next Steps</span></div>
+    <div class="right">From Plan to Pilot</div>
+  </div>
+  <div class="body">
+    <h2 class="title">Next 90 days.</h2>
+    <p class="lede tight">A concrete sequence to move from architecture document to validated prototype with WPI mentor support.</p>
+
+    <div class="nxt-grid" style="margin-top:30px">
+      <div class="nxt-left">
+        <h3>Action plan · Months 1–3</h3>
+        <div class="nxt-step">
+          <div class="n">01</div>
+          <div><div class="h">Ship technical blueprint &amp; clickable mockups</div><div class="d">Schema, API contracts, prompt registry, security baseline. Sign off with WPI mentor.</div></div>
+          <div class="when">Month 1</div>
+        </div>
+        <div class="nxt-step">
+          <div class="n">02</div>
+          <div><div class="h">Recruit 15–20 student interviews</div><div class="d">Validate readiness, proof, and visa pain points. Convert top 10 into beta cohort.</div></div>
+          <div class="when">Month 1</div>
+        </div>
+        <div class="nxt-step">
+          <div class="n">03</div>
+          <div><div class="h">Stand up student core</div><div class="d">.edu signup · profile · upload · dashboard skeleton. Ship onboarding to first 10 students.</div></div>
+          <div class="when">Month 2</div>
+        </div>
+        <div class="nxt-step">
+          <div class="n">04</div>
+          <div><div class="h">First AI workflow live</div><div class="d">Match score · tailored bullets · cover letter · approval queue. Confirm usefulness with 10 betas.</div></div>
+          <div class="when">Month 3</div>
+        </div>
+        <div class="nxt-step">
+          <div class="n">05</div>
+          <div><div class="h">Recruit teammates &amp; advisors</div><div class="d">Frontend designer · backend engineer · product/outreach. Confirm WPI mentor cadence.</div></div>
+          <div class="when">Month 1–3</div>
+        </div>
+      </div>
+
+      <div class="nxt-right">
+        <div class="nxt-card">
+          <div class="lab">What we need from WPI</div>
+          <h4>Mentor support</h4>
+          <ul>
+            <li>Monthly architecture review</li>
+            <li>Career-center advisor intro for §10</li>
+            <li>Privacy / FERPA counsel intro</li>
+            <li>Beta-cohort recruiting via student orgs</li>
+          </ul>
+        </div>
+        <div class="nxt-card t">
+          <div class="lab">What we need from beta users</div>
+          <h4>20–30 .edu students</h4>
+          <ul>
+            <li>Active job-seekers</li>
+            <li>Mix of CS / engineering / business</li>
+            <li>Mix of US / international students</li>
+            <li>Willing to share outcomes</li>
+          </ul>
+        </div>
+        <div class="nxt-card a">
+          <div class="lab">Open teammate roles</div>
+          <h4>Building the team</h4>
+          <ul>
+            <li>Frontend / product designer</li>
+            <li>Full-stack / backend engineer</li>
+            <li>Product / business / outreach</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><div>CareerProof AI · 12-Month Build Plan</div><div>12 / 12 · Thank you</div></div>
+</section>
+
+</deck-stage>
+
+</body>
+</html>

@@ -1,0 +1,1146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>CareerProof AI — Architecture & Roadmap (Print)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script>
+  window.addEventListener('load', async () => {
+    try { if (document.fonts && document.fonts.ready) { await document.fonts.ready; } } catch (e) {}
+    setTimeout(() => { window.print(); }, 500);
+  });
+</script>
+<style>
+  :root{
+    --bg:        #f6f7fb;
+    --paper:     #ffffff;
+    --ink:       #0f1729;
+    --ink-2:     #1f2a44;
+    --muted:     #5a6479;
+    --line:      #e3e6ef;
+    --line-2:    #d4d8e3;
+    --chip:      #eef0f7;
+    --indigo:    #4f46e5;
+    --indigo-50: #eef0ff;
+    --indigo-100:#dde0ff;
+    --teal:      #0d9488;
+    --teal-50:   #e6f4f2;
+    --amber:     #b45309;
+    --amber-50:  #fdf3e3;
+    --rose:      #9f1239;
+    --rose-50:   #fceaee;
+    --green:     #15803d;
+    --green-50:  #e6f4ec;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:'Inter',system-ui,sans-serif;-webkit-font-smoothing:antialiased;font-feature-settings:"ss01","cv11";}
+  .doc{width:1440px;margin:0 auto;padding:48px 56px 96px;}
+
+  /* ---------- print ---------- */
+  @page { size: 1480px 1900px; margin: 0; }
+  @media print {
+    html, body { background: #fff !important; }
+    body { width: 1440px; }
+    .doc { width: 1440px; padding: 36px 48px; margin: 0; }
+    *, *::before, *::after {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+      color-adjust: exact !important;
+    }
+    .section { break-inside: avoid; page-break-inside: avoid; }
+    .section { break-before: page; page-break-before: page; }
+    .masthead { break-after: avoid; page-break-after: avoid; }
+    .arch, .roadmap, .timeline, .nl, .twocol, .twocol2, table.stage-table {
+      break-inside: avoid; page-break-inside: avoid;
+    }
+    .layer, .rm-lane, .rm-milestones, .check-grp, table.stage-table tr {
+      break-inside: avoid; page-break-inside: avoid;
+    }
+    .foot { break-before: avoid; page-break-before: avoid; }
+    a { color: inherit; text-decoration: none; }
+  }
+  .mono{font-family:'JetBrains Mono',ui-monospace,monospace;font-feature-settings:"ss02";letter-spacing:-.01em}
+  .small{font-size:11px}
+  .micro{font-size:10px}
+  hr.rule{border:0;border-top:1px solid var(--line);margin:0}
+
+  /* ---------- masthead ---------- */
+  .masthead{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid var(--ink);padding-bottom:18px;margin-bottom:28px}
+  .mh-left .eyebrow{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase}
+  .mh-left h1{font-size:42px;font-weight:700;letter-spacing:-.02em;margin:8px 0 4px;line-height:1}
+  .mh-left .sub{font-size:15px;color:var(--ink-2);max-width:720px;line-height:1.5}
+  .mh-right{text-align:right;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);line-height:1.7}
+  .mh-right b{color:var(--ink)}
+  .stamp{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--ink);padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px}
+  .stamp .dot{width:6px;height:6px;border-radius:50%;background:var(--indigo)}
+
+  /* ---------- section header ---------- */
+  .section{margin-top:56px}
+  .sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:18px}
+  .sec-num{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);letter-spacing:.18em}
+  .sec-title{font-size:22px;font-weight:600;letter-spacing:-.01em;margin:0}
+  .sec-tag{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase}
+  .sec-desc{font-size:13px;color:var(--muted);max-width:880px;margin:-6px 0 18px;line-height:1.6}
+
+  /* ---------- exec overview ---------- */
+  .exec{display:grid;grid-template-columns:1.15fr 1fr;gap:24px}
+  .panel{background:var(--paper);border:1px solid var(--line);padding:22px}
+  .panel h3{margin:0 0 4px;font-size:13px;font-weight:600;letter-spacing:.02em}
+  .panel .tag{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.16em;text-transform:uppercase;margin-bottom:14px}
+  .three-sided{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+  .ts{border:1px solid var(--line);padding:14px}
+  .ts .role{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .ts h4{margin:6px 0 6px;font-size:14px;font-weight:600}
+  .ts p{margin:0;font-size:12px;color:var(--ink-2);line-height:1.5}
+  .ts .pill{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:9px;padding:2px 6px;border:1px solid var(--line-2);margin-top:10px;color:var(--muted)}
+  .ts.student{border-top:3px solid var(--indigo)}
+  .ts.recruiter{border-top:3px solid var(--teal)}
+  .ts.uni{border-top:3px solid var(--amber)}
+
+  .kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}
+  .kpi{background:var(--paper);padding:14px}
+  .kpi .v{font-size:22px;font-weight:600;letter-spacing:-.02em}
+  .kpi .l{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-top:2px}
+
+  .pillars{margin-top:14px}
+  .pillar{display:grid;grid-template-columns:80px 1fr;gap:12px;padding:10px 0;border-bottom:1px dashed var(--line)}
+  .pillar:last-child{border-bottom:0}
+  .pillar .id{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);padding-top:2px}
+  .pillar .name{font-size:13px;font-weight:600}
+  .pillar .desc{font-size:12px;color:var(--ink-2);line-height:1.5}
+
+  /* ---------- layered architecture ---------- */
+  .arch{background:var(--paper);border:1px solid var(--line);padding:0;overflow:hidden}
+  .layer{display:grid;grid-template-columns:160px 1fr;border-bottom:1px solid var(--line)}
+  .layer:last-child{border-bottom:0}
+  .layer .label{padding:18px 16px;background:#fbfbfd;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
+  .layer .label .num{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.16em}
+  .layer .label .nm{font-size:14px;font-weight:600;margin-top:4px}
+  .layer .label .nt{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5}
+  .layer .body{padding:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start}
+  .node{border:1px solid var(--line-2);background:#fff;padding:9px 11px;min-width:140px;font-size:12px;line-height:1.3;display:flex;flex-direction:column;gap:3px}
+  .node .nm{font-weight:600;color:var(--ink)}
+  .node .ds{font-family:'JetBrainsEditor Mono','JetBrains Mono',monospace;font-size:10px;color:var(--muted)}
+  .node.acc-i{border-left:3px solid var(--indigo)}
+  .node.acc-t{border-left:3px solid var(--teal)}
+  .node.acc-a{border-left:3px solid var(--amber)}
+  .node.acc-r{border-left:3px solid var(--rose)}
+  .node.acc-g{border-left:3px solid var(--green)}
+  .layer.lyr-presentation .label{background:#f6f7ff}
+  .layer.lyr-app .label{background:#fbfbfd}
+  .layer.lyr-ai .label{background:#f5fbfa}
+  .layer.lyr-data .label{background:#fbfaf5}
+  .layer.lyr-sec .label{background:#fcf6f7}
+
+  /* ---------- swimlane roadmap ---------- */
+  .roadmap{background:var(--paper);border:1px solid var(--line);overflow:hidden}
+  .rm-axis{display:grid;grid-template-columns:200px repeat(7,1fr);border-bottom:1px solid var(--ink)}
+  .rm-axis .corner{padding:14px 14px;border-right:1px solid var(--line);background:#fbfbfd}
+  .rm-axis .corner .t{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.16em}
+  .rm-axis .corner .v{font-size:13px;font-weight:600;margin-top:2px}
+  .rm-stage{padding:10px 12px;border-right:1px solid var(--line);position:relative}
+  .rm-stage:last-child{border-right:0}
+  .rm-stage .n{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.14em}
+  .rm-stage .t{font-size:12px;font-weight:600;margin-top:2px;letter-spacing:-.01em}
+  .rm-stage .w{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);margin-top:2px}
+  .rm-stage .gate{margin-top:6px;font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.12em;color:var(--ink);background:var(--indigo-50);border:1px solid var(--indigo-100);padding:2px 5px;display:inline-block}
+  .rm-stage::after{content:"";position:absolute;right:-5px;top:50%;width:9px;height:9px;background:#fff;border:1px solid var(--ink);transform:translateY(-50%) rotate(45deg);z-index:2}
+  .rm-stage:last-child::after{display:none}
+
+  .rm-lane{display:grid;grid-template-columns:200px repeat(7,1fr);border-bottom:1px solid var(--line)}
+  .rm-lane:last-child{border-bottom:0}
+  .rm-lane .lane-l{padding:12px 14px;border-right:1px solid var(--line);background:#fbfbfd;font-size:12px;font-weight:600;display:flex;flex-direction:column;gap:2px;justify-content:center}
+  .rm-lane .lane-l .id{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.16em}
+  .rm-cell{padding:10px;border-right:1px solid var(--line);min-height:80px}
+  .rm-cell:last-child{border-right:0}
+  .rm-bar{padding:6px 8px;font-size:11px;line-height:1.35;border:1px solid;margin-bottom:5px}
+  .rm-bar .h{font-weight:600;font-size:11px}
+  .rm-bar .d{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:var(--muted);letter-spacing:.02em;margin-top:1px}
+  .bar-i{background:var(--indigo-50);border-color:var(--indigo-100);color:var(--ink)}
+  .bar-t{background:var(--teal-50);border-color:#c7e6e2;color:var(--ink)}
+  .bar-a{background:var(--amber-50);border-color:#f3dfb3;color:var(--ink)}
+  .bar-r{background:var(--rose-50);border-color:#f4cfd6;color:var(--ink)}
+  .bar-g{background:var(--green-50);border-color:#c9e3d3;color:var(--ink)}
+  .bar-n{background:#f3f4f8;border-color:var(--line-2);color:var(--ink)}
+  .lane-icon{display:inline-block;width:14px;height:14px;background:var(--indigo);margin-right:8px;vertical-align:middle}
+  .li-i{background:#4f46e5}.li-fe{background:#7c3aed}.li-be{background:#0ea5e9}.li-ai{background:#0d9488}
+  .li-db{background:#b45309}.li-sec{background:#9f1239}.li-ops{background:#334155}.li-qa{background:#65a30d}.li-mkt{background:#db2777}
+
+  .rm-milestones{display:grid;grid-template-columns:200px repeat(7,1fr);background:#fbfbfd;border-top:1px solid var(--ink)}
+  .rm-milestones .ml{padding:10px 12px;border-right:1px solid var(--line);font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.14em;display:flex;align-items:center}
+  .rm-milestones .mi{padding:10px 12px;border-right:1px solid var(--line);font-size:11px;line-height:1.4}
+  .rm-milestones .mi:last-child{border-right:0}
+  .rm-milestones .mi .gate{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--ink);background:#fff;border:1px solid var(--ink);padding:2px 5px;letter-spacing:.12em}
+  .rm-milestones .mi .desc{margin-top:4px;color:var(--ink-2);font-size:10.5px}
+
+  /* ---------- flows ---------- */
+  .twocol{display:grid;grid-template-columns:1.3fr 1fr;gap:24px}
+  .flow{background:var(--paper);border:1px solid var(--line);padding:22px;position:relative}
+  .flow h3{margin:0 0 4px;font-size:13px;font-weight:600}
+  .flow .tag{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;margin-bottom:18px}
+  .nodes{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;align-items:start}
+  .fnode{border:1px solid var(--line-2);padding:10px;font-size:11px;line-height:1.4;background:#fff;min-height:78px;position:relative}
+  .fnode .h{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:var(--muted);letter-spacing:.14em;margin-bottom:4px}
+  .fnode .nm{font-weight:600;font-size:12px}
+  .fnode .ds{color:var(--ink-2);font-size:10.5px;margin-top:3px}
+  .fnode.s1{border-top:3px solid var(--indigo)}
+  .fnode.s2{border-top:3px solid var(--teal)}
+  .fnode.s3{border-top:3px solid var(--amber)}
+  .fnode.s4{border-top:3px solid var(--rose)}
+  .fnode.s5{border-top:3px solid var(--green)}
+  .arrows{position:absolute;left:22px;right:22px;top:128px;height:2px;pointer-events:none}
+
+  .triad{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px}
+  .triad-card{border:1px solid var(--line-2);padding:14px;background:#fff}
+  .triad-card .role{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase}
+  .triad-card .h{font-size:13px;font-weight:600;margin-top:4px}
+  .triad-card ul{margin:8px 0 0;padding-left:14px;font-size:11px;line-height:1.5;color:var(--ink-2)}
+  .triad-card.a{border-top:3px solid var(--indigo)}
+  .triad-card.b{border-top:3px solid var(--teal)}
+  .triad-card.c{border-top:3px solid var(--amber)}
+  .triad-arrows{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.06em;text-align:center}
+
+  /* ---------- table ---------- */
+  table.stage-table{width:100%;border-collapse:collapse;background:var(--paper);border:1px solid var(--line);font-size:11px}
+  table.stage-table th{text-align:left;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;padding:10px 10px;border-bottom:1px solid var(--ink);font-weight:500;background:#fbfbfd;vertical-align:bottom}
+  table.stage-table td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.5}
+  table.stage-table tr:last-child td{border-bottom:0}
+  .stage-id{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:var(--ink)}
+  .pri{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.12em;padding:2px 6px;border:1px solid;display:inline-block;text-transform:uppercase}
+  .pri.p0{background:var(--indigo-50);border-color:var(--indigo-100);color:#312e81}
+  .pri.p1{background:var(--teal-50);border-color:#c7e6e2;color:#0f766e}
+  .pri.p2{background:var(--amber-50);border-color:#f3dfb3;color:#92400e}
+
+  /* ---------- build now/later ---------- */
+  .nl{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--ink);border:1px solid var(--ink)}
+  .nl-col{background:var(--paper);padding:22px}
+  .nl-col h3{margin:0;font-size:14px}
+  .nl-col .tag{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;margin-top:4px}
+  .nl-list{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:6px 14px}
+  .nl-item{font-size:12px;padding:8px 10px;border:1px solid var(--line-2);background:#fff;display:flex;gap:10px;align-items:center}
+  .nl-item .b{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted)}
+  .nl-now .nl-item{border-left:3px solid var(--indigo)}
+  .nl-later .nl-item{border-left:3px solid var(--amber)}
+
+  /* ---------- checklist + risks ---------- */
+  .twocol2{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  .check{background:var(--paper);border:1px solid var(--line);padding:22px}
+  .check h3{margin:0 0 4px;font-size:13px;font-weight:600}
+  .check .tag{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;margin-bottom:14px}
+  .check-grp{margin-top:12px}
+  .check-grp .gh{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--ink);text-transform:uppercase;border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:8px}
+  .check-row{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:5px 0;font-size:12px;border-bottom:1px dashed var(--line)}
+  .check-row:last-child{border-bottom:0}
+  .box{width:14px;height:14px;border:1.5px solid var(--ink);display:inline-block;margin-top:1px}
+  .box.ok{background:var(--ink)}
+  .box.ok::before{content:"";display:block;width:5px;height:9px;border:solid #fff;border-width:0 1.5px 1.5px 0;transform:rotate(45deg);margin:1px 0 0 4px}
+  .check-row .stage{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:var(--muted);letter-spacing:.12em}
+
+  .risks table{width:100%;border-collapse:collapse;font-size:11px;margin-top:6px}
+  .risks th{text-align:left;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase;padding:8px 8px;border-bottom:1px solid var(--ink);font-weight:500;vertical-align:bottom}
+  .risks td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.45}
+  .sev{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.1em;padding:2px 5px;border:1px solid;text-transform:uppercase}
+  .sev.h{background:var(--rose-50);border-color:#f4cfd6;color:#9f1239}
+  .sev.m{background:var(--amber-50);border-color:#f3dfb3;color:#92400e}
+  .sev.l{background:var(--green-50);border-color:#c9e3d3;color:#15803d}
+
+  /* ---------- timeline ---------- */
+  .timeline{background:var(--paper);border:1px solid var(--line);padding:18px 22px 22px}
+  .tl-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:10px}
+  .tl-head .h{font-size:13px;font-weight:600}
+  .tl-head .tag{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase}
+  .tl-grid{position:relative;border:1px solid var(--line);background:#fbfbfd}
+  .tl-months{display:grid;grid-template-columns:repeat(18,1fr);border-bottom:1px solid var(--line)}
+  .tl-months div{padding:6px 0;text-align:center;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);border-right:1px solid var(--line);letter-spacing:.06em}
+  .tl-months div:last-child{border-right:0}
+  .tl-month-q{background:#f1f3f9}
+  .tl-rows{padding:10px 0}
+  .tl-row{display:grid;grid-template-columns:140px 1fr;align-items:center;padding:6px 0 6px 12px;gap:10px}
+  .tl-row .lbl{font-size:11px;font-weight:600}
+  .tl-row .lbl .id{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:var(--muted);letter-spacing:.12em;display:block}
+  .tl-track{position:relative;height:22px;background:#fff;border:1px solid var(--line)}
+  .tl-bar{position:absolute;top:2px;bottom:2px;border:1px solid;display:flex;align-items:center;padding:0 8px;font-size:10.5px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden}
+  .tl-mile{position:absolute;top:-6px;width:1px;height:32px;background:var(--ink)}
+  .tl-mile .mtag{position:absolute;top:-14px;left:-22px;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.1em;background:var(--ink);color:#fff;padding:1px 5px}
+
+  .legend{display:flex;gap:14px;margin-top:12px;flex-wrap:wrap}
+  .legend .l{display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.06em}
+  .legend .sw{width:14px;height:10px;border:1px solid}
+
+  /* ---------- footer ---------- */
+  .foot{margin-top:48px;padding-top:18px;border-top:1px solid var(--ink);display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+</style>
+</head>
+<body>
+<main class="doc">
+
+<!-- =============== MASTHEAD =============== -->
+<header class="masthead">
+  <div class="mh-left">
+    <div class="stamp"><span class="dot"></span> Internal · Architecture & Roadmap · v1.0</div>
+    <div class="eyebrow">CareerProof AI &nbsp;/&nbsp; Product Engineering</div>
+    <h1>Platform Architecture &amp; 18-Month Build Plan</h1>
+    <p class="sub">B2B2C SaaS for verified <span class="mono">.edu</span> career readiness — connecting students, recruiters and university career centers through proof-of-skill profiles, AI-driven matching and privacy-respecting analytics.</p>
+  </div>
+  <div class="mh-right">
+    <div><b>Document</b> &nbsp; ARC-001 / R1</div>
+    <div><b>Owner</b> &nbsp;&nbsp;&nbsp; Product &amp; Eng. Lead</div>
+    <div><b>Status</b> &nbsp;&nbsp; Draft for Review</div>
+    <div><b>Audience</b>&nbsp; Mentors · Advisors · Team</div>
+    <div><b>Updated</b>&nbsp; Apr 2026</div>
+  </div>
+</header>
+
+<!-- =============== EXECUTIVE OVERVIEW =============== -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">§ 01</span>
+    <h2 class="sec-title">Executive Platform Overview</h2>
+    <span class="sec-tag">Three-sided Marketplace</span>
+  </div>
+  <p class="sec-desc">A multi-sided platform with one shared verified profile graph at the center. Students build proof-backed profiles; recruiters discover and invite verified candidates; universities receive privacy-respecting aggregate analytics on cohort readiness and skill trends.</p>
+
+  <div class="exec">
+    <div class="panel">
+      <h3>The Three-Sided Platform</h3>
+      <div class="tag">Sides · Value Exchanged · Trust Anchor</div>
+
+      <div class="three-sided">
+        <div class="ts student">
+          <div class="role">Side A — Primary User</div>
+          <h4>Students</h4>
+          <p>Verified <span class="mono">.edu</span> identity. Build a proof-of-skill profile, generate tailored applications, track outcomes, and receive recruiter invitations.</p>
+          <span class="pill mono">B2C · FREE TIER</span>
+        </div>
+        <div class="ts recruiter">
+          <div class="role">Side B — B2B Customer</div>
+          <h4>Recruiters</h4>
+          <p>Search verified students by role-readiness, skill evidence and visa compatibility. Send invitations, track conversion, manage company brand.</p>
+          <span class="pill mono">B2B · SUBSCRIPTION</span>
+        </div>
+        <div class="ts uni">
+          <div class="role">Side C — Institutional B2B</div>
+          <h4>Universities</h4>
+          <p>Aggregate, anonymized analytics for career centers — readiness by major, skill gaps, employer engagement, recruiter trust scores.</p>
+          <span class="pill mono">B2B · INSTITUTIONAL</span>
+        </div>
+      </div>
+
+      <div class="pillars">
+        <div class="pillar">
+          <div class="id">PILLAR 01</div>
+          <div>
+            <div class="name">Verified .edu identity</div>
+            <div class="desc">Email-domain verification + university-issued artifacts; the trust anchor that powers proof-of-skill and recruiter signal quality.</div>
+          </div>
+        </div>
+        <div class="pillar">
+          <div class="id">PILLAR 02</div>
+          <div>
+            <div class="name">Proof over claims</div>
+            <div class="desc">Every skill carries evidence — GitHub commits, coursework, portfolio links, certificates — surfaced as verifiable proof cards.</div>
+          </div>
+        </div>
+        <div class="pillar">
+          <div class="id">PILLAR 03</div>
+          <div>
+            <div class="name">Outcome learning loop</div>
+            <div class="desc">Edits, applications and interview outcomes feed back into the recommendation, scoring and skill-gap engines.</div>
+          </div>
+        </div>
+        <div class="pillar">
+          <div class="id">PILLAR 04</div>
+          <div>
+            <div class="name">Privacy-first network effects</div>
+            <div class="desc">Universities and benchmarks operate on anonymized cohorts; students retain explicit visibility and consent controls.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Plan at a Glance</h3>
+      <div class="tag">Phasing · Surface Area · Scope</div>
+      <div class="kpis">
+        <div class="kpi"><div class="v">7</div><div class="l">Stages · 0 → 6</div></div>
+        <div class="kpi"><div class="v">~18 mo</div><div class="l">End-to-end Roadmap</div></div>
+        <div class="kpi"><div class="v">9</div><div class="l">Engineering Swimlanes</div></div>
+        <div class="kpi"><div class="v">3</div><div class="l">User Sides · B2B2C</div></div>
+        <div class="kpi"><div class="v">42</div><div class="l">Application Modules</div></div>
+        <div class="kpi"><div class="v">6</div><div class="l">Go / No-Go Gates</div></div>
+      </div>
+
+      <div style="margin-top:18px">
+        <div class="tag">Strategic phasing</div>
+        <div style="display:grid;grid-template-columns:1fr;gap:6px;margin-top:6px">
+          <div style="display:grid;grid-template-columns:90px 1fr;gap:10px;align-items:start;padding:8px 0;border-bottom:1px dashed var(--line)">
+            <div class="mono small" style="color:var(--muted)">PHASE I</div>
+            <div><b style="font-size:12px">Single-sided Student Product</b><div class="small" style="color:var(--ink-2);line-height:1.5;margin-top:2px">Stages 0 → 3 · build trust, depth and a real outcome on one side first.</div></div>
+          </div>
+          <div style="display:grid;grid-template-columns:90px 1fr;gap:10px;align-items:start;padding:8px 0;border-bottom:1px dashed var(--line)">
+            <div class="mono small" style="color:var(--muted)">PHASE II</div>
+            <div><b style="font-size:12px">Two-sided Marketplace</b><div class="small" style="color:var(--ink-2);line-height:1.5;margin-top:2px">Stage 4 · open recruiter side once student supply is verified and useful.</div></div>
+          </div>
+          <div style="display:grid;grid-template-columns:90px 1fr;gap:10px;align-items:start;padding:8px 0">
+            <div class="mono small" style="color:var(--muted)">PHASE III</div>
+            <div><b style="font-size:12px">Institutional &amp; Network Effects</b><div class="small" style="color:var(--ink-2);line-height:1.5;margin-top:2px">Stages 5 → 6 · universities, benchmarking, recruiter scoring, hardening.</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =============== LAYERED ARCHITECTURE =============== -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">§ 02</span>
+    <h2 class="sec-title">Enterprise SaaS System Architecture</h2>
+    <span class="sec-tag">Layered View · 8 Tiers</span>
+  </div>
+  <p class="sec-desc">Eight horizontal tiers from presentation to compliance. Components are scoped to a single tier and communicate across tiers through versioned API contracts and typed event schemas. AI services are isolated behind a model-gateway with safety and hallucination checks.</p>
+
+  <div class="arch">
+    <!-- Layer 1: Presentation -->
+    <div class="layer lyr-presentation">
+      <div class="label">
+        <div class="num">L1 · CLIENTS</div>
+        <div class="nm">Presentation</div>
+        <div class="nt">Next.js 14 · TypeScript · Tailwind · shadcn/ui · React Server Components</div>
+      </div>
+      <div class="body">
+        <div class="node acc-i"><span class="nm">Student Portal</span><span class="ds">/app/student · web + mobile-web</span></div>
+        <div class="node acc-t"><span class="nm">Recruiter Portal</span><span class="ds">/app/recruiter · gated</span></div>
+        <div class="node acc-a"><span class="nm">University Console</span><span class="ds">/app/university · SSO</span></div>
+        <div class="node acc-r"><span class="nm">Internal Admin</span><span class="ds">/app/admin · RBAC</span></div>
+        <div class="node"><span class="nm">Marketing Site</span><span class="ds">public · static</span></div>
+        <div class="node"><span class="nm">Email Templates</span><span class="ds">react-email</span></div>
+      </div>
+    </div>
+
+    <!-- Layer 2: API / BFF -->
+    <div class="layer">
+      <div class="label">
+        <div class="num">L2 · GATEWAY</div>
+        <div class="nm">API &amp; BFF</div>
+        <div class="nt">FastAPI · OpenAPI 3.1 · OAuth 2.1 · per-side BFF</div>
+      </div>
+      <div class="body">
+        <div class="node"><span class="nm">REST API</span><span class="ds">FastAPI · /v1</span></div>
+        <div class="node"><span class="nm">Webhooks</span><span class="ds">Stripe · job APIs</span></div>
+        <div class="node"><span class="nm">Auth Service</span><span class="ds">JWT · session</span></div>
+        <div class="node"><span class="nm">Rate Limiter</span><span class="ds">per-user · per-tenant</span></div>
+        <div class="node"><span class="nm">Edge Cache</span><span class="ds">Vercel · stale-while-revalidate</span></div>
+        <div class="node"><span class="nm">Schema Contracts</span><span class="ds">Zod · Pydantic</span></div>
+      </div>
+    </div>
+
+    <!-- Layer 3: Application services -->
+    <div class="layer lyr-app">
+      <div class="label">
+        <div class="num">L3 · DOMAIN</div>
+        <div class="nm">Application Services</div>
+        <div class="nt">Bounded contexts · per-domain modules · transactional</div>
+      </div>
+      <div class="body">
+        <div class="node acc-i"><span class="nm">Identity &amp; .edu Verify</span><span class="ds">signup · roles</span></div>
+        <div class="node acc-i"><span class="nm">Profile</span><span class="ds">student · visa · targets</span></div>
+        <div class="node acc-i"><span class="nm">Resume</span><span class="ds">upload · parse · versions</span></div>
+        <div class="node acc-i"><span class="nm">Job Match</span><span class="ds">score · gaps · explain</span></div>
+        <div class="node acc-i"><span class="nm">Generation</span><span class="ds">resume · cover letter</span></div>
+        <div class="node acc-i"><span class="nm">Approval Queue</span><span class="ds">prepare → apply</span></div>
+        <div class="node acc-i"><span class="nm">Application Tracker</span><span class="ds">statuses · notes</span></div>
+        <div class="node acc-i"><span class="nm">Proof-of-Skill</span><span class="ds">evidence · verification</span></div>
+        <div class="node acc-i"><span class="nm">Readiness Score</span><span class="ds">per-role index</span></div>
+        <div class="node acc-i"><span class="nm">Mock Interview</span><span class="ds">tech · behavioral</span></div>
+        <div class="node acc-t"><span class="nm">Recruiter Search</span><span class="ds">faceted · visa-aware</span></div>
+        <div class="node acc-t"><span class="nm">Company Profiles</span><span class="ds">brand · roles</span></div>
+        <div class="node acc-t"><span class="nm">Invitations</span><span class="ds">workflow · tracking</span></div>
+        <div class="node acc-a"><span class="nm">University Analytics</span><span class="ds">aggregates · reports</span></div>
+        <div class="node acc-a"><span class="nm">Peer Benchmarking</span><span class="ds">cohort intel</span></div>
+        <div class="node acc-a"><span class="nm">Referral Graph</span><span class="ds">edges · paths</span></div>
+        <div class="node"><span class="nm">Notifications</span><span class="ds">email · in-app</span></div>
+        <div class="node"><span class="nm">Billing</span><span class="ds">Stripe · plans</span></div>
+      </div>
+    </div>
+
+    <!-- Layer 4: AI/ML -->
+    <div class="layer lyr-ai">
+      <div class="label">
+        <div class="num">L4 · INTELLIGENCE</div>
+        <div class="nm">AI / ML Services</div>
+        <div class="nt">Model gateway · prompt registry · safety + eval harness</div>
+      </div>
+      <div class="body">
+        <div class="node acc-t"><span class="nm">Resume Parser</span><span class="ds">PDF/DOCX → JSON</span></div>
+        <div class="node acc-t"><span class="nm">JD Parser</span><span class="ds">requirements + nice-to-have</span></div>
+        <div class="node acc-t"><span class="nm">Skill Extraction</span><span class="ds">taxonomy-aligned</span></div>
+        <div class="node acc-t"><span class="nm">Match Engine</span><span class="ds">embeddings + rules</span></div>
+        <div class="node acc-t"><span class="nm">Generation Pipeline</span><span class="ds">grounded · no-hallucination</span></div>
+        <div class="node acc-t"><span class="nm">Skill-Gap Engine</span><span class="ds">ranked priorities</span></div>
+        <div class="node acc-t"><span class="nm">Project Recommender</span><span class="ds">role-targeted</span></div>
+        <div class="node acc-t"><span class="nm">Interview Engine</span><span class="ds">Q-gen · scoring</span></div>
+        <div class="node acc-t"><span class="nm">Vector Search</span><span class="ds">pgvector → Pinecone</span></div>
+        <div class="node acc-t"><span class="nm">Safety Guardrails</span><span class="ds">PII · hallucination · bias</span></div>
+        <div class="node acc-t"><span class="nm">Eval Harness</span><span class="ds">offline · golden sets</span></div>
+      </div>
+    </div>
+
+    <!-- Layer 5: Workflow -->
+    <div class="layer">
+      <div class="label">
+        <div class="num">L5 · WORKFLOW</div>
+        <div class="nm">Automation &amp; Jobs</div>
+        <div class="nt">n8n flows · background workers · cron · retries</div>
+      </div>
+      <div class="body">
+        <div class="node"><span class="nm">Job Discovery</span><span class="ds">daily · multi-source</span></div>
+        <div class="node"><span class="nm">Resume Pipeline</span><span class="ds">parse → embed → store</span></div>
+        <div class="node"><span class="nm">Email Digests</span><span class="ds">daily / weekly</span></div>
+        <div class="node"><span class="nm">Recruiter Invites</span><span class="ds">queued workflows</span></div>
+        <div class="node"><span class="nm">Progress Reports</span><span class="ds">readiness deltas</span></div>
+        <div class="node"><span class="nm">Re-ranker Refresh</span><span class="ds">embeddings rebuild</span></div>
+        <div class="node"><span class="nm">DLQ &amp; Retry</span><span class="ds">poison-message handling</span></div>
+      </div>
+    </div>
+
+    <!-- Layer 6: Data -->
+    <div class="layer lyr-data">
+      <div class="label">
+        <div class="num">L6 · DATA</div>
+        <div class="nm">Storage &amp; Persistence</div>
+        <div class="nt">Postgres · pgvector · object storage · audit ledger</div>
+      </div>
+      <div class="body">
+        <div class="node acc-a"><span class="nm">Postgres / Supabase</span><span class="ds">primary OLTP</span></div>
+        <div class="node acc-a"><span class="nm">pgvector → Pinecone</span><span class="ds">embeddings</span></div>
+        <div class="node acc-a"><span class="nm">Object Storage</span><span class="ds">resumes · artifacts</span></div>
+        <div class="node acc-a"><span class="nm">Application Ledger</span><span class="ds">history · outcomes</span></div>
+        <div class="node acc-a"><span class="nm">Skill Evidence Store</span><span class="ds">proof artifacts</span></div>
+        <div class="node acc-a"><span class="nm">Job Catalog</span><span class="ds">deduped · normalized</span></div>
+        <div class="node acc-a"><span class="nm">University Aggregates</span><span class="ds">anonymized cubes</span></div>
+        <div class="node acc-a"><span class="nm">Audit Log</span><span class="ds">append-only · WORM</span></div>
+      </div>
+    </div>
+
+    <!-- Layer 7: Integrations + Infra -->
+    <div class="layer">
+      <div class="label">
+        <div class="num">L7 · PLATFORM</div>
+        <div class="nm">Integrations &amp; Infra</div>
+        <div class="nt">Vercel · Cloud Run · GitHub Actions · Docker · Prom/Grafana</div>
+      </div>
+      <div class="body">
+        <div class="node"><span class="nm">Job APIs</span><span class="ds">Adzuna · JSearch</span></div>
+        <div class="node"><span class="nm">GitHub API</span><span class="ds">repo signals</span></div>
+        <div class="node"><span class="nm">LLM APIs</span><span class="ds">Claude · OpenAI</span></div>
+        <div class="node"><span class="nm">Email Provider</span><span class="ds">transactional · marketing</span></div>
+        <div class="node"><span class="nm">Stripe</span><span class="ds">subscriptions · billing</span></div>
+        <div class="node"><span class="nm">CI / CD</span><span class="ds">GitHub Actions</span></div>
+        <div class="node"><span class="nm">Hosting</span><span class="ds">Vercel · Cloud Run</span></div>
+        <div class="node"><span class="nm">Observability</span><span class="ds">Prom · Grafana · Sentry</span></div>
+        <div class="node"><span class="nm">Secrets</span><span class="ds">vault · KMS</span></div>
+        <div class="node"><span class="nm">Environments</span><span class="ds">dev · stg · prod</span></div>
+      </div>
+    </div>
+
+    <!-- Layer 8: Security/Compliance -->
+    <div class="layer lyr-sec">
+      <div class="label">
+        <div class="num">L8 · GOVERNANCE</div>
+        <div class="nm">Security &amp; Compliance</div>
+        <div class="nt">RBAC · consent · retention · FERPA-aware · auditability</div>
+      </div>
+      <div class="body">
+        <div class="node acc-r"><span class="nm">.edu Verification</span><span class="ds">domain + artifact</span></div>
+        <div class="node acc-r"><span class="nm">RBAC</span><span class="ds">student · recruiter · uni · admin</span></div>
+        <div class="node acc-r"><span class="nm">Consent Manager</span><span class="ds">visibility · share scopes</span></div>
+        <div class="node acc-r"><span class="nm">PII Vault</span><span class="ds">field-level encryption</span></div>
+        <div class="node acc-r"><span class="nm">Anonymization</span><span class="ds">k-anonymity · cohort floors</span></div>
+        <div class="node acc-r"><span class="nm">Audit Trail</span><span class="ds">who · what · when</span></div>
+        <div class="node acc-r"><span class="nm">Retention &amp; Deletion</span><span class="ds">TTL · right-to-erase</span></div>
+        <div class="node acc-r"><span class="nm">Rate &amp; Abuse</span><span class="ds">throttle · bot defense</span></div>
+        <div class="node acc-r"><span class="nm">FERPA Posture</span><span class="ds">institutional data ctrls</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =============== SWIMLANE ROADMAP =============== -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">§ 03</span>
+    <h2 class="sec-title">Implementation Roadmap — Swimlanes &amp; Milestone Gates</h2>
+    <span class="sec-tag">9 Lanes · 7 Stages · 6 Gates</span>
+  </div>
+  <p class="sec-desc">Each row is a delivery lane; each column is a stage with a go/no-go gate. Bars indicate scope ownership. Diamonds at the end of each stage are decision gates — work in the next stage starts only when its predecessor's gate criteria are met.</p>
+
+  <div class="roadmap">
+
+    <!-- stage axis -->
+    <div class="rm-axis">
+      <div class="corner"><div class="t">SWIMLANE / STAGE</div><div class="v">Delivery Plan</div></div>
+      <div class="rm-stage"><div class="n">STAGE 0</div><div class="t">Foundation &amp; Architecture</div><div class="w">2–3 wks</div><div class="gate">G0 · Blueprint signed</div></div>
+      <div class="rm-stage"><div class="n">STAGE 1</div><div class="t">Student MVP</div><div class="w">6–10 wks</div><div class="gate">G1 · 5–10 users</div></div>
+      <div class="rm-stage"><div class="n">STAGE 2</div><div class="t">Real Matching &amp; Dashboard</div><div class="w">3–5 mo</div><div class="gate">G2 · 20–100 beta</div></div>
+      <div class="rm-stage"><div class="n">STAGE 3</div><div class="t">CareerProof &amp; Learning Loop</div><div class="w">5–8 mo</div><div class="gate">G3 · Activation lift</div></div>
+      <div class="rm-stage"><div class="n">STAGE 4</div><div class="t">Recruiter Marketplace</div><div class="w">8–12 mo</div><div class="gate">G4 · 1st paid logo</div></div>
+      <div class="rm-stage"><div class="n">STAGE 5</div><div class="t">University &amp; Network</div><div class="w">12–18 mo</div><div class="gate">G5 · Pilot uni live</div></div>
+      <div class="rm-stage"><div class="n">STAGE 6</div><div class="t">Hardening &amp; Scale</div><div class="w">Continuous</div><div class="gate">G6 · Enterprise-ready</div></div>
+    </div>
+
+    <!-- Lane 1: Product -->
+    <div class="rm-lane">
+      <div class="lane-l"><span class="id">LN-01</span><span><span class="lane-icon li-i"></span>Product</span></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Vision &amp; scope</div><div class="d">PRD · MVP cut · roles</div></div><div class="rm-bar bar-i"><div class="h">User flows</div><div class="d">student · recruiter · uni</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">MVP definition</div><div class="d">approval queue spec</div></div><div class="rm-bar bar-i"><div class="h">UX research</div><div class="d">5 student interviews</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Beta program</div><div class="d">20–100 users</div></div><div class="rm-bar bar-i"><div class="h">Analytics &amp; KPIs</div><div class="d">activation · retention</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">CareerProof PRD</div><div class="d">readiness · proof model</div></div><div class="rm-bar bar-i"><div class="h">Outcomes loop</div><div class="d">interview tracking</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Recruiter GTM</div><div class="d">ICP · pricing</div></div><div class="rm-bar bar-i"><div class="h">Pilot motion</div><div class="d">5 design partners</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">University motion</div><div class="d">career-center pilot</div></div><div class="rm-bar bar-i"><div class="h">Network strategy</div><div class="d">benchmarking flywheel</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Pricing &amp; packaging</div><div class="d">3 SKUs</div></div></div>
+    </div>
+
+    <!-- Lane 2: Frontend -->
+    <div class="rm-lane">
+      <div class="lane-l"><span class="id">LN-02</span><span><span class="lane-icon li-fe"></span>Frontend</span></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">UI style guide</div><div class="d">tokens · shadcn audit</div></div><div class="rm-bar bar-n"><div class="h">Routing scaffold</div><div class="d">Next.js 14 · RSC</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Auth + onboarding</div><div class="d">.edu signup flow</div></div><div class="rm-bar bar-n"><div class="h">Profile · upload · queue</div><div class="d">core student surfaces</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Job discovery UI</div><div class="d">filters · saved · tracker</div></div><div class="rm-bar bar-n"><div class="h">Dashboard v2</div><div class="d">readiness snapshot</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Proof-card UX</div><div class="d">evidence attach</div></div><div class="rm-bar bar-n"><div class="h">Interview practice</div><div class="d">conversational UI</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Recruiter portal</div><div class="d">search · invites</div></div><div class="rm-bar bar-n"><div class="h">Visibility controls</div><div class="d">student consent UX</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">University console</div><div class="d">analytics views</div></div><div class="rm-bar bar-n"><div class="h">Public receipts</div><div class="d">shareable cards</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">A11y · perf · i18n</div><div class="d">WCAG AA · Core Web Vitals</div></div></div>
+    </div>
+
+    <!-- Lane 3: Backend -->
+    <div class="rm-lane">
+      <div class="lane-l"><span class="id">LN-03</span><span><span class="lane-icon li-be"></span>Backend</span></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">API contracts</div><div class="d">OpenAPI · Pydantic</div></div><div class="rm-bar bar-i"><div class="h">Service skeleton</div><div class="d">FastAPI · auth</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Resume + JD endpoints</div><div class="d">parse · score · gen</div></div><div class="rm-bar bar-i"><div class="h">Match score engine</div><div class="d">v0 rules + embed</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Job ingestion</div><div class="d">Adzuna/JSearch · dedupe</div></div><div class="rm-bar bar-i"><div class="h">Tracker domain</div><div class="d">statuses · history</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Proof-of-skill svc</div><div class="d">evidence APIs</div></div><div class="rm-bar bar-i"><div class="h">Readiness service</div><div class="d">per-role index</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Recruiter search</div><div class="d">faceted · visa-aware</div></div><div class="rm-bar bar-i"><div class="h">Invitations + billing</div><div class="d">Stripe · plans</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Aggregation engine</div><div class="d">k-anon cubes</div></div><div class="rm-bar bar-i"><div class="h">Reference graph</div><div class="d">edges · paths</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Multi-tenant scale</div><div class="d">sharding · queues</div></div></div>
+    </div>
+
+    <!-- Lane 4: AI/ML -->
+    <div class="rm-lane">
+      <div class="lane-l"><span class="id">LN-04</span><span><span class="lane-icon li-ai"></span>AI / ML</span></div>
+      <div class="rm-cell"><div class="rm-bar bar-t"><div class="h">Prompt architecture</div><div class="d">registry · versioning</div></div><div class="rm-bar bar-t"><div class="h">Safety baseline</div><div class="d">PII · hallucination rules</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-t"><div class="h">Resume / JD parse</div><div class="d">structured JSON</div></div><div class="rm-bar bar-t"><div class="h">Generation pipeline</div><div class="d">bullets · cover letter</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-t"><div class="h">Embeddings v1</div><div class="d">pgvector · skill graph</div></div><div class="rm-bar bar-t"><div class="h">Match explainer</div><div class="d">rationale strings</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-t"><div class="h">Readiness scorer</div><div class="d">role models</div></div><div class="rm-bar bar-t"><div class="h">Interview gen + grade</div><div class="d">tech + behavioral</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-t"><div class="h">Re-ranker for recruiters</div><div class="d">supply-side intent</div></div><div class="rm-bar bar-t"><div class="h">Visa-aware filtering</div><div class="d">policy-aware ranking</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-t"><div class="h">Cohort analytics</div><div class="d">trend extraction</div></div><div class="rm-bar bar-t"><div class="h">Recruiter trust model</div><div class="d">ghosting score</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-t"><div class="h">Eval harness + drift</div><div class="d">offline goldens</div></div></div>
+    </div>
+
+    <!-- Lane 5: Database -->
+    <div class="rm-lane">
+      <div class="lane-l"><span class="id">LN-05</span><span><span class="lane-icon li-db"></span>Database</span></div>
+      <div class="rm-cell"><div class="rm-bar bar-a"><div class="h">Schema v1</div><div class="d">users · profiles · resumes</div></div><div class="rm-bar bar-a"><div class="h">Migrations &amp; seeds</div><div class="d">Alembic</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-a"><div class="h">Resume + match tables</div><div class="d">parsed_json · scores</div></div><div class="rm-bar bar-a"><div class="h">RLS policies</div><div class="d">per-tenant</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-a"><div class="h">Job catalog</div><div class="d">normalized · indexed</div></div><div class="rm-bar bar-a"><div class="h">pgvector index</div><div class="d">HNSW · tuned</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-a"><div class="h">Evidence store</div><div class="d">proof artifacts</div></div><div class="rm-bar bar-a"><div class="h">Outcomes ledger</div><div class="d">apply → result</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-a"><div class="h">Recruiter / company</div><div class="d">multi-tenant rows</div></div><div class="rm-bar bar-a"><div class="h">Billing schema</div><div class="d">subs · usage</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-a"><div class="h">Aggregate cubes</div><div class="d">k-anon enforced</div></div><div class="rm-bar bar-a"><div class="h">Reference edges</div><div class="d">graph table</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-a"><div class="h">Vector tier upgrade</div><div class="d">Pinecone / Weaviate</div></div></div>
+    </div>
+
+    <!-- Lane 6: Security -->
+    <div class="rm-lane">
+      <div class="lane-l"><span class="id">LN-06</span><span><span class="lane-icon li-sec"></span>Security</span></div>
+      <div class="rm-cell"><div class="rm-bar bar-r"><div class="h">Threat model</div><div class="d">STRIDE pass</div></div><div class="rm-bar bar-r"><div class="h">Privacy rules</div><div class="d">consent + retention draft</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-r"><div class="h">.edu verification</div><div class="d">domain + email</div></div><div class="rm-bar bar-r"><div class="h">Secure file upload</div><div class="d">AV scan · MIME</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-r"><div class="h">RBAC v1</div><div class="d">student · admin</div></div><div class="rm-bar bar-r"><div class="h">Audit log baseline</div><div class="d">append-only</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-r"><div class="h">Consent UX + scopes</div><div class="d">visibility matrix</div></div><div class="rm-bar bar-r"><div class="h">PII vault</div><div class="d">field-level encryption</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-r"><div class="h">Recruiter RBAC</div><div class="d">multi-seat</div></div><div class="rm-bar bar-r"><div class="h">Abuse + bot defense</div><div class="d">scrape protection</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-r"><div class="h">FERPA posture</div><div class="d">institutional ctrls</div></div><div class="rm-bar bar-r"><div class="h">Anonymization tests</div><div class="d">k-anon · l-diversity</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-r"><div class="h">Pen test &amp; SOC 2 prep</div><div class="d">evidence collection</div></div></div>
+    </div>
+
+    <!-- Lane 7: Deployment -->
+    <div class="rm-lane">
+      <div class="lane-l"><span class="id">LN-07</span><span><span class="lane-icon li-ops"></span>Deployment</span></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Envs: dev/stg/prod</div><div class="d">Vercel · Cloud Run</div></div><div class="rm-bar bar-n"><div class="h">CI/CD baseline</div><div class="d">GitHub Actions</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Containerization</div><div class="d">Dockerfiles · pinned</div></div><div class="rm-bar bar-n"><div class="h">Preview envs</div><div class="d">per-PR</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Logging + Sentry</div><div class="d">structured · tags</div></div><div class="rm-bar bar-n"><div class="h">DB backups</div><div class="d">PITR · weekly drill</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Prom + Grafana</div><div class="d">SLOs · dashboards</div></div><div class="rm-bar bar-n"><div class="h">On-call rotation</div><div class="d">runbooks</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Multi-region read</div><div class="d">CDN · edge cache</div></div><div class="rm-bar bar-n"><div class="h">Cost guardrails</div><div class="d">LLM budgets</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Tenant isolation</div><div class="d">noisy-neighbor</div></div><div class="rm-bar bar-n"><div class="h">Blue/green deploys</div><div class="d">zero-downtime</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">DR drills · uptime ≥99.9%</div><div class="d">quarterly</div></div></div>
+    </div>
+
+    <!-- Lane 8: Testing -->
+    <div class="rm-lane">
+      <div class="lane-l"><span class="id">LN-08</span><span><span class="lane-icon li-qa"></span>Testing</span></div>
+      <div class="rm-cell"><div class="rm-bar bar-g"><div class="h">Test strategy</div><div class="d">pyramid · coverage</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-g"><div class="h">Unit + contract</div><div class="d">pytest · OpenAPI</div></div><div class="rm-bar bar-g"><div class="h">E2E happy path</div><div class="d">Playwright</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-g"><div class="h">AI eval harness</div><div class="d">golden resumes/JDs</div></div><div class="rm-bar bar-g"><div class="h">Load smoke</div><div class="d">k6 · key paths</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-g"><div class="h">Readiness scorer eval</div><div class="d">calibration metrics</div></div><div class="rm-bar bar-g"><div class="h">Interview eval</div><div class="d">rubric agreement</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-g"><div class="h">Recruiter UAT</div><div class="d">design-partner script</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-g"><div class="h">Privacy regressions</div><div class="d">anonymization probes</div></div><div class="rm-bar bar-g"><div class="h">Chaos tests</div><div class="d">queue · LLM outage</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-g"><div class="h">Continuous eval</div><div class="d">drift · canaries</div></div></div>
+    </div>
+
+    <!-- Lane 9: Future Marketplace -->
+    <div class="rm-lane">
+      <div class="lane-l"><span class="id">LN-09</span><span><span class="lane-icon li-mkt"></span>Future Marketplace</span></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Recruiter discovery</div><div class="d">market sizing</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Recruiter ICP research</div><div class="d">5 hiring leads</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Visibility primitives</div><div class="d">opt-in flags</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-n"><div class="h">Verified profile schema</div><div class="d">recruiter-facing view</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Recruiter MVP</div><div class="d">search · invites · Stripe</div></div><div class="rm-bar bar-i"><div class="h">Visa-compat matching</div><div class="d">policy-aware</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Recruiter scoring</div><div class="d">anti-ghosting</div></div><div class="rm-bar bar-i"><div class="h">Reference graph</div><div class="d">alumni paths</div></div></div>
+      <div class="rm-cell"><div class="rm-bar bar-i"><div class="h">Network monetization</div><div class="d">tiers · enterprise</div></div></div>
+    </div>
+
+    <!-- Milestone gates row -->
+    <div class="rm-milestones">
+      <div class="ml">MILESTONE GATE</div>
+      <div class="mi"><span class="gate">G0 · DESIGN-COMPLETE</span><div class="desc">Blueprint, schema, prompt registry &amp; security baseline approved.</div></div>
+      <div class="mi"><span class="gate">G1 · MVP USABLE</span><div class="desc">5–10 students complete approval-queue → applied flow.</div></div>
+      <div class="mi"><span class="gate">G2 · BETA SCALE</span><div class="desc">20–100 active beta users · &lt;3% AI failure rate.</div></div>
+      <div class="mi"><span class="gate">G3 · ACTIVATION LIFT</span><div class="desc">Readiness score &amp; learning loop drive measurable interview lift.</div></div>
+      <div class="mi"><span class="gate">G4 · FIRST PAID LOGO</span><div class="desc">Recruiter side closes first paid customer · Stripe live.</div></div>
+      <div class="mi"><span class="gate">G5 · UNIVERSITY PILOT</span><div class="desc">First university LIVE on analytics with FERPA-aware controls.</div></div>
+      <div class="mi"><span class="gate">G6 · ENTERPRISE READY</span><div class="desc">SOC 2 Type I, 99.9% SLO, multi-tenant scale, DR drilled.</div></div>
+    </div>
+
+  </div>
+</section>
+
+<!-- =============== STAGE TABLE =============== -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">§ 04</span>
+    <h2 class="sec-title">Stage-by-Stage Detail</h2>
+    <span class="sec-tag">Modules · Tasks · Deliverable · Priority</span>
+  </div>
+  <p class="sec-desc">Detailed stage table — modules built, the disciplines that own each stage, and the concrete deliverable that exits the gate.</p>
+
+  <table class="stage-table">
+    <thead>
+      <tr>
+        <th style="width:74px">Stage</th>
+        <th style="width:170px">Name</th>
+        <th style="width:78px">Time</th>
+        <th>Key modules</th>
+        <th style="width:230px">AI / ML &amp; Data tasks</th>
+        <th style="width:200px">Security &amp; Testing</th>
+        <th style="width:170px">Deliverable / Gate</th>
+        <th style="width:74px">Priority</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="stage-id">S0</span></td>
+        <td><b>Foundation &amp; Architecture</b><div class="mono small" style="color:var(--muted)">Discovery · Compliance Plan</div></td>
+        <td class="mono small">2–3 wks</td>
+        <td>Vision &amp; scope · roles · flows · system arch · DB schema · API contracts · prompt architecture · UI style guide · repo &amp; project board</td>
+        <td>Prompt registry · safety baseline · skill taxonomy v0 · vector strategy decision (pgvector → Pinecone)</td>
+        <td>Threat model · privacy rules · consent matrix · test strategy · deployment plan</td>
+        <td>Technical blueprint &amp; <b>G0</b></td>
+        <td><span class="pri p0">P0 · Now</span></td>
+      </tr>
+      <tr>
+        <td><span class="stage-id">S1</span></td>
+        <td><b>Student MVP</b><div class="mono small" style="color:var(--muted)">Resume → Match → Apply</div></td>
+        <td class="mono small">6–10 wks</td>
+        <td>Auth (.edu) · profile · resume upload · AI parser · JD input · match score · tailored resume · cover letter · skill-gap · approval queue</td>
+        <td>Resume + JD parsing · grounded generation · v0 match (rules + embeddings) · explanation strings</td>
+        <td>RBAC v1 · secure upload · AV scan · unit + E2E happy paths · golden eval set</td>
+        <td>5–10 student users &amp; <b>G1</b></td>
+        <td><span class="pri p0">P0 · Now</span></td>
+      </tr>
+      <tr>
+        <td><span class="stage-id">S2</span></td>
+        <td><b>Real Matching &amp; Dashboard</b><div class="mono small" style="color:var(--muted)">Jobs · Tracker · GitHub</div></td>
+        <td class="mono small">3–5 mo</td>
+        <td>Job discovery (Adzuna/JSearch) · saved jobs · application tracker · visa filter · GitHub analysis · dashboard v2 · email digests · monitoring upgrade</td>
+        <td>Embeddings v1 (pgvector + HNSW) · job dedupe · GitHub signal model · match explainer</td>
+        <td>Audit log baseline · backups · k6 smoke · privacy regressions on tracker</td>
+        <td>20–100 beta users &amp; <b>G2</b></td>
+        <td><span class="pri p0">P0 · Now</span></td>
+      </tr>
+      <tr>
+        <td><span class="stage-id">S3</span></td>
+        <td><b>CareerProof &amp; Learning Loop</b><div class="mono small" style="color:var(--muted)">Proof-of-skill · Interview</div></td>
+        <td class="mono small">5–8 mo</td>
+        <td>Career Twin profile · proof-of-skill layer · readiness score · skill-to-interview engine · auto project suggestions · mock interview · learning loop · public receipts</td>
+        <td>Readiness scorer · interview Q-gen + grader · preference learning from edits · outcome attribution</td>
+        <td>Consent scopes · PII vault · scorer calibration eval · interview rubric agreement</td>
+        <td>Activation lift &amp; <b>G3</b></td>
+        <td><span class="pri p1">P1 · Next</span></td>
+      </tr>
+      <tr>
+        <td><span class="stage-id">S4</span></td>
+        <td><b>Recruiter Marketplace</b><div class="mono small" style="color:var(--muted)">Search · Invite · Bill</div></td>
+        <td class="mono small">8–12 mo</td>
+        <td>Recruiter auth · company profiles · visibility controls · faceted search · verified profile view · invitations · visa-compat matching · analytics · Stripe</td>
+        <td>Recruiter re-ranker · visa-aware ranking · trust signal precursors</td>
+        <td>Multi-seat RBAC · scrape defense · billing audit · UAT with design partners</td>
+        <td>1st paid logo &amp; <b>G4</b></td>
+        <td><span class="pri p1">P1 · Next</span></td>
+      </tr>
+      <tr>
+        <td><span class="stage-id">S5</span></td>
+        <td><b>University &amp; Network</b><div class="mono small" style="color:var(--muted)">Analytics · Benchmark · Graph</div></td>
+        <td class="mono small">12–18 mo</td>
+        <td>University admin · readiness analytics · peer benchmarking · recruiter anti-ghosting · reference graph · reports · privacy/compliance · network effects</td>
+        <td>Cohort aggregation · k-anon enforcement · trust model for recruiters · referral path inference</td>
+        <td>FERPA posture · anonymization tests · audit trail completeness</td>
+        <td>1st university live &amp; <b>G5</b></td>
+        <td><span class="pri p2">P2 · Later</span></td>
+      </tr>
+      <tr>
+        <td><span class="stage-id">S6</span></td>
+        <td><b>Hardening &amp; Scale</b><div class="mono small" style="color:var(--muted)">SOC 2 · SLOs · Enterprise</div></td>
+        <td class="mono small">Continuous</td>
+        <td>Multi-region · tenant isolation · pricing/packaging · enterprise SSO · advanced billing · advanced compliance automation</td>
+        <td>Drift monitoring · canary models · cost-aware routing · vector tier upgrade</td>
+        <td>Pen test · SOC 2 Type I · DR drills · chaos suite</td>
+        <td>Enterprise-ready &amp; <b>G6</b></td>
+        <td><span class="pri p2">P2 · Later</span></td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- =============== TIMELINE =============== -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">§ 05</span>
+    <h2 class="sec-title">18-Month Timeline View</h2>
+    <span class="sec-tag">Months · Bars · Gates</span>
+  </div>
+  <p class="sec-desc">A condensed Gantt of the same plan. Stages overlap deliberately — Stage 2 begins before Stage 1's last polish; Stage 3 starts as Stage 2 stabilizes; Stage 4 prep starts in parallel with Stage 3.</p>
+
+  <div class="timeline">
+    <div class="tl-head">
+      <div class="h">CareerProof AI · 18-month build plan</div>
+      <div class="tag">M1 → M18 · gates marked</div>
+    </div>
+
+    <div class="tl-grid">
+      <div class="tl-months">
+        <div>M1</div><div class="tl-month-q">M2</div><div>M3</div><div class="tl-month-q">M4</div><div>M5</div><div>M6</div>
+        <div class="tl-month-q">M7</div><div>M8</div><div>M9</div><div class="tl-month-q">M10</div><div>M11</div><div>M12</div>
+        <div class="tl-month-q">M13</div><div>M14</div><div>M15</div><div class="tl-month-q">M16</div><div>M17</div><div>M18</div>
+      </div>
+
+      <div class="tl-rows">
+        <!-- Stage 0 -->
+        <div class="tl-row">
+          <div class="lbl">Stage 0 · Foundation<span class="id">S0 · 2–3 wks</span></div>
+          <div class="tl-track">
+            <div class="tl-bar bar-i" style="left:0%;width:5%">S0</div>
+            <div class="tl-mile" style="left:5%"><span class="mtag">G0</span></div>
+          </div>
+        </div>
+        <!-- Stage 1 -->
+        <div class="tl-row">
+          <div class="lbl">Stage 1 · Student MVP<span class="id">S1 · 6–10 wks</span></div>
+          <div class="tl-track">
+            <div class="tl-bar bar-i" style="left:5%;width:13%">S1 · MVP</div>
+            <div class="tl-mile" style="left:18%"><span class="mtag">G1</span></div>
+          </div>
+        </div>
+        <!-- Stage 2 -->
+        <div class="tl-row">
+          <div class="lbl">Stage 2 · Matching &amp; Dash<span class="id">S2 · 3–5 mo</span></div>
+          <div class="tl-track">
+            <div class="tl-bar bar-i" style="left:16%;width:22%">S2 · Real matching · GitHub · tracker</div>
+            <div class="tl-mile" style="left:38%"><span class="mtag">G2</span></div>
+          </div>
+        </div>
+        <!-- Stage 3 -->
+        <div class="tl-row">
+          <div class="lbl">Stage 3 · CareerProof<span class="id">S3 · 5–8 mo</span></div>
+          <div class="tl-track">
+            <div class="tl-bar bar-t" style="left:34%;width:32%">S3 · Proof-of-skill · readiness · interviews · learning loop</div>
+            <div class="tl-mile" style="left:66%"><span class="mtag">G3</span></div>
+          </div>
+        </div>
+        <!-- Stage 4 -->
+        <div class="tl-row">
+          <div class="lbl">Stage 4 · Recruiter<span class="id">S4 · 8–12 mo</span></div>
+          <div class="tl-track">
+            <div class="tl-bar bar-t" style="left:50%;width:38%">S4 · Recruiter marketplace · Stripe · invitations</div>
+            <div class="tl-mile" style="left:88%"><span class="mtag">G4</span></div>
+          </div>
+        </div>
+        <!-- Stage 5 -->
+        <div class="tl-row">
+          <div class="lbl">Stage 5 · University<span class="id">S5 · 12–18 mo</span></div>
+          <div class="tl-track">
+            <div class="tl-bar bar-a" style="left:66%;width:30%">S5 · University analytics · benchmarking · referral graph</div>
+            <div class="tl-mile" style="left:96%"><span class="mtag">G5</span></div>
+          </div>
+        </div>
+        <!-- Stage 6 -->
+        <div class="tl-row">
+          <div class="lbl">Stage 6 · Hardening<span class="id">S6 · continuous</span></div>
+          <div class="tl-track">
+            <div class="tl-bar bar-r" style="left:38%;width:60%">S6 · SOC 2 prep · SLOs · multi-region · DR · enterprise</div>
+            <div class="tl-mile" style="left:98%"><span class="mtag">G6</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="l"><span class="sw" style="background:var(--indigo-50);border-color:var(--indigo-100)"></span>Single-sided / Student</div>
+      <div class="l"><span class="sw" style="background:var(--teal-50);border-color:#c7e6e2"></span>Two-sided / Recruiter</div>
+      <div class="l"><span class="sw" style="background:var(--amber-50);border-color:#f3dfb3"></span>Institutional / University</div>
+      <div class="l"><span class="sw" style="background:var(--rose-50);border-color:#f4cfd6"></span>Cross-cutting / Hardening</div>
+      <div class="l"><span class="sw" style="background:var(--ink);border-color:var(--ink)"></span>Milestone gate</div>
+    </div>
+  </div>
+</section>
+
+<!-- =============== DATA FLOW + MARKETPLACE =============== -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">§ 06</span>
+    <h2 class="sec-title">Data Flow &amp; Marketplace Topology</h2>
+    <span class="sec-tag">End-to-End Loop</span>
+  </div>
+  <p class="sec-desc">Left: the canonical pipeline from raw student/job inputs to outcomes and back into the recommendation loop. Right: how the three sides exchange value once the marketplace is live.</p>
+
+  <div class="twocol">
+    <div class="flow">
+      <h3>Data flow — single student loop</h3>
+      <div class="tag">Input → AI → Storage → Surface → Outcome → Loop</div>
+
+      <div class="nodes">
+        <div class="fnode s1"><div class="h">01 · INPUT</div><div class="nm">Student inputs</div><div class="ds">Resume PDF · JD text · GitHub · profile · target roles</div></div>
+        <div class="fnode s2"><div class="h">02 · AI</div><div class="nm">Processing</div><div class="ds">Parsers · embeddings · match · gen · skill-gap · safety</div></div>
+        <div class="fnode s3"><div class="h">03 · STORE</div><div class="nm">Persistence</div><div class="ds">Postgres · pgvector · object storage · evidence ledger</div></div>
+        <div class="fnode s4"><div class="h">04 · SURFACE</div><div class="nm">Approval queue</div><div class="ds">Match score · resume v · cover letter · gaps · projects</div></div>
+        <div class="fnode s5"><div class="h">05 · OUTCOME</div><div class="nm">Apply &amp; track</div><div class="ds">Status · interview · offer · rejection · notes</div></div>
+      </div>
+
+      <!-- arrows -->
+      <svg viewBox="0 0 1000 30" preserveAspectRatio="none" style="width:100%;height:24px;margin-top:14px" aria-hidden="true">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0 0 L10 5 L0 10 z" fill="#0f1729"/>
+          </marker>
+        </defs>
+        <line x1="100" y1="15" x2="290" y2="15" stroke="#0f1729" stroke-width="1" marker-end="url(#ar)"/>
+        <line x1="300" y1="15" x2="490" y2="15" stroke="#0f1729" stroke-width="1" marker-end="url(#ar)"/>
+        <line x1="500" y1="15" x2="690" y2="15" stroke="#0f1729" stroke-width="1" marker-end="url(#ar)"/>
+        <line x1="700" y1="15" x2="890" y2="15" stroke="#0f1729" stroke-width="1" marker-end="url(#ar)"/>
+      </svg>
+
+      <div style="margin-top:8px;border:1px solid var(--line);background:#fbfbfd;padding:12px 14px;display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div class="mono small" style="color:var(--muted);letter-spacing:.14em">06 · LEARNING LOOP</div>
+          <div style="font-size:12px;font-weight:600;margin-top:2px">Outcomes feed back → re-ranker, scorer, gen preferences, project recommender</div>
+        </div>
+        <svg viewBox="0 0 200 30" style="width:200px;height:24px" aria-hidden="true">
+          <path d="M190 15 C 150 -5, 50 -5, 10 15" fill="none" stroke="#0f1729" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#ar)"/>
+        </svg>
+      </div>
+
+      <div style="margin-top:14px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+        <div class="node acc-r" style="min-width:0"><span class="nm">PII boundary</span><span class="ds">Field-level encryption · vault</span></div>
+        <div class="node acc-r" style="min-width:0"><span class="nm">Consent boundary</span><span class="ds">Visibility scopes · per-side</span></div>
+        <div class="node acc-r" style="min-width:0"><span class="nm">Anonymization</span><span class="ds">Aggregates only to Side C</span></div>
+      </div>
+    </div>
+
+    <div class="flow">
+      <h3>Marketplace — three-sided value loop</h3>
+      <div class="tag">Side A · Side B · Side C</div>
+
+      <div class="triad">
+        <div class="triad-card a">
+          <div class="role">Side A · Students</div>
+          <div class="h">Build verified profile</div>
+          <ul>
+            <li>.edu identity</li>
+            <li>Proof-of-skill evidence</li>
+            <li>Readiness score</li>
+            <li>Application outcomes</li>
+          </ul>
+        </div>
+        <div class="triad-card b">
+          <div class="role">Side B · Recruiters</div>
+          <div class="h">Discover &amp; invite</div>
+          <ul>
+            <li>Faceted search</li>
+            <li>Visa-compat filter</li>
+            <li>Verified evidence view</li>
+            <li>Invitations &amp; pipeline</li>
+          </ul>
+        </div>
+        <div class="triad-card c">
+          <div class="role">Side C · Universities</div>
+          <div class="h">Aggregate &amp; benchmark</div>
+          <ul>
+            <li>Readiness by major</li>
+            <li>Cohort skill gaps</li>
+            <li>Recruiter trust scores</li>
+            <li>Outcome reports</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="triad-arrows">
+        <div>↓ supply&nbsp;·&nbsp;profiles</div>
+        <div>↑ demand · invites</div>
+        <div>↻ aggregates · feedback</div>
+      </div>
+
+      <div style="margin-top:14px;border:1px solid var(--line);background:#fbfbfd;padding:12px 14px;font-size:12px;line-height:1.55;color:var(--ink-2)">
+        <b>Network effects:</b> more verified students → better recruiter conversion. More recruiters → richer outcomes for benchmarking. More universities → cleaner cohort baselines that improve recommendations for every student.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =============== BUILD NOW VS LATER =============== -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">§ 07</span>
+    <h2 class="sec-title">Build Now vs. Build Later</h2>
+    <span class="sec-tag">Scope Discipline</span>
+  </div>
+  <p class="sec-desc">Explicit scope boundary. Anything in <i>Build Later</i> is intentionally deferred — it is feature-locked behind earlier gates and not built speculatively before its predecessors are validated.</p>
+
+  <div class="nl">
+    <div class="nl-col nl-now">
+      <h3>Build now &nbsp; · &nbsp; Stages 0 → 3</h3>
+      <div class="tag">Single-sided student product · in-flight</div>
+      <div class="nl-list">
+        <div class="nl-item"><span class="b">N01</span> .edu student login</div>
+        <div class="nl-item"><span class="b">N02</span> Student profile</div>
+        <div class="nl-item"><span class="b">N03</span> Resume upload</div>
+        <div class="nl-item"><span class="b">N04</span> Resume parsing (AI)</div>
+        <div class="nl-item"><span class="b">N05</span> JD matching</div>
+        <div class="nl-item"><span class="b">N06</span> Match score + explain</div>
+        <div class="nl-item"><span class="b">N07</span> Tailored resume bullets</div>
+        <div class="nl-item"><span class="b">N08</span> Cover letter generator</div>
+        <div class="nl-item"><span class="b">N09</span> Skill-gap analysis</div>
+        <div class="nl-item"><span class="b">N10</span> Project suggestions</div>
+        <div class="nl-item"><span class="b">N11</span> Approval queue</div>
+        <div class="nl-item"><span class="b">N12</span> Application tracker</div>
+        <div class="nl-item"><span class="b">N13</span> Proof-of-skill (manual)</div>
+        <div class="nl-item"><span class="b">N14</span> GitHub analysis</div>
+        <div class="nl-item"><span class="b">N15</span> Visa filtering</div>
+        <div class="nl-item"><span class="b">N16</span> Basic deployment + monitoring</div>
+      </div>
+    </div>
+    <div class="nl-col nl-later">
+      <h3>Build later &nbsp; · &nbsp; Stages 4 → 6</h3>
+      <div class="tag">Multi-sided · enterprise · gated by earlier validation</div>
+      <div class="nl-list">
+        <div class="nl-item"><span class="b">L01</span> Recruiter portal</div>
+        <div class="nl-item"><span class="b">L02</span> Company profiles</div>
+        <div class="nl-item"><span class="b">L03</span> Recruiter search + invites</div>
+        <div class="nl-item"><span class="b">L04</span> Stripe payments</div>
+        <div class="nl-item"><span class="b">L05</span> University dashboard</div>
+        <div class="nl-item"><span class="b">L06</span> Peer benchmarking</div>
+        <div class="nl-item"><span class="b">L07</span> Anti-ghosting recruiter scores</div>
+        <div class="nl-item"><span class="b">L08</span> Reference / referral graph</div>
+        <div class="nl-item"><span class="b">L09</span> Advanced marketplace tiers</div>
+        <div class="nl-item"><span class="b">L10</span> Enterprise analytics</div>
+        <div class="nl-item"><span class="b">L11</span> Public career receipts</div>
+        <div class="nl-item"><span class="b">L12</span> Calendar integration</div>
+        <div class="nl-item"><span class="b">L13</span> Pinecone / Weaviate tier</div>
+        <div class="nl-item"><span class="b">L14</span> Full compliance automation</div>
+        <div class="nl-item"><span class="b">L15</span> SOC 2 Type II</div>
+        <div class="nl-item"><span class="b">L16</span> SSO &amp; enterprise admin</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =============== CHECKLIST + RISKS =============== -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">§ 08</span>
+    <h2 class="sec-title">Production Readiness &amp; Risk Register</h2>
+    <span class="sec-tag">Gating Criteria · Mitigations</span>
+  </div>
+  <p class="sec-desc">Production readiness is a moving bar; this checklist is what must hold before each marketplace gate. The risk register is reviewed at every stage gate and the recruiter/university launches in particular.</p>
+
+  <div class="twocol2">
+    <div class="check">
+      <h3>Production readiness checklist</h3>
+      <div class="tag">Required by G2 · Hardened by G6</div>
+
+      <div class="check-grp">
+        <div class="gh">Reliability &amp; ops</div>
+        <div class="check-row"><span class="box ok"></span><span>SLOs defined per critical path · 99.9% target</span><span class="stage">G2</span></div>
+        <div class="check-row"><span class="box ok"></span><span>Structured logging + Sentry + dashboards</span><span class="stage">G2</span></div>
+        <div class="check-row"><span class="box"></span><span>On-call rotation · runbooks · incident process</span><span class="stage">G3</span></div>
+        <div class="check-row"><span class="box"></span><span>Quarterly DR drills · PITR restore test</span><span class="stage">G5</span></div>
+        <div class="check-row"><span class="box"></span><span>Blue/green or canary deploys</span><span class="stage">G4</span></div>
+      </div>
+
+      <div class="check-grp">
+        <div class="gh">Security &amp; compliance</div>
+        <div class="check-row"><span class="box ok"></span><span>RBAC · session hardening · CSRF · CSP</span><span class="stage">G1</span></div>
+        <div class="check-row"><span class="box ok"></span><span>.edu verification &amp; AV-scanned uploads</span><span class="stage">G1</span></div>
+        <div class="check-row"><span class="box"></span><span>PII vault · field-level encryption</span><span class="stage">G3</span></div>
+        <div class="check-row"><span class="box"></span><span>FERPA-aware controls for university data</span><span class="stage">G5</span></div>
+        <div class="check-row"><span class="box"></span><span>External pen test · SOC 2 Type I</span><span class="stage">G6</span></div>
+      </div>
+
+      <div class="check-grp">
+        <div class="gh">AI quality &amp; safety</div>
+        <div class="check-row"><span class="box ok"></span><span>Prompt registry · versioned releases</span><span class="stage">G0</span></div>
+        <div class="check-row"><span class="box ok"></span><span>Hallucination guardrails on generation</span><span class="stage">G1</span></div>
+        <div class="check-row"><span class="box"></span><span>Eval harness with golden datasets</span><span class="stage">G2</span></div>
+        <div class="check-row"><span class="box"></span><span>Drift monitoring &amp; canaries</span><span class="stage">G6</span></div>
+      </div>
+
+      <div class="check-grp">
+        <div class="gh">Data &amp; multi-tenant</div>
+        <div class="check-row"><span class="box ok"></span><span>Row-level security · per-tenant isolation</span><span class="stage">G2</span></div>
+        <div class="check-row"><span class="box"></span><span>Anonymization tests for cohorts (k-anon)</span><span class="stage">G5</span></div>
+        <div class="check-row"><span class="box"></span><span>Retention &amp; right-to-erase workflows</span><span class="stage">G4</span></div>
+      </div>
+    </div>
+
+    <div class="check risks">
+      <h3>Risk register</h3>
+      <div class="tag">Likelihood × Impact · mitigation owners</div>
+
+      <table>
+        <thead>
+          <tr><th style="width:42px">ID</th><th>Risk</th><th style="width:64px">Severity</th><th>Mitigation</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">R-01</td><td>AI hallucinated experience inflates resumes / cover letters</td><td><span class="sev h">High</span></td><td>Grounded generation; source-evidence binding; human approval queue gate; eval golden set</td></tr>
+          <tr><td class="mono">R-02</td><td>LLM cost / latency outside budget at scale</td><td><span class="sev m">Med</span></td><td>Cost-aware routing; cached generations; batched embeddings; per-tenant quotas</td></tr>
+          <tr><td class="mono">R-03</td><td>Cold-start: too few recruiters to match supply at S4</td><td><span class="sev h">High</span></td><td>Design-partner program; verticalized launch (CS interns); hand-curated invitations</td></tr>
+          <tr><td class="mono">R-04</td><td>Privacy regression — student data exposed via aggregates</td><td><span class="sev h">High</span></td><td>k-anon thresholds; cohort floors; suppression rules; quarterly anonymization tests</td></tr>
+          <tr><td class="mono">R-05</td><td>FERPA / institutional data agreements block university launch</td><td><span class="sev m">Med</span></td><td>Counsel review at S0; institutional DPA template; opt-in consent at student level</td></tr>
+          <tr><td class="mono">R-06</td><td>Job source TOS / scraping limits</td><td><span class="sev m">Med</span></td><td>Licensed APIs first (Adzuna/JSearch); manual paste fallback; rate-limited workers</td></tr>
+          <tr><td class="mono">R-07</td><td>Recruiter abuse — spammy outreach degrades trust</td><td><span class="sev m">Med</span></td><td>Anti-ghosting score; rate caps; student block list; recruiter onboarding gate</td></tr>
+          <tr><td class="mono">R-08</td><td>Visa-status mishandling harms international students</td><td><span class="sev h">High</span></td><td>Student-controlled disclosure; default-private; audited logic with policy-aware ranking</td></tr>
+          <tr><td class="mono">R-09</td><td>Vendor lock-in (LLM, vector DB)</td><td><span class="sev l">Low</span></td><td>Provider-agnostic gateway; pgvector first; portable prompt registry</td></tr>
+          <tr><td class="mono">R-10</td><td>Scope creep — recruiter or uni features bleed into student MVP</td><td><span class="sev m">Med</span></td><td>Hard gate review; feature freeze per stage; build-now-vs-later contract</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div>CareerProof AI · Architecture &amp; Roadmap · Internal · v1.0</div>
+  <div>ARC-001 · R1 · Apr 2026</div>
+</footer>
+
+</main>
+</body>
+</html>

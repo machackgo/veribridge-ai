@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Student Dashboard — CareerProof AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#fafbfd;--bg-2:#f1f3f8;--paper:#fff;--ink:#0a0e1a;--ink-2:#1f2a44;--muted:#6b7280;
+    --line:#e6e8ef;--line-2:#d4d8e3;
+    --indigo:#4f46e5;--indigo-soft:#eef0ff;--emerald:#10b981;--emerald-soft:#e6f7f1;
+    --purple:#8b5cf6;--purple-soft:#f1ecff;--amber:#d97706;--rose:#f43f5e;
+    --shadow-sm:0 1px 2px rgba(10,14,26,.04);--shadow-md:0 8px 20px -8px rgba(10,14,26,.10);
+    --shadow-lg:0 24px 60px -20px rgba(10,14,26,.18);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  .mono{font-family:'JetBrains Mono',monospace}
+  a{color:inherit;text-decoration:none}
+
+  /* nav (shared) */
+  .nav{position:sticky;top:0;z-index:60;backdrop-filter:saturate(180%) blur(16px);background:rgba(250,251,253,.85);border-bottom:1px solid var(--line)}
+  .nav-inner{max-width:1480px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;gap:24px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px}
+  .brand .logo{width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,var(--ink),#2a3050);display:grid;place-items:center}
+  .brand .logo::after{content:"";width:6px;height:6px;border-radius:50%;background:linear-gradient(135deg,var(--indigo),var(--purple));box-shadow:0 0 12px rgba(79,70,229,.7)}
+  .nav-links{display:flex;gap:4px;flex:1;justify-content:center}
+  .nav-links a{font-size:14px;color:var(--ink-2);padding:8px 14px;border-radius:8px;font-weight:500}
+  .nav-links a:hover,.nav-links a.active{background:var(--paper);color:var(--ink)}
+  .nav-links a.active{box-shadow:var(--shadow-sm);border:1px solid var(--line)}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent}
+  .btn-primary{background:var(--ink);color:#fff}
+  .btn-ghost{background:transparent;color:var(--ink-2);border-color:var(--line-2)}
+
+  /* page layout */
+  .page{max-width:1480px;margin:0 auto;padding:32px 28px 80px;display:grid;grid-template-columns:240px 1fr;gap:28px}
+  .side{position:sticky;top:80px;align-self:start;background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px;height:fit-content}
+  .side .who{display:flex;align-items:center;gap:10px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:14px}
+  .avatar{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,var(--indigo),var(--purple));color:#fff;display:grid;place-items:center;font-weight:600;font-size:13px}
+  .who .nm{font-weight:600;font-size:13px}
+  .who .em{font-size:11px;color:var(--muted)}
+  .side .lab{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;margin:14px 0 8px}
+  .side a{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;font-size:13px;color:var(--ink-2)}
+  .side a.active{background:var(--ink);color:#fff;font-weight:500}
+  .side a:hover:not(.active){background:var(--bg-2)}
+  .side .ico{width:14px;height:14px;flex-shrink:0}
+
+  .main h1{font-size:32px;font-weight:600;letter-spacing:-.02em;margin:0 0 4px}
+  .main .crumb{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase}
+  .main .lede{font-size:14px;color:var(--muted);margin:6px 0 24px}
+
+  .grid{display:grid;gap:16px}
+  .row-1{grid-template-columns:1.4fr 1fr 1fr}
+  .row-2{grid-template-columns:1fr 1fr}
+  .row-3{grid-template-columns:1.5fr 1fr;margin-top:16px}
+
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px}
+  .card .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+  .card .h .t{font-weight:600;font-size:14px;letter-spacing:-.01em}
+  .card .h .a{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase}
+
+  /* score card hero */
+  .score{background:linear-gradient(135deg,var(--ink),#1a2040 60%,#2a1a4a);color:#fff;position:relative;overflow:hidden}
+  .score::after{content:"";position:absolute;right:-60px;top:-60px;width:240px;height:240px;background:radial-gradient(circle,rgba(139,92,246,.5),transparent 70%);filter:blur(20px)}
+  .score .h{margin-bottom:18px}
+  .score .h .t{color:#fff}
+  .score .h .a{color:rgba(255,255,255,.5)}
+  .score-body{display:grid;grid-template-columns:auto 1fr;gap:24px;align-items:center;position:relative}
+  .ring{width:96px;height:96px;position:relative}
+  .ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+  .ring .v{position:absolute;inset:0;display:grid;place-items:center;font-weight:600;font-size:30px;letter-spacing:-.02em}
+  .score .meta .lab{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;color:rgba(255,255,255,.5);text-transform:uppercase}
+  .score .meta h2{margin:6px 0 4px;font-size:22px;font-weight:600;letter-spacing:-.01em}
+  .score .meta .delta{color:#86efac;font-size:13px;font-weight:500}
+  .score .breakdown{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:18px;position:relative}
+  .score .bk{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:10px 12px}
+  .score .bk .l{font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.14em;color:rgba(255,255,255,.5);text-transform:uppercase}
+  .score .bk .v{font-size:16px;font-weight:600;margin-top:3px}
+  .score .bk .b{height:3px;background:rgba(255,255,255,.15);border-radius:2px;margin-top:8px;overflow:hidden}
+  .score .bk .b div{height:100%;background:linear-gradient(90deg,#a5b4fc,#86efac)}
+
+  /* mini metric */
+  .metric .v{font-size:34px;font-weight:600;letter-spacing:-.025em;line-height:1}
+  .metric .sub{font-size:12px;color:var(--muted);margin-top:6px}
+  .metric.indigo{background:var(--indigo-soft);border-color:color-mix(in srgb,var(--indigo) 25%,transparent)}
+  .metric.indigo .v{color:var(--indigo)}
+  .metric.green{background:var(--emerald-soft);border-color:color-mix(in srgb,var(--emerald) 25%,transparent)}
+  .metric.green .v{color:var(--emerald)}
+
+  /* job match table */
+  .jobs{display:flex;flex-direction:column;gap:8px}
+  .job{display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2)}
+  .job .co{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:12px;background:#fff;border:1px solid var(--line)}
+  .job .nm{font-weight:600;font-size:13px;letter-spacing:-.005em}
+  .job .meta{font-size:11px;color:var(--muted);margin-top:2px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em}
+  .job .pct{font-weight:600;font-size:15px;color:var(--emerald)}
+  .job .pct .lbl{font-size:9px;font-family:'JetBrains Mono',monospace;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;font-weight:500;display:block;text-align:right}
+  .job .arrow{color:var(--muted)}
+
+  /* skill gap */
+  .gap-list{display:flex;flex-direction:column;gap:10px}
+  .gap-item{display:grid;grid-template-columns:1fr auto;gap:6px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2)}
+  .gap-item .nm{font-size:13px;font-weight:600}
+  .gap-item .why{font-size:11px;color:var(--muted);grid-column:1/-1;font-family:'JetBrains Mono',monospace;letter-spacing:.04em}
+  .gap-item .bar{grid-column:1/-1;height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:4px}
+  .gap-item .bar div{height:100%;background:linear-gradient(90deg,var(--amber),var(--rose));border-radius:3px}
+  .gap-item .pct{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted)}
+
+  /* tracker */
+  .track{display:flex;flex-direction:column;gap:8px}
+  .tr{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:11px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2)}
+  .tr .co{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:11px;background:#fff;border:1px solid var(--line)}
+  .tr .nm{font-size:13px;font-weight:600}
+  .tr .when{font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.04em}
+  .stat{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:4px 8px;border-radius:999px;font-weight:600}
+  .stat.applied{background:var(--indigo-soft);color:var(--indigo)}
+  .stat.interview{background:var(--purple-soft);color:var(--purple)}
+  .stat.offer{background:var(--emerald-soft);color:var(--emerald)}
+  .stat.review{background:#fef3e6;color:var(--amber)}
+
+  /* recent activity */
+  .act{display:flex;flex-direction:column;gap:0}
+  .act-item{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--line)}
+  .act-item:last-child{border-bottom:0}
+  .act-item .ico{width:28px;height:28px;border-radius:7px;background:var(--bg-2);display:grid;place-items:center;color:var(--ink-2);flex-shrink:0;border:1px solid var(--line)}
+  .act-item .t{font-size:13px;font-weight:500;line-height:1.4}
+  .act-item .d{font-size:11px;color:var(--muted);margin-top:2px}
+  .act-item .when{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.06em;white-space:nowrap}
+
+  /* next best action */
+  .nba{background:linear-gradient(135deg,var(--indigo-soft),var(--purple-soft));border-color:color-mix(in srgb,var(--indigo) 18%,transparent)}
+  .nba .h .t{color:var(--indigo)}
+  .nba h3{margin:0 0 8px;font-size:18px;font-weight:600;letter-spacing:-.01em}
+  .nba p{margin:0 0 14px;font-size:13px;color:var(--ink-2);line-height:1.5}
+  .nba .why{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;margin-bottom:6px}
+  .nba .btn{background:var(--ink);color:#fff;padding:9px 14px;font-size:13px}
+
+  /* upload card */
+  .up{border:1px dashed var(--line-2);border-radius:11px;padding:18px;background:var(--bg-2);text-align:center}
+  .up .ico{width:36px;height:36px;border-radius:9px;background:var(--paper);border:1px solid var(--line);display:grid;place-items:center;margin:0 auto 10px;color:var(--ink-2)}
+  .up p{margin:0;font-size:12px;color:var(--muted)}
+  .up b{display:block;font-size:13px;color:var(--ink);font-weight:600;margin-bottom:3px}
+
+  @media (max-width:1100px){.page{grid-template-columns:1fr}.side{position:static}.row-1,.row-2,.row-3{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="CareerProof Landing.html"><span class="logo"></span>CareerProof<span style="color:var(--muted);font-weight:500;margin-left:2px">AI</span></a>
+    <div class="nav-links">
+      <a href="CareerProof Landing.html#platform">Platform</a>
+      <a class="active" href="dashboard-student.html">Students</a>
+      <a href="dashboard-recruiter.html">Recruiters</a>
+      <a href="dashboard-university.html">Universities</a>
+      <a href="CareerProof_AI_12_Month_Roadmap.html">Roadmap</a>
+    </div>
+    <a class="btn btn-primary" href="#">Continue building →</a>
+  </div>
+</nav>
+
+<div class="page">
+  <aside class="side">
+    <div class="who"><div class="avatar">MR</div><div><div class="nm">Maya Reyes</div><div class="em mono">maya.reyes@wpi.edu</div></div></div>
+    <div class="lab">Workspace</div>
+    <a class="active" data-view="overview" href="#overview">▣ Overview</a>
+    <a data-view="profile" href="#profile">▦ Profile &amp; Proof</a>
+    <a data-view="jobs" href="#jobs">↗ Job Matches</a>
+    <a data-view="apps" href="#apps">⚐ Applications</a>
+    <a data-view="gaps" href="#gaps">◇ Skill Gaps</a>
+    <a data-view="mock" href="#mock">▭ Mock Interview</a>
+    <div class="lab">Account</div>
+    <a data-view="settings" href="#settings">⚙ Settings</a>
+    <a data-view="privacy" href="#privacy">🛡 Privacy</a>
+  </aside>
+
+  <main class="main">
+  <section data-pane="overview">
+    <div class="crumb">Dashboard · Overview</div>
+    <h1>Welcome back, Maya.</h1>
+    <p class="lede">Your CareerProof score is up <b style="color:var(--emerald)">+14 in 30d</b> — driven by 2 newly verified skills and a deployed Docker project. Two recruiters viewed your profile this week.</p>
+
+    <div class="grid row-1">
+      <div class="card score">
+        <div class="h"><span class="t">CareerProof Score</span><span class="a">Updated 2h ago</span></div>
+        <div class="score-body">
+          <div class="ring">
+            <svg viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="42" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="7"/>
+              <circle cx="50" cy="50" r="42" fill="none" stroke="url(#g)" stroke-width="7" stroke-linecap="round" stroke-dasharray="263.8" stroke-dashoffset="47"/>
+              <defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#a5b4fc"/><stop offset="1" stop-color="#86efac"/></linearGradient></defs>
+            </svg>
+            <div class="v">82</div>
+          </div>
+          <div class="meta">
+            <div class="lab">Career Readiness</div>
+            <h2>Strong · Top 12% of CS '26</h2>
+            <div class="delta">↑ 14 in last 30 days</div>
+          </div>
+        </div>
+        <div class="breakdown">
+          <div class="bk"><div class="l">Skills</div><div class="v">88</div><div class="b"><div style="width:88%"></div></div></div>
+          <div class="bk"><div class="l">Proof</div><div class="v">79</div><div class="b"><div style="width:79%"></div></div></div>
+          <div class="bk"><div class="l">Experience</div><div class="v">72</div><div class="b"><div style="width:72%"></div></div></div>
+          <div class="bk"><div class="l">Polish</div><div class="v">86</div><div class="b"><div style="width:86%"></div></div></div>
+        </div>
+      </div>
+      <div class="card metric indigo">
+        <div class="h"><span class="t" style="color:var(--indigo)">Verified Skills</span><span class="a">Live</span></div>
+        <div class="v">24</div>
+        <div class="sub">18 with public proof · 6 pending</div>
+      </div>
+      <div class="card metric green">
+        <div class="h"><span class="t" style="color:var(--emerald)">Top Match</span><span class="a">Today</span></div>
+        <div class="v">94%</div>
+        <div class="sub">Backend Engineer · NYC</div>
+      </div>
+    </div>
+
+    <div class="grid row-2" style="margin-top:16px">
+      <div class="card">
+        <div class="h"><span class="t">Job matches</span><span class="a">12 new this week</span></div>
+        <div class="jobs">
+          <div class="job"><div class="co" style="background:var(--ink);color:#fff">St</div><div><div class="nm">Backend Engineer, Intern</div><div class="meta">Stripe · NYC · F-1 OK</div></div><div class="pct"><span class="lbl">Match</span>94%</div><div class="arrow">→</div></div>
+          <div class="job"><div class="co" style="background:#0d9488;color:#fff">Lr</div><div><div class="nm">Software Engineer Intern</div><div class="meta">Linear · Remote · F-1 OK</div></div><div class="pct"><span class="lbl">Match</span>91%</div><div class="arrow">→</div></div>
+          <div class="job"><div class="co" style="background:#4f46e5;color:#fff">Vc</div><div><div class="nm">Full-stack Intern</div><div class="meta">Vercel · NYC · F-1 OK</div></div><div class="pct" style="color:var(--indigo)"><span class="lbl">Match</span>88%</div><div class="arrow">→</div></div>
+          <div class="job"><div class="co" style="background:#f59e0b;color:#fff">An</div><div><div class="nm">SRE Intern</div><div class="meta">Anthropic · SF · sponsor required</div></div><div class="pct" style="color:var(--purple)"><span class="lbl">Match</span>83%</div><div class="arrow">→</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="h"><span class="t">Skill gaps · ranked by impact</span><span class="a">Updated daily</span></div>
+        <div class="gap-list">
+          <div class="gap-item"><div class="nm">Kubernetes</div><div class="pct">68% of saved jobs</div><div class="why">Required by Stripe · Linear · Vercel</div><div class="bar"><div style="width:38%"></div></div></div>
+          <div class="gap-item"><div class="nm">gRPC</div><div class="pct">42% of saved jobs</div><div class="why">Backend &amp; SRE roles · medium difficulty</div><div class="bar"><div style="width:25%"></div></div></div>
+          <div class="gap-item"><div class="nm">System Design Interview</div><div class="pct">59% of saved jobs</div><div class="why">Mock interview module recommended</div><div class="bar"><div style="width:48%"></div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid row-3">
+      <div class="card">
+        <div class="h"><span class="t">Application tracker</span><span class="a">7 active</span></div>
+        <div class="track">
+          <div class="tr"><div class="co" style="background:var(--ink);color:#fff">St</div><div><div class="nm">Stripe · Backend Eng. Intern</div><div class="when">Applied 4 days ago · CL tailored</div></div><span class="stat interview">Interview</span></div>
+          <div class="tr"><div class="co" style="background:#0d9488;color:#fff">Lr</div><div><div class="nm">Linear · SWE Intern</div><div class="when">Applied 8 days ago</div></div><span class="stat applied">Applied</span></div>
+          <div class="tr"><div class="co" style="background:#4f46e5;color:#fff">Vc</div><div><div class="nm">Vercel · Full-stack Intern</div><div class="when">Awaiting your edits</div></div><span class="stat review">Draft</span></div>
+          <div class="tr"><div class="co" style="background:#000;color:#fff">Fg</div><div><div class="nm">Figma · Platform Intern</div><div class="when">Phone screen scheduled · Tue</div></div><span class="stat interview">Interview</span></div>
+          <div class="tr"><div class="co" style="background:#1f2a44;color:#fff">Ne</div><div><div class="nm">Netflix · Tools Intern</div><div class="when">Final round · offer pending</div></div><span class="stat offer">Offer</span></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div class="card nba">
+          <div class="h"><span class="t">Next Best Action</span><span class="a">AI · Today</span></div>
+          <div class="why">Why this matters</div>
+          <h3>Ship a small Kubernetes project this week.</h3>
+          <p>It closes the highest-impact gap in your saved-job list — present in 68% of roles you're targeting — and we'll auto-link the deployed app as proof.</p>
+          <a class="btn" href="#">Open project brief →</a>
+        </div>
+        <div class="card">
+          <div class="h"><span class="t">Recent activity</span><span class="a">7d</span></div>
+          <div class="act">
+            <div class="act-item"><span class="ico">●</span><div><div class="t">Docker skill verified — 3 evidence sources</div><div class="d">github · live deploy · CS 4515 transcript</div></div><span class="when">2h</span></div>
+            <div class="act-item"><span class="ico">↗</span><div><div class="t">Stripe recruiter viewed your profile</div><div class="d">Saw Docker, Distributed Systems, React proofs</div></div><span class="when">1d</span></div>
+            <div class="act-item"><span class="ico">⚐</span><div><div class="t">Cover letter draft — Vercel</div><div class="d">Awaiting your approval in queue</div></div><span class="when">2d</span></div>
+            <div class="act-item"><span class="ico">+</span><div><div class="t">Score increased: 68 → 82</div><div class="d">Driven by proof verification &amp; new project</div></div><span class="when">5d</span></div>
+          </div>
+        </div>
+        <div class="card up">
+          <div class="ico">↑</div>
+          <b>Upload new evidence</b>
+          <p>Resume · transcript · project file · GitHub URL</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== PROFILE & PROOF ========== -->
+  <section data-pane="profile" hidden>
+    <div class="crumb">Dashboard · Profile &amp; Proof</div>
+    <h1>Your verified profile.</h1>
+    <p class="lede">Every skill on your CareerProof profile is anchored to evidence — GitHub commits, deployed apps, transcripts, and certifications. Recruiters see only what you choose to share.</p>
+
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:grid;grid-template-columns:auto 1fr auto;gap:24px;align-items:center">
+        <div class="avatar" style="width:84px;height:84px;font-size:30px;border-radius:18px">MR</div>
+        <div>
+          <h2 style="margin:0 0 4px;font-size:24px;font-weight:600;letter-spacing:-.01em">Maya Reyes</h2>
+          <div style="font-size:13px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.04em">WPI · CS '26 · GPA 3.84 · Worcester, MA</div>
+          <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+            <span class="stat applied" style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:4px 8px;border-radius:5px;font-weight:600;background:var(--emerald-soft);color:var(--emerald)">✓ .edu Verified</span>
+            <span class="stat" style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:4px 8px;border-radius:5px;font-weight:600;background:var(--indigo-soft);color:var(--indigo)">F-1 · Visa OK</span>
+            <span class="stat" style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:4px 8px;border-radius:5px;font-weight:600;background:var(--purple-soft);color:var(--purple)">Score 82 · Top 12%</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px"><button class="btn btn-ghost">Preview as recruiter</button><button class="btn btn-primary">Edit profile</button></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="h"><span class="t">Verified skills · 18 with public proof</span><span class="a">6 pending verification</span></div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        <span style="font-size:13px;padding:7px 12px;background:var(--emerald-soft);border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent);color:var(--emerald);border-radius:7px;font-weight:600">✓ Docker</span>
+        <span style="font-size:13px;padding:7px 12px;background:var(--emerald-soft);border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent);color:var(--emerald);border-radius:7px;font-weight:600">✓ React</span>
+        <span style="font-size:13px;padding:7px 12px;background:var(--emerald-soft);border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent);color:var(--emerald);border-radius:7px;font-weight:600">✓ TypeScript</span>
+        <span style="font-size:13px;padding:7px 12px;background:var(--emerald-soft);border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent);color:var(--emerald);border-radius:7px;font-weight:600">✓ PostgreSQL</span>
+        <span style="font-size:13px;padding:7px 12px;background:var(--emerald-soft);border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent);color:var(--emerald);border-radius:7px;font-weight:600">✓ Node.js</span>
+        <span style="font-size:13px;padding:7px 12px;background:var(--emerald-soft);border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent);color:var(--emerald);border-radius:7px;font-weight:600">✓ Distributed Systems</span>
+        <span style="font-size:13px;padding:7px 12px;background:var(--emerald-soft);border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent);color:var(--emerald);border-radius:7px;font-weight:600">✓ Python</span>
+        <span style="font-size:13px;padding:7px 12px;background:var(--emerald-soft);border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent);color:var(--emerald);border-radius:7px;font-weight:600">✓ Git</span>
+        <span style="font-size:13px;padding:7px 12px;background:var(--bg-2);border:1px solid var(--line);border-radius:7px;font-weight:500;color:var(--ink-2)">Kubernetes · pending</span>
+        <span style="font-size:13px;padding:7px 12px;background:var(--bg-2);border:1px solid var(--line);border-radius:7px;font-weight:500;color:var(--ink-2)">GraphQL · pending</span>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card">
+        <div class="h"><span class="t">Docker · 3 evidence sources</span><span class="a" style="color:var(--emerald)">✓ Verified</span></div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:11px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2);align-items:center"><div style="width:30px;height:30px;border-radius:7px;background:#0a0e1a;color:#fff;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:11px">GH</div><div><div style="font-size:13px;font-weight:600">careerproof-eval · Production Docker app</div><div style="font-size:11px;color:var(--muted);margin-top:2px;font-family:'JetBrains Mono',monospace">4.2k LOC · 18 commits · 3 contributors</div></div><button class="btn btn-ghost" style="font-size:11px;padding:5px 10px">View Evidence →</button></div>
+          <div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:11px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2);align-items:center"><div style="width:30px;height:30px;border-radius:7px;background:var(--teal-soft,#e6f4f2);color:var(--teal,#0d9488);display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:11px">↑</div><div><div style="font-size:13px;font-weight:600">project-flux.app · Live deploy</div><div style="font-size:11px;color:var(--muted);margin-top:2px;font-family:'JetBrains Mono',monospace">90-day uptime · containerized · auto-scaled</div></div><button class="btn btn-ghost" style="font-size:11px;padding:5px 10px">View Evidence →</button></div>
+          <div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:11px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2);align-items:center"><div style="width:30px;height:30px;border-radius:7px;background:#fef3e6;color:var(--amber);display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:11px">Tx</div><div><div style="font-size:13px;font-weight:600">CS 4515 · Distributed Systems</div><div style="font-size:11px;color:var(--muted);margin-top:2px;font-family:'JetBrains Mono',monospace">A · WPI Spring 2025 transcript</div></div><button class="btn btn-ghost" style="font-size:11px;padding:5px 10px">View Evidence →</button></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="h"><span class="t">React · 2 evidence sources</span><span class="a" style="color:var(--emerald)">✓ Verified</span></div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:11px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2);align-items:center"><div style="width:30px;height:30px;border-radius:7px;background:#0a0e1a;color:#fff;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:11px">GH</div><div><div style="font-size:13px;font-weight:600">flux-ui · Component library</div><div style="font-size:11px;color:var(--muted);margin-top:2px;font-family:'JetBrains Mono',monospace">2.8k LOC · 42 commits · TS strict</div></div><button class="btn btn-ghost" style="font-size:11px;padding:5px 10px">View Evidence →</button></div>
+          <div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:11px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2);align-items:center"><div style="width:30px;height:30px;border-radius:7px;background:var(--purple);color:#fff;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:11px">Cf</div><div><div style="font-size:13px;font-weight:600">Meta React Specialization</div><div style="font-size:11px;color:var(--muted);margin-top:2px;font-family:'JetBrains Mono',monospace">Coursera · issued Nov 2024</div></div><button class="btn btn-ghost" style="font-size:11px;padding:5px 10px">View Evidence →</button></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== JOB MATCHES ========== -->
+  <section data-pane="jobs" hidden>
+    <div class="crumb">Dashboard · Job Matches</div>
+    <h1>Roles ranked for you.</h1>
+    <p class="lede">Match scores combine skill overlap, evidence relevance, visa compatibility, and historical placement signal — not just keywords.</p>
+
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+      <span style="font-size:12px;padding:7px 11px;border-radius:8px;background:var(--ink);color:#fff;font-weight:500">All roles · 240</span>
+      <span style="font-size:12px;padding:7px 11px;border-radius:8px;background:var(--paper);border:1px solid var(--line);color:var(--ink-2);font-weight:500">F-1 OK · 184</span>
+      <span style="font-size:12px;padding:7px 11px;border-radius:8px;background:var(--paper);border:1px solid var(--line);color:var(--ink-2);font-weight:500">Match ≥ 85 · 22</span>
+      <span style="font-size:12px;padding:7px 11px;border-radius:8px;background:var(--paper);border:1px solid var(--line);color:var(--ink-2);font-weight:500">Internship · 96</span>
+      <span style="font-size:12px;padding:7px 11px;border-radius:8px;background:var(--paper);border:1px solid var(--line);color:var(--ink-2);font-weight:500">New this week · 12</span>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;padding:14px;border:1px solid var(--line);border-radius:11px"><div class="co" style="width:42px;height:42px;border-radius:10px;background:var(--ink);color:#fff;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px">St</div><div><div style="font-weight:600;font-size:14px">Backend Engineer, Intern · Stripe</div><div style="font-size:11px;color:var(--muted);margin-top:3px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em">NYC · F-1 OK · $48/hr · Summer 2026</div><div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap"><span style="font-size:10px;padding:3px 7px;background:var(--emerald-soft);color:var(--emerald);border-radius:4px;font-weight:600">✓ Docker</span><span style="font-size:10px;padding:3px 7px;background:var(--emerald-soft);color:var(--emerald);border-radius:4px;font-weight:600">✓ TypeScript</span><span style="font-size:10px;padding:3px 7px;background:var(--emerald-soft);color:var(--emerald);border-radius:4px;font-weight:600">✓ PostgreSQL</span><span style="font-size:10px;padding:3px 7px;background:var(--rose-soft,#fee4e9);color:var(--rose);border-radius:4px;font-weight:600">⚠ Kubernetes missing</span></div></div><div style="text-align:right"><div style="font-size:24px;font-weight:700;color:var(--emerald);font-family:'JetBrains Mono',monospace">94%</div><div style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;font-weight:600">Match</div></div><div style="display:flex;flex-direction:column;gap:6px"><button class="btn btn-ghost" style="font-size:11px;padding:6px 10px">Save</button><button class="btn btn-primary" style="font-size:11px;padding:6px 10px">Prepare app →</button></div></div>
+        <div style="display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;padding:14px;border:1px solid var(--line);border-radius:11px"><div class="co" style="width:42px;height:42px;border-radius:10px;background:#0d9488;color:#fff;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px">Lr</div><div><div style="font-weight:600;font-size:14px">Software Engineer Intern · Linear</div><div style="font-size:11px;color:var(--muted);margin-top:3px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em">Remote · F-1 OK · $52/hr · Summer 2026</div><div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap"><span style="font-size:10px;padding:3px 7px;background:var(--emerald-soft);color:var(--emerald);border-radius:4px;font-weight:600">✓ React</span><span style="font-size:10px;padding:3px 7px;background:var(--emerald-soft);color:var(--emerald);border-radius:4px;font-weight:600">✓ TypeScript</span><span style="font-size:10px;padding:3px 7px;background:var(--rose-soft,#fee4e9);color:var(--rose);border-radius:4px;font-weight:600">⚠ GraphQL missing</span></div></div><div style="text-align:right"><div style="font-size:24px;font-weight:700;color:var(--emerald);font-family:'JetBrains Mono',monospace">91%</div><div style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;font-weight:600">Match</div></div><div style="display:flex;flex-direction:column;gap:6px"><button class="btn btn-ghost" style="font-size:11px;padding:6px 10px">Save</button><button class="btn btn-primary" style="font-size:11px;padding:6px 10px">Prepare app →</button></div></div>
+        <div style="display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;padding:14px;border:1px solid var(--line);border-radius:11px"><div class="co" style="width:42px;height:42px;border-radius:10px;background:#4f46e5;color:#fff;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px">Vc</div><div><div style="font-weight:600;font-size:14px">Full-stack Intern · Vercel</div><div style="font-size:11px;color:var(--muted);margin-top:3px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em">NYC · F-1 OK · $50/hr · Summer 2026</div><div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap"><span style="font-size:10px;padding:3px 7px;background:var(--emerald-soft);color:var(--emerald);border-radius:4px;font-weight:600">✓ React</span><span style="font-size:10px;padding:3px 7px;background:var(--emerald-soft);color:var(--emerald);border-radius:4px;font-weight:600">✓ Node.js</span><span style="font-size:10px;padding:3px 7px;background:var(--rose-soft,#fee4e9);color:var(--rose);border-radius:4px;font-weight:600">⚠ Edge runtime missing</span></div></div><div style="text-align:right"><div style="font-size:24px;font-weight:700;color:var(--indigo);font-family:'JetBrains Mono',monospace">88%</div><div style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;font-weight:600">Match</div></div><div style="display:flex;flex-direction:column;gap:6px"><button class="btn btn-ghost" style="font-size:11px;padding:6px 10px">Save</button><button class="btn btn-primary" style="font-size:11px;padding:6px 10px">Prepare app →</button></div></div>
+        <div style="display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;padding:14px;border:1px solid var(--line);border-radius:11px"><div class="co" style="width:42px;height:42px;border-radius:10px;background:#f59e0b;color:#fff;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px">An</div><div><div style="font-weight:600;font-size:14px">SRE Intern · Anthropic</div><div style="font-size:11px;color:var(--muted);margin-top:3px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em">SF · Sponsorship required · Summer 2026</div><div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap"><span style="font-size:10px;padding:3px 7px;background:var(--emerald-soft);color:var(--emerald);border-radius:4px;font-weight:600">✓ Docker</span><span style="font-size:10px;padding:3px 7px;background:var(--rose-soft,#fee4e9);color:var(--rose);border-radius:4px;font-weight:600">⚠ Kubernetes missing</span><span style="font-size:10px;padding:3px 7px;background:var(--rose-soft,#fee4e9);color:var(--rose);border-radius:4px;font-weight:600">⚠ Terraform missing</span></div></div><div style="text-align:right"><div style="font-size:24px;font-weight:700;color:var(--purple);font-family:'JetBrains Mono',monospace">83%</div><div style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;font-weight:600">Match</div></div><div style="display:flex;flex-direction:column;gap:6px"><button class="btn btn-ghost" style="font-size:11px;padding:6px 10px">Save</button><button class="btn btn-primary" style="font-size:11px;padding:6px 10px">Prepare app →</button></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== APPLICATIONS ========== -->
+  <section data-pane="apps" hidden>
+    <div class="crumb">Dashboard · Applications</div>
+    <h1>Application tracker.</h1>
+    <p class="lede">14 applications across 6 stages. Resume + cover letter versions are tracked per company so you can A/B what's converting.</p>
+
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:8px">
+      <div style="background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:14px;min-height:380px"><div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;display:flex;justify-content:space-between;font-weight:600"><span>Saved</span><span style="background:var(--bg-2);padding:1px 6px;border-radius:4px;color:var(--ink)">3</span></div><div style="display:flex;flex-direction:column;gap:8px"><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Anthropic · SRE</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Saved 2d ago</div></div><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Plaid · Backend</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Saved 5d ago</div></div><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Notion · Platform</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Saved 1w ago</div></div></div></div>
+      <div style="background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:14px;min-height:380px"><div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;display:flex;justify-content:space-between;font-weight:600"><span>Prepared</span><span style="background:var(--bg-2);padding:1px 6px;border-radius:4px;color:var(--ink)">2</span></div><div style="display:flex;flex-direction:column;gap:8px"><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Vercel · Full-stack</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Resume v3 · CL drafted</div></div><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">GitHub · DevTools</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Resume v3 · CL approved</div></div></div></div>
+      <div style="background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:14px;min-height:380px"><div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;display:flex;justify-content:space-between;font-weight:600"><span style="color:var(--indigo)">Applied</span><span style="background:var(--indigo-soft);padding:1px 6px;border-radius:4px;color:var(--indigo)">4</span></div><div style="display:flex;flex-direction:column;gap:8px"><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Linear · SWE</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Applied 8d · Resume v3</div></div><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Datadog · Backend</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Applied 6d · Resume v2</div></div><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Cloudflare · Platform</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Applied 3d · Resume v3</div></div><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Ramp · SWE</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Applied 1d · Resume v3</div></div></div></div>
+      <div style="background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:14px;min-height:380px"><div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;display:flex;justify-content:space-between;font-weight:600"><span style="color:var(--purple)">Interview</span><span style="background:var(--purple-soft);padding:1px 6px;border-radius:4px;color:var(--purple)">3</span></div><div style="display:flex;flex-direction:column;gap:8px"><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Stripe · Backend</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Round 2 · Tue 3pm</div></div><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Figma · Platform</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Phone screen · Wed</div></div><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Retool · Frontend</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Take-home submitted</div></div></div></div>
+      <div style="background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:14px;min-height:380px"><div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;display:flex;justify-content:space-between;font-weight:600"><span style="color:var(--emerald)">Offer</span><span style="background:var(--emerald-soft);padding:1px 6px;border-radius:4px;color:var(--emerald)">1</span></div><div style="display:flex;flex-direction:column;gap:8px"><div style="background:var(--emerald-soft);border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent);border-radius:8px;padding:10px"><div style="font-size:12px;font-weight:600">Netflix · Tools</div><div style="font-size:10px;color:var(--emerald);font-family:'JetBrains Mono',monospace;margin-top:3px;font-weight:600">$ Decision by Fri</div></div></div></div>
+      <div style="background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:14px;min-height:380px"><div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;display:flex;justify-content:space-between;font-weight:600"><span style="color:var(--rose)">Rejected</span><span style="background:var(--bg-2);padding:1px 6px;border-radius:4px;color:var(--ink)">1</span></div><div style="display:flex;flex-direction:column;gap:8px"><div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:10px;opacity:.7"><div style="font-size:12px;font-weight:600">Airbnb · SWE</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Final round · feedback saved</div></div></div></div>
+    </div>
+  </section>
+
+  <!-- ========== SKILL GAPS ========== -->
+  <section data-pane="gaps" hidden>
+    <div class="crumb">Dashboard · Skill Gaps</div>
+    <h1>Close the gaps that matter.</h1>
+    <p class="lede">Ranked by how often the missing skill appears in your saved-job set. Each gap pairs with a learning plan and a project that becomes provable evidence.</p>
+
+    <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:16px">
+      <div class="card">
+        <div class="h"><span class="t">Missing skills · ranked by impact</span><span class="a">Updated daily</span></div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2)"><div style="display:flex;justify-content:space-between;align-items:start"><div><div style="font-size:15px;font-weight:600">Kubernetes</div><div style="font-size:11px;color:var(--muted);margin-top:3px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em">In 68% of saved jobs · Stripe · Linear · Vercel</div></div><span style="font-size:11px;padding:4px 9px;border-radius:5px;background:var(--rose-soft);color:var(--rose);font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.1em">HIGH IMPACT</span></div><div style="height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:10px"><div style="height:100%;width:38%;background:linear-gradient(90deg,var(--amber),var(--rose))"></div></div><div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:5px"><span>Your readiness · 38%</span><span>Target · 75%</span></div></div>
+          <div style="padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2)"><div style="display:flex;justify-content:space-between;align-items:start"><div><div style="font-size:15px;font-weight:600">System Design Interview</div><div style="font-size:11px;color:var(--muted);margin-top:3px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em">In 59% of saved jobs · phone screen blocker</div></div><span style="font-size:11px;padding:4px 9px;border-radius:5px;background:var(--amber-soft,#fef3e6);color:var(--amber);font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.1em">MED IMPACT</span></div><div style="height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:10px"><div style="height:100%;width:48%;background:linear-gradient(90deg,var(--amber),var(--rose))"></div></div><div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:5px"><span>Your readiness · 48%</span><span>Target · 80%</span></div></div>
+          <div style="padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2)"><div style="display:flex;justify-content:space-between;align-items:start"><div><div style="font-size:15px;font-weight:600">gRPC</div><div style="font-size:11px;color:var(--muted);margin-top:3px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em">In 42% of saved jobs · backend &amp; SRE roles</div></div><span style="font-size:11px;padding:4px 9px;border-radius:5px;background:var(--amber-soft,#fef3e6);color:var(--amber);font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.1em">MED IMPACT</span></div><div style="height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:10px"><div style="height:100%;width:25%;background:linear-gradient(90deg,var(--amber),var(--rose))"></div></div><div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:5px"><span>Your readiness · 25%</span><span>Target · 70%</span></div></div>
+          <div style="padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2)"><div style="display:flex;justify-content:space-between;align-items:start"><div><div style="font-size:15px;font-weight:600">Terraform</div><div style="font-size:11px;color:var(--muted);margin-top:3px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em">In 36% of saved jobs · DevOps adjacent</div></div><span style="font-size:11px;padding:4px 9px;border-radius:5px;background:var(--bg-2);color:var(--muted);border:1px solid var(--line);font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.1em">LOW IMPACT</span></div><div style="height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:10px"><div style="height:100%;width:18%;background:linear-gradient(90deg,var(--amber),var(--rose))"></div></div><div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:5px"><span>Your readiness · 18%</span><span>Target · 60%</span></div></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div class="card nba"><div class="h"><span class="t">Recommended project</span><span class="a">AI</span></div><div class="why">Closes 1 high + 1 med-impact gap</div><h3>Deploy a multi-tier app on minikube</h3><p>Container a simple React + Postgres app, deploy to local Kubernetes with Helm, expose via ingress. We'll auto-link the GitHub repo + screenshots as proof.</p><a class="btn" href="#">Open project brief →</a></div>
+        <div class="card"><div class="h"><span class="t">Learning plan · 6 weeks</span><span class="a">Curated</span></div><div style="display:flex;flex-direction:column;gap:8px"><div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2);align-items:center"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:var(--indigo);width:30px">W1-2</span><div><div style="font-size:12px;font-weight:600">Kubernetes Up &amp; Running</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">CKAD prep · ~12 hrs</div></div><span style="font-size:10px;color:var(--muted)">→</span></div><div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2);align-items:center"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:var(--indigo);width:30px">W3-4</span><div><div style="font-size:12px;font-weight:600">Build minikube project</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">Deployed proof artifact · ~16 hrs</div></div><span style="font-size:10px;color:var(--muted)">→</span></div><div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2);align-items:center"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:var(--indigo);width:30px">W5</span><div><div style="font-size:12px;font-weight:600">System Design drills</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">Mock interview pack · 5 sessions</div></div><span style="font-size:10px;color:var(--muted)">→</span></div><div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2);align-items:center"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:var(--indigo);width:30px">W6</span><div><div style="font-size:12px;font-weight:600">Re-score &amp; verify</div><div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">Expected lift: +6 to score</div></div><span style="font-size:10px;color:var(--muted)">→</span></div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== MOCK INTERVIEW ========== -->
+  <section data-pane="mock" hidden>
+    <div class="crumb">Dashboard · Mock Interview</div>
+    <h1>Practice with the AI interviewer.</h1>
+    <p class="lede">Realistic role-specific sessions. Technical, behavioral, and system-design — scored against rubrics used by top tech recruiters.</p>
+
+    <div style="display:grid;grid-template-columns:1fr 1.2fr;gap:16px">
+      <div class="card score" style="min-height:0">
+        <div class="h"><span class="t">Interview readiness</span><span class="a">Last session 4d</span></div>
+        <div class="score-body"><div class="ring"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="42" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="7"/><circle cx="50" cy="50" r="42" fill="none" stroke="url(#g2)" stroke-width="7" stroke-linecap="round" stroke-dasharray="263.8" stroke-dashoffset="95"/><defs><linearGradient id="g2" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#a5b4fc"/><stop offset="1" stop-color="#86efac"/></linearGradient></defs></svg><div class="v">64</div></div><div class="meta"><div class="lab">Readiness</div><h2>Solid · keep practicing</h2><div class="delta">↑ 9 in last 14 days</div></div></div>
+        <div class="breakdown"><div class="bk"><div class="l">Technical</div><div class="v">72</div><div class="b"><div style="width:72%"></div></div></div><div class="bk"><div class="l">System</div><div class="v">48</div><div class="b"><div style="width:48%"></div></div></div><div class="bk"><div class="l">Behavioral</div><div class="v">78</div><div class="b"><div style="width:78%"></div></div></div><div class="bk"><div class="l">Comms</div><div class="v">68</div><div class="b"><div style="width:68%"></div></div></div></div>
+      </div>
+      <div class="card">
+        <div class="h"><span class="t">Choose a role</span><span class="a">Tailored to your saved jobs</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
+          <div style="padding:14px;border:2px solid var(--indigo);border-radius:10px;background:var(--indigo-soft);cursor:pointer"><div style="font-size:13px;font-weight:600">Backend Engineer Intern</div><div style="font-size:11px;color:var(--indigo);font-family:'JetBrains Mono',monospace;margin-top:3px;letter-spacing:.04em">● Selected · Stripe-style</div></div>
+          <div style="padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2);cursor:pointer"><div style="font-size:13px;font-weight:600">Full-stack Intern</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px;letter-spacing:.04em">Vercel · Linear style</div></div>
+          <div style="padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2);cursor:pointer"><div style="font-size:13px;font-weight:600">SRE / Platform</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px;letter-spacing:.04em">Anthropic · Cloudflare</div></div>
+          <div style="padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2);cursor:pointer"><div style="font-size:13px;font-weight:600">ML / Data</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px;letter-spacing:.04em">Anthropic · OpenAI style</div></div>
+        </div>
+        <button class="btn btn-primary" style="width:100%;justify-content:center;padding:12px">▶ Start mock interview · ~45 min</button>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+      <div class="card"><div class="h"><span class="t">Sample technical questions</span><span class="a">Backend Eng.</span></div><div style="display:flex;flex-direction:column;gap:8px"><div style="padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"><div style="font-size:13px;font-weight:600">Rate-limit a public API</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">System design · 30 min</div></div><div style="padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"><div style="font-size:13px;font-weight:600">Implement an LRU cache</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Coding · 25 min · Python</div></div><div style="padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"><div style="font-size:13px;font-weight:600">Postgres index strategy for a 100M-row table</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Architecture · 20 min</div></div><div style="padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"><div style="font-size:13px;font-weight:600">Debug a flaky distributed test</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Practical · 25 min</div></div></div></div>
+      <div class="card"><div class="h"><span class="t">Sample behavioral questions</span><span class="a">Universal</span></div><div style="display:flex;flex-direction:column;gap:8px"><div style="padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"><div style="font-size:13px;font-weight:600">Walk me through a project you shipped.</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">STAR · 5 min</div></div><div style="padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"><div style="font-size:13px;font-weight:600">A time you disagreed with a teammate.</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Conflict · 4 min</div></div><div style="padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"><div style="font-size:13px;font-weight:600">Hardest bug you've debugged.</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Technical narrative · 5 min</div></div><div style="padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"><div style="font-size:13px;font-weight:600">Why this company?</div><div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:3px">Motivation · 2 min</div></div></div></div>
+    </div>
+  </section>
+
+  <!-- ========== SETTINGS ========== -->
+  <section data-pane="settings" hidden>
+    <div class="crumb">Account · Settings</div>
+    <h1>Settings.</h1>
+    <p class="lede">Profile, target roles, notifications, and account controls.</p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card"><div class="h"><span class="t">Profile</span></div><div style="display:flex;flex-direction:column;gap:12px"><label style="display:flex;flex-direction:column;gap:5px"><span style="font-size:11px;font-family:'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600">Name</span><input value="Maya Reyes" style="font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"/></label><label style="display:flex;flex-direction:column;gap:5px"><span style="font-size:11px;font-family:'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600">.edu email · verified</span><input value="maya.reyes@wpi.edu" disabled style="font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2);color:var(--muted)"/></label><label style="display:flex;flex-direction:column;gap:5px"><span style="font-size:11px;font-family:'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600">Major · grad year</span><input value="Computer Science · 2026" style="font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"/></label><label style="display:flex;flex-direction:column;gap:5px"><span style="font-size:11px;font-family:'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600">Location preference</span><input value="NYC · Remote · Boston" style="font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2)"/></label></div></div>
+      <div class="card"><div class="h"><span class="t">Target roles</span><span class="a">Drives matching</span></div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px"><span style="font-size:12px;padding:6px 11px;background:var(--ink);color:#fff;border-radius:7px;font-weight:500;display:inline-flex;align-items:center;gap:6px">Backend Engineer <span style="opacity:.6">×</span></span><span style="font-size:12px;padding:6px 11px;background:var(--ink);color:#fff;border-radius:7px;font-weight:500;display:inline-flex;align-items:center;gap:6px">Full-stack <span style="opacity:.6">×</span></span><span style="font-size:12px;padding:6px 11px;background:var(--ink);color:#fff;border-radius:7px;font-weight:500;display:inline-flex;align-items:center;gap:6px">SRE / Platform <span style="opacity:.6">×</span></span><span style="font-size:12px;padding:6px 11px;background:var(--paper);border:1px dashed var(--line-2);border-radius:7px;color:var(--muted)">+ Add</span></div><div class="h"><span class="t" style="font-size:13px">Compensation floor</span></div><input type="range" min="30" max="80" value="45" style="width:100%"/><div style="display:flex;justify-content:space-between;font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--muted)"><span>$30/hr</span><b style="color:var(--ink)">$45/hr</b><span>$80/hr</span></div></div>
+      <div class="card"><div class="h"><span class="t">Notification preferences</span></div><div style="display:flex;flex-direction:column;gap:0"><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)"><span><b style="font-size:13px">New high-match jobs</b><div style="font-size:11px;color:var(--muted);margin-top:2px">Email · 1× daily digest</div></span><span style="width:38px;height:22px;background:var(--emerald);border-radius:99px;position:relative"><span style="position:absolute;right:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)"><span><b style="font-size:13px">Recruiter views your profile</b><div style="font-size:11px;color:var(--muted);margin-top:2px">Email · real-time</div></span><span style="width:38px;height:22px;background:var(--emerald);border-radius:99px;position:relative"><span style="position:absolute;right:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)"><span><b style="font-size:13px">Application status updates</b><div style="font-size:11px;color:var(--muted);margin-top:2px">Email + push</div></span><span style="width:38px;height:22px;background:var(--emerald);border-radius:99px;position:relative"><span style="position:absolute;right:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0"><span><b style="font-size:13px">Weekly progress report</b><div style="font-size:11px;color:var(--muted);margin-top:2px">Email · Monday 8am</div></span><span style="width:38px;height:22px;background:var(--line);border-radius:99px;position:relative"><span style="position:absolute;left:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label></div></div>
+      <div class="card"><div class="h"><span class="t">Account</span></div><div style="display:flex;flex-direction:column;gap:8px"><button class="btn btn-ghost" style="justify-content:flex-start;width:100%">Connected accounts · GitHub, Coursera</button><button class="btn btn-ghost" style="justify-content:flex-start;width:100%">Two-factor authentication · enabled</button><button class="btn btn-ghost" style="justify-content:flex-start;width:100%">Change password</button><button class="btn btn-ghost" style="justify-content:flex-start;width:100%;color:var(--rose);border-color:color-mix(in srgb,var(--rose) 25%,transparent)">Deactivate account</button></div></div>
+    </div>
+  </section>
+
+  <!-- ========== PRIVACY ========== -->
+  <section data-pane="privacy" hidden>
+    <div class="crumb">Account · Privacy</div>
+    <h1>You control what's visible.</h1>
+    <p class="lede">CareerProof's privacy is opt-in by default. Recruiters and universities only see fields you've explicitly approved.</p>
+
+    <div style="background:linear-gradient(135deg,var(--emerald-soft),var(--purple-soft));border:1px solid color-mix(in srgb,var(--emerald) 22%,transparent);border-radius:13px;padding:18px 20px;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center;margin-bottom:18px"><div style="width:40px;height:40px;border-radius:10px;background:#fff;color:var(--emerald);display:grid;place-items:center;font-weight:700;font-size:18px;border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent)">🛡</div><div><div style="font-weight:600;font-size:14px;letter-spacing:-.005em">Opt-in privacy is on.</div><div style="font-size:12px;color:var(--ink-2);margin-top:2px;line-height:1.5">Your visa status, GPA, and contact info are private by default. WPI sees aggregate cohort data only — never individual profiles.</div></div><div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.12em;color:var(--emerald);text-transform:uppercase;font-weight:700">Compliant ✓</div></div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="card"><div class="h"><span class="t">Recruiter discovery</span><span class="a" style="color:var(--emerald)">● ON</span></div><div style="display:flex;flex-direction:column;gap:0"><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)"><span><b style="font-size:13px">Discoverable in search</b><div style="font-size:11px;color:var(--muted);margin-top:2px">Verified recruiters can find your profile</div></span><span style="width:38px;height:22px;background:var(--emerald);border-radius:99px;position:relative"><span style="position:absolute;right:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)"><span><b style="font-size:13px">Show real name</b><div style="font-size:11px;color:var(--muted);margin-top:2px">Off → recruiters see initials until invite</div></span><span style="width:38px;height:22px;background:var(--emerald);border-radius:99px;position:relative"><span style="position:absolute;right:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0"><span><b style="font-size:13px">Show GPA</b><div style="font-size:11px;color:var(--muted);margin-top:2px">Recommended off · GPA bias risk</div></span><span style="width:38px;height:22px;background:var(--line);border-radius:99px;position:relative"><span style="position:absolute;left:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label></div></div>
+      <div class="card"><div class="h"><span class="t">Visa status disclosure</span><span class="a" style="color:var(--indigo)">Default private</span></div><p style="font-size:13px;color:var(--ink-2);line-height:1.55;margin:0 0 12px">Visa status is hidden until you opt in <em>per company</em>. Recruiters can filter by F-1 OK only against the consenting pool — never the full graph.</p><div style="display:flex;flex-direction:column;gap:8px"><label style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-2);border:1px solid var(--line);border-radius:8px"><span style="font-size:13px;font-weight:600">Show F-1 status to F-1-OK employers</span><span style="width:38px;height:22px;background:var(--emerald);border-radius:99px;position:relative"><span style="position:absolute;right:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label><label style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-2);border:1px solid var(--line);border-radius:8px"><span style="font-size:13px;font-weight:600">Show F-1 status to all employers</span><span style="width:38px;height:22px;background:var(--line);border-radius:99px;position:relative"><span style="position:absolute;left:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label></div></div>
+      <div class="card"><div class="h"><span class="t">Skill evidence visibility</span><span class="a">18 verified</span></div><div style="display:flex;flex-direction:column;gap:0"><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)"><span><b style="font-size:13px">Public GitHub repos</b><div style="font-size:11px;color:var(--muted);margin-top:2px">Visible to recruiters · 12 repos</div></span><span style="width:38px;height:22px;background:var(--emerald);border-radius:99px;position:relative"><span style="position:absolute;right:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)"><span><b style="font-size:13px">Coursework / transcripts</b><div style="font-size:11px;color:var(--muted);margin-top:2px">Course names &amp; grades · 4 visible</div></span><span style="width:38px;height:22px;background:var(--emerald);border-radius:99px;position:relative"><span style="position:absolute;right:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)"><span><b style="font-size:13px">Live deployed projects</b><div style="font-size:11px;color:var(--muted);margin-top:2px">project-flux.app · 2 others</div></span><span style="width:38px;height:22px;background:var(--emerald);border-radius:99px;position:relative"><span style="position:absolute;right:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label><label style="display:flex;justify-content:space-between;align-items:center;padding:11px 0"><span><b style="font-size:13px">Certifications</b><div style="font-size:11px;color:var(--muted);margin-top:2px">AWS · Meta React · 2 others</div></span><span style="width:38px;height:22px;background:var(--emerald);border-radius:99px;position:relative"><span style="position:absolute;right:2px;top:2px;width:18px;height:18px;background:#fff;border-radius:50%"></span></span></label></div></div>
+      <div class="card"><div class="h"><span class="t">Data &amp; consent</span><span class="a">FERPA-aware</span></div><div style="display:flex;flex-direction:column;gap:8px"><button class="btn btn-ghost" style="justify-content:flex-start;width:100%">↓ Download my data · ZIP</button><button class="btn btn-ghost" style="justify-content:flex-start;width:100%">⊟ View consent log · 23 events</button><button class="btn btn-ghost" style="justify-content:flex-start;width:100%">◇ Manage university data sharing</button><button class="btn btn-ghost" style="justify-content:flex-start;width:100%">▭ Audit log · who viewed my profile</button><div style="height:1px;background:var(--line);margin:6px 0"></div><button class="btn btn-ghost" style="justify-content:flex-start;width:100%;color:var(--rose);border-color:color-mix(in srgb,var(--rose) 25%,transparent)">⊘ Delete account &amp; all data</button></div></div>
+    </div>
+  </section>
+
+  </main>
+</div>
+
+<script>
+(function(){
+  const links = document.querySelectorAll('.side a[data-view]');
+  const panes = document.querySelectorAll('main.main > section[data-pane]');
+  function show(view){
+    links.forEach(a => a.classList.toggle('active', a.dataset.view === view));
+    panes.forEach(p => { p.hidden = p.dataset.pane !== view; });
+    window.scrollTo({top:0, behavior:'instant'});
+  }
+  links.forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    const v = a.dataset.view;
+    history.replaceState(null, '', '#'+v);
+    show(v);
+  }));
+  const initial = (location.hash || '#overview').slice(1);
+  if ([...links].some(a => a.dataset.view === initial)) show(initial);
+})();
+</script>
+
+</body>
+</html>

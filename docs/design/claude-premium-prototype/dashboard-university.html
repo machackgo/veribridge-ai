@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>University Console — CareerProof AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#fafbfd;--bg-2:#f1f3f8;--paper:#fff;--ink:#0a0e1a;--ink-2:#1f2a44;--muted:#6b7280;
+    --line:#e6e8ef;--line-2:#d4d8e3;
+    --indigo:#4f46e5;--indigo-soft:#eef0ff;--teal:#0d9488;--teal-soft:#e6f4f2;
+    --emerald:#10b981;--emerald-soft:#e6f7f1;--amber:#d97706;--amber-soft:#fef3e6;--rose:#f43f5e;--rose-soft:#fee4e9;--purple:#8b5cf6;--purple-soft:#f1ecff;
+    --shadow-sm:0 1px 2px rgba(10,14,26,.04);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  .mono{font-family:'JetBrains Mono',monospace}
+  a{color:inherit;text-decoration:none}
+
+  .nav{position:sticky;top:0;z-index:60;backdrop-filter:saturate(180%) blur(16px);background:rgba(250,251,253,.85);border-bottom:1px solid var(--line)}
+  .nav-inner{max-width:1480px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;gap:24px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px}
+  .brand .logo{width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,var(--ink),#2a3050);display:grid;place-items:center}
+  .brand .logo::after{content:"";width:6px;height:6px;border-radius:50%;background:linear-gradient(135deg,var(--amber),var(--rose));box-shadow:0 0 12px rgba(217,119,6,.7)}
+  .nav-links{display:flex;gap:4px;flex:1;justify-content:center}
+  .nav-links a{font-size:14px;color:var(--ink-2);padding:8px 14px;border-radius:8px;font-weight:500}
+  .nav-links a:hover,.nav-links a.active{background:var(--paper);color:var(--ink)}
+  .nav-links a.active{box-shadow:var(--shadow-sm);border:1px solid var(--line)}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;cursor:pointer}
+  .btn-primary{background:var(--ink);color:#fff}
+  .btn-ghost{background:transparent;color:var(--ink-2);border-color:var(--line-2)}
+
+  .page{max-width:1480px;margin:0 auto;padding:32px 28px 80px;display:grid;grid-template-columns:240px 1fr;gap:28px}
+  .side{position:sticky;top:80px;align-self:start;background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px;height:fit-content}
+  .side .who{display:flex;align-items:center;gap:10px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:14px}
+  .crest{width:36px;height:36px;border-radius:8px;background:#9b1414;color:#fff;display:grid;place-items:center;font-weight:700;font-size:13px;font-family:'Inter',serif;letter-spacing:-.02em;flex-shrink:0}
+  .who .nm{font-weight:600;font-size:13px}
+  .who .em{font-size:11px;color:var(--muted)}
+  .who .badge{margin-top:4px;display:inline-flex;align-items:center;gap:4px;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);background:var(--amber-soft);padding:2px 6px;border-radius:4px;font-weight:600}
+  .side .lab{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;margin:14px 0 8px}
+  .side a{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;font-size:13px;color:var(--ink-2)}
+  .side a.active{background:var(--ink);color:#fff;font-weight:500}
+  .side a:hover:not(.active){background:var(--bg-2)}
+
+  .main h1{font-size:32px;font-weight:600;letter-spacing:-.02em;margin:0 0 4px}
+  .main .crumb{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase}
+  .main .head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px}
+  .main .lede{font-size:14px;color:var(--muted);margin:6px 0 0;max-width:680px}
+  .main .filters{display:flex;gap:8px;align-items:center;margin:18px 0 20px;flex-wrap:wrap}
+  .filter{font-size:12px;padding:7px 11px;border-radius:8px;background:var(--paper);border:1px solid var(--line);font-weight:500;color:var(--ink-2);display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+  .filter b{font-weight:600;color:var(--ink)}
+  .filter.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .filter.active b{color:#fff}
+  .privacy-note{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--emerald);background:var(--emerald-soft);padding:5px 9px;border-radius:6px;font-weight:600;border:1px solid color-mix(in srgb,var(--emerald) 20%,transparent);display:inline-flex;align-items:center;gap:6px}
+
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px}
+  .card .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+  .card .h .t{font-weight:600;font-size:14px;letter-spacing:-.01em}
+  .card .h .sub{font-size:12px;color:var(--muted);font-weight:400;margin-top:2px}
+  .card .h .a{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase}
+
+  /* metric strip */
+  .strip{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+  .m-card{background:var(--paper);border:1px solid var(--line);border-radius:13px;padding:18px;position:relative;overflow:hidden}
+  .m-card .lab{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;margin-bottom:6px}
+  .m-card .v{font-size:28px;font-weight:600;letter-spacing:-.02em;line-height:1}
+  .m-card .v .u{font-size:14px;color:var(--muted);font-weight:500;margin-left:2px}
+  .m-card .delta{font-size:11px;color:var(--emerald);font-weight:600;margin-top:6px}
+  .m-card.warn .delta{color:var(--rose)}
+  .m-card .sparkline{position:absolute;right:12px;bottom:12px;width:60px;height:24px;opacity:.6}
+
+  /* main grid */
+  .work{display:grid;grid-template-columns:1.4fr 1fr;gap:16px}
+
+  /* readiness chart */
+  .chart{height:280px;position:relative;padding:10px 4px 26px}
+  .chart .grid-y{position:absolute;left:30px;right:10px;top:10px;bottom:26px;display:flex;flex-direction:column;justify-content:space-between}
+  .chart .gl{border-top:1px dashed var(--line);font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--muted);padding-left:0;margin-left:-30px}
+  .chart .bars{position:absolute;left:30px;right:10px;top:10px;bottom:26px;display:grid;grid-template-columns:repeat(8,1fr);gap:14px;align-items:end}
+  .bar-col{position:relative;height:100%;display:flex;align-items:end;gap:3px;justify-content:center}
+  .bar{width:14px;background:var(--indigo);border-radius:3px 3px 0 0;position:relative}
+  .bar.b{background:#a5b4fc}
+  .bar:hover{filter:brightness(1.1)}
+  .x-axis{position:absolute;left:30px;right:10px;bottom:0;display:grid;grid-template-columns:repeat(8,1fr);gap:14px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);text-align:center;letter-spacing:.04em}
+  .legend{display:flex;gap:14px;justify-content:flex-end;margin-top:8px;font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.04em}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:5px}
+
+  /* gap heatmap */
+  .heat{display:grid;grid-template-columns:140px repeat(5,1fr);gap:4px;font-size:11px}
+  .heat .hh{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:6px 4px;text-align:center}
+  .heat .rl{padding:8px 0;font-weight:600;font-size:12px;display:flex;align-items:center}
+  .heat .cell{padding:10px 6px;border-radius:5px;text-align:center;font-weight:600;font-family:'JetBrains Mono',monospace;font-size:11px}
+  .h0{background:var(--emerald-soft);color:var(--emerald)}
+  .h1{background:#d1fae5;color:#047857}
+  .h2{background:var(--amber-soft);color:var(--amber)}
+  .h3{background:#fed7aa;color:#9a3412}
+  .h4{background:var(--rose-soft);color:var(--rose)}
+
+  /* outcomes table */
+  .out{display:flex;flex-direction:column;gap:6px}
+  .o-row{display:grid;grid-template-columns:1fr auto auto auto;gap:14px;align-items:center;padding:11px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2)}
+  .o-row .nm{font-size:13px;font-weight:600}
+  .o-row .meta{font-size:11px;color:var(--muted);margin-top:2px;font-family:'JetBrains Mono',monospace;letter-spacing:.04em}
+  .o-row .placed{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px}
+  .o-row .placed .l{font-size:9px;font-family:'JetBrains Mono',monospace;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;display:block;font-weight:600}
+  .pill{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;padding:3px 7px;border-radius:5px;font-weight:700;text-transform:uppercase}
+  .pill.up{background:var(--emerald-soft);color:var(--emerald)}
+  .pill.flat{background:var(--bg-2);color:var(--muted);border:1px solid var(--line)}
+  .pill.down{background:var(--rose-soft);color:var(--rose)}
+
+  /* employer engagement */
+  .emp{display:flex;flex-direction:column;gap:0}
+  .emp-row{display:grid;grid-template-columns:auto 1fr auto auto;gap:12px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+  .emp-row:last-child{border-bottom:0}
+  .emp-row .co{width:32px;height:32px;border-radius:7px;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:11px;background:var(--bg-2);border:1px solid var(--line)}
+  .emp-row .nm{font-size:13px;font-weight:600}
+  .emp-row .meta{font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.04em;margin-top:2px}
+  .emp-row .v{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px;text-align:right}
+  .emp-row .v .l{font-size:9px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;display:block;font-weight:600}
+
+  /* k-anon banner */
+  .kbanner{background:linear-gradient(135deg,var(--emerald-soft),var(--teal-soft));border:1px solid color-mix(in srgb,var(--emerald) 22%,transparent);border-radius:13px;padding:18px 20px;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center;margin-bottom:18px}
+  .kbanner .ico{width:40px;height:40px;border-radius:10px;background:#fff;color:var(--emerald);display:grid;place-items:center;font-weight:700;font-family:'JetBrains Mono',monospace;font-size:13px;border:1px solid color-mix(in srgb,var(--emerald) 25%,transparent)}
+  .kbanner .t{font-weight:600;font-size:14px;letter-spacing:-.005em}
+  .kbanner .d{font-size:12px;color:var(--ink-2);margin-top:2px;line-height:1.5}
+  .kbanner .a{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.12em;color:var(--emerald);text-transform:uppercase;font-weight:700}
+
+  @media (max-width:1100px){.page{grid-template-columns:1fr}.side{position:static}.work{grid-template-columns:1fr}.strip{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="CareerProof Landing.html"><span class="logo"></span>CareerProof<span style="color:var(--muted);font-weight:500;margin-left:2px">AI</span></a>
+    <div class="nav-links">
+      <a href="CareerProof Landing.html#platform">Platform</a>
+      <a href="dashboard-student.html">Students</a>
+      <a href="dashboard-recruiter.html">Recruiters</a>
+      <a class="active" href="dashboard-university.html">Universities</a>
+      <a href="CareerProof_AI_12_Month_Roadmap.html">Roadmap</a>
+    </div>
+    <a class="btn btn-primary" href="#">Continue building →</a>
+  </div>
+</nav>
+
+<div class="page">
+  <aside class="side">
+    <div class="who">
+      <div class="crest">W</div>
+      <div>
+        <div class="nm">WPI Career Center</div>
+        <div class="em mono">career-dev@wpi.edu</div>
+        <div class="badge">Institutional · DPA</div>
+      </div>
+    </div>
+    <div class="lab">Workspace</div>
+    <a class="active" href="#">▣ Overview</a>
+    <a href="#">↗ Readiness</a>
+    <a href="#">◇ Skill gaps</a>
+    <a href="#">⚐ Outcomes</a>
+    <a href="#">⊞ Employer trends</a>
+    <a href="#">▦ Cohort compare</a>
+    <div class="lab">Reports</div>
+    <a href="#">↓ Quarterly export</a>
+    <a href="#">⊟ Department brief</a>
+    <div class="lab">Account</div>
+    <a href="#">🛡 Privacy &amp; DPA</a>
+    <a href="#">⚙ Settings</a>
+  </aside>
+
+  <main class="main">
+    <div class="head">
+      <div>
+        <div class="crumb">University console · Overview</div>
+        <h1>Class of 2026 · Cohort overview</h1>
+        <p class="lede">Aggregate readiness, skill gaps, and employment outcomes for WPI undergraduates. All metrics are anonymized at the cohort level.</p>
+      </div>
+      <button class="btn btn-primary">↓ Export PDF report</button>
+    </div>
+
+    <div class="filters">
+      <span class="filter active">Cohort: <b>Class of 2026</b></span>
+      <span class="filter">Department: <b>All</b></span>
+      <span class="filter">Term: <b>Spring 2026</b></span>
+      <span class="filter">Compare: <b>R1 peer set</b></span>
+      <span class="privacy-note">🛡 k-anon ≥ 25 · FERPA-aware</span>
+    </div>
+
+    <div class="kbanner">
+      <div class="ico">k≥25</div>
+      <div>
+        <div class="t">Privacy boundary enforced.</div>
+        <div class="d">All cohort views suppress cells where the underlying group is fewer than <b>25 students</b>. Department × visa-status × employment-status cross-tabs are blocked when any cell falls below the threshold. WPI cannot see individual student records.</div>
+      </div>
+      <div class="a">Compliant ✓</div>
+    </div>
+
+    <div class="strip">
+      <div class="m-card"><div class="lab">Cohort size</div><div class="v">1,284<span class="u"> students</span></div><div class="delta" style="color:var(--muted)">Class of 2026</div></div>
+      <div class="m-card"><div class="lab">Avg. readiness</div><div class="v">73.4</div><div class="delta">↑ 6.2 vs '25 cohort</div></div>
+      <div class="m-card"><div class="lab">Verified profiles</div><div class="v">847<span class="u"> · 66%</span></div><div class="delta">↑ 18% adoption</div></div>
+      <div class="m-card"><div class="lab">Placed by graduation</div><div class="v">71<span class="u">%</span></div><div class="delta">↑ 8 pts vs peer R1</div></div>
+      <div class="m-card warn"><div class="lab">Employer engagement</div><div class="v">142<span class="u"> firms</span></div><div class="delta" style="color:var(--amber)">↓ 4 vs Fall — backfilling</div></div>
+    </div>
+
+    <div class="work">
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div class="card">
+          <div class="h">
+            <div><span class="t">Readiness over time · cohort vs peer R1</span><div class="sub">Average CareerProof score by month, fall '25 → spring '26</div></div>
+            <span class="a">Trailing 8 months</span>
+          </div>
+          <div class="chart">
+            <div class="grid-y">
+              <div class="gl">100</div><div class="gl">75</div><div class="gl">50</div><div class="gl">25</div><div class="gl">0</div>
+            </div>
+            <div class="bars">
+              <div class="bar-col"><div class="bar" style="height:58%"></div><div class="bar b" style="height:54%"></div></div>
+              <div class="bar-col"><div class="bar" style="height:62%"></div><div class="bar b" style="height:56%"></div></div>
+              <div class="bar-col"><div class="bar" style="height:64%"></div><div class="bar b" style="height:57%"></div></div>
+              <div class="bar-col"><div class="bar" style="height:67%"></div><div class="bar b" style="height:58%"></div></div>
+              <div class="bar-col"><div class="bar" style="height:69%"></div><div class="bar b" style="height:60%"></div></div>
+              <div class="bar-col"><div class="bar" style="height:71%"></div><div class="bar b" style="height:61%"></div></div>
+              <div class="bar-col"><div class="bar" style="height:72%"></div><div class="bar b" style="height:62%"></div></div>
+              <div class="bar-col"><div class="bar" style="height:73%"></div><div class="bar b" style="height:63%"></div></div>
+            </div>
+            <div class="x-axis">
+              <div>Sep</div><div>Oct</div><div>Nov</div><div>Dec</div><div>Jan</div><div>Feb</div><div>Mar</div><div>Apr</div>
+            </div>
+          </div>
+          <div class="legend">
+            <span><i style="background:var(--indigo)"></i>WPI '26</span>
+            <span><i style="background:#a5b4fc"></i>Peer R1 avg</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="h">
+            <div><span class="t">Skill gap heatmap · % of students with verified proof, by department</span><div class="sub">Lower = bigger gap to close. Cells suppressed when n &lt; 25.</div></div>
+            <span class="a">Department × Skill</span>
+          </div>
+          <div class="heat">
+            <div></div>
+            <div class="hh">Cloud / Docker</div>
+            <div class="hh">System Design</div>
+            <div class="hh">ML / Data</div>
+            <div class="hh">Distributed</div>
+            <div class="hh">Security</div>
+
+            <div class="rl">Computer Science</div>
+            <div class="cell h1">72%</div>
+            <div class="cell h2">54%</div>
+            <div class="cell h1">68%</div>
+            <div class="cell h2">48%</div>
+            <div class="cell h2">52%</div>
+
+            <div class="rl">Data Science</div>
+            <div class="cell h2">56%</div>
+            <div class="cell h2">51%</div>
+            <div class="cell h0">82%</div>
+            <div class="cell h3">38%</div>
+            <div class="cell h3">34%</div>
+
+            <div class="rl">Robotics Eng.</div>
+            <div class="cell h3">42%</div>
+            <div class="cell h2">48%</div>
+            <div class="cell h2">55%</div>
+            <div class="cell h3">36%</div>
+            <div class="cell h3">31%</div>
+
+            <div class="rl">Electrical &amp; Computer</div>
+            <div class="cell h3">38%</div>
+            <div class="cell h2">46%</div>
+            <div class="cell h3">32%</div>
+            <div class="cell h3">29%</div>
+            <div class="cell h2">44%</div>
+
+            <div class="rl">Bioinformatics</div>
+            <div class="cell h2">48%</div>
+            <div class="cell h3">36%</div>
+            <div class="cell h0">78%</div>
+            <div class="cell h4">22%</div>
+            <div class="cell h3">31%</div>
+          </div>
+          <div style="margin-top:12px;display:flex;gap:6px;align-items:center;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.06em">
+            <span>0%</span>
+            <div style="flex:1;height:6px;border-radius:3px;background:linear-gradient(90deg,var(--rose),var(--amber),var(--emerald))"></div>
+            <span>100%</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div class="card">
+          <div class="h">
+            <div><span class="t">Department outcomes</span><div class="sub">Placement rate · Class of 2026</div></div>
+          </div>
+          <div class="out">
+            <div class="o-row"><div><div class="nm">Computer Science</div><div class="meta">n = 312 · k-anon ✓</div></div><div class="placed"><span class="l">Placed</span>78%</div><span class="pill up">↑ 9</span></div>
+            <div class="o-row"><div><div class="nm">Data Science</div><div class="meta">n = 184 · k-anon ✓</div></div><div class="placed"><span class="l">Placed</span>74%</div><span class="pill up">↑ 6</span></div>
+            <div class="o-row"><div><div class="nm">Robotics Engineering</div><div class="meta">n = 156 · k-anon ✓</div></div><div class="placed"><span class="l">Placed</span>69%</div><span class="pill flat">flat</span></div>
+            <div class="o-row"><div><div class="nm">Electrical &amp; Computer</div><div class="meta">n = 128 · k-anon ✓</div></div><div class="placed"><span class="l">Placed</span>67%</div><span class="pill up">↑ 4</span></div>
+            <div class="o-row"><div><div class="nm">Bioinformatics</div><div class="meta">n = 47 · k-anon ✓</div></div><div class="placed"><span class="l">Placed</span>61%</div><span class="pill down">↓ 3</span></div>
+            <div class="o-row"><div><div class="nm">Game Development</div><div class="meta">n = &lt; 25 · suppressed</div></div><div class="placed" style="color:var(--muted)"><span class="l">Placed</span>—</div><span class="pill flat">k&lt;25</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="h">
+            <div><span class="t">Top employer engagement</span><div class="sub">Profile views &amp; invitations · last 90 days</div></div>
+            <span class="a">142 firms</span>
+          </div>
+          <div class="emp">
+            <div class="emp-row"><div class="co" style="background:#000;color:#fff">St</div><div><div class="nm">Stripe</div><div class="meta">186 views · 24 invites · 8 hires</div></div><div class="v">186<span class="l">Views</span></div><span class="pill up">+34%</span></div>
+            <div class="emp-row"><div class="co" style="background:#0d9488;color:#fff">Lr</div><div><div class="nm">Linear</div><div class="meta">142 views · 18 invites · 5 hires</div></div><div class="v">142<span class="l">Views</span></div><span class="pill up">+22%</span></div>
+            <div class="emp-row"><div class="co" style="background:#4f46e5;color:#fff">Vc</div><div><div class="nm">Vercel</div><div class="meta">128 views · 15 invites · 4 hires</div></div><div class="v">128<span class="l">Views</span></div><span class="pill up">+18%</span></div>
+            <div class="emp-row"><div class="co" style="background:#f59e0b;color:#fff">An</div><div><div class="nm">Anthropic</div><div class="meta">96 views · 11 invites · 3 hires</div></div><div class="v">96<span class="l">Views</span></div><span class="pill up">+12%</span></div>
+            <div class="emp-row"><div class="co" style="background:#1f2a44;color:#fff">Ne</div><div><div class="nm">Netflix</div><div class="meta">82 views · 9 invites · 2 hires</div></div><div class="v">82<span class="l">Views</span></div><span class="pill flat">flat</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+</body>
+</html>
