@@ -20,7 +20,9 @@ export default defineConfig({
   ],
   /* Build + serve the Next.js app before running tests */
   webServer: {
-    command: "npm run build && npm run start",
+    // DEMO_MODE=true bypasses the dashboard auth middleware so existing
+    // dashboard/navigation tests continue to pass without a real session.
+    command: "npm run build && DEMO_MODE=true npm run start",
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
