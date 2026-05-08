@@ -9,6 +9,8 @@ type Step = "email" | "otp"
 
 const RESEND_DELAY = 60
 const EDU_PATTERN = /\.edu$/i
+const SMTP_DELIVERY_ERROR_MESSAGE =
+  "Verification email could not be sent. For local development, enable demo mode. For production, configure a verified SMTP sender domain."
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -21,6 +23,24 @@ function maskEmail(email: string) {
   if (!local || !domain) return email
   const visible = local.slice(0, 3)
   return `${visible}${"•".repeat(Math.max(0, local.length - 3))}@${domain}`
+}
+
+function getOtpSendErrorMessage(err: unknown) {
+  const fallback = "Failed to send code. Please try again."
+  const message = err instanceof Error ? err.message : ""
+  const normalized = message.toLowerCase()
+
+  if (
+    normalized.includes("error sending magic link email") ||
+    normalized.includes("failed to send") ||
+    normalized.includes("email delivery") ||
+    normalized.includes("smtp") ||
+    normalized.includes("resend")
+  ) {
+    return SMTP_DELIVERY_ERROR_MESSAGE
+  }
+
+  return message || fallback
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -486,11 +506,7 @@ function LoginInner() {
       setStep("otp")
       startCountdown()
     } catch (err: unknown) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to send code. Please try again."
-      )
+      setError(getOtpSendErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -538,9 +554,7 @@ function LoginInner() {
       await sendOtp(email)
       startCountdown()
     } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : "Failed to resend code. Please try again."
-      )
+      setError(getOtpSendErrorMessage(err))
     } finally {
       setLoading(false)
     }

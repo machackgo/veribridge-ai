@@ -24,6 +24,8 @@
  */
 
 import { expect, test } from "@playwright/test"
+import { existsSync, readFileSync } from "node:fs"
+import path from "node:path"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -38,6 +40,20 @@ async function mockOtpSend(page: Parameters<typeof page.route>[0]) {
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ message_id: "test-msg" }),
+    })
+  })
+}
+
+/** Intercept Supabase OTP-send and return an SMTP delivery failure stub. */
+async function mockOtpSendEmailFailure(page: Parameters<typeof page.route>[0]) {
+  await page.route("**/auth/v1/otp**", async route => {
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({
+        code: "email_provider_error",
+        message: "Error sending magic link email",
+      }),
     })
   })
 }
@@ -187,6 +203,32 @@ test.describe("Login page — .edu validation", () => {
     await page.getByRole("button", { name: /send verification code/i }).click()
     // Should NOT see the .edu error
     await expect(page.getByTestId("error-banner")).not.toBeVisible()
+  })
+
+  test("shows friendly SMTP setup guidance when OTP email cannot be sent", async ({
+    page,
+  }) => {
+    await mockOtpSendEmailFailure(page)
+    await page.goto("/login")
+    await page.getByTestId("email-input").fill(EDU_EMAIL)
+    await page.getByRole("button", { name: /send verification code/i }).click()
+
+    await expect(page.getByTestId("error-banner")).toContainText(
+      "Verification email could not be sent. For local development, enable demo mode. For production, configure a verified SMTP sender domain."
+    )
+  })
+})
+
+// ── Auth documentation ───────────────────────────────────────────────────────
+
+test.describe("Auth documentation", () => {
+  test("documents local demo mode while SMTP is paused", async () => {
+    const docsPath = path.resolve(process.cwd(), "../../docs/auth/local_auth_testing.md")
+
+    expect(existsSync(docsPath)).toBe(true)
+    const doc = readFileSync(docsPath, "utf8")
+    expect(doc).toContain("NEXT_PUBLIC_DEMO_MODE=true")
+    expect(doc).toContain("Real OTP auth can be tested again")
   })
 })
 

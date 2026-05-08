@@ -212,6 +212,92 @@ const flow: Array<[string, string, string, string, string]> = [
   ["07 · Prep", "Mock Interview", "Role-specific drills · grounded feedback", "★", "#10b981"],
 ];
 
+// ── Trust Graph — animated hero visual ───────────────────────────────────────
+function TrustGraph() {
+  const nodes = [
+    {
+      label: ".edu Verified", sub: "WPI · class of 2026",
+      icon: "✓", color: "#6366f1",
+      x: -28, y: -155, delay: 0,
+    },
+    {
+      label: "GitHub Proof", sub: "47 repos · active",
+      icon: "⌥", color: "#10b981",
+      x: 158, y: -52, delay: 0.55,
+    },
+    {
+      label: "Visa Fit 92%", sub: "F-1 · STEM OPT eligible",
+      icon: "◎", color: "#f59e0b",
+      x: 100, y: 142, delay: 1.1,
+    },
+    {
+      label: "Recruiter Match", sub: "Stripe · 94% fit",
+      icon: "↗", color: "#8b5cf6",
+      x: -138, y: 118, delay: 1.65,
+    },
+    {
+      label: "Resume Parsed", sub: "AI-extracted · verified",
+      icon: "▦", color: "#0ea5e9",
+      x: -162, y: -42, delay: 2.2,
+    },
+  ]
+
+  return (
+    <div className="vb-tg-wrap" aria-hidden="true">
+      <div className="vb-tg-glow-bg" />
+      <div className="vb-tg">
+        {/* Decorative orbital rings */}
+        <div className="vb-ring vb-ring-3" />
+        <div className="vb-ring vb-ring-1" />
+        <div className="vb-ring vb-ring-2" />
+
+        {/* SVG connection lines */}
+        <svg className="vb-tg-svg" viewBox="0 0 440 440">
+          {nodes.map((n, i) => (
+            <line
+              key={i}
+              x1="220" y1="220"
+              x2={220 + n.x} y2={220 + n.y}
+              stroke={n.color}
+              strokeWidth="1"
+              strokeOpacity="0.22"
+              strokeDasharray="3 6"
+            />
+          ))}
+        </svg>
+
+        {/* Central glowing node */}
+        <div className="vb-tg-center">
+          <div className="vb-tg-logo-text">vb</div>
+          <div className="vb-tg-trust-label">Trust Graph</div>
+        </div>
+
+        {/* Proof node cards */}
+        {nodes.map((n, i) => (
+          <div
+            key={i}
+            className="vb-tg-node"
+            style={{
+              left: `calc(50% + ${n.x}px)`,
+              top: `calc(50% + ${n.y}px)`,
+              animationDelay: `${n.delay}s`,
+              borderColor: n.color + "33",
+            }}
+          >
+            <div className="vb-tg-node-head">
+              <span className="vb-tg-node-icon" style={{ color: n.color }}>
+                {n.icon}
+              </span>
+              <span className="vb-tg-node-label">{n.label}</span>
+            </div>
+            <div className="vb-tg-node-sub">{n.sub}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function ClaudeLanding() {
   const [activeSkill, setActiveSkill] = useState<string>("Docker");
   const skillData = PROOF_DATA[activeSkill];
@@ -284,13 +370,13 @@ export function ClaudeLanding() {
               Verified <span className="cp-mono cp-edu">.edu</span> · Now in private beta with WPI
             </div>
             <h1 className="cp-hero-h">
-              Verified student talent backed by evidence for{" "}
-              <em>verified students</em>.
+              Verified talent, backed by{" "}
+              <em>real evidence.</em>
             </h1>
             <p className="cp-hero-sub">
-              VeriBridge AI helps verified students turn projects, coursework,
-              resumes, and applications into evidence-backed career profiles
-              recruiters and universities can trust.
+              Turn projects, coursework, and GitHub commits into a
+              verified evidence trail recruiters and universities can
+              trust — not self-reported skills.
             </p>
             <div className="cp-hero-ctas">
               <Link className="cp-btn cp-btn-primary" href="/login?next=/dashboard">
@@ -310,79 +396,7 @@ export function ClaudeLanding() {
           </div>
 
           <div className="cp-stage">
-            <svg className="cp-stage-svg" viewBox="0 0 600 620" preserveAspectRatio="none" aria-hidden="true">
-              <path d="M 120 100 Q 250 60 400 180" />
-              <path d="M 480 220 Q 380 280 280 240" />
-              <path d="M 460 480 Q 320 420 200 380" />
-              <path d="M 100 480 Q 200 440 300 400" />
-            </svg>
-            <div className="cp-stage-rot">
-              <div className="cp-dash">
-                <div className="cp-dash-top">
-                  <span /><span /><span />
-                  <span className="cp-url">veribridge.ai/me</span>
-                </div>
-                <div className="cp-dash-body">
-                  <div className="cp-score-card">
-                    <div className="cp-ring">
-                      <svg viewBox="0 0 70 70">
-                        <circle className="cp-ring-bg" cx="35" cy="35" r="30" fill="none" strokeWidth="6" />
-                        <circle className="cp-ring-fg" cx="35" cy="35" r="30" fill="none" strokeWidth="6" />
-                      </svg>
-                      <div>82</div>
-                    </div>
-                    <div>
-                      <div className="cp-score-label">Career Readiness</div>
-                      <div className="cp-score-num">82 / 100 · Strong</div>
-                    </div>
-                    <div className="cp-score-bar">
-                      <div>Trend</div>
-                      <strong>↑ 14 / 30d</strong>
-                    </div>
-                  </div>
-                  <div className="cp-mini cp-mini-indigo">
-                    <div>Verified Skills</div>
-                    <strong>24</strong>
-                    <span>18 with public proof</span>
-                  </div>
-                  <div className="cp-mini cp-mini-green">
-                    <div>Top Job Match</div>
-                    <strong>94%</strong>
-                    <span>Backend Eng · NYC</span>
-                  </div>
-                </div>
-              </div>
-
-              <FloatingCard className="cp-f-skill" tag="Skill · Proof-Backed" title="Docker" icon="Dk" verified>
-                <p>3 evidence sources · last verified 2d ago</p>
-                <EvidenceRow icon="▣" title="github.com/maya/proof-app" meta="2.1k LOC" />
-                <EvidenceRow icon="↗" title="Deployed app" meta="live" />
-              </FloatingCard>
-
-              <FloatingCard className="cp-f-evidence" tag="Evidence Trail" title="CS 4515 — Distributed Systems">
-                <p>Final project · A · transcript-verified</p>
-                <EvidenceRow icon="⚐" title="Project report" meta="14 pp" />
-                <EvidenceRow icon="▦" title="Test coverage" meta="87%" />
-              </FloatingCard>
-
-              <div className="cp-float cp-f-match">
-                <div className="cp-float-head">
-                  <span>Top Match · Today</span>
-                  <span className="cp-verified cp-indigo-verified">94%</span>
-                </div>
-                <h4>Backend Engineer, Intern</h4>
-                <p>Visa-compatible · 6 of 7 required skills proven</p>
-              </div>
-
-              <div className="cp-float cp-f-gap">
-                <div className="cp-float-head">
-                  <span>Gap · Build Next</span>
-                </div>
-                <h4>Kubernetes</h4>
-                <p>Required by 68% of your saved jobs</p>
-                <div className="cp-gap-bar"><div /></div>
-              </div>
-            </div>
+            <TrustGraph />
           </div>
         </div>
       </section>

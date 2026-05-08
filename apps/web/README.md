@@ -97,12 +97,18 @@ Backend verifies HS256 JWT with SUPABASE_JWT_SECRET → returns data
 
 ### Development bypass
 
-Set `DEMO_MODE=true` (server-only env var) to skip the dashboard middleware.
-This is used automatically by the Playwright test suite — see `playwright.config.ts`.
+Set `NEXT_PUBLIC_DEMO_MODE=true` to skip the dashboard auth proxy guard while
+local SMTP/domain verification is not ready. This variable must be present at
+build/start time because Next.js bakes it into the Edge Runtime bundle.
 
 ```bash
-DEMO_MODE=true npm run start
+NEXT_PUBLIC_DEMO_MODE=true npm run dev
 ```
+
+For the current Resend/Supabase SMTP status and local auth workflow, see:
+
+- `../../docs/auth/smtp_domain_setup_status.md`
+- `../../docs/auth/local_auth_testing.md`
 
 ### Calling the backend
 
@@ -160,7 +166,7 @@ npm run test:e2e
 | `e2e/proof-section.spec.ts` | Interactive skill tabs and evidence cards |
 | `e2e/auth.spec.ts` | Login page renders, .edu validation, OTP flow (mocked) |
 
-The Playwright suite runs with `DEMO_MODE=true` so dashboard tests do not
+The Playwright suite runs with `NEXT_PUBLIC_DEMO_MODE=true` so dashboard tests do not
 require a real Supabase session.
 
 ---
