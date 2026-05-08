@@ -1,25 +1,28 @@
 """
-Supabase client factory.
+Supabase client factory and typed exception hierarchy.
 
-Two clients are exposed:
+Exception hierarchy
+-------------------
+SupabaseError              (base — catch-all for all Supabase-originated errors)
+  SupabaseConnectionError  — network failure (DNS, refused, timeout)
+  SupabaseAPIError         — PostgREST returned a non-2xx error
+  SupabaseFKError          — 23503 foreign-key constraint violation
 
-* ``get_supabase_client``  — server-side client using the **service-role key**.
-  Bypasses RLS. Use only for server-initiated writes (parsers, matchers,
-  AI generators). Never return this client or its key to a browser.
+Endpoints map these to HTTP status codes:
+  SupabaseConnectionError → 503
+  SupabaseAPIError        → 503
+  SupabaseFKError         → 409
+  (unknown exceptions)    → 500 JSON
 
-* ``get_supabase_anon_client`` — client using the **anon key**.
-  Respects RLS. Suitable for operations that must behave as an
-  authenticated user (e.g. when forwarding a user JWT).
+Client functions
+----------------
+get_supabase_client()      — service-role key, bypasses RLS.
+                             Use for server-side writes (parsers, AI, etc.).
+                             Never expose to browsers.
+get_supabase_anon_client() — anon key, RLS applies.
+                             Use when acting as an end user.
 
-Both functions are cached with ``lru_cache`` so the underlying HTTP
-client is reused across requests.
-
-Usage
------
-from app.db.supabase import get_supabase_client
-
-client = get_supabase_client()
-result = client.table("users").select("id").eq("id", user_id).execute()
+Both are lru_cache-ed so the HTTP session is reused across requests.
 """
 
 from __future__ import annotations
@@ -39,26 +42,68 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+# ── Typed exception hierarchy ─────────────────────────────────────────────────
+
+
+class SupabaseError(RuntimeError):
+    """Base class for all Supabase-originated errors."""
+
+
+class SupabaseConnectionError(SupabaseError):
+    """
+    Network failure — DNS resolution, connection refused, timeout.
+    Maps to HTTP 503 Service Unavailable.
+    """
+
+
+class SupabaseAPIError(SupabaseError):
+    """
+    PostgREST returned a non-2xx response (bad query, permission denied, …).
+    Maps to HTTP 503 Service Unavailable.
+    """
+
+
+class SupabaseFKError(SupabaseError):
+    """
+    PostgreSQL error 23503 — foreign-key constraint violation.
+    Typically means the demo user row does not exist in public.users.
+    Maps to HTTP 409 Conflict.
+    """
+
+
+# ── Config guard ──────────────────────────────────────────────────────────────
+
+
 def _require_supabase() -> None:
     if not _SUPABASE_AVAILABLE:
         raise RuntimeError(
             "The 'supabase' package is not installed. "
-            "Run: pip install supabase"
+            "Run: pip install 'supabase>=2.3.0,<3.0.0'"
         )
-    if not settings.supabase_configured:
+    if not settings.supabase_url:
         raise RuntimeError(
-            "Supabase is not configured. "
-            "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your .env file."
+            "SUPABASE_URL is not set. "
+            "Add it to .env: https://yourref.supabase.co"
         )
+    if not settings.supabase_service_role_key.get_secret_value():
+        raise RuntimeError(
+            "SUPABASE_SERVICE_ROLE_KEY is not set. "
+            "Find it in: Supabase dashboard → Settings → API → service_role."
+        )
+    logger.debug("Supabase target: %s", settings.supabase_url_host)
+
+
+# ── Client factories ──────────────────────────────────────────────────────────
 
 
 @lru_cache(maxsize=1)
 def get_supabase_client() -> "Client":
     """
-    Return a server-side Supabase client authenticated with the
-    service-role key.  Bypasses all RLS policies.
+    Return a server-side Supabase client using the service-role key.
+    Bypasses all RLS policies.
 
-    Never expose this client or its key to frontend code.
+    The client does not make a network call on construction — the first
+    actual query call triggers the connection.
     """
     _require_supabase()
     return create_client(
@@ -70,17 +115,15 @@ def get_supabase_client() -> "Client":
 @lru_cache(maxsize=1)
 def get_supabase_anon_client() -> "Client":
     """
-    Return a Supabase client authenticated with the public anon key.
-    RLS policies apply — suitable for operations that should behave
-    as an end user.  Pass a user JWT via ``client.auth.set_session``
-    when acting on behalf of a specific user.
+    Return a Supabase client using the public anon key.
+    RLS policies apply — use for operations that act as an end user.
     """
     _require_supabase()
     anon_key = settings.supabase_anon_key.get_secret_value()
     if not anon_key:
         raise RuntimeError(
             "SUPABASE_ANON_KEY is not set. "
-            "Set it in your .env file."
+            "Find it in: Supabase dashboard → Settings → API → anon key."
         )
     return create_client(
         supabase_url=settings.supabase_url,

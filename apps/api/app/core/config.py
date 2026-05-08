@@ -1,6 +1,7 @@
 from functools import lru_cache
+from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,37 +21,26 @@ class Settings(BaseSettings):
     # ── Supabase ─────────────────────────────────────────────────
     # SUPABASE_URL is the project REST/API base URL, e.g.
     # https://<project-ref>.supabase.co
-    # It is not a secret but should still be env-driven.
+    # It is NOT the Postgres DATABASE_URL — they are different things.
     supabase_url: str = Field(default="", alias="SUPABASE_URL")
 
-    # SUPABASE_ANON_KEY is safe for browser/public clients.
-    # The backend should prefer the service-role key for server-side
-    # operations so it can bypass RLS where needed (parsers, matchers).
     supabase_anon_key: SecretStr = Field(
         default=SecretStr(""), alias="SUPABASE_ANON_KEY"
     )
 
-    # SUPABASE_SERVICE_ROLE_KEY bypasses RLS — never expose to the
-    # browser or include in client-side code.
+    # Server-side only — bypasses RLS.  Never expose to a browser.
     supabase_service_role_key: SecretStr = Field(
         default=SecretStr(""), alias="SUPABASE_SERVICE_ROLE_KEY"
     )
 
     # ── Demo / development overrides ─────────────────────────────
-    # Temporary stand-in for the authenticated user's UUID until
-    # Supabase Auth is wired up.  Set DEMO_USER_ID in .env to
-    # override.  The default is a clearly fake, non-colliding UUID.
-    # Never use a real user's UUID here.
     demo_user_id: str = Field(
         default="00000000-0000-0000-0000-000000000001",
         alias="DEMO_USER_ID",
     )
 
     # ── Database (direct Postgres connection) ────────────────────
-    # Used by async SQLAlchemy / psycopg for server-side queries.
-    # Format: postgresql+asyncpg://user:pass@host:port/dbname
-    # Supabase: use the "Transaction" pooler URL for serverless,
-    # or the direct URL for long-lived server processes.
+    # Used by async SQLAlchemy — NOT the same as SUPABASE_URL.
     database_url: SecretStr = Field(
         default=SecretStr(""), alias="DATABASE_URL"
     )
@@ -61,7 +51,59 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # ── Validators ────────────────────────────────────────────────
+
+    @field_validator("supabase_url")
+    @classmethod
+    def validate_supabase_url_format(cls, v: str) -> str:
+        """
+        Reject obviously wrong SUPABASE_URL values at startup.
+
+        Common mistakes caught here:
+          - Using the Postgres host  (db.xxx.supabase.co)
+          - Using http:// instead of https://
+          - Leaving the placeholder value from .env.example
+          - Trailing whitespace from copy-paste
+        """
+        v = v.strip()
+        if not v:
+            return v  # empty is OK — supabase_configured checks presence
+
+        parsed = urlparse(v)
+
+        if parsed.scheme != "https":
+            raise ValueError(
+                f"SUPABASE_URL must start with 'https://'. "
+                f"Found scheme: {parsed.scheme!r}. "
+                "The REST API URL looks like: https://yourref.supabase.co\n"
+                "Note: DATABASE_URL (the Postgres connection string) is different — "
+                "do not use it here."
+            )
+
+        host = parsed.netloc.lower()
+        if not host:
+            raise ValueError("SUPABASE_URL has no hostname after 'https://'.")
+
+        if not host.endswith(".supabase.co"):
+            raise ValueError(
+                f"SUPABASE_URL host must end with '.supabase.co'. "
+                f"Got: {host!r}. "
+                "Do not use the direct Postgres host (db.xxx.supabase.co); "
+                "use the project REST URL (xxx.supabase.co)."
+            )
+
+        if host.startswith("db."):
+            raise ValueError(
+                "SUPABASE_URL appears to be the Postgres host (starts with 'db.'). "
+                "Use the project REST URL instead: "
+                f"https://{host[3:]} "
+                "(remove the 'db.' prefix and use https://)."
+            )
+
+        return v.rstrip("/")  # normalise: strip trailing slash
+
     # ── Derived properties ────────────────────────────────────────
+
     @property
     def cors_origins(self) -> list[str]:
         return [
@@ -72,11 +114,16 @@ class Settings(BaseSettings):
 
     @property
     def supabase_configured(self) -> bool:
-        """True when the minimum Supabase environment is present."""
+        """True when both URL and service-role key are present."""
         return bool(
             self.supabase_url
             and self.supabase_service_role_key.get_secret_value()
         )
+
+    @property
+    def supabase_url_host(self) -> str:
+        """Return only the hostname — safe to log."""
+        return urlparse(self.supabase_url).netloc if self.supabase_url else ""
 
 
 @lru_cache

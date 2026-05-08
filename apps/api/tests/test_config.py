@@ -84,6 +84,61 @@ class TestSupabaseFields:
         assert s.supabase_configured is False
 
 
+class TestSupabaseUrlValidation:
+    """Verify that obviously wrong SUPABASE_URL values are rejected early."""
+
+    def test_valid_supabase_url_accepted(self) -> None:
+        s = make_settings(SUPABASE_URL="https://abc123.supabase.co")
+        assert s.supabase_url == "https://abc123.supabase.co"
+
+    def test_trailing_slash_stripped(self) -> None:
+        s = make_settings(SUPABASE_URL="https://abc123.supabase.co/")
+        assert s.supabase_url == "https://abc123.supabase.co"
+
+    def test_empty_url_accepted(self) -> None:
+        """Empty URL is allowed — supabase_configured will be False."""
+        s = make_settings(SUPABASE_URL="")
+        assert s.supabase_url == ""
+
+    def test_http_url_rejected(self) -> None:
+        """http:// is rejected — must be https://."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError) as exc_info:
+            make_settings(SUPABASE_URL="http://abc123.supabase.co")
+        assert "https" in str(exc_info.value).lower()
+
+    def test_postgres_host_rejected(self) -> None:
+        """db.xxx.supabase.co is the Postgres host, not the REST API URL."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError) as exc_info:
+            make_settings(SUPABASE_URL="https://db.abc123.supabase.co")
+        assert "db." in str(exc_info.value) or "postgres" in str(exc_info.value).lower()
+
+    def test_non_supabase_host_rejected(self) -> None:
+        """Hosts that don't end with .supabase.co are rejected."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError) as exc_info:
+            make_settings(SUPABASE_URL="https://example.com")
+        assert "supabase.co" in str(exc_info.value)
+
+    def test_url_without_scheme_rejected(self) -> None:
+        """URL missing scheme entirely is rejected."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            make_settings(SUPABASE_URL="abc123.supabase.co")
+
+    def test_supabase_url_host_property(self) -> None:
+        """supabase_url_host returns only the hostname — safe to log."""
+        s = make_settings(SUPABASE_URL="https://abc123.supabase.co")
+        assert s.supabase_url_host == "abc123.supabase.co"
+        # Must not contain credentials or keys
+        assert "eyJ" not in s.supabase_url_host
+
+    def test_supabase_url_host_empty_when_url_missing(self) -> None:
+        s = make_settings(SUPABASE_URL="")
+        assert s.supabase_url_host == ""
+
+
 class TestDefaultsForLocalDev:
     def test_supabase_unconfigured_when_empty_strings(self) -> None:
         """supabase_configured is False when URL and key are empty strings."""
