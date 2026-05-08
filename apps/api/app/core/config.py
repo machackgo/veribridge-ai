@@ -36,6 +36,16 @@ class Settings(BaseSettings):
         default=SecretStr(""), alias="SUPABASE_SERVICE_ROLE_KEY"
     )
 
+    # ── Demo / development overrides ─────────────────────────────
+    # Temporary stand-in for the authenticated user's UUID until
+    # Supabase Auth is wired up.  Set DEMO_USER_ID in .env to
+    # override.  The default is a clearly fake, non-colliding UUID.
+    # Never use a real user's UUID here.
+    demo_user_id: str = Field(
+        default="00000000-0000-0000-0000-000000000001",
+        alias="DEMO_USER_ID",
+    )
+
     # ── Database (direct Postgres connection) ────────────────────
     # Used by async SQLAlchemy / psycopg for server-side queries.
     # Format: postgresql+asyncpg://user:pass@host:port/dbname

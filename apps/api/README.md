@@ -101,6 +101,73 @@ Expected:
 
 ---
 
+## Student Profile API
+
+Two routes are implemented. Authentication is not yet enforced — all
+requests act as the user identified by `DEMO_USER_ID` in `.env`.
+
+### GET /api/v1/student/profile
+
+Returns the current student's profile.
+
+```bash
+curl http://localhost:8000/api/v1/student/profile
+```
+
+Returns `404` if no profile has been created yet.
+
+### PUT /api/v1/student/profile
+
+Creates or updates the current student's profile (upsert).
+
+```bash
+curl -X PUT http://localhost:8000/api/v1/student/profile \
+  -H "Content-Type: application/json" \
+  -d '{
+    "full_name": "Maya Reyes",
+    "university": "WPI",
+    "degree": "B.S.",
+    "major": "Computer Science",
+    "graduation_year": 2026,
+    "visa_status": "F-1",
+    "target_roles": ["Backend Engineer", "SWE Intern"],
+    "target_locations": ["NYC", "Remote"],
+    "github_url": "https://github.com/maya",
+    "linkedin_url": "https://linkedin.com/in/maya"
+  }'
+```
+
+Required fields: `full_name`, `university`, `degree`, `major`.
+All other fields are optional.
+
+### Demo user setup
+
+Set `DEMO_USER_ID` in `.env` to the UUID of a row in your Supabase
+`auth.users` table.  You also need a matching row in `public.users`
+(the application-side user table).
+
+To create one quickly in the Supabase SQL editor:
+
+```sql
+-- Replace the UUID with your actual DEMO_USER_ID value
+insert into public.users (id, email, role, status)
+values (
+  '00000000-0000-0000-0000-000000000001',
+  'demo@example.com',
+  'student',
+  'active'
+)
+on conflict (id) do nothing;
+```
+
+### Interactive docs
+
+With the server running, visit:
+- Swagger UI: http://localhost:8000/docs
+- ReDoc:       http://localhost:8000/redoc
+
+---
+
 ## Running Tests
 
 ```bash
