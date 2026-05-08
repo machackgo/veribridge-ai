@@ -86,6 +86,15 @@ def debug_config() -> dict[str, Any]:
     elif not url:
         hint = "SUPABASE_URL is missing."
 
+    jwt_secret_ok = settings.auth_configured
+
+    if hint is None and not jwt_secret_ok:
+        hint = (
+            "SUPABASE_JWT_SECRET is missing. "
+            "JWT auth will not work — dev fallback (DEMO_USER_ID) is active. "
+            "Find it at: Supabase dashboard → Settings → API → JWT Settings → JWT Secret."
+        )
+
     return {
         "environment": settings.environment,
         "supabase": {
@@ -97,7 +106,11 @@ def debug_config() -> dict[str, Any]:
             "anon_key_present": anon_key_ok,
             "configured": settings.supabase_configured,
         },
-        "demo_user_id": settings.demo_user_id,
+        "auth": {
+            "jwt_secret_present": jwt_secret_ok,
+            "mode": "jwt" if jwt_secret_ok else "demo_fallback",
+            "demo_user_id": settings.demo_user_id if not jwt_secret_ok else None,
+        },
         "hint": hint,
     }
 

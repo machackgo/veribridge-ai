@@ -33,7 +33,19 @@ class Settings(BaseSettings):
         default=SecretStr(""), alias="SUPABASE_SERVICE_ROLE_KEY"
     )
 
+    # ── Auth ──────────────────────────────────────────────────────
+    # SUPABASE_JWT_SECRET signs all Supabase Auth JWTs with HS256.
+    # Find it at: Supabase dashboard → Settings → API → JWT Settings → JWT Secret.
+    # Required for token verification in production.
+    # When absent (dev only), falls back to DEMO_USER_ID.
+    supabase_jwt_secret: SecretStr = Field(
+        default=SecretStr(""), alias="SUPABASE_JWT_SECRET"
+    )
+
     # ── Demo / development overrides ─────────────────────────────
+    # Fallback user ID used when no Authorization header is present
+    # and ENVIRONMENT != "production".  Set to the real auth user UUID
+    # created by scripts/create_demo_auth_user.py.
     demo_user_id: str = Field(
         default="00000000-0000-0000-0000-000000000001",
         alias="DEMO_USER_ID",
@@ -124,6 +136,11 @@ class Settings(BaseSettings):
     def supabase_url_host(self) -> str:
         """Return only the hostname — safe to log."""
         return urlparse(self.supabase_url).netloc if self.supabase_url else ""
+
+    @property
+    def auth_configured(self) -> bool:
+        """True when JWT verification is possible (secret is present)."""
+        return bool(self.supabase_jwt_secret.get_secret_value())
 
 
 @lru_cache

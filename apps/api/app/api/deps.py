@@ -10,10 +10,18 @@ Override these in tests via ``app.dependency_overrides``:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from app.core.auth import AuthTokenExpired, AuthTokenInvalid, extract_user_id
 from app.core.config import settings
 from app.db.supabase import get_supabase_client
+
+# auto_error=False so we can inspect the token ourselves and return structured errors,
+# and also allow the dev-mode fallback when no header is present at all.
+_bearer = HTTPBearer(auto_error=False)
 
 
 def get_db() -> Any:
@@ -25,15 +33,53 @@ def get_db() -> Any:
     return get_supabase_client()
 
 
-def get_current_user_id() -> str:
+def get_current_user_id(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> str:
     """
-    Return the ID of the currently acting user.
+    Resolve the authenticated user ID from the request.
 
-    Pre-auth placeholder: reads DEMO_USER_ID from settings.
-    Default value is ``00000000-0000-0000-0000-000000000001`` — a
-    clearly fake UUID that will not collide with real Supabase users.
+    Priority:
+      1. If an Authorization: Bearer <token> header is present, verify the
+         Supabase HS256 JWT and return the ``sub`` claim.
+      2. In non-production environments without a token, fall back to
+         ``DEMO_USER_ID`` so curl/Swagger still works without a real session.
+      3. In production with no token → 401.
 
-    Replace this dependency with a real JWT-validation dependency
-    once Supabase Auth is integrated.
+    Raises HTTP 401 with a structured JSON body on any auth failure.
     """
-    return settings.demo_user_id
+    if credentials is not None:
+        secret = settings.supabase_jwt_secret.get_secret_value()
+        try:
+            return extract_user_id(credentials.credentials, secret)
+        except AuthTokenExpired:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "code": "token_expired",
+                    "message": "Your session has expired. Please sign in again.",
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except AuthTokenInvalid as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "code": "invalid_token",
+                    "message": str(exc),
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    # No token supplied.
+    if settings.environment != "production" and settings.demo_user_id:
+        return settings.demo_user_id
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={
+            "code": "unauthorized",
+            "message": "Authentication required. Provide a Bearer token.",
+        },
+        headers={"WWW-Authenticate": "Bearer"},
+    )

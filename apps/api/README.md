@@ -101,10 +101,98 @@ Expected:
 
 ---
 
-## Student Profile API
+## Demo User Setup (first-time development)
 
-Two routes are implemented. Authentication is not yet enforced — all
-requests act as the user identified by `DEMO_USER_ID` in `.env`.
+Before the Student Profile API will work, you need a real Supabase Auth user
+whose UUID is placed in `DEMO_USER_ID` in `.env`, and a matching row in
+`public.users`.
+
+### Step 1 — Create the Supabase Auth user
+
+If the Supabase dashboard Authentication page is broken, use this script:
+
+```bash
+# Run from the project root
+python apps/api/scripts/create_demo_auth_user.py
+```
+
+The script:
+- Reads `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from `apps/api/.env`
+- Prompts you for a temporary password (not echoed, not stored)
+- Creates `mohammedmubashir@wpi.edu` with `email_confirm = true`
+- Prints only the user **ID** and **email** — never prints any key
+- Handles "already exists" gracefully and shows the existing ID
+
+**Never run this in production.**
+
+### Step 2 — Update DEMO_USER_ID
+
+Copy the user ID printed by the script, then edit `apps/api/.env`:
+
+```
+DEMO_USER_ID=<paste-the-uuid-here>
+```
+
+### Step 3 — Restart the backend
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+### Step 4 — Bootstrap the public.users row
+
+The `student_profiles` table has a FK to `public.users`. Run this once:
+
+```bash
+curl -s -X POST http://localhost:8000/api/v1/debug/bootstrap-demo-user \
+  | python3 -m json.tool
+```
+
+Expected: `"created": true` on first run, `"created": false` if already done.
+
+### Step 5 — Check config
+
+```bash
+curl -s http://localhost:8000/api/v1/debug/config | python3 -m json.tool
+```
+
+---
+
+## Authentication
+
+Routes use `Authorization: Bearer <token>` with Supabase Auth JWTs (HS256).
+
+**Development (no token):** Set `DEMO_USER_ID` in `.env` and omit the header. The
+server falls back to that UUID automatically when `ENVIRONMENT != production`.
+
+**Development (with real token):** Sign in from the frontend (or use Supabase's
+REST auth endpoint) and pass the access token:
+
+```bash
+# Sign in and capture the access token
+TOKEN=$(curl -s -X POST \
+  "https://your-ref.supabase.co/auth/v1/token?grant_type=password" \
+  -H "apikey: <SUPABASE_ANON_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"mohammedmubashir@wpi.edu","password":"<your-password>"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# Use it in subsequent requests
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/student/profile
+```
+
+**Error responses** when a token is present but invalid:
+
+| Situation | HTTP | `code` |
+|---|---|---|
+| Token expired | 401 | `token_expired` |
+| Bad signature / malformed | 401 | `invalid_token` |
+| No token in production | 401 | `unauthorized` |
+
+---
+
+## Student Profile API
 
 ### GET /api/v1/student/profile
 
@@ -178,6 +266,9 @@ pytest
 |---|---|
 | `tests/test_health.py` | Health endpoint response shape |
 | `tests/test_config.py` | Settings loading; SecretStr types; Supabase config detection |
+| `tests/test_auth.py` | JWT verification — valid, expired, wrong secret, wrong audience, malformed |
+| `tests/test_student_profile.py` | Student profile API; field mapping; DB error handling |
+| `tests/test_create_demo_auth_user.py` | CLI script — env loading, URL validation, user creation |
 
 Tests make no real network calls to Supabase.
 
