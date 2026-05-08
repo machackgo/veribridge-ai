@@ -298,15 +298,27 @@ html {
 
 /* ── Card hover lift (dashboard cards) ── */
 .vb-card-hover {
-  transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
+  transition: transform 220ms cubic-bezier(0.22,1,0.36,1),
+              box-shadow 220ms cubic-bezier(0.22,1,0.36,1),
+              border-color 220ms ease;
 }
 .vb-card-hover:hover {
-  transform: translateY(-2px);
+  transform: translateY(-3px);
   box-shadow:
-    0 12px 32px -8px rgba(10, 14, 26, 0.1),
-    0 4px 12px -4px rgba(10, 14, 26, 0.06);
+    0 16px 40px -8px rgba(10, 14, 26, 0.12),
+    0 6px 16px -4px rgba(10, 14, 26, 0.07);
   border-color: var(--line-strong) !important;
 }
+
+/* ── Dashboard card stagger (wrapping container gets .vb-stagger) ── */
+.vb-stagger > * {
+  animation: vb-reveal 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.vb-stagger > *:nth-child(1) { animation-delay: 0ms; }
+.vb-stagger > *:nth-child(2) { animation-delay: 55ms; }
+.vb-stagger > *:nth-child(3) { animation-delay: 110ms; }
+.vb-stagger > *:nth-child(4) { animation-delay: 165ms; }
+.vb-stagger > *:nth-child(5) { animation-delay: 220ms; }
 
 /* ── Scroll reveal animation ── */
 @keyframes vb-reveal {
@@ -354,4 +366,5 @@ html {
   .vb-reveal { animation: none; opacity: 1; transform: none; }
   .vb-btn-lift { transition: none; }
   .vb-btn-lift:hover, .vb-btn-lift:active { transform: none; box-shadow: none; }
+  .vb-stagger > * { animation: none; opacity: 1; transform: none; }
 }

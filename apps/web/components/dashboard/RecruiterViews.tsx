@@ -609,7 +609,7 @@ export function RecruiterOverview() {
       />
 
       {/* Metric cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 20 }}>
+      <div className="vb-stagger" style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 20 }}>
         {metrics.map((m) => (
           <div key={m.label} style={{ ...card }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 6 }}>{m.label}</div>

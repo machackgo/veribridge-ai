@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 /* ── Complete proof-of-skill data for all 5 skills ── */
 type EvidenceItem = {
@@ -216,6 +216,28 @@ export function ClaudeLanding() {
   const [activeSkill, setActiveSkill] = useState<string>("Docker");
   const skillData = PROOF_DATA[activeSkill];
 
+  /* Scroll-reveal: add .vb-in-view when element enters viewport */
+  useEffect(() => {
+    const targets = document.querySelectorAll<HTMLElement>(
+      ".cp-triad, .cp-flow-rail, .cp-cta-card, .cp-visa-inner, .cp-proof-stage"
+    );
+    if (!targets.length) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("vb-in-view");
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.10, rootMargin: "0px 0px -40px 0px" }
+    );
+    targets.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <main className="cp-page">
       <svg width="0" height="0" className="cp-defs" aria-hidden="true">
@@ -248,7 +270,7 @@ export function ClaudeLanding() {
               Sign in
             </Link>
             <Link className="cp-btn cp-btn-primary" href="/dashboard">
-              Start Building Profile <span>→</span>
+              Start Building Profile <span className="cp-btn-arrow">→</span>
             </Link>
           </div>
         </div>
@@ -273,7 +295,7 @@ export function ClaudeLanding() {
             </p>
             <div className="cp-hero-ctas">
               <Link className="cp-btn cp-btn-primary" href="/dashboard">
-                Start Building Profile <span>→</span>
+                Start Building Profile <span className="cp-btn-arrow">→</span>
               </Link>
               <a className="cp-btn cp-btn-glass" href="#platform">
                 View Platform
@@ -687,7 +709,7 @@ export function ClaudeLanding() {
             <p>Free for verified <span className="cp-mono">.edu</span> students. No credit card. Profile in under 10 minutes.</p>
             <div>
               <Link className="cp-btn cp-btn-primary" href="/dashboard">
-                Start Building Profile <span>→</span>
+                Start Building Profile <span className="cp-btn-arrow">→</span>
               </Link>
               <a className="cp-btn cp-btn-ghost" href="#roadmap">View Roadmap</a>
             </div>

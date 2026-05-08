@@ -261,7 +261,7 @@ export function StudentOverview() {
       />
 
       {/* Row 1: 1.4fr 1fr 1fr */}
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 16 }}>
+      <div className="vb-stagger" style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 16 }}>
         {/* Score card hero */}
         <div
           style={{
@@ -368,7 +368,7 @@ export function StudentOverview() {
       </div>
 
       {/* Row 2: 1fr 1fr */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+      <div className="vb-stagger" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
         {/* Job matches */}
         <Card>
           <CardHeader title="Job matches" eyebrow="12 new this week" />
@@ -459,7 +459,7 @@ export function StudentOverview() {
       </div>
 
       {/* Row 3: 1.5fr 1fr */}
-      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16, marginTop: 16 }}>
+      <div className="vb-stagger" style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16, marginTop: 16 }}>
         {/* Application tracker */}
         <Card>
           <CardHeader title="Application tracker" eyebrow="7 active" />

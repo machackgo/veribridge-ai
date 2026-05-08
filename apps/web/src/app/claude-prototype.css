@@ -1561,6 +1561,175 @@ a.cp-ev-card:visited {
 /* ══ CARD HOVER LIFT ══ */
 .cp-side, .cp-flow-step, .cp-ev-card, .cp-skill-tab { cursor: pointer; }
 
+/* ══════════════════════════════════════════════════════════════
+   PREMIUM MOTION POLISH — ProMax pass
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 1. Hero text stagger entrance (fires on page load) ─────── */
+@keyframes cp-hero-fade {
+  from { opacity: 0; transform: translateY(22px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.cp-hero-stamp { animation: cp-hero-fade 0.65s cubic-bezier(0.22,1,0.36,1) 0.05s both; }
+.cp-hero-h     { animation: cp-hero-fade 0.75s cubic-bezier(0.22,1,0.36,1) 0.18s both; }
+.cp-hero-sub   { animation: cp-hero-fade 0.70s cubic-bezier(0.22,1,0.36,1) 0.34s both; }
+.cp-hero-ctas  { animation: cp-hero-fade 0.65s cubic-bezier(0.22,1,0.36,1) 0.50s both; }
+.cp-hero-trust { animation: cp-hero-fade 0.60s cubic-bezier(0.22,1,0.36,1) 0.65s both; }
+/* Stage element fades in slightly later */
+.cp-stage      { animation: cp-hero-fade 0.80s cubic-bezier(0.22,1,0.36,1) 0.30s both; }
+
+/* ── 2. Animated hero background glow breath ────────────────── */
+@keyframes cp-bg-breathe {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.78; }
+}
+.cp-hero::before {
+  animation: cp-bg-breathe 18s ease-in-out infinite;
+}
+
+/* ── 3. Nav link animated underline ────────────────────────── */
+.cp-nav-links a { position: relative; }
+.cp-nav-links a::after {
+  content: "";
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  right: 50%;
+  height: 1.5px;
+  background: var(--indigo);
+  border-radius: 1px;
+  opacity: 0;
+  transition: left 0.22s cubic-bezier(0.22,1,0.36,1),
+              right 0.22s cubic-bezier(0.22,1,0.36,1),
+              opacity 0.2s ease;
+}
+.cp-nav-links a:hover::after { left: 14px; right: 14px; opacity: 0.6; }
+
+/* ── 4. Button arrow slide micro-interaction ─────────────────── */
+.cp-btn-arrow {
+  display: inline-block;
+  transition: transform 0.2s cubic-bezier(0.22,1,0.36,1);
+  will-change: transform;
+}
+.cp-btn:hover .cp-btn-arrow { transform: translateX(4px); }
+
+/* Enhanced button lift */
+.cp-btn { will-change: transform; }
+.cp-btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md), 0 0 0 3px rgba(79,70,229,0.10),
+              inset 0 1px 0 rgba(255,255,255,0.12);
+}
+
+/* ── 5. Proof panel crossfade when skill switches ────────────── */
+@keyframes cp-panel-enter {
+  from { opacity: 0; transform: translateY(10px) scale(0.995); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+.cp-proof-detail {
+  animation: cp-panel-enter 0.32s cubic-bezier(0.22,1,0.36,1) both;
+}
+
+/* ── 6. Evidence card stagger reveal (triggers on panel remount) */
+@keyframes cp-ev-enter {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.cp-ev-card {
+  animation: cp-ev-enter 0.40s cubic-bezier(0.22,1,0.36,1) both;
+}
+.cp-ev-card:nth-child(1) { animation-delay: 0.04s; }
+.cp-ev-card:nth-child(2) { animation-delay: 0.09s; }
+.cp-ev-card:nth-child(3) { animation-delay: 0.14s; }
+.cp-ev-card:nth-child(4) { animation-delay: 0.19s; }
+
+/* ── 7. Enhanced platform card hover ───────────────────────── */
+.cp-side {
+  transition: all 0.30s cubic-bezier(0.22,1,0.36,1);
+}
+.cp-side:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 28px 64px -16px rgba(10,14,26,0.20),
+              0 8px 24px -8px rgba(79,70,229,0.10);
+  border-color: color-mix(in srgb, var(--indigo) 22%, var(--line));
+}
+/* Top border thickens on hover */
+.cp-side-a::before, .cp-side-b::before, .cp-side-c::before {
+  transition: height 0.25s ease;
+}
+.cp-side:hover::before { height: 4px; }
+
+/* ── 8. Platform card stagger (activated by .vb-in-view) ───── */
+@keyframes cp-card-enter {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.cp-triad { --stagger: 0ms; }
+.cp-triad .cp-side {
+  opacity: 0;
+  animation: cp-card-enter 0.6s cubic-bezier(0.22,1,0.36,1) both;
+  animation-play-state: paused;
+}
+.cp-triad.vb-in-view .cp-side { animation-play-state: running; }
+.cp-triad.vb-in-view .cp-side:nth-child(1) { animation-delay: 0.00s; }
+.cp-triad.vb-in-view .cp-side:nth-child(2) { animation-delay: 0.08s; }
+.cp-triad.vb-in-view .cp-side:nth-child(3) { animation-delay: 0.16s; }
+
+/* ── 9. Flow step stagger ───────────────────────────────────── */
+.cp-flow-step {
+  transition: all 0.28s cubic-bezier(0.22,1,0.36,1);
+  opacity: 0;
+  animation: cp-card-enter 0.5s cubic-bezier(0.22,1,0.36,1) both;
+  animation-play-state: paused;
+}
+.cp-flow-rail.vb-in-view .cp-flow-step { animation-play-state: running; }
+.cp-flow-rail.vb-in-view .cp-flow-step:nth-child(1) { animation-delay: 0.00s; }
+.cp-flow-rail.vb-in-view .cp-flow-step:nth-child(2) { animation-delay: 0.05s; }
+.cp-flow-rail.vb-in-view .cp-flow-step:nth-child(3) { animation-delay: 0.10s; }
+.cp-flow-rail.vb-in-view .cp-flow-step:nth-child(4) { animation-delay: 0.15s; }
+.cp-flow-rail.vb-in-view .cp-flow-step:nth-child(5) { animation-delay: 0.20s; }
+.cp-flow-rail.vb-in-view .cp-flow-step:nth-child(6) { animation-delay: 0.25s; }
+.cp-flow-rail.vb-in-view .cp-flow-step:nth-child(7) { animation-delay: 0.30s; }
+.cp-flow-step:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 14px 36px -8px rgba(10,14,26,0.14);
+}
+
+/* ── 10. CTA card content stagger (on in-view) ──────────────── */
+.cp-cta-card > * {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.55s cubic-bezier(0.22,1,0.36,1),
+              transform 0.55s cubic-bezier(0.22,1,0.36,1);
+}
+.cp-cta-card.vb-in-view > *:nth-child(1) { opacity:1; transform:none; transition-delay:0.06s; }
+.cp-cta-card.vb-in-view > *:nth-child(2) { opacity:1; transform:none; transition-delay:0.16s; }
+.cp-cta-card.vb-in-view > *:nth-child(3) { opacity:1; transform:none; transition-delay:0.26s; }
+.cp-cta-card.vb-in-view > *:nth-child(4) { opacity:1; transform:none; transition-delay:0.36s; }
+
+/* ── 11. Skill tab transition polish ─────────────────────────── */
+.cp-skill-tab {
+  transition: all 0.22s cubic-bezier(0.22,1,0.36,1);
+}
+.cp-skill-tab:not([data-active="true"]):hover {
+  transform: translateX(5px);
+}
+
+/* ── 12. Visa job row hover slide ────────────────────────────── */
+a.cp-visa-job-row:hover {
+  transform: translateX(3px);
+  background: var(--bg-2);
+}
+
+/* ── 13. Score ring glow pulse ───────────────────────────────── */
+@keyframes cp-ring-glow {
+  0%, 100% { filter: drop-shadow(0 0 5px rgba(165,180,252,0.35)); }
+  50%       { filter: drop-shadow(0 0 12px rgba(134,239,172,0.45)); }
+}
+.cp-ring svg { animation: cp-ring-glow 4s ease-in-out infinite; }
+
+/* ══════════════════════════════════════════════════════════════ */
+
 @media (max-width: 1100px) {
   .cp-visa-inner { grid-template-columns: 1fr; gap: 32px; }
   .cp-visa-grid-4 { grid-template-columns: repeat(2,1fr); }
@@ -1572,5 +1741,12 @@ a.cp-ev-card:visited {
   .cp-page *::after {
     animation: none !important;
     transition: none !important;
+  }
+  /* Ensure scroll-triggered elements are visible when motion is reduced */
+  .cp-triad .cp-side,
+  .cp-flow-step,
+  .cp-cta-card > * {
+    opacity: 1 !important;
+    transform: none !important;
   }
 }
