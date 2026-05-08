@@ -265,11 +265,10 @@ export function ClaudeLanding() {
             <a href="#roadmap">Roadmap</a>
           </div>
           <div className="cp-nav-cta">
-            {/* Sign in goes to dashboard (no auth in demo) */}
-            <Link className="cp-btn cp-btn-ghost" href="/dashboard">
+            <Link className="cp-btn cp-btn-ghost" href="/login?next=/dashboard">
               Sign in
             </Link>
-            <Link className="cp-btn cp-btn-primary" href="/dashboard">
+            <Link className="cp-btn cp-btn-primary" href="/login?next=/dashboard">
               Start Building Profile <span className="cp-btn-arrow">→</span>
             </Link>
           </div>
@@ -294,7 +293,7 @@ export function ClaudeLanding() {
               recruiters and universities can trust.
             </p>
             <div className="cp-hero-ctas">
-              <Link className="cp-btn cp-btn-primary" href="/dashboard">
+              <Link className="cp-btn cp-btn-primary" href="/login?next=/dashboard">
                 Start Building Profile <span className="cp-btn-arrow">→</span>
               </Link>
               <a className="cp-btn cp-btn-glass" href="#platform">
@@ -708,7 +707,7 @@ export function ClaudeLanding() {
             <h2>Stop describing your work. <em>Prove it.</em></h2>
             <p>Free for verified <span className="cp-mono">.edu</span> students. No credit card. Profile in under 10 minutes.</p>
             <div>
-              <Link className="cp-btn cp-btn-primary" href="/dashboard">
+              <Link className="cp-btn cp-btn-primary" href="/login?next=/dashboard">
                 Start Building Profile <span className="cp-btn-arrow">→</span>
               </Link>
               <a className="cp-btn cp-btn-ghost" href="#roadmap">View Roadmap</a>

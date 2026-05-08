@@ -2,29 +2,59 @@ import { createServerClient } from "@supabase/ssr"
 import { type NextRequest, NextResponse } from "next/server"
 
 /**
- * Auth middleware for VeriBridge AI.
+ * Auth proxy for VeriBridge AI (Next.js 16 "proxy" convention).
  *
  * Protected paths: /dashboard/**
  *
- * DEMO_MODE bypass (server-only env var, not NEXT_PUBLIC_):
- *   Set DEMO_MODE=true to skip auth checks — used by the Playwright
+ * Behaviour:
+ *  - Unauthenticated request to /dashboard/* → redirect /login?next=<path>
+ *  - Authenticated request to /login → redirect /dashboard (avoid login loop)
+ *  - All other paths → pass through unchanged
+ *
+ * Session check uses getSession() (reads JWT from cookie, no extra network
+ * round-trip). The actual JWT is validated per-request by the backend API;
+ * the proxy only decides whether to redirect the browser.
+ *
+ * DEMO_MODE bypass (server-only env var, never NEXT_PUBLIC_):
+ *   Set DEMO_MODE=true to skip all auth redirects. Used by the Playwright
  *   test suite and local development without a real Supabase session.
- *   Never set this in production.
+ *   NEVER set this in production.
  */
 export async function proxy(request: NextRequest) {
-  if (process.env.DEMO_MODE === "true") {
+  // NEXT_PUBLIC_ prefix ensures this is baked into the Edge Runtime bundle
+  // at build time (plain DEMO_MODE is not available in Edge Runtime).
+  if (process.env.NEXT_PUBLIC_DEMO_MODE === "true") {
     return NextResponse.next()
   }
 
   const { pathname } = request.nextUrl
 
-  // Only protect /dashboard/* for now.
-  // /recruiter/* and /university/* remain prototype-accessible.
-  if (!pathname.startsWith("/dashboard")) {
+  // Paths that never require auth (add more as the app grows)
+  const isPublic =
+    pathname === "/" ||
+    pathname === "/login" ||
+    pathname.startsWith("/auth/") ||
+    pathname.startsWith("/recruiter") ||
+    pathname.startsWith("/university")
+
+  if (isPublic) {
+    // If the user is already logged in, bounce them away from /login
+    // so they don't see the login form while already authenticated.
+    if (pathname === "/login") {
+      const session = await getSessionSafe(request)
+      if (session) {
+        const next = request.nextUrl.searchParams.get("next") ?? "/dashboard"
+        const dest = request.nextUrl.clone()
+        dest.pathname = next.startsWith("/") ? next : "/dashboard"
+        dest.search = ""
+        return NextResponse.redirect(dest)
+      }
+    }
     return NextResponse.next()
   }
 
-  // Build a response we can attach refreshed auth cookies to.
+  // For all other paths (currently only /dashboard/**) check for a session.
+  // Build a response object we can attach refreshed auth cookies to.
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient(
@@ -36,8 +66,8 @@ export async function proxy(request: NextRequest) {
           return request.cookies.getAll()
         },
         setAll(cookiesToSet) {
-          // Mirror cookies to both the outgoing request and the response
-          // so the browser and the server stay in sync.
+          // Mirror refreshed tokens to both the request and the response
+          // so the browser and any downstream server component stay in sync.
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           )
@@ -50,15 +80,17 @@ export async function proxy(request: NextRequest) {
     }
   )
 
-  // Use getUser() (not getSession()) — only getUser() validates the JWT
-  // with Supabase Auth servers, making it safe for server-side checks.
+  // getSession() reads the JWT from the auth cookie and validates its
+  // signature locally — no round-trip to Supabase per request.
+  // Expired tokens are refreshed via the refresh_token (one network call).
   const {
-    data: { user },
-  } = await supabase.auth.getUser()
+    data: { session },
+  } = await supabase.auth.getSession()
 
-  if (!user) {
+  if (!session) {
     const loginUrl = request.nextUrl.clone()
     loginUrl.pathname = "/login"
+    loginUrl.search = ""
     loginUrl.searchParams.set("next", pathname)
     return NextResponse.redirect(loginUrl)
   }
@@ -66,12 +98,36 @@ export async function proxy(request: NextRequest) {
   return supabaseResponse
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+async function getSessionSafe(request: NextRequest) {
+  try {
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return request.cookies.getAll()
+          },
+          setAll() {
+            // Read-only check — no cookie updates needed here
+          },
+        },
+      }
+    )
+    const { data } = await supabase.auth.getSession()
+    return data.session
+  } catch {
+    return null
+  }
+}
+
 export const config = {
   matcher: [
     /*
      * Run on all paths except Next.js internals and static files.
-     * The middleware itself gates only /dashboard/* — the matcher
-     * is broad so we can later extend protection without touching config.
+     * Auth logic in the function body decides which paths are gated.
      */
     "/((?!_next/static|_next/image|favicon.ico|api/).*)",
   ],

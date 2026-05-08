@@ -36,17 +36,17 @@ test.describe("Landing page — navigation", () => {
     await expect(page).toHaveURL("/university");
   });
 
-  test("navbar Sign in → /dashboard", async ({ page }) => {
+  test("navbar Sign in → /login", async ({ page }) => {
     await page.getByRole("link", { name: /Sign in/i }).click();
-    await expect(page).toHaveURL("/dashboard");
+    await expect(page).toHaveURL(/\/login/);
   });
 
-  test("hero Start Building Profile → /dashboard", async ({ page }) => {
+  test("hero Start Building Profile → /login", async ({ page }) => {
     const heroCta = page
       .locator(".cp-hero-ctas")
       .getByRole("link", { name: /Start Building Profile/i });
     await heroCta.click();
-    await expect(page).toHaveURL("/dashboard");
+    await expect(page).toHaveURL(/\/login/);
   });
 
   test("hero View Platform → #platform (stays on /)", async ({ page }) => {
@@ -55,12 +55,12 @@ test.describe("Landing page — navigation", () => {
     await expect(page).toHaveURL("/#platform");
   });
 
-  test("CTA card Start Building Profile → /dashboard", async ({ page }) => {
+  test("CTA card Start Building Profile → /login", async ({ page }) => {
     const ctaLink = page
       .locator(".cp-cta-card")
       .getByRole("link", { name: /Start Building Profile/i });
     await ctaLink.click();
-    await expect(page).toHaveURL("/dashboard");
+    await expect(page).toHaveURL(/\/login/);
   });
 
   test("no black button has zero-contrast text", async ({ page }) => {

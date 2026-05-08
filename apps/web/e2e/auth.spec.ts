@@ -1,17 +1,26 @@
 /**
- * Auth flow tests — login page UI and .edu validation.
+ * Auth flow tests — public routes, login page UI, and .edu validation.
  *
  * Network calls to Supabase are intercepted with page.route() so these
  * tests are fully deterministic and require no real Supabase credentials.
  *
+ * The test suite runs with DEMO_MODE=true (see playwright.config.ts) so
+ * /dashboard is accessible without a session. Protected-route redirect
+ * tests (unauthenticated /dashboard → /login) require DEMO_MODE=false and
+ * are documented but not asserted here to avoid conflicting with dashboard
+ * navigation tests that also run in this suite.
+ *
  * What is tested:
- *  - Login page renders with required UI elements
+ *  - / is always public (no redirect to /login)
+ *  - /login renders with correct UI elements
  *  - Non-.edu email shows a validation error (no network call needed)
  *  - .edu email + mocked OTP send → transitions to OTP screen
- *  - OTP screen has correct UI elements
+ *  - OTP screen shows updated copy ("Enter your verification code")
+ *  - "Verify and continue" button is present
  *  - Invalid OTP + mocked verify error → shows error message
  *  - "Change email" returns to email step
  *  - "Back to home" navigates to landing page
+ *  - /dashboard is accessible in DEMO_MODE (existing tests not broken)
  */
 
 import { expect, test } from "@playwright/test"
@@ -68,6 +77,38 @@ async function mockOtpVerifyFailure(page: Parameters<typeof page.route>[0]) {
     })
   })
 }
+
+// ── Public landing page ────────────────────────────────────────────────────────
+
+test.describe("Public landing page", () => {
+  test("/ renders the landing page without redirecting to /login", async ({ page }) => {
+    await page.goto("/")
+    await expect(page).toHaveURL("/")
+    await expect(page).not.toHaveURL(/\/login/)
+  })
+
+  test("/ shows the VeriBridge AI hero heading", async ({ page }) => {
+    await page.goto("/")
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible()
+  })
+
+  test("/ shows Sign in link pointing to /login", async ({ page }) => {
+    await page.goto("/")
+    const signIn = page.getByRole("link", { name: /sign in/i })
+    await expect(signIn).toBeVisible()
+    const href = await signIn.getAttribute("href")
+    expect(href).toContain("/login")
+  })
+
+  test("/ shows Start Building Profile CTA pointing to /login", async ({ page }) => {
+    await page.goto("/")
+    const cta = page
+      .locator(".cp-hero-ctas")
+      .getByRole("link", { name: /Start Building Profile/i })
+    const href = await cta.getAttribute("href")
+    expect(href).toContain("/login")
+  })
+})
 
 // ── Login page renders ─────────────────────────────────────────────────────────
 
@@ -158,14 +199,14 @@ test.describe("Login page — OTP screen", () => {
     await page.getByTestId("email-input").fill(EDU_EMAIL)
     await page.getByRole("button", { name: /send verification code/i }).click()
     await expect(
-      page.getByRole("heading", { name: /check your inbox/i })
+      page.getByRole("heading", { name: /enter your verification code/i })
     ).toBeVisible()
   }
 
-  test("shows Check your inbox headline", async ({ page }) => {
+  test("shows Enter your verification code headline", async ({ page }) => {
     await goToOtpStep(page)
     await expect(
-      page.getByRole("heading", { name: /check your inbox/i })
+      page.getByRole("heading", { name: /enter your verification code/i })
     ).toBeVisible()
   })
 
@@ -177,7 +218,8 @@ test.describe("Login page — OTP screen", () => {
 
   test("shows a code sent badge", async ({ page }) => {
     await goToOtpStep(page)
-    await expect(page.getByText(/code sent/i)).toBeVisible()
+    await expect(page.getByTestId("code-sent-badge")).toBeVisible()
+    await expect(page.getByTestId("code-sent-badge")).toContainText(/code sent/i)
   })
 
   test("has an OTP input", async ({ page }) => {
@@ -185,10 +227,10 @@ test.describe("Login page — OTP screen", () => {
     await expect(page.getByTestId("otp-input")).toBeVisible()
   })
 
-  test("has a Verify code button", async ({ page }) => {
+  test("has a Verify and continue button", async ({ page }) => {
     await goToOtpStep(page)
     await expect(
-      page.getByRole("button", { name: /verify code/i })
+      page.getByRole("button", { name: /verify and continue/i })
     ).toBeVisible()
   })
 
@@ -224,7 +266,7 @@ test.describe("Login page — OTP screen", () => {
   test("short OTP shows validation error", async ({ page }) => {
     await goToOtpStep(page)
     await page.getByTestId("otp-input").fill("123")
-    await page.getByRole("button", { name: /verify code/i }).click()
+    await page.getByRole("button", { name: /verify and continue/i }).click()
     await expect(page.getByTestId("error-banner")).toContainText(/6-digit/i)
   })
 
@@ -232,7 +274,7 @@ test.describe("Login page — OTP screen", () => {
     await goToOtpStep(page)
     await mockOtpVerifyFailure(page)
     await page.getByTestId("otp-input").fill(VALID_OTP)
-    await page.getByRole("button", { name: /verify code/i }).click()
+    await page.getByRole("button", { name: /verify and continue/i }).click()
     await expect(page.getByTestId("error-banner")).toBeVisible()
   })
 })

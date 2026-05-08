@@ -264,6 +264,7 @@ function OtpStep({
     <form onSubmit={onSubmit} noValidate>
       <div style={{ marginBottom: 8 }}>
         <div
+          data-testid="code-sent-badge"
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -290,7 +291,7 @@ function OtpStep({
           marginBottom: 8,
         }}
       >
-        Check your inbox
+        Enter your verification code
       </h1>
       <p
         style={{
@@ -301,11 +302,11 @@ function OtpStep({
           opacity: 0.7,
         }}
       >
-        We sent a 6-digit code to{" "}
+        Enter the verification code sent to your university email{" "}
         <span style={{ fontWeight: 600, color: "var(--ink, #0a0e1a)" }}>
           {maskEmail(email)}
         </span>
-        . It expires in 10 minutes.
+        . The code expires in 10 minutes.
       </p>
 
       {error && <ErrorBanner msg={error} />}
@@ -351,7 +352,7 @@ function OtpStep({
       />
 
       <PrimaryButton loading={loading}>
-        Verify code
+        Verify and continue
       </PrimaryButton>
 
       <div
