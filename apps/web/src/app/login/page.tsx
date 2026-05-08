@@ -433,7 +433,7 @@ function OtpStep({
 function LoginInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const redirectTo = searchParams.get("next") ?? "/dashboard"
+  const redirectTo = searchParams.get("next") ?? "/onboarding"
 
   const [step, setStep] = useState<Step>("email")
   const [email, setEmail] = useState("")
@@ -531,7 +531,11 @@ function LoginInner() {
       })
       if (error) throw error
       if (data.session) {
-        router.push(redirectTo.startsWith("/") ? redirectTo : "/dashboard")
+        const onboardingCompleted =
+          window.localStorage.getItem("veribridge:onboarding-completed") === "true"
+        const requestedPath = redirectTo.startsWith("/") ? redirectTo : "/dashboard"
+        const destination = onboardingCompleted ? requestedPath : "/onboarding"
+        router.push(destination)
         router.refresh()
       }
     } catch (err: unknown) {

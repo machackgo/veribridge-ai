@@ -4,11 +4,11 @@ import { type NextRequest, NextResponse } from "next/server"
 /**
  * Auth proxy for VeriBridge AI (Next.js 16 "proxy" convention).
  *
- * Protected paths: /dashboard/**
+ * Protected paths: /dashboard/** and /onboarding
  *
  * Behaviour:
- *  - Unauthenticated request to /dashboard/* → redirect /login?next=<path>
- *  - Authenticated request to /login → redirect /dashboard (avoid login loop)
+ *  - Unauthenticated request to protected paths → redirect /login?next=<path>
+ *  - Authenticated request to /login → redirect to requested next path or /onboarding
  *  - All other paths → pass through unchanged
  *
  * Session check uses getSession() (reads JWT from cookie, no extra network
@@ -43,7 +43,7 @@ export async function proxy(request: NextRequest) {
     if (pathname === "/login") {
       const session = await getSessionSafe(request)
       if (session) {
-        const next = request.nextUrl.searchParams.get("next") ?? "/dashboard"
+        const next = request.nextUrl.searchParams.get("next") ?? "/onboarding"
         const dest = request.nextUrl.clone()
         dest.pathname = next.startsWith("/") ? next : "/dashboard"
         dest.search = ""
@@ -53,7 +53,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next()
   }
 
-  // For all other paths (currently only /dashboard/**) check for a session.
+  // For all other paths (dashboard and first-run onboarding) check for a session.
   // Build a response object we can attach refreshed auth cookies to.
   let supabaseResponse = NextResponse.next({ request })
 

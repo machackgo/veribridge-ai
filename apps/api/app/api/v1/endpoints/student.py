@@ -23,7 +23,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user_id, get_db
 from app.db.supabase import SupabaseAPIError, SupabaseConnectionError, SupabaseFKError
+from app.schemas.onboarding import (
+    OnboardingCompleteResponse,
+    OpportunityHeatmapResponse,
+    StudentOnboardingResponse,
+    StudentOnboardingUpsert,
+)
 from app.schemas.student import StudentProfileResponse, StudentProfileUpsert
+from app.services.onboarding_service import OpportunityHeatmapService, StudentOnboardingService
 from app.services.student_service import StudentProfileService
 
 logger = logging.getLogger(__name__)
@@ -85,6 +92,64 @@ def get_student_profile(
         )
 
     return profile
+
+
+# ── Universal onboarding + Career Graph ───────────────────────────────────────
+
+
+@router.get(
+    "/onboarding",
+    response_model=StudentOnboardingResponse,
+    summary="Get universal student onboarding profile",
+)
+def get_student_onboarding(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> StudentOnboardingResponse:
+    return StudentOnboardingService(db).get_onboarding(user_id)
+
+
+@router.put(
+    "/onboarding",
+    response_model=StudentOnboardingResponse,
+    summary="Create or update universal student onboarding profile",
+)
+def upsert_student_onboarding(
+    body: StudentOnboardingUpsert,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> StudentOnboardingResponse:
+    return StudentOnboardingService(db).upsert_onboarding(user_id, body)
+
+
+@router.post(
+    "/onboarding/complete",
+    response_model=OnboardingCompleteResponse,
+    summary="Mark universal student onboarding complete",
+)
+def complete_student_onboarding(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> OnboardingCompleteResponse:
+    completed_at = StudentOnboardingService(db).mark_complete(user_id)
+    return OnboardingCompleteResponse(
+        user_id=user_id,
+        completed=True,
+        completed_at=completed_at,
+    )
+
+
+@router.get(
+    "/opportunity-heatmap",
+    response_model=OpportunityHeatmapResponse,
+    summary="Get Opportunity & Salary Heatmap recommendations",
+)
+def get_opportunity_heatmap(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> OpportunityHeatmapResponse:
+    onboarding = StudentOnboardingService(db)
+    return OpportunityHeatmapService(onboarding).get_heatmap(user_id)
 
 
 # ── PUT /student/profile ──────────────────────────────────────────────────────

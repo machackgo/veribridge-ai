@@ -3,6 +3,7 @@ import { DashboardShell } from "../../../components/dashboard/DashboardShell";
 
 const nav = [
   { label: "Overview", href: "/dashboard", icon: "▣" },
+  { label: "Onboarding", href: "/dashboard/onboarding", icon: "✦" },
   { label: "Profile & Proof", href: "/dashboard/profile", icon: "▦" },
   { label: "Job Matches", href: "/dashboard/jobs", icon: "↗" },
   { label: "Applications", href: "/dashboard/applications", icon: "⚐" },
