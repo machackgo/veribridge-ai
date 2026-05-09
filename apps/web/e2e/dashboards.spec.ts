@@ -78,7 +78,9 @@ test.describe("/onboarding first-run flow", () => {
 
   test("academic dropdowns render", async ({ page }) => {
     await page.goto("/onboarding");
-    const degreeHeightBefore = await controlHeight(page.getByLabel("Degree level"));
+    await expect(page.getByLabel("University country")).toHaveValue("");
+    await expect(page.getByRole("button", { name: "Degree level" })).toContainText("Select an option");
+    const degreeHeightBefore = await controlHeight(page.getByRole("button", { name: "Degree level" }));
     await page.getByLabel("University country").click();
     await expect(page.getByRole("option", { name: "Canada" })).toBeVisible();
     await expect(page.getByRole("option", { name: "India" })).toBeVisible();
@@ -122,6 +124,16 @@ test.describe("/onboarding first-run flow", () => {
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByRole("heading", { name: "Target Roles & Industries" })).toBeVisible();
     await expect(page.getByText("Step 2 of 7").first()).toBeVisible();
+  });
+
+  test("starts with no preselected roles, industries, skills, or proof evidence", async ({ page }) => {
+    await page.goto("/dashboard/onboarding");
+    await page.getByRole("button", { name: /Continue/i }).click();
+    await expect(page.getByText("No target roles selected yet. Add the roles you want to apply for.")).toBeVisible();
+    await expect(page.getByText("No target industries selected yet. Add the industries you are interested in.")).toBeVisible();
+    await page.getByRole("button", { name: /Continue/i }).click();
+    await expect(page.getByText("No skills added yet. Start with your strongest technical, AI, data, cloud, or project skills.")).toBeVisible();
+    await expect(page.getByText("No proof evidence added yet. Attach proof such as GitHub, LinkedIn, certificates, reports, demos, or dashboards.")).toBeVisible();
   });
 
   test("final completion redirects to dashboard", async ({ page }) => {
@@ -225,20 +237,211 @@ test.describe("/dashboard/onboarding", () => {
     await expect(page.getByRole("button", { name: /SpaceTech/ })).toBeVisible();
   });
 
-  test("skills and evidence dropdowns render", async ({ page }) => {
+  test("skills proof builder renders and verifies proof evidence", async ({ page }) => {
     await page.goto("/dashboard/onboarding");
+    await page.getByLabel("Major / field of study").fill("Artificial Intelligence");
+    await page.getByRole("option", { name: "Artificial Intelligence", exact: true }).click();
+    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByRole("heading", { name: "Skills & Proof Evidence" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Public link" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Upload file" })).toBeVisible();
+    await page.getByLabel("Suggested skills").click();
+    await expect(page.getByRole("option", { name: "Python" })).toBeVisible();
+    await expect(page.getByRole("option", { name: "Machine Learning" })).toBeVisible();
+    await expect(page.getByRole("option", { name: "RAG" })).toBeVisible();
+    await expect(page.getByRole("option", { name: "LLMs" })).toBeVisible();
+    await expect(page.getByRole("option", { name: "Financial Modeling" })).toHaveCount(0);
+    await page.getByRole("option", { name: "Python" }).click();
+    await page.getByLabel("Suggested skills").click();
+    await page.getByRole("option", { name: "Machine Learning" }).click();
+    await expect(page.getByRole("button", { name: /Python ×/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Machine Learning ×/ })).toBeVisible();
+    await page.getByLabel("Add a skill").fill("AWS");
+    await page.getByRole("button", { name: "Add skill to inventory" }).click();
+    await expect(page.getByRole("button", { name: /AWS ×/ })).toBeVisible();
+    await expect(page.getByText(/3 skills in inventory/i).first()).toBeVisible();
+    await page.getByLabel("Add a skill").fill("RAG");
+    await page.getByRole("button", { name: "Add skill to inventory" }).click();
+    await expect(page.getByRole("button", { name: /RAG ×/ })).toBeVisible();
+    await expect(page.getByText(/4 skills in inventory/i).first()).toBeVisible();
+    await page.getByRole("button", { name: /RAG ×/ }).click();
+    await expect(page.getByRole("button", { name: /RAG ×/ })).toHaveCount(0);
+    await expect(page.getByText(/3 skills in inventory/i).first()).toBeVisible();
+
+    const proofSkillField = page.getByRole("textbox", { name: "Choose skill to attach proof", exact: true });
+    await proofSkillField.click();
+    await expect(page.getByRole("option", { name: "Python" })).toBeVisible();
+    await expect(page.getByRole("option", { name: "Machine Learning" })).toBeVisible();
+    await expect(page.getByRole("option", { name: "Financial Modeling" })).toHaveCount(0);
+    await page.getByRole("option", { name: "Python" }).click();
+    await expect(page.getByText(/Good Python proof can include/i)).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Choose skill to attach proof", exact: true })).toHaveValue("Python");
+    await page.getByLabel("Evidence source type").click();
+    await expect(page.getByRole("option", { name: "GitHub code file", exact: true })).toBeVisible();
+    await page.getByRole("option", { name: "GitHub code file", exact: true }).click();
+    await expect(page.getByLabel("Evidence description", { exact: true })).toHaveCount(1);
+    await page.getByLabel("Repository URL").fill("https://github.com/user/project");
+    await page.getByLabel("File path").fill("app/main.py");
+    await page.getByLabel("Start line").fill("20");
+    await page.getByLabel("End line").fill("95");
+    await page.getByLabel("Evidence description", { exact: true }).fill("Built FastAPI prediction endpoint using Python.");
+    await page.getByRole("button", { name: "Add proof evidence" }).click();
+    await expect(page.getByText("Skill: Python")).toBeVisible();
+    await expect(page.getByText("Evidence source: GitHub code file")).toBeVisible();
+    await expect(page.getByText("Repository URL: https://github.com/user/project")).toBeVisible();
+    await expect(page.getByText("File path: app/main.py")).toBeVisible();
+    await expect(page.getByText("Lines: 20–95")).toBeVisible();
+    await expect(page.getByText(/Python usage likely found/i)).toBeVisible();
+    await expect(page.getByText(/1 proof items added/i).first()).toBeVisible();
+
+    await proofSkillField.click();
+    await page.getByRole("option", { name: "AWS", exact: true }).click();
+    await expect(page.getByText(/Good AWS proof can include/i)).toBeVisible();
+    await page.getByLabel("Evidence source type").click();
+    await page.getByRole("option", { name: "Cloud deployment proof", exact: true }).click();
+    await expect(page.getByLabel("Cloud provider")).toBeVisible();
+    await expect(page.getByLabel("Deployment URL (optional)")).toBeVisible();
+    await expect(page.getByLabel("Repository URL (optional)")).toBeVisible();
+    await expect(page.getByLabel("Config / workflow file (optional)")).toBeVisible();
+    await expect(page.getByLabel("Architecture diagram URL (optional)")).toBeVisible();
+    await expect(page.getByLabel("Start line")).toHaveCount(0);
+    await expect(page.getByLabel("End line")).toHaveCount(0);
+    await page.getByLabel("Deployment URL (optional)").fill("https://cloud.example.com");
+    await page.getByLabel("Repository URL (optional)").fill("https://github.com/user/cloud-project");
+    await page.getByLabel("Config / workflow file (optional)").fill("infra/main.tf");
+    await page.getByLabel("Evidence description", { exact: true }).fill("Deployed an app on AWS with Terraform.");
+    await page.getByRole("button", { name: "Add proof evidence" }).click();
+    await expect(page.getByText("Skill: AWS")).toBeVisible();
+    await expect(page.getByText("Evidence source: Cloud deployment proof")).toBeVisible();
+    await expect(page.getByText(/Cloud proof recorded/i)).toBeVisible();
+    await expect(page.getByText(/2 proof items added/i).first()).toBeVisible();
+
+    await proofSkillField.click();
+    await page.getByRole("option", { name: "Machine Learning", exact: true }).click();
+    await page.getByLabel("Evidence source type").click();
+    await page.getByRole("option", { name: "Certificate", exact: true }).click();
+    await expect(page.getByLabel("Certificate URL")).toBeVisible();
+    await expect(page.getByLabel("Issuer")).toBeVisible();
+    await expect(page.getByLabel("Completion date (optional)")).toBeVisible();
+    await expect(page.getByLabel("Start line")).toHaveCount(0);
+    await page.getByLabel("Certificate URL").fill("https://credential.example.com/cert");
+    await page.getByLabel("Issuer").fill("Coursera");
+    await page.getByLabel("Completion date (optional)").fill("2026-05-08");
+    await page.getByLabel("Evidence description", { exact: true }).fill("Completed a machine learning certificate.");
+    await page.getByRole("button", { name: "Add proof evidence" }).click();
+    await expect(page.getByText("Skill: Machine Learning")).toBeVisible();
+    await expect(page.getByText("Evidence source: Certificate")).toBeVisible();
+    await expect(page.getByText("Issuer: Coursera")).toBeVisible();
+    await expect(page.getByText(/Certificate recorded/i)).toBeVisible();
+    await expect(page.getByText(/3 proof items added/i).first()).toBeVisible();
+
+    await proofSkillField.click();
+    await page.getByRole("option", { name: "AWS", exact: true }).click();
+    await page.getByLabel("Evidence source type").click();
+    await page.getByRole("option", { name: "LinkedIn post", exact: true }).click();
+    await expect(page.getByLabel("LinkedIn post URL")).toBeVisible();
+    await expect(page.getByLabel("Related project/repository URL (optional)")).toBeVisible();
+    await expect(page.getByLabel("Start line")).toHaveCount(0);
+    await expect(page.getByLabel("End line")).toHaveCount(0);
+    await page.getByLabel("LinkedIn post URL").fill("https://www.linkedin.com/posts/example");
+    await page.getByLabel("Related project/repository URL (optional)").fill("https://github.com/user/project");
+    await page.getByLabel("Evidence description", { exact: true }).fill("LinkedIn post about a cloud deployment project.");
+    await page.getByRole("button", { name: "Add proof evidence" }).click();
+    await expect(page.getByText("Evidence source: LinkedIn post")).toBeVisible();
+    await expect(page.getByText("LinkedIn post URL: https://www.linkedin.com/posts/example")).toBeVisible();
+    await expect(page.getByText("Related project/repository URL: https://github.com/user/project")).toBeVisible();
+    await expect(page.getByText(/LinkedIn post recorded for recruiter review/i)).toBeVisible();
+    await expect(page.getByText(/4 proof items added/i).first()).toBeVisible();
+    await expect(page.getByText("Skill: Machine Learning")).toBeVisible();
+  });
+
+  test("upload file evidence flow supports report image and video uploads", async ({ page }) => {
+    await page.goto("/dashboard/onboarding");
+    await page.getByLabel("Major / field of study").fill("Artificial Intelligence");
+    await page.getByRole("option", { name: "Artificial Intelligence", exact: true }).click();
     await page.getByRole("button", { name: "Continue" }).click();
     await page.getByRole("button", { name: "Continue" }).click();
     await page.getByLabel("Suggested skills").click();
-    await expect(page.getByRole("option", { name: "Python" })).toBeVisible();
-    await expect(page.getByRole("option", { name: "Financial Modeling" })).toBeVisible();
-    await page.getByLabel("Suggested skills").fill("Revit");
-    await expect(page.getByRole("option", { name: "Use custom: Revit" })).toBeVisible();
-    await page.getByRole("option", { name: "Use custom: Revit" }).click();
-    await expect(page.getByRole("button", { name: /Revit/ })).toBeVisible();
-    await page.getByLabel("Evidence type").click();
-    await expect(page.getByRole("option", { name: "GitHub repo" })).toBeVisible();
-    await expect(page.getByRole("option", { name: "Financial model" })).toBeVisible();
+    await page.getByRole("option", { name: "Python", exact: true }).click();
+    await page.getByLabel("Add a skill").fill("AWS");
+    await page.getByRole("button", { name: "Add skill to inventory" }).click();
+
+    const proofSkillField = page.getByRole("textbox", { name: "Choose skill to attach proof", exact: true });
+    await proofSkillField.click();
+    await page.getByRole("option", { name: "AWS", exact: true }).click();
+
+    await page.getByRole("button", { name: "Upload file" }).click();
+    await expect(page.getByLabel("Upload evidence file")).toBeVisible();
+    await expect(page.getByRole("switch", { name: "Recruiter visibility" })).toHaveAttribute("aria-checked", "false");
+
+    await page.getByLabel("Evidence source type").click();
+    await page.getByRole("option", { name: "Project report", exact: true }).click();
+    await expect(page.getByLabel("Evidence description", { exact: true })).toHaveCount(1);
+    await expect(page.getByLabel("Start line")).toHaveCount(0);
+    await expect(page.getByLabel("End line")).toHaveCount(0);
+    await expect(page.getByLabel("Live demo URL")).toHaveCount(0);
+    await expect(page.getByLabel("Repository URL", { exact: true })).toHaveCount(0);
+    await page.getByLabel("Upload evidence file").setInputFiles({
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4\n%demo pdf"),
+    });
+    await page.getByLabel("Evidence title").fill("Quarterly report");
+    await page.getByLabel("Related project/repository URL (optional)").fill("https://github.com/user/report");
+    await expect(page.getByLabel("Evidence description", { exact: true })).toHaveCount(1);
+    await page.getByLabel("Evidence description", { exact: true }).fill("Quarterly report proving project delivery.");
+    await page.getByRole("button", { name: "Add proof evidence" }).click();
+    await expect(page.getByText("Uploaded file: report.pdf")).toBeVisible();
+    await expect(page.getByText("File type: application/pdf")).toBeVisible();
+    await expect(page.getByText("Evidence description: Quarterly report proving project delivery.")).toBeVisible();
+    await expect(page.getByText("Visibility: Private")).toBeVisible();
+    await expect(page.getByText(/Uploaded evidence saved for recruiter review/i)).toBeVisible();
+
+    await proofSkillField.click();
+    await page.getByRole("option", { name: "AWS", exact: true }).click();
+    await page.getByRole("button", { name: "Upload file" }).click();
+    await page.getByLabel("Evidence source type").click();
+    await page.getByRole("option", { name: "Architecture diagram", exact: true }).click();
+    await expect(page.getByLabel("Start line")).toHaveCount(0);
+    await expect(page.getByLabel("Live demo URL")).toHaveCount(0);
+    await page.getByRole("switch", { name: "Recruiter visibility" }).click();
+    await page.getByRole("switch", { name: "Require my approval before each recruiter can view this evidence" }).click();
+    await page.getByLabel("Upload evidence file").setInputFiles({
+      name: "architecture.png",
+      mimeType: "image/png",
+      buffer: Buffer.from("png-demo"),
+    });
+    await page.getByLabel("Evidence description", { exact: true }).fill("Architecture diagram proving system design.");
+    await page.getByRole("button", { name: "Add proof evidence" }).click();
+    await expect(page.getByText("Uploaded file: architecture.png")).toBeVisible();
+    await expect(page.getByText("File type: image/png")).toBeVisible();
+    await expect(page.getByText("Visibility: Approval required for recruiters")).toBeVisible();
+    await page.getByRole("button", { name: "Show evidence" }).last().click();
+    await expect(page.getByAltText("architecture.png")).toBeVisible();
+    await expect(page.getByText(/Request access to view this evidence/i)).toHaveCount(0);
+
+    await proofSkillField.click();
+    await page.getByRole("option", { name: "AWS", exact: true }).click();
+    await page.getByRole("button", { name: "Upload file" }).click();
+    await page.getByLabel("Evidence source type").click();
+    await page.getByRole("option", { name: "Deployed app / live demo", exact: true }).click();
+    await expect(page.getByLabel("Evidence description", { exact: true })).toHaveCount(1);
+    await expect(page.getByLabel("Live demo URL")).toHaveCount(0);
+    await expect(page.getByLabel("Repository URL", { exact: true })).toHaveCount(0);
+    await page.getByLabel("Upload evidence file").setInputFiles({
+      name: "demo.mp4",
+      mimeType: "video/mp4",
+      buffer: Buffer.from("mp4-demo"),
+    });
+    await page.getByLabel("Evidence description", { exact: true }).fill("Recorded demo presentation video.");
+    await page.getByRole("button", { name: "Add proof evidence" }).click();
+    await expect(page.getByText("Uploaded file: demo.mp4")).toBeVisible();
+    await expect(page.getByText("File type: video/mp4")).toBeVisible();
+    await expect(page.getByText("Visibility: Approval required for recruiters")).toBeVisible();
+    await page.getByRole("button", { name: "Show evidence" }).last().click();
+    await expect(page.locator("video").last()).toBeVisible();
+    await expect(page.getByText(/Request access to view this evidence/i)).toHaveCount(0);
   });
 
   test("location and work mode options render", async ({ page }) => {
@@ -279,9 +482,9 @@ test.describe("/dashboard/onboarding", () => {
     }
     await expect(page.getByText("Expected salary min")).toBeVisible();
     await expect(page.getByText("Minimum acceptable salary")).toBeVisible();
-    await expect(page.getByLabel("Currency")).toBeVisible();
-    await expect(page.getByLabel("Salary period")).toBeVisible();
-    await expect(page.getByLabel("Open to negotiation")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Currency", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Salary period" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open to negotiation" })).toBeVisible();
     await expect(page.getByText(/compare your expectations with market ranges/i)).toBeVisible();
   });
 
@@ -409,6 +612,24 @@ test.describe("Key pages render expected headings", () => {
   }
 });
 
+test.describe("Dashboard empty states", () => {
+  test("profile proof starts empty", async ({ page }) => {
+    await page.goto("/dashboard/profile");
+    await expect(page.getByText("Verified skills · none added yet")).toBeVisible();
+    await expect(page.getByText("Proof evidence · none added yet")).toBeVisible();
+    await expect(page.getByText(/No skills have been added to this profile yet/i)).toBeVisible();
+    await expect(page.getByText(/No proof evidence has been attached yet/i)).toBeVisible();
+  });
+
+  test("settings target roles and compensation start empty", async ({ page }) => {
+    await page.goto("/dashboard/settings");
+    await expect(page.getByText(/No target roles selected yet/i)).toBeVisible();
+    await expect(page.getByText(/No salary preference set yet/i)).toBeVisible();
+    await expect(page.getByPlaceholder("Add your major in onboarding")).toBeVisible();
+    await expect(page.getByPlaceholder("Add location preferences in onboarding")).toBeVisible();
+  });
+});
+
 /* ── Toggle interaction tests ── */
 test.describe("Toggle switches are interactive", () => {
   test("Recruiter settings toggles respond to click", async ({ page }) => {
@@ -466,5 +687,24 @@ test.describe("Toggle switches are interactive", () => {
     await expect(startBtn).toBeVisible();
     await startBtn.click();
     await expect(page.locator('[role="status"]')).toBeVisible({ timeout: 3000 });
+  });
+});
+
+test.describe("Recruiter evidence preview", () => {
+  test("respects uploaded evidence visibility settings", async ({ page }) => {
+    await page.goto("/recruiter");
+
+    await page.getByTestId("evidence-toggle-0").click();
+    await expect(page.getByText("Visibility: Private")).toBeVisible();
+    await expect(page.getByText(/Evidence exists, but the student has not shared this private file/i)).toBeVisible();
+
+    await page.getByTestId("evidence-toggle-3").click();
+    await expect(page.getByText("Visibility: Shared with recruiters")).toBeVisible();
+    await expect(page.getByText("Uploaded file: docker-certificate.png")).toBeVisible();
+    await expect(page.getByText("File type: image/png")).toBeVisible();
+
+    await page.getByTestId("evidence-toggle-4").click();
+    await expect(page.getByText("Visibility: Approval required")).toBeVisible();
+    await expect(page.getByText(/Request access to view this evidence/i)).toBeVisible();
   });
 });

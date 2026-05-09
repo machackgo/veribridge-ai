@@ -1,8 +1,9 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { useState } from "react";
 import { DemoToast, useDemoToast } from "../ui/DemoToast";
+import { getProofVisibilityLabel } from "../onboarding/taxonomy";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -69,12 +70,12 @@ const card: React.CSSProperties = {
   padding: 20,
 };
 
-function Btn({ children, variant = "primary", style: extraStyle, onClick }: {
+function Btn({ children, variant = "primary", style: extraStyle, onClick, ...rest }: {
   children: ReactNode;
   variant?: "primary" | "secondary";
   style?: React.CSSProperties;
   onClick?: () => void;
-}) {
+} & ButtonHTMLAttributes<HTMLButtonElement>) {
   const base: React.CSSProperties = {
     display: "inline-flex",
     alignItems: "center",
@@ -91,7 +92,11 @@ function Btn({ children, variant = "primary", style: extraStyle, onClick }: {
     variant === "primary"
       ? { ...base, background: "var(--ink)", color: "#fff", borderColor: "transparent" }
       : { ...base, background: "transparent", color: "var(--ink-2)", borderColor: "var(--line)" };
-  return <button type="button" onClick={onClick} style={{ ...styles, ...extraStyle }}>{children}</button>;
+  return (
+    <button type="button" onClick={onClick} style={{ ...styles, ...extraStyle }} {...rest}>
+      {children}
+    </button>
+  );
 }
 
 function FilterChip({ children, active }: { children: ReactNode; active?: boolean }) {
@@ -333,6 +338,7 @@ function CandidateList() {
 // ── Candidate preview ──────────────────────────────────────────────────────
 
 function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
+  const [activeEvidenceIndex, setActiveEvidenceIndex] = useState(-1);
   const maya = candidates[0];
   const paStats = [
     { label: "VeriBridge", value: "82" },
@@ -342,10 +348,102 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
   ];
   const skills = ["Docker · Production app · 3 sources", "Distributed Systems · A · WPI transcript", "React + TypeScript · 5 evidence", "Kubernetes · cert + coursework"];
   const artifacts = [
-    { icon: "⌥", label: "GitHub", meta: "maya/proof-app · 2.1k LOC" },
-    { icon: "↗", label: "Deployed", meta: "proof-app.fly.dev · live" },
-    { icon: "▣", label: "Transcript", meta: "CS 4515 · A · WPI" },
-    { icon: "◇", label: "Cert", meta: "Docker Foundations · 2025" },
+    {
+      icon: "↗",
+      label: "Uploaded report",
+      meta: "private upload · sales-dashboard.pdf",
+      evidence: {
+        skill: "Tableau",
+        sourceType: "Dashboard / analytics report",
+        evidenceAccessMethod: "upload_file" as const,
+        evidenceTitle: "Sales dashboard report",
+        uploadedFileName: "sales-dashboard.pdf",
+        uploadedFileType: "application/pdf",
+        uploadedFileSize: "2.4 MB",
+        uploadedFileUrl: "",
+        isRecruiterVisible: false,
+        requiresApproval: false,
+        visibilityNote: "Private uploads are only shown to authorized reviewers/recruiters based on sharing settings.",
+        description: "Quarterly dashboard report with key business metrics.",
+        verificationStatus: "Pending verification" as const,
+        verificationSummary: "Uploaded evidence saved for recruiter review.",
+      },
+    },
+    {
+      icon: "⌥",
+      label: "GitHub code file",
+      meta: "maya/proof-app · app/main.py",
+      evidence: {
+        skill: "Python",
+        sourceType: "GitHub code file",
+        evidenceAccessMethod: "public_link" as const,
+        evidenceUrl: "https://github.com/maya/proof-app",
+        filePath: "app/main.py",
+        startLine: "20",
+        endLine: "95",
+        description: "Built FastAPI prediction endpoint.",
+        verificationStatus: "Verified" as const,
+        verificationSummary: "Python usage likely found ✅",
+      },
+    },
+    {
+      icon: "▣",
+      label: "LinkedIn post",
+      meta: "project showcase · public post",
+      evidence: {
+        skill: "Leadership",
+        sourceType: "LinkedIn post",
+        evidenceAccessMethod: "public_link" as const,
+        linkedInPostUrl: "https://www.linkedin.com/posts/demo-project",
+        relatedProjectUrl: "https://github.com/maya/proof-app",
+        description: "LinkedIn post showcasing the hackathon build.",
+        verificationStatus: "Pending verification" as const,
+        verificationSummary: "LinkedIn post recorded for recruiter review.",
+      },
+    },
+    {
+      icon: "◇",
+      label: "Shared certificate",
+      meta: "Docker Foundations · shared with recruiters",
+      evidence: {
+        skill: "Docker",
+        sourceType: "Certificate",
+        evidenceAccessMethod: "upload_file" as const,
+        evidenceTitle: "Docker Foundations Certificate",
+        uploadedFileName: "docker-certificate.png",
+        uploadedFileType: "image/png",
+        uploadedFileSize: "1.1 MB",
+        uploadedFileUrl: "https://files.veribridge.test/docker-certificate.png",
+        isRecruiterVisible: true,
+        requiresApproval: false,
+        certificateIssuer: "Docker, Inc.",
+        completionDate: "2025-04-12",
+        description: "Completion certificate for Docker Foundations.",
+        verificationStatus: "Pending verification" as const,
+        verificationSummary: "Uploaded evidence saved for recruiter review.",
+      },
+    },
+    {
+      icon: "◐",
+      label: "Approval required",
+      meta: "architecture diagram · recruiter request access",
+      evidence: {
+        skill: "Architecture",
+        sourceType: "Architecture diagram",
+        evidenceAccessMethod: "upload_file" as const,
+        evidenceTitle: "System architecture diagram",
+        uploadedFileName: "architecture.png",
+        uploadedFileType: "image/png",
+        uploadedFileSize: "860 KB",
+        uploadedFileUrl: "https://files.veribridge.test/architecture.png",
+        isRecruiterVisible: true,
+        requiresApproval: true,
+        diagramUrl: "https://drive.google.com/file/d/demo",
+        description: "Architecture diagram for the proof-of-skill build.",
+        verificationStatus: "Pending verification" as const,
+        verificationSummary: "Uploaded evidence saved for recruiter review.",
+      },
+    },
   ];
 
   return (
@@ -391,9 +489,9 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
 
       {/* PA grid 2x2 */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
-        {paStats.map(({ label, value }) => (
+        {paStats.map(({ label, value }, index) => (
           <div
-            key={label}
+            key={`${label}-${index}`}
             style={{
               background: "var(--bg-2)",
               borderRadius: 8,
@@ -432,25 +530,148 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
       {/* Proof artifacts */}
       <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 8 }}>Proof Artifacts</div>
       <div style={{ marginBottom: 16 }}>
-        {artifacts.map(({ icon, label, meta }) => (
-          <div
-            key={label}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "7px 10px",
-              borderRadius: 7,
-              marginBottom: 4,
-              background: "var(--bg-2)",
-              fontSize: 12,
-            }}
-          >
-            <span style={{ fontSize: 14, width: 18, textAlign: "center" }}>{icon}</span>
-            <span style={{ fontWeight: 600, color: "var(--ink-2)", minWidth: 64 }}>{label}</span>
-            <span style={{ color: "var(--muted)" }}>{meta}</span>
-          </div>
-        ))}
+        {artifacts.map(({ icon, label, meta }, index) => {
+          const active = activeEvidenceIndex === index;
+          const evidence = artifacts[index].evidence as unknown as Record<string, string | undefined>;
+          const visibilityLabel = getProofVisibilityLabel(
+            Boolean(evidence.isRecruiterVisible),
+            Boolean(evidence.requiresApproval),
+            (evidence.evidenceAccessMethod as "public_link" | "upload_file") || "public_link",
+            "recruiter"
+          );
+          return (
+            <div
+              key={`${label}-${index}`}
+              style={{
+                display: "grid",
+                gap: 8,
+                padding: "10px 10px",
+                borderRadius: 10,
+                marginBottom: 6,
+                background: active ? "var(--indigo-soft)" : "var(--bg-2)",
+                border: `1px solid ${active ? "#c7d2fe" : "transparent"}`,
+                fontSize: 12,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 14, width: 18, textAlign: "center" }}>{icon}</span>
+                <span style={{ fontWeight: 700, color: "var(--ink-2)", minWidth: 104 }}>{label}</span>
+                <span style={{ color: "var(--muted)" }}>{meta}</span>
+                <div style={{ marginLeft: "auto" }}>
+                  <Btn
+                    variant="secondary"
+                    onClick={() => setActiveEvidenceIndex(active ? -1 : index)}
+                    data-testid={`evidence-toggle-${index}`}
+                    style={{ padding: "6px 10px", fontSize: 12 }}
+                  >
+                    {active ? "Hide Evidence" : "Show Evidence"}
+                  </Btn>
+                </div>
+              </div>
+              {active && (
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 10,
+                    border: "1px solid var(--line)",
+                    borderRadius: 12,
+                    background: "#fff",
+                    padding: 12,
+                  }}
+                >
+                  <div style={{ display: "grid", gap: 4 }}>
+                    <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Evidence preview</div>
+                    <div style={{ fontWeight: 800, color: "var(--ink)" }}>{evidence.evidenceTitle ?? evidence.sourceType}</div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)" }}>Visibility: {visibilityLabel}</div>
+                  </div>
+                  {evidence.evidenceAccessMethod === "upload_file" ? (
+                    !evidence.isRecruiterVisible ? (
+                      <div
+                        style={{
+                          border: "1px dashed var(--line)",
+                          borderRadius: 10,
+                          background: "var(--bg-2)",
+                          padding: 10,
+                          color: "var(--muted)",
+                          fontSize: 12,
+                        }}
+                      >
+                        Evidence exists, but the student has not shared this private file.
+                      </div>
+                    ) : evidence.requiresApproval ? (
+                      <div
+                        style={{
+                          border: "1px dashed var(--line)",
+                          borderRadius: 10,
+                          background: "var(--bg-2)",
+                          padding: 10,
+                          color: "var(--muted)",
+                          fontSize: 12,
+                          display: "grid",
+                          gap: 8,
+                        }}
+                      >
+                        <div>Request access to view this evidence.</div>
+                        <Btn variant="secondary" onClick={() => onToast?.("Request access sent to student (demo).")}>Request access</Btn>
+                      </div>
+                    ) : (
+                      <div style={{ display: "grid", gap: 4, color: "var(--ink-2)", fontSize: 12 }}>
+                        <div><strong>Skill:</strong> {evidence.skill}</div>
+                        <div><strong>Evidence source:</strong> {evidence.sourceType}</div>
+                        {evidence.evidenceTitle && <div><strong>Evidence title:</strong> {evidence.evidenceTitle}</div>}
+                        {evidence.uploadedFileName && <div><strong>Uploaded file:</strong> {evidence.uploadedFileName}</div>}
+                        {evidence.uploadedFileType && <div><strong>File type:</strong> {evidence.uploadedFileType}</div>}
+                        {evidence.uploadedFileSize && <div><strong>File size:</strong> {evidence.uploadedFileSize}</div>}
+                        {evidence.description && <div><strong>Evidence description:</strong> {evidence.description}</div>}
+                        {evidence.visibilityNote && <div><strong>Visibility note for recruiters:</strong> {evidence.visibilityNote}</div>}
+                        <div><strong>Verification:</strong> {evidence.verificationSummary}</div>
+                        {evidence.uploadedFileUrl && (
+                          <div
+                            style={{
+                              border: "1px dashed var(--line)",
+                              borderRadius: 10,
+                              background: "var(--bg-2)",
+                              padding: 10,
+                              color: "var(--muted)",
+                              fontSize: 12,
+                            }}
+                          >
+                            Uploaded evidence preview placeholder for authorized reviewers.
+                          </div>
+                        )}
+                        {evidence.uploadedFileUrl && (
+                          <Btn
+                            variant="secondary"
+                            onClick={() => window.open(evidence.uploadedFileUrl, "_blank", "noopener,noreferrer")}
+                            style={{ justifySelf: "start", padding: "6px 10px", fontSize: 12 }}
+                          >
+                            Open file
+                          </Btn>
+                        )}
+                      </div>
+                    )
+                  ) : (
+                    <div style={{ display: "grid", gap: 4, color: "var(--ink-2)", fontSize: 12 }}>
+                      <div><strong>Skill:</strong> {evidence.skill}</div>
+                      <div><strong>Evidence source:</strong> {evidence.sourceType}</div>
+                      {evidence.evidenceUrl && <div><strong>Evidence URL:</strong> {evidence.evidenceUrl}</div>}
+                      {evidence.linkedInPostUrl && <div><strong>LinkedIn post URL:</strong> {evidence.linkedInPostUrl}</div>}
+                      {evidence.relatedProjectUrl && <div><strong>Related project/repository URL:</strong> {evidence.relatedProjectUrl}</div>}
+                      {evidence.filePath && <div><strong>File path:</strong> {evidence.filePath}</div>}
+                      {evidence.startLine && evidence.endLine && <div><strong>Lines:</strong> {evidence.startLine}–{evidence.endLine}</div>}
+                      {evidence.uploadedFileName && <div><strong>Uploaded file:</strong> {evidence.uploadedFileName}</div>}
+                      {evidence.uploadedFileType && <div><strong>File type:</strong> {evidence.uploadedFileType}</div>}
+                      {evidence.uploadedFileSize && <div><strong>File size:</strong> {evidence.uploadedFileSize}</div>}
+                      {evidence.description && <div><strong>Evidence description:</strong> {evidence.description}</div>}
+                      {evidence.visibilityNote && <div><strong>Visibility note:</strong> {evidence.visibilityNote}</div>}
+                      <div><strong>Verification:</strong> {evidence.verificationSummary}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Actions */}

@@ -498,6 +498,348 @@ export function searchIndustries(query: string, major: string) {
   return searchOptions(query, query.trim() ? INDUSTRY_OPTIONS : getSuggestedIndustriesForMajor(major));
 }
 
+export const SKILL_TAXONOMY = {
+  "AI, Data & Software": [
+    "Python",
+    "Machine Learning",
+    "Deep Learning",
+    "PyTorch",
+    "TensorFlow",
+    "Scikit-learn",
+    "Pandas",
+    "NumPy",
+    "SQL",
+    "Data Analysis",
+    "MLOps",
+    "FastAPI",
+    "Docker",
+    "GitHub",
+    "RAG",
+    "LLMs",
+    "Vector Databases",
+    "Prompt Engineering",
+    "NLP",
+    "Computer Vision",
+    "JavaScript",
+    "TypeScript",
+    "React",
+    "Node.js",
+    "APIs",
+    "Cloud",
+    "Data Structures",
+    "Algorithms",
+    "System Design",
+    "Cybersecurity",
+  ],
+  "Finance & Business": [
+    "Excel",
+    "Financial Modeling",
+    "Valuation",
+    "Accounting",
+    "Risk Analysis",
+    "Bloomberg Terminal",
+    "Power BI",
+    "SQL",
+    "Market Research",
+    "Business Analysis",
+    "Project Management",
+    "Stakeholder Management",
+    "Presentation",
+    "Forecasting",
+  ],
+  "Engineering & Manufacturing": [
+    "CAD",
+    "SolidWorks",
+    "AutoCAD",
+    "MATLAB",
+    "Manufacturing",
+    "Product Design",
+    "Simulation",
+    "Quality Engineering",
+    "Systems Engineering",
+    "Embedded Systems",
+    "Controls",
+    "Electronics",
+    "Thermodynamics",
+    "Finite Element Analysis",
+    "Process Improvement",
+  ],
+  "Healthcare & Life Sciences": [
+    "Lab Techniques",
+    "Clinical Research",
+    "PCR",
+    "Data Collection",
+    "Research Writing",
+    "Public Health",
+    "Bioinformatics",
+    "Medical Terminology",
+    "Regulatory Documentation",
+    "Statistics",
+    "Excel",
+    "SQL",
+    "Data Analysis",
+  ],
+  "Design, Architecture & Creative": [
+    "Figma",
+    "UX Research",
+    "Portfolio Design",
+    "AutoCAD",
+    "Revit",
+    "SketchUp",
+    "Design Systems",
+    "Adobe Creative Suite",
+    "Wireframing",
+    "Prototyping",
+    "Information Architecture",
+    "Interaction Design",
+    "Brand Design",
+    "3D Modeling",
+  ],
+  "General Professional Skills": [
+    "Communication",
+    "Leadership",
+    "Problem Solving",
+    "Research",
+    "Writing",
+    "Presentation",
+    "Teamwork",
+    "Critical Thinking",
+    "Public Speaking",
+    "Project Coordination",
+    "Time Management",
+    "Documentation",
+  ],
+} as const;
+
+const MAJOR_SKILL_SUGGESTIONS: Record<string, string[]> = {
+  "Computer Science": ["Python", "JavaScript", "TypeScript", "React", "Node.js", "SQL", "Git", "Docker", "APIs", "Cloud", "Data Structures", "Algorithms", "System Design", "Cybersecurity"],
+  "Artificial Intelligence": ["Python", "Machine Learning", "Deep Learning", "PyTorch", "TensorFlow", "Scikit-learn", "MLOps", "FastAPI", "Docker", "RAG", "LLMs", "Vector Databases", "Prompt Engineering", "NLP", "Computer Vision"],
+  "Data Science": ["Python", "Machine Learning", "Data Analysis", "Pandas", "NumPy", "SQL", "Scikit-learn", "MLOps", "FastAPI", "Docker", "RAG", "LLMs", "Statistics", "Visualization"],
+  Finance: ["Excel", "Financial Modeling", "Valuation", "Accounting", "Risk Analysis", "Bloomberg Terminal", "Power BI", "SQL", "Market Research"],
+  Accounting: ["Excel", "Accounting", "Financial Modeling", "Risk Analysis", "SQL", "Power BI", "Audit", "Forecasting"],
+  "Business Administration": ["Excel", "Business Analysis", "Project Management", "Market Research", "Presentation", "Stakeholder Management", "Communication", "Power BI", "SQL"],
+  Healthcare: ["Lab Techniques", "Clinical Research", "PCR", "Research Writing", "Public Health", "Bioinformatics", "Data Collection", "Medical Terminology", "Statistics"],
+  Biology: ["Lab Techniques", "Clinical Research", "PCR", "Research Writing", "Public Health", "Bioinformatics", "Data Collection", "Medical Terminology", "Statistics"],
+  "Mechanical Engineering": ["CAD", "SolidWorks", "AutoCAD", "MATLAB", "Manufacturing", "Product Design", "Simulation", "Quality Engineering", "Process Improvement"],
+  "Electrical Engineering": ["MATLAB", "Embedded Systems", "Controls", "Electronics", "Power Systems", "CAD", "Simulation", "Systems Engineering"],
+  "Civil Engineering": ["AutoCAD", "Revit", "Surveying", "Construction", "Project Management", "Structural Analysis", "Simulation", "Quality Engineering"],
+  Design: ["Figma", "UX Research", "Portfolio Design", "Design Systems", "Wireframing", "Prototyping", "Adobe Creative Suite", "Information Architecture"],
+  Architecture: ["AutoCAD", "Revit", "SketchUp", "Portfolio Design", "Design Systems", "3D Modeling", "Presentation", "Research"],
+  Psychology: ["Research", "UX Research", "Communication", "Survey Design", "Statistics", "Writing", "Data Analysis", "Presentation"],
+  Marketing: ["Content Strategy", "Market Research", "Copywriting", "SEO", "Social Media", "Analytics", "Presentation", "Communication"],
+  Education: ["Teaching", "Curriculum Design", "Writing", "Research", "Presentation", "Communication", "Instructional Design"],
+  "Law/Policy": ["Policy Analysis", "Research", "Writing", "Compliance", "Documentation", "Communication", "Presentation"],
+  "Supply Chain": ["Operations", "Logistics", "Excel", "Data Analysis", "Procurement", "Inventory Management", "Project Management"],
+  "Media/Journalism": ["Writing", "Video Editing", "Storytelling", "Communication", "Research", "Presentation", "Content Strategy"],
+};
+
+const ROLE_SKILL_HINTS: Record<string, string[]> = {
+  "Software Engineer": ["JavaScript", "TypeScript", "React", "Node.js", "APIs", "Git", "Docker"],
+  "Backend Engineer": ["Python", "Node.js", "APIs", "SQL", "Docker", "Cloud"],
+  "Data Engineer": ["Python", "SQL", "Docker", "Cloud", "Data Pipelines", "ETL"],
+  "Generative AI Engineer": ["Python", "PyTorch", "RAG", "LLMs", "Vector Databases", "FastAPI", "Docker"],
+  "Financial Analyst": ["Excel", "Financial Modeling", "Valuation", "Accounting", "Power BI"],
+  "Mechanical Engineer": ["CAD", "SolidWorks", "AutoCAD", "MATLAB", "Simulation"],
+  "UX Designer": ["Figma", "UX Research", "Prototyping", "Design Systems", "Wireframing"],
+  "Clinical Research Assistant": ["Clinical Research", "Lab Techniques", "Research Writing", "Data Collection"],
+  "Policy Analyst": ["Policy Analysis", "Research", "Writing", "Documentation"],
+  "Supply Chain Analyst": ["Excel", "SQL", "Operations", "Logistics", "Data Analysis"],
+};
+
+const DEFAULT_SKILLS = [
+  "Communication",
+  "Research",
+  "Problem Solving",
+  "Presentation",
+  "Teamwork",
+  "Writing",
+  "Time Management",
+  "Critical Thinking",
+  "Documentation",
+  "Leadership",
+];
+
+export const ALL_SKILL_OPTIONS = Array.from(new Set(Object.values(SKILL_TAXONOMY).flat()));
+
+export function getSuggestedSkillsForMajor(major: string) {
+  return MAJOR_SKILL_SUGGESTIONS[major] ?? DEFAULT_SKILLS;
+}
+
+export function getSuggestedSkillsForContext(major: string, roles: string[]) {
+  const roleHints = roles.flatMap((role) => ROLE_SKILL_HINTS[role] ?? []);
+  return Array.from(new Set([...getSuggestedSkillsForMajor(major), ...roleHints])).slice(0, 18);
+}
+
+export function searchSkills(query: string, major: string) {
+  return searchOptions(query, query.trim() ? ALL_SKILL_OPTIONS : getSuggestedSkillsForMajor(major));
+}
+
+export const PROOF_EVIDENCE_SOURCE_TYPES = [
+  "GitHub repository",
+  "GitHub code file",
+  "Deployed app / live demo",
+  "Cloud deployment proof",
+  "Architecture diagram",
+  "Project report",
+  "Coursework project",
+  "Certificate",
+  "Dashboard / analytics report",
+  "Notebook / experiment",
+  "Presentation / slides",
+  "Portfolio link",
+  "Team / leadership evidence",
+  "LinkedIn post",
+  "Other",
+] as const;
+
+export const PROOF_EVIDENCE_ACCESS_METHODS = ["Public link", "Upload file"] as const;
+
+export const UPLOAD_EVIDENCE_FILE_ACCEPT =
+  ".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.webp,.ppt,.pptx,.csv,.xlsx,.mp4,.mov,.webm,.ipynb";
+
+export const CLOUD_PROVIDER_OPTIONS = ["AWS", "GCP", "Azure", "Other"] as const;
+
+export type SkillCategory = "code" | "cloud" | "data" | "ai" | "soft" | "general";
+
+const CODE_SKILL_KEYWORDS = [
+  "python",
+  "javascript",
+  "typescript",
+  "java",
+  "c++",
+  "sql",
+  "react",
+  "fastapi",
+  "django",
+  "node.js",
+  "nodejs",
+];
+
+const CLOUD_SKILL_KEYWORDS = [
+  "aws",
+  "gcp",
+  "google cloud",
+  "azure",
+  "docker",
+  "kubernetes",
+  "ci/cd",
+  "github actions",
+  "terraform",
+  "cloud run",
+  "ecs",
+  "ec2",
+  "lambda",
+  "devops",
+  "sre",
+  "platform",
+];
+
+const DATA_SKILL_KEYWORDS = [
+  "excel",
+  "tableau",
+  "power bi",
+  "snowflake",
+  "bigquery",
+  "pandas",
+  "numpy",
+  "sql",
+  "dashboard",
+  "analytics",
+];
+
+const AI_SKILL_KEYWORDS = [
+  "machine learning",
+  "deep learning",
+  "lightgbm",
+  "xgboost",
+  "nlp",
+  "rag",
+  "llm",
+  "llms",
+  "computer vision",
+  "generative ai",
+  "prompt engineering",
+  "mlops",
+  "llmops",
+  "genai",
+];
+
+const SOFT_SKILL_KEYWORDS = [
+  "project management",
+  "leadership",
+  "communication",
+  "agile",
+  "scrum",
+  "stakeholder",
+  "presentation",
+  "teamwork",
+];
+
+export function detectSkillCategory(skill: string): SkillCategory {
+  const normalized = skill.trim().toLowerCase();
+  if (!normalized) return "general";
+  if (CLOUD_SKILL_KEYWORDS.some((keyword) => normalized.includes(keyword))) return "cloud";
+  if (AI_SKILL_KEYWORDS.some((keyword) => normalized.includes(keyword))) return "ai";
+  if (DATA_SKILL_KEYWORDS.some((keyword) => normalized.includes(keyword))) return "data";
+  if (SOFT_SKILL_KEYWORDS.some((keyword) => normalized.includes(keyword))) return "soft";
+  if (CODE_SKILL_KEYWORDS.some((keyword) => normalized.includes(keyword))) return "code";
+  return "general";
+}
+
+export function getRecommendedProofSourceType(skill: string) {
+  const category = detectSkillCategory(skill);
+  if (category === "cloud") return "Cloud deployment proof";
+  if (category === "data") return "Dashboard / analytics report";
+  if (category === "soft") return "Team / leadership evidence";
+  if (category === "general") return "Project report";
+  return "GitHub code file";
+}
+
+export function getSkillProofHint(skill: string) {
+  const trimmed = skill.trim() || "this skill";
+  const category = detectSkillCategory(trimmed);
+
+  if (category === "cloud") {
+    return `Good ${trimmed} proof can include a deployed app URL, architecture diagram, Terraform/IaC file, GitHub Actions workflow, cloud logs, or a project report.`;
+  }
+
+  if (category === "data") {
+    return `Good ${trimmed} proof can include dashboard files, formulas, pivot tables, analysis reports, or screenshots.`;
+  }
+
+  if (category === "ai") {
+    return `Good ${trimmed} proof can include notebooks, model files, experiments, demo apps, architecture diagrams, or evaluation reports.`;
+  }
+
+  if (category === "soft") {
+    return `Good ${trimmed} proof can include planning docs, team artifacts, presentations, dashboards, meeting notes, or outcome reports.`;
+  }
+
+  if (category === "code") {
+    return `Good ${trimmed} proof can include a GitHub code file, notebook, package, backend endpoint, or project repository.`;
+  }
+
+  return "Good proof can be a code file, project/report evidence, deployed/demo evidence, dashboard/data evidence, certificate, diagram, video, team artifact, or other artifact.";
+}
+
+export function isCodeLikeFilePath(filePath: string) {
+  return /\.(py|js|jsx|ts|tsx|java|c|cpp|cc|cxx|h|hpp|sql|sh|rb|go|rs|cs|swift|kt|m|mm|php|scala|r|ipynb|yml|yaml|json|tf)$/.test(
+    filePath.trim().toLowerCase()
+  );
+}
+
+export function getProofVisibilityLabel(
+  isRecruiterVisible: boolean,
+  requiresApproval: boolean,
+  evidenceAccessMethod: "public_link" | "upload_file",
+  viewerRole: "student_owner" | "recruiter" = "student_owner"
+) {
+  if (evidenceAccessMethod === "public_link") return "Public link";
+  if (!isRecruiterVisible) return "Private";
+  if (requiresApproval) return viewerRole === "student_owner" ? "Approval required for recruiters" : "Approval required";
+  return "Shared with recruiters";
+}
+
 function searchOptions(query: string, options: string[]) {
   const term = query.trim().toLowerCase();
   const matches = term ? options.filter((option) => option.toLowerCase().includes(term)) : options;

@@ -6,7 +6,6 @@ import { useState } from "react";
 import { DemoToast, useDemoToast } from "../ui/DemoToast";
 import {
   applications,
-  evidence,
   jobs,
   skillGaps,
   student,
@@ -774,91 +773,66 @@ export function StudentProfileProof() {
 
       {/* Verified skills */}
       <Card style={{ marginBottom: 16 }}>
-        <CardHeader title="Verified skills · 18 with public proof" eyebrow="6 pending verification" />
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {["Docker", "React", "TypeScript", "PostgreSQL", "Node.js", "Distributed Systems", "Python", "Git"].map((s) => (
-            <span
-              key={s}
-              style={{
-                fontSize: 13,
-                padding: "7px 12px",
-                background: "var(--emerald-soft)",
-                border: "1px solid color-mix(in srgb,var(--emerald) 25%,transparent)",
-                color: "var(--emerald)",
-                borderRadius: 7,
-                fontWeight: 600,
-              }}
-            >
-              ✓ {s}
-            </span>
-          ))}
-          {["Kubernetes · pending", "GraphQL · pending"].map((s) => (
-            <span
-              key={s}
-              style={{
-                fontSize: 13,
-                padding: "7px 12px",
-                background: "var(--bg-2)",
-                border: "1px solid var(--line)",
-                borderRadius: 7,
-                fontWeight: 500,
-                color: "var(--ink-2)",
-              }}
-            >
-              {s}
-            </span>
-          ))}
+        <CardHeader title="Verified skills · none added yet" eyebrow="Start with your strongest skills" />
+        <div style={{ display: "grid", gap: 12 }}>
+          <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
+            No skills have been added to this profile yet. VeriBridge will verify each skill from exact proof when you attach it.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {["Suggested: Python", "Suggested: Docker", "Suggested: SQL", "Suggested: Figma"].map((s) => (
+              <span
+                key={s}
+                style={{
+                  fontSize: 12,
+                  padding: "7px 11px",
+                  background: "var(--bg-2)",
+                  border: "1px dashed var(--line-2)",
+                  color: "var(--muted)",
+                  borderRadius: 999,
+                  fontWeight: 600,
+                }}
+              >
+                {s}
+              </span>
+            ))}
+          </div>
         </div>
       </Card>
 
       {/* Evidence cards */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        {evidence.map((item) => (
-          <Card key={item.skill}>
-            <CardHeader
-              title={`${item.skill} · ${item.artifacts.length} evidence sources`}
-              eyebrow={item.status === "Verified" ? "✓ Verified" : "Pending"}
-            />
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {item.artifacts.map((artifact) => (
-                <div
-                  key={artifact}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "auto 1fr auto",
-                    gap: 10,
-                    padding: 11,
-                    border: "1px solid var(--line)",
-                    borderRadius: 9,
-                    background: "var(--bg-2)",
-                    alignItems: "center",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 30,
-                      height: 30,
-                      borderRadius: 7,
-                      background: "var(--ink)",
-                      color: "#fff",
-                      display: "grid",
-                      placeItems: "center",
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontWeight: 700,
-                      fontSize: 11,
-                    }}
-                  >
-                    GH
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{artifact}</div>
-                  </div>
-                  <Btn ghost style={{ fontSize: 11, padding: "5px 10px" }} onClick={() => show("Evidence viewer — coming soon.")}>View Evidence →</Btn>
-                </div>
-              ))}
-            </div>
-          </Card>
-        ))}
+        <Card>
+          <CardHeader title="Proof evidence · none added yet" eyebrow="Attach GitHub, LinkedIn, or other evidence" />
+          <div style={{ display: "grid", gap: 12 }}>
+            <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
+              No proof evidence has been attached yet. Add GitHub, LinkedIn, certificate, report, demo, or dashboard proof to build a recruiter-ready profile.
+            </p>
+            <Btn ghost style={{ justifyContent: "flex-start", width: "fit-content" }} onClick={() => show("Add proof — coming soon.")}>
+              Add proof evidence
+            </Btn>
+          </div>
+        </Card>
+        <Card>
+          <CardHeader title="Suggested proof types" eyebrow="Not selected" />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {["GitHub repo", "LinkedIn post", "Certificate", "Report", "Demo link", "Dashboard"].map((item, index) => (
+              <span
+                key={`${item}-${index}`}
+                style={{
+                  fontSize: 12,
+                  padding: "7px 11px",
+                  background: "var(--bg-2)",
+                  border: "1px dashed var(--line-2)",
+                  color: "var(--muted)",
+                  borderRadius: 999,
+                  fontWeight: 600,
+                }}
+              >
+                {item}
+              </span>
+            ))}
+          </div>
+        </Card>
       </div>
     </div>
   );
@@ -1147,9 +1121,9 @@ export function StudentVisaFit() {
         lede="Career-readiness and job compatibility insights. Not legal advice."
       />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 16 }}>
-        {visaSignals.map(([label, value]) => (
+        {visaSignals.map(([label, value], index) => (
           <div
-            key={label}
+            key={`${label}-${index}`}
             style={{
               background: "var(--indigo-soft)",
               border: "1px solid color-mix(in srgb,var(--indigo) 25%,transparent)",
@@ -1264,7 +1238,7 @@ export function StudentMockInterview() {
           <CardHeader title="Choose a role" eyebrow="Tailored to your saved jobs" />
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
             {[
-              { label: "Backend Engineer Intern", sub: "● Selected · Stripe-style", selected: true },
+              { label: "Backend Engineer Intern", sub: "Stripe-style", selected: false },
               { label: "Full-stack Intern", sub: "Vercel · Linear style", selected: false },
               { label: "SRE / Platform", sub: "Anthropic · Cloudflare", selected: false },
               { label: "ML / Data", sub: "Anthropic · OpenAI style", selected: false },
@@ -1367,14 +1341,15 @@ export function StudentSettings() {
             {[
               { label: "Name", value: "Maya Reyes", disabled: false },
               { label: ".edu email · verified", value: "maya.reyes@wpi.edu", disabled: true },
-              { label: "Major · grad year", value: "Computer Science · 2026", disabled: false },
-              { label: "Location preference", value: "NYC · Remote · Boston", disabled: false },
+              { label: "Major · grad year", value: "", disabled: false },
+              { label: "Location preference", value: "", disabled: false },
             ].map((f) => (
               <label key={f.label} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                 <Mono style={{ fontSize: 11, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--muted)", fontWeight: 600 }}>{f.label}</Mono>
                 <input
                   defaultValue={f.value}
                   disabled={f.disabled}
+                  placeholder={f.label === "Major · grad year" ? "Add your major in onboarding" : f.label === "Location preference" ? "Add location preferences in onboarding" : undefined}
                   style={{
                     fontFamily: "inherit",
                     padding: "9px 12px",
@@ -1392,33 +1367,34 @@ export function StudentSettings() {
         {/* Target roles */}
         <Card>
           <CardHeader title="Target roles" eyebrow="Drives matching" />
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-            {["Backend Engineer", "Full-stack", "SRE / Platform"].map((r) => (
-              <span
-                key={r}
-                style={{
-                  fontSize: 12,
-                  padding: "6px 11px",
-                  background: "var(--ink)",
-                  color: "#fff",
-                  borderRadius: 7,
-                  fontWeight: 500,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                {r} <span style={{ opacity: 0.6 }}>×</span>
-              </span>
-            ))}
-            <span style={{ fontSize: 12, padding: "6px 11px", background: "var(--paper)", border: "1px dashed var(--line-2)", borderRadius: 7, color: "var(--muted)" }}>
-              + Add
-            </span>
+          <div style={{ display: "grid", gap: 12 }}>
+            <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
+              No target roles selected yet. Add the roles you want to apply for.
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {["Suggested: Backend Engineer", "Suggested: Full-stack Engineer", "Suggested: SRE / Platform"].map((r) => (
+                <span
+                  key={r}
+                  style={{
+                    fontSize: 12,
+                    padding: "6px 11px",
+                    background: "var(--bg-2)",
+                    border: "1px dashed var(--line-2)",
+                    color: "var(--muted)",
+                    borderRadius: 999,
+                    fontWeight: 600,
+                  }}
+                >
+                  {r}
+                </span>
+              ))}
+            </div>
           </div>
-          <CardHeader title="Compensation floor" />
-          <input type="range" min={30} max={80} defaultValue={45} style={{ width: "100%" }} />
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", color: "var(--muted)" }}>
-            <span>$30/hr</span><b style={{ color: "var(--ink)" }}>$45/hr</b><span>$80/hr</span>
+          <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+            <CardHeader title="Compensation floor" />
+            <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
+              No salary preference set yet. Add compensation targets when you are ready.
+            </p>
           </div>
         </Card>
         {/* Notifications */}
