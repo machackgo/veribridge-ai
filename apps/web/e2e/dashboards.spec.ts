@@ -244,6 +244,8 @@ test.describe("/dashboard/onboarding", () => {
     await page.getByRole("button", { name: "Continue" }).click();
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByRole("heading", { name: "Skills & Proof Evidence" })).toBeVisible();
+    await expect(page.getByText(/Add skills you want recruiters to trust/i)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Proof Evidence Builder" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Public link" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Upload file" })).toBeVisible();
     await page.getByLabel("Suggested skills").click();
@@ -269,26 +271,30 @@ test.describe("/dashboard/onboarding", () => {
     await expect(page.getByRole("button", { name: /RAG ×/ })).toHaveCount(0);
     await expect(page.getByText(/3 skills in inventory/i).first()).toBeVisible();
 
-    const proofSkillField = page.getByRole("textbox", { name: "Choose skill to attach proof", exact: true });
+    const proofSkillField = page.getByRole("textbox", { name: "Skill", exact: true });
     await proofSkillField.click();
     await expect(page.getByRole("option", { name: "Python" })).toBeVisible();
     await expect(page.getByRole("option", { name: "Machine Learning" })).toBeVisible();
     await expect(page.getByRole("option", { name: "Financial Modeling" })).toHaveCount(0);
     await page.getByRole("option", { name: "Python" }).click();
     await expect(page.getByText(/Good Python proof can include/i)).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Choose skill to attach proof", exact: true })).toHaveValue("Python");
+    await expect(page.getByRole("textbox", { name: "Skill", exact: true })).toHaveValue("Python");
     await page.getByLabel("Evidence source type").click();
-    await expect(page.getByRole("option", { name: "GitHub code file", exact: true })).toBeVisible();
-    await page.getByRole("option", { name: "GitHub code file", exact: true }).click();
+    await expect(page.getByRole("option", { name: "GitHub file", exact: true })).toBeVisible();
+    await page.getByRole("option", { name: "GitHub file", exact: true }).click();
+    await expect(page.getByLabel("Repository URL / Evidence URL")).toBeVisible();
+    await expect(page.getByLabel("File path")).toBeVisible();
+    await expect(page.getByLabel("Start line")).toBeVisible();
+    await expect(page.getByLabel("End line")).toBeVisible();
     await expect(page.getByLabel("Evidence description", { exact: true })).toHaveCount(1);
-    await page.getByLabel("Repository URL").fill("https://github.com/user/project");
+    await page.getByLabel("Repository URL / Evidence URL").fill("https://github.com/user/project");
     await page.getByLabel("File path").fill("app/main.py");
     await page.getByLabel("Start line").fill("20");
     await page.getByLabel("End line").fill("95");
     await page.getByLabel("Evidence description", { exact: true }).fill("Built FastAPI prediction endpoint using Python.");
     await page.getByRole("button", { name: "Add proof evidence" }).click();
     await expect(page.getByText("Skill: Python")).toBeVisible();
-    await expect(page.getByText("Evidence source: GitHub code file")).toBeVisible();
+    await expect(page.getByText("Evidence source: GitHub file")).toBeVisible();
     await expect(page.getByText("Repository URL: https://github.com/user/project")).toBeVisible();
     await expect(page.getByText("File path: app/main.py")).toBeVisible();
     await expect(page.getByText("Lines: 20–95")).toBeVisible();
@@ -296,63 +302,48 @@ test.describe("/dashboard/onboarding", () => {
     await expect(page.getByText(/1 proof items added/i).first()).toBeVisible();
 
     await proofSkillField.click();
+    await page.getByRole("option", { name: "Python", exact: true }).click();
+    await page.getByLabel("Evidence source type").click();
+    await page.getByRole("option", { name: "Presentation deck", exact: true }).click();
+    await page.getByLabel("Repository URL / Evidence URL").fill("https://example.com/presentation.pdf");
+    await page.getByLabel("File path").fill("presentation.pdf");
+    await page.getByLabel("Evidence description", { exact: true }).fill("Presentation deck for a class project.");
+    await page.getByRole("button", { name: "Add proof evidence" }).click();
+    await expect(page.getByText(/Skill usage not found in the provided file path/i)).toBeVisible();
+
+    await proofSkillField.click();
     await page.getByRole("option", { name: "AWS", exact: true }).click();
     await expect(page.getByText(/Good AWS proof can include/i)).toBeVisible();
     await page.getByLabel("Evidence source type").click();
-    await page.getByRole("option", { name: "Cloud deployment proof", exact: true }).click();
-    await expect(page.getByLabel("Cloud provider")).toBeVisible();
-    await expect(page.getByLabel("Deployment URL (optional)")).toBeVisible();
-    await expect(page.getByLabel("Repository URL (optional)")).toBeVisible();
-    await expect(page.getByLabel("Config / workflow file (optional)")).toBeVisible();
-    await expect(page.getByLabel("Architecture diagram URL (optional)")).toBeVisible();
-    await expect(page.getByLabel("Start line")).toHaveCount(0);
-    await expect(page.getByLabel("End line")).toHaveCount(0);
-    await page.getByLabel("Deployment URL (optional)").fill("https://cloud.example.com");
-    await page.getByLabel("Repository URL (optional)").fill("https://github.com/user/cloud-project");
-    await page.getByLabel("Config / workflow file (optional)").fill("infra/main.tf");
+    await page.getByRole("option", { name: "Deployed app", exact: true }).click();
+    await page.getByLabel("Repository URL / Evidence URL").fill("https://cloud.example.com");
+    await page.getByLabel("File path").fill("infra/main.tf");
     await page.getByLabel("Evidence description", { exact: true }).fill("Deployed an app on AWS with Terraform.");
     await page.getByRole("button", { name: "Add proof evidence" }).click();
     await expect(page.getByText("Skill: AWS")).toBeVisible();
-    await expect(page.getByText("Evidence source: Cloud deployment proof")).toBeVisible();
-    await expect(page.getByText(/Cloud proof recorded/i)).toBeVisible();
-    await expect(page.getByText(/2 proof items added/i).first()).toBeVisible();
+    await expect(page.getByText("Evidence source: Deployed app")).toBeVisible();
+    await expect(page.getByText(/Pending review|Please confirm/i)).toBeVisible();
 
     await proofSkillField.click();
     await page.getByRole("option", { name: "Machine Learning", exact: true }).click();
     await page.getByLabel("Evidence source type").click();
     await page.getByRole("option", { name: "Certificate", exact: true }).click();
-    await expect(page.getByLabel("Certificate URL")).toBeVisible();
-    await expect(page.getByLabel("Issuer")).toBeVisible();
-    await expect(page.getByLabel("Completion date (optional)")).toBeVisible();
-    await expect(page.getByLabel("Start line")).toHaveCount(0);
-    await page.getByLabel("Certificate URL").fill("https://credential.example.com/cert");
-    await page.getByLabel("Issuer").fill("Coursera");
-    await page.getByLabel("Completion date (optional)").fill("2026-05-08");
+    await page.getByLabel("Repository URL / Evidence URL").fill("https://credential.example.com/cert");
     await page.getByLabel("Evidence description", { exact: true }).fill("Completed a machine learning certificate.");
     await page.getByRole("button", { name: "Add proof evidence" }).click();
     await expect(page.getByText("Skill: Machine Learning")).toBeVisible();
     await expect(page.getByText("Evidence source: Certificate")).toBeVisible();
-    await expect(page.getByText("Issuer: Coursera")).toBeVisible();
-    await expect(page.getByText(/Certificate recorded/i)).toBeVisible();
-    await expect(page.getByText(/3 proof items added/i).first()).toBeVisible();
+    await expect(page.getByText(/Pending review/i)).toBeVisible();
 
     await proofSkillField.click();
     await page.getByRole("option", { name: "AWS", exact: true }).click();
     await page.getByLabel("Evidence source type").click();
     await page.getByRole("option", { name: "LinkedIn post", exact: true }).click();
-    await expect(page.getByLabel("LinkedIn post URL")).toBeVisible();
-    await expect(page.getByLabel("Related project/repository URL (optional)")).toBeVisible();
-    await expect(page.getByLabel("Start line")).toHaveCount(0);
-    await expect(page.getByLabel("End line")).toHaveCount(0);
-    await page.getByLabel("LinkedIn post URL").fill("https://www.linkedin.com/posts/example");
-    await page.getByLabel("Related project/repository URL (optional)").fill("https://github.com/user/project");
+    await page.getByLabel("Repository URL / Evidence URL").fill("https://www.linkedin.com/posts/example");
     await page.getByLabel("Evidence description", { exact: true }).fill("LinkedIn post about a cloud deployment project.");
     await page.getByRole("button", { name: "Add proof evidence" }).click();
     await expect(page.getByText("Evidence source: LinkedIn post")).toBeVisible();
-    await expect(page.getByText("LinkedIn post URL: https://www.linkedin.com/posts/example")).toBeVisible();
-    await expect(page.getByText("Related project/repository URL: https://github.com/user/project")).toBeVisible();
-    await expect(page.getByText(/LinkedIn post recorded for recruiter review/i)).toBeVisible();
-    await expect(page.getByText(/4 proof items added/i).first()).toBeVisible();
+    await expect(page.getByText("Repository URL: https://www.linkedin.com/posts/example")).toBeVisible();
     await expect(page.getByText("Skill: Machine Learning")).toBeVisible();
   });
 
@@ -367,7 +358,7 @@ test.describe("/dashboard/onboarding", () => {
     await page.getByLabel("Add a skill").fill("AWS");
     await page.getByRole("button", { name: "Add skill to inventory" }).click();
 
-    const proofSkillField = page.getByRole("textbox", { name: "Choose skill to attach proof", exact: true });
+    const proofSkillField = page.getByRole("textbox", { name: "Skill", exact: true });
     await proofSkillField.click();
     await page.getByRole("option", { name: "AWS", exact: true }).click();
 
@@ -376,7 +367,7 @@ test.describe("/dashboard/onboarding", () => {
     await expect(page.getByRole("switch", { name: "Recruiter visibility" })).toHaveAttribute("aria-checked", "false");
 
     await page.getByLabel("Evidence source type").click();
-    await page.getByRole("option", { name: "Project report", exact: true }).click();
+    await page.getByRole("option", { name: "Lab report", exact: true }).click();
     await expect(page.getByLabel("Evidence description", { exact: true })).toHaveCount(1);
     await expect(page.getByLabel("Start line")).toHaveCount(0);
     await expect(page.getByLabel("End line")).toHaveCount(0);
@@ -402,7 +393,7 @@ test.describe("/dashboard/onboarding", () => {
     await page.getByRole("option", { name: "AWS", exact: true }).click();
     await page.getByRole("button", { name: "Upload file" }).click();
     await page.getByLabel("Evidence source type").click();
-    await page.getByRole("option", { name: "Architecture diagram", exact: true }).click();
+    await page.getByRole("option", { name: "Design portfolio", exact: true }).click();
     await expect(page.getByLabel("Start line")).toHaveCount(0);
     await expect(page.getByLabel("Live demo URL")).toHaveCount(0);
     await page.getByRole("switch", { name: "Recruiter visibility" }).click();
@@ -425,7 +416,7 @@ test.describe("/dashboard/onboarding", () => {
     await page.getByRole("option", { name: "AWS", exact: true }).click();
     await page.getByRole("button", { name: "Upload file" }).click();
     await page.getByLabel("Evidence source type").click();
-    await page.getByRole("option", { name: "Deployed app / live demo", exact: true }).click();
+    await page.getByRole("option", { name: "Demo video", exact: true }).click();
     await expect(page.getByLabel("Evidence description", { exact: true })).toHaveCount(1);
     await expect(page.getByLabel("Live demo URL")).toHaveCount(0);
     await expect(page.getByLabel("Repository URL", { exact: true })).toHaveCount(0);

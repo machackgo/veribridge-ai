@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
-  CLOUD_PROVIDER_OPTIONS,
   ALL_ROLE_OPTIONS,
   ALL_SKILL_OPTIONS,
   PROOF_EVIDENCE_ACCESS_METHODS,
@@ -93,6 +92,7 @@ const steps = [
 ];
 
 type ProofVerificationStatus =
+  | "Pending review"
   | "Pending verification"
   | "Verified"
   | "Skill usage not found"
@@ -137,6 +137,7 @@ type ProofEvidenceEntry = {
   evidence_type?: string;
   evidence_access_method?: "public_link" | "upload_file";
   evidence_url?: string;
+  repository_url?: string;
   linked_in_post_url?: string;
   related_project_url?: string;
   evidence_title?: string;
@@ -1563,9 +1564,7 @@ function PreferenceToggle({ label, active, onToggle }: { label: string; active: 
 }
 
 function renderProofEvidenceFieldGroup(form: FormState, update: (name: keyof FormState, value: string | boolean | string[]) => void) {
-  const sourceType = form.proofEvidenceType.trim();
   const accessMethod = form.proofEvidenceAccessMethod === "upload_file" ? "upload_file" : "public_link";
-  const showExactCodeLocation = sourceType === "GitHub code file" || form.proofExactCodeLocation;
   const uploadedFileLabel = inferUploadedFileLabel(form.proofUploadedFileName, form.proofUploadedFileType);
   const uploadedFileSize = form.proofUploadedFileSize || "";
   const uploadedPreviewKind = isPreviewableVideo(form.proofUploadedFileName, form.proofUploadedFileType)
@@ -1852,162 +1851,15 @@ function renderProofEvidenceFieldGroup(form: FormState, update: (name: keyof For
 
   if (accessMethod === "public_link") {
     return (
-      <>
-        {sourceType === "GitHub repository" && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-            <TextField label="Repository URL (optional)" name="proofRepositoryUrl" placeholder="https://github.com/user/project" value={form.proofRepositoryUrl} onChange={update} />
-            <TextField label="Optional key files" name="proofKeyFiles" placeholder="app/main.py, workflows/ci.yml, README.md" value={form.proofKeyFiles} onChange={update} helper="Comma-separated files or folders." />
-          </div>
-        )}
-
-        {sourceType === "GitHub code file" && (
-          <div style={{ display: "grid", gap: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-              <TextField label="Repository URL" name="proofRepositoryUrl" placeholder="https://github.com/user/project" value={form.proofRepositoryUrl} onChange={update} />
-              <TextField label="File path" name="proofFilePath" placeholder="app/main.py" value={form.proofFilePath} onChange={update} />
-            </div>
-            {showExactCodeLocation ? (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-                <TextField label="Start line" name="proofLineStart" placeholder="20" value={form.proofLineStart} onChange={update} />
-                <TextField label="End line" name="proofLineEnd" placeholder="95" value={form.proofLineEnd} onChange={update} />
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => update("proofExactCodeLocation", true)}
-                style={{
-                  justifySelf: "start",
-                  border: "1px solid var(--line)",
-                  borderRadius: 999,
-                  background: "#fff",
-                  color: "var(--ink)",
-                  padding: "8px 12px",
-                  fontSize: 12,
-                  fontWeight: 750,
-                }}
-              >
-                Add exact code location
-              </button>
-            )}
-          </div>
-        )}
-
-        {sourceType === "Deployed app / live demo" && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-            <TextField label="Live demo URL" name="proofEvidenceUrl" placeholder="https://demo.example.com" value={form.proofEvidenceUrl} onChange={update} />
-            <TextField label="Repository URL (optional)" name="proofRepositoryUrl" placeholder="https://github.com/user/project" value={form.proofRepositoryUrl} onChange={update} />
-          </div>
-        )}
-
-        {sourceType === "Cloud deployment proof" && (
-          <div style={{ display: "grid", gap: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-              <SelectDropdown label="Cloud provider" name="proofCloudProvider" value={form.proofCloudProvider} options={[...CLOUD_PROVIDER_OPTIONS] as string[]} onChange={update} />
-              <TextField label="Deployment URL (optional)" name="proofEvidenceUrl" placeholder="https://app.example.com" value={form.proofEvidenceUrl} onChange={update} />
-              <TextField label="Repository URL (optional)" name="proofRepositoryUrl" placeholder="https://github.com/user/project" value={form.proofRepositoryUrl} onChange={update} />
-              <TextField label="Config / workflow file (optional)" name="proofConfigFile" placeholder="infra/main.tf or .github/workflows/deploy.yml" value={form.proofConfigFile} onChange={update} />
-              <TextField label="Architecture diagram URL (optional)" name="proofDiagramUrl" placeholder="https://drive.google.com/..." value={form.proofDiagramUrl} onChange={update} />
-            </div>
-          </div>
-        )}
-
-        {sourceType === "Architecture diagram" && (
-          <TextField label="Diagram URL (optional)" name="proofDiagramUrl" placeholder="https://drive.google.com/..." value={form.proofDiagramUrl} onChange={update} />
-        )}
-
-        {(sourceType === "Project report" || sourceType === "Coursework project") && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-            <TextField
-              label={sourceType === "Project report" ? "Report URL (optional)" : "Project artifact URL (optional)"}
-              name="proofEvidenceUrl"
-              placeholder={sourceType === "Project report" ? "https://drive.google.com/..." : "https://github.com/user/project"}
-              value={form.proofEvidenceUrl}
-              onChange={update}
-            />
-            <TextField label="Repository URL (optional)" name="proofRepositoryUrl" placeholder="https://github.com/user/project" value={form.proofRepositoryUrl} onChange={update} />
-          </div>
-        )}
-
-        {sourceType === "Certificate" && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-            <TextField label="Certificate URL (optional)" name="proofEvidenceUrl" placeholder="https://credential.example.com/..." value={form.proofEvidenceUrl} onChange={update} />
-            <TextField label="Issuer" name="proofCertificateIssuer" placeholder="AWS, Coursera, university, employer" value={form.proofCertificateIssuer} onChange={update} />
-            <TextField label="Completion date (optional)" name="proofCompletionDate" placeholder="2026-05-08" type="date" value={form.proofCompletionDate} onChange={update} />
-          </div>
-        )}
-
-        {sourceType === "Dashboard / analytics report" && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-            <TextField label="Dashboard/report URL (optional)" name="proofEvidenceUrl" placeholder="https://lookerstudio.google.com/..." value={form.proofEvidenceUrl} onChange={update} />
-            <TextField label="Tool used (optional)" name="proofToolUsed" placeholder="Excel, Tableau, Power BI, Looker" value={form.proofToolUsed} onChange={update} />
-          </div>
-        )}
-
-        {sourceType === "Notebook / experiment" && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-            <TextField label="Notebook URL or file path (optional)" name="proofEvidenceUrl" placeholder="https://colab.research.google.com/..." value={form.proofEvidenceUrl} onChange={update} />
-            <TextField label="Repository URL (optional)" name="proofRepositoryUrl" placeholder="https://github.com/user/project" value={form.proofRepositoryUrl} onChange={update} />
-            <TextField label="Dataset (optional)" name="proofDataset" placeholder="Kaggle, internal, public dataset" value={form.proofDataset} onChange={update} />
-            <TextField label="Metrics / results (optional)" name="proofMetrics" placeholder="Accuracy 92%, F1 0.88" value={form.proofMetrics} onChange={update} />
-            {showExactCodeLocation && (
-              <>
-                <TextField label="Start line" name="proofLineStart" placeholder="20" value={form.proofLineStart} onChange={update} />
-                <TextField label="End line" name="proofLineEnd" placeholder="95" value={form.proofLineEnd} onChange={update} />
-              </>
-            )}
-          </div>
-        )}
-
-        {sourceType === "Presentation / slides" && (
-          <TextField label="Slides URL (optional)" name="proofEvidenceUrl" placeholder="https://docs.google.com/presentation/..." value={form.proofEvidenceUrl} onChange={update} />
-        )}
-
-        {sourceType === "Portfolio link" && (
-          <TextField label="Portfolio URL (optional)" name="proofEvidenceUrl" placeholder="https://yourportfolio.com/..." value={form.proofEvidenceUrl} onChange={update} />
-        )}
-
-        {sourceType === "Team / leadership evidence" && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-            <TextField label="Project/team artifact URL (optional)" name="proofEvidenceUrl" placeholder="https://docs.google.com/..." value={form.proofEvidenceUrl} onChange={update} />
-            <TextField label="Role / title" name="proofRoleTitle" placeholder="Team lead, project manager, organizer" value={form.proofRoleTitle} onChange={update} />
-          </div>
-        )}
-
-        {sourceType === "LinkedIn post" && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-            <TextField label="LinkedIn post URL" name="proofLinkedInPostUrl" placeholder="https://www.linkedin.com/posts/..." value={form.proofLinkedInPostUrl} onChange={update} />
-            <TextField label="Related project/repository URL (optional)" name="proofRelatedProjectUrl" placeholder="https://github.com/user/project" value={form.proofRelatedProjectUrl} onChange={update} />
-          </div>
-        )}
-
-        {sourceType === "Other" && showExactCodeLocation && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
-            <TextField label="Start line" name="proofLineStart" placeholder="20" value={form.proofLineStart} onChange={update} />
-            <TextField label="End line" name="proofLineEnd" placeholder="95" value={form.proofLineEnd} onChange={update} />
-          </div>
-        )}
-
-        {sourceType === "Other" && !showExactCodeLocation && (
-          <button
-            type="button"
-            onClick={() => update("proofExactCodeLocation", true)}
-            style={{
-              justifySelf: "start",
-              border: "1px solid var(--line)",
-              borderRadius: 999,
-              background: "#fff",
-              color: "var(--ink)",
-              padding: "8px 12px",
-              fontSize: 12,
-              fontWeight: 750,
-            }}
-          >
-            Add exact code location
-          </button>
-        )}
-
-        <TextAreaField label="Evidence description" name="proofEvidenceDescription" placeholder="Describe the evidence and what it demonstrates." value={form.proofEvidenceDescription} onChange={update} />
-      </>
+      <div style={{ display: "grid", gap: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
+          <TextField label="Repository URL / Evidence URL" name="proofRepositoryUrl" placeholder="https://github.com/user/project" value={form.proofRepositoryUrl} onChange={update} />
+          <TextField label="File path" name="proofFilePath" placeholder="app/main.py" value={form.proofFilePath} onChange={update} />
+          <TextField label="Start line" name="proofLineStart" placeholder="20" value={form.proofLineStart} onChange={update} />
+          <TextField label="End line" name="proofLineEnd" placeholder="95" value={form.proofLineEnd} onChange={update} />
+        </div>
+        <TextAreaField label="Evidence description" name="proofEvidenceDescription" placeholder="Built FastAPI prediction endpoint" value={form.proofEvidenceDescription} onChange={update} />
+      </div>
     );
   }
 }
@@ -2085,6 +1937,7 @@ function DropdownOption({
 function VerificationBadge({ status }: { status: ProofVerificationStatus }) {
   const styles: Record<ProofVerificationStatus, { background: string; color: string; border: string }> = {
     Verified: { background: "#ecfdf5", color: "#065f46", border: "#a7f3d0" },
+    "Pending review": { background: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe" },
     "Pending verification": { background: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe" },
     "Skill usage not found": { background: "#fef2f2", color: "#b91c1c", border: "#fecaca" },
     "Needs review": { background: "#fffbeb", color: "#92400e", border: "#fde68a" },
@@ -2126,7 +1979,7 @@ function ProofEvidenceCard({
   const sourceType = entry.sourceType ?? entry.evidence_type ?? "";
   const accessMethod = entry.evidenceAccessMethod ?? entry.evidence_access_method ?? "public_link";
   const evidenceUrl = entry.evidenceUrl ?? entry.evidence_url ?? "";
-  const repositoryUrl = entry.repositoryUrl || "";
+  const repositoryUrl = entry.repositoryUrl ?? entry.repository_url ?? "";
   const linkedInPostUrl = entry.linkedInPostUrl ?? entry.linked_in_post_url ?? "";
   const relatedProjectUrl = entry.relatedProjectUrl ?? entry.related_project_url ?? "";
   const evidenceTitle = entry.evidenceTitle ?? entry.evidence_title ?? "";
@@ -2629,8 +2482,52 @@ export function OnboardingFlow({ mode = "signup" }: { mode?: Mode }) {
 
     if (!hasAnyEvidence) {
       return {
-        verificationStatus: "Pending verification",
+        verificationStatus: "Pending review",
         verificationSummary: "Pending review until a repository link, evidence URL, file path, or description is added.",
+      };
+    }
+
+    if (path) {
+      if (skill.includes("python")) {
+        return path.endsWith(".py")
+          ? verifiedSummary("Python")
+          : {
+              verificationStatus: "Skill usage not found",
+              verificationSummary:
+                "Skill usage not found in the provided file path. Please provide a file or link that clearly demonstrates this skill.",
+            };
+      }
+
+      if (skill.includes("javascript") || skill.includes("typescript")) {
+        return /\.(js|jsx|ts|tsx)$/.test(path)
+          ? verifiedSummary("JavaScript/TypeScript")
+          : {
+              verificationStatus: "Skill usage not found",
+              verificationSummary:
+                "Skill usage not found in the provided file path. Please provide a file or link that clearly demonstrates this skill.",
+            };
+      }
+
+      if (skill.includes("sql")) {
+        return path.endsWith(".sql")
+          ? verifiedSummary("SQL")
+          : {
+              verificationStatus: "Skill usage not found",
+              verificationSummary:
+                "Skill usage not found in the provided file path. Please provide a file or link that clearly demonstrates this skill.",
+            };
+      }
+
+      return {
+        verificationStatus: "Pending review",
+        verificationSummary: "Pending review",
+      };
+    }
+
+    if (method !== "upload_file" && !path && (repository || url || description)) {
+      return {
+        verificationStatus: "Pending review",
+        verificationSummary: "Pending review",
       };
     }
 
@@ -2890,6 +2787,7 @@ export function OnboardingFlow({ mode = "signup" }: { mode?: Mode }) {
           evidence_type: sourceType,
           evidence_access_method: evidenceAccessMethod,
           evidence_url: evidenceUrl || repositoryUrl || linkedInPostUrl || diagramUrl,
+          repository_url: repositoryUrl,
           evidence_title: form.proofEvidenceTitle.trim(),
           visibility_note: form.proofVisibilityNote.trim(),
           is_recruiter_visible: isRecruiterVisible,
@@ -3172,9 +3070,9 @@ function renderStep(
         <section style={{ border: "1px solid var(--line)", borderRadius: 18, background: "#fff", padding: 18, display: "grid", gap: 14 }}>
           <div>
             <div className="vb-eyebrow">Skills to prove</div>
-            <h3 style={{ margin: "6px 0 6px", fontSize: 20 }}>Build your full skill inventory</h3>
+            <h3 style={{ margin: "6px 0 6px", fontSize: 20 }}>Skills & Proof Evidence</h3>
             <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
-              Add every skill you want VeriBridge to use for resume tailoring, recruiter proof, job matching, and skill-gap analysis. You can add proof now or later.
+              Add skills you want recruiters to trust, then attach exact proof such as a GitHub file, portfolio link, report, certificate, or project artifact. VeriBridge will later verify whether the evidence actually supports the skill.
             </p>
             <p style={{ margin: "8px 0 0", color: "var(--ink-2)", fontSize: 12, fontWeight: 700 }}>
               {form.selectedSkills.length} skills in inventory · {form.proofEvidence.length} proof items added
@@ -3250,7 +3148,7 @@ function renderStep(
         <section style={{ border: "1px solid var(--line)", borderRadius: 18, background: "linear-gradient(135deg,#fff,#f8fafc)", padding: 18, display: "grid", gap: 16 }}>
           <div>
             <div className="vb-eyebrow">Proof evidence builder</div>
-            <h3 style={{ margin: "6px 0 6px", fontSize: 20 }}>Attach exact proof to a skill</h3>
+            <h3 style={{ margin: "6px 0 6px", fontSize: 20 }}>Proof Evidence Builder</h3>
             <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
               AI verification and line highlighting will be enabled after GitHub/file integration. For now, VeriBridge records exact evidence locations and performs basic validation.
             </p>
@@ -3296,7 +3194,7 @@ function renderStep(
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
             <SearchableDropdown
-              label="Choose skill to attach proof"
+              label="Skill"
               name="proofSkill"
               placeholder={form.selectedSkills.length === 0 ? "Add a skill to your inventory first" : "Choose from your skill inventory"}
               value={form.proofSkill}
@@ -3317,6 +3215,10 @@ function renderStep(
           </div>
 
           {renderProofEvidenceFieldGroup(form, update)}
+
+          <div style={{ border: "1px solid var(--line)", borderRadius: 14, background: "#fff", padding: 12, fontSize: 13, color: "var(--ink)" }}>
+            <strong>Verification status:</strong> Basic validation runs when you add proof evidence.
+          </div>
 
           <div style={{ display: "grid", gap: 12 }}>
             <button

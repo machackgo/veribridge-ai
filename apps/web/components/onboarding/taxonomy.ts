@@ -613,8 +613,8 @@ export const SKILL_TAXONOMY = {
 
 const MAJOR_SKILL_SUGGESTIONS: Record<string, string[]> = {
   "Computer Science": ["Python", "JavaScript", "TypeScript", "React", "Node.js", "SQL", "Git", "Docker", "APIs", "Cloud", "Data Structures", "Algorithms", "System Design", "Cybersecurity"],
-  "Artificial Intelligence": ["Python", "Machine Learning", "Deep Learning", "PyTorch", "TensorFlow", "Scikit-learn", "MLOps", "FastAPI", "Docker", "RAG", "LLMs", "Vector Databases", "Prompt Engineering", "NLP", "Computer Vision"],
-  "Data Science": ["Python", "Machine Learning", "Data Analysis", "Pandas", "NumPy", "SQL", "Scikit-learn", "MLOps", "FastAPI", "Docker", "RAG", "LLMs", "Statistics", "Visualization"],
+  "Artificial Intelligence": ["Python", "Machine Learning", "Deep Learning", "PyTorch", "TensorFlow", "Scikit-learn", "Pandas", "NumPy", "SQL", "Data Analysis", "MLOps", "FastAPI", "Docker", "GitHub", "RAG", "LLMs", "Vector Databases", "Prompt Engineering", "NLP", "Computer Vision"],
+  "Data Science": ["Python", "Machine Learning", "Deep Learning", "PyTorch", "TensorFlow", "Scikit-learn", "Pandas", "NumPy", "SQL", "Data Analysis", "MLOps", "FastAPI", "Docker", "GitHub", "RAG", "LLMs", "Vector Databases", "Prompt Engineering", "NLP", "Computer Vision"],
   Finance: ["Excel", "Financial Modeling", "Valuation", "Accounting", "Risk Analysis", "Bloomberg Terminal", "Power BI", "SQL", "Market Research"],
   Accounting: ["Excel", "Accounting", "Financial Modeling", "Risk Analysis", "SQL", "Power BI", "Audit", "Forecasting"],
   "Business Administration": ["Excel", "Business Analysis", "Project Management", "Market Research", "Presentation", "Stakeholder Management", "Communication", "Power BI", "SQL"],
@@ -667,7 +667,7 @@ export function getSuggestedSkillsForMajor(major: string) {
 
 export function getSuggestedSkillsForContext(major: string, roles: string[]) {
   const roleHints = roles.flatMap((role) => ROLE_SKILL_HINTS[role] ?? []);
-  return Array.from(new Set([...getSuggestedSkillsForMajor(major), ...roleHints])).slice(0, 18);
+  return Array.from(new Set([...getSuggestedSkillsForMajor(major), ...roleHints])).slice(0, 24);
 }
 
 export function searchSkills(query: string, major: string) {
@@ -676,19 +676,23 @@ export function searchSkills(query: string, major: string) {
 
 export const PROOF_EVIDENCE_SOURCE_TYPES = [
   "GitHub repository",
-  "GitHub code file",
-  "Deployed app / live demo",
-  "Cloud deployment proof",
-  "Architecture diagram",
-  "Project report",
-  "Coursework project",
-  "Certificate",
-  "Dashboard / analytics report",
-  "Notebook / experiment",
-  "Presentation / slides",
+  "GitHub file",
+  "Deployed app",
   "Portfolio link",
-  "Team / leadership evidence",
+  "Coursework project",
+  "Lab report",
+  "Design portfolio",
+  "Figma file",
+  "CAD file",
+  "Financial model",
+  "Research paper",
+  "Presentation deck",
+  "Certificate",
+  "Internship letter",
+  "Demo video",
   "LinkedIn post",
+  "Case competition",
+  "Capstone project",
   "Other",
 ] as const;
 
@@ -788,11 +792,11 @@ export function detectSkillCategory(skill: string): SkillCategory {
 
 export function getRecommendedProofSourceType(skill: string) {
   const category = detectSkillCategory(skill);
-  if (category === "cloud") return "Cloud deployment proof";
-  if (category === "data") return "Dashboard / analytics report";
-  if (category === "soft") return "Team / leadership evidence";
-  if (category === "general") return "Project report";
-  return "GitHub code file";
+  if (category === "cloud") return "Deployed app";
+  if (category === "data") return "Financial model";
+  if (category === "soft") return "Presentation deck";
+  if (category === "general") return "Coursework project";
+  return "GitHub file";
 }
 
 export function getSkillProofHint(skill: string) {
@@ -816,7 +820,7 @@ export function getSkillProofHint(skill: string) {
   }
 
   if (category === "code") {
-    return `Good ${trimmed} proof can include a GitHub code file, notebook, package, backend endpoint, or project repository.`;
+    return `Good ${trimmed} proof can include a GitHub file, notebook, package, backend endpoint, or project repository.`;
   }
 
   return "Good proof can be a code file, project/report evidence, deployed/demo evidence, dashboard/data evidence, certificate, diagram, video, team artifact, or other artifact.";
