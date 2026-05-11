@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import { createSkillEvidence, type SkillEvidenceResponse as BackendSkillEvidenceResponse } from "@/lib/api";
 import {
   ALL_ROLE_OPTIONS,
   ALL_SKILL_OPTIONS,
@@ -99,6 +100,7 @@ type ProofVerificationStatus =
   | "Needs review";
 
 type ProofEvidenceEntry = {
+  backendEvidenceId?: string;
   skill: string;
   sourceType: string;
   evidenceAccessMethod: "public_link" | "upload_file";
@@ -1965,6 +1967,13 @@ function VerificationBadge({ status }: { status: ProofVerificationStatus }) {
   );
 }
 
+function mapBackendVerificationStatus(status: BackendSkillEvidenceResponse["verification_status"]): ProofVerificationStatus {
+  if (status === "verified") return "Verified";
+  if (status === "skill_usage_not_found") return "Skill usage not found";
+  if (status === "needs_review") return "Needs review";
+  return "Pending review";
+}
+
 function ProofEvidenceCard({
   entry,
   onRemove,
@@ -2748,7 +2757,7 @@ export function OnboardingFlow({ mode = "signup" }: { mode?: Mode }) {
     update("proofSkill", form.proofSkill === skill ? nextSkills[0] ?? "" : form.proofSkill);
   }
 
-  function addProofEvidence() {
+  async function addProofEvidence() {
     const skill = form.proofSkill.trim();
     if (!skill || !form.selectedSkills.includes(skill)) return;
 
@@ -2776,7 +2785,7 @@ export function OnboardingFlow({ mode = "signup" }: { mode?: Mode }) {
     const lineStart = form.proofLineStart.trim();
     const lineEnd = form.proofLineEnd.trim();
     const evidenceDescription = form.proofEvidenceDescription.trim();
-    const { verificationStatus, verificationSummary } = deriveProofVerification(
+    let { verificationStatus, verificationSummary } = deriveProofVerification(
       skill,
       sourceType,
       evidenceAccessMethod,
@@ -2791,12 +2800,32 @@ export function OnboardingFlow({ mode = "signup" }: { mode?: Mode }) {
       form.proofUploadedFileName,
       form.proofUploadedFileType
     );
+    let backendEvidenceId = "";
+
+    try {
+      const backendEvidence = await createSkillEvidence({
+        skill_name: skill,
+        evidence_type: sourceType,
+        repository_url: repositoryUrl || undefined,
+        evidence_url: evidenceUrl || linkedInPostUrl || relatedProjectUrl || diagramUrl || undefined,
+        file_path: filePath || undefined,
+        line_start: lineStart ? Number(lineStart) : undefined,
+        line_end: lineEnd ? Number(lineEnd) : undefined,
+        evidence_description: evidenceDescription || undefined,
+      });
+      backendEvidenceId = backendEvidence.id;
+      verificationStatus = mapBackendVerificationStatus(backendEvidence.verification_status);
+      verificationSummary = backendEvidence.verification_summary || verificationSummary;
+    } catch {
+      // Demo/local onboarding must continue when the API is unavailable.
+    }
 
     setForm((prev) => ({
       ...prev,
       proofEvidence: [
         ...prev.proofEvidence,
         {
+          backendEvidenceId,
           skill,
           sourceType,
           evidenceAccessMethod,
