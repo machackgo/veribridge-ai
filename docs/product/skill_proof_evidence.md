@@ -24,16 +24,61 @@ Saved fields:
 - `created_at`
 - `updated_at`
 
+## Phase 2: Public GitHub File Reader
+
+Phase 2 verifies public GitHub file evidence without requiring a GitHub API token. When a proof record has a GitHub `repository_url` or GitHub `evidence_url` plus `file_path`, the backend builds a `raw.githubusercontent.com` URL, fetches the file, optionally narrows inspection to the submitted line range, and checks for skill-specific code indicators.
+
+Supported URL formats:
+
+- `https://github.com/user/repo`
+- `https://github.com/user/repo/`
+- `https://github.com/user/repo/tree/main`
+- `https://github.com/user/repo/blob/main/app/main.py`
+- `https://raw.githubusercontent.com/user/repo/main/app/main.py`
+
+Branch behavior:
+
+- If the GitHub URL includes a branch, VeriBridge tries that branch first.
+- Otherwise VeriBridge tries `main`, then `master`.
+- GitHub API tokens are not used in Phase 2.
+
+Line range behavior:
+
+- If `line_start` and `line_end` are provided, VeriBridge inspects that selected range first.
+- If no line range is provided, VeriBridge inspects the full file.
+- If `line_start` is beyond the file length, verification returns `needs_review`.
+- If `line_end` is beyond the file length, VeriBridge clamps the range to the last available line and notes the inspected range in the summary.
+
+Limits:
+
+- Public GitHub files only.
+- Private repositories are not supported yet.
+- Maximum fetched file size is 1 MB.
+- Phase 2 checks deterministic code/content indicators only; it is not a semantic AI verifier.
+
 ## API Endpoints
 
 All endpoints are under `/api/v1` and are scoped to the authenticated user.
 
 - `GET /student/skill-evidence` lists the current user's evidence.
-- `POST /student/skill-evidence` creates evidence and runs mock verification.
+- `POST /student/skill-evidence` creates evidence and runs GitHub file verification when possible, otherwise mock verification.
 - `GET /student/skill-evidence/{evidence_id}` returns one evidence record for the current user.
-- `PUT /student/skill-evidence/{evidence_id}` updates one evidence record and reruns mock verification when relevant fields change.
+- `PUT /student/skill-evidence/{evidence_id}` updates one evidence record and reruns verification when relevant fields change.
 - `DELETE /student/skill-evidence/{evidence_id}` deletes one evidence record.
-- `POST /student/skill-evidence/{evidence_id}/verify` reruns mock verification.
+- `POST /student/skill-evidence/{evidence_id}/verify` reruns GitHub file verification when possible, otherwise mock verification.
+
+## GitHub File Verification Rules
+
+The Phase 2 GitHub verifier returns `verifier_version = github-file-v1`.
+
+- Python: verifies `.py` or `.ipynb` files, or content with Python indicators such as imports, functions/classes, pandas, NumPy, scikit-learn, Torch, TensorFlow, or FastAPI.
+- Machine Learning / AI / Data Science: verifies ML code indicators such as scikit-learn, DecisionTree, RandomForest, regressions, `train_test_split`, `fit(`, `predict(`, models, TensorFlow, Keras, Torch, XGBoost, or LightGBM.
+- RAG / LLM / GenAI: verifies OpenAI, Anthropic, LangChain, LlamaIndex, embeddings, vector stores, retrieval, prompts, Chroma, Pinecone, or FAISS.
+- MLOps / FastAPI / Docker / Cloud: verifies FastAPI, Uvicorn, Docker, GitHub Actions, Cloud Run, deployment, Prometheus, Grafana, monitoring, or API indicators.
+- SQL: verifies `.sql` files or SQL query/table keywords.
+- JavaScript / TypeScript: verifies `.js`, `.jsx`, `.ts`, or `.tsx` files, or common JS/TS indicators such as imports, exports, functions, `const`, `let`, React, or Next.js.
+
+If the public GitHub file is fetched and evidence is found, status is `verified` and the summary mentions the inspected lines or full file. If the file is fetched but the selected lines do not demonstrate the skill, status is `skill_usage_not_found`. If the file cannot be fetched or exceeds the size limit, status is `needs_review`.
 
 ## Mock Verification Rules
 
@@ -49,15 +94,11 @@ The Phase 1 verifier returns `verifier_version = mock-v1`.
 - Obvious mismatch: Python evidence using document or deck file paths without useful Python/ML/API context returns `skill_usage_not_found`.
 - Insufficient data returns `pending_review`.
 
-## Future Phase 2: GitHub/File Fetching
-
-Phase 2 should fetch public GitHub files and supported linked artifacts, normalize file content, and store enough metadata to verify exact evidence locations. Private files must require explicit student permission before recruiter access.
-
 ## Future Phase 3: AI Verification + Highlighted Lines
 
 Phase 3 should use AI verification to evaluate whether the evidence actually supports the selected skill. The recruiter viewer should show highlighted lines, confidence, and a concise explanation of why the evidence supports or does not support the skill.
 
-## Future Recruiter Flow
+## Future Phase 4: Recruiter Evidence Viewer
 
 The intended recruiter flow is:
 

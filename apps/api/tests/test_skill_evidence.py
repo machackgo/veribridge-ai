@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user_id, get_db
 from app.main import app
+from app.services.github_evidence_service import GitHubFileFetchResult
 
 USER_ID = "00000000-0000-0000-0000-000000000001"
 OTHER_USER_ID = "00000000-0000-0000-0000-000000000002"
@@ -25,7 +26,6 @@ def _python_payload() -> dict:
     return {
         "skill_name": "Python",
         "evidence_type": "GitHub file",
-        "repository_url": "https://github.com/user/project",
         "file_path": "app/main.py",
         "line_start": 20,
         "line_end": 95,
@@ -212,5 +212,68 @@ def test_missing_evidence_returns_404() -> None:
         response = client.get("/api/v1/student/skill-evidence/missing")
         assert response.status_code == 404
         assert response.json()["detail"]["code"] == "skill_evidence_not_found"
+    finally:
+        _clear_overrides()
+
+
+def test_api_post_uses_github_file_verifier(monkeypatch) -> None:
+    store: dict = {}
+    client = _client(store)
+
+    def fake_fetch(repository_url: str, file_path: str, branch_candidates=None) -> GitHubFileFetchResult:
+        assert repository_url == "https://github.com/user/project"
+        assert file_path == "app/main.py"
+        return GitHubFileFetchResult(
+            ok=True,
+            content="from fastapi import FastAPI\n\napp = FastAPI()\n",
+            branch="main",
+            raw_url="https://raw.githubusercontent.com/user/project/main/app/main.py",
+        )
+
+    monkeypatch.setattr("app.services.github_evidence_service.fetch_public_github_file", fake_fetch)
+    try:
+        response = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                **_python_payload(),
+                "repository_url": "https://github.com/user/project",
+                "line_start": 1,
+                "line_end": 3,
+            },
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["verification_status"] == "verified"
+        assert data["verifier_version"] == "github-file-v1"
+        assert "Verified from public GitHub file" in data["verification_summary"]
+    finally:
+        _clear_overrides()
+
+
+def test_verify_endpoint_reruns_github_file_verifier(monkeypatch) -> None:
+    store: dict = {}
+    client = _client(store)
+    contents = ["print('placeholder')\n", "from fastapi import FastAPI\napp = FastAPI()\n"]
+
+    def fake_fetch(repository_url: str, file_path: str, branch_candidates=None) -> GitHubFileFetchResult:
+        return GitHubFileFetchResult(ok=True, content=contents.pop(0), branch="main")
+
+    monkeypatch.setattr("app.services.github_evidence_service.fetch_public_github_file", fake_fetch)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                **_python_payload(),
+                "repository_url": "https://github.com/user/project",
+                "line_start": 1,
+                "line_end": 2,
+            },
+        ).json()
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/verify")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["verification_status"] == "verified"
+        assert data["verifier_version"] == "github-file-v1"
+        assert data["evidence"]["verifier_version"] == "github-file-v1"
     finally:
         _clear_overrides()

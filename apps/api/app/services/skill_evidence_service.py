@@ -11,6 +11,7 @@ from app.schemas.skill_evidence import (
     SkillEvidenceResponse,
     SkillEvidenceUpdate,
 )
+from app.services.github_evidence_service import verify_github_file_evidence
 
 _TABLE = "skill_evidence"
 _MOCK_VERIFIER_VERSION = "mock-v1"
@@ -44,7 +45,7 @@ class SkillEvidenceService:
         return [_to_response(row) for row in (getattr(result, "data", []) or [])]
 
     def create_skill_evidence(self, user_id: str, payload: SkillEvidenceCreate) -> SkillEvidenceResponse:
-        verification = verify_evidence_mock(payload)
+        verification = verify_evidence(payload)
         data = {
             **payload.model_dump(),
             "user_id": user_id,
@@ -97,7 +98,7 @@ class SkillEvidenceService:
         }
         if relevant.intersection(updates):
             merged = {**current, **updates}
-            verification = verify_evidence_mock(merged)
+            verification = verify_evidence(merged)
             updates.update(
                 {
                     "verification_status": verification["status"],
@@ -138,7 +139,7 @@ class SkillEvidenceService:
 
     def verify_skill_evidence(self, user_id: str, evidence_id: str) -> SkillEvidenceResponse:
         current = self._get_row(user_id, evidence_id)
-        verification = verify_evidence_mock(current)
+        verification = verify_evidence(current)
         updates = {
             "verification_status": verification["status"],
             "verification_summary": verification["summary"],
@@ -184,6 +185,13 @@ class SkillEvidenceService:
         if result is None:
             raise SkillEvidenceNotFoundError(evidence_id)
         return result.data
+
+
+def verify_evidence(payload_or_record: Any) -> dict[str, str]:
+    github_verification = verify_github_file_evidence(payload_or_record)
+    if github_verification is not None:
+        return github_verification
+    return verify_evidence_mock(payload_or_record)
 
 
 def verify_evidence_mock(payload_or_record: Any) -> dict[str, str]:
