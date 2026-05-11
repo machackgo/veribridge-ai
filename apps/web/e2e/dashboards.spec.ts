@@ -243,9 +243,9 @@ test.describe("/dashboard/onboarding", () => {
     await page.getByRole("option", { name: "Artificial Intelligence", exact: true }).click();
     await page.getByRole("button", { name: "Continue" }).click();
     await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page.getByRole("heading", { name: "Skills & Proof Evidence" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Skills & Proof Evidence" })).toBeVisible();
     await expect(page.getByText(/Add skills you want recruiters to trust/i)).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Proof Evidence Builder" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 3, name: "Proof Evidence Builder" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Public link" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Upload file" })).toBeVisible();
     await page.getByLabel("Suggested skills").click();
@@ -302,6 +302,20 @@ test.describe("/dashboard/onboarding", () => {
     await expect(page.getByText(/1 proof items added/i).first()).toBeVisible();
 
     await proofSkillField.click();
+    await page.getByRole("option", { name: "Machine Learning", exact: true }).click();
+    await page.getByLabel("Evidence source type").click();
+    await page.getByRole("option", { name: "GitHub file", exact: true }).click();
+    await page.getByLabel("Repository URL / Evidence URL").fill("https://github.com/user/ml-project");
+    await page.getByLabel("File path").fill("Tree.py");
+    await page.getByLabel("Evidence description", { exact: true }).fill("Used a decision tree Machine Learning model.");
+    await page.getByRole("button", { name: "Add proof evidence" }).click();
+    const machineLearningFileCard = page.getByTestId("proof-evidence-card").filter({ hasText: "File path: Tree.py" });
+    await expect(machineLearningFileCard).toContainText("Skill: Machine Learning");
+    await expect(machineLearningFileCard).toContainText("File path: Tree.py");
+    await expect(machineLearningFileCard).toContainText(/Machine Learning evidence likely found/i);
+    await expect(machineLearningFileCard).toContainText(/Python\/Notebook file and ML keywords detected/i);
+
+    await proofSkillField.click();
     await page.getByRole("option", { name: "Python", exact: true }).click();
     await page.getByLabel("Evidence source type").click();
     await page.getByRole("option", { name: "Presentation deck", exact: true }).click();
@@ -310,6 +324,20 @@ test.describe("/dashboard/onboarding", () => {
     await page.getByLabel("Evidence description", { exact: true }).fill("Presentation deck for a class project.");
     await page.getByRole("button", { name: "Add proof evidence" }).click();
     await expect(page.getByText(/Skill usage not found in the provided file path/i)).toBeVisible();
+
+    await page.getByLabel("Add a skill").fill("RAG");
+    await page.getByRole("button", { name: "Add skill to inventory" }).click();
+    await proofSkillField.click();
+    await page.getByRole("option", { name: "RAG", exact: true }).click();
+    await page.getByLabel("Evidence source type").click();
+    await page.getByRole("option", { name: "GitHub file", exact: true }).click();
+    await page.getByLabel("Repository URL / Evidence URL").fill("https://github.com/user/rag-project");
+    await page.getByLabel("File path").fill("rag_pipeline.py");
+    await page.getByLabel("Evidence description", { exact: true }).fill("Built embeddings and retrieval for a RAG pipeline.");
+    await page.getByRole("button", { name: "Add proof evidence" }).click();
+    await expect(page.getByText("Skill: RAG")).toBeVisible();
+    await expect(page.getByText("File path: rag_pipeline.py")).toBeVisible();
+    await expect(page.getByText(/AI\/LLM evidence likely found/i)).toBeVisible();
 
     await proofSkillField.click();
     await page.getByRole("option", { name: "AWS", exact: true }).click();
@@ -320,9 +348,9 @@ test.describe("/dashboard/onboarding", () => {
     await page.getByLabel("File path").fill("infra/main.tf");
     await page.getByLabel("Evidence description", { exact: true }).fill("Deployed an app on AWS with Terraform.");
     await page.getByRole("button", { name: "Add proof evidence" }).click();
-    await expect(page.getByText("Skill: AWS")).toBeVisible();
-    await expect(page.getByText("Evidence source: Deployed app")).toBeVisible();
-    await expect(page.getByText(/Pending review|Please confirm/i)).toBeVisible();
+    const awsEvidenceCard = page.getByTestId("proof-evidence-card").filter({ hasText: "Skill: AWS" }).filter({ hasText: "Evidence source: Deployed app" });
+    await expect(awsEvidenceCard).toBeVisible();
+    await expect(awsEvidenceCard).toContainText("Verification: Pending review");
 
     await proofSkillField.click();
     await page.getByRole("option", { name: "Machine Learning", exact: true }).click();
@@ -331,9 +359,10 @@ test.describe("/dashboard/onboarding", () => {
     await page.getByLabel("Repository URL / Evidence URL").fill("https://credential.example.com/cert");
     await page.getByLabel("Evidence description", { exact: true }).fill("Completed a machine learning certificate.");
     await page.getByRole("button", { name: "Add proof evidence" }).click();
-    await expect(page.getByText("Skill: Machine Learning")).toBeVisible();
-    await expect(page.getByText("Evidence source: Certificate")).toBeVisible();
-    await expect(page.getByText(/Pending review/i)).toBeVisible();
+    const certificateCard = page.getByTestId("proof-evidence-card").filter({ hasText: "Evidence source: Certificate" });
+    await expect(certificateCard).toContainText("Skill: Machine Learning");
+    await expect(certificateCard).toContainText("Evidence source: Certificate");
+    await expect(certificateCard).toContainText("Verification: Pending review");
 
     await proofSkillField.click();
     await page.getByRole("option", { name: "AWS", exact: true }).click();
@@ -342,9 +371,10 @@ test.describe("/dashboard/onboarding", () => {
     await page.getByLabel("Repository URL / Evidence URL").fill("https://www.linkedin.com/posts/example");
     await page.getByLabel("Evidence description", { exact: true }).fill("LinkedIn post about a cloud deployment project.");
     await page.getByRole("button", { name: "Add proof evidence" }).click();
-    await expect(page.getByText("Evidence source: LinkedIn post")).toBeVisible();
-    await expect(page.getByText("Repository URL: https://www.linkedin.com/posts/example")).toBeVisible();
-    await expect(page.getByText("Skill: Machine Learning")).toBeVisible();
+    const linkedInCard = page.getByTestId("proof-evidence-card").filter({ hasText: "Evidence source: LinkedIn post" });
+    await expect(linkedInCard).toContainText("Skill: AWS");
+    await expect(linkedInCard).toContainText("Evidence source: LinkedIn post");
+    await expect(linkedInCard).toContainText("Repository URL: https://www.linkedin.com/posts/example");
   });
 
   test("upload file evidence flow supports report image and video uploads", async ({ page }) => {

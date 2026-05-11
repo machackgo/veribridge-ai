@@ -2037,6 +2037,7 @@ function ProofEvidenceCard({
 
   return (
     <article
+      data-testid="proof-evidence-card"
       className="vb-card-hover"
       style={{
         border: "1px solid var(--line)",
@@ -2480,22 +2481,68 @@ export function OnboardingFlow({ mode = "signup" }: { mode?: Mode }) {
       };
     }
 
-    if (!hasAnyEvidence) {
+    function evidenceSummary(summary: string) {
       return {
-        verificationStatus: "Pending review",
-        verificationSummary: "Pending review until a repository link, evidence URL, file path, or description is added.",
+        verificationStatus: "Verified" as const,
+        verificationSummary: summary,
       };
     }
 
+    if (!hasAnyEvidence) {
+      return {
+        verificationStatus: "Pending review",
+        verificationSummary: "Pending review: VeriBridge needs AI/GitHub integration to inspect this evidence.",
+      };
+    }
+
+    const evidenceText = `${path} ${description} ${repository} ${url} ${config} ${uploadedName}`.toLowerCase();
+    const isPythonSkill = skill.includes("python");
+    const isMachineLearningSkill =
+      skill.includes("machine learning") ||
+      /\bml\b/.test(skill) ||
+      skill.includes("deep learning") ||
+      skill.includes("data science") ||
+      /\bai\b/.test(skill);
+    const isAiLlmSkill =
+      skill.includes("rag") ||
+      /\bllm\b/.test(skill) ||
+      skill.includes("llms") ||
+      skill.includes("genai") ||
+      skill.includes("generative ai") ||
+      skill.includes("prompt engineering") ||
+      skill.includes("vector database");
+    const isMlopsSkill = skill.includes("mlops") || skill.includes("docker") || skill.includes("fastapi") || skill.includes("cloud") || skill.includes("ci/cd");
+    const hasPythonOrNotebookPath = /\.(py|ipynb)$/i.test(path);
+    const hasMlKeyword =
+      /\b(model|decision tree|random forest|regression|classification|neural network|training|prediction|sklearn|scikit-learn|pytorch|tensorflow|xgboost|lightgbm)\b/.test(
+        description
+      );
+    const hasAiLlmKeyword = /\b(rag|llm|prompt|embedding|vector|langchain|llamaindex|openai|anthropic|retrieval)\b/.test(evidenceText);
+    const hasMlopsKeyword = /\b(dockerfile|docker|fastapi|github actions|ci|cd|deploy|cloud|api|monitoring)\b/.test(evidenceText);
+
+    if (isMachineLearningSkill && (hasPythonOrNotebookPath || hasMlKeyword)) {
+      return evidenceSummary("Machine Learning evidence likely found ✅: Python/Notebook file and ML keywords detected.");
+    }
+
+    if (isPythonSkill && hasPythonOrNotebookPath) {
+      return verifiedSummary("Python");
+    }
+
+    if (isAiLlmSkill && hasAiLlmKeyword) {
+      return evidenceSummary("AI/LLM evidence likely found ✅: AI/LLM keywords detected in the file path or description.");
+    }
+
+    if (isMlopsSkill && hasMlopsKeyword) {
+      return evidenceSummary("MLOps evidence likely found ✅: deployment, API, cloud, or CI/CD evidence detected.");
+    }
+
     if (path) {
-      if (skill.includes("python")) {
-        return path.endsWith(".py")
-          ? verifiedSummary("Python")
-          : {
-              verificationStatus: "Skill usage not found",
-              verificationSummary:
-                "Skill usage not found in the provided file path. Please provide a file or link that clearly demonstrates this skill.",
-            };
+      if (isPythonSkill) {
+        return {
+          verificationStatus: "Skill usage not found",
+          verificationSummary:
+            "Skill usage not found in the provided file path. Please provide a file or link that clearly demonstrates this skill.",
+        };
       }
 
       if (skill.includes("javascript") || skill.includes("typescript")) {
@@ -2520,14 +2567,14 @@ export function OnboardingFlow({ mode = "signup" }: { mode?: Mode }) {
 
       return {
         verificationStatus: "Pending review",
-        verificationSummary: "Pending review",
+        verificationSummary: "Pending review: VeriBridge needs AI/GitHub integration to inspect this evidence.",
       };
     }
 
     if (method !== "upload_file" && !path && (repository || url || description)) {
       return {
         verificationStatus: "Pending review",
-        verificationSummary: "Pending review",
+        verificationSummary: "Pending review: VeriBridge needs AI/GitHub integration to inspect this evidence.",
       };
     }
 
@@ -3070,7 +3117,7 @@ function renderStep(
         <section style={{ border: "1px solid var(--line)", borderRadius: 18, background: "#fff", padding: 18, display: "grid", gap: 14 }}>
           <div>
             <div className="vb-eyebrow">Skills to prove</div>
-            <h3 style={{ margin: "6px 0 6px", fontSize: 20 }}>Skills & Proof Evidence</h3>
+            <h3 style={{ margin: "6px 0 6px", fontSize: 20 }}>Skill Inventory</h3>
             <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
               Add skills you want recruiters to trust, then attach exact proof such as a GitHub file, portfolio link, report, certificate, or project artifact. VeriBridge will later verify whether the evidence actually supports the skill.
             </p>
@@ -3085,6 +3132,7 @@ function renderStep(
             selected={form.selectedSkills}
             onToggle={(skill) => toggleList("skills", skill)}
             allowCustom
+            maxDefaultOptions={24}
             showSelectedChips={false}
           />
           <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "end" }}>
