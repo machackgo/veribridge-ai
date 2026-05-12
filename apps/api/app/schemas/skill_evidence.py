@@ -131,3 +131,59 @@ class PublicProofVerificationResponse(BaseModel):
     github_inspection_used: bool = False
     verifier_version: str
     created_at: str
+
+
+SampleInputs = list[dict[str, Any]] | dict[str, Any]
+
+
+class WebsiteVerificationGuideBase(BaseModel):
+    project_overview: str | None = Field(default=None, max_length=4000)
+    feature_to_verify: str = Field(..., min_length=1, max_length=500)
+    verification_steps: list[str] = Field(..., min_length=1, max_length=50)
+    sample_inputs: SampleInputs | None = None
+    expected_output: str = Field(..., min_length=1, max_length=4000)
+    login_required: bool = False
+    login_notes: str | None = Field(default=None, max_length=2000)
+    access_notes: str | None = Field(default=None, max_length=2000)
+    known_limitations: str | None = Field(default=None, max_length=3000)
+    additional_notes: str | None = Field(default=None, max_length=3000)
+
+    @field_validator(
+        "project_overview",
+        "feature_to_verify",
+        "expected_output",
+        "login_notes",
+        "access_notes",
+        "known_limitations",
+        "additional_notes",
+        mode="before",
+    )
+    @classmethod
+    def _trim_optional_guide_strings(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip() or None
+        return str(value).strip() or None
+
+    @field_validator("verification_steps", mode="before")
+    @classmethod
+    def _trim_verification_steps(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            raise ValueError("verification_steps must be a list of strings")
+        steps = [str(step).strip() for step in value if str(step).strip()]
+        if not steps:
+            raise ValueError("verification_steps must include at least one non-empty step")
+        return steps
+
+
+class WebsiteVerificationGuideCreate(WebsiteVerificationGuideBase):
+    pass
+
+
+class WebsiteVerificationGuideResponse(WebsiteVerificationGuideBase):
+    id: str
+    user_id: str
+    skill_evidence_id: str
+    created_at: str
+    updated_at: str

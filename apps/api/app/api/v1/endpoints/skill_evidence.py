@@ -15,6 +15,8 @@ from app.schemas.skill_evidence import (
     SkillEvidenceResponse,
     SkillEvidenceUpdate,
     SkillEvidenceVerifyResponse,
+    WebsiteVerificationGuideCreate,
+    WebsiteVerificationGuideResponse,
 )
 from app.services.public_proof_verification_service import (
     PublicProofNotVerifiableError,
@@ -24,6 +26,11 @@ from app.services.public_proof_verification_service import (
 from app.services.skill_evidence_service import (
     SkillEvidenceNotFoundError,
     SkillEvidenceService,
+)
+from app.services.website_verification_guide_service import (
+    WebsiteVerificationGuideNotAllowedError,
+    WebsiteVerificationGuideNotFoundError,
+    WebsiteVerificationGuideService,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,6 +215,67 @@ def get_latest_public_proof_verification(
         raise _database_unavailable(exc) from exc
 
 
+@router.post(
+    "/{evidence_id}/website-verification-guide",
+    response_model=WebsiteVerificationGuideResponse,
+    summary="Create or replace a website verification guide for one evidence record",
+)
+def save_website_verification_guide(
+    evidence_id: str,
+    body: WebsiteVerificationGuideCreate,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> WebsiteVerificationGuideResponse:
+    try:
+        return WebsiteVerificationGuideService(db).save_guide(user_id, evidence_id, body)
+    except SkillEvidenceNotFoundError as exc:
+        raise _not_found(evidence_id) from exc
+    except WebsiteVerificationGuideNotAllowedError as exc:
+        raise _website_guide_not_allowed(str(exc), evidence_id) from exc
+    except SupabaseError as exc:
+        raise _database_unavailable(exc) from exc
+    except Exception as exc:
+        logger.exception("POST /student/skill-evidence/%s/website-verification-guide: unexpected error", evidence_id)
+        raise _database_unavailable(exc) from exc
+
+
+@router.put(
+    "/{evidence_id}/website-verification-guide",
+    response_model=WebsiteVerificationGuideResponse,
+    summary="Replace a website verification guide for one evidence record",
+)
+def replace_website_verification_guide(
+    evidence_id: str,
+    body: WebsiteVerificationGuideCreate,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> WebsiteVerificationGuideResponse:
+    return save_website_verification_guide(evidence_id, body, user_id, db)
+
+
+@router.get(
+    "/{evidence_id}/website-verification-guide",
+    response_model=WebsiteVerificationGuideResponse,
+    summary="Get the website verification guide for one evidence record",
+)
+def get_website_verification_guide(
+    evidence_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> WebsiteVerificationGuideResponse:
+    try:
+        return WebsiteVerificationGuideService(db).get_guide(user_id, evidence_id)
+    except SkillEvidenceNotFoundError as exc:
+        raise _not_found(evidence_id) from exc
+    except WebsiteVerificationGuideNotFoundError as exc:
+        raise _website_guide_not_found(evidence_id) from exc
+    except SupabaseError as exc:
+        raise _database_unavailable(exc) from exc
+    except Exception as exc:
+        logger.exception("GET /student/skill-evidence/%s/website-verification-guide: unexpected error", evidence_id)
+        raise _database_unavailable(exc) from exc
+
+
 def _not_found(evidence_id: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -246,6 +314,28 @@ def _public_verification_not_found(evidence_id: str) -> HTTPException:
         detail={
             "code": "public_proof_verification_not_found",
             "message": "No public proof verification result exists for this evidence record.",
+            "evidence_id": evidence_id,
+        },
+    )
+
+
+def _website_guide_not_allowed(message: str, evidence_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "website_verification_guide_not_allowed",
+            "message": message,
+            "evidence_id": evidence_id,
+        },
+    )
+
+
+def _website_guide_not_found(evidence_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": "website_verification_guide_not_found",
+            "message": "No website verification guide exists for this evidence record.",
             "evidence_id": evidence_id,
         },
     )
