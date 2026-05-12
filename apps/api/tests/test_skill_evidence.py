@@ -277,3 +277,122 @@ def test_verify_endpoint_reruns_github_file_verifier(monkeypatch) -> None:
         assert data["evidence"]["verifier_version"] == "github-file-v1"
     finally:
         _clear_overrides()
+
+
+def test_public_proof_verification_strong_match_for_github_repository_metadata() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "Python",
+                "evidence_type": "GitHub repository URL",
+                "repository_url": "https://github.com/student/fastapi-prediction-service",
+                "evidence_description": (
+                    "Built and deployed a Python FastAPI prediction service with pytest coverage "
+                    "and pandas preprocessing."
+                ),
+                "metadata": {
+                    "title": "FastAPI prediction service",
+                    "repository_name": "fastapi-prediction-service",
+                    "visibility": "public",
+                },
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["skill_evidence_id"] == created["id"]
+        assert data["verification_status"] == "strong_match"
+        assert data["confidence_score"] >= 0.82
+        assert data["needs_human_review"] is False
+        assert data["verifier_version"] == "public-metadata-v1"
+        assert any("stored metadata" in note.lower() or "stored" in note.lower() for note in [data["verifier_notes"]])
+    finally:
+        _clear_overrides()
+
+
+def test_public_proof_verification_weak_match_for_sparse_metadata() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "Python",
+                "evidence_type": "Deployed project URL",
+                "evidence_url": "https://example.com/project",
+                "evidence_description": "Class project.",
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["verification_status"] == "weak_match"
+        assert data["needs_human_review"] is True
+        assert any("skill-relevant" in signal for signal in data["missing_signals"])
+    finally:
+        _clear_overrides()
+
+
+def test_public_proof_verification_rejects_private_proof() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "Python",
+                "evidence_type": "GitHub repository URL",
+                "repository_url": "https://github.com/student/private-project",
+                "evidence_description": "Built a Python project.",
+                "proof_visibility": "private",
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification")
+        assert response.status_code == 400
+        assert response.json()["detail"]["code"] == "public_proof_not_verifiable"
+    finally:
+        _clear_overrides()
+
+
+def test_get_latest_public_proof_verification_returns_latest_result() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "SQL",
+                "evidence_type": "Public portfolio URL",
+                "evidence_url": "https://student.dev/docs/analytics-project",
+                "evidence_description": "Analytics project.",
+                "metadata": {"title": "Analytics portfolio"},
+            },
+        ).json()
+        first = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification").json()
+
+        client.put(
+            f"/api/v1/student/skill-evidence/{created['id']}",
+            json={
+                "evidence_description": (
+                    "Authored SQL schema, joins, and Postgres queries for an analytics dashboard "
+                    "and documented the database design."
+                ),
+                "metadata": {"title": "SQL analytics documentation", "visibility": "public"},
+            },
+        )
+        second = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification").json()
+
+        response = client.get(f"/api/v1/student/skill-evidence/{created['id']}/public-verification/latest")
+        assert response.status_code == 200
+        latest = response.json()
+        assert latest["id"] == second["id"]
+        assert latest["id"] != first["id"]
+        assert latest["verification_status"] in {"plausible_match", "strong_match"}
+    finally:
+        _clear_overrides()
