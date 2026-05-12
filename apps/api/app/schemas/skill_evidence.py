@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -12,6 +12,14 @@ VerificationStatus = Literal[
     "verified",
     "skill_usage_not_found",
     "needs_review",
+]
+ProofVisibility = Literal["public", "private"]
+PublicVerificationStatus = Literal[
+    "pending",
+    "weak_match",
+    "plausible_match",
+    "strong_match",
+    "rejected",
 ]
 
 
@@ -24,6 +32,8 @@ class _SkillEvidenceBase(BaseModel):
     line_start: int | None = Field(default=None, gt=0)
     line_end: int | None = Field(default=None, gt=0)
     evidence_description: str | None = Field(default=None, max_length=4000)
+    proof_visibility: ProofVisibility | None = "public"
+    metadata: dict[str, Any] | None = None
 
     @field_validator(
         "skill_name",
@@ -32,6 +42,7 @@ class _SkillEvidenceBase(BaseModel):
         "repository_url",
         "file_path",
         "evidence_description",
+        "proof_visibility",
         mode="before",
     )
     @classmethod
@@ -89,6 +100,8 @@ class SkillEvidenceResponse(BaseModel):
     line_start: int | None = None
     line_end: int | None = None
     evidence_description: str | None = None
+    proof_visibility: ProofVisibility = "public"
+    metadata: dict[str, Any] = Field(default_factory=dict)
     verification_status: VerificationStatus
     verification_summary: str | None = None
     verifier_version: str | None = None
@@ -102,3 +115,18 @@ class SkillEvidenceVerifyResponse(BaseModel):
     verification_summary: str
     verifier_version: str
     evidence: SkillEvidenceResponse
+
+
+class PublicProofVerificationResponse(BaseModel):
+    id: str
+    user_id: str
+    skill_evidence_id: str
+    verification_status: PublicVerificationStatus
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+    evidence_summary: str
+    matched_signals: list[str]
+    missing_signals: list[str]
+    verifier_notes: str
+    needs_human_review: bool
+    verifier_version: str
+    created_at: str

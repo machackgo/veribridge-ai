@@ -10,10 +10,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import get_current_user_id, get_db
 from app.db.supabase import SupabaseError
 from app.schemas.skill_evidence import (
+    PublicProofVerificationResponse,
     SkillEvidenceCreate,
     SkillEvidenceResponse,
     SkillEvidenceUpdate,
     SkillEvidenceVerifyResponse,
+)
+from app.services.public_proof_verification_service import (
+    PublicProofNotVerifiableError,
+    PublicProofVerificationNotFoundError,
+    PublicProofVerificationService,
 )
 from app.services.skill_evidence_service import (
     SkillEvidenceNotFoundError,
@@ -156,6 +162,52 @@ def verify_skill_evidence(
     )
 
 
+@router.post(
+    "/{evidence_id}/public-verification",
+    response_model=PublicProofVerificationResponse,
+    summary="Run public proof verification for one evidence record",
+)
+def verify_public_proof_evidence(
+    evidence_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> PublicProofVerificationResponse:
+    try:
+        return PublicProofVerificationService(db).verify_public_proof(user_id, evidence_id)
+    except SkillEvidenceNotFoundError as exc:
+        raise _not_found(evidence_id) from exc
+    except PublicProofNotVerifiableError as exc:
+        raise _public_verification_not_allowed(str(exc), evidence_id) from exc
+    except SupabaseError as exc:
+        raise _database_unavailable(exc) from exc
+    except Exception as exc:
+        logger.exception("POST /student/skill-evidence/%s/public-verification: unexpected error", evidence_id)
+        raise _database_unavailable(exc) from exc
+
+
+@router.get(
+    "/{evidence_id}/public-verification/latest",
+    response_model=PublicProofVerificationResponse,
+    summary="Get the latest public proof verification result",
+)
+def get_latest_public_proof_verification(
+    evidence_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> PublicProofVerificationResponse:
+    try:
+        return PublicProofVerificationService(db).get_latest_public_verification(user_id, evidence_id)
+    except SkillEvidenceNotFoundError as exc:
+        raise _not_found(evidence_id) from exc
+    except PublicProofVerificationNotFoundError as exc:
+        raise _public_verification_not_found(evidence_id) from exc
+    except SupabaseError as exc:
+        raise _database_unavailable(exc) from exc
+    except Exception as exc:
+        logger.exception("GET /student/skill-evidence/%s/public-verification/latest: unexpected error", evidence_id)
+        raise _database_unavailable(exc) from exc
+
+
 def _not_found(evidence_id: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -173,5 +225,27 @@ def _database_unavailable(exc: Exception) -> HTTPException:
         detail={
             "code": "database_unavailable",
             "message": "The skill evidence store is temporarily unavailable.",
+        },
+    )
+
+
+def _public_verification_not_allowed(message: str, evidence_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "public_proof_not_verifiable",
+            "message": message,
+            "evidence_id": evidence_id,
+        },
+    )
+
+
+def _public_verification_not_found(evidence_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": "public_proof_verification_not_found",
+            "message": "No public proof verification result exists for this evidence record.",
+            "evidence_id": evidence_id,
         },
     )

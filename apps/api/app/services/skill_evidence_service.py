@@ -46,8 +46,11 @@ class SkillEvidenceService:
 
     def create_skill_evidence(self, user_id: str, payload: SkillEvidenceCreate) -> SkillEvidenceResponse:
         verification = verify_evidence(payload)
+        payload_data = payload.model_dump()
+        payload_data["metadata"] = payload_data.get("metadata") or {}
+        payload_data["proof_visibility"] = payload_data.get("proof_visibility") or "public"
         data = {
-            **payload.model_dump(),
+            **payload_data,
             "user_id": user_id,
             "verification_status": verification["status"],
             "verification_summary": verification["summary"],
@@ -85,6 +88,10 @@ class SkillEvidenceService:
         updates = payload.model_dump(exclude_unset=True)
         if not updates:
             return _to_response(current)
+        if updates.get("metadata") is None:
+            updates["metadata"] = {}
+        if updates.get("proof_visibility") is None:
+            updates["proof_visibility"] = "public"
 
         relevant = {
             "skill_name",
@@ -95,6 +102,8 @@ class SkillEvidenceService:
             "line_start",
             "line_end",
             "evidence_description",
+            "proof_visibility",
+            "metadata",
         }
         if relevant.intersection(updates):
             merged = {**current, **updates}
@@ -325,6 +334,8 @@ def _to_response(row: dict[str, Any]) -> SkillEvidenceResponse:
         line_start=row.get("line_start"),
         line_end=row.get("line_end"),
         evidence_description=row.get("evidence_description"),
+        proof_visibility=row.get("proof_visibility") or "public",
+        metadata=row.get("metadata") or {},
         verification_status=row.get("verification_status") or "pending_review",
         verification_summary=row.get("verification_summary"),
         verifier_version=row.get("verifier_version"),
