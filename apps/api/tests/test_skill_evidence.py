@@ -34,6 +34,36 @@ def _python_payload() -> dict:
     }
 
 
+def _website_payload() -> dict:
+    return {
+        "skill_name": "React",
+        "evidence_type": "Deployed website URL",
+        "evidence_url": "https://student-demo.example.com",
+        "proof_visibility": "public",
+        "evidence_description": "Built a deployed website for an interactive project dashboard.",
+        "metadata": {"title": "Interactive project dashboard"},
+    }
+
+
+def _website_guide_payload() -> dict:
+    return {
+        "project_overview": "Interactive dashboard that lets users filter and inspect project metrics.",
+        "feature_to_verify": "Dashboard filter interaction",
+        "verification_steps": [
+            "Open the live website.",
+            "Select the Projects filter.",
+            "Choose Active projects.",
+            "Confirm the results update without a page reload.",
+        ],
+        "sample_inputs": {"filter": "Active projects"},
+        "expected_output": "The dashboard shows only active projects and updates the visible result count.",
+        "login_required": False,
+        "access_notes": "No login is required for the public demo.",
+        "known_limitations": "Free-tier hosting may cold start.",
+        "additional_notes": "Use a desktop viewport for the clearest table layout.",
+    }
+
+
 def test_create_skill_evidence_verifies_python_file() -> None:
     store: dict = {}
     client = _client(store)
@@ -544,5 +574,130 @@ def test_public_proof_verification_github_api_failure_falls_back(monkeypatch) ->
         assert data["verification_status"] in {"weak_match", "plausible_match"}
         assert any("not found or is not public" in signal for signal in data["missing_signals"])
         assert "attempted but unavailable" in data["verifier_notes"]
+    finally:
+        _clear_overrides()
+
+
+def test_create_website_verification_guide() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        response = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json=_website_guide_payload(),
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["skill_evidence_id"] == evidence["id"]
+        assert data["feature_to_verify"] == "Dashboard filter interaction"
+        assert data["verification_steps"][0] == "Open the live website."
+        assert data["sample_inputs"] == {"filter": "Active projects"}
+        assert data["login_required"] is False
+    finally:
+        _clear_overrides()
+
+
+def test_get_website_verification_guide() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        created = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json=_website_guide_payload(),
+        ).json()
+
+        response = client.get(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == created["id"]
+        assert data["expected_output"] == _website_guide_payload()["expected_output"]
+    finally:
+        _clear_overrides()
+
+
+def test_website_verification_guide_requires_steps() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        payload = {**_website_guide_payload(), "verification_steps": []}
+        response = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json=payload,
+        )
+
+        assert response.status_code == 422
+    finally:
+        _clear_overrides()
+
+
+def test_website_verification_guide_requires_expected_output() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        payload = _website_guide_payload()
+        payload.pop("expected_output")
+        response = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json=payload,
+        )
+
+        assert response.status_code == 422
+    finally:
+        _clear_overrides()
+
+
+def test_website_verification_guide_rejects_github_evidence() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "Python",
+                "evidence_type": "GitHub repository URL",
+                "repository_url": "https://github.com/student/project",
+                "evidence_description": "GitHub repository proof.",
+            },
+        ).json()
+        response = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json=_website_guide_payload(),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["code"] == "website_verification_guide_not_allowed"
+    finally:
+        _clear_overrides()
+
+
+def test_website_verification_guide_post_replaces_existing_guide() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        first = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json=_website_guide_payload(),
+        ).json()
+        updated_payload = {
+            **_website_guide_payload(),
+            "feature_to_verify": "Search interaction",
+            "verification_steps": ["Open the site.", "Search for analytics.", "Confirm filtered results."],
+            "expected_output": "Only analytics-related results are shown.",
+        }
+        second = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json=updated_payload,
+        ).json()
+
+        assert second["id"] == first["id"]
+        assert second["feature_to_verify"] == "Search interaction"
+        assert second["expected_output"] == "Only analytics-related results are shown."
     finally:
         _clear_overrides()
