@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user_id, get_db
 from app.main import app
 from app.services.github_evidence_service import GitHubFileFetchResult
+from app.services.github_public_inspection_service import GitHubInspectionResult
 
 USER_ID = "00000000-0000-0000-0000-000000000001"
 OTHER_USER_ID = "00000000-0000-0000-0000-000000000002"
@@ -308,8 +309,9 @@ def test_public_proof_verification_strong_match_for_github_repository_metadata()
         assert data["verification_status"] == "strong_match"
         assert data["confidence_score"] >= 0.82
         assert data["needs_human_review"] is False
-        assert data["verifier_version"] == "public-metadata-v1"
-        assert any("stored metadata" in note.lower() or "stored" in note.lower() for note in [data["verifier_notes"]])
+        assert data["github_inspection_used"] is False
+        assert data["verifier_version"] == "public-proof-v2"
+        assert "stored metadata" in data["verifier_notes"].lower()
     finally:
         _clear_overrides()
 
@@ -333,6 +335,7 @@ def test_public_proof_verification_weak_match_for_sparse_metadata() -> None:
         data = response.json()
         assert data["verification_status"] == "weak_match"
         assert data["needs_human_review"] is True
+        assert data["github_inspection_used"] is False
         assert any("skill-relevant" in signal for signal in data["missing_signals"])
     finally:
         _clear_overrides()
@@ -394,5 +397,152 @@ def test_get_latest_public_proof_verification_returns_latest_result() -> None:
         assert latest["id"] == second["id"]
         assert latest["id"] != first["id"]
         assert latest["verification_status"] in {"plausible_match", "strong_match"}
+    finally:
+        _clear_overrides()
+
+
+def test_public_proof_verification_uses_github_repo_inspection(monkeypatch) -> None:
+    store: dict = {}
+    client = _client(store)
+
+    def fake_inspect_url(self, url: str | None) -> GitHubInspectionResult:
+        assert url == "https://github.com/student/fastapi-prediction-service"
+        return GitHubInspectionResult(
+            inspection_used=True,
+            owner="student",
+            repo="fastapi-prediction-service",
+            repo_description="Python FastAPI prediction service",
+            primary_language="Python",
+            default_branch="main",
+            readme_text="This project uses Python, FastAPI, pandas, pytest, and prediction APIs.",
+            matched_signals=["GitHub repository inspected: student/fastapi-prediction-service."],
+        )
+
+    monkeypatch.setattr("app.services.public_proof_verification_service.GitHubPublicInspectionService.inspect_url", fake_inspect_url)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "Python",
+                "evidence_type": "GitHub repository URL",
+                "repository_url": "https://github.com/student/fastapi-prediction-service",
+                "evidence_description": "Project repo.",
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["github_inspection_used"] is True
+        assert data["verification_status"] in {"plausible_match", "strong_match"}
+        assert any("GitHub repository inspected" in signal for signal in data["matched_signals"])
+        assert "Real GitHub inspection was used" in data["verifier_notes"]
+    finally:
+        _clear_overrides()
+
+
+def test_public_proof_verification_uses_github_blob_inspection(monkeypatch) -> None:
+    store: dict = {}
+    client = _client(store)
+
+    def fake_inspect_url(self, url: str | None) -> GitHubInspectionResult:
+        assert url == "https://github.com/student/project/blob/main/app/main.py"
+        return GitHubInspectionResult(
+            inspection_used=True,
+            owner="student",
+            repo="project",
+            repo_description="Student backend project",
+            primary_language="Python",
+            default_branch="main",
+            readme_text="Backend service",
+            file_path="app/main.py",
+            file_name="main.py",
+            file_text="from fastapi import FastAPI\nimport pandas as pd\napp = FastAPI()\n",
+            matched_signals=[
+                "GitHub repository inspected: student/project.",
+                "GitHub blob file content was inspected: app/main.py.",
+            ],
+        )
+
+    monkeypatch.setattr("app.services.public_proof_verification_service.GitHubPublicInspectionService.inspect_url", fake_inspect_url)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "Python",
+                "evidence_type": "GitHub file URL",
+                "evidence_url": "https://github.com/student/project/blob/main/app/main.py",
+                "evidence_description": "Backend file.",
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["github_inspection_used"] is True
+        assert data["verification_status"] in {"plausible_match", "strong_match"}
+        assert any("GitHub file proof includes skill-relevant terms" in signal for signal in data["matched_signals"])
+    finally:
+        _clear_overrides()
+
+
+def test_public_proof_verification_invalid_github_url_uses_metadata_only() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "Python",
+                "evidence_type": "GitHub repository URL",
+                "repository_url": "https://github.com",
+                "evidence_description": "Built a Python project.",
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["github_inspection_used"] is False
+        assert data["verification_status"] == "rejected"
+        assert any("does not clearly match GitHub" in signal for signal in data["missing_signals"])
+    finally:
+        _clear_overrides()
+
+
+def test_public_proof_verification_github_api_failure_falls_back(monkeypatch) -> None:
+    store: dict = {}
+    client = _client(store)
+
+    def fake_inspect_url(self, url: str | None) -> GitHubInspectionResult:
+        return GitHubInspectionResult(
+            inspection_used=False,
+            owner="student",
+            repo="missing-project",
+            error="github_repo_not_found",
+            status_code=404,
+            missing_signals=["GitHub repository was not found or is not public."],
+        )
+
+    monkeypatch.setattr("app.services.public_proof_verification_service.GitHubPublicInspectionService.inspect_url", fake_inspect_url)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "Python",
+                "evidence_type": "GitHub repository URL",
+                "repository_url": "https://github.com/student/missing-project",
+                "evidence_description": "Built a Python project with FastAPI.",
+                "metadata": {"title": "Python FastAPI project"},
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["github_inspection_used"] is False
+        assert data["verification_status"] in {"weak_match", "plausible_match"}
+        assert any("not found or is not public" in signal for signal in data["missing_signals"])
+        assert "attempted but unavailable" in data["verifier_notes"]
     finally:
         _clear_overrides()
