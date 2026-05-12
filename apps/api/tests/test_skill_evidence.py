@@ -8,6 +8,7 @@ from app.api.deps import get_current_user_id, get_db
 from app.main import app
 from app.services.github_evidence_service import GitHubFileFetchResult
 from app.services.github_public_inspection_service import GitHubInspectionResult
+from app.services.website_public_inspection_service import WebsiteInspectionResult
 
 USER_ID = "00000000-0000-0000-0000-000000000001"
 OTHER_USER_ID = "00000000-0000-0000-0000-000000000002"
@@ -346,9 +347,18 @@ def test_public_proof_verification_strong_match_for_github_repository_metadata()
         _clear_overrides()
 
 
-def test_public_proof_verification_weak_match_for_sparse_metadata() -> None:
+def test_public_proof_verification_weak_match_for_sparse_metadata(monkeypatch) -> None:
     store: dict = {}
     client = _client(store)
+
+    def fake_inspect_url(self, url: str | None) -> WebsiteInspectionResult:
+        return WebsiteInspectionResult(
+            inspection_used=False,
+            error="website_network_error",
+            missing_signals=["Website request failed; falling back to stored proof metadata."],
+        )
+
+    monkeypatch.setattr("app.services.public_proof_verification_service.WebsitePublicInspectionService.inspect_url", fake_inspect_url)
     try:
         created = client.post(
             "/api/v1/student/skill-evidence",
@@ -366,6 +376,7 @@ def test_public_proof_verification_weak_match_for_sparse_metadata() -> None:
         assert data["verification_status"] == "weak_match"
         assert data["needs_human_review"] is True
         assert data["github_inspection_used"] is False
+        assert data["website_inspection_used"] is False
         assert any("skill-relevant" in signal for signal in data["missing_signals"])
     finally:
         _clear_overrides()
@@ -574,6 +585,131 @@ def test_public_proof_verification_github_api_failure_falls_back(monkeypatch) ->
         assert data["verification_status"] in {"weak_match", "plausible_match"}
         assert any("not found or is not public" in signal for signal in data["missing_signals"])
         assert "attempted but unavailable" in data["verifier_notes"]
+    finally:
+        _clear_overrides()
+
+
+def test_public_proof_verification_uses_website_inspection(monkeypatch) -> None:
+    store: dict = {}
+    client = _client(store)
+
+    def fake_inspect_url(self, url: str | None) -> WebsiteInspectionResult:
+        assert url == "https://student-demo.example.com"
+        return WebsiteInspectionResult(
+            inspection_used=True,
+            final_url="https://student-demo.example.com",
+            status_code=200,
+            page_title="FastAPI Accident Risk Dashboard",
+            meta_description="A FastAPI demo for route risk scoring.",
+            headings=["FastAPI route risk scoring"],
+            visible_text="Built with FastAPI APIs and deployed as a public dashboard.",
+            matched_signals=[
+                "Website loaded successfully with HTTP 200.",
+                "Website page title was extracted.",
+                "Website meta description was extracted.",
+                "Website headings were extracted.",
+                "Website visible text was extracted.",
+            ],
+            public_markers=["form", "interactive_controls"],
+        )
+
+    monkeypatch.setattr("app.services.public_proof_verification_service.WebsitePublicInspectionService.inspect_url", fake_inspect_url)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "FastAPI",
+                "evidence_type": "Deployed website URL",
+                "evidence_url": "https://student-demo.example.com",
+                "proof_visibility": "public",
+                "evidence_description": "Built and deployed a route risk dashboard.",
+                "metadata": {"title": "Route risk dashboard"},
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["website_inspection_used"] is True
+        assert data["github_inspection_used"] is False
+        assert data["verification_status"] == "strong_match"
+        assert data["confidence_score"] >= 0.82
+        assert any("Website visible text includes skill-relevant terms" in signal for signal in data["matched_signals"])
+        assert "Real website inspection was used" in data["verifier_notes"]
+    finally:
+        _clear_overrides()
+
+
+def test_public_proof_verification_website_http_failure_falls_back(monkeypatch) -> None:
+    store: dict = {}
+    client = _client(store)
+
+    def fake_inspect_url(self, url: str | None) -> WebsiteInspectionResult:
+        return WebsiteInspectionResult(
+            inspection_used=False,
+            final_url=url,
+            status_code=503,
+            error="website_http_error",
+            missing_signals=["Website returned HTTP 503; falling back to stored proof metadata."],
+        )
+
+    monkeypatch.setattr("app.services.public_proof_verification_service.WebsitePublicInspectionService.inspect_url", fake_inspect_url)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "FastAPI",
+                "evidence_type": "Deployed website URL",
+                "evidence_url": "https://student-demo.example.com",
+                "proof_visibility": "public",
+                "evidence_description": "Built a FastAPI deployed project.",
+                "metadata": {"title": "FastAPI public demo"},
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["website_inspection_used"] is False
+        assert data["verification_status"] in {"weak_match", "plausible_match"}
+        assert any("HTTP 503" in signal for signal in data["missing_signals"])
+        assert "attempted but unavailable" in data["verifier_notes"]
+    finally:
+        _clear_overrides()
+
+
+def test_public_proof_verification_website_non_html_falls_back(monkeypatch) -> None:
+    store: dict = {}
+    client = _client(store)
+
+    def fake_inspect_url(self, url: str | None) -> WebsiteInspectionResult:
+        return WebsiteInspectionResult(
+            inspection_used=False,
+            final_url=url,
+            status_code=200,
+            error="website_non_html_response",
+            missing_signals=["Website response was not HTML; falling back to stored proof metadata."],
+        )
+
+    monkeypatch.setattr("app.services.public_proof_verification_service.WebsitePublicInspectionService.inspect_url", fake_inspect_url)
+    try:
+        created = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "FastAPI",
+                "evidence_type": "Deployed website URL",
+                "evidence_url": "https://student-demo.example.com",
+                "proof_visibility": "public",
+                "evidence_description": "Built a FastAPI deployed project.",
+                "metadata": {"title": "FastAPI public demo"},
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{created['id']}/public-verification")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["website_inspection_used"] is False
+        assert any("not HTML" in signal for signal in data["missing_signals"])
     finally:
         _clear_overrides()
 

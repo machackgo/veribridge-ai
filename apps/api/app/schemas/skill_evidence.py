@@ -129,6 +129,7 @@ class PublicProofVerificationResponse(BaseModel):
     verifier_notes: str
     needs_human_review: bool
     github_inspection_used: bool = False
+    website_inspection_used: bool = False
     verifier_version: str
     created_at: str
 
