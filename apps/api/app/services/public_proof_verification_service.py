@@ -18,6 +18,11 @@ from app.services.github_public_inspection_service import (
     GitHubPublicInspectionService,
 )
 from app.services.skill_evidence_service import SkillEvidenceNotFoundError
+from app.services.website_public_inspection_service import (
+    WEBSITE_PUBLIC_INSPECTOR_VERSION,
+    WebsiteInspectionResult,
+    WebsitePublicInspectionService,
+)
 
 _EVIDENCE_TABLE = "skill_evidence"
 _VERIFICATION_TABLE = "skill_evidence_verifications"
@@ -39,6 +44,7 @@ class _ScoreInput:
     proof_kind: str | None
     text: str
     github_inspection: GitHubInspectionResult | None = None
+    website_inspection: WebsiteInspectionResult | None = None
 
 
 class PublicProofVerificationService:
@@ -56,6 +62,10 @@ class PublicProofVerificationService:
         github_inspection = _inspect_github_proof(score_input)
         if github_inspection is not None:
             score_input = _build_score_input(row, github_inspection)
+        else:
+            website_inspection = _inspect_website_proof(score_input)
+            if website_inspection is not None:
+                score_input = _build_score_input(row, website_inspection=website_inspection)
 
         result = _score_public_proof(score_input)
         data = {
@@ -140,6 +150,7 @@ def _score_public_proof(score_input: _ScoreInput) -> dict[str, Any]:
     missing: list[str] = []
     score = 0.0
     github_inspection = score_input.github_inspection
+    website_inspection = score_input.website_inspection
 
     if skill:
         score += 0.10
@@ -176,11 +187,20 @@ def _score_public_proof(score_input: _ScoreInput) -> dict[str, Any]:
         else:
             missing.extend(github_inspection.missing_signals)
 
+    if website_inspection is not None:
+        if website_inspection.inspection_used:
+            score += 0.18
+            matched.extend(website_inspection.matched_signals)
+        else:
+            missing.extend(website_inspection.missing_signals)
+
     keyword_hits = _skill_keyword_hits(skill, score_input.text)
     if keyword_hits:
         score += min(0.25, 0.08 * len(keyword_hits))
         if github_inspection and github_inspection.inspection_used:
             matched.append(f"GitHub inspection and stored metadata mention skill-relevant terms: {', '.join(keyword_hits[:5])}.")
+        elif website_inspection and website_inspection.inspection_used:
+            matched.append(f"Website inspection and stored metadata mention skill-relevant terms: {', '.join(keyword_hits[:5])}.")
         else:
             matched.append(f"Stored metadata mentions skill-relevant terms: {', '.join(keyword_hits[:5])}.")
     else:
@@ -215,6 +235,9 @@ def _score_public_proof(score_input: _ScoreInput) -> dict[str, Any]:
     if github_inspection and github_inspection.inspection_used:
         score += _github_skill_signal_bonus(skill, github_inspection, matched, missing)
 
+    if website_inspection and website_inspection.inspection_used:
+        score += _website_skill_signal_bonus(skill, website_inspection, matched, missing)
+
     confidence = max(0.0, min(1.0, round(score, 2)))
     status = _status_for_score(confidence, score_input.proof_kind, skill)
     needs_human_review = status in {"pending", "weak_match", "rejected"} or confidence < 0.75
@@ -228,17 +251,22 @@ def _score_public_proof(score_input: _ScoreInput) -> dict[str, Any]:
             score_input.proof_kind,
             confidence,
             bool(github_inspection and github_inspection.inspection_used),
+            bool(website_inspection and website_inspection.inspection_used),
         ),
         "matched_signals": matched,
         "missing_signals": missing,
         "verifier_notes": (
-            _verifier_notes(github_inspection)
+            _verifier_notes(github_inspection, website_inspection)
         ),
         "needs_human_review": needs_human_review,
     }
 
 
-def _build_score_input(row: dict[str, Any], github_inspection: GitHubInspectionResult | None = None) -> _ScoreInput:
+def _build_score_input(
+    row: dict[str, Any],
+    github_inspection: GitHubInspectionResult | None = None,
+    website_inspection: WebsiteInspectionResult | None = None,
+) -> _ScoreInput:
     metadata = _metadata(row)
     proof_url = _clean(row.get("repository_url")) or _clean(row.get("evidence_url")) or _clean(metadata.get("url"))
     proof_kind = _proof_kind(row, proof_url)
@@ -251,15 +279,29 @@ def _build_score_input(row: dict[str, Any], github_inspection: GitHubInspectionR
             proof_url or "",
             _metadata_text(metadata),
             github_inspection.text if github_inspection and github_inspection.inspection_used else "",
+            website_inspection.text if website_inspection and website_inspection.inspection_used else "",
         ]
     ).lower()
-    return _ScoreInput(row=row, proof_url=proof_url, proof_kind=proof_kind, text=text, github_inspection=github_inspection)
+    return _ScoreInput(
+        row=row,
+        proof_url=proof_url,
+        proof_kind=proof_kind,
+        text=text,
+        github_inspection=github_inspection,
+        website_inspection=website_inspection,
+    )
 
 
 def _inspect_github_proof(score_input: _ScoreInput) -> GitHubInspectionResult | None:
     if score_input.proof_url is None or parse_github_repo_url(score_input.proof_url) is None:
         return None
     return GitHubPublicInspectionService().inspect_url(score_input.proof_url)
+
+
+def _inspect_website_proof(score_input: _ScoreInput) -> WebsiteInspectionResult | None:
+    if score_input.proof_url is None or score_input.proof_kind not in {"deployed_project", "portfolio_documentation"}:
+        return None
+    return WebsitePublicInspectionService().inspect_url(score_input.proof_url)
 
 
 def _is_public(row: dict[str, Any]) -> bool:
@@ -316,8 +358,20 @@ def _status_for_score(score: float, proof_kind: str | None, skill: str) -> str:
     return "rejected"
 
 
-def _summary(status: str, skill: str, proof_kind: str | None, score: float, github_inspection_used: bool) -> str:
-    basis = "inspected public GitHub proof" if github_inspection_used else "stored public proof metadata"
+def _summary(
+    status: str,
+    skill: str,
+    proof_kind: str | None,
+    score: float,
+    github_inspection_used: bool,
+    website_inspection_used: bool,
+) -> str:
+    if github_inspection_used:
+        basis = "inspected public GitHub proof"
+    elif website_inspection_used:
+        basis = "inspected public website proof"
+    else:
+        basis = "stored public proof metadata"
     if status == "strong_match":
         return f"{basis} strongly supports the claimed skill '{skill}' with confidence {score:.2f}."
     if status == "plausible_match":
@@ -363,6 +417,48 @@ def _github_skill_signal_bonus(
     return bonus
 
 
+def _website_skill_signal_bonus(
+    skill: str,
+    website_inspection: WebsiteInspectionResult,
+    matched: list[str],
+    missing: list[str],
+) -> float:
+    bonus = 0.0
+    title_hits = _skill_keyword_hits(skill, website_inspection.page_title or "")
+    if title_hits:
+        bonus += 0.06
+        matched.append(f"Website title includes skill-relevant terms: {', '.join(title_hits[:5])}.")
+    elif website_inspection.page_title:
+        missing.append("Website title was inspected but did not include skill-relevant terms.")
+
+    meta_hits = _skill_keyword_hits(skill, website_inspection.meta_description or "")
+    if meta_hits:
+        bonus += 0.06
+        matched.append(f"Website meta description includes skill-relevant terms: {', '.join(meta_hits[:5])}.")
+    elif website_inspection.meta_description:
+        missing.append("Website meta description was inspected but did not include skill-relevant terms.")
+
+    heading_hits = _skill_keyword_hits(skill, " ".join(website_inspection.headings))
+    if heading_hits:
+        bonus += 0.08
+        matched.append(f"Website headings include skill-relevant terms: {', '.join(heading_hits[:5])}.")
+    elif website_inspection.headings:
+        missing.append("Website headings were inspected but did not include skill-relevant terms.")
+
+    body_hits = _skill_keyword_hits(skill, website_inspection.visible_text or "")
+    if body_hits:
+        bonus += 0.10
+        matched.append(f"Website visible text includes skill-relevant terms: {', '.join(body_hits[:5])}.")
+    elif website_inspection.visible_text:
+        missing.append("Website visible text was inspected but did not include skill-relevant terms.")
+
+    if website_inspection.public_markers:
+        bonus += 0.03
+        matched.append(f"Website public interaction markers found: {', '.join(website_inspection.public_markers[:5])}.")
+
+    return bonus
+
+
 def _language_supports_skill(normalized_skill: str, language: str) -> bool:
     return (
         ("python" in normalized_skill and language == "python")
@@ -371,19 +467,32 @@ def _language_supports_skill(normalized_skill: str, language: str) -> bool:
     )
 
 
-def _verifier_notes(github_inspection: GitHubInspectionResult | None) -> str:
+def _verifier_notes(
+    github_inspection: GitHubInspectionResult | None,
+    website_inspection: WebsiteInspectionResult | None,
+) -> str:
     base = "Rule-based MVP only. This result does not scrape webpages or call an LLM."
-    if github_inspection is None:
-        return f"{base} GitHub inspection was not applicable; used stored metadata only."
-    if github_inspection.inspection_used:
+    if github_inspection and github_inspection.inspection_used:
         return (
             f"{base} Real GitHub inspection was used via {GITHUB_PUBLIC_INSPECTOR_VERSION}; "
             "stored metadata remains part of the score."
         )
-    return (
-        f"{base} Real GitHub inspection was attempted but unavailable "
-        f"({github_inspection.error or 'unknown_error'}); used stored metadata fallback."
-    )
+    if github_inspection is not None:
+        return (
+            f"{base} Real GitHub inspection was attempted but unavailable "
+            f"({github_inspection.error or 'unknown_error'}); used stored metadata fallback."
+        )
+    if website_inspection and website_inspection.inspection_used:
+        return (
+            f"{base} Real website inspection was used via {WEBSITE_PUBLIC_INSPECTOR_VERSION}; "
+            "no forms were submitted, no links were clicked, and stored metadata remains part of the score."
+        )
+    if website_inspection is not None:
+        return (
+            f"{base} Real website inspection was attempted but unavailable "
+            f"({website_inspection.error or 'unknown_error'}); used stored metadata fallback."
+        )
+    return f"{base} Live public inspection was not applicable; used stored metadata only."
 
 
 def _skill_keyword_hits(skill: str, text: str) -> list[str]:
@@ -417,7 +526,8 @@ def _keywords_for_skill(skill: str) -> tuple[str, ...]:
 
 
 def _keyword_hits(text: str, keywords: tuple[str, ...]) -> list[str]:
-    return [keyword for keyword in keywords if keyword.lower() in text]
+    normalized_text = text.lower()
+    return [keyword for keyword in keywords if keyword.lower() in normalized_text]
 
 
 def _has_repo_detail(row: dict[str, Any]) -> bool:
@@ -443,6 +553,7 @@ def _metadata_text(metadata: dict[str, Any]) -> str:
 
 def _input_snapshot(row: dict[str, Any], score_input: _ScoreInput) -> dict[str, Any]:
     github_inspection = score_input.github_inspection
+    website_inspection = score_input.website_inspection
     snapshot = {
         "skill_name": row.get("skill_name"),
         "evidence_type": row.get("evidence_type"),
@@ -454,6 +565,7 @@ def _input_snapshot(row: dict[str, Any], score_input: _ScoreInput) -> dict[str, 
         "metadata": _metadata(row),
         "proof_kind": score_input.proof_kind,
         "github_inspection_used": bool(github_inspection and github_inspection.inspection_used),
+        "website_inspection_used": bool(website_inspection and website_inspection.inspection_used),
     }
     if github_inspection is not None:
         snapshot["github_inspection"] = {
@@ -464,6 +576,15 @@ def _input_snapshot(row: dict[str, Any], score_input: _ScoreInput) -> dict[str, 
             "file_path": github_inspection.file_path,
             "error": github_inspection.error,
             "status_code": github_inspection.status_code,
+        }
+    if website_inspection is not None:
+        snapshot["website_inspection"] = {
+            "final_url": website_inspection.final_url,
+            "status_code": website_inspection.status_code,
+            "page_title": website_inspection.page_title,
+            "headings": website_inspection.headings,
+            "public_markers": website_inspection.public_markers,
+            "error": website_inspection.error,
         }
     return snapshot
 
@@ -482,6 +603,7 @@ def _to_response(row: dict[str, Any]) -> PublicProofVerificationResponse:
         verifier_notes=row.get("verifier_notes") or "",
         needs_human_review=bool(row.get("needs_human_review")),
         github_inspection_used=bool(row.get("github_inspection_used") or input_snapshot.get("github_inspection_used")),
+        website_inspection_used=bool(row.get("website_inspection_used") or input_snapshot.get("website_inspection_used")),
         verifier_version=row.get("verifier_version") or _VERIFIER_VERSION,
         created_at=str(row.get("created_at") or ""),
     )
