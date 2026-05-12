@@ -837,3 +837,179 @@ def test_website_verification_guide_post_replaces_existing_guide() -> None:
         assert second["expected_output"] == "Only analytics-related results are shown."
     finally:
         _clear_overrides()
+
+
+def test_generate_website_verification_plan_ready() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json=_website_guide_payload(),
+        )
+
+        response = client.post(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-plan")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["skill_evidence_id"] == evidence["id"]
+        assert data["website_url"] == _website_payload()["evidence_url"]
+        assert data["plan_status"] == "ready"
+        assert data["can_attempt_automated_execution"] is True
+        assert data["requires_login"] is False
+        assert data["normalized_test_steps"][0] == "Open the live website."
+        assert data["expected_output"] == _website_guide_payload()["expected_output"]
+        assert data["sample_inputs"] == {"filter": "Active projects"}
+        assert data["planner_version"] == "website-plan-v1"
+    finally:
+        _clear_overrides()
+
+
+def test_generate_website_verification_plan_needs_more_detail_for_vague_guide() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json={
+                **_website_guide_payload(),
+                "feature_to_verify": "Main app behavior",
+                "verification_steps": ["Test the app"],
+                "sample_inputs": None,
+                "expected_output": "It works",
+            },
+        )
+
+        response = client.post(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-plan")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["plan_status"] == "needs_more_detail"
+        assert data["can_attempt_automated_execution"] is False
+        assert "vague_verification_steps" in data["validation_warnings"]
+        assert "expected_output_too_generic" in data["validation_warnings"]
+    finally:
+        _clear_overrides()
+
+
+def test_generate_website_verification_plan_warns_for_login_without_safe_notes() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json={
+                **_website_guide_payload(),
+                "login_required": True,
+                "login_notes": None,
+                "access_notes": None,
+            },
+        )
+
+        response = client.post(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-plan")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["requires_login"] is True
+        assert data["plan_status"] == "needs_more_detail"
+        assert data["can_attempt_automated_execution"] is False
+        assert "login_required_without_safe_access_notes" in data["validation_warnings"]
+    finally:
+        _clear_overrides()
+
+
+def test_get_latest_website_verification_plan() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json=_website_guide_payload(),
+        )
+        first = client.post(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-plan").json()
+
+        client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json={
+                **_website_guide_payload(),
+                "feature_to_verify": "Search interaction",
+                "verification_steps": ["Open the site.", "Search for analytics.", "Confirm filtered results."],
+                "sample_inputs": {"search": "analytics"},
+                "expected_output": "Only analytics-related results are shown.",
+            },
+        )
+        second = client.post(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-plan").json()
+
+        response = client.get(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-plan/latest")
+
+        assert response.status_code == 200
+        latest = response.json()
+        assert latest["id"] == second["id"]
+        assert latest["id"] != first["id"]
+        assert latest["feature_to_verify"] == "Search interaction"
+    finally:
+        _clear_overrides()
+
+
+def test_generate_website_verification_plan_requires_existing_guide() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-plan")
+
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "website_verification_guide_not_found"
+    finally:
+        _clear_overrides()
+
+
+def test_generate_website_verification_plan_rejects_invalid_evidence_type() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post(
+            "/api/v1/student/skill-evidence",
+            json={
+                "skill_name": "Python",
+                "evidence_type": "GitHub repository URL",
+                "repository_url": "https://github.com/student/project",
+                "evidence_description": "GitHub repository proof.",
+            },
+        ).json()
+
+        response = client.post(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-plan")
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["code"] == "website_verification_guide_not_allowed"
+    finally:
+        _clear_overrides()
+
+
+def test_website_verification_plan_includes_executor_fields() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json=_website_guide_payload(),
+        )
+
+        response = client.post(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-plan")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data["inferred_action_candidates"], list)
+        assert {item["step_number"] for item in data["inferred_action_candidates"]} == {1, 2, 3, 4}
+        assert all("action_type" in item for item in data["inferred_action_candidates"])
+        assert isinstance(data["validation_warnings"], list)
+        assert isinstance(data["agent_notes"], str)
+        assert "No browser actions are executed" in data["agent_notes"]
+    finally:
+        _clear_overrides()

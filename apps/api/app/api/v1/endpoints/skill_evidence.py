@@ -17,6 +17,7 @@ from app.schemas.skill_evidence import (
     SkillEvidenceVerifyResponse,
     WebsiteVerificationGuideCreate,
     WebsiteVerificationGuideResponse,
+    WebsiteVerificationPlanResponse,
 )
 from app.services.public_proof_verification_service import (
     PublicProofNotVerifiableError,
@@ -31,6 +32,10 @@ from app.services.website_verification_guide_service import (
     WebsiteVerificationGuideNotAllowedError,
     WebsiteVerificationGuideNotFoundError,
     WebsiteVerificationGuideService,
+)
+from app.services.website_verification_plan_service import (
+    WebsiteVerificationPlanNotFoundError,
+    WebsiteVerificationPlanService,
 )
 
 logger = logging.getLogger(__name__)
@@ -276,6 +281,54 @@ def get_website_verification_guide(
         raise _database_unavailable(exc) from exc
 
 
+@router.post(
+    "/{evidence_id}/website-verification-plan",
+    response_model=WebsiteVerificationPlanResponse,
+    summary="Generate a website verification plan for one evidence record",
+)
+def generate_website_verification_plan(
+    evidence_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> WebsiteVerificationPlanResponse:
+    try:
+        return WebsiteVerificationPlanService(db).generate_plan(user_id, evidence_id)
+    except SkillEvidenceNotFoundError as exc:
+        raise _not_found(evidence_id) from exc
+    except WebsiteVerificationGuideNotFoundError as exc:
+        raise _website_guide_not_found(evidence_id) from exc
+    except WebsiteVerificationGuideNotAllowedError as exc:
+        raise _website_guide_not_allowed(str(exc), evidence_id) from exc
+    except SupabaseError as exc:
+        raise _database_unavailable(exc) from exc
+    except Exception as exc:
+        logger.exception("POST /student/skill-evidence/%s/website-verification-plan: unexpected error", evidence_id)
+        raise _database_unavailable(exc) from exc
+
+
+@router.get(
+    "/{evidence_id}/website-verification-plan/latest",
+    response_model=WebsiteVerificationPlanResponse,
+    summary="Get the latest website verification plan for one evidence record",
+)
+def get_latest_website_verification_plan(
+    evidence_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> WebsiteVerificationPlanResponse:
+    try:
+        return WebsiteVerificationPlanService(db).get_latest_plan(user_id, evidence_id)
+    except SkillEvidenceNotFoundError as exc:
+        raise _not_found(evidence_id) from exc
+    except WebsiteVerificationPlanNotFoundError as exc:
+        raise _website_plan_not_found(evidence_id) from exc
+    except SupabaseError as exc:
+        raise _database_unavailable(exc) from exc
+    except Exception as exc:
+        logger.exception("GET /student/skill-evidence/%s/website-verification-plan/latest: unexpected error", evidence_id)
+        raise _database_unavailable(exc) from exc
+
+
 def _not_found(evidence_id: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -336,6 +389,17 @@ def _website_guide_not_found(evidence_id: str) -> HTTPException:
         detail={
             "code": "website_verification_guide_not_found",
             "message": "No website verification guide exists for this evidence record.",
+            "evidence_id": evidence_id,
+        },
+    )
+
+
+def _website_plan_not_found(evidence_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": "website_verification_plan_not_found",
+            "message": "No website verification plan exists for this evidence record.",
             "evidence_id": evidence_id,
         },
     )

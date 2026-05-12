@@ -21,6 +21,7 @@ PublicVerificationStatus = Literal[
     "strong_match",
     "rejected",
 ]
+WebsiteVerificationPlanStatus = Literal["ready", "needs_more_detail", "unsupported"]
 
 
 class _SkillEvidenceBase(BaseModel):
@@ -188,3 +189,22 @@ class WebsiteVerificationGuideResponse(WebsiteVerificationGuideBase):
     skill_evidence_id: str
     created_at: str
     updated_at: str
+
+
+class WebsiteVerificationPlanResponse(BaseModel):
+    id: str
+    user_id: str
+    skill_evidence_id: str
+    website_url: str
+    feature_to_verify: str
+    plan_status: WebsiteVerificationPlanStatus
+    normalized_test_steps: list[str]
+    expected_output: str
+    sample_inputs: SampleInputs | None = None
+    inferred_action_candidates: list[dict[str, Any]]
+    validation_warnings: list[str]
+    agent_notes: str
+    requires_login: bool
+    can_attempt_automated_execution: bool
+    planner_version: str
+    created_at: str
