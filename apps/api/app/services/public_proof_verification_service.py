@@ -1,4 +1,4 @@
-"""Rule-based public proof verification for stored skill evidence metadata."""
+"""Rule-based public proof verification for stored and inspected public evidence."""
 
 from __future__ import annotations
 
@@ -12,11 +12,16 @@ from uuid import uuid4
 
 from app.schemas.skill_evidence import PublicProofVerificationResponse
 from app.services.github_evidence_service import parse_github_repo_url
+from app.services.github_public_inspection_service import (
+    GITHUB_PUBLIC_INSPECTOR_VERSION,
+    GitHubInspectionResult,
+    GitHubPublicInspectionService,
+)
 from app.services.skill_evidence_service import SkillEvidenceNotFoundError
 
 _EVIDENCE_TABLE = "skill_evidence"
 _VERIFICATION_TABLE = "skill_evidence_verifications"
-_VERIFIER_VERSION = "public-metadata-v1"
+_VERIFIER_VERSION = "public-proof-v2"
 
 
 class PublicProofVerificationNotFoundError(LookupError):
@@ -33,6 +38,7 @@ class _ScoreInput:
     proof_url: str | None
     proof_kind: str | None
     text: str
+    github_inspection: GitHubInspectionResult | None = None
 
 
 class PublicProofVerificationService:
@@ -47,14 +53,18 @@ class PublicProofVerificationService:
         if score_input.proof_url is None:
             raise PublicProofNotVerifiableError("Public proof verification requires a public URL.")
 
+        github_inspection = _inspect_github_proof(score_input)
+        if github_inspection is not None:
+            score_input = _build_score_input(row, github_inspection)
+
         result = _score_public_proof(score_input)
         data = {
             **result,
             "user_id": user_id,
             "skill_evidence_id": evidence_id,
-            "verification_type": "public_metadata",
+            "verification_type": "public_proof",
             "verifier_version": _VERIFIER_VERSION,
-            "input_snapshot": _input_snapshot(row, score_input.proof_kind),
+            "input_snapshot": _input_snapshot(row, score_input),
         }
 
         if isinstance(self._client, dict):
@@ -129,6 +139,7 @@ def _score_public_proof(score_input: _ScoreInput) -> dict[str, Any]:
     matched: list[str] = []
     missing: list[str] = []
     score = 0.0
+    github_inspection = score_input.github_inspection
 
     if skill:
         score += 0.10
@@ -158,12 +169,22 @@ def _score_public_proof(score_input: _ScoreInput) -> dict[str, Any]:
     else:
         missing.append("Description is missing or too short to explain the student's contribution.")
 
+    if github_inspection is not None:
+        if github_inspection.inspection_used:
+            score += 0.18
+            matched.extend(github_inspection.matched_signals)
+        else:
+            missing.extend(github_inspection.missing_signals)
+
     keyword_hits = _skill_keyword_hits(skill, score_input.text)
     if keyword_hits:
         score += min(0.25, 0.08 * len(keyword_hits))
-        matched.append(f"Stored metadata mentions skill-relevant terms: {', '.join(keyword_hits[:5])}.")
+        if github_inspection and github_inspection.inspection_used:
+            matched.append(f"GitHub inspection and stored metadata mention skill-relevant terms: {', '.join(keyword_hits[:5])}.")
+        else:
+            matched.append(f"Stored metadata mentions skill-relevant terms: {', '.join(keyword_hits[:5])}.")
     else:
-        missing.append("Stored title, description, URL, and metadata do not mention skill-relevant terms.")
+        missing.append("Stored metadata and inspected public proof signals do not mention skill-relevant terms.")
 
     contribution_hits = _keyword_hits(
         score_input.text,
@@ -191,6 +212,9 @@ def _score_public_proof(score_input: _ScoreInput) -> dict[str, Any]:
     elif score_input.proof_kind == "github_repository":
         missing.append("Repository proof does not include file or path details for deeper analysis.")
 
+    if github_inspection and github_inspection.inspection_used:
+        score += _github_skill_signal_bonus(skill, github_inspection, matched, missing)
+
     confidence = max(0.0, min(1.0, round(score, 2)))
     status = _status_for_score(confidence, score_input.proof_kind, skill)
     needs_human_review = status in {"pending", "weak_match", "rejected"} or confidence < 0.75
@@ -198,18 +222,23 @@ def _score_public_proof(score_input: _ScoreInput) -> dict[str, Any]:
     return {
         "verification_status": status,
         "confidence_score": confidence,
-        "evidence_summary": _summary(status, skill, score_input.proof_kind, confidence),
+        "evidence_summary": _summary(
+            status,
+            skill,
+            score_input.proof_kind,
+            confidence,
+            bool(github_inspection and github_inspection.inspection_used),
+        ),
         "matched_signals": matched,
         "missing_signals": missing,
         "verifier_notes": (
-            "Rule-based MVP only. This result uses stored metadata and URL structure; "
-            "it does not fetch GitHub, scrape webpages, or call an LLM."
+            _verifier_notes(github_inspection)
         ),
         "needs_human_review": needs_human_review,
     }
 
 
-def _build_score_input(row: dict[str, Any]) -> _ScoreInput:
+def _build_score_input(row: dict[str, Any], github_inspection: GitHubInspectionResult | None = None) -> _ScoreInput:
     metadata = _metadata(row)
     proof_url = _clean(row.get("repository_url")) or _clean(row.get("evidence_url")) or _clean(metadata.get("url"))
     proof_kind = _proof_kind(row, proof_url)
@@ -221,9 +250,16 @@ def _build_score_input(row: dict[str, Any]) -> _ScoreInput:
             _clean(row.get("file_path")),
             proof_url or "",
             _metadata_text(metadata),
+            github_inspection.text if github_inspection and github_inspection.inspection_used else "",
         ]
     ).lower()
-    return _ScoreInput(row=row, proof_url=proof_url, proof_kind=proof_kind, text=text)
+    return _ScoreInput(row=row, proof_url=proof_url, proof_kind=proof_kind, text=text, github_inspection=github_inspection)
+
+
+def _inspect_github_proof(score_input: _ScoreInput) -> GitHubInspectionResult | None:
+    if score_input.proof_url is None or parse_github_repo_url(score_input.proof_url) is None:
+        return None
+    return GitHubPublicInspectionService().inspect_url(score_input.proof_url)
 
 
 def _is_public(row: dict[str, Any]) -> bool:
@@ -280,14 +316,74 @@ def _status_for_score(score: float, proof_kind: str | None, skill: str) -> str:
     return "rejected"
 
 
-def _summary(status: str, skill: str, proof_kind: str | None, score: float) -> str:
+def _summary(status: str, skill: str, proof_kind: str | None, score: float, github_inspection_used: bool) -> str:
+    basis = "inspected public GitHub proof" if github_inspection_used else "stored public proof metadata"
     if status == "strong_match":
-        return f"Stored public {proof_kind} metadata strongly supports the claimed skill '{skill}' with confidence {score:.2f}."
+        return f"{basis} strongly supports the claimed skill '{skill}' with confidence {score:.2f}."
     if status == "plausible_match":
-        return f"Stored public {proof_kind} metadata plausibly supports the claimed skill '{skill}' with confidence {score:.2f}."
+        return f"{basis} plausibly supports the claimed skill '{skill}' with confidence {score:.2f}."
     if status == "weak_match":
-        return f"Stored public proof metadata weakly supports the claimed skill '{skill}' with confidence {score:.2f}."
-    return f"Stored proof metadata does not provide enough public, skill-relevant signal for '{skill}'."
+        return f"{basis} weakly supports the claimed skill '{skill}' with confidence {score:.2f}."
+    return f"{basis} does not provide enough public, skill-relevant signal for '{skill}'."
+
+
+def _github_skill_signal_bonus(
+    skill: str,
+    github_inspection: GitHubInspectionResult,
+    matched: list[str],
+    missing: list[str],
+) -> float:
+    bonus = 0.0
+    normalized_skill = skill.lower()
+    language = (github_inspection.primary_language or "").lower()
+    if language and language in _keywords_for_skill(skill):
+        bonus += 0.08
+        matched.append(f"GitHub primary language directly supports the claimed skill: {github_inspection.primary_language}.")
+    elif language and _language_supports_skill(normalized_skill, language):
+        bonus += 0.08
+        matched.append(f"GitHub primary language supports the claimed skill: {github_inspection.primary_language}.")
+    elif github_inspection.primary_language:
+        missing.append(f"GitHub primary language does not directly match the claimed skill: {github_inspection.primary_language}.")
+
+    readme_hits = _skill_keyword_hits(skill, github_inspection.readme_text or "")
+    if readme_hits:
+        bonus += 0.10
+        matched.append(f"GitHub README includes skill-relevant terms: {', '.join(readme_hits[:5])}.")
+    elif github_inspection.readme_text:
+        missing.append("GitHub README was inspected but did not include skill-relevant terms.")
+
+    file_text = " ".join([github_inspection.file_name or "", github_inspection.file_path or "", github_inspection.file_text or ""])
+    file_hits = _skill_keyword_hits(skill, file_text)
+    if file_hits:
+        bonus += 0.10
+        matched.append(f"GitHub file proof includes skill-relevant terms: {', '.join(file_hits[:5])}.")
+    elif github_inspection.file_path:
+        missing.append("GitHub file proof was inspected but did not include skill-relevant terms.")
+
+    return bonus
+
+
+def _language_supports_skill(normalized_skill: str, language: str) -> bool:
+    return (
+        ("python" in normalized_skill and language == "python")
+        or (_contains_any(normalized_skill, ("javascript", "typescript", "react", "next")) and language in {"javascript", "typescript"})
+        or ("sql" in normalized_skill and language in {"sql", "plpgsql"})
+    )
+
+
+def _verifier_notes(github_inspection: GitHubInspectionResult | None) -> str:
+    base = "Rule-based MVP only. This result does not scrape webpages or call an LLM."
+    if github_inspection is None:
+        return f"{base} GitHub inspection was not applicable; used stored metadata only."
+    if github_inspection.inspection_used:
+        return (
+            f"{base} Real GitHub inspection was used via {GITHUB_PUBLIC_INSPECTOR_VERSION}; "
+            "stored metadata remains part of the score."
+        )
+    return (
+        f"{base} Real GitHub inspection was attempted but unavailable "
+        f"({github_inspection.error or 'unknown_error'}); used stored metadata fallback."
+    )
 
 
 def _skill_keyword_hits(skill: str, text: str) -> list[str]:
@@ -345,8 +441,9 @@ def _metadata_text(metadata: dict[str, Any]) -> str:
         return str(metadata)
 
 
-def _input_snapshot(row: dict[str, Any], proof_kind: str | None) -> dict[str, Any]:
-    return {
+def _input_snapshot(row: dict[str, Any], score_input: _ScoreInput) -> dict[str, Any]:
+    github_inspection = score_input.github_inspection
+    snapshot = {
         "skill_name": row.get("skill_name"),
         "evidence_type": row.get("evidence_type"),
         "evidence_url": row.get("evidence_url"),
@@ -355,11 +452,24 @@ def _input_snapshot(row: dict[str, Any], proof_kind: str | None) -> dict[str, An
         "evidence_description": row.get("evidence_description"),
         "proof_visibility": row.get("proof_visibility"),
         "metadata": _metadata(row),
-        "proof_kind": proof_kind,
+        "proof_kind": score_input.proof_kind,
+        "github_inspection_used": bool(github_inspection and github_inspection.inspection_used),
     }
+    if github_inspection is not None:
+        snapshot["github_inspection"] = {
+            "owner": github_inspection.owner,
+            "repo": github_inspection.repo,
+            "primary_language": github_inspection.primary_language,
+            "default_branch": github_inspection.default_branch,
+            "file_path": github_inspection.file_path,
+            "error": github_inspection.error,
+            "status_code": github_inspection.status_code,
+        }
+    return snapshot
 
 
 def _to_response(row: dict[str, Any]) -> PublicProofVerificationResponse:
+    input_snapshot = row.get("input_snapshot") if isinstance(row.get("input_snapshot"), dict) else {}
     return PublicProofVerificationResponse(
         id=str(row["id"]),
         user_id=str(row["user_id"]),
@@ -371,6 +481,7 @@ def _to_response(row: dict[str, Any]) -> PublicProofVerificationResponse:
         missing_signals=list(row.get("missing_signals") or []),
         verifier_notes=row.get("verifier_notes") or "",
         needs_human_review=bool(row.get("needs_human_review")),
+        github_inspection_used=bool(row.get("github_inspection_used") or input_snapshot.get("github_inspection_used")),
         verifier_version=row.get("verifier_version") or _VERIFIER_VERSION,
         created_at=str(row.get("created_at") or ""),
     )

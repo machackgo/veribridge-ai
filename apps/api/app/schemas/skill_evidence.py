@@ -128,5 +128,6 @@ class PublicProofVerificationResponse(BaseModel):
     missing_signals: list[str]
     verifier_notes: str
     needs_human_review: bool
+    github_inspection_used: bool = False
     verifier_version: str
     created_at: str
