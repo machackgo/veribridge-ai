@@ -144,6 +144,46 @@ Future roadmap:
 - Phase 5F: AI semantic evaluator over browser execution results.
 - Phase 5G: Recruiter-readable website proof reports.
 
+## Phase 5E: Safe Browser Verification Executor Foundation
+
+Phase 5E adds a separate browser-run layer for deployed website proof. Browser runs build on saved website verification plans and attempt only bounded, public, non-destructive interactions that can be derived from structured plan fields.
+
+The browser executor can:
+
+- Open the submitted public website URL in a controlled Playwright browser context.
+- Translate clear plan steps into safe actions such as navigate, fill, select, click, wait for text, and assert text present.
+- Use only sample inputs supplied by the student in the verification guide/plan.
+- Click only benign action targets such as analyze, generate, calculate, search, run, check, view result, next, or verify.
+- Inspect the final page URL, title, and visible text snapshot.
+- Store browser runs and per-step outcomes for traceability.
+
+The browser executor has strict safety limits:
+
+- Login-required flows are blocked and recorded as `blocked_by_login`.
+- Localhost, private IPs, file URLs, and unsupported schemes are rejected before browser execution.
+- Passwords, payment fields, tokens, OTPs, card data, or other sensitive values are not filled.
+- Destructive or real-world action buttons such as delete, purchase, pay, buy, subscribe, send message, send email, confirm order, transfer, or submit application are not clicked.
+- It does not bypass authentication, CAPTCHAs, paywalls, or bot protections.
+- It does not run arbitrary page JavaScript.
+- Screenshots and HTML snapshot storage fields exist for future use, but this phase stores a safe text snapshot only.
+
+Browser execution statuses:
+
+- `browser_verified`: navigation and safe required steps passed, and expected output appeared clearly.
+- `browser_partially_verified`: some browser evidence appeared, but confidence remains partial.
+- `browser_failed`: executable steps ran, but expected output was not found.
+- `needs_human_review`: plan/page state is ambiguous or not detailed enough for safe execution.
+- `blocked_by_login`: the plan or page requires authentication.
+- `unsupported_plan`: the plan cannot be translated into safe browser actions.
+- `execution_timeout`: execution exceeded bounded timeouts.
+- `execution_error`: browser execution failed safely before enough page state was collected.
+
+Future roadmap:
+
+- Phase 5F: AI semantic evaluator over static and browser execution results.
+- Phase 5G: Student-facing and recruiter-facing website proof verification UI.
+- Phase 5H: Richer screenshot/report artifacts when storage and privacy rules are defined.
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.
