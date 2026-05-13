@@ -107,6 +107,43 @@ The intended recruiter flow is:
 3. Relevant lines or regions are highlighted.
 4. AI explains why the evidence supports the skill.
 
+## Phase 5D: Website Verification Executor Foundation
+
+Phase 5D adds stored website verification runs for deployed website proof. A run takes a saved website verification plan, safely inspects the public HTML page, performs static checks, stores the run, and stores child check records for traceability.
+
+The current executor is static/public-page only. It can:
+
+- Load the latest or selected website verification plan.
+- Fetch and inspect the public website HTML through the existing safe website inspection service.
+- Record page title, meta description, headings, and a visible text excerpt.
+- Check whether meaningful terms from the plan feature and expected output appear in static page content.
+- Mark checks that require clicking, typing, selecting, form submission, or login as browser-required.
+- Persist run status, summary, counts, page snapshot fields, raw executor notes, and per-check results.
+
+The current executor cannot:
+
+- Execute JavaScript-driven browser flows.
+- Click buttons, type into forms, select dropdowns, or submit data.
+- Use private login credentials.
+- Capture screenshots.
+- Make AI semantic judgments about behavior.
+- Verify hidden, authenticated, or post-interaction states.
+
+Run statuses:
+
+- `static_verified`: static public-page content strongly matches the plan and no browser-only actions are required.
+- `partial_verification`: static public-page content partially matches the plan.
+- `failed_static_checks`: the site loaded but static checks did not find enough matching evidence.
+- `needs_browser_execution`: the plan or page requires interactions such as clicking, typing, selecting, form submission, or login.
+- `needs_review`: the plan is vague, unsupported, or needs human judgment before execution.
+- `execution_error`: the public website could not be safely inspected.
+
+Future roadmap:
+
+- Phase 5E: Browser executor for safe public flows.
+- Phase 5F: AI semantic evaluator over browser execution results.
+- Phase 5G: Recruiter-readable website proof reports.
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.
