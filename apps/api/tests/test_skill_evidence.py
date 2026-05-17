@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user_id, get_db
 from app.main import app
+from app.schemas.skill_evidence import count_words
 from app.services.github_evidence_service import GitHubFileFetchResult
 from app.services.github_public_inspection_service import GitHubInspectionResult
 from app.services.website_public_inspection_service import WebsiteInspectionResult
@@ -49,7 +50,10 @@ def _website_payload() -> dict:
 def _website_guide_payload() -> dict:
     return {
         "project_overview": "Interactive dashboard that lets users filter and inspect project metrics.",
-        "feature_to_verify": "Dashboard filter interaction",
+        "feature_to_verify": (
+            "After the visitor opens the public project dashboard, they select a project status filter and the website "
+            "updates the metrics table to show only matching active projects."
+        ),
         "verification_steps": [
             "Open the live website.",
             "Select the Projects filter.",
@@ -727,7 +731,7 @@ def test_create_website_verification_guide() -> None:
         assert response.status_code == 200
         data = response.json()
         assert data["skill_evidence_id"] == evidence["id"]
-        assert data["feature_to_verify"] == "Dashboard filter interaction"
+        assert data["feature_to_verify"] == _website_guide_payload()["feature_to_verify"]
         assert data["verification_steps"][0] == "Open the live website."
         assert data["sample_inputs"] == {"filter": "Active projects"}
         assert data["login_required"] is False
@@ -788,6 +792,85 @@ def test_website_verification_guide_requires_expected_output() -> None:
         _clear_overrides()
 
 
+def test_website_verification_guide_rejects_short_feature_description() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        response = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json={**_website_guide_payload(), "feature_to_verify": "It shows safer route."},
+        )
+
+        assert response.status_code == 422
+        assert "Feature description must contain at least 20 words" in response.text
+    finally:
+        _clear_overrides()
+
+
+def test_website_verification_guide_accepts_twenty_word_feature_description() -> None:
+    store: dict = {}
+    client = _client(store)
+    feature = (
+        "After users enter origin and destination details, the website calculates route accident risk and shows "
+        "a safer alternative recommendation clearly."
+    )
+    try:
+        assert count_words(feature) >= 20
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        response = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json={**_website_guide_payload(), "feature_to_verify": feature},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["feature_to_verify"] == feature
+    finally:
+        _clear_overrides()
+
+
+def test_website_verification_guide_rejects_short_expected_output() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        response = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json={**_website_guide_payload(), "expected_output": "Risk appears."},
+        )
+
+        assert response.status_code == 422
+        assert "Expected output must contain at least 8 words" in response.text
+    finally:
+        _clear_overrides()
+
+
+def test_website_verification_guide_accepts_eight_word_expected_output() -> None:
+    store: dict = {}
+    client = _client(store)
+    expected_output = "Risk score and safer route recommendation appear onscreen clearly."
+    try:
+        assert count_words(expected_output) >= 8
+        evidence = client.post("/api/v1/student/skill-evidence", json=_website_payload()).json()
+        response = client.post(
+            f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
+            json={**_website_guide_payload(), "expected_output": expected_output},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["expected_output"] == expected_output
+    finally:
+        _clear_overrides()
+
+
+def test_website_verification_guide_word_count_handles_whitespace_and_punctuation() -> None:
+    whitespace_heavy = "  After   users\nenter\torigin   and destination, the website analyzes risk and displays safer route guidance. "
+    punctuation_heavy = "Route-risk, score-card, safer-route, recommendation, results-section, appears, after, analysis."
+
+    assert count_words(whitespace_heavy) == 15
+    assert count_words(punctuation_heavy) == 8
+
+
 def test_website_verification_guide_rejects_github_evidence() -> None:
     store: dict = {}
     client = _client(store)
@@ -823,9 +906,12 @@ def test_website_verification_guide_post_replaces_existing_guide() -> None:
         ).json()
         updated_payload = {
             **_website_guide_payload(),
-            "feature_to_verify": "Search interaction",
+            "feature_to_verify": (
+                "After the visitor opens the public project dashboard, they type an analytics search query and the "
+                "website updates the results list to show only matching analytics projects."
+            ),
             "verification_steps": ["Open the site.", "Search for analytics.", "Confirm filtered results."],
-            "expected_output": "Only analytics-related results are shown.",
+            "expected_output": "Only analytics-related results are shown in the filtered project results list.",
         }
         second = client.post(
             f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
@@ -833,8 +919,8 @@ def test_website_verification_guide_post_replaces_existing_guide() -> None:
         ).json()
 
         assert second["id"] == first["id"]
-        assert second["feature_to_verify"] == "Search interaction"
-        assert second["expected_output"] == "Only analytics-related results are shown."
+        assert second["feature_to_verify"] == updated_payload["feature_to_verify"]
+        assert second["expected_output"] == "Only analytics-related results are shown in the filtered project results list."
     finally:
         _clear_overrides()
 
@@ -875,10 +961,8 @@ def test_generate_website_verification_plan_needs_more_detail_for_vague_guide() 
             f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
             json={
                 **_website_guide_payload(),
-                "feature_to_verify": "Main app behavior",
                 "verification_steps": ["Test the app"],
                 "sample_inputs": None,
-                "expected_output": "It works",
             },
         )
 
@@ -889,7 +973,6 @@ def test_generate_website_verification_plan_needs_more_detail_for_vague_guide() 
         assert data["plan_status"] == "needs_more_detail"
         assert data["can_attempt_automated_execution"] is False
         assert "vague_verification_steps" in data["validation_warnings"]
-        assert "expected_output_too_generic" in data["validation_warnings"]
     finally:
         _clear_overrides()
 
@@ -936,10 +1019,13 @@ def test_get_latest_website_verification_plan() -> None:
             f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-guide",
             json={
                 **_website_guide_payload(),
-                "feature_to_verify": "Search interaction",
+                "feature_to_verify": (
+                    "After the visitor opens the public project dashboard, they enter an analytics search term and "
+                    "the website filters the displayed cards to show matching analytics project results."
+                ),
                 "verification_steps": ["Open the site.", "Search for analytics.", "Confirm filtered results."],
                 "sample_inputs": {"search": "analytics"},
-                "expected_output": "Only analytics-related results are shown.",
+                "expected_output": "Only analytics-related results are shown in the filtered project results list.",
             },
         )
         second = client.post(f"/api/v1/student/skill-evidence/{evidence['id']}/website-verification-plan").json()
@@ -950,7 +1036,7 @@ def test_get_latest_website_verification_plan() -> None:
         latest = response.json()
         assert latest["id"] == second["id"]
         assert latest["id"] != first["id"]
-        assert latest["feature_to_verify"] == "Search interaction"
+        assert "analytics search term" in latest["feature_to_verify"]
     finally:
         _clear_overrides()
 
