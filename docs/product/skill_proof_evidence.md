@@ -263,6 +263,23 @@ Future roadmap:
 - Phase 5F.2: stronger local rerankers, classifiers, or self-hosted model providers for better semantic decisions.
 - Future: versioned model/prompt evaluation records if a model-backed evaluator is introduced.
 
+## Phase 5F.2: Semantic Similarity Smoke Test And Calibration
+
+Phase 5F.2 adds a developer smoke-test script for the real local semantic similarity model. The script runs curated VeriBridge examples through `sentence-transformers/all-MiniLM-L6-v2`, prints cosine similarity scores, applies the current labels, and summarizes whether the examples look aligned with human expectations.
+
+Semantic models output similarity scores, not final truth. Thresholds decide how those numeric scores become product signals such as `strong_semantic_match`, `moderate_semantic_match`, `weak_semantic_match`, or `low_semantic_match`. Calibration means testing realistic examples to see whether those thresholds behave sensibly before relying on them in product decisions.
+
+The calibration set intentionally includes:
+
+- Positive examples where different wording should still score high, such as safer route language versus low-risk path language.
+- Medium examples that are related but less direct, such as visa-compatible jobs versus work authorization filters.
+- Negative controls where the text should not support the claim.
+- Tricky borderline examples that are close but not equivalent, such as accident risk prediction versus historical accident counts.
+
+This makes the verifier more trustworthy because it checks both false negatives and false positives. A useful threshold should recognize real paraphrases without treating every topically related sentence as proof.
+
+The smoke test is developer tooling only. It does not call external LLM APIs, does not store embeddings, and does not automatically change production thresholds. Future improvements may use larger calibration datasets, human-labeled examples, threshold tuning by evidence type, classifier/reranker models, or self-hosted model providers.
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.
