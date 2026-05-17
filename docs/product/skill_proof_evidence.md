@@ -184,6 +184,56 @@ Future roadmap:
 - Phase 5G: Student-facing and recruiter-facing website proof verification UI.
 - Phase 5H: Richer screenshot/report artifacts when storage and privacy rules are defined.
 
+## Phase 5F: AI Semantic Website Verification Foundation
+
+Phase 5F adds the semantic judgment layer for deployed website proof. A semantic result combines the student's claimed skill or feature, the website verification guide, the structured verification plan, the latest or selected static run, and the latest or selected safe browser run into a final verification judgment.
+
+The semantic evaluator stores:
+
+- `semantic_status`
+- `confidence_score`
+- `evaluator_provider`
+- `evaluator_version`
+- recruiter-facing summary
+- evidence summary
+- limitations
+- recommended next action
+- compact source snapshot
+
+Semantic statuses:
+
+- `verified`: browser execution completed, expected output signals were observed, and no major blocking warnings are present.
+- `partially_verified`: supporting evidence exists, but not every expected step or signal was confirmed.
+- `not_verified`: collected static and browser evidence did not demonstrate the claimed behavior.
+- `needs_human_review`: signals are mixed, ambiguous, login-blocked, unsupported, or require judgment beyond safe automation.
+- `insufficient_evidence`: a plan exists but static/browser evidence is missing or too sparse.
+- `evaluation_error`: semantic evaluation failed due to an internal runtime issue.
+
+The confidence score is a bounded `0.0000` to `1.0000` value. It reflects how strongly the structured evidence supports the semantic status, not a guarantee of product correctness. Verified results should generally be high confidence, partial results medium confidence, human-review and insufficient-evidence results lower confidence, and not-verified results confidence in the negative judgment.
+
+The recruiter summary is intentionally concise and professional. It explains what VeriBridge observed without exposing internal implementation details or overstating what was proven. The source snapshot stores compact references to plan status, static run counts/status, browser run counts/status, final URL/title, a safe text excerpt, and selected step/check summaries. It does not store hidden chain-of-thought or large raw page content.
+
+Current evaluator architecture:
+
+- The service uses a `WebsiteSemanticEvaluatorProvider` interface.
+- Phase 5F ships with `DeterministicMockWebsiteSemanticEvaluator`.
+- No external Claude, OpenAI, Gemini, or other live LLM API is called.
+- No API keys or model secrets are required.
+- A future model-backed provider can replace the deterministic provider while preserving the same persisted result contract.
+
+Limitations and ethical caution:
+
+- Visible website behavior is not the same as full product correctness.
+- Hidden backend logic, model accuracy, business correctness, production reliability, and data quality are not independently proven.
+- Login-required or ambiguous flows should remain reviewable by a human.
+- Semantic verification is currently based on structured evidence and deterministic logic, not live external model reasoning.
+
+Future roadmap:
+
+- Phase 5G: Student-facing website proof verification result UI.
+- Phase 5H: Recruiter-facing proof report UI.
+- Future: real LLM evaluator provider with auditable prompt/version controls.
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.
