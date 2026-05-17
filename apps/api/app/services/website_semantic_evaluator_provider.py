@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.services.website_semantic_similarity_service import semantic_similarity_label
+
 _EVALUATOR_PROVIDER = "deterministic_mock"
 _EVALUATOR_VERSION = "website-semantic-evaluator-mock-v1"
 
@@ -68,6 +70,8 @@ def determine_semantic_status(context: dict[str, Any]) -> str:
         return "needs_human_review"
     if _plan_is_ambiguous(plan):
         return "needs_human_review"
+    if browser_status == "needs_human_review" and _strong_semantic_similarity(context):
+        return "partially_verified"
     if browser_status in {"needs_human_review", "unsupported_plan", "execution_timeout", "execution_error"}:
         return "needs_human_review"
     if browser_status == "browser_verified" and _expected_signals_found(context) and not _has_major_blocking_warnings(plan):
@@ -95,16 +99,19 @@ def calculate_confidence_score(context: dict[str, Any], status: str | None = Non
     browser_run = context.get("browser_run") or {}
     plan = context.get("plan") or {}
     signal_hits = len(_expected_signal_hits(context))
+    similarity_score = _semantic_similarity_score(context)
 
     if status == "verified":
         score = 0.88 + min(signal_hits, 5) * 0.015
         if int(browser_run.get("steps_failed") or 0) == 0:
             score += 0.03
+        score += _semantic_similarity_confidence_boost(similarity_score, maximum=0.04)
         return _clamp(score, 0.85, 0.98)
     if status == "partially_verified":
         score = 0.58 + min(signal_hits, 4) * 0.04
         if (static_run.get("execution_status") == "partial_verification") or (browser_run.get("browser_execution_status") == "browser_partially_verified"):
             score += 0.08
+        score += _semantic_similarity_confidence_boost(similarity_score, maximum=0.08)
         return _clamp(score, 0.55, 0.84)
     if status == "not_verified":
         score = 0.74
@@ -117,6 +124,7 @@ def calculate_confidence_score(context: dict[str, Any], status: str | None = Non
             score += 0.1
         if signal_hits:
             score += 0.08
+        score += _semantic_similarity_confidence_boost(similarity_score, maximum=0.04)
         return _clamp(score, 0.35, 0.70)
     if status == "insufficient_evidence":
         return _clamp(0.18 + min(signal_hits, 2) * 0.05, 0.10, 0.40)
@@ -160,6 +168,9 @@ def build_evidence_summary(context: dict[str, Any]) -> str:
         )
     if hits:
         parts.append(f"Observed expected output signals: {', '.join(hits[:8])}.")
+    similarity = context.get("semantic_similarity") or {}
+    if similarity.get("available") and similarity.get("score") is not None:
+        parts.append(f"Claim/output semantic similarity was {similarity.get('interpretation') or semantic_similarity_label(similarity.get('score'))} ({float(similarity['score']):.2f}).")
     if not parts:
         return "No static or browser verification run evidence is available yet."
     return " ".join(parts)
@@ -196,10 +207,23 @@ def build_internal_reasoning_summary(context: dict[str, Any], status: str) -> st
     static_status = ((context.get("static_run") or {}).get("execution_status")) or "none"
     browser_status = ((context.get("browser_run") or {}).get("browser_execution_status")) or "none"
     hits = _expected_signal_hits(context)
+    similarity = context.get("semantic_similarity") or {}
+    similarity_note = ""
+    if similarity.get("available") and similarity.get("score") is not None:
+        label = similarity.get("interpretation") or semantic_similarity_label(similarity.get("score"))
+        if label == "strong_semantic_match":
+            similarity_note = " Claim/output semantic similarity was strong."
+        elif label == "moderate_semantic_match":
+            similarity_note = " Claim/output semantic similarity was moderate."
+        else:
+            similarity_note = f" Claim/output semantic similarity was {label}."
+    elif similarity:
+        similarity_note = " Claim/output semantic similarity was unavailable."
     return (
         f"Status {status} based on plan_status={((context.get('plan') or {}).get('plan_status') or 'unknown')}, "
         f"static_status={static_status}, browser_status={browser_status}, "
         f"expected_signal_hits={', '.join(hits[:6]) if hits else 'none'}."
+        f"{similarity_note}"
     )
 
 
@@ -239,6 +263,29 @@ def _plan_is_ambiguous(plan: dict[str, Any]) -> bool:
 def _has_major_blocking_warnings(plan: dict[str, Any]) -> bool:
     warnings = set(plan.get("validation_warnings") or [])
     return bool(warnings & {"unsupported_instruction_detected", "login_required_without_safe_access_notes"})
+
+
+def _semantic_similarity_score(context: dict[str, Any]) -> float | None:
+    similarity = context.get("semantic_similarity") or {}
+    if not similarity.get("available"):
+        return None
+    score = similarity.get("score")
+    return float(score) if score is not None else None
+
+
+def _strong_semantic_similarity(context: dict[str, Any]) -> bool:
+    score = _semantic_similarity_score(context)
+    return score is not None and score >= 0.82
+
+
+def _semantic_similarity_confidence_boost(score: float | None, maximum: float) -> float:
+    if score is None:
+        return 0.0
+    if score >= 0.82:
+        return maximum
+    if score >= 0.68:
+        return maximum / 2
+    return 0.0
 
 
 def _meaningful_keywords(value: str) -> list[str]:

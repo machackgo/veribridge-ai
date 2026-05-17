@@ -20,6 +20,11 @@ from app.services.website_semantic_evaluator_provider import (
     calculate_confidence_score,
     determine_semantic_status,
 )
+from app.services.website_semantic_similarity_service import (
+    SentenceEmbeddingProvider,
+    evaluate_semantic_similarity,
+    semantic_similarity_to_snapshot,
+)
 from app.services.website_verification_executor_service import WebsiteVerificationRunNotFoundError
 from app.services.website_verification_guide_service import WebsiteVerificationGuideNotAllowedError, _validate_website_evidence
 from app.services.website_verification_plan_service import WebsiteVerificationPlanNotFoundError
@@ -38,9 +43,15 @@ class WebsiteSemanticVerificationResultNotFoundError(LookupError):
 
 
 class WebsiteSemanticVerificationService:
-    def __init__(self, client: Any, evaluator: WebsiteSemanticEvaluatorProvider | None = None) -> None:
+    def __init__(
+        self,
+        client: Any,
+        evaluator: WebsiteSemanticEvaluatorProvider | None = None,
+        embedding_provider: SentenceEmbeddingProvider | None = None,
+    ) -> None:
         self._client = client
         self._evaluator = evaluator or DeterministicMockWebsiteSemanticEvaluator()
+        self._embedding_provider = embedding_provider
 
     def evaluate_latest_website_semantic_verification(self, user_id: str, evidence_id: str) -> WebsiteSemanticVerificationResultResponse:
         return self.evaluate_website_semantic_verification(user_id, evidence_id)
@@ -55,6 +66,9 @@ class WebsiteSemanticVerificationService:
     ) -> WebsiteSemanticVerificationResultResponse:
         context = self.load_evaluation_context(user_id, evidence_id, plan_id, static_run_id, browser_run_id)
         evaluation_input = self.build_semantic_evaluation_input(context)
+        similarity = evaluate_semantic_similarity(evaluation_input, self._embedding_provider)
+        context["semantic_similarity"] = semantic_similarity_to_snapshot(similarity)
+        evaluation_input["semantic_similarity"] = semantic_similarity_to_snapshot(similarity)
         try:
             evaluation = self.evaluate_semantically(evaluation_input)
         except Exception:
@@ -105,6 +119,7 @@ class WebsiteSemanticVerificationService:
             "static_checks": [_compact_static_check(check) for check in (context.get("static_checks") or [])[:20]],
             "browser_run": _compact_browser_run(context.get("browser_run")),
             "browser_steps": [_compact_browser_step(step) for step in (context.get("browser_steps") or [])[:20]],
+            "semantic_similarity": context.get("semantic_similarity"),
         }
 
     def evaluate_semantically(self, context: dict[str, Any]) -> WebsiteSemanticEvaluationResult:
@@ -252,6 +267,7 @@ class WebsiteSemanticVerificationService:
                 "static_check_summaries": [check.get("check_summary") for check in compact.get("static_checks", [])[:6]],
                 "browser_step_summaries": [step.get("step_summary") for step in compact.get("browser_steps", [])[:8]],
             },
+            "semantic_similarity": semantic_similarity_to_snapshot(compact.get("semantic_similarity")),
         }
 
     def _get_evidence_row(self, user_id: str, evidence_id: str) -> dict[str, Any]:
@@ -504,6 +520,7 @@ def _to_response(row: dict[str, Any]) -> WebsiteSemanticVerificationResultRespon
         evidence_summary=row.get("evidence_summary"),
         limitations=row.get("limitations"),
         recommended_next_action=row.get("recommended_next_action"),
+        semantic_similarity=semantic_similarity_to_snapshot((row.get("source_snapshot") or {}).get("semantic_similarity")),
         source_snapshot=row.get("source_snapshot") or {},
         created_at=str(row.get("created_at") or ""),
         updated_at=str(row.get("updated_at") or ""),
