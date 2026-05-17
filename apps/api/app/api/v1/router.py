@@ -6,6 +6,7 @@ from app.api.v1.endpoints import (
     skill_evidence,
     student,
     website_browser_verification_runs,
+    website_semantic_verification_results,
     website_verification_runs,
 )
 
@@ -31,6 +32,11 @@ api_router.include_router(
     website_browser_verification_runs.router,
     prefix="/student/skill-evidence",
     tags=["website-browser-verification-runs"],
+)
+api_router.include_router(
+    website_semantic_verification_results.router,
+    prefix="/student/skill-evidence",
+    tags=["website-semantic-verification-results"],
 )
 api_router.include_router(
     debug.router,
