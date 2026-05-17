@@ -23,6 +23,14 @@ class WebsiteSemanticVerificationEvaluationRequest(BaseModel):
     browser_run_id: str | None = Field(default=None)
 
 
+class WebsiteSemanticSimilarityResponse(BaseModel):
+    available: bool
+    score: float | None = None
+    label: str
+    model: str | None = None
+    method: str
+
+
 class WebsiteSemanticVerificationResultResponse(BaseModel):
     id: str
     evidence_id: str
@@ -38,6 +46,7 @@ class WebsiteSemanticVerificationResultResponse(BaseModel):
     evidence_summary: str | None = None
     limitations: str | None = None
     recommended_next_action: str | None = None
+    semantic_similarity: WebsiteSemanticSimilarityResponse | None = None
     source_snapshot: dict[str, Any]
     created_at: str
     updated_at: str

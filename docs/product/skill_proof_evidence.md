@@ -234,6 +234,35 @@ Future roadmap:
 - Phase 5H: Recruiter-facing proof report UI.
 - Future: real LLM evaluator provider with auditable prompt/version controls.
 
+## Phase 5F.1: Local Semantic Similarity Engine
+
+Phase 5F.1 adds local NLP semantic similarity to the website proof verifier. It compares what the student claims or expects against what the static and browser verification layers actually observed.
+
+Example:
+
+- Claim: `This website recommends a safer route.`
+- Observed output: `Alternative low-risk path available.`
+
+Exact keyword matching may miss this because the wording is different. An embedding model converts each sentence into a meaning-vector: a list of numbers that represents the sentence's semantic content. Cosine similarity compares the angle between those vectors. If two vectors point in a similar direction, the texts likely mean similar things even when they use different words.
+
+The current local engine uses Sentence Transformers with the CPU-friendly `sentence-transformers/all-MiniLM-L6-v2` model when it is available locally. It does not call Claude, OpenAI, Gemini, or any paid external LLM API. Model loading is lazy, and if the local model is not available, semantic verification falls back to the existing deterministic evaluator and records semantic similarity as unavailable.
+
+Similarity labels:
+
+- `strong_semantic_match`: score is `0.82` or higher.
+- `moderate_semantic_match`: score is `0.68` to below `0.82`.
+- `weak_semantic_match`: score is `0.50` to below `0.68`.
+- `low_semantic_match`: score is below `0.50`.
+
+Semantic similarity supports verification, but it does not decide the result alone. A strong similarity score can modestly raise confidence, and in some ambiguous but supportive cases it can help move evidence toward `partially_verified`. It should not override strong contradictory evidence, such as both browser execution and static checks failing.
+
+VeriBridge stores only compact similarity metadata in `website_semantic_verification_results.source_snapshot`: availability, score, label, model name, and method. Embedding vectors are not stored in Postgres in this phase because they are bulky, model-specific, and not needed for the recruiter-facing audit trail.
+
+Future roadmap:
+
+- Phase 5F.2: stronger local rerankers, classifiers, or self-hosted model providers for better semantic decisions.
+- Future: versioned model/prompt evaluation records if a model-backed evaluator is introduced.
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.
