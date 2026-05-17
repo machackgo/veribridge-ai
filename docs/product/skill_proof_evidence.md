@@ -280,6 +280,33 @@ This makes the verifier more trustworthy because it checks both false negatives 
 
 The smoke test is developer tooling only. It does not call external LLM APIs, does not store embeddings, and does not automatically change production thresholds. Future improvements may use larger calibration datasets, human-labeled examples, threshold tuning by evidence type, classifier/reranker models, or self-hosted model providers.
 
+## Phase 5F.3: Minimum Detail Requirement For Semantic Verification
+
+Phase 5F.3 adds input-quality guardrails for website verification guides. Short descriptions reduce semantic signal quality because the local embedding model has too little context to compare meaning reliably. Richer descriptions help VeriBridge understand the intended workflow and the visible result it should verify.
+
+Website guide requirements:
+
+- `feature_to_verify` must contain at least 20 words.
+- `expected_output` must contain at least 8 words.
+
+This is a product-quality guardrail, not an arbitrary form restriction. The feature description should mention what the user enters or clicks, what the website does, and what outcome should appear. The expected output should describe the visible result VeriBridge should look for after the flow succeeds.
+
+Too short:
+
+- `It shows safer route.`
+
+Better:
+
+- `After the user enters a source and destination, the website analyzes accident risk for the route and displays a safer rerouting recommendation.`
+
+Valid expected output example:
+
+- `A risk score card and safer route recommendation appear on the results section.`
+
+Invalid expected output example:
+
+- `Risk appears.`
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.

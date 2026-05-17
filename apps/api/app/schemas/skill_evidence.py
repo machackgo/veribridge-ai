@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -22,6 +23,14 @@ PublicVerificationStatus = Literal[
     "rejected",
 ]
 WebsiteVerificationPlanStatus = Literal["ready", "needs_more_detail", "unsupported"]
+_MIN_FEATURE_TO_VERIFY_WORDS = 20
+_MIN_EXPECTED_OUTPUT_WORDS = 8
+_FEATURE_DETAIL_MESSAGE = "Feature description must contain at least 20 words so VeriBridge can verify it accurately."
+_EXPECTED_OUTPUT_DETAIL_MESSAGE = "Expected output must contain at least 8 words so VeriBridge can compare the result reliably."
+
+
+def count_words(text: str) -> int:
+    return len(re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?", text or ""))
 
 
 class _SkillEvidenceBase(BaseModel):
@@ -177,6 +186,20 @@ class WebsiteVerificationGuideBase(BaseModel):
         if not steps:
             raise ValueError("verification_steps must include at least one non-empty step")
         return steps
+
+    @field_validator("feature_to_verify")
+    @classmethod
+    def _validate_feature_detail(cls, value: str) -> str:
+        if count_words(value) < _MIN_FEATURE_TO_VERIFY_WORDS:
+            raise ValueError(_FEATURE_DETAIL_MESSAGE)
+        return value
+
+    @field_validator("expected_output")
+    @classmethod
+    def _validate_expected_output_detail(cls, value: str) -> str:
+        if count_words(value) < _MIN_EXPECTED_OUTPUT_WORDS:
+            raise ValueError(_EXPECTED_OUTPUT_DETAIL_MESSAGE)
+        return value
 
 
 class WebsiteVerificationGuideCreate(WebsiteVerificationGuideBase):

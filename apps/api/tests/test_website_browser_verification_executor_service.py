@@ -40,7 +40,10 @@ def _website_payload() -> dict:
 def _browser_guide_payload() -> dict:
     return {
         "project_overview": "Public dashboard for accident risk rerouting.",
-        "feature_to_verify": "Accident risk rerouting dashboard",
+        "feature_to_verify": (
+            "After a visitor enters a source and destination, the website analyzes accident risk for that route "
+            "and displays a safer rerouting recommendation with a visible risk score."
+        ),
         "verification_steps": [
             "Open the live website.",
             "Enter source as Worcester, MA.",
@@ -49,7 +52,7 @@ def _browser_guide_payload() -> dict:
             "Confirm a risk score card appears.",
         ],
         "sample_inputs": {"source": "Worcester, MA", "destination": "Boston, MA"},
-        "expected_output": "Risk score card and safer rerouting recommendation are visible.",
+        "expected_output": "Risk score card and safer rerouting recommendation are visible on the route results page.",
         "login_required": False,
     }
 
@@ -77,7 +80,7 @@ def _unsafe_click_guide_payload() -> dict:
         **_browser_guide_payload(),
         "verification_steps": ["Open the live website.", "Click Pay Now.", "Confirm receipt preview appears."],
         "sample_inputs": None,
-        "expected_output": "Receipt preview confirmation appears.",
+        "expected_output": "Receipt preview confirmation appears after the checkout button is clicked.",
     }
 
 

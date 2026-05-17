@@ -36,7 +36,10 @@ def _website_payload() -> dict:
 def _static_guide_payload() -> dict:
     return {
         "project_overview": "Public dashboard for accident risk rerouting.",
-        "feature_to_verify": "Accident risk rerouting dashboard",
+        "feature_to_verify": (
+            "After a visitor opens the public route dashboard, the website explains accident risk for planned trips "
+            "and shows a safer rerouting recommendation for route planning."
+        ),
         "verification_steps": [
             "Open the live website.",
             "Review the landing page content.",
