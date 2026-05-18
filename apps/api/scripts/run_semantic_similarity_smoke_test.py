@@ -12,6 +12,8 @@ if str(ROOT) not in sys.path:
 
 from app.services.website_semantic_similarity_service import (  # noqa: E402
     LocalSentenceEmbeddingProvider,
+    build_claim_semantic_bundle,
+    build_observed_semantic_bundle,
     compute_embedding_similarity,
     semantic_similarity_label,
 )
@@ -40,6 +42,25 @@ class ScoredSmokeTestExample:
     score: float
     label: str
     alignment: str
+
+
+@dataclass(frozen=True)
+class BundleComparisonExample:
+    name: str
+    raw_claim: str
+    raw_observed: str
+    context: dict
+
+
+@dataclass(frozen=True)
+class ScoredBundleComparison:
+    example: BundleComparisonExample
+    raw_score: float
+    raw_label: str
+    enriched_score: float
+    enriched_label: str
+    claim_bundle: str
+    observed_bundle: str
 
 
 CALIBRATION_EXAMPLES: list[SmokeTestExample] = [
@@ -130,6 +151,60 @@ CALIBRATION_EXAMPLES: list[SmokeTestExample] = [
 ]
 
 
+BUNDLE_COMPARISON_EXAMPLES: list[BundleComparisonExample] = [
+    BundleComparisonExample(
+        name="Safer route recommendation",
+        raw_claim="This website recommends a safer route.",
+        raw_observed="Alternative low-risk path available.",
+        context={
+            "evidence": {
+                "evidence_description": "This website analyzes accident risk for a route and recommends a safer route after the user enters trip locations.",
+            },
+            "plan": {
+                "feature_to_verify": "analyzes route accident risk after a user enters source and destination locations, then recommends a safer alternative route",
+                "expected_output": "A route risk score and safer route recommendation appear on the results section.",
+                "normalized_test_steps": [
+                    "Enter a source location.",
+                    "Enter a destination location.",
+                    "Click the route analysis action.",
+                    "Confirm that route risk and safer-route output appears.",
+                ],
+                "sample_inputs": {"source": "Boston", "destination": "Cambridge"},
+            },
+            "static_run": {
+                "execution_status": "partial_verification",
+                "execution_summary": "Static checks found route risk and safer route language.",
+            },
+            "static_checks": [
+                {
+                    "check_status": "passed",
+                    "observed_value": "route risk score safer route",
+                    "check_summary": "Matched visible route risk and rerouting terminology.",
+                }
+            ],
+            "browser_run": {
+                "browser_execution_status": "browser_verified",
+                "execution_summary": "Browser execution entered source and destination inputs, triggered route analysis, and reached the result page.",
+                "page_title": "Route Risk Analyzer",
+                "safe_text_snapshot": "Risk Score: High. Safer route available. Alternative low-risk path available.",
+            },
+            "browser_steps": [
+                {
+                    "step_status": "passed",
+                    "step_summary": "Entered source and destination route inputs.",
+                    "observed_result": "Route form accepted both locations.",
+                },
+                {
+                    "step_status": "passed",
+                    "step_summary": "Clicked Analyze Route and observed route risk results.",
+                    "observed_result": "Risk Score: High and Safer route available.",
+                },
+            ],
+        },
+    )
+]
+
+
 def evaluate_alignment(expected_judgment: str, score: float) -> str:
     label = semantic_similarity_label(score)
     if expected_judgment == EXPECTED_HIGH:
@@ -159,6 +234,32 @@ def score_examples(
                 score=score,
                 label=label,
                 alignment=evaluate_alignment(example.expected_judgment, score),
+            )
+        )
+    return scored
+
+
+def score_bundle_comparisons(
+    examples: list[BundleComparisonExample],
+    provider: LocalSentenceEmbeddingProvider,
+) -> list[ScoredBundleComparison]:
+    scored: list[ScoredBundleComparison] = []
+    for example in examples:
+        raw_score = compute_embedding_similarity(example.raw_claim, example.raw_observed, provider)
+        claim_bundle = build_claim_semantic_bundle(example.context)
+        observed_bundle = build_observed_semantic_bundle(example.context)
+        enriched_score = compute_embedding_similarity(claim_bundle, observed_bundle, provider)
+        if raw_score is None or enriched_score is None:
+            raise RuntimeError("Semantic similarity service returned no score for a bundle comparison example.")
+        scored.append(
+            ScoredBundleComparison(
+                example=example,
+                raw_score=raw_score,
+                raw_label=semantic_similarity_label(raw_score),
+                enriched_score=enriched_score,
+                enriched_label=semantic_similarity_label(enriched_score),
+                claim_bundle=claim_bundle,
+                observed_bundle=observed_bundle,
             )
         )
     return scored
@@ -211,10 +312,26 @@ def print_report(scored_examples: list[ScoredSmokeTestExample], summary: dict[st
     print(f"Suggested note:                {summary['suggested_note']}")
 
 
+def print_bundle_comparison_report(scored_comparisons: list[ScoredBundleComparison]) -> None:
+    print("\nRaw vs Enriched Semantic Bundle Comparison")
+    print("=" * 48)
+    for item in scored_comparisons:
+        print(f"\nCase: {item.example.name}")
+        print("Raw short text score:")
+        print(f"  {item.raw_score:.4f} ({item.raw_label})")
+        print("Enriched bundle score:")
+        print(f"  {item.enriched_score:.4f} ({item.enriched_label})")
+        print("Claim bundle preview:")
+        print(f"  {item.claim_bundle[:220]}")
+        print("Observed bundle preview:")
+        print(f"  {item.observed_bundle[:220]}")
+
+
 def main() -> int:
     provider = LocalSentenceEmbeddingProvider()
     try:
         scored = score_examples(CALIBRATION_EXAMPLES, provider)
+        bundle_comparisons = score_bundle_comparisons(BUNDLE_COMPARISON_EXAMPLES, provider)
     except Exception as exc:
         print("Semantic similarity smoke test could not run with the local embedding model.")
         print(f"Reason: {type(exc).__name__}: {exc}")
@@ -222,6 +339,7 @@ def main() -> int:
         print("For a one-time development download, rerun with VERIBRIDGE_ALLOW_MODEL_DOWNLOAD=true.")
         return 1
     print_report(scored, summarize_scores(scored))
+    print_bundle_comparison_report(bundle_comparisons)
     return 0
 
 

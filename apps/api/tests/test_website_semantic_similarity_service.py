@@ -11,10 +11,15 @@ from app.api.deps import get_current_user_id, get_db
 from app.main import app
 from app.services.website_semantic_similarity_service import (
     SemanticSimilarityResult,
+    build_claim_semantic_bundle,
     build_claim_text,
+    build_observed_semantic_bundle,
     build_observed_text,
+    claim_bundle_source_fields,
+    compact_semantic_fragments,
     compute_embedding_similarity,
     evaluate_semantic_similarity,
+    observed_bundle_source_fields,
     normalize_semantic_text,
     semantic_similarity_label,
 )
@@ -40,16 +45,28 @@ class _UnavailableEmbeddingProvider:
         raise RuntimeError("model unavailable")
 
 
+class _RecordingEmbeddingProvider:
+    model_name = "recording-provider"
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        self.texts = texts
+        return [[1.0, 0.0], [0.9, 0.1]]
+
+
 def _context(observed: str = "Alternative low-risk path available.") -> dict:
     return {
         "evidence": {
             "skill_name": "FastAPI",
-            "evidence_description": "This website predicts accident risk and recommends a safer route.",
+            "evidence_description": "This public website predicts accident risk after route inputs are entered and recommends a safer route.",
         },
         "plan": {
-            "feature_to_verify": "Route accident risk recommendation",
-            "expected_output": "This website recommends a safer route.",
+            "feature_to_verify": "analyzes route accident risk after a user enters source and destination locations, then recommends a safer alternative route",
+            "expected_output": "A route risk score and safer route recommendation appear.",
             "normalized_test_steps": ["Open website", "Analyze route", "Confirm safer route recommendation"],
+            "sample_inputs": {"source": "Boston", "destination": "Cambridge"},
             "validation_warnings": [],
         },
         "static_run": {
@@ -81,6 +98,32 @@ def _context(observed: str = "Alternative low-risk path available.") -> dict:
             }
         ],
     }
+
+
+def _context_with_status(browser_status: str, observed: str = "Alternative low-risk path available.") -> dict:
+    context = _context(observed)
+    context["browser_run"]["browser_execution_status"] = browser_status
+    if browser_status == "browser_failed":
+        context["browser_run"]["execution_summary"] = "Browser run could not reach the route result page."
+        context["browser_run"]["safe_text_snapshot"] = "Welcome page and contact links."
+        context["browser_steps"] = [
+            {
+                "step_status": "failed",
+                "observed_result": "No route recommendation appeared.",
+                "step_summary": "The route analysis action did not produce the expected output.",
+            }
+        ]
+    if browser_status == "blocked_by_login":
+        context["browser_run"]["execution_summary"] = "Browser run stopped at a login screen."
+        context["browser_run"]["safe_text_snapshot"] = "Sign in to continue."
+        context["browser_steps"] = [
+            {
+                "step_status": "needs_human_review",
+                "observed_result": "Login was required before route analysis could run.",
+                "step_summary": "The verification flow was blocked by authentication.",
+            }
+        ]
+    return context
 
 
 def _client(store: dict) -> TestClient:
@@ -182,11 +225,94 @@ def test_claim_text_builder_creates_useful_text() -> None:
     assert "recommends a safer route" in claim
 
 
+def test_claim_semantic_bundle_includes_feature_expected_output_and_steps() -> None:
+    claim = build_claim_semantic_bundle(_context())
+
+    assert "The student claims" in claim
+    assert "source and destination" in claim
+    assert "expected visible outcome" in claim
+    assert "risk score" in claim
+    assert "intended verification flow" in claim
+    assert "Open website" in claim
+
+
 def test_observed_text_builder_creates_useful_text() -> None:
     observed = build_observed_text(_context())
 
     assert "Alternative low-risk path available" in observed
     assert "route result page" in observed
+
+
+def test_observed_semantic_bundle_includes_summary_status_and_visible_output() -> None:
+    observed = build_observed_semantic_bundle(_context())
+
+    assert "completed part of the browser flow" in observed
+    assert "Browser execution summary" in observed
+    assert "Alternative low-risk path available" in observed
+    assert "Static verification status was partial_verification" in observed
+
+
+def test_failed_browser_bundle_does_not_use_success_wording() -> None:
+    observed = build_observed_semantic_bundle(_context_with_status("browser_failed"))
+
+    assert "attempted the browser flow but did not observe the expected result" in observed
+    assert "successfully completed the browser flow" not in observed
+
+
+def test_blocked_by_login_bundle_reflects_blocked_state() -> None:
+    observed = build_observed_semantic_bundle(_context_with_status("blocked_by_login"))
+
+    assert "required login" in observed
+    assert "Sign in to continue" in observed
+
+
+def test_missing_browser_bundle_falls_back_to_static_evidence() -> None:
+    context = _context()
+    context["browser_run"] = None
+    context["browser_steps"] = []
+
+    observed = build_observed_semantic_bundle(context)
+
+    assert "No browser execution result was available" in observed
+    assert "Static verification status was partial_verification" in observed
+    assert "route risk language" in observed
+
+
+def test_semantic_bundles_are_compact_and_length_capped() -> None:
+    text = compact_semantic_fragments(["same text", "same text", "x" * 2000], max_chars=120)
+
+    assert len(text) <= 120
+    assert text.count("same text") == 1
+
+
+def test_source_field_provenance_is_reported() -> None:
+    context = _context()
+
+    assert claim_bundle_source_fields(context) == [
+        "skill_evidence.description",
+        "plan.feature_to_verify",
+        "plan.expected_output",
+        "plan.normalized_test_steps",
+        "plan.sample_inputs",
+    ]
+    observed_fields = observed_bundle_source_fields(context)
+    assert "browser_run.execution_summary" in observed_fields
+    assert "browser_run.safe_text_snapshot" in observed_fields
+    assert "static_run.execution_summary" in observed_fields
+
+
+def test_similarity_evaluation_uses_richer_bundles() -> None:
+    provider = _RecordingEmbeddingProvider()
+    result = evaluate_semantic_similarity(_context(), provider)
+
+    assert result.available is True
+    assert len(provider.texts) == 2
+    assert "The student claims" in provider.texts[0]
+    assert "The expected visible outcome" in provider.texts[0]
+    assert "VeriBridge completed part of the browser flow" in provider.texts[1]
+    assert "The observed page/output included" in provider.texts[1]
+    assert result.claim_bundle_source_fields
+    assert result.observed_bundle_source_fields
 
 
 def test_mocked_embedding_provider_returns_high_similarity_for_paraphrase() -> None:
@@ -242,10 +368,12 @@ def test_semantic_verification_source_snapshot_stores_similarity_metadata(monkey
         score=0.87,
         model_name="fake-local-embedding-model",
         method="sentence_transformers_cosine_similarity",
-        claim_text="This website recommends a safer route.",
-        observed_text="Alternative low-risk path available.",
+        claim_text="The student claims that this website recommends a safer route.",
+        observed_text="VeriBridge observed alternative low-risk path available.",
         interpretation="strong_semantic_match",
         supports_verification=True,
+        claim_bundle_source_fields=["plan.feature_to_verify"],
+        observed_bundle_source_fields=["browser_run.safe_text_snapshot"],
     )
     monkeypatch.setattr("app.services.website_semantic_verification_service.evaluate_semantic_similarity", lambda context, provider=None: similarity)
     try:
@@ -258,6 +386,9 @@ def test_semantic_verification_source_snapshot_stores_similarity_metadata(monkey
         assert data["semantic_similarity"]["score"] == 0.87
         assert data["semantic_similarity"]["label"] == "strong_semantic_match"
         assert data["source_snapshot"]["semantic_similarity"]["model"] == "fake-local-embedding-model"
+        assert data["source_snapshot"]["semantic_similarity_claim_bundle_preview"].startswith("The student claims")
+        assert data["source_snapshot"]["semantic_similarity_claim_bundle_source_fields"] == ["plan.feature_to_verify"]
+        assert data["source_snapshot"]["semantic_similarity_observed_bundle_source_fields"] == ["browser_run.safe_text_snapshot"]
     finally:
         _clear_overrides()
 

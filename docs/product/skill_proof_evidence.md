@@ -307,6 +307,29 @@ Invalid expected output example:
 
 - `Risk appears.`
 
+## Phase 5F.4: Better Semantic Evidence Construction
+
+Phase 5F.4 improves the text representation sent to the local semantic similarity engine. Embeddings compare the text we feed them. If that text is too short, incomplete, or missing execution context, the score can be weaker or misleading even when the underlying evidence is useful.
+
+This phase creates richer semantic bundles:
+
+- Claim bundle: combines the student's evidence description, `feature_to_verify`, `expected_output`, a compact version of normalized test steps, and sample inputs when they clarify the intended interaction.
+- Observed evidence bundle: combines browser execution status, browser execution summary, browser step evidence, safe visible page text, static execution status, static summary, and passed static check signals.
+
+Short pair:
+
+- Claim: `This website recommends a safer route.`
+- Observed: `Alternative low-risk path available.`
+
+Enriched pair:
+
+- Claim bundle: `The student claims this website analyzes route accident risk after a user enters source and destination locations, then recommends a safer alternative route.`
+- Observed bundle: `During browser verification, VeriBridge entered source and destination inputs, clicked the analysis action, and observed a displayed risk score plus a safer route recommendation.`
+
+This is an example of input representation in NLP. The embedding model has the same architecture and thresholds, but it receives a more complete description of the claim and the collected evidence. The observed bundle is result-aware: verified runs use success wording, failed runs say the expected result was not observed, login-blocked runs say the flow was blocked, and missing browser runs fall back to static evidence.
+
+VeriBridge stores compact bundle previews and source-field provenance in `website_semantic_verification_results.source_snapshot`. It does not store large page dumps or embedding vectors.
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.
