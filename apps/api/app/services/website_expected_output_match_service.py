@@ -19,6 +19,7 @@ _PREVIEW_LIMIT = 400
 
 _STOPWORDS = {
     "after",
+    "analysis",
     "appear",
     "appears",
     "available",
@@ -35,6 +36,7 @@ _STOPWORDS = {
     "should",
     "show",
     "shown",
+    "tailor",
     "that",
     "this",
     "visible",
@@ -63,6 +65,7 @@ _DOMAIN_PHRASES = [
     "salary range",
     "market comparison",
     "salary recommendation",
+    "tailored resume",
     "customized resume",
     "resume draft",
     "job description",
@@ -327,6 +330,8 @@ def _meaningful_tokens(value: str) -> list[str]:
             token = token[:-3]
         if token.endswith("ed") and len(token) > 5:
             token = token[:-2]
+        if token in _STOPWORDS:
+            continue
         if token not in deduped:
             deduped.append(token)
     return deduped
@@ -338,6 +343,8 @@ def _signal_present(signal: str, observed: str) -> bool:
     if signal in {"route recommendation", "rerouting recommendation"} and ("route" in observed or "rerouting" in observed) and "available" in observed:
         return True
     if signal == "recommendation" and "available" in observed:
+        return True
+    if signal in {"tailored resume", "customized resume"} and "resume" in observed and ("tailor" in observed or "customiz" in observed):
         return True
     words = _meaningful_tokens(signal)
     if not words:

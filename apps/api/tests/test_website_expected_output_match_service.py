@@ -244,6 +244,19 @@ def test_customized_resume_draft_vs_job_description_uploaded_is_not_strong_match
     assert result.blocks_full_verification is True
 
 
+def test_tailored_resume_expected_output_matches_customized_resume_observation() -> None:
+    result = evaluate_expected_output_match(
+        _context("A tailored resume draft should appear after analysis.", "Customized Resume Draft ready for review."),
+        _FakeEmbeddingProvider([[1.0, 0.0], [0.74, 0.26]]),
+    )
+
+    assert result.label in {"strong_expected_output_match", "moderate_expected_output_match"}
+    assert result.supports_verification is True
+    assert result.blocks_full_verification is False
+    assert "tailored resume" in result.exact_signal_hits
+    assert "resume draft" in result.exact_signal_hits
+
+
 def test_signal_extraction_identifies_key_output_phrases() -> None:
     signals = extract_required_output_signals("A prediction probability and predicted disease label should be shown.")
 
