@@ -373,6 +373,24 @@ The result is stored compactly in `website_semantic_verification_results.source_
 
 This layer reduces false positives by preventing `verified` when the browser flow completed but the output did not demonstrate the exact expected capability. In those cases, VeriBridge returns a more cautious semantic status such as `needs_human_review` and uses recruiter-facing wording that explains the observed output did not clearly match the claimed result.
 
+## Phase 5F.7: False-Positive Reduction Evaluation
+
+Phase 5F.7 adds a repeatable developer evaluation for the expected-output guardrail introduced in Phase 5F.6. The goal is to check whether the guardrail actually reduces false-positive risk while still preserving strong true-positive cases.
+
+False positives are dangerous in proof verification because they can mislead recruiters into believing a student demonstrated a capability that the website did not actually show. The evaluation compares strong true positives against misleading trap cases, generic-output cases, and borderline cases.
+
+Example:
+
+- Claim: `This app predicts accident risk.`
+- Expected: `A risk prediction score should appear.`
+- Observed: `Historical accident counts by city are displayed.`
+
+These outputs are related to accidents, but they do not prove the same capability. Displaying historical counts is not the same as predicting risk. The Phase 5F.7 harness reports how semantic similarity alone might view the text as related, then shows how expected-output matching blocks or downgrades full verification when required output signals are missing.
+
+The evaluation script prints per-scenario diagnostics, including semantic similarity score, expected-output match score, exact signal hits, missing signals, whether full verification should be blocked, and the final recommended interpretation. It also summarizes whether true-positive cases were preserved, false-positive traps were blocked or downgraded, generic outputs were blocked, and borderline cases stayed cautious.
+
+This phase does not redesign production verification logic. It is a trust and measurement layer. Production logic should only change if the evaluation exposes a clear implementation bug or a larger calibration set justifies a conservative adjustment.
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.
