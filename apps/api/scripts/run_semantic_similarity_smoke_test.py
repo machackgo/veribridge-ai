@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.services.website_expected_output_match_service import evaluate_expected_output_match  # noqa: E402
 from app.services.website_semantic_similarity_service import (  # noqa: E402
     LocalSentenceEmbeddingProvider,
     build_claim_semantic_bundle,
@@ -70,6 +71,14 @@ class ScoredBundleComparison:
     enriched_label: str
     claim_bundle: str
     observed_bundle: str
+
+
+@dataclass(frozen=True)
+class ExpectedOutputFalsePositiveCase:
+    name: str
+    expected_output: str
+    observed_output: str
+    expected_decision: str
 
 
 @dataclass(frozen=True)
@@ -246,6 +255,28 @@ BUNDLE_COMPARISON_EXAMPLES: list[BundleComparisonExample] = [
             ],
         },
     )
+]
+
+
+EXPECTED_OUTPUT_FALSE_POSITIVE_CASES: list[ExpectedOutputFalsePositiveCase] = [
+    ExpectedOutputFalsePositiveCase(
+        name="Good route-risk output",
+        expected_output="A risk score and safer route recommendation should appear.",
+        observed_output="Risk Score: High. Safer route available.",
+        expected_decision="supports verification",
+    ),
+    ExpectedOutputFalsePositiveCase(
+        name="Prediction vs historical counts",
+        expected_output="A risk score and accident-risk prediction should appear.",
+        observed_output="Historical accident counts by city are displayed.",
+        expected_decision="blocks full verification",
+    ),
+    ExpectedOutputFalsePositiveCase(
+        name="Verification vs upload",
+        expected_output="A verification result should confirm the selected skill was found.",
+        observed_output="GitHub repository uploaded successfully.",
+        expected_decision="blocks full verification",
+    ),
 ]
 
 
@@ -522,6 +553,48 @@ def print_bundle_comparison_report(scored_comparisons: list[ScoredBundleComparis
         print(f"  {item.observed_bundle[:220]}")
 
 
+def print_expected_output_false_positive_report(
+    cases: list[ExpectedOutputFalsePositiveCase],
+    provider: LocalSentenceEmbeddingProvider,
+) -> None:
+    print("\nExpected Output Match False-Positive Cases")
+    print("=" * 48)
+    for case in cases:
+        result = evaluate_expected_output_match(
+            {
+                "plan": {
+                    "feature_to_verify": case.expected_output,
+                    "expected_output": case.expected_output,
+                    "normalized_test_steps": ["Run the website flow.", "Confirm expected output."],
+                },
+                "browser_run": {
+                    "browser_execution_status": "browser_verified",
+                    "execution_summary": "Browser flow produced visible output.",
+                    "safe_text_snapshot": case.observed_output,
+                },
+                "browser_steps": [
+                    {
+                        "step_status": "passed",
+                        "observed_result": case.observed_output,
+                        "step_summary": "Observed final website output.",
+                    }
+                ],
+                "static_run": None,
+                "static_checks": [],
+            },
+            provider,
+        )
+        print(f"\nCase: {case.name}")
+        print(f"Expected output: {case.expected_output}")
+        print(f"Observed output:  {case.observed_output}")
+        print(f"Score:           {_format_optional_score(result.score)}")
+        print(f"Label:           {result.label}")
+        print(f"Signal hits:     {', '.join(result.exact_signal_hits) or 'none'}")
+        print(f"Signal misses:   {', '.join(result.missing_required_signals) or 'none'}")
+        print(f"Expected:        {case.expected_decision}")
+        print(f"Blocks verified: {result.blocks_full_verification}")
+
+
 def print_full_calibration_report(
     comparisons: list[FullCalibrationComparison],
     summaries: dict[str, GroupCalibrationSummary],
@@ -587,6 +660,7 @@ def main() -> int:
     print_bundle_comparison_report(bundle_comparisons)
     full_summary = summarize_full_calibration(full_comparisons)
     print_full_calibration_report(full_comparisons, full_summary, build_threshold_recommendation(full_comparisons, full_summary))
+    print_expected_output_false_positive_report(EXPECTED_OUTPUT_FALSE_POSITIVE_CASES, provider)
     return 0
 
 

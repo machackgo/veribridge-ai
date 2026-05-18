@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user_id, get_db
 from app.main import app
+from app.services.website_semantic_similarity_service import SemanticSimilarityResult
 from app.services.website_semantic_evaluator_provider import DeterministicMockWebsiteSemanticEvaluator
 
 USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -439,5 +440,83 @@ def test_source_snapshot_includes_compact_summary_references() -> None:
         assert snapshot["browser_run"]["id"] == browser_run["id"]
         assert "safe_text_snapshot_excerpt" in snapshot["browser_run"]
         assert len(snapshot["browser_run"]["safe_text_snapshot_excerpt"]) < 500
+    finally:
+        _clear_overrides()
+
+
+def test_high_semantic_similarity_is_not_enough_when_expected_output_mismatches(monkeypatch) -> None:
+    store: dict = {}
+    client = _client(store)
+    monkeypatch.setattr(
+        "app.services.website_semantic_verification_service.evaluate_semantic_similarity",
+        lambda context, provider=None: SemanticSimilarityResult(
+            available=True,
+            score=0.91,
+            model_name="fake-local-embedding-model",
+            method="sentence_transformers_cosine_similarity",
+            claim_text="The app predicts accident risk.",
+            observed_text="Historical accident counts by city are displayed.",
+            interpretation="strong_semantic_match",
+            supports_verification=True,
+        ),
+    )
+    try:
+        evidence, plan, _, browser_run = _seed_ready_context(store)
+        plan["expected_output"] = "A risk score and accident-risk prediction should appear."
+        browser_run["safe_text_snapshot"] = "Historical accident counts by city are displayed."
+        browser_run["execution_summary"] = "Browser flow displayed historical accident counts by city."
+        for step in store["website_browser_verification_steps"].values():
+            if step["run_id"] == browser_run["id"]:
+                step["observed_result"] = "Historical accident counts by city are displayed."
+                step["step_summary"] = "Historical counts appeared, but no prediction output was shown."
+
+        data = _evaluate(client, evidence["id"]).json()
+
+        assert data["semantic_status"] == "needs_human_review"
+        assert data["source_snapshot"]["expected_output_match"]["blocks_full_verification"] is True
+    finally:
+        _clear_overrides()
+
+
+def test_expected_output_match_acts_as_false_positive_guardrail_for_upload_not_verification() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence, plan, _, browser_run = _seed_ready_context(store)
+        plan["feature_to_verify"] = "verifies whether a student demonstrated the selected programming skill using submitted GitHub evidence"
+        plan["expected_output"] = "A verification result should confirm the selected skill was found."
+        browser_run["safe_text_snapshot"] = "GitHub repository uploaded successfully."
+        browser_run["execution_summary"] = "Browser flow showed that the repository upload completed."
+        for step in store["website_browser_verification_steps"].values():
+            if step["run_id"] == browser_run["id"]:
+                step["observed_result"] = "GitHub repository uploaded successfully."
+                step["step_summary"] = "Upload completed, but no verification result appeared."
+
+        data = _evaluate(client, evidence["id"]).json()
+
+        assert data["semantic_status"] == "needs_human_review"
+        assert "did not clearly demonstrate" in data["recruiter_facing_summary"]
+    finally:
+        _clear_overrides()
+
+
+def test_recruiter_summary_is_cautious_when_output_mismatch_exists() -> None:
+    store: dict = {}
+    client = _client(store)
+    try:
+        evidence, plan, _, browser_run = _seed_ready_context(store)
+        plan["expected_output"] = "A customized resume draft should appear."
+        browser_run["safe_text_snapshot"] = "Job description uploaded successfully."
+        browser_run["execution_summary"] = "Browser flow uploaded a job description."
+        for step in store["website_browser_verification_steps"].values():
+            if step["run_id"] == browser_run["id"]:
+                step["observed_result"] = "Job description uploaded successfully."
+                step["step_summary"] = "Input upload completed, but no customized resume draft appeared."
+
+        data = _evaluate(client, evidence["id"]).json()
+
+        assert data["semantic_status"] == "needs_human_review"
+        assert data["source_snapshot"]["expected_output_match"]["blocks_full_verification"] is True
+        assert "reviewed manually" in data["recruiter_facing_summary"]
     finally:
         _clear_overrides()

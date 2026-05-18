@@ -348,6 +348,31 @@ This shows that better text representation can improve model signals without cha
 
 The calibration report groups expected high, medium, low, and tricky borderline examples. It checks whether enriched bundles improve true-positive alignment, whether they inflate low or borderline examples, and whether current thresholds still look trustworthy. The current production thresholds remain conservative unless a larger calibration set strongly justifies changing them.
 
+## Phase 5F.6: Expected Output Matching And False-Positive Reduction
+
+Phase 5F.6 adds a dedicated expected-output match guardrail. A website producing some output after a browser flow is not enough to verify the student's claim. VeriBridge now compares what the student said should appear against what static and browser verification actually observed.
+
+Good match:
+
+- Expected: `A risk score and safer route recommendation should appear.`
+- Observed: `Risk Score: High. Safer route available.`
+
+Bad match:
+
+- Expected: `A risk prediction should appear.`
+- Observed: `Historical accident counts displayed.`
+
+These examples are topically related, but they do not prove the same capability. Prediction is not the same as historical display. Verification is not the same as upload. A generated result is not the same as successful input upload.
+
+The expected-output matcher combines two signals:
+
+- local semantic similarity between the expected output and observed output
+- exact required output signals, such as `risk score`, `safer route`, `verification result`, `predicted label`, or `customized resume`
+
+The result is stored compactly in `website_semantic_verification_results.source_snapshot` under `expected_output_match`. It includes the score, label, signal hits, missing signals, whether the match supports verification, and whether it blocks full verification. Large raw text and embedding vectors are not stored.
+
+This layer reduces false positives by preventing `verified` when the browser flow completed but the output did not demonstrate the exact expected capability. In those cases, VeriBridge returns a more cautious semantic status such as `needs_human_review` and uses recruiter-facing wording that explains the observed output did not clearly match the claimed result.
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.
