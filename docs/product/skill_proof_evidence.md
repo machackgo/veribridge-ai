@@ -330,6 +330,24 @@ This is an example of input representation in NLP. The embedding model has the s
 
 VeriBridge stores compact bundle previews and source-field provenance in `website_semantic_verification_results.source_snapshot`. It does not store large page dumps or embedding vectors.
 
+## Phase 5F.5: Recalibration With Enriched Semantic Bundles
+
+Phase 5F.5 recalibrates local semantic similarity after changing the input representation. When the verifier moves from short raw text pairs to richer claim and observed-evidence bundles, the model's score behavior can change. Calibration compares both versions side by side before making any production threshold decision.
+
+The smoke-test workflow now evaluates each curated example twice:
+
+- Raw score: original short claim text compared with original short observed text.
+- Enriched score: claim and observed evidence bundles built with the same semantic construction logic used by production verification.
+
+Safer-route example:
+
+- Raw score: `0.4728`
+- Enriched score: `0.6196`
+
+This shows that better text representation can improve model signals without changing the embedding model. It also shows why thresholds should not be lowered casually: verification false positives are more damaging than missed automation, because they could overstate what a student actually demonstrated.
+
+The calibration report groups expected high, medium, low, and tricky borderline examples. It checks whether enriched bundles improve true-positive alignment, whether they inflate low or borderline examples, and whether current thresholds still look trustworthy. The current production thresholds remain conservative unless a larger calibration set strongly justifies changing them.
+
 ## Phase 5F.6: Expected Output Matching And False-Positive Reduction
 
 Phase 5F.6 adds a dedicated expected-output match guardrail. A website producing some output after a browser flow is not enough to verify the student's claim. VeriBridge now compares what the student said should appear against what static and browser verification actually observed.
