@@ -75,6 +75,8 @@ def determine_semantic_status(context: dict[str, Any]) -> str:
     if browser_status in {"needs_human_review", "unsupported_plan", "execution_timeout", "execution_error"}:
         return "needs_human_review"
     if browser_status == "browser_verified" and _expected_signals_found(context) and not _has_major_blocking_warnings(plan):
+        if _expected_output_match_blocks_full_verification(context):
+            return "needs_human_review"
         return "verified"
     if browser_status == "browser_partially_verified":
         return "partially_verified"
@@ -106,6 +108,8 @@ def calculate_confidence_score(context: dict[str, Any], status: str | None = Non
         if int(browser_run.get("steps_failed") or 0) == 0:
             score += 0.03
         score += _semantic_similarity_confidence_boost(similarity_score, maximum=0.04)
+        if _expected_output_match_supports_verification(context):
+            score += 0.03
         return _clamp(score, 0.85, 0.98)
     if status == "partially_verified":
         score = 0.58 + min(signal_hits, 4) * 0.04
@@ -124,6 +128,8 @@ def calculate_confidence_score(context: dict[str, Any], status: str | None = Non
             score += 0.1
         if signal_hits:
             score += 0.08
+        if _expected_output_match_blocks_full_verification(context):
+            score += 0.05
         score += _semantic_similarity_confidence_boost(similarity_score, maximum=0.04)
         return _clamp(score, 0.35, 0.70)
     if status == "insufficient_evidence":
@@ -132,13 +138,25 @@ def calculate_confidence_score(context: dict[str, Any], status: str | None = Non
 
 
 def build_recruiter_facing_summary(context: dict[str, Any], status: str) -> str:
+    output_match = context.get("expected_output_match") or {}
+    output_mismatch = output_match.get("blocks_full_verification")
     if status == "verified":
+        if output_match.get("supports_verification"):
+            hits = output_match.get("exact_signal_hits") or []
+            suffix = f": {', '.join(hits[:3])}." if hits else "."
+            return f"VeriBridge verified that the website completed the guided browser flow and displayed output matching the student's claimed result{suffix}"
         return "VeriBridge verified that the deployed website demonstrated the claimed feature through a completed browser execution flow and matching output signals."
     if status == "partially_verified":
+        if output_mismatch:
+            return "VeriBridge observed some supporting website behavior, but the resulting output did not fully match the student's expected verification result."
         return "VeriBridge observed supporting evidence for the claimed website feature, but the automated execution could not fully confirm every expected step."
     if status == "not_verified":
+        if output_mismatch:
+            return "VeriBridge could not confirm the claimed feature because the observed website output did not match the stated expected result."
         return "VeriBridge could not confirm the claimed website behavior from the available static and browser execution evidence."
     if status == "needs_human_review":
+        if output_mismatch:
+            return "The site produced an output after execution, but the output did not clearly demonstrate the exact claimed feature and should be reviewed manually."
         return "The website proof produced mixed or incomplete signals and should be reviewed by a human before being treated as verified."
     if status == "insufficient_evidence":
         return "Not enough verification evidence is available yet to make a reliable judgment."
@@ -171,6 +189,14 @@ def build_evidence_summary(context: dict[str, Any]) -> str:
     similarity = context.get("semantic_similarity") or {}
     if similarity.get("available") and similarity.get("score") is not None:
         parts.append(f"Claim/output semantic similarity was {similarity.get('interpretation') or semantic_similarity_label(similarity.get('score'))} ({float(similarity['score']):.2f}).")
+    output_match = context.get("expected_output_match") or {}
+    if output_match:
+        parts.append(
+            "Expected-output match was {label}{score}.".format(
+                label=output_match.get("label") or "unavailable",
+                score=f" ({float(output_match['score']):.2f})" if output_match.get("score") is not None else "",
+            )
+        )
     if not parts:
         return "No static or browser verification run evidence is available yet."
     return " ".join(parts)
@@ -186,6 +212,8 @@ def build_limitations(context: dict[str, Any], status: str) -> str:
     browser_run = context.get("browser_run") or {}
     if status in {"needs_human_review", "insufficient_evidence"} or plan.get("requires_login") or browser_run.get("browser_execution_status") == "blocked_by_login":
         limitations.append("Login-required, sparse, or ambiguous flows may need human review.")
+    if (context.get("expected_output_match") or {}).get("blocks_full_verification"):
+        limitations.append("The observed output did not fully match the student's stated expected result.")
     return " ".join(limitations)
 
 
@@ -208,6 +236,7 @@ def build_internal_reasoning_summary(context: dict[str, Any], status: str) -> st
     browser_status = ((context.get("browser_run") or {}).get("browser_execution_status")) or "none"
     hits = _expected_signal_hits(context)
     similarity = context.get("semantic_similarity") or {}
+    output_match = context.get("expected_output_match") or {}
     similarity_note = ""
     if similarity.get("available") and similarity.get("score") is not None:
         label = similarity.get("interpretation") or semantic_similarity_label(similarity.get("score"))
@@ -219,11 +248,19 @@ def build_internal_reasoning_summary(context: dict[str, Any], status: str) -> st
             similarity_note = f" Claim/output semantic similarity was {label}."
     elif similarity:
         similarity_note = " Claim/output semantic similarity was unavailable."
+    output_note = ""
+    if output_match:
+        output_note = (
+            f" Expected-output match was {output_match.get('label') or 'unavailable'} "
+            f"with hits={', '.join((output_match.get('exact_signal_hits') or [])[:5]) or 'none'} "
+            f"and misses={', '.join((output_match.get('missing_required_signals') or [])[:5]) or 'none'}."
+        )
     return (
         f"Status {status} based on plan_status={((context.get('plan') or {}).get('plan_status') or 'unknown')}, "
         f"static_status={static_status}, browser_status={browser_status}, "
         f"expected_signal_hits={', '.join(hits[:6]) if hits else 'none'}."
         f"{similarity_note}"
+        f"{output_note}"
     )
 
 
@@ -276,6 +313,24 @@ def _semantic_similarity_score(context: dict[str, Any]) -> float | None:
 def _strong_semantic_similarity(context: dict[str, Any]) -> bool:
     score = _semantic_similarity_score(context)
     return score is not None and score >= 0.82
+
+
+def _expected_output_match_supports_verification(context: dict[str, Any]) -> bool:
+    match = context.get("expected_output_match")
+    if not match:
+        return True
+    return bool(match.get("supports_verification")) and not bool(match.get("blocks_full_verification"))
+
+
+def _expected_output_match_blocks_full_verification(context: dict[str, Any]) -> bool:
+    match = context.get("expected_output_match")
+    if not match:
+        return False
+    return bool(match.get("blocks_full_verification")) or match.get("label") in {
+        "weak_expected_output_match",
+        "low_expected_output_match",
+        "unavailable",
+    }
 
 
 def _semantic_similarity_confidence_boost(score: float | None, maximum: float) -> float:

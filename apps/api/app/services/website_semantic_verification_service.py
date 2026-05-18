@@ -9,6 +9,10 @@ from uuid import uuid4
 from app.schemas.website_semantic_verification_result import WebsiteSemanticVerificationResultResponse
 from app.services.skill_evidence_service import SkillEvidenceNotFoundError
 from app.services.website_browser_verification_executor_service import WebsiteBrowserVerificationRunNotFoundError
+from app.services.website_expected_output_match_service import (
+    evaluate_expected_output_match,
+    expected_output_match_to_snapshot,
+)
 from app.services.website_semantic_evaluator_provider import (
     DeterministicMockWebsiteSemanticEvaluator,
     WebsiteSemanticEvaluationResult,
@@ -69,6 +73,9 @@ class WebsiteSemanticVerificationService:
         similarity = evaluate_semantic_similarity(evaluation_input, self._embedding_provider)
         context["semantic_similarity"] = semantic_similarity_to_snapshot(similarity)
         evaluation_input["semantic_similarity"] = semantic_similarity_to_snapshot(similarity)
+        output_match = evaluate_expected_output_match(evaluation_input, self._embedding_provider)
+        context["expected_output_match"] = expected_output_match_to_snapshot(output_match)
+        evaluation_input["expected_output_match"] = expected_output_match_to_snapshot(output_match)
         try:
             evaluation = self.evaluate_semantically(evaluation_input)
         except Exception:
@@ -120,6 +127,7 @@ class WebsiteSemanticVerificationService:
             "browser_run": _compact_browser_run(context.get("browser_run")),
             "browser_steps": [_compact_browser_step(step) for step in (context.get("browser_steps") or [])[:20]],
             "semantic_similarity": context.get("semantic_similarity"),
+            "expected_output_match": context.get("expected_output_match"),
         }
 
     def evaluate_semantically(self, context: dict[str, Any]) -> WebsiteSemanticEvaluationResult:
@@ -237,6 +245,7 @@ class WebsiteSemanticVerificationService:
         static_run = compact.get("static_run") or {}
         browser_run = compact.get("browser_run") or {}
         similarity = semantic_similarity_to_snapshot(compact.get("semantic_similarity"))
+        output_match = expected_output_match_to_snapshot(compact.get("expected_output_match"))
         return {
             "plan": {
                 "id": compact["plan"].get("id"),
@@ -278,6 +287,7 @@ class WebsiteSemanticVerificationService:
             "semantic_similarity_model": similarity.get("model"),
             "semantic_similarity_method": similarity.get("method"),
             "semantic_similarity_available": similarity.get("available"),
+            "expected_output_match": output_match,
         }
 
     def _get_evidence_row(self, user_id: str, evidence_id: str) -> dict[str, Any]:
