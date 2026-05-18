@@ -236,6 +236,7 @@ class WebsiteSemanticVerificationService:
         compact = self.build_semantic_evaluation_input(context)
         static_run = compact.get("static_run") or {}
         browser_run = compact.get("browser_run") or {}
+        similarity = semantic_similarity_to_snapshot(compact.get("semantic_similarity"))
         return {
             "plan": {
                 "id": compact["plan"].get("id"),
@@ -267,7 +268,16 @@ class WebsiteSemanticVerificationService:
                 "static_check_summaries": [check.get("check_summary") for check in compact.get("static_checks", [])[:6]],
                 "browser_step_summaries": [step.get("step_summary") for step in compact.get("browser_steps", [])[:8]],
             },
-            "semantic_similarity": semantic_similarity_to_snapshot(compact.get("semantic_similarity")),
+            "semantic_similarity": similarity,
+            "semantic_similarity_claim_bundle_preview": similarity.get("claim_bundle_preview"),
+            "semantic_similarity_observed_bundle_preview": similarity.get("observed_bundle_preview"),
+            "semantic_similarity_claim_bundle_source_fields": similarity.get("claim_bundle_source_fields") or [],
+            "semantic_similarity_observed_bundle_source_fields": similarity.get("observed_bundle_source_fields") or [],
+            "semantic_similarity_score": similarity.get("score"),
+            "semantic_similarity_label": similarity.get("label"),
+            "semantic_similarity_model": similarity.get("model"),
+            "semantic_similarity_method": similarity.get("method"),
+            "semantic_similarity_available": similarity.get("available"),
         }
 
     def _get_evidence_row(self, user_id: str, evidence_id: str) -> dict[str, Any]:
