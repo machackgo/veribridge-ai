@@ -258,6 +258,33 @@ Semantic similarity supports verification, but it does not decide the result alo
 
 VeriBridge stores only compact similarity metadata in `website_semantic_verification_results.source_snapshot`: availability, score, label, model name, and method. Embedding vectors are not stored in Postgres in this phase because they are bulky, model-specific, and not needed for the recruiter-facing audit trail.
 
+## GitHub Proof Semantic Track - Phase G4: False-Positive Reduction Evaluation
+
+Phase G4 evaluates whether GitHub capability matching actually improves trust. The guardrail from G3 is useful only if it blocks related-but-not-equivalent code without throwing away obvious true positives.
+
+The evaluation compares four groups:
+
+- Strong true positives: code that really shows the claimed capability.
+- False-positive traps: code that is related, but does not prove the exact claim.
+- Generic or incomplete code: imports, schemas, helper names, or setup without the proof step.
+- Borderline cases: partially supportive code that should stay cautious.
+
+In the curated evaluation harness, VeriBridge checked whether the guardrail preserved strong GitHub proof cases and blocked misleading ones. The strong cases stayed supported, and the traps stayed blocked. That is the behavior we want before we trust recruiter-facing proof reports.
+
+Example:
+
+- Claim: `I built and evaluated a machine learning classification model.`
+- Code found: CSV loading, preprocessing, train/test split.
+- Missing: model training, prediction, evaluation.
+- Result: full verification should be blocked.
+
+This phase does not change the product claim. It measures whether the capability matcher is reducing false positives while keeping legitimate proof visible and explainable.
+
+Future roadmap:
+
+- Phase G5: Recruiter-facing GitHub proof report foundation.
+- Future: richer line-range redirect actions and claim-to-code UI.
+
 Future roadmap:
 
 - Phase 5F.2: stronger local rerankers, classifiers, or self-hosted model providers for better semantic decisions.
