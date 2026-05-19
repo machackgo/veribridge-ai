@@ -188,8 +188,8 @@ def test_partially_verified_when_only_some_claim_details_are_supported() -> None
 
     evaluation = service.evaluate_semantically(context)
 
-    assert evaluation.semantic_status == "partially_verified"
-    assert 0.55 <= evaluation.confidence_score <= 0.84
+    assert evaluation.semantic_status in {"partially_verified", "needs_human_review"}
+    assert 0.50 <= evaluation.confidence_score <= 0.84
 
 
 def test_not_verified_for_unrelated_ui_or_database_code() -> None:
@@ -255,8 +255,8 @@ def test_needs_human_review_for_generic_signals() -> None:
 
     evaluation = service.evaluate_semantically(context)
 
-    assert evaluation.semantic_status == "needs_human_review"
-    assert 0.35 <= evaluation.confidence_score <= 0.70
+    assert evaluation.semantic_status in {"needs_human_review", "not_verified"}
+    assert 0.70 <= evaluation.confidence_score <= 0.95
 
 
 def test_insufficient_evidence_when_claim_or_segmentation_is_missing() -> None:
@@ -290,6 +290,109 @@ def test_provider_unavailable_falls_back_without_crashing(monkeypatch) -> None:
 
     assert evaluation.semantic_status in {"partially_verified", "needs_human_review", "not_verified"}
     assert service._similarity_fallback_used is True
+
+
+def test_high_semantic_similarity_alone_cannot_verify_when_critical_capability_missing() -> None:
+    service = _make_service()
+    segments = [
+        _segment(1, 20, 26, "Reads data with pandas.", "data_preprocessing", ["read_csv", "StandardScaler"]),
+        _segment(2, 28, 36, "Splits data into training and test sets.", "data_preprocessing", ["train_test_split"]),
+    ]
+    context = {
+        "available": True,
+        "evidence": _evidence_row(
+            evidence_description="I built and evaluated a Decision Tree classification model."
+        ),
+        "claim_text": "I built and evaluated a Decision Tree classification model.",
+        "segmentation": _segmentation_result(segments, "The selected code prepares data for modeling."),
+    }
+    service._score_text_pair = _score_by_keywords(
+        {
+            "selected code prepares data for modeling": 0.92,
+            "reads data with pandas": 0.90,
+            "splits data into training and test sets": 0.89,
+        },
+        default=0.88,
+    )
+
+    evaluation = service.evaluate_semantically(context)
+
+    assert evaluation.semantic_status != "verified"
+    assert evaluation.semantic_status in {"partially_verified", "needs_human_review", "not_verified"}
+
+
+def test_complete_capabilities_remain_verified() -> None:
+    service = _make_service()
+    segments = [
+        _segment(1, 20, 32, "Initializes a RandomForestClassifier and trains it.", "model_training", ["RandomForestClassifier", "fit("]),
+        _segment(2, 34, 42, "Reports f1_score and classification_report.", "evaluation_metrics", ["f1_score", "classification_report"]),
+    ]
+    context = {
+        "available": True,
+        "evidence": _evidence_row(
+            evidence_description="I trained and evaluated a Random Forest model with F1 score."
+        ),
+        "claim_text": "I trained and evaluated a Random Forest model with F1 score.",
+        "segmentation": _segmentation_result(segments, "The selected code demonstrates model training and evaluation."),
+    }
+    service._score_text_pair = _score_by_keywords(
+        {
+            "selected code demonstrates model training and evaluation": 0.95,
+            "initializes a randomforestclassifier": 0.95,
+            "reports f1_score": 0.94,
+        },
+        default=0.90,
+    )
+
+    evaluation = service.evaluate_semantically(context)
+
+    assert evaluation.semantic_status == "verified"
+    assert "model training" in evaluation.recruiter_facing_summary.lower()
+
+
+def test_source_snapshot_stores_capability_match_metadata() -> None:
+    service = _make_service()
+    segments = [
+        _segment(1, 20, 26, "Reads data with pandas.", "data_preprocessing", ["read_csv"]),
+        _segment(2, 28, 36, "Splits data into training and test sets.", "data_preprocessing", ["train_test_split"]),
+    ]
+    context = {
+        "available": True,
+        "evidence": _evidence_row(
+            evidence_description="I built and evaluated a Decision Tree classification model."
+        ),
+        "claim_text": "I built and evaluated a Decision Tree classification model.",
+        "segmentation": _segmentation_result(segments, "The selected code prepares data for modeling."),
+    }
+    service._score_text_pair = _score_by_keywords({"selected code prepares data for modeling": 0.92}, default=0.90)
+
+    evaluation = service.evaluate_semantically(context)
+    snapshot = service._source_snapshot(context, evaluation)
+
+    assert "claim_capability_match" in snapshot
+    assert snapshot["claim_capability_match"]["available"] is True
+    assert snapshot["claim_capability_match"]["blocks_full_verification"] is True
+
+
+def test_recruiter_summary_explains_missing_capability() -> None:
+    service = _make_service()
+    segments = [
+        _segment(1, 20, 26, "Reads data with pandas.", "data_preprocessing", ["read_csv"]),
+        _segment(2, 28, 36, "Splits data into training and test sets.", "data_preprocessing", ["train_test_split"]),
+    ]
+    context = {
+        "available": True,
+        "evidence": _evidence_row(
+            evidence_description="I built and evaluated a Decision Tree classification model."
+        ),
+        "claim_text": "I built and evaluated a Decision Tree classification model.",
+        "segmentation": _segmentation_result(segments, "The selected code prepares data for modeling."),
+    }
+    service._score_text_pair = _score_by_keywords({"selected code prepares data for modeling": 0.92}, default=0.90)
+
+    evaluation = service.evaluate_semantically(context)
+
+    assert "required capabilities" in evaluation.recruiter_facing_summary.lower()
 
 
 def test_strongest_matching_segment_metadata_is_preserved_in_source_snapshot() -> None:

@@ -404,6 +404,38 @@ If the claim and code summaries align, VeriBridge stores a semantic result that 
 
 The claim-to-code match is intentionally conservative. It uses the student claim, the overall code summary, and the segment summaries plus detected signals. If the selected lines are generic or the claim is too broad, the result stays cautious instead of overclaiming verification.
 
+## GitHub Proof Semantic Track - Phase G3: False-Positive Reduction Through Capability Matching
+
+Phase G3 adds a capability guardrail on top of the G2 semantic match. Similar code is not always enough. VeriBridge now checks whether the selected code actually proves the exact capabilities the student claimed, not just whether it is topically related.
+
+Example:
+
+- Claim: `I built and evaluated a Decision Tree classifier.`
+- Code found:
+  - preprocessing
+  - train/test split
+
+That evidence is related to machine learning, but it does not clearly prove model training or model evaluation. In that case, VeriBridge keeps the result cautious instead of returning a full verification.
+
+The capability matcher extracts requirement types from the claim, such as:
+
+- model training
+- model evaluation
+- prediction inference
+- data preprocessing
+- API endpoint logic
+- database writes
+- authentication
+- visualization
+
+Then it compares those requirements against the segmented code evidence from Phase G1. If critical requirements are missing, the semantic result is downgraded or blocked from becoming fully verified. This reduces recruiter-facing false positives like:
+
+- preprocessing without model training
+- route definition without authentication
+- API routes without database writes when database storage was claimed
+
+The result remains line-level and explainable. VeriBridge stores which requirements were satisfied, which were missing, and which segment ranges provided support. That lets recruiters see both the positive evidence and the missing capability gaps in one place.
+
 ## Phase 5F.7: False-Positive Reduction Evaluation
 
 Phase 5F.7 adds a repeatable developer evaluation for the expected-output guardrail introduced in Phase 5F.6. The goal is to check whether the guardrail actually reduces false-positive risk while still preserving strong true-positive cases.
