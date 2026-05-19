@@ -280,10 +280,35 @@ Example:
 
 This phase does not change the product claim. It measures whether the capability matcher is reducing false positives while keeping legitimate proof visible and explainable.
 
+## GitHub Proof Semantic Track: Phase G5 - Recruiter-Friendly GitHub Proof Report Foundation
+
+Phase G5 turns the GitHub proof intelligence from the earlier phases into a clean recruiter-readable report object. The verifier already knows the claim, the semantic match result, the strongest supporting line ranges, the confirmed capabilities, the missing capabilities, and the confidence level. G5 packages that information into a report that the recruiter UI can render later without recomputing the underlying proof.
+
+The report includes:
+
+- the student claim
+- the verification result
+- the confidence level
+- a concise recruiter-facing explanation
+- the strongest supporting code line ranges
+- confirmed capabilities
+- missing capabilities, when applicable
+- limitations and a recommended next action
+
+Example:
+
+- Claim: `I built and evaluated a Decision Tree classifier.`
+- Lines 20-32: model training
+- Lines 34-50: prediction
+- Lines 52-61: evaluation
+- Result: the selected code supports the claim
+
+G5 does not add the recruiter UI yet. It creates the backend report foundation that future recruiter screens can show as summary cards, expandable evidence blocks, and exact line-level support views.
+
 Future roadmap:
 
-- Phase G5: Recruiter-facing GitHub proof report foundation.
-- Future: richer line-range redirect actions and claim-to-code UI.
+- Phase G6: recruiter evidence redirect and open-exact-lines support.
+- Phase G7: recruiter-facing GitHub proof UI.
 
 Future roadmap:
 
