@@ -388,6 +388,22 @@ Each segment is intentionally conservative. VeriBridge looks for signals such as
 
 The GitHub verifier now attaches a compact `github_code_evidence_summary` to successful file-based evidence responses. That summary includes the overall code explanation and the detected line-level segments, preserving the absolute line numbers so recruiters can inspect the exact proof location later.
 
+## GitHub Proof Semantic Track - Phase G2: Claim-to-Code Semantic Matching
+
+Phase G2 compares the student's GitHub proof claim with the line-level code evidence summaries produced in Phase G1. The system does not read raw code only. It first turns the selected code into plain-English segment summaries, then compares those summaries with what the student said they built.
+
+Example:
+
+- Student claim: `I built and evaluated a Decision Tree classification model for stroke prediction.`
+- Matched evidence:
+  - Lines 20-32: classifier setup and training
+  - Lines 34-50: prediction logic
+  - Lines 52-61: evaluation metrics
+
+If the claim and code summaries align, VeriBridge stores a semantic result that explains why the code supports the claim, which line ranges are strongest, and what the recruiter should inspect. This creates the foundation for recruiter-facing GitHub proof reports without jumping straight to a final UI redirect layer.
+
+The claim-to-code match is intentionally conservative. It uses the student claim, the overall code summary, and the segment summaries plus detected signals. If the selected lines are generic or the claim is too broad, the result stays cautious instead of overclaiming verification.
+
 ## Phase 5F.7: False-Positive Reduction Evaluation
 
 Phase 5F.7 adds a repeatable developer evaluation for the expected-output guardrail introduced in Phase 5F.6. The goal is to check whether the guardrail actually reduces false-positive risk while still preserving strong true-positive cases.

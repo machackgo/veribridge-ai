@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     debug,
+    github_semantic_verification_results,
     health,
     skill_evidence,
     student,
@@ -32,6 +33,11 @@ api_router.include_router(
     website_browser_verification_runs.router,
     prefix="/student/skill-evidence",
     tags=["website-browser-verification-runs"],
+)
+api_router.include_router(
+    github_semantic_verification_results.router,
+    prefix="/student/skill-evidence",
+    tags=["github-semantic-verification-results"],
 )
 api_router.include_router(
     website_semantic_verification_results.router,
