@@ -152,6 +152,8 @@ def test_selected_lines_without_skill_returns_skill_usage_not_found(monkeypatch)
     )
     assert result is not None
     assert result["status"] == "skill_usage_not_found"
+    assert result["github_code_evidence_summary"]["available"] is True
+    assert result["github_code_evidence_summary"]["segments"]
 
 
 def test_no_github_url_falls_back_to_mock_verifier() -> None:

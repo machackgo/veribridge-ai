@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.schemas.github_code_evidence_segmentation import GitHubCodeEvidenceSummaryResponse
+
 
 VerificationStatus = Literal[
     "pending_review",
@@ -115,6 +117,7 @@ class SkillEvidenceResponse(BaseModel):
     verification_status: VerificationStatus
     verification_summary: str | None = None
     verifier_version: str | None = None
+    github_code_evidence_summary: GitHubCodeEvidenceSummaryResponse | None = None
     created_at: str
     updated_at: str
 

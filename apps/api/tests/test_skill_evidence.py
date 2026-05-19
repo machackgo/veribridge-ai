@@ -282,6 +282,9 @@ def test_api_post_uses_github_file_verifier(monkeypatch) -> None:
         assert data["verification_status"] == "verified"
         assert data["verifier_version"] == "github-file-v1"
         assert "Verified from public GitHub file" in data["verification_summary"]
+        assert data["github_code_evidence_summary"]["available"] is True
+        assert data["github_code_evidence_summary"]["segments"]
+        assert data["metadata"]["github_code_evidence_summary"]["available"] is True
     finally:
         _clear_overrides()
 
@@ -311,6 +314,7 @@ def test_verify_endpoint_reruns_github_file_verifier(monkeypatch) -> None:
         assert data["verification_status"] == "verified"
         assert data["verifier_version"] == "github-file-v1"
         assert data["evidence"]["verifier_version"] == "github-file-v1"
+        assert data["evidence"]["github_code_evidence_summary"]["available"] is True
     finally:
         _clear_overrides()
 
