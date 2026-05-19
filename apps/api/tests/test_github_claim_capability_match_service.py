@@ -58,13 +58,24 @@ def _context(description: str, segments: list[GitHubCodeEvidenceSegment], skill_
 def test_extracts_model_training_requirement_from_training_claim() -> None:
     result = evaluate_github_claim_capability_match(
         _context(
-            "I built and trained a Decision Tree classification model for stroke prediction.",
+            "I built and trained a Decision Tree classification model.",
             [_segment(1, 20, 32, "Initializes and trains a Decision Tree classifier.", "model_training", ["DecisionTreeClassifier", "fit("])],
         )
     )
     requirement_keys = [item.requirement_key for item in result.extracted_requirements]
     assert "model_training" in requirement_keys
     assert result.capability_match_status == "strong_capability_match"
+
+
+def test_extracts_model_training_requirement_from_built_classification_model_claim() -> None:
+    result = evaluate_github_claim_capability_match(
+        _context(
+            "I built and evaluated a Decision Tree classification model for stroke prediction.",
+            [_segment(1, 20, 32, "Initializes and trains a Decision Tree classifier.", "model_training", ["DecisionTreeClassifier", "fit("])],
+        )
+    )
+    requirement_keys = [item.requirement_key for item in result.extracted_requirements]
+    assert "model_training" in requirement_keys
 
 
 def test_extracts_model_evaluation_requirement_from_evaluation_claim() -> None:
@@ -188,6 +199,18 @@ def test_api_and_database_case_supports_full_verification() -> None:
     )
     assert result.capability_match_status == "strong_capability_match"
     assert result.supports_full_verification is True
+
+
+def test_supabase_client_variable_alone_does_not_satisfy_database_write() -> None:
+    result = evaluate_github_claim_capability_match(
+        _context(
+            "I stored verified proof records in Supabase.",
+            [_segment(1, 4, 10, "Defines a supabase_client variable.", "generic_logic", ["supabase_client"], supports_skill=False)],
+            skill_name="Backend Development",
+        )
+    )
+    assert result.capability_match_status in {"capability_mismatch", "partial_capability_match", "unavailable"}
+    assert result.supports_full_verification is False
 
 
 def test_auth_claim_without_auth_code_blocks_full_verification() -> None:

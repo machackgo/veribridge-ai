@@ -167,13 +167,34 @@ def extract_claim_requirements(context: dict[str, Any]) -> list[GitHubClaimRequi
     requirements: list[GitHubClaimRequirement] = []
     add = requirements.append
 
-    if _contains_any(text, ("trained", "training", "fit a model", "fit(", "built a classifier", "built a model", "model training", "classifier", "regressor", "machine learning model")):
+    if _contains_any(
+        text,
+        (
+            "trained",
+            "training",
+            "fit a model",
+            "fit(",
+            "built a classifier",
+            "built a model",
+            "created a model",
+            "constructed a model",
+            "model training",
+            "classification model",
+            "regression model",
+            "machine learning model",
+            "decision tree",
+            "random forest",
+            "logistic regression",
+            "classifier",
+            "regressor",
+        ),
+    ) or re.search(r"\b(built|created|trained|constructed)\b.{0,40}\b(model|classifier|regressor)\b", text):
         add(_req("model_training", "Model training", _phrase(text, ("trained", "training", "fit a model", "fit(", "built a classifier", "built a model", "model training", "classifier", "regressor")), "model_training", "critical"))
 
     if _contains_any(text, ("evaluated", "evaluation", "accuracy", "f1", "precision", "recall", "confusion matrix", "classification report", "roc auc", "roc_auc")):
         add(_req("model_evaluation", "Model evaluation", _phrase(text, ("evaluated", "evaluation", "accuracy", "f1", "precision", "recall", "confusion matrix", "classification report", "roc auc", "roc_auc")), "model_evaluation", "critical"))
 
-    if _contains_any(text, ("predicted", "predict ", "predict(", "predicts", "inference", "generated predictions")):
+    if _contains_any(text, ("predicted", "prediction", "predict ", "predict(", "predicts", "inference", "generated predictions")):
         add(_req("prediction_inference", "Prediction inference", _phrase(text, ("predicted", "predict ", "predict(", "predicts", "inference", "generated predictions")), "prediction_inference", "critical"))
 
     if _contains_any(text, ("preprocessed", "preprocessing", "cleaned data", "scaled", "encoded", "feature engineering", "normalized", "data preparation", "data cleaning")):
@@ -283,7 +304,7 @@ def _segment_requirement_score(requirement_type: str, segment: GitHubCodeEvidenc
             return 3
         return 0
     if requirement_type == "database_write":
-        if segment_type == "database_logic" or _contains_any(text, ("insert(", "update(", "upsert(", "commit(", "save(", "write(", "session", "supabase")):
+        if segment_type == "database_logic" or _contains_any(text, ("insert(", "insert into", "update(", "upsert(", "commit(", "save(", "write(", "write to database", "persist", "db.session", "sqlalchemy", "supabase.insert", "supabase.upsert")):
             return 3
         return 0
     if requirement_type == "authentication":
