@@ -373,6 +373,21 @@ The result is stored compactly in `website_semantic_verification_results.source_
 
 This layer reduces false positives by preventing `verified` when the browser flow completed but the output did not demonstrate the exact expected capability. In those cases, VeriBridge returns a more cautious semantic status such as `needs_human_review` and uses recruiter-facing wording that explains the observed output did not clearly match the claimed result.
 
+## GitHub Proof Semantic Track - Phase G1
+
+Phase G1 starts the GitHub proof semantic track with line-level code evidence segmentation. When a student submits a GitHub file and selected line range, VeriBridge now breaks that code into meaningful line ranges and adds a plain-English explanation for each segment.
+
+Example:
+
+- Lines 20-32: Decision Tree classifier creation and training
+- Lines 34-50: Prediction and evaluation
+
+This is the foundation for later GitHub semantic work. The system is not yet trying to decide whether the student's written claim fully matches the code. Instead, it is preparing the evidence into smaller, recruiter-friendly pieces that can be inspected directly. That makes it easier to build future semantic claim matching, code proof reports, and line-range redirect buttons.
+
+Each segment is intentionally conservative. VeriBridge looks for signals such as model initialization, training, prediction, evaluation metrics, preprocessing, API routes, database logic, UI components, file I/O, and authentication logic. If the code is generic or the signals are weak, the segment summary stays cautious instead of overclaiming.
+
+The GitHub verifier now attaches a compact `github_code_evidence_summary` to successful file-based evidence responses. That summary includes the overall code explanation and the detected line-level segments, preserving the absolute line numbers so recruiters can inspect the exact proof location later.
+
 ## Phase 5F.7: False-Positive Reduction Evaluation
 
 Phase 5F.7 adds a repeatable developer evaluation for the expected-output guardrail introduced in Phase 5F.6. The goal is to check whether the guardrail actually reduces false-positive risk while still preserving strong true-positive cases.

@@ -47,7 +47,7 @@ class SkillEvidenceService:
     def create_skill_evidence(self, user_id: str, payload: SkillEvidenceCreate) -> SkillEvidenceResponse:
         verification = verify_evidence(payload)
         payload_data = payload.model_dump()
-        payload_data["metadata"] = payload_data.get("metadata") or {}
+        payload_data["metadata"] = _merge_verification_metadata(payload_data.get("metadata"), verification)
         payload_data["proof_visibility"] = payload_data.get("proof_visibility") or "public"
         data = {
             **payload_data,
@@ -108,6 +108,7 @@ class SkillEvidenceService:
         if relevant.intersection(updates):
             merged = {**current, **updates}
             verification = verify_evidence(merged)
+            updates["metadata"] = _merge_verification_metadata(updates.get("metadata") or current.get("metadata"), verification)
             updates.update(
                 {
                     "verification_status": verification["status"],
@@ -153,6 +154,7 @@ class SkillEvidenceService:
             "verification_status": verification["status"],
             "verification_summary": verification["summary"],
             "verifier_version": verification["verifier_version"],
+            "metadata": _merge_verification_metadata(current.get("metadata"), verification),
         }
 
         if isinstance(self._client, dict):
@@ -339,9 +341,26 @@ def _to_response(row: dict[str, Any]) -> SkillEvidenceResponse:
         verification_status=row.get("verification_status") or "pending_review",
         verification_summary=row.get("verification_summary"),
         verifier_version=row.get("verifier_version"),
+        github_code_evidence_summary=_github_code_evidence_summary_from_row(row),
         created_at=str(row.get("created_at") or ""),
         updated_at=str(row.get("updated_at") or ""),
     )
+
+
+def _merge_verification_metadata(metadata: Any, verification: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(metadata or {})
+    github_summary = verification.get("github_code_evidence_summary")
+    if github_summary:
+        merged["github_code_evidence_summary"] = github_summary
+    return merged
+
+
+def _github_code_evidence_summary_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = row.get("metadata") or {}
+    if isinstance(metadata, dict) and metadata.get("github_code_evidence_summary"):
+        return metadata.get("github_code_evidence_summary")
+    value = row.get("github_code_evidence_summary")
+    return value if isinstance(value, dict) else None
 
 
 def _now() -> str:

@@ -8,6 +8,11 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
+from app.services.github_code_evidence_segmentation_service import (
+    github_code_evidence_segmentation_to_snapshot,
+    segment_github_code_evidence,
+)
+
 GITHUB_FILE_VERIFIER_VERSION = "github-file-v1"
 MAX_GITHUB_FILE_BYTES = 1_000_000
 DEFAULT_BRANCH_CANDIDATES = ("main", "master")
@@ -262,7 +267,7 @@ def inspect_skill_usage(skill_name: str, content_or_lines: str, evidence_descrip
     return False
 
 
-def verify_github_file_evidence(payload_or_record: Any) -> dict[str, str] | None:
+def verify_github_file_evidence(payload_or_record: Any) -> dict[str, Any] | None:
     data = _as_dict(payload_or_record)
     repository_url = data.get("repository_url") or data.get("evidence_url")
     file_path = data.get("file_path")
@@ -292,17 +297,26 @@ def verify_github_file_evidence(payload_or_record: Any) -> dict[str, str] | None
     content_for_inspection = line_range.content
     skill_name = str(data.get("skill_name") or "")
     description = str(data.get("evidence_description") or "")
+    segmentation = segment_github_code_evidence(
+        content_for_inspection,
+        line_range.line_start,
+        skill_name,
+        description,
+    )
+    segmentation_snapshot = github_code_evidence_segmentation_to_snapshot(segmentation)
     if _extension_confirms_skill(skill_name, str(file_path)) or inspect_skill_usage(skill_name, content_for_inspection, description):
         return {
             "status": "verified",
             "summary": f"Verified from public GitHub file. Relevant evidence found in {line_range.summary_range}.",
             "verifier_version": GITHUB_FILE_VERIFIER_VERSION,
+            "github_code_evidence_summary": segmentation_snapshot,
         }
 
     return {
         "status": "skill_usage_not_found",
         "summary": f"GitHub file was fetched, but the selected lines did not clearly demonstrate {skill_name}.",
         "verifier_version": GITHUB_FILE_VERIFIER_VERSION,
+        "github_code_evidence_summary": segmentation_snapshot,
     }
 
 
