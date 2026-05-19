@@ -305,6 +305,28 @@ Example:
 
 G5 does not add the recruiter UI yet. It creates the backend report foundation that future recruiter screens can show as summary cards, expandable evidence blocks, and exact line-level support views.
 
+## GitHub Proof Semantic Track: Phase H1 - Direct Evidence Access And Recruiter Redirect Foundation
+
+Phase H1 adds backend access links so a recruiter can inspect the original proof directly. VeriBridge already knows which code lines or website result are supporting the claim. H1 turns that into recruiter-safe links that future UI buttons can open.
+
+Two direct access types are supported:
+
+- GitHub exact line ranges for selected code evidence
+- public live website URLs for deployed website proof
+
+Example:
+
+- Supporting range: `Lines 20-32: Model training`
+- Generated action: `View Exact Code Lines`
+- Direct URL: `https://github.com/user/project/blob/main/app/model.py#L20-L32`
+
+For website proof:
+
+- Generated action: `Open Live Website`
+- Direct URL: the student’s public deployed app URL
+
+H1 does not build the final recruiter buttons yet. It creates the backend link layer, persists it, and makes it easy for the future recruiter UI to open the original evidence in one click.
+
 Future roadmap:
 
 - Phase G6: recruiter evidence redirect and open-exact-lines support.
