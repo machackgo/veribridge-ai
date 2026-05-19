@@ -14,6 +14,11 @@ from app.services.github_code_evidence_segmentation_service import (
     github_code_evidence_segmentation_to_snapshot,
 )
 from app.schemas.github_semantic_verification_result import GitHubSemanticVerificationResultResponse
+from app.services.github_claim_capability_match_service import (
+    GitHubClaimCapabilityMatchResult,
+    evaluate_github_claim_capability_match,
+    github_claim_capability_match_to_snapshot,
+)
 from app.services.github_code_evidence_segmentation_service import (
     github_code_evidence_segment_to_snapshot,
     segment_github_code_evidence,
@@ -203,6 +208,9 @@ class GitHubSemanticVerificationService:
             formatted.append(self._format_segment_for_matching(segment))
         return formatted
 
+    def evaluate_claim_capability_match(self, context: dict[str, Any]) -> GitHubClaimCapabilityMatchResult:
+        return evaluate_github_claim_capability_match(context)
+
     def evaluate_claim_against_segments(self, context: dict[str, Any]) -> list[GitHubClaimCodeSegmentMatch]:
         claim_text = context.get("claim_text") or ""
         matches: list[GitHubClaimCodeSegmentMatch] = []
@@ -246,6 +254,7 @@ class GitHubSemanticVerificationService:
         context: dict[str, Any],
         overall_match: dict[str, Any],
         segment_matches: list[GitHubClaimCodeSegmentMatch],
+        capability_match: GitHubClaimCapabilityMatchResult | None = None,
     ) -> str:
         if not context.get("available"):
             return "insufficient_evidence"
@@ -261,11 +270,45 @@ class GitHubSemanticVerificationService:
         strongest_score = strongest.semantic_score if strongest else None
         generic = self._is_generic_evidence(segment_matches)
         total_support = len(supportive)
+        capability_status = capability_match.capability_match_status if capability_match else "unavailable"
+        capability_missing_critical = bool(capability_match and capability_match.missing_critical_requirements)
+        capability_supports_full = bool(capability_match and capability_match.supports_full_verification)
+        capability_blocks_full = bool(capability_match and capability_match.blocks_full_verification)
+
+        if capability_status == "unavailable" and total_support == 0 and (overall_score or 0.0) < 0.55:
+            return "not_verified"
+        if capability_status == "capability_mismatch":
+            if total_support and (overall_score or 0.0) >= 0.55:
+                return "needs_human_review"
+            return "not_verified"
+        if capability_missing_critical:
+            if total_support and any(match.supports_skill for match in segment_matches):
+                return "partially_verified"
+            if generic or (overall_score or 0.0) >= 0.55 or (strongest_score or 0.0) >= 0.55:
+                return "needs_human_review"
+            return "not_verified"
+        if capability_status == "weak_capability_match" or capability_blocks_full:
+            if total_support >= 2 and strongest_score is not None and strongest_score >= 0.68:
+                return "partially_verified"
+            if total_support >= 1 and strongest_score is not None and strongest_score >= 0.55:
+                return "needs_human_review"
+            return "not_verified"
 
         if overall_score is not None and strongest_score is not None:
-            if overall_score >= 0.82 and strongest_score >= 0.82 and total_support >= 2 and not generic:
+            if (
+                overall_score >= 0.82
+                and strongest_score >= 0.82
+                and total_support >= 2
+                and not generic
+                and capability_supports_full
+            ):
                 return "verified"
-            if overall_score >= 0.68 and strongest_score >= 0.68 and total_support >= 1 and not generic:
+            if (
+                overall_score >= 0.68
+                and strongest_score >= 0.68
+                and total_support >= 1
+                and not generic
+            ):
                 return "partially_verified"
         if total_support >= 2 and strongest_score is not None and strongest_score >= 0.68:
             return "partially_verified"
@@ -284,25 +327,33 @@ class GitHubSemanticVerificationService:
         context: dict[str, Any],
         overall_match: dict[str, Any],
         segment_matches: list[GitHubClaimCodeSegmentMatch],
+        capability_match: GitHubClaimCapabilityMatchResult | None = None,
         status: str | None = None,
     ) -> float:
-        status = status or self.determine_github_semantic_status(context, overall_match, segment_matches)
+        status = status or self.determine_github_semantic_status(context, overall_match, segment_matches, capability_match)
         overall_score = overall_match.get("score") or 0.0
         strongest = self._strongest_match(segment_matches)
         strongest_score = strongest.semantic_score if strongest else 0.0
         support_count = len([match for match in segment_matches if self._is_supportive_match(match)])
         generic = self._is_generic_evidence(segment_matches)
+        capability_status = capability_match.capability_match_status if capability_match else "unavailable"
+        capability_missing_critical = bool(capability_match and capability_match.missing_critical_requirements)
+        capability_supports_full = bool(capability_match and capability_match.supports_full_verification)
 
         if status == "verified":
             score = 0.88
             score += min(support_count, 4) * 0.02
             score += max(0.0, overall_score - 0.7) * 0.1
             score += max(0.0, strongest_score - 0.75) * 0.08
+            if capability_supports_full:
+                score += 0.03
             return _clamp(score, 0.85, 0.98)
         if status == "partially_verified":
             score = 0.60 + min(support_count, 3) * 0.05
             score += max(0.0, overall_score - 0.55) * 0.15
             score += max(0.0, strongest_score - 0.55) * 0.08
+            if capability_status == "partial_capability_match":
+                score += 0.03
             return _clamp(score, 0.55, 0.84)
         if status == "needs_human_review":
             score = 0.42
@@ -310,11 +361,15 @@ class GitHubSemanticVerificationService:
             score += min(support_count, 2) * 0.04
             if generic:
                 score -= 0.03
+            if capability_missing_critical:
+                score -= 0.02
             return _clamp(score, 0.35, 0.70)
         if status == "not_verified":
             score = 0.76
             if overall_score < 0.30 and strongest_score < 0.30:
                 score += 0.1
+            if capability_status in {"capability_mismatch", "weak_capability_match"}:
+                score += 0.02
             return _clamp(score, 0.70, 0.95)
         if status == "insufficient_evidence":
             return _clamp(0.20 + min(support_count, 2) * 0.05, 0.10, 0.40)
@@ -325,24 +380,46 @@ class GitHubSemanticVerificationService:
         context: dict[str, Any],
         status: str,
         segment_matches: list[GitHubClaimCodeSegmentMatch],
+        capability_match: GitHubClaimCapabilityMatchResult | None = None,
     ) -> str:
         strongest = self._strongest_match(segment_matches)
+        missing_critical = [item.get("requirement_label") for item in (capability_match.missing_critical_requirements if capability_match else [])]
+        satisfied = [item.get("requirement_label") for item in (capability_match.satisfied_requirements if capability_match else [])]
         if status == "verified":
+            capability_text = ""
+            if satisfied:
+                capability_text = " It includes " + ", ".join(satisfied[:3]).lower() + "."
             if strongest:
                 return (
                     "VeriBridge found that the selected GitHub code supports the student's claim. "
                     f"The strongest evidence appears in lines {strongest.line_start}-{strongest.line_end}, "
-                    f"where the code {strongest.summary.lower()}"
+                    f"where the code {strongest.summary.lower()}."
+                    f"{capability_text}"
                 )
-            return "VeriBridge found that the selected GitHub code supports the student's claim."
+            return "VeriBridge found that the selected GitHub code supports the student's claim." + capability_text
         if status == "partially_verified":
+            if missing_critical:
+                return (
+                    "VeriBridge found code evidence for part of the student's claim, but the selected lines did not "
+                    f"clearly demonstrate the required capability: {', '.join(missing_critical[:3]).lower()}."
+                )
             return (
                 "VeriBridge found code evidence that supports part of the student's claim, but some described "
                 "functionality was not clearly demonstrated in the selected lines."
             )
         if status == "not_verified":
+            if missing_critical:
+                return (
+                    "VeriBridge could not confirm the student's claim because the selected code did not include "
+                    f"the required capabilities described: {', '.join(missing_critical[:3]).lower()}."
+                )
             return "VeriBridge could not confirm the student's claim from the selected GitHub code evidence."
         if status == "needs_human_review":
+            if missing_critical:
+                return (
+                    "The selected code is related to the student's claim, but one or more required capabilities were "
+                    f"not clearly demonstrated in the provided line range: {', '.join(missing_critical[:3]).lower()}."
+                )
             return "The selected code contains potentially relevant signals, but the available evidence is not strong enough for an automated verification judgment."
         if status == "insufficient_evidence":
             return "Not enough structured GitHub evidence was available to perform a reliable semantic verification."
@@ -353,6 +430,7 @@ class GitHubSemanticVerificationService:
         context: dict[str, Any],
         segment_matches: list[GitHubClaimCodeSegmentMatch],
         overall_match: dict[str, Any] | None,
+        capability_match: GitHubClaimCapabilityMatchResult | None = None,
     ) -> str:
         segmentation = context.get("segmentation")
         claim = context.get("claim_text") or ""
@@ -361,6 +439,14 @@ class GitHubSemanticVerificationService:
             parts.append(f"Claim: {claim}")
         if segmentation and segmentation.available and segmentation.overall_summary:
             parts.append(f"Overall code summary: {segmentation.overall_summary}")
+        if capability_match is not None:
+            parts.append(f"Capability match: {capability_match.capability_match_status}.")
+            if capability_match.satisfied_requirements:
+                summary = ", ".join(item.get("requirement_label") or item.get("requirement_key") for item in capability_match.satisfied_requirements[:3])
+                parts.append(f"Satisfied capabilities: {summary}.")
+            if capability_match.missing_critical_requirements:
+                summary = ", ".join(item.get("requirement_label") or item.get("requirement_key") for item in capability_match.missing_critical_requirements[:3])
+                parts.append(f"Missing critical capabilities: {summary}.")
         if overall_match and overall_match.get("score") is not None:
             parts.append(
                 "Claim to overall summary similarity was {label} ({score:.2f}).".format(
@@ -378,18 +464,30 @@ class GitHubSemanticVerificationService:
             return "No structured GitHub evidence was available."
         return " ".join(parts)
 
-    def build_github_limitations(self, context: dict[str, Any], status: str) -> str:
+    def build_github_limitations(
+        self,
+        context: dict[str, Any],
+        status: str,
+        capability_match: GitHubClaimCapabilityMatchResult | None = None,
+    ) -> str:
         limitations = [
             "This evaluation compares the student's claim against plain-English summaries of selected GitHub code, not against a live execution trace.",
             "It does not independently validate runtime behavior, hidden tests, or broader repository correctness.",
         ]
         if status in {"needs_human_review", "insufficient_evidence"}:
             limitations.append("Sparse, generic, or ambiguous code evidence may require human review.")
+        if capability_match and capability_match.missing_critical_requirements:
+            limitations.append("One or more critical claimed capabilities were not demonstrated in the selected line range.")
         if not context.get("available"):
             limitations.append("The selected code could not be fetched or segmented reliably.")
         return " ".join(limitations)
 
-    def build_github_recommended_next_action(self, context: dict[str, Any], status: str) -> str:
+    def build_github_recommended_next_action(
+        self,
+        context: dict[str, Any],
+        status: str,
+        capability_match: GitHubClaimCapabilityMatchResult | None = None,
+    ) -> str:
         if status == "verified":
             return "No further action required."
         if status == "partially_verified":
@@ -418,18 +516,19 @@ class GitHubSemanticVerificationService:
 
         overall_match = self.evaluate_claim_against_overall_code_summary(context)
         segment_matches = self.evaluate_claim_against_segments(context)
-        status = self.determine_github_semantic_status(context, overall_match, segment_matches)
-        confidence = self.calculate_github_semantic_confidence(context, overall_match, segment_matches, status)
+        capability_match = self.evaluate_claim_capability_match(context)
+        status = self.determine_github_semantic_status(context, overall_match, segment_matches, capability_match)
+        confidence = self.calculate_github_semantic_confidence(context, overall_match, segment_matches, capability_match, status)
         strongest = self._strongest_match(segment_matches)
 
-        reasoning = self._build_internal_reasoning_summary(context, status, overall_match, segment_matches)
+        reasoning = self._build_internal_reasoning_summary(context, status, overall_match, segment_matches, capability_match)
         return GitHubClaimCodeSemanticEvaluationResult(
             semantic_status=status,
             confidence_score=confidence,
-            recruiter_facing_summary=self.build_github_recruiter_summary(context, status, segment_matches),
-            evidence_summary=self.build_github_evidence_summary(context, segment_matches, overall_match),
-            limitations=self.build_github_limitations(context, status),
-            recommended_next_action=self.build_github_recommended_next_action(context, status),
+            recruiter_facing_summary=self.build_github_recruiter_summary(context, status, segment_matches, capability_match),
+            evidence_summary=self.build_github_evidence_summary(context, segment_matches, overall_match, capability_match),
+            limitations=self.build_github_limitations(context, status, capability_match),
+            recommended_next_action=self.build_github_recommended_next_action(context, status, capability_match),
             internal_reasoning_summary=reasoning,
             strongest_matching_segment_start=strongest.line_start if strongest else None,
             strongest_matching_segment_end=strongest.line_end if strongest else None,
@@ -526,12 +625,14 @@ class GitHubSemanticVerificationService:
     def _source_snapshot(self, context: dict[str, Any], evaluation: GitHubClaimCodeSemanticEvaluationResult) -> dict[str, Any]:
         segmentation = context.get("segmentation")
         overall_match = self.evaluate_claim_against_overall_code_summary(context)
+        capability_match = self.evaluate_claim_capability_match(context)
         matched_segments = evaluation.matched_segments[:3]
         return {
             "claim_preview": _preview(context.get("claim_text")),
             "overall_code_summary_preview": _preview((segmentation.overall_summary if segmentation else "")),
             "overall_code_summary_score": overall_match.get("score"),
             "overall_code_summary_label": overall_match.get("label"),
+            "claim_capability_match": github_claim_capability_match_to_snapshot(capability_match),
             "matched_segments": [
                 {
                     "line_start": segment.line_start,
@@ -634,6 +735,7 @@ class GitHubSemanticVerificationService:
         status: str,
         overall_match: dict[str, Any],
         segment_matches: list[GitHubClaimCodeSegmentMatch],
+        capability_match: GitHubClaimCapabilityMatchResult | None = None,
     ) -> str:
         strongest = self._strongest_match(segment_matches)
         pieces = []
@@ -643,6 +745,11 @@ class GitHubSemanticVerificationService:
             pieces.append(
                 f"Strongest segment match was lines {strongest.line_start}-{strongest.line_end} with {strongest.semantic_label} ({strongest.semantic_score:.2f})."
             )
+        if capability_match is not None:
+            pieces.append(f"Capability match status was {capability_match.capability_match_status}.")
+            if capability_match.missing_critical_requirements:
+                missing = ", ".join(item.get("requirement_label") or item.get("requirement_key") for item in capability_match.missing_critical_requirements[:3])
+                pieces.append(f"Missing critical requirements: {missing}.")
         if segment_matches:
             supportive_count = len([match for match in segment_matches if self._is_supportive_match(match)])
             pieces.append(f"{supportive_count} segments provided meaningful support.")
