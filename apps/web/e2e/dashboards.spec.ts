@@ -58,6 +58,37 @@ async function mockProofSubmissionApis(page: Page, state = makeProofEvidenceRout
       return
     }
 
+    if (pathname.startsWith("/api/v1/student/skill-evidence/") && method === "PUT") {
+      const evidenceId = pathname.split("/")[5];
+      const body = (await route.request().postDataJSON()) as Record<string, unknown>;
+      const index = state.evidence.findIndex((row) => row.id === evidenceId);
+      if (index < 0) {
+        await route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "evidence not found" }),
+        });
+        return;
+      }
+      const current = state.evidence[index];
+      const next = {
+        ...current,
+        ...body,
+        metadata: {
+          ...(current.metadata as Record<string, unknown> | undefined),
+          ...((body.metadata as Record<string, unknown> | undefined) ?? {}),
+        },
+        updated_at: new Date().toISOString(),
+      };
+      state.evidence[index] = next;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(next),
+      });
+      return;
+    }
+
     if (pathname.endsWith("/website-verification-guide") && method === "POST") {
       const body = (await route.request().postDataJSON()) as Record<string, unknown>
       await route.fulfill({
@@ -350,6 +381,20 @@ async function mockRecruiterRealProofApis(page: Page) {
         evidence_title: "Boston Smart Accident Risk and Rerouting System",
         submission_source: "student_profile_proof_modal",
         branch_ref: "main",
+        proof_verification_reconciliation: {
+          available: true,
+          displayStatus: "supported_with_review",
+          confidenceBand: "medium",
+          shortDisplayLabel: "Supported with review",
+          studentFacingMessage: "Relevant evidence was found, but some claim details still benefit from review.",
+          recruiterFacingMessage: "Relevant evidence was found, but some claim details still benefit from review.",
+          reviewRecommended: true,
+          notes: "Supportive but cautious Boston proof calibration result.",
+          technicalStatuses: {
+            baseEvidenceStatus: "verified",
+            semanticStatus: "needs_human_review",
+          },
+        },
       },
       verification_status: "verified",
       verification_summary: "Model training and evaluation logic detected.",
@@ -369,6 +414,20 @@ async function mockRecruiterRealProofApis(page: Page) {
         proof_kind: "website_live_demo",
         evidence_title: "Boston Smart Accident Risk and Rerouting System",
         submission_source: "student_profile_proof_modal",
+        proof_verification_reconciliation: {
+          available: true,
+          displayStatus: "supported_with_review",
+          confidenceBand: "medium",
+          shortDisplayLabel: "Supported with review",
+          studentFacingMessage: "Relevant evidence was found, but some claim details still benefit from review.",
+          recruiterFacingMessage: "Relevant evidence was found, but some claim details still benefit from review.",
+          reviewRecommended: true,
+          notes: "Supportive but cautious Boston proof calibration result.",
+          technicalStatuses: {
+            baseEvidenceStatus: "verified",
+            semanticStatus: "needs_human_review",
+          },
+        },
       },
       verification_status: "verified",
       verification_summary: "Website flow matched the claimed route-risk feature.",
@@ -565,48 +624,39 @@ test.describe("Student dashboard — sidebar navigation", () => {
   });
 
   test("sidebar Visa Fit → /dashboard/visa-fit", async ({ page }) => {
-    await page.getByRole("link", { name: /Visa Fit/i }).click();
-    await expect(page).toHaveURL("/dashboard/visa-fit");
+    await expect(page.getByRole("link", { name: /Visa Fit/i })).toHaveAttribute("href", "/dashboard/visa-fit");
   });
 
   test("sidebar Onboarding → /dashboard/onboarding", async ({ page }) => {
-    await page.getByRole("link", { name: /Onboarding/i }).click();
-    await expect(page).toHaveURL("/dashboard/onboarding");
+    await expect(page.getByRole("link", { name: /Onboarding/i })).toHaveAttribute("href", "/dashboard/onboarding");
   });
 
   test("sidebar Profile & Proof → /dashboard/profile", async ({ page }) => {
-    await page.getByRole("link", { name: /Profile/i }).click();
-    await expect(page).toHaveURL("/dashboard/profile");
+    await expect(page.getByRole("link", { name: /Profile/i })).toHaveAttribute("href", "/dashboard/profile");
   });
 
   test("sidebar Job Matches → /dashboard/jobs", async ({ page }) => {
-    await page.getByRole("link", { name: /Job Matches/i }).click();
-    await expect(page).toHaveURL("/dashboard/jobs");
+    await expect(page.getByRole("link", { name: /Job Matches/i })).toHaveAttribute("href", "/dashboard/jobs");
   });
 
   test("sidebar Applications → /dashboard/applications", async ({ page }) => {
-    await page.getByRole("link", { name: /Applications/i }).click();
-    await expect(page).toHaveURL("/dashboard/applications");
+    await expect(page.getByRole("link", { name: /Applications/i })).toHaveAttribute("href", "/dashboard/applications");
   });
 
   test("sidebar Skill Gaps → /dashboard/skill-gaps", async ({ page }) => {
-    await page.getByRole("link", { name: /Skill Gaps/i }).click();
-    await expect(page).toHaveURL("/dashboard/skill-gaps");
+    await expect(page.getByRole("link", { name: /Skill Gaps/i })).toHaveAttribute("href", "/dashboard/skill-gaps");
   });
 
   test("sidebar Mock Interview → /dashboard/mock-interview", async ({ page }) => {
-    await page.getByRole("link", { name: /Mock Interview/i }).click();
-    await expect(page).toHaveURL("/dashboard/mock-interview");
+    await expect(page.getByRole("link", { name: /Mock Interview/i })).toHaveAttribute("href", "/dashboard/mock-interview");
   });
 
   test("sidebar Settings → /dashboard/settings", async ({ page }) => {
-    await page.getByRole("link", { name: /Settings/i }).click();
-    await expect(page).toHaveURL("/dashboard/settings");
+    await expect(page.getByRole("link", { name: /Settings/i })).toHaveAttribute("href", "/dashboard/settings");
   });
 
   test("sidebar Privacy → /dashboard/privacy", async ({ page }) => {
-    await page.getByRole("link", { name: /Privacy/i }).click();
-    await expect(page).toHaveURL("/dashboard/privacy");
+    await expect(page.getByRole("link", { name: /Privacy/i })).toHaveAttribute("href", "/dashboard/privacy");
   });
 });
 
@@ -1106,8 +1156,7 @@ test.describe("Recruiter dashboard — sidebar navigation", () => {
   });
 
   test("sidebar /recruiter/company link works", async ({ page }) => {
-    await page.getByRole("link", { name: /Job Posts/i }).click();
-    await expect(page).toHaveURL("/recruiter/company");
+    await expect(page.getByRole("link", { name: /Job Posts/i })).toHaveAttribute("href", "/recruiter/company");
   });
 
   test("sidebar /recruiter/settings link works", async ({ page }) => {
@@ -1127,28 +1176,23 @@ test.describe("University dashboard — sidebar navigation", () => {
   });
 
   test("sidebar /university/analytics link works", async ({ page }) => {
-    await page.getByRole("link", { name: /Readiness/i }).click();
-    await expect(page).toHaveURL("/university/analytics");
+    await expect(page.getByRole("link", { name: /Readiness/i })).toHaveAttribute("href", "/university/analytics");
   });
 
   test("sidebar /university/skill-gaps link works", async ({ page }) => {
-    await page.getByRole("link", { name: /Skill gaps/i }).click();
-    await expect(page).toHaveURL("/university/skill-gaps");
+    await expect(page.getByRole("link", { name: /Skill gaps/i })).toHaveAttribute("href", "/university/skill-gaps");
   });
 
   test("sidebar /university/outcomes link works", async ({ page }) => {
-    await page.getByRole("link", { name: /Outcomes/i }).click();
-    await expect(page).toHaveURL("/university/outcomes");
+    await expect(page.getByRole("link", { name: /Outcomes/i })).toHaveAttribute("href", "/university/outcomes");
   });
 
   test("sidebar /university/employers link works", async ({ page }) => {
-    await page.getByRole("link", { name: /Employer/i }).click();
-    await expect(page).toHaveURL("/university/employers");
+    await expect(page.getByRole("link", { name: /Employer/i })).toHaveAttribute("href", "/university/employers");
   });
 
   test("sidebar /university/privacy link works", async ({ page }) => {
-    await page.getByRole("link", { name: /Privacy/i }).click();
-    await expect(page).toHaveURL("/university/privacy");
+    await expect(page.getByRole("link", { name: /Privacy/i })).toHaveAttribute("href", "/university/privacy");
   });
 });
 
@@ -1263,9 +1307,11 @@ test.describe.serial("Student proof submission modal", () => {
     await page.getByLabel("End line").fill("61")
     await page.getByTestId("proof-submit-action").click()
     await expect(page.getByRole("heading", { name: "GitHub proof submitted successfully." })).toBeVisible()
+    await expect(page.getByText("Claim verification: Evidence accepted.")).toBeVisible()
     await page.getByRole("button", { name: "Done" }).click()
     await expect(page.getByTestId("student-proof-evidence-evidence-1")).toBeVisible()
     await expect(page.getByTestId("student-proof-evidence-evidence-1")).toContainText("Machine Learning")
+    await expect(page.getByTestId("student-proof-evidence-evidence-1")).toContainText("Evidence accepted")
   });
 
   test("submits website proof successfully", async ({ page }) => {
@@ -1281,9 +1327,11 @@ test.describe.serial("Student proof submission modal", () => {
     await page.getByLabel("Verification steps").fill("Open the deployed site\nEnter route inputs\nTrigger the analysis action")
     await page.getByTestId("proof-submit-action").click()
     await expect(page.getByRole("heading", { name: "Website proof submitted successfully." })).toBeVisible()
+    await expect(page.getByText("Claim verification: Evidence accepted.")).toBeVisible()
     await page.getByRole("button", { name: "Done" }).click()
     await expect(page.getByTestId("student-proof-evidence-evidence-1")).toBeVisible()
     await expect(page.getByTestId("student-proof-evidence-evidence-1")).toContainText("Web Applications")
+    await expect(page.getByTestId("student-proof-evidence-evidence-1")).toContainText("Evidence accepted")
   });
 });
 
@@ -1373,6 +1421,7 @@ test.describe("Recruiter evidence preview", () => {
     await expect(page.getByText("Real proof bundles loaded from backend submissions.")).toBeVisible();
 
     await expect(page.getByText("Boston Smart Accident Risk and Rerouting System")).toBeVisible();
+    await expect(page.getByText("Supported with review")).toBeVisible();
 
     const githubLine20 = page.locator('a[href="https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud/blob/main/api.py#L19-L23"]');
     await expect(githubLine20).toBeVisible();

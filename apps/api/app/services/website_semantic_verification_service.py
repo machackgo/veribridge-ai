@@ -29,6 +29,7 @@ from app.services.website_semantic_similarity_service import (
     evaluate_semantic_similarity,
     semantic_similarity_to_snapshot,
 )
+from app.services.proof_verification_status_reconciliation_service import proof_verification_reconciliation_snapshot
 from app.services.website_verification_executor_service import WebsiteVerificationRunNotFoundError
 from app.services.website_verification_guide_service import WebsiteVerificationGuideNotAllowedError, _validate_website_evidence
 from app.services.website_verification_plan_service import WebsiteVerificationPlanNotFoundError
@@ -176,7 +177,7 @@ class WebsiteSemanticVerificationService:
             "evidence_summary": evaluation.evidence_summary,
             "limitations": evaluation.limitations,
             "recommended_next_action": evaluation.recommended_next_action,
-            "source_snapshot": self._source_snapshot(context),
+            "source_snapshot": self._source_snapshot(context, evaluation.semantic_status),
         }
 
         if isinstance(self._client, dict):
@@ -240,12 +241,26 @@ class WebsiteSemanticVerificationService:
             raise WebsiteSemanticVerificationResultNotFoundError(result_id)
         return _to_response(result.data)
 
-    def _source_snapshot(self, context: dict[str, Any]) -> dict[str, Any]:
+    def _source_snapshot(self, context: dict[str, Any], semantic_status: str | None = None) -> dict[str, Any]:
         compact = self.build_semantic_evaluation_input(context)
         static_run = compact.get("static_run") or {}
         browser_run = compact.get("browser_run") or {}
         similarity = semantic_similarity_to_snapshot(compact.get("semantic_similarity"))
         output_match = expected_output_match_to_snapshot(compact.get("expected_output_match"))
+        reconciliation = proof_verification_reconciliation_snapshot(
+            {
+                "available": compact.get("plan") is not None,
+                "base_evidence_status": compact.get("evidence", {}).get("verification_status"),
+                "semantic_status": semantic_status,
+                "report_status": None,
+                "browser_status": browser_run.get("browser_execution_status"),
+                "static_status": static_run.get("execution_status"),
+                "capability_match_status": None,
+                "expected_output_match_status": output_match.get("label"),
+                "expected_output_blocks_verification": output_match.get("blocks_full_verification"),
+                "supporting_line_ranges": compact.get("browser_steps") or compact.get("static_checks") or [],
+            }
+        )
         return {
             "plan": {
                 "id": compact["plan"].get("id"),
@@ -288,6 +303,7 @@ class WebsiteSemanticVerificationService:
             "semantic_similarity_method": similarity.get("method"),
             "semantic_similarity_available": similarity.get("available"),
             "expected_output_match": output_match,
+            "product_verification_reconciliation": reconciliation,
         }
 
     def _get_evidence_row(self, user_id: str, evidence_id: str) -> dict[str, Any]:
@@ -453,6 +469,8 @@ def _compact_evidence(row: dict[str, Any]) -> dict[str, Any]:
         "evidence_type": row.get("evidence_type"),
         "evidence_url": row.get("evidence_url"),
         "evidence_description": row.get("evidence_description"),
+        "verification_status": row.get("verification_status"),
+        "verification_summary": row.get("verification_summary"),
     }
 
 

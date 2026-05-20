@@ -160,6 +160,7 @@ def test_verified_result_for_ml_workflow_supports_claim() -> None:
     assert evaluation.strongest_matching_segment_end == 32
     assert evaluation.matched_segments[0].semantic_score is not None
     assert "decision tree classifier" in evaluation.recruiter_facing_summary.lower()
+    assert evaluation.internal_reasoning_summary
 
 
 def test_partially_verified_when_only_some_claim_details_are_supported() -> None:
@@ -190,6 +191,31 @@ def test_partially_verified_when_only_some_claim_details_are_supported() -> None
 
     assert evaluation.semantic_status in {"partially_verified", "needs_human_review"}
     assert 0.50 <= evaluation.confidence_score <= 0.84
+
+
+def test_github_semantic_snapshot_includes_reconciled_display_status() -> None:
+    service = _make_service()
+    segments = [
+        _segment(1, 20, 32, "Initializes a Decision Tree classifier and trains it using fit().", "model_training", ["DecisionTreeClassifier", "fit("]),
+    ]
+    segmentation = _segmentation_result(segments, "The selected code demonstrates model training.")
+    context = {
+        "available": True,
+        "evidence": _evidence_row(),
+        "claim_text": service.build_github_claim_text({"evidence": _evidence_row()}),
+        "segmentation": segmentation,
+    }
+    service._score_text_pair = _score_by_keywords({"overall code summary": 0.93, "initializes a decision tree": 0.92}, default=0.18)
+
+    evaluation = service.evaluate_semantically(context)
+    snapshot = service._source_snapshot(context, evaluation)
+
+    assert snapshot["product_verification_reconciliation"]["display_status"] in {
+        "verified",
+        "supported_with_review",
+        "partially_supported",
+        "not_verified",
+    }
 
 
 def test_not_verified_for_unrelated_ui_or_database_code() -> None:

@@ -822,7 +822,8 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
                         {evidence.uploadedFileSize && <div><strong>File size:</strong> {evidence.uploadedFileSize}</div>}
                         {evidence.description && <div><strong>Evidence description:</strong> {evidence.description}</div>}
                         {evidence.visibilityNote && <div><strong>Visibility note for recruiters:</strong> {evidence.visibilityNote}</div>}
-                        <div><strong>Verification:</strong> {evidence.verificationSummary}</div>
+                        <div><strong>Claim status:</strong> {evidence.verificationStatus}</div>
+                        {evidence.verificationSummary && <div><strong>Verification summary:</strong> {evidence.verificationSummary}</div>}
                         {evidence.uploadedFileUrl && (
                           <div
                             style={{
@@ -862,7 +863,8 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
                       {evidence.uploadedFileSize && <div><strong>File size:</strong> {evidence.uploadedFileSize}</div>}
                       {evidence.description && <div><strong>Evidence description:</strong> {evidence.description}</div>}
                       {evidence.visibilityNote && <div><strong>Visibility note:</strong> {evidence.visibilityNote}</div>}
-                      <div><strong>Verification:</strong> {evidence.verificationSummary}</div>
+                      <div><strong>Claim status:</strong> {evidence.verificationStatus}</div>
+                      {evidence.verificationSummary && <div><strong>Verification summary:</strong> {evidence.verificationSummary}</div>}
                       {(typeof evidence.backendEvidenceId === "string" || Array.isArray(evidence.accessLinks)) && (
                         <EvidenceAccessActions
                           evidenceId={typeof evidence.backendEvidenceId === "string" ? evidence.backendEvidenceId : undefined}

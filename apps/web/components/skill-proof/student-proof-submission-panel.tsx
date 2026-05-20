@@ -13,8 +13,15 @@ import {
   generateEvidenceAccessLinks,
   generateWebsiteVerificationPlan,
   listSkillEvidence,
+  updateSkillEvidence,
   type SkillEvidenceResponse,
 } from "@/lib/api"
+import {
+  formatBaseEvidenceAcceptanceLabel,
+  formatProofDisplayLabel,
+  reconcileProofVerificationDisplayState,
+  type ProofVerificationReconciliation,
+} from "./proof-verification-status"
 
 type SubmissionTab = "github" | "website"
 
@@ -86,17 +93,107 @@ function normalizeLineNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function formatVerificationStatus(status: string): string {
-  return status
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ")
-}
-
 function getEvidenceTitle(evidence: SkillEvidenceResponse): string {
   const metadata = evidence.metadata as Record<string, unknown> | undefined
   const title = typeof metadata?.evidence_title === "string" ? metadata.evidence_title.trim() : ""
   return title || evidence.skill_name
+}
+
+function readReconciliationFromMetadata(metadata: Record<string, unknown> | undefined): ProofVerificationReconciliation | null {
+  const reconciliation = metadata?.proof_verification_reconciliation
+  if (!reconciliation || typeof reconciliation !== "object") return null
+  const candidate = reconciliation as Partial<ProofVerificationReconciliation>
+  if (
+    typeof candidate.displayStatus !== "string" ||
+    typeof candidate.shortDisplayLabel !== "string" ||
+    typeof candidate.studentFacingMessage !== "string" ||
+    typeof candidate.recruiterFacingMessage !== "string"
+  ) {
+    return null
+  }
+  return {
+    available: Boolean(candidate.available ?? true),
+    displayStatus: candidate.displayStatus as ProofVerificationReconciliation["displayStatus"],
+    confidenceBand: (candidate.confidenceBand as ProofVerificationReconciliation["confidenceBand"]) || "low",
+    shortDisplayLabel: candidate.shortDisplayLabel,
+    studentFacingMessage: candidate.studentFacingMessage,
+    recruiterFacingMessage: candidate.recruiterFacingMessage,
+    reviewRecommended: Boolean(candidate.reviewRecommended),
+    notes: candidate.notes ?? null,
+    technicalStatuses: candidate.technicalStatuses ?? {},
+  }
+}
+
+function buildEvidenceMetadataUpdate(
+  existingMetadata: Record<string, unknown> | undefined,
+  reconciliation: ProofVerificationReconciliation,
+  extra: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    ...(existingMetadata ?? {}),
+    ...extra,
+    verification_display_status: reconciliation.displayStatus,
+    verification_display_label: reconciliation.shortDisplayLabel,
+    verification_review_recommended: reconciliation.reviewRecommended,
+    verification_confidence_band: reconciliation.confidenceBand,
+    verification_display_message: reconciliation.studentFacingMessage,
+    recruiter_verification_message: reconciliation.recruiterFacingMessage,
+    proof_verification_reconciliation: reconciliation,
+  }
+}
+
+function buildGitHubProofReconciliation(params: {
+  baseStatus: string
+  semanticStatus?: string | null
+  reportStatus?: string | null
+  report?: { missing_capabilities?: Array<Record<string, unknown>>; confirmed_capabilities?: Array<Record<string, unknown>> } | null
+  semanticSegments?: Array<Record<string, unknown>> | null
+}): ProofVerificationReconciliation {
+  const missingCriticalRequirements = Boolean(
+    (params.report?.missing_capabilities ?? []).some((item) => String(item["importance"] ?? "") === "critical")
+  )
+  const capabilityMatchStatus = missingCriticalRequirements
+    ? "partial_capability_match"
+    : params.semanticStatus === "verified" || params.reportStatus === "verified"
+      ? "strong_capability_match"
+      : "partial_capability_match"
+  const blocksFullVerification = Boolean(
+    params.reportStatus === "not_verified" ||
+      params.semanticStatus === "not_verified" ||
+      missingCriticalRequirements ||
+      ((params.report?.missing_capabilities?.length ?? 0) > 0 && params.semanticStatus !== "verified" && params.reportStatus !== "verified")
+  )
+  return reconcileProofVerificationDisplayState({
+    available: true,
+    baseEvidenceStatus: params.baseStatus,
+    semanticStatus: params.semanticStatus,
+    reportStatus: params.reportStatus,
+    capabilityMatchStatus,
+    missingCriticalRequirements,
+    blocksFullVerification,
+    supportingEvidence: Boolean((params.semanticSegments?.length ?? 0) > 0 || (params.report?.confirmed_capabilities?.length ?? 0) > 0),
+  })
+}
+
+function buildWebsiteProofReconciliation(params: {
+  baseStatus: string
+  semanticStatus?: string | null
+  browserStatus?: string | null
+  staticStatus?: string | null
+  expectedOutputMatchStatus?: string | null
+  expectedOutputBlocksVerification?: boolean
+  semanticSourceSnapshot?: Record<string, unknown> | null
+}): ProofVerificationReconciliation {
+  return reconcileProofVerificationDisplayState({
+    available: true,
+    baseEvidenceStatus: params.baseStatus,
+    semanticStatus: params.semanticStatus,
+    browserStatus: params.browserStatus,
+    staticStatus: params.staticStatus,
+    expectedOutputMatchStatus: params.expectedOutputMatchStatus,
+    expectedOutputBlocksVerification: params.expectedOutputBlocksVerification,
+    supportingEvidence: Boolean(params.semanticSourceSnapshot?.semantic_similarity || params.semanticSourceSnapshot?.expected_output_match),
+  })
 }
 
 async function runGitHubSubmission(
@@ -121,17 +218,19 @@ async function runGitHubSubmission(
   })
 
   const notes: string[] = [`Created GitHub evidence row ${createdEvidence.id}.`]
+  let semanticResult: Awaited<ReturnType<typeof createGithubSemanticVerificationResult>> | null = null
+  let report: Awaited<ReturnType<typeof createGithubRecruiterProofReport>> | null = null
 
   try {
-    const semanticResult = await createGithubSemanticVerificationResult(createdEvidence.id)
-    notes.push(`Created GitHub semantic result (${semanticResult.semantic_status}).`)
+    semanticResult = await createGithubSemanticVerificationResult(createdEvidence.id)
     try {
-      const report = await createGithubRecruiterProofReport(createdEvidence.id, semanticResult.id)
-      notes.push(`Created GitHub recruiter report (${report.report_status}).`)
+      report = await createGithubRecruiterProofReport(createdEvidence.id, semanticResult.id)
     } catch (error) {
+      report = null
       notes.push(`Recruiter report could not be generated yet: ${error instanceof Error ? error.message : "unknown error"}`)
     }
   } catch (error) {
+    semanticResult = null
     notes.push(`GitHub semantic verification could not run yet: ${error instanceof Error ? error.message : "unknown error"}`)
   }
 
@@ -142,11 +241,32 @@ async function runGitHubSubmission(
     notes.push(`Direct evidence links could not be generated yet: ${error instanceof Error ? error.message : "unknown error"}`)
   }
 
+  const reconciliation = buildGitHubProofReconciliation({
+    baseStatus: createdEvidence.verification_status,
+    semanticStatus: semanticResult?.semantic_status,
+    reportStatus: report?.report_status,
+    report,
+    semanticSegments: semanticResult?.matched_segments ?? null,
+  })
+
+  try {
+    await updateSkillEvidence(createdEvidence.id, {
+      metadata: buildEvidenceMetadataUpdate(createdEvidence.metadata as Record<string, unknown> | undefined, reconciliation, {
+        latest_semantic_status: semanticResult?.semantic_status ?? null,
+        latest_report_status: report?.report_status ?? null,
+      }),
+    })
+  } catch (error) {
+    notes.push(`Proof status labels could not be reconciled yet: ${error instanceof Error ? error.message : "unknown error"}`)
+  }
+
+  notes.unshift(`Claim verification: ${formatProofDisplayLabel(reconciliation.displayStatus, "student")}.`)
+
   await refreshEvidence()
 
   return {
     title: "GitHub proof submitted successfully.",
-    message: `${form.skillName.trim()} proof is now recorded in VeriBridge.`,
+    message: reconciliation.studentFacingMessage,
     notes,
   }
 }
@@ -176,6 +296,9 @@ async function runWebsiteSubmission(
   })
 
   const notes: string[] = [`Created website evidence row ${createdEvidence.id}.`]
+  let websiteReconciliation: ProofVerificationReconciliation | null = null
+  let staticRunStatus: string | null = null
+  let browserRunStatus: string | null = null
   const guidePayload = {
     project_overview: form.projectTitle.trim() || null,
     feature_to_verify: form.featureToVerify.trim(),
@@ -201,6 +324,7 @@ async function runWebsiteSubmission(
   try {
     const staticRun = await executeWebsiteVerificationRun(createdEvidence.id, planId)
     staticRunId = staticRun.id
+    staticRunStatus = staticRun.execution_status
     notes.push(`Static verification run completed (${staticRun.execution_status}).`)
   } catch (error) {
     notes.push(`Static verification run could not complete: ${error instanceof Error ? error.message : "unknown error"}`)
@@ -210,6 +334,7 @@ async function runWebsiteSubmission(
   try {
     const browserRun = await executeWebsiteBrowserVerificationRun(createdEvidence.id, planId)
     browserRunId = browserRun.id
+    browserRunStatus = browserRun.browser_execution_status
     notes.push(`Browser verification run completed (${browserRun.browser_execution_status}).`)
   } catch (error) {
     notes.push(`Browser verification run could not complete: ${error instanceof Error ? error.message : "unknown error"}`)
@@ -221,7 +346,30 @@ async function runWebsiteSubmission(
       static_run_id: staticRunId,
       browser_run_id: browserRunId,
     })
-    notes.push(`Created website semantic result (${semantic.semantic_status}).`)
+    const snapshot = (semantic.source_snapshot || {}) as Record<string, unknown>
+    const expectedOutputMatch = (snapshot.expected_output_match as Record<string, unknown> | undefined) ?? {}
+    websiteReconciliation = buildWebsiteProofReconciliation({
+      baseStatus: createdEvidence.verification_status,
+      semanticStatus: semantic.semantic_status,
+      browserStatus: browserRunStatus,
+      staticStatus: staticRunStatus,
+      expectedOutputMatchStatus: typeof expectedOutputMatch.label === "string" ? expectedOutputMatch.label : null,
+      expectedOutputBlocksVerification: Boolean(expectedOutputMatch.blocks_full_verification),
+      semanticSourceSnapshot: snapshot,
+    })
+    notes.push(`Claim verification: ${formatProofDisplayLabel(websiteReconciliation.displayStatus, "student")}.`)
+
+    try {
+      await updateSkillEvidence(createdEvidence.id, {
+        metadata: buildEvidenceMetadataUpdate(createdEvidence.metadata as Record<string, unknown> | undefined, websiteReconciliation, {
+          latest_semantic_status: semantic.semantic_status,
+          latest_static_run_status: staticRunId ? "available" : null,
+          latest_browser_run_status: browserRunId ? "available" : null,
+        }),
+      })
+    } catch (error) {
+      notes.push(`Proof status labels could not be reconciled yet: ${error instanceof Error ? error.message : "unknown error"}`)
+    }
   } catch (error) {
     notes.push(`Website semantic result could not be created yet: ${error instanceof Error ? error.message : "unknown error"}`)
   }
@@ -237,7 +385,7 @@ async function runWebsiteSubmission(
 
   return {
     title: "Website proof submitted successfully.",
-    message: `${form.skillName.trim()} proof is now recorded in VeriBridge.`,
+    message: websiteReconciliation?.studentFacingMessage ?? "VeriBridge created the website proof record and generated the verification workflow.",
     notes,
   }
 }
@@ -419,6 +567,11 @@ export function StudentProofSubmissionPanel({
           <div style={{ display: "grid", gap: 10 }}>
             {evidence.map((entry) => {
               const title = getEvidenceTitle(entry)
+              const metadata = (entry.metadata as Record<string, unknown> | undefined) ?? {}
+              const reconciliation = readReconciliationFromMetadata(metadata)
+              const displayLabel = reconciliation
+                ? formatProofDisplayLabel(reconciliation.displayStatus, "student")
+                : formatBaseEvidenceAcceptanceLabel(entry.verification_status)
               return (
                 <article
                   key={entry.id}
@@ -453,14 +606,19 @@ export function StudentProofSubmissionPanel({
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {formatVerificationStatus(entry.verification_status)}
+                      {displayLabel}
                     </span>
                   </div>
                   {entry.evidence_description ? (
                     <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>{entry.evidence_description}</div>
                   ) : null}
+                  {reconciliation ? (
+                    <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.55 }}>
+                      {reconciliation.studentFacingMessage}
+                    </div>
+                  ) : null}
                   {entry.verification_summary ? (
-                    <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.55 }}>{entry.verification_summary}</div>
+                    <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>{entry.verification_summary}</div>
                   ) : null}
                 </article>
               )
