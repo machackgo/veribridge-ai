@@ -382,6 +382,42 @@ This helps a recruiter inspect both:
 
 It also keeps the earlier H2 behavior intact on individual proof cards, so direct links remain available wherever a proof card is shown.
 
+## Phase I1: Student Proof Submission UI Foundation
+
+Before Phase I1, the student-facing `Add proof evidence` button was still a placeholder. The backend proof systems existed, but students could not create GitHub or website proof from the real Profile & Proof page.
+
+Phase I1 replaces that placeholder with a working submission modal.
+
+Students can now submit:
+
+- GitHub code proof
+- Website/live demo proof
+
+Website proof remains optional. A student can submit GitHub only, website only, or both separately.
+
+The GitHub form captures:
+
+- skill name
+- project or evidence title
+- claim or evidence description
+- GitHub repository URL
+- file path
+- start line
+- end line
+
+The website form captures:
+
+- skill name
+- project or evidence title
+- live website URL
+- feature to verify
+- expected output
+- verification steps
+
+The modal submits through the existing backend API pipeline. After submission, VeriBridge refreshes the profile proof list so the new evidence is visible immediately.
+
+This unlocks a real end-to-end project test through the app UI, including the Boston Accident Risk project flow.
+
 Future roadmap:
 
 - Phase 5F.2: stronger local rerankers, classifiers, or self-hosted model providers for better semantic decisions.

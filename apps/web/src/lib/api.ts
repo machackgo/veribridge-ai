@@ -47,6 +47,8 @@ export type SkillEvidencePayload = {
   line_start?: number | null
   line_end?: number | null
   evidence_description?: string | null
+  proof_visibility?: "public" | "private" | null
+  metadata?: Record<string, unknown> | null
 }
 
 export type SkillEvidenceResponse = SkillEvidencePayload & {
@@ -82,6 +84,164 @@ export type EvidenceAccessLinkListResponse = {
 }
 
 export type EvidenceAccessLinkCreateResponse = EvidenceAccessLinkListResponse
+
+export type WebsiteVerificationGuidePayload = {
+  project_overview?: string | null
+  feature_to_verify: string
+  verification_steps: string[]
+  sample_inputs?: unknown[] | Record<string, unknown> | null
+  expected_output: string
+  login_required?: boolean
+  login_notes?: string | null
+  access_notes?: string | null
+  known_limitations?: string | null
+  additional_notes?: string | null
+}
+
+export type WebsiteVerificationGuideResponse = WebsiteVerificationGuidePayload & {
+  id: string
+  user_id: string
+  skill_evidence_id: string
+  created_at: string
+  updated_at: string
+}
+
+export type WebsiteVerificationPlanResponse = {
+  id: string
+  user_id: string
+  skill_evidence_id: string
+  website_url: string
+  feature_to_verify: string
+  plan_status: string
+  normalized_test_steps: string[]
+  expected_output: string
+  sample_inputs?: unknown[] | Record<string, unknown> | null
+  inferred_action_candidates: Array<Record<string, unknown>>
+  validation_warnings: string[]
+  agent_notes: string
+  requires_login: boolean
+  can_attempt_automated_execution: boolean
+  planner_version: string
+  created_at: string
+}
+
+export type WebsiteVerificationRunResponse = {
+  id: string
+  evidence_id: string
+  plan_id: string
+  user_id: string
+  execution_status: string
+  executor_version: string
+  execution_summary?: string | null
+  checks_attempted: number
+  checks_passed: number
+  checks_failed: number
+  checks_needing_review: number
+  inspected_url?: string | null
+  inspected_title?: string | null
+  inspected_meta_description?: string | null
+  inspected_headings: string[]
+  inspected_visible_text_excerpt?: string | null
+  raw_executor_notes: Record<string, unknown>
+  created_at: string
+  updated_at: string
+  checks: Array<Record<string, unknown>>
+}
+
+export type WebsiteBrowserVerificationRunResponse = {
+  id: string
+  evidence_id: string
+  plan_id: string
+  user_id: string
+  browser_execution_status: string
+  executor_version: string
+  execution_summary?: string | null
+  inspected_url?: string | null
+  final_url?: string | null
+  page_title?: string | null
+  screenshot_storage_path?: string | null
+  html_snapshot_storage_path?: string | null
+  safe_text_snapshot?: string | null
+  steps_attempted: number
+  steps_passed: number
+  steps_failed: number
+  steps_skipped: number
+  steps_needing_review: number
+  browser_metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+  steps: Array<Record<string, unknown>>
+}
+
+export type WebsiteSemanticVerificationResultResponse = {
+  id: string
+  evidence_id: string
+  plan_id: string
+  static_run_id?: string | null
+  browser_run_id?: string | null
+  user_id: string
+  semantic_status: string
+  confidence_score?: number | null
+  evaluator_version: string
+  evaluator_provider: string
+  recruiter_facing_summary?: string | null
+  evidence_summary?: string | null
+  limitations?: string | null
+  recommended_next_action?: string | null
+  semantic_similarity?: {
+    available: boolean
+    score?: number | null
+    label: string
+    model?: string | null
+    method: string
+  } | null
+  source_snapshot: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type GitHubSemanticVerificationResultResponse = {
+  id: string
+  evidence_id: string
+  user_id: string
+  semantic_status: string
+  confidence_score?: number | null
+  evaluator_version: string
+  evaluator_provider: string
+  recruiter_facing_summary?: string | null
+  evidence_summary?: string | null
+  limitations?: string | null
+  recommended_next_action?: string | null
+  strongest_matching_segment_start?: number | null
+  strongest_matching_segment_end?: number | null
+  strongest_matching_segment_summary?: string | null
+  matched_segments: Array<Record<string, unknown>>
+  source_snapshot: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type GitHubRecruiterProofReportResponse = {
+  id: string
+  evidence_id: string
+  github_semantic_result_id: string
+  user_id: string
+  report_status: string
+  confidence_score?: number | null
+  report_version: string
+  student_claim?: string | null
+  headline?: string | null
+  recruiter_summary?: string | null
+  evidence_summary?: string | null
+  limitations?: string | null
+  recommended_next_action?: string | null
+  confirmed_capabilities: Array<Record<string, unknown>>
+  missing_capabilities: Array<Record<string, unknown>>
+  supporting_line_ranges: Array<Record<string, unknown>>
+  report_snapshot: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
 
 export async function listSkillEvidence(): Promise<SkillEvidenceResponse[]> {
   const res = await fetchAPI("/api/v1/student/skill-evidence")
@@ -150,4 +310,82 @@ export async function generateEvidenceAccessLinks(evidenceId: string): Promise<E
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
   const data = (await res.json()) as EvidenceAccessLinkCreateResponse
   return data.results ?? []
+}
+
+export async function createWebsiteVerificationGuide(
+  evidenceId: string,
+  payload: WebsiteVerificationGuidePayload
+): Promise<WebsiteVerificationGuideResponse> {
+  const res = await fetchAPI(`/api/v1/student/skill-evidence/${evidenceId}/website-verification-guide`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function generateWebsiteVerificationPlan(evidenceId: string): Promise<WebsiteVerificationPlanResponse> {
+  const res = await fetchAPI(`/api/v1/student/skill-evidence/${evidenceId}/website-verification-plan`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function executeWebsiteVerificationRun(
+  evidenceId: string,
+  planId?: string | null
+): Promise<WebsiteVerificationRunResponse> {
+  const res = await fetchAPI(`/api/v1/student/skill-evidence/${evidenceId}/website-verification-runs`, {
+    method: "POST",
+    body: JSON.stringify(planId ? { plan_id: planId } : {}),
+  })
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function executeWebsiteBrowserVerificationRun(
+  evidenceId: string,
+  planId?: string | null
+): Promise<WebsiteBrowserVerificationRunResponse> {
+  const res = await fetchAPI(`/api/v1/student/skill-evidence/${evidenceId}/website-browser-verification-runs`, {
+    method: "POST",
+    body: JSON.stringify(planId ? { plan_id: planId } : {}),
+  })
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function createWebsiteSemanticVerificationResult(
+  evidenceId: string,
+  payload: { plan_id?: string | null; static_run_id?: string | null; browser_run_id?: string | null } = {}
+): Promise<WebsiteSemanticVerificationResultResponse> {
+  const res = await fetchAPI(`/api/v1/student/skill-evidence/${evidenceId}/website-semantic-verification-results`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function createGithubSemanticVerificationResult(
+  evidenceId: string
+): Promise<GitHubSemanticVerificationResultResponse> {
+  const res = await fetchAPI(`/api/v1/student/skill-evidence/${evidenceId}/github-semantic-verification-results`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function createGithubRecruiterProofReport(
+  evidenceId: string,
+  semanticResultId?: string | null
+): Promise<GitHubRecruiterProofReportResponse> {
+  const res = await fetchAPI(`/api/v1/student/skill-evidence/${evidenceId}/github-recruiter-proof-reports`, {
+    method: "POST",
+    body: JSON.stringify(semanticResultId ? { semantic_result_id: semanticResultId } : {}),
+  })
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
 }
