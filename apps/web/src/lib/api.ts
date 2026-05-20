@@ -421,6 +421,82 @@ export async function searchRecruiterCandidates(query: string): Promise<Candidat
   return res.json()
 }
 
+// ── GitHub Portfolio Scan (Phase J3B) ────────────────────────────────────────
+
+export type GitHubPortfolioSuggestedStatus = "suggested" | "needs_review" | "skipped"
+export type GitHubPortfolioConfidenceLabel = "high" | "medium" | "low"
+
+export type GitHubPortfolioScanCandidate = {
+  candidate_id: string
+  repo_name: string
+  repo_url: string
+  project_title: string
+  skill_label: string
+  evidence_description: string
+  student_claim: string
+  file_path: string
+  line_start: number
+  line_end: number
+  github_highlight_url: string
+  confidence_label: GitHubPortfolioConfidenceLabel
+  selection_reason: string
+  website_url?: string | null
+  suggested_status: GitHubPortfolioSuggestedStatus
+  warnings: string[]
+  import_key: string
+}
+
+export type GitHubPortfolioScanResponse = {
+  github_username: string
+  repo_count_scanned: number
+  candidate_count: number
+  detected_skill_count: number
+  proof_candidates: GitHubPortfolioScanCandidate[]
+}
+
+export type GitHubPortfolioCandidateResult = {
+  candidate_id: string
+  skill_label: string
+  repo_name: string
+  status: "imported" | "skipped_duplicate" | "failed"
+  evidence_id?: string | null
+  message: string
+}
+
+export type GitHubPortfolioImportResponse = {
+  imported_count: number
+  skipped_duplicate_count: number
+  failed_count: number
+  imported_evidence_ids: string[]
+  per_candidate_results: GitHubPortfolioCandidateResult[]
+}
+
+export async function scanGitHubPortfolio(params: {
+  github_profile_url?: string | null
+  github_username?: string | null
+  max_repos?: number
+  include_forks?: boolean
+  include_archived?: boolean
+}): Promise<GitHubPortfolioScanResponse> {
+  const res = await fetchAPI("/api/v1/student/github-portfolio/scan", {
+    method: "POST",
+    body: JSON.stringify(params),
+  })
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+export async function importSelectedGitHubPortfolioProofs(
+  proof_candidates: GitHubPortfolioScanCandidate[]
+): Promise<GitHubPortfolioImportResponse> {
+  const res = await fetchAPI("/api/v1/student/github-portfolio/import-selected", {
+    method: "POST",
+    body: JSON.stringify({ proof_candidates }),
+  })
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
 // ── Recruiter Candidate Detail (Phase J2) ─────────────────────────────────────
 
 export type EvidenceAccessLinkItem = {

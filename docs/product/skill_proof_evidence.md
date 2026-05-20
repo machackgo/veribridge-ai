@@ -889,6 +889,78 @@ python apps/api/scripts/import_github_portfolio_proofs.py \
 - Website proof import when homepage URL is detected
 - Batch import for the 100-profile benchmark dataset
 
+## Phase J3B — Student GitHub Scan UI
+
+J3A built the backend scanner and CLI importer foundation. J3B exposes it as a student-facing product workflow inside the Profile & Proof page.
+
+### What J3B adds
+
+**Backend**
+
+Two new API endpoints under `/api/v1/student/github-portfolio/`:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/scan` | `POST` | Dry-run scan — scans public repos and returns proof candidates without writing to the database |
+| `/import-selected` | `POST` | Saves the student-approved candidates as real skill evidence records and triggers the full verification pipeline |
+
+The scan endpoint calls the J3A `PortfolioScanner` with a `_FilteredGitHubAPIClient` wrapper that strips forks and archived repos before scanning. No proof evidence is created during the scan preview.
+
+The import-selected endpoint:
+1. Checks for duplicates (same user + repo + file + line range + skill).
+2. Creates a `SkillEvidenceService` record for each approved candidate (same path as manual UI submission).
+3. Runs GitHub semantic verification, recruiter proof report generation, and evidence access link generation — all best-effort.
+
+**Frontend**
+
+The Profile & Proof page now shows two action buttons alongside the evidence list:
+- **Add proof evidence** — existing manual submission modal (GitHub or live website).
+- **Scan my GitHub profile** — new scan modal.
+
+Scan modal flow:
+1. Student enters a GitHub profile URL (e.g. `https://github.com/machackgo`) or bare username.
+2. Optional: max repos (1–50), include forks, include archived.
+3. VeriBridge scans public repos and returns proof suggestion cards.
+4. Each card shows: skill label, project title, repo name, file path, line range, evidence description, selection reason, confidence label, and a direct GitHub highlight link.
+5. High-confidence candidates are auto-selected. Needs-review candidates default to unselected.
+6. Student reviews, selects/deselects, then clicks **Save selected to profile**.
+7. Success summary shows imported count, skipped duplicates, and any failures.
+8. The evidence list below refreshes to show newly imported proof items.
+
+### Example flow
+
+```
+Student enters: https://github.com/machackgo
+→ VeriBridge finds Machine Learning, Docker, FastAPI evidence across 3 repos
+→ Shows 7 proof suggestion cards
+→ Student deselects 2 weak candidates
+→ Clicks "Save 5 selected to profile"
+→ "Imported 5 GitHub proof items. 0 duplicates skipped."
+→ New proof cards appear in the evidence list
+```
+
+### Design principles
+
+- **Public repos only.** No private GitHub OAuth required (future work).
+- **Human-in-the-loop.** Nothing is auto-saved without student review and approval.
+- **No weak evidence.** The J3A scanner's `is_weak_range()` filter rejects import-only and comment-only line ranges before they reach the student.
+- **Duplicate prevention.** The import endpoint skips any candidate that already exists for the user (same repo + file + lines + skill).
+- **Same verification pipeline.** Imported candidates go through GitHub semantic verification, recruiter proof report generation, and evidence access link generation — identical to the manual submission path.
+
+### Confidence labels
+
+| Label | Meaning | Default selection |
+|---|---|---|
+| `high` | Detection reason is a top-tier signal (ML training, API endpoint, Dockerfile, CI/CD) | Auto-selected |
+| `medium` | Detection reason is a supporting signal (database query, React component, data preprocessing) | Not auto-selected (status: `needs_review`) |
+
+### What is NOT done in J3B
+
+- No private repo access (public repos only).
+- No GitHub OAuth integration (future work).
+- No website proof auto-import from `homepage` URL (future work).
+- No background async scanning (scan runs synchronously on the API server).
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.
