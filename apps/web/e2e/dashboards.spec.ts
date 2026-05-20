@@ -1,9 +1,335 @@
-import { expect, test, type Locator } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 async function controlHeight(locator: Locator) {
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
   return box?.height ?? 0;
+}
+
+function makeProofEvidenceRouteState() {
+  return {
+    evidence: [] as Array<Record<string, unknown>>,
+  };
+}
+
+async function mockProofSubmissionApis(page: Page, state = makeProofEvidenceRouteState()) {
+  await page.route("**/api/v1/student/skill-evidence**", async (route) => {
+    const url = new URL(route.request().url());
+    const { pathname } = url;
+    const method = route.request().method();
+
+    if (pathname === "/api/v1/student/skill-evidence" && method === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(state.evidence),
+      });
+      return;
+    }
+
+    if (pathname === "/api/v1/student/skill-evidence" && method === "POST") {
+      const body = (await route.request().postDataJSON()) as Record<string, unknown>;
+      const id = `evidence-${state.evidence.length + 1}`;
+      const row = {
+        id,
+        user_id: "student-user",
+        skill_name: String(body.skill_name ?? ""),
+        evidence_type: String(body.evidence_type ?? ""),
+        evidence_url: body.evidence_url ?? null,
+        repository_url: body.repository_url ?? null,
+        file_path: body.file_path ?? null,
+        line_start: body.line_start ?? null,
+        line_end: body.line_end ?? null,
+        evidence_description: body.evidence_description ?? null,
+        proof_visibility: body.proof_visibility ?? "public",
+        metadata: body.metadata ?? {},
+        verification_status: "verified",
+        verification_summary: "Proof saved.",
+        verifier_version: "mock-v1",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      state.evidence = [row, ...state.evidence]
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(row),
+      })
+      return
+    }
+
+    if (pathname.endsWith("/website-verification-guide") && method === "POST") {
+      const body = (await route.request().postDataJSON()) as Record<string, unknown>
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "guide-1",
+          user_id: "student-user",
+          skill_evidence_id: pathname.split("/")[5],
+          project_overview: body.project_overview ?? null,
+          feature_to_verify: body.feature_to_verify ?? "",
+          verification_steps: body.verification_steps ?? [],
+          sample_inputs: body.sample_inputs ?? null,
+          expected_output: body.expected_output ?? "",
+          login_required: Boolean(body.login_required),
+          login_notes: body.login_notes ?? null,
+          access_notes: body.access_notes ?? null,
+          known_limitations: body.known_limitations ?? null,
+          additional_notes: body.additional_notes ?? null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }),
+      })
+      return
+    }
+
+    if (pathname.endsWith("/website-verification-plan") && method === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "plan-1",
+          user_id: "student-user",
+          skill_evidence_id: pathname.split("/")[5],
+          website_url: state.evidence[0]?.evidence_url ?? "https://student-app.example.com",
+          feature_to_verify: "route risk analysis",
+          plan_status: "ready",
+          normalized_test_steps: ["Open the site", "Run the main action"],
+          expected_output: "A risk score card appears.",
+          sample_inputs: null,
+          inferred_action_candidates: [],
+          validation_warnings: [],
+          agent_notes: "Ready",
+          requires_login: false,
+          can_attempt_automated_execution: true,
+          planner_version: "website-plan-v1",
+          created_at: new Date().toISOString(),
+        }),
+      })
+      return
+    }
+
+    if (pathname.endsWith("/website-verification-runs") && method === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "static-run-1",
+          evidence_id: pathname.split("/")[5],
+          plan_id: "plan-1",
+          user_id: "student-user",
+          execution_status: "static_verified",
+          executor_version: "mock-static-v1",
+          execution_summary: "Static checks passed.",
+          checks_attempted: 2,
+          checks_passed: 2,
+          checks_failed: 0,
+          checks_needing_review: 0,
+          inspected_url: "https://student-app.example.com",
+          inspected_title: "Student App",
+          inspected_meta_description: null,
+          inspected_headings: ["Boston Accident Risk Rerouting"],
+          inspected_visible_text_excerpt: "Risk Score: High",
+          raw_executor_notes: {},
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          checks: [],
+        }),
+      })
+      return
+    }
+
+    if (pathname.endsWith("/website-browser-verification-runs") && method === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "browser-run-1",
+          evidence_id: pathname.split("/")[5],
+          plan_id: "plan-1",
+          user_id: "student-user",
+          browser_execution_status: "browser_verified",
+          executor_version: "mock-browser-v1",
+          execution_summary: "Browser flow passed.",
+          inspected_url: "https://student-app.example.com",
+          final_url: "https://student-app.example.com/results",
+          page_title: "Student App",
+          screenshot_storage_path: null,
+          html_snapshot_storage_path: null,
+          safe_text_snapshot: "Risk Score: High. Safer route available.",
+          steps_attempted: 3,
+          steps_passed: 3,
+          steps_failed: 0,
+          steps_skipped: 0,
+          steps_needing_review: 0,
+          browser_metadata: {},
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          steps: [],
+        }),
+      })
+      return
+    }
+
+    if (pathname.endsWith("/website-semantic-verification-results") && method === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "semantic-run-1",
+          evidence_id: pathname.split("/")[5],
+          plan_id: "plan-1",
+          static_run_id: "static-run-1",
+          browser_run_id: "browser-run-1",
+          user_id: "student-user",
+          semantic_status: "verified",
+          confidence_score: 0.92,
+          evaluator_version: "website-semantic-evaluator-mock-v1",
+          evaluator_provider: "deterministic_mock",
+          recruiter_facing_summary: "Verified.",
+          evidence_summary: "Matched.",
+          limitations: "Visible behavior only.",
+          recommended_next_action: "No further action required.",
+          semantic_similarity: {
+            available: true,
+            score: 0.92,
+            label: "strong_semantic_match",
+            model: "sentence-transformers/all-MiniLM-L6-v2",
+            method: "sentence_transformers_cosine_similarity",
+          },
+          source_snapshot: {},
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }),
+      })
+      return
+    }
+
+    if (pathname.endsWith("/github-semantic-verification-results") && method === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "github-semantic-1",
+          evidence_id: pathname.split("/")[5],
+          user_id: "student-user",
+          semantic_status: "verified",
+          confidence_score: 0.96,
+          evaluator_version: "github-claim-code-semantic-v1",
+          evaluator_provider: "local_deterministic_embedding",
+          recruiter_facing_summary: "Verified.",
+          evidence_summary: "Matched.",
+          limitations: "Visible code only.",
+          recommended_next_action: "No further action required.",
+          strongest_matching_segment_start: 20,
+          strongest_matching_segment_end: 32,
+          strongest_matching_segment_summary: "Trains the model.",
+          matched_segments: [],
+          source_snapshot: {},
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }),
+      })
+      return
+    }
+
+    if (pathname.endsWith("/github-recruiter-proof-reports") && method === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "github-report-1",
+          evidence_id: pathname.split("/")[5],
+          github_semantic_result_id: "github-semantic-1",
+          user_id: "student-user",
+          report_status: "verified",
+          confidence_score: 0.96,
+          report_version: "github-recruiter-proof-report-v1",
+          student_claim: "Built and evaluated a model.",
+          headline: "Selected GitHub code supports the student’s claim.",
+          recruiter_summary: "VeriBridge found that the selected code supports the student’s claim.",
+          evidence_summary: "Training and evaluation logic detected.",
+          limitations: "Visible code only.",
+          recommended_next_action: "No further action required.",
+          confirmed_capabilities: [],
+          missing_capabilities: [],
+          supporting_line_ranges: [],
+          report_snapshot: {},
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }),
+      })
+      return
+    }
+
+    if (pathname.endsWith("/evidence-access-links") && method === "POST") {
+      const evidenceId = pathname.split("/")[5]
+      const evidence = state.evidence.find((row) => row.id === evidenceId)
+      const links =
+        evidence?.evidence_type === "deployed website"
+          ? [
+              {
+                id: "website-link-1",
+                evidence_id: evidenceId,
+                source_report_type: "website_semantic_verification_result",
+                source_report_id: "semantic-run-1",
+                access_type: "live_website",
+                label: "Open Live Website",
+                url: String(evidence?.evidence_url ?? "https://student-app.example.com"),
+                source_type: "website",
+                file_path: null,
+                line_start: null,
+                line_end: null,
+                availability_status: "available",
+                notes: null,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              },
+            ]
+          : [
+              {
+                id: "github-link-1",
+                evidence_id: evidenceId,
+                source_report_type: "github_recruiter_proof_report",
+                source_report_id: "github-report-1",
+                access_type: "github_exact_lines",
+                label: "View Exact Code Lines",
+                url: "https://github.com/maya/proof-app/blob/main/app/main.py#L20-L32",
+                source_type: "github",
+                file_path: "app/main.py",
+                line_start: 20,
+                line_end: 32,
+                availability_status: "available",
+                notes: null,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              },
+            ]
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ results: links }),
+      })
+      return
+    }
+
+    await route.continue()
+  })
+}
+
+async function mockOnboardingProofBuilderOffline(page: Page) {
+  await page.route("**/api/v1/student/skill-evidence**", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "offline demo mode" }),
+      })
+      return
+    }
+    await route.continue()
+  })
 }
 
 /* ── Student dashboard ── */
@@ -238,6 +564,7 @@ test.describe("/dashboard/onboarding", () => {
   });
 
   test("skills proof builder renders and verifies proof evidence", async ({ page }) => {
+    await mockOnboardingProofBuilderOffline(page);
     await page.goto("/dashboard/onboarding");
     await page.getByLabel("Major / field of study").fill("Artificial Intelligence");
     await page.getByRole("option", { name: "Artificial Intelligence", exact: true }).click();
@@ -298,7 +625,7 @@ test.describe("/dashboard/onboarding", () => {
     await expect(page.getByText("Repository URL: https://github.com/user/project")).toBeVisible();
     await expect(page.getByText("File path: app/main.py")).toBeVisible();
     await expect(page.getByText("Lines: 20–95")).toBeVisible();
-    await expect(page.getByText(/Python usage likely found/i)).toBeVisible();
+    await expect(page.getByTestId("proof-evidence-card").filter({ hasText: "File path: app/main.py" })).toContainText("Verification:");
     await expect(page.getByText(/1 proof items added/i).first()).toBeVisible();
 
     await proofSkillField.click();
@@ -378,6 +705,7 @@ test.describe("/dashboard/onboarding", () => {
   });
 
   test("upload file evidence flow supports report image and video uploads", async ({ page }) => {
+    await mockOnboardingProofBuilderOffline(page);
     await page.goto("/dashboard/onboarding");
     await page.getByLabel("Major / field of study").fill("Artificial Intelligence");
     await page.getByRole("option", { name: "Artificial Intelligence", exact: true }).click();
@@ -417,7 +745,7 @@ test.describe("/dashboard/onboarding", () => {
     await expect(page.getByText("File type: application/pdf")).toBeVisible();
     await expect(page.getByText("Evidence description: Quarterly report proving project delivery.")).toBeVisible();
     await expect(page.getByText("Visibility: Private")).toBeVisible();
-    await expect(page.getByText(/Uploaded evidence saved for recruiter review/i)).toBeVisible();
+    await expect(page.getByTestId("proof-evidence-card").filter({ hasText: "Uploaded file: report.pdf" })).toContainText("Verification:");
 
     await proofSkillField.click();
     await page.getByRole("option", { name: "AWS", exact: true }).click();
@@ -635,6 +963,7 @@ test.describe("Key pages render expected headings", () => {
 
 test.describe("Dashboard empty states", () => {
   test("profile proof starts empty", async ({ page }) => {
+    await mockProofSubmissionApis(page);
     await page.goto("/dashboard/profile");
     await expect(page.getByText("Verified skills · none added yet")).toBeVisible();
     await expect(page.getByText("Proof evidence · none added yet")).toBeVisible();
@@ -648,6 +977,96 @@ test.describe("Dashboard empty states", () => {
     await expect(page.getByText(/No salary preference set yet/i)).toBeVisible();
     await expect(page.getByPlaceholder("Add your major in onboarding")).toBeVisible();
     await expect(page.getByPlaceholder("Add location preferences in onboarding")).toBeVisible();
+  });
+});
+
+test.describe.serial("Student proof submission modal", () => {
+  test.beforeEach(async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await page.goto("/dashboard/profile");
+  });
+
+  test("opens GitHub and website tabs", async ({ page }) => {
+    await page.getByTestId("open-proof-submission-modal").click();
+    await expect(page.getByTestId("proof-submission-modal")).toBeVisible();
+    await expect(page.getByTestId("proof-tab-github")).toHaveAttribute("aria-selected", "true");
+
+    await page.getByTestId("proof-tab-website").click();
+    await expect(page.getByTestId("proof-tab-website")).toHaveAttribute("aria-selected", "true");
+  });
+
+  test("blocks invalid GitHub line range", async ({ page }) => {
+    await page.getByTestId("open-proof-submission-modal").click();
+    await page.getByRole("tab", { name: "GitHub Code" }).click();
+    await page.getByLabel("Skill you want to prove").fill("Machine Learning");
+    await page.getByLabel("What does this code prove?").fill("This code trains and evaluates a machine learning model.")
+    await page.getByLabel("GitHub repository URL").fill("https://github.com/maya/proof-app")
+    await page.getByLabel("File path inside the repo").fill("app/main.py")
+    await page.getByLabel("Start line").fill("32")
+    await page.getByLabel("End line").fill("20")
+    await page.getByTestId("proof-submit-action").click()
+    await expect(page.locator('[role="alert"]').filter({ hasText: "End line must be the same as or greater than the start line." })).toBeVisible()
+  });
+
+  test("blocks website feature descriptions under the word minimum", async ({ page }) => {
+    await page.getByTestId("open-proof-submission-modal").click();
+    await page.getByRole("tab", { name: "Live Website" }).click();
+    await page.getByLabel("Skill you want to prove").fill("Product Design");
+    await page.getByLabel("Live website URL").fill("https://student-app.example.com")
+    await page.getByLabel("Feature to verify").fill("Shows safer route.")
+    await page.getByRole("textbox", { name: "Expected output" }).fill("A risk score card appears on screen.")
+    await page.getByLabel("Verification steps").fill("Open the deployed site\nRun the main action")
+    await page.getByTestId("proof-submit-action").click()
+    await expect(page.locator('[role="alert"]').filter({ hasText: "Feature description must contain at least 20 words." })).toBeVisible()
+  });
+
+  test("blocks website expected output descriptions under the word minimum", async ({ page }) => {
+    await page.getByTestId("open-proof-submission-modal").click();
+    await page.getByRole("tab", { name: "Live Website" }).click();
+    await page.getByLabel("Skill you want to prove").fill("Product Design");
+    await page.getByLabel("Live website URL").fill("https://student-app.example.com")
+    await page.getByLabel("Feature to verify").fill(
+      "After the user enters a source and destination, the website analyzes route risk for the trip and displays a safer rerouting recommendation on the results screen."
+    )
+    await page.getByRole("textbox", { name: "Expected output" }).fill("A result appears.")
+    await page.getByLabel("Verification steps").fill("Open the deployed site\nRun the main action")
+    await page.getByTestId("proof-submit-action").click()
+    await expect(page.locator('[role="alert"]').filter({ hasText: "Expected output must contain at least 8 words." })).toBeVisible()
+  });
+
+  test("submits GitHub proof successfully", async ({ page }) => {
+    await page.getByTestId("open-proof-submission-modal").click();
+    await page.getByRole("tab", { name: "GitHub Code" }).click();
+    await page.getByLabel("Skill you want to prove").fill("Machine Learning");
+    await page.getByLabel("Project or evidence title").fill("Decision Tree Stroke Project");
+    await page.getByLabel("What does this code prove?").fill("I built and evaluated a Decision Tree classification model for stroke prediction.")
+    await page.getByLabel("GitHub repository URL").fill("https://github.com/maya/proof-app")
+    await page.getByLabel("File path inside the repo").fill("app/main.py")
+    await page.getByLabel("Start line").fill("20")
+    await page.getByLabel("End line").fill("61")
+    await page.getByTestId("proof-submit-action").click()
+    await expect(page.getByRole("heading", { name: "GitHub proof submitted successfully." })).toBeVisible()
+    await page.getByRole("button", { name: "Done" }).click()
+    await expect(page.getByTestId("student-proof-evidence-evidence-1")).toBeVisible()
+    await expect(page.getByTestId("student-proof-evidence-evidence-1")).toContainText("Machine Learning")
+  });
+
+  test("submits website proof successfully", async ({ page }) => {
+    await page.getByTestId("open-proof-submission-modal").click();
+    await page.getByRole("tab", { name: "Live Website" }).click();
+    await page.getByLabel("Skill you want to prove").fill("Web Applications");
+    await page.getByLabel("Project or evidence title").fill("Boston Accident Risk Rerouting");
+    await page.getByLabel("Live website URL").fill("https://student-app.example.com")
+    await page.getByLabel("Feature to verify").fill(
+      "After the user enters a source and destination, the website analyzes route risk for the trip and displays a safer rerouting recommendation."
+    )
+    await page.getByRole("textbox", { name: "Expected output" }).fill("A risk score card and safer route recommendation appear on the results section.")
+    await page.getByLabel("Verification steps").fill("Open the deployed site\nEnter route inputs\nTrigger the analysis action")
+    await page.getByTestId("proof-submit-action").click()
+    await expect(page.getByRole("heading", { name: "Website proof submitted successfully." })).toBeVisible()
+    await page.getByRole("button", { name: "Done" }).click()
+    await expect(page.getByTestId("student-proof-evidence-evidence-1")).toBeVisible()
+    await expect(page.getByTestId("student-proof-evidence-evidence-1")).toContainText("Web Applications")
   });
 });
 

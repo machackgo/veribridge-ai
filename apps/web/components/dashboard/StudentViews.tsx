@@ -11,6 +11,7 @@ import {
   student,
   visaSignals,
 } from "../../data/mock";
+import { StudentProofSubmissionPanel } from "../skill-proof/student-proof-submission-panel";
 
 /* ── Shared micro-components (minimal, not over-abstracted) ── */
 
@@ -801,17 +802,7 @@ export function StudentProfileProof() {
 
       {/* Evidence cards */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <Card>
-          <CardHeader title="Proof evidence · none added yet" eyebrow="Attach GitHub, LinkedIn, or other evidence" />
-          <div style={{ display: "grid", gap: 12 }}>
-            <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
-              No proof evidence has been attached yet. Add GitHub, LinkedIn, certificate, report, demo, or dashboard proof to build a recruiter-ready profile.
-            </p>
-            <Btn ghost style={{ justifyContent: "flex-start", width: "fit-content" }} onClick={() => show("Add proof — coming soon.")}>
-              Add proof evidence
-            </Btn>
-          </div>
-        </Card>
+        <StudentProofSubmissionPanel notify={show} />
         <Card>
           <CardHeader title="Suggested proof types" eyebrow="Not selected" />
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
