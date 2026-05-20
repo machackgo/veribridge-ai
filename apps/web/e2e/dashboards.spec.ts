@@ -1801,3 +1801,345 @@ test.describe("Recruiter evidence preview", () => {
     await expect(page.locator('a[href="https://route-risk-demo.example.com"]')).toBeVisible();
   });
 });
+
+// ── J3B: Student GitHub Scan UI ────────────────────────────────────────────────
+
+function makeScanRouteState() {
+  return {
+    scanCalled: false,
+    importCalled: false,
+    importedIds: [] as string[],
+  };
+}
+
+function buildMockScanCandidate(overrides: Record<string, unknown> = {}) {
+  return {
+    candidate_id: "test-cand-abc123",
+    repo_name: "ml-project",
+    repo_url: "https://github.com/testuser/ml-project",
+    project_title: "Ml Project",
+    skill_label: "Machine Learning",
+    evidence_description: "I used Machine Learning in ml-project.",
+    student_claim: "Built Machine Learning in Ml Project.",
+    file_path: "train.py",
+    line_start: 6,
+    line_end: 10,
+    github_highlight_url:
+      "https://github.com/testuser/ml-project/blob/main/train.py#L6-L10",
+    confidence_label: "high",
+    selection_reason: "ML training call",
+    website_url: null,
+    suggested_status: "suggested",
+    warnings: [],
+    import_key: "|https://github.com/testuser/ml-project|train.py|6|10|Machine Learning",
+    ...overrides,
+  };
+}
+
+async function mockGitHubPortfolioApis(
+  page: Page,
+  state = makeScanRouteState(),
+  opts: {
+    scanCandidates?: Array<Record<string, unknown>>;
+    scanStatus?: number;
+    importStatus?: number;
+  } = {}
+) {
+  const {
+    scanCandidates = [buildMockScanCandidate()],
+    scanStatus = 200,
+    importStatus = 200,
+  } = opts;
+
+  await page.route("**/api/v1/student/github-portfolio/scan", async (route) => {
+    state.scanCalled = true;
+    if (scanStatus !== 200) {
+      await route.fulfill({
+        status: scanStatus,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "scan error" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        github_username: "testuser",
+        repo_count_scanned: 1,
+        candidate_count: scanCandidates.length,
+        detected_skill_count: new Set(scanCandidates.map((c) => c.skill_label)).size,
+        proof_candidates: scanCandidates,
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/student/github-portfolio/import-selected", async (route) => {
+    state.importCalled = true;
+    const body = (await route.request().postDataJSON()) as { proof_candidates: Array<Record<string, unknown>> };
+    const imported = (body.proof_candidates ?? []).map((c, i) => ({
+      candidate_id: String(c.candidate_id),
+      skill_label: String(c.skill_label),
+      repo_name: String(c.repo_name),
+      status: "imported",
+      evidence_id: `evidence-scan-${i + 1}`,
+      message: "Imported successfully.",
+    }));
+    state.importedIds = imported.map((r) => r.evidence_id);
+    if (importStatus !== 200) {
+      await route.fulfill({
+        status: importStatus,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "import error" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        imported_count: imported.length,
+        skipped_duplicate_count: 0,
+        failed_count: 0,
+        imported_evidence_ids: state.importedIds,
+        per_candidate_results: imported,
+      }),
+    });
+  });
+}
+
+test.describe("J3B — Student GitHub Scan UI", () => {
+  test("Scan my GitHub profile button is visible on the profile page", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await page.goto("/dashboard/profile");
+    await expect(page.getByTestId("open-github-scan-modal")).toBeVisible();
+  });
+
+  test("Add proof evidence button is still present (manual flow not removed)", async ({
+    page,
+  }) => {
+    await mockProofSubmissionApis(page);
+    await page.goto("/dashboard/profile");
+    await expect(page.getByTestId("open-proof-submission-modal")).toBeVisible();
+  });
+
+  test("Clicking Scan my GitHub profile opens the scan modal", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await expect(page.getByTestId("github-scan-modal")).toBeVisible();
+  });
+
+  test("Scan modal shows the profile URL input", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await expect(page.getByTestId("github-scan-profile-url")).toBeVisible();
+    await expect(page.getByTestId("github-scan-submit")).toBeVisible();
+  });
+
+  test("Empty GitHub URL shows validation error", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await page.getByTestId("github-scan-submit").click();
+    await expect(page.getByTestId("github-scan-error")).toBeVisible();
+    await expect(page.getByTestId("github-scan-error")).toContainText(
+      "Enter your GitHub profile URL or username."
+    );
+  });
+
+  test("Invalid GitHub URL (repo path not profile) shows validation error", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await page.getByTestId("github-scan-profile-url").fill("https://github.com/user/some-repo/blob/main/file.py");
+    await page.getByTestId("github-scan-submit").click();
+    await expect(page.getByTestId("github-scan-error")).toBeVisible();
+  });
+
+  test("Successful scan displays candidate cards with skill, project, file path, and line range", async ({
+    page,
+  }) => {
+    await mockProofSubmissionApis(page);
+    await mockGitHubPortfolioApis(page);
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await page.getByTestId("github-scan-profile-url").fill("https://github.com/testuser");
+    await page.getByTestId("github-scan-submit").click();
+
+    await expect(page.getByTestId("github-scan-candidates-list")).toBeVisible();
+    const card = page.getByTestId("scan-candidate-test-cand-abc123");
+    await expect(card).toBeVisible();
+    await expect(card.getByTestId("scan-candidate-skill")).toContainText("Machine Learning");
+    await expect(card.getByTestId("scan-candidate-project")).toContainText("Ml Project");
+    await expect(card.getByTestId("scan-candidate-filepath")).toContainText("train.py");
+    await expect(card.getByTestId("scan-candidate-linerange")).toContainText("L6–L10");
+  });
+
+  test("High-confidence candidates are auto-selected", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await mockGitHubPortfolioApis(page);
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await page.getByTestId("github-scan-profile-url").fill("testuser");
+    await page.getByTestId("github-scan-submit").click();
+
+    await expect(page.getByTestId("github-scan-candidates-list")).toBeVisible();
+    const checkbox = page.getByTestId("scan-candidate-checkbox-test-cand-abc123");
+    await expect(checkbox).toBeChecked();
+  });
+
+  test("User can unselect a candidate", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await mockGitHubPortfolioApis(page);
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await page.getByTestId("github-scan-profile-url").fill("testuser");
+    await page.getByTestId("github-scan-submit").click();
+
+    await expect(page.getByTestId("github-scan-candidates-list")).toBeVisible();
+    const checkbox = page.getByTestId("scan-candidate-checkbox-test-cand-abc123");
+    await expect(checkbox).toBeChecked();
+    await checkbox.uncheck();
+    await expect(checkbox).not.toBeChecked();
+  });
+
+  test("User can select all and deselect all", async ({ page }) => {
+    const c1 = buildMockScanCandidate({ candidate_id: "c1", skill_label: "Machine Learning" });
+    const c2 = buildMockScanCandidate({ candidate_id: "c2", skill_label: "FastAPI", suggested_status: "needs_review" });
+    await mockProofSubmissionApis(page);
+    await mockGitHubPortfolioApis(page, makeScanRouteState(), { scanCandidates: [c1, c2] });
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await page.getByTestId("github-scan-profile-url").fill("testuser");
+    await page.getByTestId("github-scan-submit").click();
+
+    await expect(page.getByTestId("github-scan-candidates-list")).toBeVisible();
+    await page.getByTestId("github-scan-deselect-all").click();
+    await expect(page.getByTestId("scan-candidate-checkbox-c1")).not.toBeChecked();
+    await expect(page.getByTestId("scan-candidate-checkbox-c2")).not.toBeChecked();
+
+    await page.getByTestId("github-scan-select-all").click();
+    await expect(page.getByTestId("scan-candidate-checkbox-c1")).toBeChecked();
+    await expect(page.getByTestId("scan-candidate-checkbox-c2")).toBeChecked();
+  });
+
+  test("Save selected calls import endpoint and shows success summary", async ({ page }) => {
+    const state = makeScanRouteState();
+    await mockProofSubmissionApis(page);
+    await mockGitHubPortfolioApis(page, state);
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await page.getByTestId("github-scan-profile-url").fill("testuser");
+    await page.getByTestId("github-scan-submit").click();
+
+    await expect(page.getByTestId("github-scan-candidates-list")).toBeVisible();
+    await page.getByTestId("github-scan-save-selected").click();
+
+    await expect(page.getByTestId("github-scan-import-success")).toBeVisible();
+    await expect(page.getByTestId("github-scan-import-success")).toContainText(
+      "Imported 1 GitHub proof item"
+    );
+    expect(state.importCalled).toBe(true);
+  });
+
+  test("Duplicate skip message appears when import returns skipped", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await page.route("**/api/v1/student/github-portfolio/scan", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          github_username: "testuser",
+          repo_count_scanned: 1,
+          candidate_count: 1,
+          detected_skill_count: 1,
+          proof_candidates: [buildMockScanCandidate()],
+        }),
+      });
+    });
+    await page.route("**/api/v1/student/github-portfolio/import-selected", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          imported_count: 0,
+          skipped_duplicate_count: 1,
+          failed_count: 0,
+          imported_evidence_ids: [],
+          per_candidate_results: [
+            {
+              candidate_id: "test-cand-abc123",
+              skill_label: "Machine Learning",
+              repo_name: "ml-project",
+              status: "skipped_duplicate",
+              evidence_id: null,
+              message: "Duplicate evidence already exists for this user.",
+            },
+          ],
+        }),
+      });
+    });
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await page.getByTestId("github-scan-profile-url").fill("testuser");
+    await page.getByTestId("github-scan-submit").click();
+
+    await expect(page.getByTestId("github-scan-candidates-list")).toBeVisible();
+    await page.getByTestId("github-scan-save-selected").click();
+
+    await expect(page.getByTestId("github-scan-import-success")).toBeVisible();
+    await expect(page.getByTestId("github-scan-import-success")).toContainText(
+      "1 duplicate"
+    );
+  });
+
+  test("No candidates message shows when scan returns empty", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await mockGitHubPortfolioApis(page, makeScanRouteState(), { scanCandidates: [] });
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await page.getByTestId("github-scan-profile-url").fill("testuser");
+    await page.getByTestId("github-scan-submit").click();
+
+    await expect(page.getByTestId("github-scan-no-candidates")).toBeVisible();
+    await expect(page.getByTestId("github-scan-no-candidates")).toContainText(
+      "No high-confidence proof candidates found."
+    );
+  });
+
+  test("Manual Add Proof Evidence flow still works after J3B changes", async ({ page }) => {
+    const state = makeProofEvidenceRouteState();
+    await mockProofSubmissionApis(page, state);
+    await page.goto("/dashboard/profile");
+    await expect(page.getByTestId("open-proof-submission-modal")).toBeVisible();
+    await page.getByTestId("open-proof-submission-modal").click();
+    await expect(page.getByTestId("proof-submission-modal")).toBeVisible();
+    await page.getByTestId("proof-submit-cancel").click();
+    await expect(page.getByTestId("proof-submission-modal")).not.toBeVisible();
+  });
+
+  test("Scan modal closes when backdrop is clicked", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await expect(page.getByTestId("github-scan-modal")).toBeVisible();
+    await page.getByTestId("github-scan-modal-close").click();
+    await expect(page.getByTestId("github-scan-modal")).not.toBeVisible();
+  });
+
+  test("Evidence review link is present on each candidate card", async ({ page }) => {
+    await mockProofSubmissionApis(page);
+    await mockGitHubPortfolioApis(page);
+    await page.goto("/dashboard/profile");
+    await page.getByTestId("open-github-scan-modal").click();
+    await page.getByTestId("github-scan-profile-url").fill("testuser");
+    await page.getByTestId("github-scan-submit").click();
+
+    await expect(page.getByTestId("scan-candidate-review-link")).toBeVisible();
+    const href = await page.getByTestId("scan-candidate-review-link").getAttribute("href");
+    expect(href).toMatch(/^https:\/\/github\.com\//);
+    await expect(page.getByTestId("scan-candidate-review-link")).toHaveAttribute("target", "_blank");
+  });
+});

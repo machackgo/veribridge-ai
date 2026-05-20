@@ -22,6 +22,7 @@ import {
   reconcileProofVerificationDisplayState,
   type ProofVerificationReconciliation,
 } from "./proof-verification-status"
+import { GitHubPortfolioScanPanel } from "./github-portfolio-scan-panel"
 
 type SubmissionTab = "github" | "website"
 
@@ -396,6 +397,7 @@ export function StudentProofSubmissionPanel({
   notify?: (message: string) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [scanOpen, setScanOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<SubmissionTab>("github")
   const [loadingEvidence, setLoadingEvidence] = useState(true)
   const [evidence, setEvidence] = useState<SkillEvidenceResponse[]>([])
@@ -535,25 +537,52 @@ export function StudentProofSubmissionPanel({
         <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
           Add GitHub code proof or a live website proof. Website proof is optional.
         </p>
-        <button
-          type="button"
-          data-testid="open-proof-submission-modal"
-          className="vb-btn-lift"
-          style={{
-            border: "1px solid var(--line-2)",
-            borderRadius: 11,
-            padding: "10px 14px",
-            background: "var(--ink)",
-            color: "#fff",
-            width: "fit-content",
-            fontWeight: 700,
-            cursor: "pointer",
-          }}
-          onClick={() => setOpen(true)}
-        >
-          Add proof evidence
-        </button>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            data-testid="open-proof-submission-modal"
+            className="vb-btn-lift"
+            style={{
+              border: "1px solid var(--line-2)",
+              borderRadius: 11,
+              padding: "10px 14px",
+              background: "var(--ink)",
+              color: "#fff",
+              width: "fit-content",
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+            onClick={() => setOpen(true)}
+          >
+            Add proof evidence
+          </button>
+          <button
+            type="button"
+            data-testid="open-github-scan-modal"
+            className="vb-btn-lift"
+            style={{
+              border: "1px solid var(--line-2)",
+              borderRadius: 11,
+              padding: "10px 14px",
+              background: "transparent",
+              color: "var(--ink)",
+              width: "fit-content",
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+            onClick={() => setScanOpen(true)}
+          >
+            Scan my GitHub profile
+          </button>
+        </div>
       </div>
+
+      {scanOpen && (
+        <GitHubPortfolioScanPanel
+          onImportSuccess={() => void refreshEvidence()}
+          onClose={() => setScanOpen(false)}
+        />
+      )}
 
       <div style={{ display: "grid", gap: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>{evidenceCountLabel}</div>
