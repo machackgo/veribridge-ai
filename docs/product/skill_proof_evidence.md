@@ -775,8 +775,119 @@ Recruiter searches "Machine Learning"
 
 ### What comes next
 
-- Phase J3: richer candidate profile cards with proof depth scoring and talent pool filters
+- Phase J3A: personal GitHub portfolio importer for proof seeding
+- Phase J3B: richer candidate profile cards with proof depth scoring and talent pool filters
 - Phase J4: ranking, scoring engine, and marketplace-scale seeded datasets
+
+---
+
+## Phase J3A — Personal GitHub Portfolio Importer
+
+Phase J3A introduces a repeatable development/demo importer that scans a public GitHub profile, detects strong repositories and high-signal code evidence, and creates real VeriBridge proof records for a student profile.
+
+### Why it exists
+
+Before J3A, populating a real proof-backed candidate profile required manually submitting evidence through the UI. J3A automates this for development and demo purposes by scanning a real GitHub profile (the primary target is `machackgo`, the user's own profile) and converting strong repository evidence into real skill records.
+
+### Key design decision: avoid weak line ranges
+
+The initial Boston test used lines 19–23 in `api.py`, which were only import statements. The semantic verifier was correctly cautious — imports do not prove the claim. J3A's `LineRangeSelector` actively rejects import-only and comment-only blocks. It scores each line for signal strength and only creates evidence from ranges containing:
+- ML model training calls (`model.fit`, `train_test_split`)
+- ML inference / evaluation (`predict`, `accuracy_score`)
+- FastAPI/Flask endpoint decorators and handler bodies
+- Dockerfile build and runtime instructions
+- GitHub Actions CI/CD workflow steps
+- Cloud deployment commands
+- Database query logic
+- RAG / LLM pipeline logic
+
+### How it works
+
+```
+1. GitHubAPIClient.list_repos(username)
+   → public repos for the profile
+
+2. For each repo:
+   a. get_file_tree() → all blob paths
+   b. detect_skills_from_repo() → skill labels from languages + topics + README
+   c. Filter high-signal files (api.py, Dockerfile, .github/workflows/*.yml, etc.)
+   d. Fetch file content via get_raw_file()
+   e. select_high_signal_ranges() → (start, end, detection_reason) tuples
+   f. Build EvidenceCandidate with github_highlight_url containing #Lstart-Lend
+
+3. Duplicate detection:
+   - Check skill_evidence table for same user + repo + file + lines + skill
+   - Skip if already imported
+
+4. Dry-run: produce JSON report (no DB writes)
+5. Import mode: create real SkillEvidenceService records (same path as UI)
+```
+
+### Usage
+
+**Dry-run (safe, no DB writes):**
+```bash
+python apps/api/scripts/import_github_portfolio_proofs.py \
+  --github-user machackgo \
+  --use-demo-user \
+  --dry-run \
+  --output apps/api/tmp/github_portfolio_import_dry_run_machackgo.json
+```
+
+**Full import:**
+```bash
+python apps/api/scripts/import_github_portfolio_proofs.py \
+  --github-user machackgo \
+  --use-demo-user
+```
+
+**Import a single specific repo:**
+```bash
+python apps/api/scripts/import_github_portfolio_proofs.py \
+  --github-user machackgo \
+  --use-demo-user \
+  --include-repos boston-smart-accident-risk-rerouting-google-cloud \
+  --dry-run
+```
+
+### Example dry-run report format
+
+```json
+{
+  "github_username": "machackgo",
+  "total_candidates": 4,
+  "candidates": [
+    {
+      "repo": "boston-smart-accident-risk-rerouting-google-cloud",
+      "skill": "Machine Learning",
+      "project_title": "Boston Smart Accident Risk Rerouting Google Cloud",
+      "file_path": "api.py",
+      "line_start": 35,
+      "line_end": 55,
+      "github_highlight_url": "https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud/blob/main/api.py#L35-L55",
+      "detection_reason": "ML prediction/inference",
+      "evidence_description": "I used Machine Learning in the boston-smart-accident-risk-rerouting-google-cloud repository. The evidence is in api.py (lines 35–55), which contains ML prediction/inference.",
+      "student_claim": "...",
+      "website_url": "https://boston-accident-risk-api-qzr2qvsfqa-uc.a.run.app"
+    }
+  ]
+}
+```
+
+### What is NOT done in J3A
+
+- No private repo access (public repos only)
+- No GitHub OAuth integration yet
+- No LLM-assisted evidence selection (fully rule-based)
+- No automatic website proof record creation (GitHub proof is the priority)
+- No 100-profile seeded benchmark dataset (that comes in a later phase)
+
+### Future work
+
+- GitHub OAuth for authenticated scanning (higher rate limits, private repos)
+- LLM-assisted claim generation for better evidence descriptions
+- Website proof import when homepage URL is detected
+- Batch import for the 100-profile benchmark dataset
 
 ## Privacy And Security
 
