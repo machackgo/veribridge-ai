@@ -4,6 +4,7 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { useState } from "react";
 import { DemoToast, useDemoToast } from "../ui/DemoToast";
 import { EvidenceAccessActions } from "../skill-proof/evidence-access-actions";
+import { ProjectEvidenceActions } from "../skill-proof/project-evidence-actions";
 import { getProofVisibilityLabel } from "../onboarding/taxonomy";
 import type { EvidenceAccessLink } from "@/lib/api";
 
@@ -404,6 +405,29 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
       updated_at: "2026-05-19T00:00:00.000Z",
     },
   ];
+  const projectEvidenceBundles = [
+    {
+      id: "combined-project",
+      projectName: "Boston Accident Risk Rerouting",
+      note: "Implementation evidence and live product proof are grouped together.",
+      links: [
+        ...githubProofAccessLinks.map((link, index) => ({ ...link, id: `combined-github-${index + 1}` })),
+        ...websiteProofAccessLinks.map((link) => ({ ...link, id: "combined-website-1" })),
+      ],
+    },
+    {
+      id: "github-only-project",
+      projectName: "Decision Tree Classification Model",
+      note: "GitHub proof only. Website deployment is optional.",
+      links: [{ ...githubProofAccessLinks[0]!, id: "github-only-code-lines-1" }],
+    },
+    {
+      id: "website-only-project",
+      projectName: "Route Risk Demo Deployment",
+      note: "Public deployed proof only. No GitHub link is required here.",
+      links: [{ ...websiteProofAccessLinks[0]!, id: "website-only-live-1" }],
+    },
+  ];
   const artifacts = [
     {
       icon: "↗",
@@ -599,6 +623,21 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
             <span style={{ color: "var(--emerald)", fontWeight: 700 }}>✓</span>
             {s}
           </div>
+        ))}
+      </div>
+
+      {/* Project evidence */}
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 8 }}>Project Evidence</div>
+      <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+        {projectEvidenceBundles.map((bundle) => (
+          <ProjectEvidenceActions
+            key={bundle.id}
+            dataTestId={`project-evidence-bundle-${bundle.id}`}
+            projectName={bundle.projectName}
+            note={bundle.note}
+            links={bundle.links}
+            compact
+          />
         ))}
       </div>
 

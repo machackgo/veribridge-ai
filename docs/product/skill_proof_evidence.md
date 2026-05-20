@@ -358,6 +358,30 @@ Website example:
 
 This completes the first visible recruiter-access layer for direct proof inspection. Future UI work can reuse the same backend links to build richer proof report cards and redirect flows without duplicating URL logic in the frontend.
 
+## Phase H3: Combined Project Evidence Actions UI
+
+Phase H3 groups related GitHub and website proof actions into one recruiter-friendly project evidence area. H2 showed direct buttons on individual proof cards. H3 makes the recruiter experience cleaner by presenting the actions together when a project has both a code proof and a live deployed proof.
+
+The combined UI supports three cases:
+
+- GitHub + live website
+- GitHub only
+- website only
+
+The website deployment is optional. VeriBridge does not assume every project has a live app, and the UI stays clean when only GitHub proof exists.
+
+Example:
+
+- Project: `Boston Accident Risk Rerouting`
+- Actions: `View Code Lines 1653–1779` and `Open Live Website`
+
+This helps a recruiter inspect both:
+
+- the implementation evidence
+- the deployed product experience
+
+It also keeps the earlier H2 behavior intact on individual proof cards, so direct links remain available wherever a proof card is shown.
+
 Future roadmap:
 
 - Phase 5F.2: stronger local rerankers, classifiers, or self-hosted model providers for better semantic decisions.
