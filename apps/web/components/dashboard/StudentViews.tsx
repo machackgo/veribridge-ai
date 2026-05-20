@@ -780,9 +780,9 @@ export function StudentProfileProof() {
             No skills have been added to this profile yet. VeriBridge will verify each skill from exact proof when you attach it.
           </p>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {["Suggested: Python", "Suggested: Docker", "Suggested: SQL", "Suggested: Figma"].map((s) => (
+            {["Suggested: Python", "Suggested: Docker", "Suggested: SQL", "Suggested: Figma"].map((s, index) => (
               <span
-                key={s}
+                key={`${s}-${index}`}
                 style={{
                   fontSize: 12,
                   padding: "7px 11px",
