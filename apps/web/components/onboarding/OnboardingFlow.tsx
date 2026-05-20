@@ -3199,9 +3199,9 @@ function renderStep(
               </p>
             ) : (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {form.selectedSkills.map((skill) => (
+                {form.selectedSkills.map((skill, index) => (
                   <button
-                    key={skill}
+                    key={`${skill}-${index}`}
                     type="button"
                     onClick={() => removeSelectedSkill(skill)}
                     style={{
