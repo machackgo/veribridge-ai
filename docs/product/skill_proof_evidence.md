@@ -418,6 +418,23 @@ The modal submits through the existing backend API pipeline. After submission, V
 
 This unlocks a real end-to-end project test through the app UI, including the Boston Accident Risk project flow.
 
+## Phase I2: Recruiter View Real Proof Data Wiring
+
+Phase I2 connects the recruiter proof panel to the real proof data created by the student submission flow. Before this phase, the recruiter page still showed demo-style proof links even though the backend was already storing real GitHub and website evidence.
+
+That created a gap in end-to-end testing: the student profile showed the real Boston evidence cards, but the recruiter view still pointed at placeholder links such as `student-app.example.com` and demo GitHub URLs.
+
+Phase I2 fixes that by reading persisted proof evidence and direct evidence access links from the backend, then grouping them into recruiter-friendly project bundles.
+
+Example:
+
+- Project: `Boston Smart Accident Risk and Rerouting System`
+- Actions:
+  - `View Code Lines 19–23`
+  - `Open Live Website`
+
+The buttons are now rendered from stored backend proof data instead of being hardcoded in the frontend. Prototype grouping uses exact normalized project title matching, which is enough for local validation. A future production model may use an explicit `project_id` or `evidence_bundle_id`.
+
 Future roadmap:
 
 - Phase 5F.2: stronger local rerankers, classifiers, or self-hosted model providers for better semantic decisions.

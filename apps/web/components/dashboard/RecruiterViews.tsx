@@ -1,12 +1,19 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
-import { useState } from "react";
 import { DemoToast, useDemoToast } from "../ui/DemoToast";
 import { EvidenceAccessActions } from "../skill-proof/evidence-access-actions";
 import { ProjectEvidenceActions } from "../skill-proof/project-evidence-actions";
+import {
+  buildRecruiterProofArtifacts,
+  buildRecruiterProjectEvidenceBundles,
+  type RecruiterProofArtifact,
+  type RecruiterProjectEvidenceBundle,
+  isRealSubmittedProofEvidence,
+} from "../skill-proof/recruiter-project-proof-adapter";
 import { getProofVisibilityLabel } from "../onboarding/taxonomy";
-import type { EvidenceAccessLink } from "@/lib/api";
+import { getLatestEvidenceAccessLinks, listSkillEvidence, type EvidenceAccessLink, type SkillEvidenceResponse } from "@/lib/api";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -342,6 +349,64 @@ function CandidateList() {
 
 function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
   const [activeEvidenceIndex, setActiveEvidenceIndex] = useState(-1);
+  const [realProofData, setRealProofData] = useState<{
+    loading: boolean;
+    bundles: RecruiterProjectEvidenceBundle[];
+    artifacts: RecruiterProofArtifact[];
+    error: string | null;
+  }>({
+    loading: true,
+    bundles: [],
+    artifacts: [],
+    error: null,
+  });
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadRealProofData() {
+      try {
+        const evidenceRows = await listSkillEvidence();
+        const realEvidenceRows = evidenceRows.filter(isRealSubmittedProofEvidence);
+        const accessLinksByEvidenceId = new Map<string, EvidenceAccessLink[]>();
+
+        await Promise.all(
+          realEvidenceRows.map(async (evidence) => {
+            try {
+              const links = await getLatestEvidenceAccessLinks(evidence.id);
+              accessLinksByEvidenceId.set(evidence.id, links);
+            } catch {
+              accessLinksByEvidenceId.set(evidence.id, []);
+            }
+          })
+        );
+
+        if (!active) return;
+
+        setRealProofData({
+          loading: false,
+          bundles: buildRecruiterProjectEvidenceBundles(realEvidenceRows, accessLinksByEvidenceId),
+          artifacts: buildRecruiterProofArtifacts(realEvidenceRows, accessLinksByEvidenceId),
+          error: null,
+        });
+      } catch (error) {
+        if (!active) return;
+        setRealProofData({
+          loading: false,
+          bundles: [],
+          artifacts: [],
+          error: error instanceof Error ? error.message : "Unable to load real proof data.",
+        });
+      }
+    }
+
+    loadRealProofData();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const maya = candidates[0];
   const paStats = [
     { label: "VeriBridge", value: "82" },
@@ -545,6 +610,24 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
     },
   ];
 
+  const visibleProjectEvidenceBundles = realProofData.bundles.length > 0 ? realProofData.bundles : projectEvidenceBundles;
+  const visibleArtifacts = realProofData.artifacts.length > 0 ? realProofData.artifacts : artifacts;
+  const projectEvidenceHeaderNote = realProofData.loading
+    ? "Loading real proof data from the backend…"
+    : realProofData.bundles.length > 0
+      ? "Real proof bundles loaded from backend submissions."
+      : realProofData.error
+        ? `Using demo proof examples because real backend proof could not be loaded yet: ${realProofData.error}`
+        : "Demo proof examples are shown when no real backend evidence is available.";
+
+  function getBundleTitle(bundle: RecruiterProjectEvidenceBundle | { projectName: string }) {
+    return "projectTitle" in bundle ? bundle.projectTitle : bundle.projectName;
+  }
+
+  function getBundleLinks(bundle: RecruiterProjectEvidenceBundle | { links: EvidenceAccessLink[]; combinedAccessLinks?: EvidenceAccessLink[] }) {
+    return "combinedAccessLinks" in bundle ? bundle.combinedAccessLinks ?? [] : bundle.links;
+  }
+
   return (
     <div style={{ ...card, position: "sticky", top: 100, alignSelf: "start" }}>
       {/* Header */}
@@ -628,14 +711,15 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
 
       {/* Project evidence */}
       <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 8 }}>Project Evidence</div>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10, lineHeight: 1.5 }}>{projectEvidenceHeaderNote}</div>
       <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
-        {projectEvidenceBundles.map((bundle) => (
+        {visibleProjectEvidenceBundles.map((bundle) => (
           <ProjectEvidenceActions
             key={bundle.id}
             dataTestId={`project-evidence-bundle-${bundle.id}`}
-            projectName={bundle.projectName}
-            note={bundle.note}
-            links={bundle.links}
+            projectName={getBundleTitle(bundle)}
+            note={bundle.note ?? undefined}
+            links={getBundleLinks(bundle)}
             compact
           />
         ))}
@@ -644,9 +728,9 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
       {/* Proof artifacts */}
       <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 8 }}>Proof Artifacts</div>
       <div style={{ marginBottom: 16 }}>
-        {artifacts.map(({ icon, label, meta }, index) => {
+        {visibleArtifacts.map(({ icon, label, meta }, index) => {
           const active = activeEvidenceIndex === index;
-          const evidence = artifacts[index].evidence as any;
+          const evidence = visibleArtifacts[index].evidence as any;
           const visibilityLabel = getProofVisibilityLabel(
             Boolean(evidence.isRecruiterVisible),
             Boolean(evidence.requiresApproval),
