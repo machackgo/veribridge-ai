@@ -390,7 +390,7 @@ export async function createGithubRecruiterProofReport(
   return res.json()
 }
 
-// ── Recruiter Candidate Search (Phase J1) ────────────────────────────────────
+// ── Recruiter Candidate Search (Phase J1) ─────────────────────────────────────
 
 export type CandidateSearchResult = {
   user_id: string
@@ -417,6 +417,67 @@ export async function searchRecruiterCandidates(query: string): Promise<Candidat
   const res = await fetchAPI(
     `/api/v1/recruiter/candidates/search?query=${encodeURIComponent(query)}`
   )
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
+// ── Recruiter Candidate Detail (Phase J2) ─────────────────────────────────────
+
+export type EvidenceAccessLinkItem = {
+  id: string
+  label: string
+  url: string
+  access_type: string
+  source_type: string
+  file_path?: string | null
+  line_start?: number | null
+  line_end?: number | null
+  availability_status: string
+}
+
+export type ProofProjectSummary = {
+  project_title: string
+  status_label?: string | null
+  status_code?: string | null
+  has_github_proof: boolean
+  has_website_proof: boolean
+  recruiter_summary?: string | null
+  associated_skill_labels: string[]
+  evidence_access_links: EvidenceAccessLinkItem[]
+}
+
+export type VerifiedSkillSummary = {
+  skill_name: string
+  evidence_count: number
+  strongest_status_label?: string | null
+}
+
+export type ProofOverview = {
+  total_evidence_count: number
+  accepted_evidence_count: number
+  github_proof_count: number
+  website_proof_count: number
+  strongest_display_status?: string | null
+}
+
+export type RecruiterCandidateDetailResponse = {
+  candidate_id: string
+  display_name: string
+  school_name?: string | null
+  degree?: string | null
+  major?: string | null
+  proof_overview: ProofOverview
+  verified_or_supported_skills: VerifiedSkillSummary[]
+  proof_projects: ProofProjectSummary[]
+}
+
+export async function fetchRecruiterCandidateDetail(
+  candidateId: string
+): Promise<RecruiterCandidateDetailResponse> {
+  const res = await fetchAPI(
+    `/api/v1/recruiter/candidates/${encodeURIComponent(candidateId)}/detail`
+  )
+  if (res.status === 404) throw new Error(`Candidate not found: ${candidateId}`)
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
   return res.json()
 }

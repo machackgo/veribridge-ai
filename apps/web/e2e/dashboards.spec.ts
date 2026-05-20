@@ -1395,7 +1395,7 @@ test.describe("Toggle switches are interactive", () => {
   });
 });
 
-/* ── Recruiter verified skill search (Phase J1) ── */
+/* ── Recruiter verified skill search (Phase J1 + J2) ── */
 
 async function mockRecruiterCandidateSearch(
   page: Page,
@@ -1416,6 +1416,30 @@ async function mockRecruiterCandidateSearch(
         results: filtered,
         result_count: filtered.length,
       }),
+    });
+  });
+}
+
+async function mockRecruiterCandidateDetail(
+  page: Page,
+  detailByUserId: Record<string, Record<string, unknown>> = {},
+) {
+  await page.route("**/api/v1/recruiter/candidates/*/detail", async (route) => {
+    const segments = new URL(route.request().url()).pathname.split("/");
+    const userId = segments[segments.length - 2] ?? "";
+    const detail = detailByUserId[userId];
+    if (!detail) {
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Candidate not found." }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(detail),
     });
   });
 }
@@ -1486,12 +1510,14 @@ test.describe("Recruiter verified skill search — Phase J1", () => {
 
   test("clicking a search result shows the detail panel", async ({ page }) => {
     await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    // 404 for detail → error state still shows proof overview and fallback skills
+    await mockRecruiterCandidateDetail(page, {});
     await page.goto("/recruiter");
     await page.getByTestId("recruiter-search-input").fill("Machine Learning");
     await page.getByTestId("recruiter-search-submit").click();
     await page.getByTestId(`search-result-card-${MOCK_CANDIDATE.user_id}`).click();
-    await expect(page.getByText("Matched Skills")).toBeVisible();
-    await expect(page.getByText("Strongest Project")).toBeVisible();
+    // Proof overview stats are always rendered regardless of detail fetch state
+    await expect(page.getByTestId("detail-proof-overview")).toBeVisible();
   });
 
   test("no-results state renders cleanly", async ({ page }) => {
@@ -1520,6 +1546,199 @@ test.describe("Recruiter verified skill search — Phase J1", () => {
     await page.getByTestId("recruiter-search-input").fill("Machine Learning");
     await page.getByTestId("recruiter-search-submit").click();
     await expect(page.getByText(/1 proof-backed candidate found/i)).toBeVisible();
+  });
+});
+
+/* ── Recruiter candidate detail — Phase J2 ── */
+
+const MOCK_CANDIDATE_DETAIL: Record<string, unknown> = {
+  candidate_id: "user-ml-01",
+  display_name: "Mohammed Mubashir Uddin Faraz",
+  school_name: "WPI",
+  degree: "MS AI",
+  major: "Artificial Intelligence",
+  proof_overview: {
+    total_evidence_count: 2,
+    accepted_evidence_count: 2,
+    github_proof_count: 1,
+    website_proof_count: 1,
+    strongest_display_status: "Evidence Accepted",
+  },
+  verified_or_supported_skills: [
+    { skill_name: "Machine Learning", evidence_count: 2, strongest_status_label: "Evidence Accepted" },
+  ],
+  proof_projects: [
+    {
+      project_title: "Boston Smart Accident Risk and Rerouting System",
+      status_label: "Evidence Accepted",
+      status_code: "verified",
+      has_github_proof: true,
+      has_website_proof: true,
+      recruiter_summary: "Model training and evaluation logic detected.",
+      associated_skill_labels: ["Machine Learning"],
+      evidence_access_links: [
+        {
+          id: "link-github-1",
+          label: "View Exact Code Lines",
+          url: "https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud/blob/main/api.py#L19-L23",
+          access_type: "github_exact_lines",
+          source_type: "github",
+          file_path: "api.py",
+          line_start: 19,
+          line_end: 23,
+          availability_status: "available",
+        },
+        {
+          id: "link-website-1",
+          label: "Open Live Website",
+          url: "https://boston-accident-risk-api-qzr2qvsfqa-uc.a.run.app",
+          access_type: "live_website",
+          source_type: "website",
+          file_path: null,
+          line_start: null,
+          line_end: null,
+          availability_status: "available",
+        },
+      ],
+    },
+  ],
+};
+
+test.describe("Recruiter candidate detail — Phase J2", () => {
+  test("search results still appear as in J1", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await mockRecruiterCandidateDetail(page, { "user-ml-01": MOCK_CANDIDATE_DETAIL });
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    await expect(page.getByTestId("recruiter-search-results")).toBeVisible();
+    await expect(page.getByText("Mohammed Mubashir Uddin Faraz").first()).toBeVisible();
+  });
+
+  test("first result auto-select triggers detail fetch and renders overview", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await mockRecruiterCandidateDetail(page, { "user-ml-01": MOCK_CANDIDATE_DETAIL });
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    // Auto-select fires detail fetch; wait for overview stats to populate
+    await expect(page.getByTestId("detail-proof-overview")).toBeVisible();
+    // After detail loads, overview values come from real detail response
+    await expect(page.getByTestId("detail-proof-overview")).toContainText("2");
+  });
+
+  test("clicking a different result updates the detail panel", async ({ page }) => {
+    const secondCandidate: Record<string, unknown> = {
+      user_id: "user-ml-02",
+      display_name: "Alice Nguyen",
+      school_name: "MIT",
+      degree: "BS",
+      major: "Computer Science",
+      matched_skill_names: ["Machine Learning"],
+      evidence_count: 1,
+      accepted_evidence_count: 1,
+      has_github_proof: true,
+      has_website_proof: false,
+      strongest_project_title: "Alice ML Project",
+      proof_status_label: "Evidence Accepted",
+    };
+    const secondDetail: Record<string, unknown> = {
+      candidate_id: "user-ml-02",
+      display_name: "Alice Nguyen",
+      school_name: "MIT",
+      degree: "BS",
+      major: "Computer Science",
+      proof_overview: { total_evidence_count: 1, accepted_evidence_count: 1, github_proof_count: 1, website_proof_count: 0, strongest_display_status: "Evidence Accepted" },
+      verified_or_supported_skills: [{ skill_name: "Machine Learning", evidence_count: 1, strongest_status_label: "Evidence Accepted" }],
+      proof_projects: [],
+    };
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE, secondCandidate]);
+    await mockRecruiterCandidateDetail(page, {
+      "user-ml-01": MOCK_CANDIDATE_DETAIL,
+      "user-ml-02": secondDetail,
+    });
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    // Click the second candidate card
+    await page.getByTestId("search-result-card-user-ml-02").click();
+    // Detail panel header should update to Alice's name
+    await expect(page.getByText("Alice Nguyen").first()).toBeVisible();
+  });
+
+  test("detail panel shows proof overview counts from real detail response", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await mockRecruiterCandidateDetail(page, { "user-ml-01": MOCK_CANDIDATE_DETAIL });
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    await expect(page.getByTestId("detail-proof-overview")).toBeVisible();
+    // The overview grid should render stat labels from real detail
+    await expect(page.getByTestId("detail-proof-overview")).toContainText("Total evidence");
+    await expect(page.getByTestId("detail-proof-overview")).toContainText("Accepted");
+  });
+
+  test("detail panel shows project title from real detail response", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await mockRecruiterCandidateDetail(page, { "user-ml-01": MOCK_CANDIDATE_DETAIL });
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    await expect(page.getByTestId("detail-proof-projects")).toBeVisible();
+    // Scope to the detail projects section to avoid strict-mode conflict with the search card
+    await expect(
+      page.getByTestId("detail-proof-projects").getByText("Boston Smart Accident Risk and Rerouting System")
+    ).toBeVisible();
+  });
+
+  test("detail panel renders GitHub exact-line action from detail response", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await mockRecruiterCandidateDetail(page, { "user-ml-01": MOCK_CANDIDATE_DETAIL });
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    await expect(page.getByTestId("detail-proof-projects")).toBeVisible();
+    const githubLink = page.locator(
+      'a[href="https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud/blob/main/api.py#L19-L23"]'
+    ).first();
+    await expect(githubLink).toBeVisible();
+    await expect(githubLink).toHaveAttribute("target", "_blank");
+    await expect(githubLink).toHaveAttribute("rel", /noopener/);
+  });
+
+  test("detail panel renders website open action from detail response", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await mockRecruiterCandidateDetail(page, { "user-ml-01": MOCK_CANDIDATE_DETAIL });
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    await expect(page.getByTestId("detail-proof-projects")).toBeVisible();
+    const websiteLink = page.locator(
+      'a[href="https://boston-accident-risk-api-qzr2qvsfqa-uc.a.run.app"]'
+    ).first();
+    await expect(websiteLink).toBeVisible();
+    await expect(websiteLink).toHaveAttribute("target", "_blank");
+  });
+
+  test("detail fetch failure shows clean UI message", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    // Return 404 for detail to simulate failure
+    await mockRecruiterCandidateDetail(page, {});
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    // Error message should appear in the panel
+    await expect(page.getByTestId("detail-error-message")).toBeVisible();
+    await expect(page.getByTestId("detail-error-message")).toContainText("Could not load full proof detail");
+  });
+
+  test("J1 no-results behavior still passes", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, []);
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("COBOL");
+    await page.getByTestId("recruiter-search-submit").click();
+    await expect(page.getByTestId("recruiter-search-empty")).toBeVisible();
+    await expect(page.getByTestId("recruiter-search-empty")).toContainText("No candidates found");
   });
 });
 

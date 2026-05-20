@@ -694,13 +694,89 @@ Recruiter searches "Machine Learning":
 - The default dashboard state (before a search is submitted) still shows demo candidate cards (Maya Reyes, Jordan Kim, Arjun Singh, Leila Pham) and the demo CandidatePreview panel for illustration.
 - The metric cards (2,847 active candidates, etc.) remain demo values.
 - The pipeline board uses demo counts.
-- Per-candidate real proof access links (exact GitHub line links, live website buttons) require a Phase J2 per-candidate proof endpoint. The detail panel in Phase J1 shows a summary with a note explaining what J2 will add.
 
 ### Future phases
 
-- Phase J2: per-candidate real proof inspection endpoint so recruiters can see the exact GitHub line links and live site buttons for any searched candidate's proof.
 - Phase J3: richer candidate profile cards with proof depth scoring, company challenge signals, and talent pool filters.
 - Phase J4: ranking, scoring, and filtering by proof confidence, school, graduation year, and visa status.
+
+---
+
+## Phase J2 — Recruiter Candidate Detail and Proof Drill-Down
+
+Phase J1 made recruiter search real: typing a skill returns real proof-backed candidate cards from the live database. Phase J2 makes the selected candidate panel real: clicking a candidate loads a full backend proof payload so the recruiter can inspect their evidence.
+
+### What was added
+
+**Backend**
+
+- `GET /api/v1/recruiter/candidates/{candidate_user_id}/detail` — new endpoint returning a `RecruiterCandidateDetailResponse`
+- `RecruiterCandidateDetailService` — loads the student profile, all skill evidence, and persisted evidence access links for the candidate using the service-role client (same cross-user pattern as J1 search)
+- Evidence is grouped by normalized project title. GitHub and website evidence for the same project title are combined into one project bundle.
+- Access links are filtered to the latest generation and only `available` links are surfaced
+- Recruiter-safe response: no raw snapshots, no internal debug fields
+
+**Response schema (`RecruiterCandidateDetailResponse`)**
+
+```
+RecruiterCandidateDetailResponse
+  candidate_id
+  display_name
+  school_name / degree / major
+  proof_overview
+    total_evidence_count
+    accepted_evidence_count
+    github_proof_count
+    website_proof_count
+    strongest_display_status
+  verified_or_supported_skills[]
+    skill_name, evidence_count, strongest_status_label
+  proof_projects[]
+    project_title
+    status_label / status_code
+    has_github_proof / has_website_proof
+    recruiter_summary
+    associated_skill_labels[]
+    evidence_access_links[]
+      id, label, url, access_type, source_type
+      file_path, line_start, line_end, availability_status
+```
+
+**Frontend**
+
+- `fetchRecruiterCandidateDetail(candidateId)` added to `api.ts`
+- `RecruiterCandidateDetailResponse` and nested types added to `api.ts`
+- `RecruiterOverview` now fetches candidate detail whenever `selectedResult` changes (auto-select or explicit click)
+- Detail panel shows a loading indicator while fetching
+- Detail panel shows a clean error message if the fetch fails
+- After detail loads, the panel renders:
+  - Candidate header (name, school/degree, proof status badge)
+  - Proof overview stats (evidence counts, GitHub count, website count)
+  - Verified skills list with evidence count per skill
+  - Project evidence section with one card per grouped project
+  - Direct evidence action links (exact GitHub lines, live website) from the real backend payload
+
+### Example flow
+
+```
+Recruiter searches "Machine Learning"
+→ Mohammed Mubashir Uddin Faraz card appears (real proof data)
+→ Recruiter clicks the card
+→ Detail panel fetches /api/v1/recruiter/candidates/{user_id}/detail
+→ Boston Smart Accident Risk and Rerouting System project appears
+→ "View Exact Code Lines" link → github.com/…/api.py#L19-L23
+→ "Open Live Website" link → boston-accident-risk-api-qzr2qvsfqa-uc.a.run.app
+```
+
+### What remains demo/static
+
+- The pre-search recruiter landing state (metric cards, demo pipeline board, demo CandidatePreview) remains demo/static. This is intentional — the real experience begins after a search.
+- After a real search result is selected, the detail panel is fully powered by the new real backend endpoint.
+
+### What comes next
+
+- Phase J3: richer candidate profile cards with proof depth scoring and talent pool filters
+- Phase J4: ranking, scoring engine, and marketplace-scale seeded datasets
 
 ## Privacy And Security
 
