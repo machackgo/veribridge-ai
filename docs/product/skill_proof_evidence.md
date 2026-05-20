@@ -332,6 +332,32 @@ Future roadmap:
 - Phase G6: recruiter evidence redirect and open-exact-lines support.
 - Phase G7: recruiter-facing GitHub proof UI.
 
+## Phase H2: Recruiter Evidence Access Buttons
+
+Phase H2 surfaces the backend evidence links as recruiter-facing UI actions. The recruiter view does not rebuild GitHub URLs or website URLs in the browser. It consumes the backend-generated access link response and renders safe buttons that open the original proof in a new tab.
+
+GitHub proof shows buttons such as:
+
+- `View Exact Code Lines`
+- `View Code Lines 20-32`
+
+Website proof shows a button such as:
+
+- `Open Live Website`
+
+Example:
+
+- GitHub supporting range: `Lines 20-32: Model training`
+- Recruiter action: `View Exact Code Lines`
+- Direct URL: `https://github.com/user/project/blob/main/app/model.py#L20-L32`
+
+Website example:
+
+- Recruiter action: `Open Live Website`
+- Direct URL: the student’s public deployed app URL
+
+This completes the first visible recruiter-access layer for direct proof inspection. Future UI work can reuse the same backend links to build richer proof report cards and redirect flows without duplicating URL logic in the frontend.
+
 Future roadmap:
 
 - Phase 5F.2: stronger local rerankers, classifiers, or self-hosted model providers for better semantic decisions.

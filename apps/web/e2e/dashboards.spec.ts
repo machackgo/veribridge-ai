@@ -719,13 +719,33 @@ test.describe("Recruiter evidence preview", () => {
     await expect(page.getByText("Visibility: Private")).toBeVisible();
     await expect(page.getByText(/Evidence exists, but the student has not shared this private file/i)).toBeVisible();
 
-    await page.getByTestId("evidence-toggle-3").click();
+    await page.getByTestId("evidence-toggle-4").click();
     await expect(page.getByText("Visibility: Shared with recruiters")).toBeVisible();
     await expect(page.getByText("Uploaded file: docker-certificate.png")).toBeVisible();
     await expect(page.getByText("File type: image/png")).toBeVisible();
 
-    await page.getByTestId("evidence-toggle-4").click();
+    await page.getByTestId("evidence-toggle-5").click();
     await expect(page.getByText("Visibility: Approval required")).toBeVisible();
     await expect(page.getByText(/Request access to view this evidence/i)).toBeVisible();
+  });
+
+  test("shows direct GitHub and website evidence access actions", async ({ page }) => {
+    await page.goto("/recruiter");
+
+    await page.getByTestId("evidence-toggle-1").click();
+    const githubLine20 = page.getByRole("link", { name: /View Code Lines 20–32/i });
+    await expect(githubLine20).toHaveAttribute("href", "https://github.com/maya/proof-app/blob/main/app/main.py#L20-L32");
+    await expect(githubLine20).toHaveAttribute("target", "_blank");
+    await expect(githubLine20).toHaveAttribute("rel", /noopener/);
+
+    const githubLine52 = page.getByRole("link", { name: /View Code Lines 52–61/i });
+    await expect(githubLine52).toHaveAttribute("href", "https://github.com/maya/proof-app/blob/main/app/main.py#L52-L61");
+    await expect(githubLine52).toHaveAttribute("target", "_blank");
+
+    await page.getByTestId("evidence-toggle-2").click();
+    const websiteLink = page.getByRole("link", { name: /Open Live Website/i });
+    await expect(websiteLink).toHaveAttribute("href", "https://student-app.example.com");
+    await expect(websiteLink).toHaveAttribute("target", "_blank");
+    await expect(websiteLink).toHaveAttribute("rel", /noopener/);
   });
 });

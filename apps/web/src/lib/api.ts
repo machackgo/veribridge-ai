@@ -59,6 +59,30 @@ export type SkillEvidenceResponse = SkillEvidencePayload & {
   updated_at: string
 }
 
+export type EvidenceAccessLink = {
+  id: string
+  evidence_id: string
+  source_report_type: "github_recruiter_proof_report" | "website_semantic_verification_result" | "direct_skill_evidence" | "none"
+  source_report_id?: string | null
+  access_type: "github_exact_lines" | "live_website"
+  label: string
+  url: string
+  source_type: "github" | "website"
+  file_path?: string | null
+  line_start?: number | null
+  line_end?: number | null
+  availability_status: "available" | "unavailable" | "invalid_source" | "insufficient_data"
+  notes?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type EvidenceAccessLinkListResponse = {
+  results: EvidenceAccessLink[]
+}
+
+export type EvidenceAccessLinkCreateResponse = EvidenceAccessLinkListResponse
+
 export async function listSkillEvidence(): Promise<SkillEvidenceResponse[]> {
   const res = await fetchAPI("/api/v1/student/skill-evidence")
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
@@ -103,4 +127,27 @@ export async function verifySkillEvidence(id: string): Promise<{
   })
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
   return res.json()
+}
+
+export async function getLatestEvidenceAccessLinks(evidenceId: string): Promise<EvidenceAccessLink[]> {
+  const res = await fetchAPI(`/api/v1/student/skill-evidence/${evidenceId}/evidence-access-links/latest`)
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  const data = (await res.json()) as EvidenceAccessLinkListResponse
+  return data.results ?? []
+}
+
+export async function listEvidenceAccessLinks(evidenceId: string): Promise<EvidenceAccessLink[]> {
+  const res = await fetchAPI(`/api/v1/student/skill-evidence/${evidenceId}/evidence-access-links`)
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  const data = (await res.json()) as EvidenceAccessLinkListResponse
+  return data.results ?? []
+}
+
+export async function generateEvidenceAccessLinks(evidenceId: string): Promise<EvidenceAccessLink[]> {
+  const res = await fetchAPI(`/api/v1/student/skill-evidence/${evidenceId}/evidence-access-links`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  const data = (await res.json()) as EvidenceAccessLinkCreateResponse
+  return data.results ?? []
 }

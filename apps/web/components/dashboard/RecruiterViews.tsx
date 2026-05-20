@@ -3,7 +3,9 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { useState } from "react";
 import { DemoToast, useDemoToast } from "../ui/DemoToast";
+import { EvidenceAccessActions } from "../skill-proof/evidence-access-actions";
 import { getProofVisibilityLabel } from "../onboarding/taxonomy";
+import type { EvidenceAccessLink } from "@/lib/api";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -347,6 +349,61 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
     { label: "Visa", value: "F-1 OK" },
   ];
   const skills = ["Docker · Production app · 3 sources", "Distributed Systems · A · WPI transcript", "React + TypeScript · 5 evidence", "Kubernetes · cert + coursework"];
+  const githubProofAccessLinks: EvidenceAccessLink[] = [
+    {
+      id: "demo-github-access-20-32",
+      evidence_id: "demo-github-evidence",
+      source_report_type: "github_recruiter_proof_report",
+      source_report_id: "demo-github-report",
+      access_type: "github_exact_lines",
+      label: "View Exact Code Lines",
+      url: "https://github.com/maya/proof-app/blob/main/app/main.py#L20-L32",
+      source_type: "github",
+      file_path: "app/main.py",
+      line_start: 20,
+      line_end: 32,
+      availability_status: "available",
+      notes: "Decision Tree training segment from the recruiter report.",
+      created_at: "2026-05-19T00:00:00.000Z",
+      updated_at: "2026-05-19T00:00:00.000Z",
+    },
+    {
+      id: "demo-github-access-52-61",
+      evidence_id: "demo-github-evidence",
+      source_report_type: "github_recruiter_proof_report",
+      source_report_id: "demo-github-report",
+      access_type: "github_exact_lines",
+      label: "View Exact Code Lines",
+      url: "https://github.com/maya/proof-app/blob/main/app/main.py#L52-L61",
+      source_type: "github",
+      file_path: "app/main.py",
+      line_start: 52,
+      line_end: 61,
+      availability_status: "available",
+      notes: "Evaluation metrics segment from the recruiter report.",
+      created_at: "2026-05-19T00:00:00.000Z",
+      updated_at: "2026-05-19T00:00:00.000Z",
+    },
+  ];
+  const websiteProofAccessLinks: EvidenceAccessLink[] = [
+    {
+      id: "demo-website-access-live",
+      evidence_id: "demo-website-evidence",
+      source_report_type: "website_semantic_verification_result",
+      source_report_id: "demo-website-report",
+      access_type: "live_website",
+      label: "Open Live Website",
+      url: "https://student-app.example.com",
+      source_type: "website",
+      file_path: null,
+      line_start: null,
+      line_end: null,
+      availability_status: "available",
+      notes: "Public deployed proof inspected through the semantic verification report.",
+      created_at: "2026-05-19T00:00:00.000Z",
+      updated_at: "2026-05-19T00:00:00.000Z",
+    },
+  ];
   const artifacts = [
     {
       icon: "↗",
@@ -374,6 +431,7 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
       label: "GitHub code file",
       meta: "maya/proof-app · app/main.py",
       evidence: {
+        backendEvidenceId: "demo-github-evidence",
         skill: "Python",
         sourceType: "GitHub code file",
         evidenceAccessMethod: "public_link" as const,
@@ -384,6 +442,23 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
         description: "Built FastAPI prediction endpoint.",
         verificationStatus: "Verified" as const,
         verificationSummary: "Python usage likely found ✅",
+        accessLinks: githubProofAccessLinks,
+      },
+    },
+    {
+      icon: "▤",
+      label: "Live website",
+      meta: "student-app.example.com · public deployed proof",
+      evidence: {
+        backendEvidenceId: "demo-website-evidence",
+        skill: "Web App",
+        sourceType: "Deployed website",
+        evidenceAccessMethod: "public_link" as const,
+        evidenceUrl: "https://student-app.example.com",
+        description: "Route risk checker with rerouting recommendation.",
+        verificationStatus: "Verified" as const,
+        verificationSummary: "Website flow matched the claimed route-risk feature.",
+        accessLinks: websiteProofAccessLinks,
       },
     },
     {
@@ -532,7 +607,7 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
       <div style={{ marginBottom: 16 }}>
         {artifacts.map(({ icon, label, meta }, index) => {
           const active = activeEvidenceIndex === index;
-          const evidence = artifacts[index].evidence as unknown as Record<string, string | undefined>;
+          const evidence = artifacts[index].evidence as any;
           const visibilityLabel = getProofVisibilityLabel(
             Boolean(evidence.isRecruiterVisible),
             Boolean(evidence.requiresApproval),
@@ -665,6 +740,14 @@ function CandidatePreview({ onToast }: { onToast?: (msg: string) => void }) {
                       {evidence.description && <div><strong>Evidence description:</strong> {evidence.description}</div>}
                       {evidence.visibilityNote && <div><strong>Visibility note:</strong> {evidence.visibilityNote}</div>}
                       <div><strong>Verification:</strong> {evidence.verificationSummary}</div>
+                      {(typeof evidence.backendEvidenceId === "string" || Array.isArray(evidence.accessLinks)) && (
+                        <EvidenceAccessActions
+                          evidenceId={typeof evidence.backendEvidenceId === "string" ? evidence.backendEvidenceId : undefined}
+                          fallbackLinks={Array.isArray(evidence.accessLinks) ? evidence.accessLinks : []}
+                          compact
+                          className="recruiter-proof-access"
+                        />
+                      )}
                     </div>
                   )}
                 </div>
