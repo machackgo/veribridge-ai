@@ -6,6 +6,7 @@ from app.api.v1.endpoints import (
     github_recruiter_proof_reports,
     github_semantic_verification_results,
     health,
+    recruiter_candidates,
     skill_evidence,
     student,
     website_browser_verification_runs,
@@ -55,6 +56,11 @@ api_router.include_router(
     website_semantic_verification_results.router,
     prefix="/student/skill-evidence",
     tags=["website-semantic-verification-results"],
+)
+api_router.include_router(
+    recruiter_candidates.router,
+    prefix="/recruiter/candidates",
+    tags=["recruiter-candidates"],
 )
 api_router.include_router(
     debug.router,
