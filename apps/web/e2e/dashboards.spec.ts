@@ -733,19 +733,51 @@ test.describe("Recruiter evidence preview", () => {
     await page.goto("/recruiter");
 
     await page.getByTestId("evidence-toggle-1").click();
-    const githubLine20 = page.getByRole("link", { name: /View Code Lines 20–32/i });
+    const githubLine20 = page.getByTestId("evidence-access-link-github_exact_lines-demo-github-access-20-32");
     await expect(githubLine20).toHaveAttribute("href", "https://github.com/maya/proof-app/blob/main/app/main.py#L20-L32");
     await expect(githubLine20).toHaveAttribute("target", "_blank");
     await expect(githubLine20).toHaveAttribute("rel", /noopener/);
 
-    const githubLine52 = page.getByRole("link", { name: /View Code Lines 52–61/i });
+    const githubLine52 = page.getByTestId("evidence-access-link-github_exact_lines-demo-github-access-52-61");
     await expect(githubLine52).toHaveAttribute("href", "https://github.com/maya/proof-app/blob/main/app/main.py#L52-L61");
     await expect(githubLine52).toHaveAttribute("target", "_blank");
 
     await page.getByTestId("evidence-toggle-2").click();
-    const websiteLink = page.getByRole("link", { name: /Open Live Website/i });
+    const websiteLink = page.getByTestId("evidence-access-link-live_website-demo-website-access-live");
     await expect(websiteLink).toHaveAttribute("href", "https://student-app.example.com");
     await expect(websiteLink).toHaveAttribute("target", "_blank");
     await expect(websiteLink).toHaveAttribute("rel", /noopener/);
+  });
+
+  test("shows combined project evidence actions for GitHub and website proof", async ({ page }) => {
+    await page.goto("/recruiter");
+
+    const combined = page.getByTestId("project-evidence-bundle-combined-project");
+    await expect(combined.getByTestId("project-evidence-link-combined-github-1")).toHaveAttribute(
+      "href",
+      "https://github.com/maya/proof-app/blob/main/app/main.py#L20-L32"
+    );
+    await expect(combined.getByTestId("project-evidence-link-combined-github-2")).toHaveAttribute(
+      "href",
+      "https://github.com/maya/proof-app/blob/main/app/main.py#L52-L61"
+    );
+    await expect(combined.getByTestId("project-evidence-link-combined-website-1")).toHaveAttribute(
+      "href",
+      "https://student-app.example.com"
+    );
+
+    const githubOnly = page.getByTestId("project-evidence-bundle-github-only-project");
+    await expect(githubOnly.getByTestId("project-evidence-link-github-only-code-lines-1")).toHaveAttribute(
+      "href",
+      "https://github.com/maya/proof-app/blob/main/app/main.py#L20-L32"
+    );
+    await expect(githubOnly.getByRole("link", { name: /Open Live Website/i })).toHaveCount(0);
+
+    const websiteOnly = page.getByTestId("project-evidence-bundle-website-only-project");
+    await expect(websiteOnly.getByTestId("project-evidence-link-website-only-live-1")).toHaveAttribute(
+      "href",
+      "https://student-app.example.com"
+    );
+    await expect(websiteOnly.getByRole("link", { name: /View Code Lines/i })).toHaveCount(0);
   });
 });
