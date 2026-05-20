@@ -332,6 +332,223 @@ async function mockOnboardingProofBuilderOffline(page: Page) {
   })
 }
 
+async function mockRecruiterRealProofApis(page: Page) {
+  const realEvidenceRows: Array<Record<string, unknown>> = [
+    {
+      id: "boston-github-evidence",
+      user_id: "student-user",
+      skill_name: "Machine Learning",
+      evidence_type: "github repository",
+      repository_url: "https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud",
+      file_path: "api.py",
+      line_start: 19,
+      line_end: 23,
+      evidence_description: "I built and evaluated a Decision Tree classification model for route risk prediction.",
+      proof_visibility: "public",
+      metadata: {
+        proof_kind: "github_code",
+        evidence_title: "Boston Smart Accident Risk and Rerouting System",
+        submission_source: "student_profile_proof_modal",
+        branch_ref: "main",
+      },
+      verification_status: "verified",
+      verification_summary: "Model training and evaluation logic detected.",
+      verifier_version: "mock-v1",
+      created_at: "2026-05-19T00:00:00.000Z",
+      updated_at: "2026-05-19T00:00:00.000Z",
+    },
+    {
+      id: "boston-website-evidence",
+      user_id: "student-user",
+      skill_name: "Web Applications",
+      evidence_type: "deployed website",
+      evidence_url: "https://boston-accident-risk-api-qzr2qvsfqa-uc.a.run.app",
+      evidence_description: "After the user enters a source and destination, the website analyzes route risk and shows a safer rerouting recommendation.",
+      proof_visibility: "public",
+      metadata: {
+        proof_kind: "website_live_demo",
+        evidence_title: "Boston Smart Accident Risk and Rerouting System",
+        submission_source: "student_profile_proof_modal",
+      },
+      verification_status: "verified",
+      verification_summary: "Website flow matched the claimed route-risk feature.",
+      verifier_version: "mock-v1",
+      created_at: "2026-05-19T00:01:00.000Z",
+      updated_at: "2026-05-19T00:01:00.000Z",
+    },
+    {
+      id: "decision-tree-github-evidence",
+      user_id: "student-user",
+      skill_name: "Machine Learning",
+      evidence_type: "github repository",
+      repository_url: "https://github.com/maya/decision-tree-project",
+      file_path: "Tree.py",
+      line_start: 20,
+      line_end: 61,
+      evidence_description: "I built and evaluated a Decision Tree classification model.",
+      proof_visibility: "public",
+      metadata: {
+        proof_kind: "github_code",
+        evidence_title: "Decision Tree Classification Model",
+        submission_source: "student_profile_proof_modal",
+      },
+      verification_status: "verified",
+      verification_summary: "Python usage likely found ✅",
+      verifier_version: "mock-v1",
+      created_at: "2026-05-18T00:00:00.000Z",
+      updated_at: "2026-05-18T00:00:00.000Z",
+    },
+    {
+      id: "route-risk-website-evidence",
+      user_id: "student-user",
+      skill_name: "Web Applications",
+      evidence_type: "deployed website",
+      evidence_url: "https://route-risk-demo.example.com",
+      evidence_description: "Public deployed proof only.",
+      proof_visibility: "public",
+      metadata: {
+        proof_kind: "website_live_demo",
+        evidence_title: "Route Risk Demo Deployment",
+        submission_source: "student_profile_proof_modal",
+      },
+      verification_status: "verified",
+      verification_summary: "Website flow matched the claimed route-risk feature.",
+      verifier_version: "mock-v1",
+      created_at: "2026-05-17T00:00:00.000Z",
+      updated_at: "2026-05-17T00:00:00.000Z",
+    },
+  ]
+
+  await page.route("**/api/v1/student/skill-evidence**", async (route) => {
+    const url = new URL(route.request().url())
+    const { pathname } = url
+    const method = route.request().method()
+
+    if (pathname === "/api/v1/student/skill-evidence" && method === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(realEvidenceRows),
+      })
+      return
+    }
+
+    if (pathname.endsWith("/evidence-access-links/latest") && method === "GET") {
+      const evidenceId = pathname.split("/")[5]
+      const isGithub = evidenceId.includes("github")
+      const isBoston = evidenceId.includes("boston")
+      const results =
+        isGithub && isBoston
+          ? [
+              {
+                id: "boston-github-link",
+                evidence_id: evidenceId,
+                source_report_type: "github_recruiter_proof_report",
+                source_report_id: "boston-github-report",
+                access_type: "github_exact_lines",
+                label: "View Code Lines 19–23",
+                url: "https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud/blob/main/api.py#L19-L23",
+                source_type: "github",
+                file_path: "api.py",
+                line_start: 19,
+                line_end: 23,
+                availability_status: "available",
+                notes: "Boston code lines from the recruiter proof report.",
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              },
+            ]
+          : isGithub
+            ? [
+                {
+                  id: "decision-tree-link",
+                  evidence_id: evidenceId,
+                  source_report_type: "github_recruiter_proof_report",
+                  source_report_id: "decision-tree-report",
+                  access_type: "github_exact_lines",
+                  label: "View Exact Code Lines",
+                  url: "https://github.com/maya/decision-tree-project/blob/main/Tree.py#L20-L61",
+                  source_type: "github",
+                  file_path: "Tree.py",
+                  line_start: 20,
+                  line_end: 61,
+                  availability_status: "available",
+                  notes: "Decision Tree code lines from the recruiter proof report.",
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                },
+              ]
+            : isBoston
+              ? [
+                  {
+                    id: "boston-website-link",
+                    evidence_id: evidenceId,
+                    source_report_type: "website_semantic_verification_result",
+                    source_report_id: "boston-website-report",
+                    access_type: "live_website",
+                    label: "Open Live Website",
+                    url: "https://boston-accident-risk-api-qzr2qvsfqa-uc.a.run.app",
+                    source_type: "website",
+                    file_path: null,
+                    line_start: null,
+                    line_end: null,
+                    availability_status: "available",
+                    notes: "Boston public deployed proof from the semantic verification report.",
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                  },
+                ]
+              : [
+                  {
+                    id: "route-risk-live-link",
+                    evidence_id: evidenceId,
+                    source_report_type: "website_semantic_verification_result",
+                    source_report_id: "route-risk-report",
+                    access_type: "live_website",
+                    label: "Open Live Website",
+                    url: "https://route-risk-demo.example.com",
+                    source_type: "website",
+                    file_path: null,
+                    line_start: null,
+                    line_end: null,
+                    availability_status: "available",
+                    notes: "Public deployed proof inspected through the semantic verification report.",
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                  },
+                ]
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ results }),
+      })
+      return
+    }
+
+    await route.continue()
+  })
+}
+
+async function mockRecruiterDemoProofFallback(page: Page) {
+  await page.route("**/api/v1/student/skill-evidence**", async (route) => {
+    const url = new URL(route.request().url())
+    const { pathname } = url
+    const method = route.request().method()
+
+    if (pathname === "/api/v1/student/skill-evidence" && method === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      })
+      return
+    }
+
+    await route.continue()
+  })
+}
+
 /* ── Student dashboard ── */
 test.describe("Student dashboard — sidebar navigation", () => {
   test.beforeEach(async ({ page }) => {
@@ -1132,6 +1349,7 @@ test.describe("Toggle switches are interactive", () => {
 
 test.describe("Recruiter evidence preview", () => {
   test("respects uploaded evidence visibility settings", async ({ page }) => {
+    await mockRecruiterDemoProofFallback(page);
     await page.goto("/recruiter");
 
     await page.getByTestId("evidence-toggle-0").click();
@@ -1148,55 +1366,42 @@ test.describe("Recruiter evidence preview", () => {
     await expect(page.getByText(/Request access to view this evidence/i)).toBeVisible();
   });
 
-  test("shows direct GitHub and website evidence access actions", async ({ page }) => {
+  test("shows real Boston project evidence access actions", async ({ page }) => {
+    await mockRecruiterRealProofApis(page);
     await page.goto("/recruiter");
 
-    await page.getByTestId("evidence-toggle-1").click();
-    const githubLine20 = page.getByTestId("evidence-access-link-github_exact_lines-demo-github-access-20-32");
-    await expect(githubLine20).toHaveAttribute("href", "https://github.com/maya/proof-app/blob/main/app/main.py#L20-L32");
+    await expect(page.getByText("Real proof bundles loaded from backend submissions.")).toBeVisible();
+
+    await expect(page.getByText("Boston Smart Accident Risk and Rerouting System")).toBeVisible();
+
+    const githubLine20 = page.locator('a[href="https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud/blob/main/api.py#L19-L23"]');
+    await expect(githubLine20).toBeVisible();
     await expect(githubLine20).toHaveAttribute("target", "_blank");
     await expect(githubLine20).toHaveAttribute("rel", /noopener/);
+    await expect(page.getByRole("link", { name: /View Code Lines 19–23/i })).toBeVisible();
 
-    const githubLine52 = page.getByTestId("evidence-access-link-github_exact_lines-demo-github-access-52-61");
-    await expect(githubLine52).toHaveAttribute("href", "https://github.com/maya/proof-app/blob/main/app/main.py#L52-L61");
-    await expect(githubLine52).toHaveAttribute("target", "_blank");
-
-    await page.getByTestId("evidence-toggle-2").click();
-    const websiteLink = page.getByTestId("evidence-access-link-live_website-demo-website-access-live");
-    await expect(websiteLink).toHaveAttribute("href", "https://student-app.example.com");
+    const websiteLink = page.locator('a[href="https://boston-accident-risk-api-qzr2qvsfqa-uc.a.run.app"]');
+    await expect(websiteLink).toBeVisible();
     await expect(websiteLink).toHaveAttribute("target", "_blank");
     await expect(websiteLink).toHaveAttribute("rel", /noopener/);
+    await expect(page.getByText("student-app.example.com")).toHaveCount(0);
+    await expect(page.getByText(/404/i)).toHaveCount(0);
   });
 
   test("shows combined project evidence actions for GitHub and website proof", async ({ page }) => {
+    await mockRecruiterRealProofApis(page);
     await page.goto("/recruiter");
 
-    const combined = page.getByTestId("project-evidence-bundle-combined-project");
-    await expect(combined.getByTestId("project-evidence-link-combined-github-1")).toHaveAttribute(
-      "href",
-      "https://github.com/maya/proof-app/blob/main/app/main.py#L20-L32"
-    );
-    await expect(combined.getByTestId("project-evidence-link-combined-github-2")).toHaveAttribute(
-      "href",
-      "https://github.com/maya/proof-app/blob/main/app/main.py#L52-L61"
-    );
-    await expect(combined.getByTestId("project-evidence-link-combined-website-1")).toHaveAttribute(
-      "href",
-      "https://student-app.example.com"
-    );
+    await expect(page.getByText("Boston Smart Accident Risk and Rerouting System")).toBeVisible();
+    await expect(
+      page.locator('a[href="https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud/blob/main/api.py#L19-L23"]')
+    ).toBeVisible();
+    await expect(page.locator('a[href="https://boston-accident-risk-api-qzr2qvsfqa-uc.a.run.app"]')).toBeVisible();
 
-    const githubOnly = page.getByTestId("project-evidence-bundle-github-only-project");
-    await expect(githubOnly.getByTestId("project-evidence-link-github-only-code-lines-1")).toHaveAttribute(
-      "href",
-      "https://github.com/maya/proof-app/blob/main/app/main.py#L20-L32"
-    );
-    await expect(githubOnly.getByRole("link", { name: /Open Live Website/i })).toHaveCount(0);
-
-    const websiteOnly = page.getByTestId("project-evidence-bundle-website-only-project");
-    await expect(websiteOnly.getByTestId("project-evidence-link-website-only-live-1")).toHaveAttribute(
-      "href",
-      "https://student-app.example.com"
-    );
-    await expect(websiteOnly.getByRole("link", { name: /View Code Lines/i })).toHaveCount(0);
+    await expect(page.locator('a[href="https://github.com/maya/decision-tree-project/blob/main/Tree.py#L20-L61"]')).toBeVisible();
+    await expect(page.getByText("Decision Tree Classification Model")).toBeVisible();
+    await expect(page.locator('a[href="https://github.com/maya/decision-tree-project/blob/main/Tree.py#L20-L61"]')).toBeVisible();
+    await expect(page.getByText("Route Risk Demo Deployment")).toBeVisible();
+    await expect(page.locator('a[href="https://route-risk-demo.example.com"]')).toBeVisible();
   });
 });
