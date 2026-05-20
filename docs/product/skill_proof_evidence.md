@@ -653,6 +653,55 @@ The evaluation script prints per-scenario diagnostics, including semantic simila
 
 This phase does not redesign production verification logic. It is a trust and measurement layer. Production logic should only change if the evaluation exposes a clear implementation bug or a larger calibration set justifies a conservative adjustment.
 
+## Phase J1 — Recruiter Verified Skill Search Foundation
+
+Phase J1 begins the candidate discovery engine. Recruiters can now search for proof-backed student candidates by skill name or keyword. The search is powered by real Skill Proof Evidence data — not hardcoded placeholder cards.
+
+### What recruiters can do
+
+A recruiter who searches "Machine Learning" sees candidate result cards backed by actual submitted proof evidence. Each card shows:
+
+- candidate name and school/program
+- matched skill names
+- evidence source count (total and accepted)
+- whether GitHub proof and live website proof are available
+- the strongest matched project title
+- a proof status label (Evidence Accepted / Pending Analysis)
+
+Selecting a card opens a summary detail panel with skill list, proof stats, and project title.
+
+### Example
+
+Recruiter searches "Machine Learning":
+
+→ Candidate result: Mohammed Mubashir Uddin Faraz · MS AI · WPI
+
+- Matched skill: Machine Learning
+- Evidence Accepted · 2 sources
+- GitHub proof: yes (Boston Smart Accident Risk and Rerouting System)
+- Live site proof: yes
+
+### What is real in Phase J1
+
+- The search bar is wired to the backend API `GET /api/v1/recruiter/candidates/search?query=...`.
+- The backend queries the `skill_evidence` table across all students using the service-role client (which bypasses RLS).
+- Results include real proof metadata: skill names, evidence counts, accepted/pending statuses, GitHub and website proof flags, and project titles from submission metadata.
+- Student profiles are joined to add display name, school, degree, and major when available.
+- Results are ordered by accepted evidence count (higher quality first).
+
+### What remains demo/static in Phase J1
+
+- The default dashboard state (before a search is submitted) still shows demo candidate cards (Maya Reyes, Jordan Kim, Arjun Singh, Leila Pham) and the demo CandidatePreview panel for illustration.
+- The metric cards (2,847 active candidates, etc.) remain demo values.
+- The pipeline board uses demo counts.
+- Per-candidate real proof access links (exact GitHub line links, live website buttons) require a Phase J2 per-candidate proof endpoint. The detail panel in Phase J1 shows a summary with a note explaining what J2 will add.
+
+### Future phases
+
+- Phase J2: per-candidate real proof inspection endpoint so recruiters can see the exact GitHub line links and live site buttons for any searched candidate's proof.
+- Phase J3: richer candidate profile cards with proof depth scoring, company challenge signals, and talent pool filters.
+- Phase J4: ranking, scoring, and filtering by proof confidence, school, graduation year, and visa status.
+
 ## Privacy And Security
 
 Users own their evidence. All API reads, writes, updates, deletes, and verification actions are scoped by `user_id`. Future recruiter access must respect student approval and privacy settings, especially for private uploads and non-public project artifacts.

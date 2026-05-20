@@ -389,3 +389,34 @@ export async function createGithubRecruiterProofReport(
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
   return res.json()
 }
+
+// ── Recruiter Candidate Search (Phase J1) ────────────────────────────────────
+
+export type CandidateSearchResult = {
+  user_id: string
+  display_name: string
+  school_name?: string | null
+  degree?: string | null
+  major?: string | null
+  matched_skill_names: string[]
+  evidence_count: number
+  accepted_evidence_count: number
+  has_github_proof: boolean
+  has_website_proof: boolean
+  strongest_project_title?: string | null
+  proof_status_label?: string | null
+}
+
+export type CandidateSearchResponse = {
+  query: string
+  results: CandidateSearchResult[]
+  result_count: number
+}
+
+export async function searchRecruiterCandidates(query: string): Promise<CandidateSearchResponse> {
+  const res = await fetchAPI(
+    `/api/v1/recruiter/candidates/search?query=${encodeURIComponent(query)}`
+  )
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}

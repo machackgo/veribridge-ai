@@ -1395,6 +1395,134 @@ test.describe("Toggle switches are interactive", () => {
   });
 });
 
+/* ── Recruiter verified skill search (Phase J1) ── */
+
+async function mockRecruiterCandidateSearch(
+  page: Page,
+  results: Array<Record<string, unknown>> = [],
+) {
+  await page.route("**/api/v1/recruiter/candidates/search**", async (route) => {
+    const url = new URL(route.request().url());
+    const query = url.searchParams.get("query") ?? "";
+    const filtered = results.filter((r) => {
+      const skills = r.matched_skill_names as string[];
+      return skills.some((s) => s.toLowerCase().includes(query.toLowerCase()));
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        query,
+        results: filtered,
+        result_count: filtered.length,
+      }),
+    });
+  });
+}
+
+const MOCK_CANDIDATE: Record<string, unknown> = {
+  user_id: "user-ml-01",
+  display_name: "Mohammed Mubashir Uddin Faraz",
+  school_name: "WPI",
+  degree: "MS AI",
+  major: "Artificial Intelligence",
+  matched_skill_names: ["Machine Learning"],
+  evidence_count: 2,
+  accepted_evidence_count: 2,
+  has_github_proof: true,
+  has_website_proof: true,
+  strongest_project_title: "Boston Smart Accident Risk and Rerouting System",
+  proof_status_label: "Evidence Accepted",
+};
+
+test.describe("Recruiter verified skill search — Phase J1", () => {
+  test("search bar is editable and search button exists", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page);
+    await page.goto("/recruiter");
+    const input = page.getByTestId("recruiter-search-input");
+    await expect(input).toBeVisible();
+    await expect(input).not.toHaveAttribute("readOnly");
+    await expect(page.getByTestId("recruiter-search-submit")).toBeVisible();
+  });
+
+  test("submitting a query shows real proof-backed candidate cards", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    await expect(page.getByTestId("recruiter-search-results")).toBeVisible();
+    // name and status appear in both card and auto-selected detail panel — check first occurrence
+    await expect(page.getByText("Mohammed Mubashir Uddin Faraz").first()).toBeVisible();
+    await expect(page.getByText("Evidence Accepted").first()).toBeVisible();
+    await expect(page.getByText("Machine Learning").first()).toBeVisible();
+  });
+
+  test("entering a query with Enter key triggers search", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("recruiter-search-results")).toBeVisible();
+    await expect(page.getByText("Mohammed Mubashir Uddin Faraz").first()).toBeVisible();
+  });
+
+  test("candidate card shows GitHub and live site proof badges", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    await expect(page.getByText("⌥ GitHub")).toBeVisible();
+    await expect(page.getByText("▤ Live site")).toBeVisible();
+  });
+
+  test("candidate card shows strongest project title", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    // title appears in card + auto-selected detail panel
+    await expect(page.getByText("Boston Smart Accident Risk and Rerouting System").first()).toBeVisible();
+  });
+
+  test("clicking a search result shows the detail panel", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    await page.getByTestId(`search-result-card-${MOCK_CANDIDATE.user_id}`).click();
+    await expect(page.getByText("Matched Skills")).toBeVisible();
+    await expect(page.getByText("Strongest Project")).toBeVisible();
+  });
+
+  test("no-results state renders cleanly", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, []);
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("COBOL");
+    await page.getByTestId("recruiter-search-submit").click();
+    // testid is the most precise locator; text appears in both heading and count label
+    await expect(page.getByTestId("recruiter-search-empty")).toBeVisible();
+    await expect(page.getByTestId("recruiter-search-empty")).toContainText("No candidates found");
+  });
+
+  test("clear button resets to default demo state", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    await expect(page.getByTestId("recruiter-search-results")).toBeVisible();
+    await page.getByTestId("recruiter-search-clear").click();
+    await expect(page.getByTestId("recruiter-search-results")).toHaveCount(0);
+  });
+
+  test("result count label shows number of matches", async ({ page }) => {
+    await mockRecruiterCandidateSearch(page, [MOCK_CANDIDATE]);
+    await page.goto("/recruiter");
+    await page.getByTestId("recruiter-search-input").fill("Machine Learning");
+    await page.getByTestId("recruiter-search-submit").click();
+    await expect(page.getByText(/1 proof-backed candidate found/i)).toBeVisible();
+  });
+});
+
 test.describe("Recruiter evidence preview", () => {
   test("respects uploaded evidence visibility settings", async ({ page }) => {
     await mockRecruiterDemoProofFallback(page);

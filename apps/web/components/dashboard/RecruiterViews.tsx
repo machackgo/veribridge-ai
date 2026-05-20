@@ -13,7 +13,7 @@ import {
   isRealSubmittedProofEvidence,
 } from "../skill-proof/recruiter-project-proof-adapter";
 import { getProofVisibilityLabel } from "../onboarding/taxonomy";
-import { getLatestEvidenceAccessLinks, listSkillEvidence, type EvidenceAccessLink, type SkillEvidenceResponse } from "@/lib/api";
+import { getLatestEvidenceAccessLinks, listSkillEvidence, searchRecruiterCandidates, type CandidateSearchResponse, type CandidateSearchResult, type EvidenceAccessLink, type SkillEvidenceResponse } from "@/lib/api";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -130,6 +130,273 @@ function FilterChip({ children, active }: { children: ReactNode; active?: boolea
       {children}
     </span>
   );
+}
+
+// ── Recruiter search state ─────────────────────────────────────────────────
+
+type RecruiterSearchState =
+  | { status: "idle" }
+  | { status: "loading"; query: string }
+  | { status: "done"; query: string; results: CandidateSearchResult[] }
+  | { status: "error"; query: string; error: string }
+
+// ── Search result candidate card ───────────────────────────────────────────
+
+function SearchResultCandidateCard({
+  result,
+  selected,
+  onClick,
+}: {
+  result: CandidateSearchResult
+  selected: boolean
+  onClick: () => void
+}) {
+  const schoolLine = [result.school_name, result.degree, result.major]
+    .filter(Boolean)
+    .join(" · ")
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onClick()}
+      data-testid={`search-result-card-${result.user_id}`}
+      style={{
+        display: "grid",
+        gap: 10,
+        padding: "14px 16px",
+        borderRadius: 12,
+        background: selected ? "var(--indigo-soft)" : "var(--bg-2)",
+        border: `1px solid ${selected ? "#c7d2fe" : "var(--line)"}`,
+        cursor: "pointer",
+        marginBottom: 8,
+        outline: "none",
+      }}
+    >
+      {/* Name row */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: "var(--ink)", marginBottom: 2 }}>
+            {result.display_name}
+          </div>
+          {schoolLine && (
+            <div style={{ fontSize: 12, color: "var(--muted)" }}>{schoolLine}</div>
+          )}
+        </div>
+        {/* Proof status badge */}
+        <span
+          style={{
+            flexShrink: 0,
+            fontSize: 10,
+            fontWeight: 700,
+            padding: "3px 8px",
+            borderRadius: 5,
+            background: result.accepted_evidence_count > 0 ? "var(--emerald-soft)" : "var(--bg-2)",
+            color: result.accepted_evidence_count > 0 ? "#065f46" : "var(--muted)",
+            border: `1px solid ${result.accepted_evidence_count > 0 ? "#6ee7b7" : "var(--line)"}`,
+            fontFamily: "'JetBrains Mono',monospace",
+          }}
+        >
+          {result.proof_status_label ?? "Pending Analysis"}
+        </span>
+      </div>
+
+      {/* Matched skills */}
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        {result.matched_skill_names.slice(0, 4).map((s) => (
+          <span
+            key={s}
+            style={{
+              fontSize: 11,
+              padding: "2px 7px",
+              borderRadius: 4,
+              background: "var(--indigo-soft)",
+              color: "var(--indigo)",
+              fontWeight: 500,
+            }}
+          >
+            {s}
+          </span>
+        ))}
+        {result.matched_skill_names.length > 4 && (
+          <span style={{ fontSize: 11, color: "var(--muted)", alignSelf: "center" }}>
+            +{result.matched_skill_names.length - 4} more
+          </span>
+        )}
+      </div>
+
+      {/* Project + proof type badges */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {result.strongest_project_title && (
+          <span style={{ fontSize: 11, color: "var(--ink-2)", fontWeight: 500, flexShrink: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260 }}>
+            {result.strongest_project_title}
+          </span>
+        )}
+        <span style={{ marginLeft: "auto", display: "flex", gap: 5, flexShrink: 0 }}>
+          {result.has_github_proof && (
+            <span
+              title="GitHub proof available"
+              style={{
+                fontSize: 10,
+                padding: "2px 6px",
+                borderRadius: 4,
+                background: "#f3f4f6",
+                color: "#374151",
+                fontWeight: 600,
+                border: "1px solid #e5e7eb",
+              }}
+            >
+              ⌥ GitHub
+            </span>
+          )}
+          {result.has_website_proof && (
+            <span
+              title="Live website proof available"
+              style={{
+                fontSize: 10,
+                padding: "2px 6px",
+                borderRadius: 4,
+                background: "#f0fdf4",
+                color: "#166534",
+                fontWeight: 600,
+                border: "1px solid #bbf7d0",
+              }}
+            >
+              ▤ Live site
+            </span>
+          )}
+        </span>
+      </div>
+
+      {/* Evidence count */}
+      <div style={{ fontSize: 11, color: "var(--muted)" }}>
+        {result.evidence_count} evidence {result.evidence_count === 1 ? "source" : "sources"} · {result.accepted_evidence_count} accepted
+      </div>
+    </div>
+  )
+}
+
+// ── Search result detail panel ─────────────────────────────────────────────
+
+function SearchResultDetailPanel({ result }: { result: CandidateSearchResult }) {
+  const schoolLine = [result.school_name, result.degree, result.major]
+    .filter(Boolean)
+    .join(" · ")
+
+  return (
+    <div style={{ ...card, position: "sticky", top: 100, alignSelf: "start" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <div
+          style={{
+            width: 48,
+            height: 48,
+            borderRadius: "50%",
+            background: "linear-gradient(135deg,#6366f1,#8b5cf6)",
+            display: "grid",
+            placeItems: "center",
+            fontWeight: 700,
+            fontSize: 16,
+            color: "#fff",
+            flexShrink: 0,
+          }}
+        >
+          {result.display_name.charAt(0).toUpperCase()}
+        </div>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)" }}>{result.display_name}</div>
+          {schoolLine && <div style={{ fontSize: 12, color: "var(--muted)" }}>{schoolLine}</div>}
+          <span
+            style={{
+              display: "inline-block",
+              marginTop: 4,
+              fontSize: 10,
+              fontWeight: 600,
+              padding: "2px 7px",
+              borderRadius: 4,
+              background: result.accepted_evidence_count > 0 ? "var(--emerald-soft)" : "var(--bg-2)",
+              color: result.accepted_evidence_count > 0 ? "#065f46" : "var(--muted)",
+              fontFamily: "'JetBrains Mono',monospace",
+            }}
+          >
+            {result.proof_status_label ?? "Pending Analysis"}
+          </span>
+        </div>
+      </div>
+
+      {/* Proof summary stats */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+        {[
+          { label: "Evidence sources", value: String(result.evidence_count) },
+          { label: "Accepted", value: String(result.accepted_evidence_count) },
+          { label: "GitHub proof", value: result.has_github_proof ? "Yes" : "None" },
+          { label: "Live site proof", value: result.has_website_proof ? "Yes" : "None" },
+        ].map(({ label, value }) => (
+          <div
+            key={label}
+            style={{
+              background: "var(--bg-2)",
+              borderRadius: 8,
+              padding: "10px 12px",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600, marginBottom: 4 }}>{label}</div>
+            <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 16, fontWeight: 700, color: "var(--ink)" }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Matched skills */}
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 8 }}>Matched Skills</div>
+      <div style={{ marginBottom: 14 }}>
+        {result.matched_skill_names.map((s) => (
+          <div
+            key={s}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "7px 0",
+              borderBottom: "1px solid var(--line)",
+              fontSize: 12,
+              color: "var(--ink-2)",
+            }}
+          >
+            <span style={{ color: "var(--emerald)", fontWeight: 700 }}>✓</span>
+            {s}
+          </div>
+        ))}
+      </div>
+
+      {/* Strongest project */}
+      {result.strongest_project_title && (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 8 }}>Strongest Project</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)", marginBottom: 16, padding: "10px 12px", background: "var(--bg-2)", borderRadius: 8 }}>
+            {result.strongest_project_title}
+          </div>
+        </>
+      )}
+
+      {/* J2 note */}
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--muted)",
+          background: "var(--bg-2)",
+          borderRadius: 8,
+          padding: "10px 12px",
+          lineHeight: 1.6,
+          marginBottom: 14,
+          border: "1px solid var(--line)",
+        }}
+      >
+        Full proof access links (exact GitHub lines, live website) are loaded from the candidate&apos;s real submitted proof. Phase J2 will wire per-candidate proof inspection.
+      </div>
+    </div>
+  )
 }
 
 function SwitchRow({
@@ -1014,6 +1281,33 @@ function PipelinePreview() {
 
 export function RecruiterOverview() {
   const { show, msg } = useDemoToast();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchState, setSearchState] = useState<RecruiterSearchState>({ status: "idle" });
+  const [selectedResult, setSelectedResult] = useState<CandidateSearchResult | null>(null);
+
+  async function handleSearch() {
+    const q = searchQuery.trim();
+    if (!q) return;
+    setSearchState({ status: "loading", query: q });
+    setSelectedResult(null);
+    try {
+      const response = await searchRecruiterCandidates(q);
+      setSearchState({ status: "done", query: q, results: response.results });
+      setSelectedResult(response.results[0] ?? null);
+    } catch (err) {
+      setSearchState({
+        status: "error",
+        query: q,
+        error: err instanceof Error ? err.message : "Search failed. Please try again.",
+      });
+    }
+  }
+
+  function handleClearSearch() {
+    setSearchQuery("");
+    setSearchState({ status: "idle" });
+    setSelectedResult(null);
+  }
 
   const metrics = [
     { label: "Active candidates", value: "2,847", detail: "+312 this week", color: "var(--indigo)" },
@@ -1021,6 +1315,8 @@ export function RecruiterOverview() {
     { label: "In pipeline", value: "42", detail: "14 in interview", color: "var(--purple)" },
     { label: "Trust score", value: "94", detail: "Top 5% verified recruiter", color: "var(--amber)" },
   ];
+
+  const isSearchActive = searchState.status !== "idle";
 
   return (
     <div>
@@ -1050,9 +1346,13 @@ export function RecruiterOverview() {
 
       {/* Search bar */}
       <div style={{ ...card, marginBottom: 20 }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: isSearchActive ? 8 : 12 }}>
           <input
+            data-testid="recruiter-search-input"
             placeholder="Search by skill, school, role, or keyword..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.currentTarget.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }}
             style={{
               flex: 1,
               padding: "10px 14px",
@@ -1063,45 +1363,168 @@ export function RecruiterOverview() {
               color: "var(--ink)",
               outline: "none",
             }}
-            readOnly
           />
-          <Btn onClick={() => show("Search is demo mode — results shown above.")}>Search</Btn>
+          <Btn
+            data-testid="recruiter-search-submit"
+            onClick={handleSearch}
+            disabled={searchState.status === "loading"}
+          >
+            {searchState.status === "loading" ? "Searching…" : "Search"}
+          </Btn>
+          {isSearchActive && (
+            <Btn variant="secondary" onClick={handleClearSearch} data-testid="recruiter-search-clear">
+              ✕ Clear
+            </Btn>
+          )}
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>Active filters:</span>
-          {["Docker", "Distributed Systems", "F-1 OK", "Class of 2026", "Score ≥ 75"].map((f) => (
-            <FilterChip key={f} active>{f}</FilterChip>
-          ))}
-          <FilterChip>+ Add filter</FilterChip>
-        </div>
+        {!isSearchActive && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>Try searching:</span>
+            {["Machine Learning", "Docker", "FastAPI", "AWS", "NLP"].map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => { setSearchQuery(f); }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "4px 10px",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  background: "var(--bg-2)",
+                  color: "var(--ink-2)",
+                  border: "1px solid var(--line)",
+                  cursor: "pointer",
+                }}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+        )}
+        {isSearchActive && searchState.status === "done" && (
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>
+            {searchState.results.length > 0
+              ? `${searchState.results.length} proof-backed candidate${searchState.results.length === 1 ? "" : "s"} found for "${searchState.query}"`
+              : `No candidates found for "${searchState.query}"`}
+          </div>
+        )}
       </div>
 
       {/* 2-col grid */}
       <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 20 }}>
-        <div style={card}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-            <div>
-              <div style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em" }}>Proof-backed candidate cards</div>
-              <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)" }}>Candidate search</div>
+
+        {/* Left column — default or search results */}
+        {searchState.status === "idle" && (
+          <div style={card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.12em" }}>Demo · Proof-backed candidate cards</div>
+                <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)" }}>Candidate search</div>
+              </div>
+              <span
+                style={{
+                  fontFamily: "'JetBrains Mono',monospace",
+                  fontSize: 11,
+                  padding: "3px 9px",
+                  borderRadius: 5,
+                  background: "var(--indigo-soft)",
+                  color: "var(--indigo)",
+                  fontWeight: 700,
+                }}
+              >
+                Demo
+              </span>
             </div>
-            <span
-              style={{
-                fontFamily: "'JetBrains Mono',monospace",
-                fontSize: 11,
-                padding: "3px 9px",
-                borderRadius: 5,
-                background: "var(--indigo-soft)",
-                color: "var(--indigo)",
-                fontWeight: 700,
-              }}
-            >
-              240 matches
-            </span>
+            <CandidateList />
+            <PipelinePreview />
           </div>
-          <CandidateList />
-          <PipelinePreview />
-        </div>
-        <CandidatePreview onToast={show} />
+        )}
+
+        {searchState.status === "loading" && (
+          <div style={card}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "24px 0", color: "var(--muted)", fontSize: 14 }}>
+              <span style={{ animation: "recruiter-pulse 1.2s infinite", display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "var(--indigo)" }} />
+              Searching for proof-backed candidates…
+            </div>
+          </div>
+        )}
+
+        {searchState.status === "done" && searchState.results.length > 0 && (
+          <div style={card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: "var(--emerald)", textTransform: "uppercase", letterSpacing: "0.12em" }}>Real search results · proof-backed</div>
+                <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)" }}>"{searchState.query}"</div>
+              </div>
+              <span
+                style={{
+                  fontFamily: "'JetBrains Mono',monospace",
+                  fontSize: 11,
+                  padding: "3px 9px",
+                  borderRadius: 5,
+                  background: "var(--emerald-soft)",
+                  color: "#065f46",
+                  fontWeight: 700,
+                }}
+              >
+                {searchState.results.length} found
+              </span>
+            </div>
+            <div data-testid="recruiter-search-results">
+              {searchState.results.map((r) => (
+                <SearchResultCandidateCard
+                  key={r.user_id}
+                  result={r}
+                  selected={selectedResult?.user_id === r.user_id}
+                  onClick={() => setSelectedResult(r)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {searchState.status === "done" && searchState.results.length === 0 && (
+          <div style={card}>
+            <div style={{ textAlign: "center", padding: "40px 20px" }}>
+              <div style={{ fontSize: 32, marginBottom: 10 }}>🔍</div>
+              <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 6 }} data-testid="recruiter-search-empty">
+                No candidates found
+              </div>
+              <div style={{ fontSize: 13, color: "var(--muted)", maxWidth: 360, margin: "0 auto" }}>
+                No proof-backed candidates matched "{searchState.query}". Try a broader skill name such as "Python", "Machine Learning", or "Cloud".
+              </div>
+            </div>
+          </div>
+        )}
+
+        {searchState.status === "error" && (
+          <div style={card}>
+            <div style={{ textAlign: "center", padding: "40px 20px" }}>
+              <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 6 }}>
+                Search unavailable
+              </div>
+              <div style={{ fontSize: 13, color: "var(--muted)" }}>
+                {searchState.error}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Right column — detail panel */}
+        {searchState.status === "idle" && <CandidatePreview onToast={show} />}
+        {searchState.status === "done" && selectedResult && (
+          <SearchResultDetailPanel result={selectedResult} />
+        )}
+        {searchState.status === "done" && !selectedResult && (
+          <div style={{ ...card, display: "grid", placeItems: "center", minHeight: 200 }}>
+            <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center" }}>
+              Select a candidate to see their proof summary.
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
