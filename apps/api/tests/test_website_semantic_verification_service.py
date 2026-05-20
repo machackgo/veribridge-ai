@@ -203,6 +203,11 @@ def test_semantic_result_endpoint_returns_verified_and_persists() -> None:
         assert data["semantic_status"] == "verified"
         assert data["evidence_id"] == evidence["id"]
         assert data["id"] in store["website_semantic_verification_results"]
+        assert data["source_snapshot"]["product_verification_reconciliation"]["display_status"] in {
+            "verified",
+            "supported_with_review",
+            "partially_supported",
+        }
     finally:
         _clear_overrides()
 

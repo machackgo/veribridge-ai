@@ -435,6 +435,28 @@ Example:
 
 The buttons are now rendered from stored backend proof data instead of being hardcoded in the frontend. Prototype grouping uses exact normalized project title matching, which is enough for local validation. A future production model may use an explicit `project_id` or `evidence_bundle_id`.
 
+## Phase I3: Verification Usability Calibration And Status Reconciliation
+
+Phase I3 improves how proof verification statuses are presented to students and recruiters. The Boston end-to-end test showed that the verification pipeline was trustworthy, but the UI could be too review-heavy and sometimes mixed raw technical statuses with product-facing outcomes.
+
+Those technical layers are still useful internally, but students and recruiters should see a cleaner product-facing status such as:
+
+- Verified
+- Supported with review
+- Partially supported
+- Not verified
+- Pending analysis
+
+Phase I3 adds a reconciliation layer that converts lower-level technical signals into a clearer product label and message. It keeps false-positive guardrails intact, but it reduces unnecessary discouragement when the evidence is materially supportive.
+
+Example:
+
+- Strong support: a complete GitHub machine learning workflow can be shown as `Verified`.
+- Supportive but review-worthy: a real Boston proof can be shown as `Supported with review` when the evidence is meaningful but one deeper layer remains cautious.
+- Weak or mismatched evidence: import-only or unrelated code still stays `Not verified`.
+
+The student-facing proof cards now use clearer labels such as `Evidence accepted` or `Supported with review`, while recruiter-facing surfaces use similarly reconciled labels and messages. The backend also stores compact reconciliation metadata so future UI layers can render the same status consistently.
+
 Future roadmap:
 
 - Phase 5F.2: stronger local rerankers, classifiers, or self-hosted model providers for better semantic decisions.

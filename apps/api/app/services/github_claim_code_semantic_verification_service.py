@@ -30,6 +30,7 @@ from app.services.github_evidence_service import (
     parse_github_repo_url,
 )
 from app.services.skill_evidence_service import SkillEvidenceNotFoundError
+from app.services.proof_verification_status_reconciliation_service import proof_verification_reconciliation_snapshot
 from app.services.website_semantic_similarity_service import (
     SentenceEmbeddingProvider,
     compute_embedding_similarity,
@@ -626,6 +627,26 @@ class GitHubSemanticVerificationService:
         segmentation = context.get("segmentation")
         overall_match = self.evaluate_claim_against_overall_code_summary(context)
         capability_match = self.evaluate_claim_capability_match(context)
+        reconciliation = proof_verification_reconciliation_snapshot(
+            {
+                "available": context.get("available", True),
+                "base_evidence_status": context.get("evidence", {}).get("verification_status"),
+                "semantic_status": evaluation.semantic_status,
+                "report_status": None,
+                "browser_status": None,
+                "static_status": None,
+                "capability_match_status": capability_match.capability_match_status if capability_match else None,
+                "expected_output_match_status": None,
+                "missing_critical_requirements": bool(capability_match and capability_match.missing_critical_requirements),
+                "blocks_full_verification": bool(
+                    capability_match and (not capability_match.supports_full_verification or capability_match.missing_critical_requirements)
+                ),
+                "supporting_line_ranges": [
+                    {"line_start": segment.line_start, "line_end": segment.line_end}
+                    for segment in (evaluation.matched_segments[:3] if evaluation.matched_segments else [])
+                ],
+            }
+        )
         matched_segments = evaluation.matched_segments[:3]
         return {
             "claim_preview": _preview(context.get("claim_text")),
@@ -652,6 +673,7 @@ class GitHubSemanticVerificationService:
             "semantic_method": "sentence_transformers_cosine_similarity",
             "fallback_used": self._similarity_fallback_used or self._embedding_provider is None,
             "segmentation": github_code_evidence_segmentation_to_snapshot(segmentation),
+            "product_verification_reconciliation": reconciliation,
         }
 
     def _get_evidence_row(self, user_id: str, evidence_id: str) -> dict[str, Any]:

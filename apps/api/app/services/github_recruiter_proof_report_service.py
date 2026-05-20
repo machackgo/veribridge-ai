@@ -14,6 +14,7 @@ from app.services.github_claim_code_semantic_verification_service import (
     GitHubSemanticVerificationResultNotFoundError,
     GitHubSemanticVerificationService,
 )
+from app.services.proof_verification_status_reconciliation_service import proof_verification_reconciliation_snapshot
 from app.services.skill_evidence_service import SkillEvidenceNotFoundError, SkillEvidenceService
 from app.services.website_semantic_similarity_service import normalize_semantic_text
 
@@ -465,6 +466,18 @@ class GitHubRecruiterProofReportService:
         semantic_result = context["semantic_result"]
         semantic_snapshot = context.get("semantic_snapshot") or {}
         capability_snapshot = semantic_snapshot.get("claim_capability_match") or {}
+        reconciliation = semantic_snapshot.get("product_verification_reconciliation") or proof_verification_reconciliation_snapshot(
+            {
+                "available": True,
+                "base_evidence_status": getattr(context.get("evidence"), "verification_status", None),
+                "semantic_status": semantic_result.semantic_status,
+                "report_status": None,
+                "capability_match_status": capability_snapshot.get("capability_match_status"),
+                "missing_critical_requirements": bool(capability_snapshot.get("missing_critical_requirements")),
+                "blocks_full_verification": bool(capability_snapshot.get("blocks_full_verification")),
+                "supporting_line_ranges": context.get("matched_segments") or [],
+            }
+        )
         return {
             "semantic_status": status,
             "confidence_score": confidence,
@@ -482,6 +495,7 @@ class GitHubRecruiterProofReportService:
             "capability_match_status": capability_snapshot.get("capability_match_status"),
             "supports_full_verification": capability_snapshot.get("supports_full_verification"),
             "blocks_full_verification": capability_snapshot.get("blocks_full_verification"),
+            "product_verification_reconciliation": reconciliation,
         }
 
 

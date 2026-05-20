@@ -1,9 +1,17 @@
 import type { EvidenceAccessLink, SkillEvidenceResponse } from "@/lib/api"
+import {
+  formatBaseEvidenceAcceptanceLabel,
+  formatProofDisplayLabel,
+  type ProofVerificationReconciliation,
+} from "./proof-verification-status"
 
 export type RecruiterProjectEvidenceBundle = {
   id: string
   projectTitle: string
   note?: string | null
+  latestDisplayLabel?: string | null
+  latestDisplayStatus?: string | null
+  latestDisplayMessage?: string | null
   evidenceItems: SkillEvidenceResponse[]
   githubAccessLinks: EvidenceAccessLink[]
   websiteAccessLinks: EvidenceAccessLink[]
@@ -79,6 +87,32 @@ function formatStatus(status: string): string {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ")
+}
+
+function readReconciliation(evidence: SkillEvidenceResponse): ProofVerificationReconciliation | null {
+  const metadata = readMetadata(evidence)
+  const candidate = metadata.proof_verification_reconciliation
+  if (!candidate || typeof candidate !== "object") return null
+  const reconciliation = candidate as Partial<ProofVerificationReconciliation>
+  if (
+    typeof reconciliation.displayStatus !== "string" ||
+    typeof reconciliation.shortDisplayLabel !== "string" ||
+    typeof reconciliation.studentFacingMessage !== "string" ||
+    typeof reconciliation.recruiterFacingMessage !== "string"
+  ) {
+    return null
+  }
+  return {
+    available: Boolean(reconciliation.available ?? true),
+    displayStatus: reconciliation.displayStatus as ProofVerificationReconciliation["displayStatus"],
+    confidenceBand: (reconciliation.confidenceBand as ProofVerificationReconciliation["confidenceBand"]) || "low",
+    shortDisplayLabel: reconciliation.shortDisplayLabel,
+    studentFacingMessage: reconciliation.studentFacingMessage,
+    recruiterFacingMessage: reconciliation.recruiterFacingMessage,
+    reviewRecommended: Boolean(reconciliation.reviewRecommended),
+    notes: reconciliation.notes ?? null,
+    technicalStatuses: reconciliation.technicalStatuses ?? {},
+  }
 }
 
 function getHostname(value?: string | null): string {
@@ -176,11 +210,25 @@ export function groupRecruiterProjectEvidenceBundles(
       const githubAccessLinks = combinedAccessLinks.filter((link) => link.access_type === "github_exact_lines")
       const websiteAccessLinks = combinedAccessLinks.filter((link) => link.access_type === "live_website")
       const latestEvidence = evidenceItems[0] ?? null
+      const reconciliation = latestEvidence ? readReconciliation(latestEvidence) : null
+      const displayLabel = reconciliation
+        ? formatProofDisplayLabel(reconciliation.displayStatus, "recruiter")
+        : latestEvidence
+          ? formatBaseEvidenceAcceptanceLabel(latestEvidence.verification_status)
+          : null
 
       return {
         id: key,
         projectTitle: entry.projectTitle,
-        note: latestEvidence?.verification_summary || (latestEvidence ? `Latest status: ${formatStatus(latestEvidence.verification_status)}` : null),
+        note:
+          (displayLabel && reconciliation?.recruiterFacingMessage
+            ? `${displayLabel}. ${reconciliation.recruiterFacingMessage}`
+            : reconciliation?.recruiterFacingMessage ||
+              latestEvidence?.verification_summary ||
+              (latestEvidence ? `Latest status: ${displayLabel || formatStatus(latestEvidence.verification_status)}` : null)),
+        latestDisplayLabel: displayLabel,
+        latestDisplayStatus: reconciliation?.displayStatus ?? null,
+        latestDisplayMessage: reconciliation?.recruiterFacingMessage ?? null,
         evidenceItems,
         githubAccessLinks,
         websiteAccessLinks,
@@ -208,7 +256,10 @@ function buildEvidenceArtifactFromRow(
 
   const evidenceAccessMethod = buildEvidenceAccessMethod(evidence)
   const verificationSummary = evidence.verification_summary || "Pending review"
-  const verificationStatus = formatStatus(evidence.verification_status)
+  const reconciliation = readReconciliation(evidence)
+  const verificationStatus = reconciliation
+    ? formatProofDisplayLabel(reconciliation.displayStatus, "recruiter")
+    : formatBaseEvidenceAcceptanceLabel(evidence.verification_status)
   const title = getRecruiterProjectTitle(evidence)
 
   return {
