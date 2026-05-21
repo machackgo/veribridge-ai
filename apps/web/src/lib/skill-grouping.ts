@@ -1,13 +1,13 @@
 /**
- * skill-grouping.ts — Phase J3C
+ * skill-grouping.ts — Phase J3C + J4A
  * Hierarchical skill grouping, subskill extraction, confidence calculation,
- * and system graph building for the GitHub portfolio scanner.
+ * and system graph building.
  *
- * Takes raw GitHubPortfolioScanCandidate[] and groups them into meaningful
- * parent skill categories with system-level evidence architecture graphs.
+ * groupProofSuggestions() — groups raw scan candidates (pre-import, J3C)
+ * groupSavedEvidence()    — groups saved DB evidence (post-import, J4A)
  */
 
-import type { GitHubPortfolioScanCandidate } from "./api"
+import type { GitHubPortfolioScanCandidate, SkillEvidenceResponse } from "./api"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -25,6 +25,17 @@ export type SkillEvidenceType =
 
 export type ConfidenceLevel = "high" | "medium" | "low"
 
+export type EvidenceSource =
+  | "github"
+  | "website"
+  | "linkedin"
+  | "certificate"
+  | "youtube"
+  | "pdf"
+  | "portfolio"
+  | "manual"
+  | "other"
+
 export type SkillEvidence = {
   candidateId: string
   repoName: string
@@ -40,6 +51,7 @@ export type SkillEvidence = {
   suggestedStatus: string
   evidenceType: SkillEvidenceType
   skillLabel: string
+  evidenceSource: EvidenceSource
 }
 
 export type ProjectEvidenceGroup = {
@@ -488,6 +500,7 @@ export function groupProofSuggestions(candidates: GitHubPortfolioScanCandidate[]
       suggestedStatus: c.suggested_status,
       evidenceType: inferEvidenceType(c.file_path, c.selection_reason),
       skillLabel: c.skill_label,
+      evidenceSource: "github",
     } as SkillEvidence,
     parentCategory: resolveParentCategory(c),
   }))
@@ -586,4 +599,248 @@ export function isGroupFullySelected(group: GroupedSkillSuggestion, selectedCand
 export function isGroupPartiallySelected(group: GroupedSkillSuggestion, selectedCandidateIds: Set<string>): boolean {
   const someSelected = group.evidenceItems.some((e) => selectedCandidateIds.has(e.candidateId))
   return someSelected && !isGroupFullySelected(group, selectedCandidateIds)
+}
+
+// ── J4A: Saved evidence utilities ─────────────────────────────────────────────
+
+/** Maps an evidence_type string to a canonical EvidenceSource. */
+export function mapEvidenceSourceType(evidenceType: string): EvidenceSource {
+  const t = evidenceType.toLowerCase().trim()
+  if (t === "github repository") return "github"
+  if (t === "deployed website") return "website"
+  if (t === "linkedin_post") return "linkedin"
+  if (t === "certificate") return "certificate"
+  if (t === "youtube_demo") return "youtube"
+  if (t === "pdf_report") return "pdf"
+  if (t === "portfolio_url") return "portfolio"
+  if (t === "manual_entry" || t === "manual" || t === "resume_bullet") return "manual"
+  return "other"
+}
+
+/** Human-readable label for a source type, used in badges. */
+export function getEvidenceSourceLabel(evidenceType: string): string {
+  const labels: Record<EvidenceSource, string> = {
+    github: "GitHub",
+    website: "Website",
+    linkedin: "LinkedIn",
+    certificate: "Certificate",
+    youtube: "YouTube",
+    pdf: "Document",
+    portfolio: "Portfolio",
+    manual: "Manual",
+    other: "Other",
+  }
+  return labels[mapEvidenceSourceType(evidenceType)] ?? "Other"
+}
+
+/** CTA label for the redirect link on an evidence item. */
+export function getEvidenceActionLabel(evidenceType: string): string {
+  const labels: Record<EvidenceSource, string> = {
+    github: "Open GitHub Evidence",
+    website: "Open Live Website",
+    linkedin: "Open LinkedIn Post",
+    certificate: "Verify Certificate",
+    youtube: "Open Demo Video",
+    pdf: "Open Document",
+    portfolio: "Open Portfolio",
+    manual: "View Proof Details",
+    other: "View Evidence",
+  }
+  return labels[mapEvidenceSourceType(evidenceType)] ?? "View Evidence"
+}
+
+/** Returns the best redirect URL for a saved evidence item, or null if none. */
+export function getEvidenceRedirectUrl(evidence: SkillEvidenceResponse): string | null {
+  const metadata = (evidence.metadata as Record<string, unknown> | undefined) ?? {}
+
+  if (evidence.evidence_type === "github repository") {
+    // Prefer the pre-built highlight URL stored in metadata
+    if (typeof metadata.github_highlight_url === "string" && metadata.github_highlight_url) {
+      return metadata.github_highlight_url
+    }
+    // Fall back to building a URL from repo + file + lines
+    if (evidence.repository_url) {
+      const base = evidence.repository_url.replace(/\/$/, "")
+      if (evidence.file_path) {
+        const branch = typeof metadata.branch_ref === "string" && metadata.branch_ref ? metadata.branch_ref : "main"
+        const anchor = evidence.line_start ? `#L${evidence.line_start}${evidence.line_end ? `-L${evidence.line_end}` : ""}` : ""
+        return `${base}/blob/${branch}/${evidence.file_path}${anchor}`
+      }
+      return base
+    }
+  }
+
+  // All other types: use evidence_url
+  return evidence.evidence_url ?? null
+}
+
+// ── Internal helpers for groupSavedEvidence ───────────────────────────────────
+
+function extractRepoNameFromUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    const parts = u.pathname.split("/").filter(Boolean)
+    if (u.hostname.includes("github.com") && parts.length >= 2) return parts[1]
+    return parts[parts.length - 1] ?? u.hostname
+  } catch {
+    return url.split("/").filter(Boolean).pop() ?? "project"
+  }
+}
+
+function verificationStatusToConfidence(status: string): ConfidenceLevel {
+  if (status === "verified") return "high"
+  if (status === "pending_review" || status === "needs_review") return "medium"
+  return "low"
+}
+
+// Maps evidence_type to a plausible detection reason for grouping when metadata.selection_reason is absent
+const EVIDENCE_TYPE_TO_DEFAULT_REASON: Record<string, string> = {
+  "github repository": "code line",
+  "deployed website": "live website demo",
+  "linkedin_post": "linkedin post",
+  "certificate": "certificate credential",
+  "youtube_demo": "demo video",
+  "pdf_report": "document proof",
+  "manual_entry": "manual entry",
+  "manual": "manual entry",
+  "resume_bullet": "resume bullet",
+}
+
+function resolveSavedEvidenceParent(e: SkillEvidenceResponse): string {
+  const skillName = e.skill_name
+  const metadata = (e.metadata as Record<string, unknown> | undefined) ?? {}
+  const storedReason = typeof metadata.selection_reason === "string" ? metadata.selection_reason : ""
+  const filePath = e.file_path ?? ""
+
+  // 1. Direct skill label mapping (unambiguous, e.g. "Docker" → "MLOps")
+  const direct = SKILL_LABEL_TO_PARENT[skillName]
+  if (direct) return direct
+
+  // 2. Use the stored detection reason from the scan metadata (GitHub scan imports)
+  if (storedReason) {
+    const fromReason = DETECTION_REASON_TO_PARENT[storedReason]
+    if (fromReason) return fromReason
+  }
+
+  // 3. File path inference (manual GitHub submissions)
+  if (filePath) {
+    const fromPath = inferParentFromFilePath(filePath)
+    if (fromPath) return fromPath
+  }
+
+  // 4. Fall back to skill_name (keeps non-IT skills intact)
+  return skillName
+}
+
+/** Groups saved SkillEvidenceResponse[] into hierarchical skill categories (J4A). */
+export function groupSavedEvidence(evidence: SkillEvidenceResponse[]): GroupedSkillSuggestion[] {
+  if (evidence.length === 0) return []
+
+  const categorized = evidence.map((e) => {
+    const metadata = (e.metadata as Record<string, unknown> | undefined) ?? {}
+
+    const githubHighlightUrl =
+      typeof metadata.github_highlight_url === "string" && metadata.github_highlight_url
+        ? metadata.github_highlight_url
+        : (e.repository_url ?? e.evidence_url ?? "")
+
+    const selectionReason =
+      typeof metadata.selection_reason === "string" && metadata.selection_reason
+        ? metadata.selection_reason
+        : (EVIDENCE_TYPE_TO_DEFAULT_REASON[e.evidence_type] ?? e.evidence_type)
+
+    const projectTitle =
+      typeof metadata.evidence_title === "string" && metadata.evidence_title.trim()
+        ? metadata.evidence_title.trim()
+        : e.skill_name
+
+    const repoUrl = e.repository_url ?? e.evidence_url ?? ""
+    const repoName = repoUrl ? extractRepoNameFromUrl(repoUrl) : e.skill_name
+
+    const ev: SkillEvidence = {
+      candidateId: e.id,
+      repoName,
+      repoUrl,
+      projectTitle,
+      filePath: e.file_path ?? "",
+      lineStart: e.line_start ?? 1,
+      lineEnd: e.line_end ?? 1,
+      githubHighlightUrl,
+      selectionReason,
+      evidenceDescription: e.evidence_description ?? "",
+      confidence: verificationStatusToConfidence(e.verification_status),
+      suggestedStatus: e.verification_status,
+      evidenceType: inferEvidenceType(e.file_path ?? "", selectionReason),
+      skillLabel: e.skill_name,
+      evidenceSource: mapEvidenceSourceType(e.evidence_type),
+    }
+    return { evidence: ev, parentCategory: resolveSavedEvidenceParent(e) }
+  })
+
+  // Group by parent category
+  const groupMap = new Map<string, SkillEvidence[]>()
+  for (const { evidence: ev, parentCategory } of categorized) {
+    const existing = groupMap.get(parentCategory) ?? []
+    existing.push(ev)
+    groupMap.set(parentCategory, existing)
+  }
+
+  const result: GroupedSkillSuggestion[] = []
+
+  for (const [skillName, evidenceItems] of groupMap.entries()) {
+    const id = normalizeSkillName(skillName)
+    const repos = [...new Set(evidenceItems.map((e) => e.repoName))]
+
+    // Subskills
+    const subskillMap = new Map<string, number>()
+    for (const e of evidenceItems) {
+      const name =
+        !["Python", "JavaScript", "TypeScript"].includes(e.skillLabel)
+          ? e.skillLabel
+          : (REASON_TO_SUBSKILL[e.selectionReason] ?? e.skillLabel)
+      subskillMap.set(name, (subskillMap.get(name) ?? 0) + 1)
+    }
+    const subskills: SkillSubskill[] = [...subskillMap.entries()]
+      .map(([name, evidenceCount]) => ({ name, evidenceCount }))
+      .sort((a, b) => b.evidenceCount - a.evidenceCount)
+
+    // Project groups (keyed by repoName, or skill+source for non-GitHub)
+    const projectMap = new Map<string, ProjectEvidenceGroup>()
+    for (const e of evidenceItems) {
+      const key = e.repoName || e.skillLabel
+      const existing = projectMap.get(key) ?? {
+        repoName: e.repoName,
+        repoUrl: e.repoUrl,
+        projectTitle: e.projectTitle,
+        evidenceItems: [],
+      }
+      existing.evidenceItems.push(e)
+      projectMap.set(key, existing)
+    }
+
+    const confidence = calculateSkillConfidence(evidenceItems)
+    const repoCount = repos.length
+
+    const grouped: GroupedSkillSuggestion = {
+      id,
+      skillName,
+      normalizedSkillName: id,
+      category: mapSkillToCategory(skillName),
+      parentSkill: null,
+      confidence,
+      statusSummary: `${evidenceItems.length} saved item${evidenceItems.length === 1 ? "" : "s"} across ${repoCount} source${repoCount === 1 ? "" : "s"}`,
+      evidenceCount: evidenceItems.length,
+      repoCount,
+      repositories: repos,
+      subskills,
+      evidenceItems,
+      projectGroups: [...projectMap.values()],
+      systemGraph: null,
+    }
+    grouped.systemGraph = buildSkillSystemGraph(grouped)
+    result.push(grouped)
+  }
+
+  result.sort((a, b) => b.evidenceCount - a.evidenceCount)
+  return result
 }

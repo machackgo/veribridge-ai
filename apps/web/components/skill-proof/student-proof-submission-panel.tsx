@@ -17,12 +17,12 @@ import {
   type SkillEvidenceResponse,
 } from "@/lib/api"
 import {
-  formatBaseEvidenceAcceptanceLabel,
   formatProofDisplayLabel,
   reconcileProofVerificationDisplayState,
   type ProofVerificationReconciliation,
 } from "./proof-verification-status"
 import { GitHubPortfolioScanPanel } from "./github-portfolio-scan-panel"
+import { SkillProofCenter } from "./skill-proof-center"
 
 type SubmissionTab = "github" | "website"
 
@@ -94,36 +94,6 @@ function normalizeLineNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function getEvidenceTitle(evidence: SkillEvidenceResponse): string {
-  const metadata = evidence.metadata as Record<string, unknown> | undefined
-  const title = typeof metadata?.evidence_title === "string" ? metadata.evidence_title.trim() : ""
-  return title || evidence.skill_name
-}
-
-function readReconciliationFromMetadata(metadata: Record<string, unknown> | undefined): ProofVerificationReconciliation | null {
-  const reconciliation = metadata?.proof_verification_reconciliation
-  if (!reconciliation || typeof reconciliation !== "object") return null
-  const candidate = reconciliation as Partial<ProofVerificationReconciliation>
-  if (
-    typeof candidate.displayStatus !== "string" ||
-    typeof candidate.shortDisplayLabel !== "string" ||
-    typeof candidate.studentFacingMessage !== "string" ||
-    typeof candidate.recruiterFacingMessage !== "string"
-  ) {
-    return null
-  }
-  return {
-    available: Boolean(candidate.available ?? true),
-    displayStatus: candidate.displayStatus as ProofVerificationReconciliation["displayStatus"],
-    confidenceBand: (candidate.confidenceBand as ProofVerificationReconciliation["confidenceBand"]) || "low",
-    shortDisplayLabel: candidate.shortDisplayLabel,
-    studentFacingMessage: candidate.studentFacingMessage,
-    recruiterFacingMessage: candidate.recruiterFacingMessage,
-    reviewRecommended: Boolean(candidate.reviewRecommended),
-    notes: candidate.notes ?? null,
-    technicalStatuses: candidate.technicalStatuses ?? {},
-  }
-}
 
 function buildEvidenceMetadataUpdate(
   existingMetadata: Record<string, unknown> | undefined,
@@ -407,13 +377,6 @@ export function StudentProofSubmissionPanel({
   const [githubForm, setGitHubForm] = useState<GitHubFormState>(initialGitHubForm)
   const [websiteForm, setWebsiteForm] = useState<WebsiteFormState>(initialWebsiteForm)
 
-  const evidenceCountLabel = useMemo(() => {
-    if (loadingEvidence) return "Proof evidence"
-    return evidence.length === 0
-      ? "Proof evidence · none added yet"
-      : `Proof evidence · ${evidence.length} item${evidence.length === 1 ? "" : "s"}`
-  }, [evidence.length, loadingEvidence])
-
   const refreshEvidence = useCallback(async () => {
     setLoadingEvidence(true)
     try {
@@ -584,77 +547,8 @@ export function StudentProofSubmissionPanel({
         />
       )}
 
-      <div style={{ display: "grid", gap: 12 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>{evidenceCountLabel}</div>
-        {loadingEvidence ? (
-          <div style={{ color: "var(--muted)", fontSize: 13 }}>Loading proof evidence…</div>
-        ) : evidence.length === 0 ? (
-          <div style={{ border: "1px dashed var(--line-2)", borderRadius: 14, background: "var(--bg)", padding: 14, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
-            No proof evidence has been attached yet. Add GitHub, live demo, certificates, reports, or dashboards.
-          </div>
-        ) : (
-          <div style={{ display: "grid", gap: 10 }}>
-            {evidence.map((entry) => {
-              const title = getEvidenceTitle(entry)
-              const metadata = (entry.metadata as Record<string, unknown> | undefined) ?? {}
-              const reconciliation = readReconciliationFromMetadata(metadata)
-              const displayLabel = reconciliation
-                ? formatProofDisplayLabel(reconciliation.displayStatus, "student")
-                : formatBaseEvidenceAcceptanceLabel(entry.verification_status)
-              return (
-                <article
-                  key={entry.id}
-                  data-testid={`student-proof-evidence-${entry.id}`}
-                  style={{
-                    border: "1px solid var(--line)",
-                    borderRadius: 12,
-                    background: "#fff",
-                    padding: 12,
-                    display: "grid",
-                    gap: 8,
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
-                    <div style={{ display: "grid", gap: 3 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{title}</div>
-                      <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                        {entry.skill_name} · {entry.evidence_type}
-                      </div>
-                    </div>
-                    <span
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 800,
-                        letterSpacing: "0.12em",
-                        textTransform: "uppercase",
-                        color: "var(--ink-2)",
-                        background: "var(--bg-2)",
-                        border: "1px solid var(--line)",
-                        borderRadius: 999,
-                        padding: "5px 8px",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {displayLabel}
-                    </span>
-                  </div>
-                  {entry.evidence_description ? (
-                    <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>{entry.evidence_description}</div>
-                  ) : null}
-                  {reconciliation ? (
-                    <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.55 }}>
-                      {reconciliation.studentFacingMessage}
-                    </div>
-                  ) : null}
-                  {entry.verification_summary ? (
-                    <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>{entry.verification_summary}</div>
-                  ) : null}
-                </article>
-              )
-            })}
-          </div>
-        )}
-      </div>
+      {/* Skill Proof Center — grouped hierarchical view of all saved evidence */}
+      <SkillProofCenter evidence={evidence} loading={loadingEvidence} />
 
       {open && (
         <div
