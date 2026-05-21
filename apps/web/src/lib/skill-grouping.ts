@@ -34,6 +34,7 @@ export type EvidenceSource =
   | "pdf"
   | "portfolio"
   | "manual"
+  | "google_drive"
   | "other"
 
 export type SkillEvidence = {
@@ -52,6 +53,8 @@ export type SkillEvidence = {
   evidenceType: SkillEvidenceType
   skillLabel: string
   evidenceSource: EvidenceSource
+  /** Source-specific display data (timestamps, page numbers, etc.) */
+  displayMetadata?: Record<string, unknown>
 }
 
 export type ProjectEvidenceGroup = {
@@ -612,8 +615,10 @@ export function mapEvidenceSourceType(evidenceType: string): EvidenceSource {
   if (t === "certificate") return "certificate"
   if (t === "youtube_demo") return "youtube"
   if (t === "pdf_report") return "pdf"
-  if (t === "portfolio_url") return "portfolio"
+  if (t === "portfolio" || t === "portfolio_url") return "portfolio"
+  if (t === "google_drive_document" || t === "google_drive") return "google_drive"
   if (t === "manual_entry" || t === "manual" || t === "resume_bullet") return "manual"
+  if (t === "other_link") return "other"
   return "other"
 }
 
@@ -628,13 +633,25 @@ export function getEvidenceSourceLabel(evidenceType: string): string {
     pdf: "Document",
     portfolio: "Portfolio",
     manual: "Manual",
+    google_drive: "Google Drive",
     other: "Other",
   }
   return labels[mapEvidenceSourceType(evidenceType)] ?? "Other"
 }
 
-/** CTA label for the redirect link on an evidence item. */
-export function getEvidenceActionLabel(evidenceType: string): string {
+/**
+ * CTA label for the redirect link on an evidence item.
+ * Pass displayMetadata to get YouTube timestamp in the label.
+ */
+export function getEvidenceActionLabel(
+  evidenceType: string,
+  displayMetadata?: Record<string, unknown>
+): string {
+  const source = mapEvidenceSourceType(evidenceType)
+  if (source === "youtube") {
+    const ts = displayMetadata?.timestamp_start_formatted
+    return typeof ts === "string" ? `Open Demo Video at ${ts}` : "Open Demo Video"
+  }
   const labels: Record<EvidenceSource, string> = {
     github: "Open GitHub Evidence",
     website: "Open Live Website",
@@ -644,9 +661,10 @@ export function getEvidenceActionLabel(evidenceType: string): string {
     pdf: "Open Document",
     portfolio: "Open Portfolio",
     manual: "View Proof Details",
-    other: "View Evidence",
+    google_drive: "Open Drive Document",
+    other: "Open Resource",
   }
-  return labels[mapEvidenceSourceType(evidenceType)] ?? "View Evidence"
+  return labels[source] ?? "View Evidence"
 }
 
 /** Returns the best redirect URL for a saved evidence item, or null if none. */
@@ -701,6 +719,10 @@ const EVIDENCE_TYPE_TO_DEFAULT_REASON: Record<string, string> = {
   "certificate": "certificate credential",
   "youtube_demo": "demo video",
   "pdf_report": "document proof",
+  "google_drive_document": "document proof",
+  "portfolio": "portfolio link",
+  "portfolio_url": "portfolio link",
+  "other_link": "external link",
   "manual_entry": "manual entry",
   "manual": "manual entry",
   "resume_bullet": "resume bullet",
@@ -773,6 +795,7 @@ export function groupSavedEvidence(evidence: SkillEvidenceResponse[]): GroupedSk
       evidenceType: inferEvidenceType(e.file_path ?? "", selectionReason),
       skillLabel: e.skill_name,
       evidenceSource: mapEvidenceSourceType(e.evidence_type),
+      displayMetadata: typeof metadata === "object" && metadata !== null ? metadata : undefined,
     }
     return { evidence: ev, parentCategory: resolveSavedEvidenceParent(e) }
   })

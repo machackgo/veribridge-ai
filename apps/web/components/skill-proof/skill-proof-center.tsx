@@ -58,17 +58,18 @@ function categoryStyle(category: string): CSSProperties {
 
 function sourceBadgeStyle(source: EvidenceSource): CSSProperties {
   const palette: Record<EvidenceSource, { bg: string; color: string; border: string }> = {
-    github:      { bg: "#f1f5f9", color: "#1e293b", border: "1px solid #e2e8f0" },
-    website:     { bg: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe" },
-    linkedin:    { bg: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" },
-    certificate: { bg: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a" },
-    youtube:     { bg: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" },
-    pdf:         { bg: "#f8fafc", color: "#475569", border: "1px solid #e2e8f0" },
-    portfolio:   { bg: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" },
-    manual:      { bg: "#faf5ff", color: "#6b21a8", border: "1px solid #e9d5ff" },
-    other:       { bg: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" },
+    github:       { bg: "#f1f5f9", color: "#1e293b", border: "1px solid #e2e8f0" },
+    website:      { bg: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe" },
+    linkedin:     { bg: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" },
+    certificate:  { bg: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a" },
+    youtube:      { bg: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" },
+    pdf:          { bg: "#f8fafc", color: "#475569", border: "1px solid #e2e8f0" },
+    portfolio:    { bg: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" },
+    manual:       { bg: "#faf5ff", color: "#6b21a8", border: "1px solid #e9d5ff" },
+    google_drive: { bg: "#fefce8", color: "#713f12", border: "1px solid #fde68a" },
+    other:        { bg: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" },
   }
-  const p = palette[source]
+  const p = palette[source] ?? { bg: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" }
   return { background: p.bg, color: p.color, border: p.border }
 }
 
@@ -159,6 +160,12 @@ function SystemGraphView({ graph }: { graph: SkillSystemGraph }) {
 
 // ── Saved evidence item row ───────────────────────────────────────────────────
 
+function savedEvidenceTypeString(source: EvidenceSource): string {
+  if (source === "github") return "github repository"
+  if (source === "website") return "deployed website"
+  return source
+}
+
 function SavedEvidenceRow({
   evidence,
   redirectUrl,
@@ -167,12 +174,25 @@ function SavedEvidenceRow({
   redirectUrl: string | null
 }) {
   const source = evidence.evidenceSource
+  const meta = evidence.displayMetadata
   const hasFileLocation = evidence.filePath && evidence.lineStart > 1
-  const actionLabel = getEvidenceActionLabel(
-    source === "github" ? "github repository"
-    : source === "website" ? "deployed website"
-    : source
-  )
+  const actionLabel = getEvidenceActionLabel(savedEvidenceTypeString(source), meta)
+
+  // YouTube timestamp display
+  const tsStart = typeof meta?.timestamp_start_formatted === "string" ? meta.timestamp_start_formatted : null
+  const tsEnd = typeof meta?.timestamp_end_formatted === "string" ? meta.timestamp_end_formatted : null
+  const transcriptSnippet = typeof meta?.transcript_snippet === "string" ? meta.transcript_snippet : null
+
+  // Google Drive / PDF detail
+  const pageNumber = typeof meta?.page_number === "string" ? meta.page_number : null
+  const sectionName = typeof meta?.section_name === "string" ? meta.section_name : null
+
+  // LinkedIn post summary
+  const postSummary = typeof meta?.post_summary === "string" ? meta.post_summary : null
+
+  // Certificate details
+  const issuer = typeof meta?.issuer === "string" ? meta.issuer : null
+  const credentialId = typeof meta?.credential_id === "string" ? meta.credential_id : null
 
   return (
     <div
@@ -193,11 +213,7 @@ function SavedEvidenceRow({
         </div>
         <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
           <span style={{ ...badgeBase, ...sourceBadgeStyle(source), fontSize: 9 }}>
-            {getEvidenceSourceLabel(
-              source === "github" ? "github repository"
-              : source === "website" ? "deployed website"
-              : source
-            )}
+            {getEvidenceSourceLabel(savedEvidenceTypeString(source))}
           </span>
           <span style={{ ...badgeBase, ...statusStyle(evidence.suggestedStatus), fontSize: 9 }}>
             {statusLabel(evidence.suggestedStatus)}
@@ -210,6 +226,46 @@ function SavedEvidenceRow({
         <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "var(--muted)" }}>
           {evidence.filePath}
           <span style={{ marginLeft: 6, fontWeight: 700 }}>L{evidence.lineStart}–L{evidence.lineEnd}</span>
+        </div>
+      )}
+
+      {/* YouTube: timestamp range */}
+      {source === "youtube" && tsStart && (
+        <div style={{ fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 10 }}>▶</span>
+          <span style={{ fontWeight: 700, color: "#991b1b" }}>
+            {tsStart}{tsEnd ? ` – ${tsEnd}` : ""}
+          </span>
+          {transcriptSnippet && (
+            <span style={{ color: "var(--muted)", fontStyle: "italic" }}>
+              · &ldquo;{transcriptSnippet.slice(0, 80)}{transcriptSnippet.length > 80 ? "…" : ""}&rdquo;
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* PDF/Google Drive: page and section */}
+      {(source === "pdf" || source === "google_drive") && (pageNumber || sectionName) && (
+        <div style={{ fontSize: 11, color: "var(--muted)" }}>
+          {pageNumber && <span>Page {pageNumber}</span>}
+          {pageNumber && sectionName && <span> · </span>}
+          {sectionName && <span>{sectionName}</span>}
+        </div>
+      )}
+
+      {/* LinkedIn: post summary */}
+      {source === "linkedin" && postSummary && (
+        <div style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>
+          &ldquo;{postSummary}&rdquo;
+        </div>
+      )}
+
+      {/* Certificate: issuer + ID */}
+      {source === "certificate" && (issuer || credentialId) && (
+        <div style={{ fontSize: 11, color: "var(--muted)" }}>
+          {issuer && <span>Issued by {issuer}</span>}
+          {issuer && credentialId && <span> · </span>}
+          {credentialId && <span>ID: {credentialId}</span>}
         </div>
       )}
 
@@ -678,7 +734,7 @@ export function SkillProofCenter({
                           rel="noopener noreferrer"
                           style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none" }}
                         >
-                          {getEvidenceActionLabel(e.evidence_type)} →
+                          {getEvidenceActionLabel(e.evidence_type, meta)} →
                         </a>
                       )}
                     </div>

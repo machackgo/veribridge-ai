@@ -23,8 +23,15 @@ import {
 } from "./proof-verification-status"
 import { GitHubPortfolioScanPanel } from "./github-portfolio-scan-panel"
 import { SkillProofCenter } from "./skill-proof-center"
+import {
+  MultiSourceProofForm,
+  SourceTypeSelector,
+} from "./multi-source-proof-form"
+import type { EvidenceSourceType } from "@/lib/evidence-sources"
 
 type SubmissionTab = "github" | "website"
+type ProofModalMode = "select" | "manual" | "ai_agent"
+type ManualFlowStep = "source_select" | "form"
 
 type SubmissionSummary = {
   title: string
@@ -376,6 +383,10 @@ export function StudentProofSubmissionPanel({
   const [submissionError, setSubmissionError] = useState<string | null>(null)
   const [githubForm, setGitHubForm] = useState<GitHubFormState>(initialGitHubForm)
   const [websiteForm, setWebsiteForm] = useState<WebsiteFormState>(initialWebsiteForm)
+  // Mode selection state (J4B)
+  const [proofMode, setProofMode] = useState<ProofModalMode>("select")
+  const [manualStep, setManualStep] = useState<ManualFlowStep>("source_select")
+  const [selectedSourceType, setSelectedSourceType] = useState<EvidenceSourceType | null>(null)
 
   const refreshEvidence = useCallback(async () => {
     setLoadingEvidence(true)
@@ -408,6 +419,44 @@ export function StudentProofSubmissionPanel({
     setSubmissionError(null)
     setGitHubForm(initialGitHubForm())
     setWebsiteForm(initialWebsiteForm())
+    setProofMode("select")
+    setManualStep("source_select")
+    setSelectedSourceType(null)
+  }
+
+  function handleSourceSelect(sourceType: EvidenceSourceType) {
+    setSelectedSourceType(sourceType)
+    if (sourceType === "github_repository") {
+      setActiveTab("github")
+    } else if (sourceType === "deployed_website") {
+      setActiveTab("website")
+    }
+    setManualStep("form")
+    setSubmissionError(null)
+  }
+
+  async function handleGenericSubmit(payload: import("@/lib/api").SkillEvidencePayload) {
+    setSubmitting(true)
+    setSubmissionError(null)
+    try {
+      const ev = await createSkillEvidence(payload)
+      try {
+        await generateEvidenceAccessLinks(ev.id)
+      } catch { /* best-effort */ }
+      await refreshEvidence()
+      const sourceName = typeof payload.metadata === "object" && payload.metadata !== null
+        ? String((payload.metadata as Record<string, unknown>).proof_kind ?? payload.evidence_type)
+        : payload.evidence_type
+      setSubmissionSummary({
+        title: "Proof evidence saved.",
+        message: `Your ${sourceName} proof for "${payload.skill_name}" has been added to your Skill Proof Center.`,
+        notes: ["Evidence added. AI verification or extraction will run in upcoming phases for this source type."],
+      })
+    } catch (err) {
+      setSubmissionError(err instanceof Error ? err.message : "Submission failed.")
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   async function handleSubmit() {
@@ -637,39 +686,158 @@ export function StudentProofSubmissionPanel({
               </div>
             ) : (
               <>
+                {/* ── Dynamic header ── */}
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--muted)" }}>
                       Add proof evidence
                     </div>
                     <h2 id="proof-submit-title" style={{ margin: "4px 0 0", fontSize: 24, color: "var(--ink)" }}>
-                      Submit GitHub or website proof
+                      {proofMode === "select" ? "How do you want to add proof?"
+                        : proofMode === "ai_agent" ? "AI Agent — Multi-Source Proof"
+                        : manualStep === "source_select" ? "Select evidence source"
+                        : selectedSourceType === "github_repository" ? "GitHub Code Proof"
+                        : selectedSourceType === "deployed_website" ? "Live Website Proof"
+                        : "Add Proof Evidence"}
                     </h2>
-                    <p style={{ margin: "8px 0 0", color: "var(--muted)", fontSize: 14, lineHeight: 1.6 }}>
-                      Website proof is optional. Use the GitHub tab for code evidence and the live website tab for deployed demo proof.
-                    </p>
                   </div>
                   <button
                     type="button"
                     onClick={closeModal}
                     aria-label="Close proof submission modal"
-                    style={{
-                      border: "1px solid var(--line)",
-                      background: "#fff",
-                      color: "var(--ink-2)",
-                      borderRadius: 10,
-                      width: 38,
-                      height: 38,
-                      fontSize: 18,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
+                    style={{ border: "1px solid var(--line)", background: "#fff", color: "var(--ink-2)", borderRadius: 10, width: 38, height: 38, fontSize: 18, fontWeight: 700, cursor: "pointer" }}
                   >
                     ×
                   </button>
                 </div>
 
-                <div role="tablist" aria-label="Proof evidence type" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {/* ── Mode: select ── */}
+                {proofMode === "select" && (
+                  <div style={{ display: "grid", gap: 16 }}>
+                    <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
+                      Choose how you want to add evidence. Only add proof you own or have permission to share.
+                    </p>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      {([
+                        ["manual", "✍ Add Manually", "Pick an evidence type and fill in the details yourself — GitHub, LinkedIn, YouTube, PDF, certificate, or free text."],
+                        ["ai_agent", "✦ Use AI Agent", "Paste resource links. GitHub scanning is active now. Other AI extraction (LinkedIn, YouTube, docs) coming in upcoming phases."],
+                      ] as const).map(([mode, title, desc]) => (
+                        <button
+                          key={`mode-${mode}`}
+                          type="button"
+                          onClick={() => { setProofMode(mode); setSubmissionError(null); }}
+                          style={{
+                            border: "1px solid var(--line)",
+                            borderRadius: 14,
+                            padding: "20px 18px",
+                            background: "#fff",
+                            cursor: "pointer",
+                            textAlign: "left",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 8,
+                            transition: "border-color 0.1s",
+                          }}
+                        >
+                          <span style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>{title}</span>
+                          <span style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>{desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Mode: manual — source type selector ── */}
+                {proofMode === "manual" && manualStep === "source_select" && (
+                  <div style={{ display: "grid", gap: 12 }}>
+                    <SourceTypeSelector onSelect={handleSourceSelect} />
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => { setProofMode("select"); setSubmissionError(null); }}
+                        style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "8px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
+                      >
+                        ← Back
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Mode: manual — multi-source form (new source types) ── */}
+                {proofMode === "manual" && manualStep === "form" && selectedSourceType &&
+                  selectedSourceType !== "github_repository" && selectedSourceType !== "deployed_website" && (
+                  <MultiSourceProofForm
+                    sourceType={selectedSourceType}
+                    submitting={submitting}
+                    error={submissionError}
+                    onBack={() => { setManualStep("source_select"); setSubmissionError(null); }}
+                    onSubmit={handleGenericSubmit}
+                  />
+                )}
+
+                {/* ── Mode: AI Agent ── */}
+                {proofMode === "ai_agent" && (
+                  <div style={{ display: "grid", gap: 16 }}>
+                    <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: "#1d4ed8", lineHeight: 1.6 }}>
+                      GitHub scanning is active now. LinkedIn, YouTube, Google Drive, certificates, and portfolio AI extraction will be added in upcoming phases.
+                      You can still save links from these sources now and VeriBridge will organize them in your Skill Proof Center.
+                    </div>
+
+                    {/* GitHub — active */}
+                    <div style={{ border: "1px solid var(--line)", borderRadius: 12, padding: "16px 18px", display: "grid", gap: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 20 }}>⌨</span>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)" }}>GitHub</div>
+                          <div style={{ fontSize: 11, color: "var(--muted)" }}>AI scan is active — scans repos and extracts evidence automatically</div>
+                        </div>
+                        <span style={{ marginLeft: "auto", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 999, padding: "2px 8px" }}>
+                          Active
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { closeModal(); setTimeout(() => setScanOpen(true), 50); }}
+                        style={{ border: "1px solid var(--ink)", background: "var(--ink)", color: "#fff", borderRadius: 10, padding: "10px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", alignSelf: "flex-start" }}
+                      >
+                        Scan my GitHub profile
+                      </button>
+                    </div>
+
+                    {/* Other sources — save link now */}
+                    <div style={{ border: "1px solid var(--line)", borderRadius: 12, padding: "16px 18px", display: "grid", gap: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)", marginBottom: 4 }}>Other Sources — Save a Link Now</div>
+                        <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>
+                          Add LinkedIn posts, YouTube demos, Google Drive documents, certificates, or portfolios.
+                          AI extraction for these will be added in upcoming phases.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { setProofMode("manual"); setManualStep("source_select"); }}
+                        style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer", alignSelf: "flex-start" }}
+                      >
+                        Browse source types →
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => { setProofMode("select"); setSubmissionError(null); }}
+                      style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "8px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer", alignSelf: "flex-start" }}
+                    >
+                      ← Back
+                    </button>
+                  </div>
+                )}
+
+                {/* ── Mode: manual — GitHub / Website forms (existing logic) ── */}
+                {proofMode === "manual" && manualStep === "form" &&
+                  (selectedSourceType === "github_repository" || selectedSourceType === "deployed_website") && (
+                  <><div>
+
+                </div><div role="tablist" aria-label="Proof evidence type" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {(
                     [
                       ["github", "GitHub Code"],
@@ -908,26 +1076,14 @@ export function StudentProofSubmissionPanel({
                 </div>
 
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                  <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>
-                    GitHub proof can be submitted on its own. Website proof is optional and only required when the project has a live deployed demo.
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setManualStep("source_select"); setSubmissionError(null); }}
+                    style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
+                  >
+                    ← Back to sources
+                  </button>
                   <div style={{ display: "flex", gap: 8 }}>
-                    <button
-                      type="button"
-                      data-testid="proof-submit-cancel"
-                      onClick={closeModal}
-                      style={{
-                        border: "1px solid var(--line)",
-                        background: "#fff",
-                        color: "var(--ink)",
-                        borderRadius: 10,
-                        padding: "10px 14px",
-                        fontWeight: 700,
-                        cursor: "pointer",
-                      }}
-                    >
-                      Cancel
-                    </button>
                     <button
                       type="button"
                       data-testid="proof-submit-action"
@@ -948,6 +1104,8 @@ export function StudentProofSubmissionPanel({
                     </button>
                   </div>
                 </div>
+                </>
+                )}
               </>
             )}
           </div>
