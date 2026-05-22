@@ -1244,18 +1244,23 @@ export function WebsiteAIAnalyzerPanel({
         { ms: bwBase + 2000,  msg: "Detecting visible input fields and buttons on page..." },
         { ms: bwBase + 5000,  msg: "Filling origin/source field with test input..." },
         { ms: bwBase + 8000,  msg: "Filling destination/to field..." },
-        { ms: bwBase + 10000, msg: "Checking for autocomplete suggestions..." },
-        { ms: bwBase + 13000, msg: "Clicking Predict Route Risk / Analyze button..." },
-        { ms: bwBase + 17000, msg: "Waiting for output and result card to appear..." },
-        { ms: bwBase + 22000, msg: "Capturing screenshot of final output screen..." },
-        { ms: bwBase + 25000, msg: "Attaching screenshot as visual proof..." },
+        { ms: bwBase + 10000, msg: "Checking for autocomplete/Places suggestions..." },
+        { ms: bwBase + 12000, msg: "Capturing baseline page state before clicking..." },
+        { ms: bwBase + 14000, msg: "Clicking Predict Route Risk / Analyze button..." },
+        { ms: bwBase + 17000, msg: "Waiting for loading/analyzing state to finish..." },
+        { ms: bwBase + 21000, msg: "Waiting for new output/result cards to appear (up to 45s)..." },
+        { ms: bwBase + 33000, msg: "Detecting new route result cards in page..." },
+        { ms: bwBase + 42000, msg: "Capturing screenshot of final output screen..." },
+        { ms: bwBase + 45000, msg: "Extracting visible output text for metric matching..." },
+        { ms: bwBase + 47000, msg: "Linking API metrics to visual evidence..." },
+        { ms: bwBase + 49000, msg: "Attaching screenshot as visual proof..." },
       ] : []),
       // Finalize
-      { ms: hasBrowserUI ? bwBase + 28000 : groupBase + 4000, msg: "Preparing grouped review screen..." },
+      { ms: hasBrowserUI ? bwBase + 52000 : groupBase + 4000, msg: "Preparing grouped review screen..." },
     ]
 
     const maxTime = hasBrowserUI
-      ? (hasRepo ? 90_000 : 70_000)
+      ? (hasRepo ? 120_000 : 100_000)
       : (hasRepo ? 50_000 : 35_000)
     const t0 = Date.now()
     let si = 0
@@ -1897,7 +1902,7 @@ export function WebsiteAIAnalyzerPanel({
               title="Evidence Sources"
               subtitle="Click any source to verify in a new tab"
             />
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 8, alignItems: "start" }}>
               {sourceLinks.map((item) => (
                 <EvidenceSourceCard key={item.id} item={item} />
               ))}

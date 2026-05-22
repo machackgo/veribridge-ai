@@ -23,16 +23,16 @@ function Mono({ children, style }: { children: ReactNode; style?: React.CSSPrope
   );
 }
 
-function PageHeader({ crumb, title, lede }: { crumb: string; title: string; lede: ReactNode }) {
+function PageHeader({ crumb, title, lede, compact }: { crumb: string; title: string; lede: ReactNode; compact?: boolean }) {
   return (
     <>
       <Mono style={{ fontSize: 11, letterSpacing: "0.16em", color: "var(--muted)", textTransform: "uppercase" }}>
         {crumb}
       </Mono>
-      <h1 style={{ fontSize: 32, fontWeight: 600, letterSpacing: "-0.02em", margin: "0 0 4px", color: "var(--ink)" }}>
+      <h1 style={{ fontSize: compact ? 26 : 32, fontWeight: 600, letterSpacing: "-0.02em", margin: "0 0 4px", color: "var(--ink)" }}>
         {title}
       </h1>
-      <p style={{ fontSize: 14, color: "var(--muted)", margin: "6px 0 24px", lineHeight: 1.55 }}>{lede}</p>
+      <p style={{ fontSize: 13, color: "var(--muted)", margin: compact ? "4px 0 10px" : "6px 0 24px", lineHeight: 1.5 }}>{lede}</p>
     </>
   );
 }
@@ -731,77 +731,51 @@ export function StudentProfileProof() {
     <div>
       <DemoToast msg={msg} />
       <PageHeader
+        compact
         crumb="Dashboard · Profile & Proof"
         title="Your verified profile."
-        lede="Every skill on your VeriBridge profile is anchored to evidence — GitHub commits, deployed apps, transcripts, and certifications. Recruiters see only what you choose to share."
+        lede="Every skill is anchored to evidence — GitHub commits, deployed apps, transcripts, and certifications."
       />
 
       {/* Profile card */}
-      <Card style={{ marginBottom: 16 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 24, alignItems: "center" }}>
+      <Card style={{ marginBottom: 10, padding: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 16, alignItems: "center" }}>
           <div
             style={{
-              width: 84,
-              height: 84,
-              borderRadius: 18,
+              width: 56,
+              height: 56,
+              borderRadius: 14,
               background: "linear-gradient(135deg,#4f46e5,#8b5cf6)",
               color: "#fff",
               display: "grid",
               placeItems: "center",
-              fontSize: 30,
+              fontSize: 20,
               fontWeight: 600,
+              flexShrink: 0,
             }}
           >
             MR
           </div>
           <div>
-            <h2 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em" }}>Maya Reyes</h2>
-            <Mono style={{ fontSize: 13, color: "var(--muted)", letterSpacing: "0.04em" }}>
+            <h2 style={{ margin: "0 0 2px", fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em" }}>Maya Reyes</h2>
+            <Mono style={{ fontSize: 11, color: "var(--muted)", letterSpacing: "0.04em" }}>
               WPI · CS &#39;26 · GPA 3.84 · Worcester, MA
             </Mono>
-            <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
               <Stat label="✓ .edu Verified" color="var(--emerald)" bg="var(--emerald-soft)" />
               <Stat label="F-1 · Visa OK" color="var(--indigo)" bg="var(--indigo-soft)" />
               <Stat label="Score 82 · Top 12%" color="var(--purple)" bg="var(--purple-soft)" />
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 6 }}>
             <Btn ghost onClick={() => show("Preview mode — recruiter view coming soon.")}>Preview as recruiter</Btn>
             <Btn onClick={() => show("Edit profile — coming soon.")}>Edit profile</Btn>
           </div>
         </div>
       </Card>
 
-      {/* Verified skills */}
-      <Card style={{ marginBottom: 16 }}>
-        <CardHeader title="Verified skills · none added yet" eyebrow="Start with your strongest skills" />
-        <div style={{ display: "grid", gap: 12 }}>
-          <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
-            No skills have been added to this profile yet. VeriBridge will verify each skill from exact proof when you attach it.
-          </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {["Suggested: Python", "Suggested: Docker", "Suggested: SQL", "Suggested: Figma"].map((s, index) => (
-              <span
-                key={`${s}-${index}`}
-                style={{
-                  fontSize: 12,
-                  padding: "7px 11px",
-                  background: "var(--bg-2)",
-                  border: "1px dashed var(--line-2)",
-                  color: "var(--muted)",
-                  borderRadius: 999,
-                  fontWeight: 600,
-                }}
-              >
-                {s}
-              </span>
-            ))}
-          </div>
-        </div>
-      </Card>
-
       {/* Evidence cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <StudentProofSubmissionPanel notify={show} />
         <Card>
           <CardHeader title="Suggested proof types" eyebrow="Not selected" />

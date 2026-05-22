@@ -46,7 +46,9 @@ _UNSAFE_CLICK_TERMS = (
     "clear all", "reset all", "cancel subscription",
 )
 
-# Generic output indicator terms (complement user-provided expected output)
+# Generic output indicator terms — used as a BASELINE FILTER, not direct detectors.
+# Terms already visible before clicking (legend items, static labels) are excluded
+# dynamically via baseline comparison.
 _OUTPUT_INDICATOR_TERMS = frozenset([
     "risk", "confidence", "route", "weather", "recommendation",
     "result", "prediction", "score", "low", "medium", "high",
@@ -56,6 +58,20 @@ _OUTPUT_INDICATOR_TERMS = frozenset([
     "danger", "safe", "optimal", "fastest",
 ])
 
+# Phrases that indicate a RESULT card / new output appeared.
+# Must be specific enough that they only appear in result output, NOT in
+# static header/legend text. Each phrase is also filtered against the baseline
+# page capture before being counted as evidence of new content.
+_RESULT_INDICATOR_PHRASES = [
+    "default route", "alternative route",
+    "showing result", "showing route", "route comparison",
+    "safer route", "risk class:", "confidence:", "risk level:",
+    "risk score:", "route result", "accident hotspot",
+    "fastest route", "optimal route", "recommended route",
+    "route 1", "route 2", "route option",
+    "hotspot area", "avoid hotspot",
+]
+
 # ── Field detection patterns ──────────────────────────────────────────────────
 
 _ORIGIN_HINTS = ["origin", "source", "start", "from", "departure", "pickup", "begin"]
@@ -63,9 +79,9 @@ _DEST_HINTS   = ["destination", "dest", "end", "to", "arrival", "dropoff", "goal
 
 _NAV_TIMEOUT       = 15_000
 _ACTION_TIMEOUT    = 5_000
-_POST_CLICK_WAIT   = 4_000   # min wait after click
-_OUTPUT_WAIT_MAX   = 30_000  # max wait for output (30s — cold starts can be slow)
-_LOADING_WAIT_MAX  = 12_000  # max wait for loading spinners to disappear
+_POST_CLICK_WAIT   = 3_000   # min wait after click before starting output detection
+_OUTPUT_WAIT_MAX   = 45_000  # max wait for NEW output after click (45s for cold starts)
+_LOADING_WAIT_MAX  = 15_000  # max wait for loading spinners to disappear
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -227,42 +243,90 @@ def _click_safe_button(page: Any) -> str | None:
     return None
 
 
-def _wait_for_output_terms(
+def _capture_baseline_text(page: Any) -> str:
+    """Capture visible body text before the submit action.
+
+    Used to compute which terms / phrases are already present in static UI
+    (e.g. legend labels "Low / Medium / High", header text "Route Risk") so
+    they are excluded from new-content detection after clicking.
+    """
+    try:
+        return page.locator("body").inner_text(timeout=3_000).lower()
+    except Exception:
+        return ""
+
+
+def _wait_for_new_content(
     page: Any,
+    baseline_text: str,
     user_expected: str | None,
     max_wait_ms: int = _OUTPUT_WAIT_MAX,
-) -> list[str]:
-    """Wait for output indicator terms to appear in page text.
+) -> tuple[bool, list[str]]:
+    """Wait for NEW output content to appear after the submit click.
 
-    Combines generic output indicators with user-provided expected output terms.
-    Returns list of matched terms (empty if timeout reached without finding output).
+    Strategy:
+    1. Exclude terms already present in ``baseline_text`` so static legend
+       words ("risk", "route", "low", "medium", "high") don't trigger a false
+       positive.
+    2. Check for result-indicator *phrases* (e.g. "default route",
+       "recommended", "risk class:") — these only appear in result cards.
+    3. Track body text length growth as a coarse change signal.
+    4. Return (new_content_detected, list_of_new_terms).
     """
-    search_terms: set[str] = set(_OUTPUT_INDICATOR_TERMS)
+    # Build candidate terms — only those absent from the baseline page
+    candidate_terms: set[str] = set()
+    for t in _OUTPUT_INDICATOR_TERMS:
+        if t not in baseline_text:
+            candidate_terms.add(t)
+    # Add user-provided expected output terms
     if user_expected:
         for t in re.split(r"[,/\n ]+", user_expected):
             t = t.strip().lower()
-            if len(t) >= 3:
-                search_terms.add(t)
+            if len(t) >= 3 and t not in baseline_text:
+                candidate_terms.add(t)
 
+    baseline_len = len(baseline_text)
     end_time = time.time() + max_wait_ms / 1000.0
-    best_found: list[str] = []
+    best_terms: list[str] = []
 
     while time.time() < end_time:
         try:
             body = page.locator("body").inner_text(timeout=3_000).lower()
-            found = [t for t in search_terms if t in body]
-            if len(found) > len(best_found):
-                best_found = found
-            if len(found) >= 3:
-                return found
+
+            # ── Phrase detection: only NEW phrases absent from baseline ────────
+            found_phrases = [
+                p for p in _RESULT_INDICATOR_PHRASES
+                if p in body and p not in baseline_text
+            ]
+
+            # ── Term detection: only terms absent from baseline ───────────────
+            found_terms = [t for t in candidate_terms if t in body]
+
+            # ── Text growth signal ────────────────────────────────────────────
+            text_grew = (len(body) - baseline_len) > 200
+
+            # A new result phrase is the strongest signal — return immediately
+            if found_phrases:
+                return True, found_phrases + found_terms[:3]
+
+            if len(found_terms) > len(best_terms):
+                best_terms = found_terms
+
+            # Many new terms + substantial text growth also confirms a result
+            if len(found_terms) >= 3 and text_grew:
+                return True, found_terms
+
         except Exception:
             pass
+
         try:
             page.wait_for_timeout(1_500)
         except Exception:
             break
 
-    return best_found
+    # Timeout — only report detected if we have multiple new terms (weak signal)
+    detected = len(best_terms) >= 3
+    return detected, best_terms
 
 
 def _generate_proof_summary(
@@ -301,15 +365,16 @@ def _generate_proof_summary(
 
     if expected_output_found and output_terms_found:
         summary += (
-            f" The following output indicators were detected in the result: "
-            f"{', '.join(output_terms_found[:6])}."
+            " VeriBridge captured the final UI output after the workflow completed."
+            f" New output detected: {', '.join(output_terms_found[:6])}."
         )
     elif expected_output_found:
-        summary += " Expected output was detected in the page."
+        summary += " VeriBridge captured the final UI output after the workflow completed."
     else:
         summary += (
-            " Review the screenshot manually to confirm the expected output appeared — "
-            "it may have appeared after the screenshot was captured."
+            " VeriBridge captured the current browser state, but final output was not"
+            " confirmed before the screenshot was taken. Review the screenshot manually"
+            " to confirm the result appeared."
         )
 
     return summary
@@ -472,7 +537,11 @@ def run_browser_screenshot(
                     if _try_fill(page, [fk], fv):
                         result.steps_run.append(f"Filled field '{fk}': \"{fv}\"")
 
-                # ── Step 6: Click safe submit button ──────────────────────────
+                # ── Step 6: Capture baseline text BEFORE clicking ─────────────
+                result.steps_run.append("Capturing baseline page state before clicking...")
+                baseline_text = _capture_baseline_text(page)
+
+                # ── Step 7: Click safe submit button ──────────────────────────
                 btn_text = _click_safe_button(page)
                 if btn_text:
                     result.button_text_clicked = btn_text
@@ -483,7 +552,7 @@ def run_browser_screenshot(
                         "submit, search, route, risk, calculate, run, find, generate"
                     )
 
-                # ── Step 7: Wait for network idle ─────────────────────────────
+                # ── Step 8: Wait for network / loading to settle ───────────────
                 try:
                     page.wait_for_load_state("networkidle", timeout=8_000)
                     result.steps_run.append("Network settled after click")
@@ -491,39 +560,48 @@ def run_browser_screenshot(
                     page.wait_for_timeout(_POST_CLICK_WAIT)
                     result.steps_run.append("Waited for page to stabilize after click")
 
-                # ── Step 7b: Wait for loading indicators to disappear ─────────
                 result.steps_run.append("Waiting for loading/analyzing state to finish...")
                 loading_done = _wait_for_loading_to_finish(page, _LOADING_WAIT_MAX)
                 if loading_done:
-                    result.steps_run.append("Loading state finished — page ready for output")
+                    result.steps_run.append("Loading state finished — page ready for output detection")
                 else:
-                    result.steps_run.append("Loading state may still be active — attempting output detection")
+                    result.steps_run.append("Loading may still be active — proceeding to output detection")
 
-                # ── Step 8: Wait actively for output indicators (up to 30s) ───
-                result.steps_run.append("Waiting for output/result to appear (up to 30s for cold starts)...")
-                output_terms = _wait_for_output_terms(page, expected_output, _OUTPUT_WAIT_MAX)
+                # ── Step 9: Wait for NEW content after click (up to 45s) ───────
+                result.steps_run.append(
+                    "Waiting for new output/result cards to appear (up to 45s for cold starts)..."
+                )
+                new_content_found, output_terms = _wait_for_new_content(
+                    page, baseline_text, expected_output, _OUTPUT_WAIT_MAX
+                )
                 result.output_terms_found = output_terms
 
-                if output_terms:
+                if new_content_found and output_terms:
                     result.expected_output_found = True
                     result.output_text_found = ", ".join(output_terms[:5])
                     result.steps_run.append(
-                        f"Output indicators detected: {', '.join(output_terms[:6])}"
+                        f"Final output detected — new content: {', '.join(output_terms[:6])}"
                     )
                 else:
-                    result.steps_run.append("Output indicators not detected in visible text")
+                    result.steps_run.append(
+                        "Final output not confirmed before timeout — capturing current state"
+                    )
 
-                # ── Step 9: Capture screenshot (AFTER output wait) ────────────
-                result.steps_run.append("Capturing screenshot of current page state")
+                # ── Step 10: Capture screenshot (AFTER output detection) ────────
+                result.steps_run.append("Capturing screenshot of final browser state")
                 _attach_screenshot(page, result)
                 # Also capture visible body text for metric-to-visual matching
                 result.frontend_visible_output_text = _extract_visible_output_text(page)
                 if result.screenshot_data_url:
-                    result.steps_run.append("Screenshot captured successfully")
                     result.success = True
-                    result.browser_workflow_status = (
-                        "passed" if result.expected_output_found else "partial"
-                    )
+                    if result.expected_output_found:
+                        result.steps_run.append("Screenshot captured — final output visible")
+                        result.browser_workflow_status = "passed"
+                    else:
+                        result.steps_run.append(
+                            "Screenshot captured — final output not confirmed before timeout"
+                        )
+                        result.browser_workflow_status = "partial"
                 else:
                     result.steps_run.append("Screenshot could not be captured")
                     result.browser_workflow_status = "partial" if btn_text else "failed"
