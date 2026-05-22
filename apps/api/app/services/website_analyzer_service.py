@@ -1,4 +1,4 @@
-"""Website AI Analyzer Service — Phase J4D.
+"""Website AI Analyzer Service — Phase J4D / J4E.
 
 Fetches a public URL, inspects common API routes, parses OpenAPI specs,
 and extracts evidence candidates for the Skill Proof Center.
@@ -15,8 +15,11 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import logging
 import re
 import socket
+import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -26,6 +29,18 @@ from app.schemas.website_analyzer import (
     WebsiteAnalysisCandidate,
     WebsiteAnalyzeResponse,
 )
+
+# Import scanner for single-repo analysis (J4E)
+_API_ROOT = Path(__file__).resolve().parents[2]
+if str(_API_ROOT) not in sys.path:
+    sys.path.insert(0, str(_API_ROOT))
+
+from scripts.github_portfolio_scanner import (  # noqa: E402
+    GitHubAPIClient,
+    PortfolioScanner,
+)
+
+logger = logging.getLogger(__name__)
 
 # ── SSRF protection ───────────────────────────────────────────────────────────
 
@@ -147,6 +162,164 @@ def _cid(source_url: str, skill: str) -> str:
     return hashlib.sha256(f"{source_url}|{skill}".encode()).hexdigest()[:16]
 
 
+# ── GitHub repo URL parser ─────────────────────────────────────────────────────
+
+_GITHUB_REPO_RE = re.compile(
+    r"(?:https?://)?github\.com/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_.\-]+?)(?:\.git)?/?$"
+)
+
+
+def parse_github_repo_url(url: str) -> tuple[str, str] | None:
+    """Extract (owner, repo) from a GitHub repo URL. Returns None if not parseable."""
+    m = _GITHUB_REPO_RE.match(url.strip())
+    return (m.group(1), m.group(2)) if m else None
+
+
+# ── Repo evidence → WebsiteAnalysisCandidate conversion ──────────────────────
+
+_DETECTION_TO_ACTION: dict[str, str] = {
+    "Dockerfile instruction":   "Open Dockerfile",
+    "CI/CD workflow step":      "Open CI/CD Config",
+    "ML training call":         "Open Training Code",
+    "ML model instantiation":   "Open Model Code",
+    "ML prediction/inference":  "Open Inference Code",
+    "ML evaluation metrics":    "Open Evaluation Code",
+    "API endpoint decorator":   "Open API Code",
+    "API handler function":     "Open API Handler",
+    "Monitoring/metrics":       "Open Metrics Code",
+    "Data preprocessing":       "Open Data Code",
+    "React component logic":    "Open React Code",
+    "RAG/LLM logic":            "Open LLM Code",
+    "NLP processing":           "Open NLP Code",
+}
+
+_HIGH_CONFIDENCE_REASONS = frozenset([
+    "ML training call", "ML prediction/inference", "ML model instantiation",
+    "ML evaluation metrics", "API endpoint decorator", "Dockerfile instruction",
+    "CI/CD workflow step", "RAG/LLM logic", "NLP processing",
+])
+
+_SKILL_TO_CATEGORY: dict[str, str] = {
+    "Machine Learning": "Machine Learning Engineering",
+    "Python":           "Machine Learning Engineering",
+    "FastAPI":          "Backend / API Engineering",
+    "Docker":           "MLOps",
+    "CI/CD":            "DevOps / CI-CD",
+    "React":            "Full-Stack Development",
+    "TypeScript":       "Full-Stack Development",
+    "JavaScript":       "Full-Stack Development",
+    "GCP":              "Cloud Deployment",
+    "AWS":              "Cloud Deployment",
+    "Cloud Deployment": "Cloud Deployment",
+    "MLOps":            "MLOps",
+    "Computer Vision":  "Computer Vision",
+    "NLP":              "NLP / Language Processing",
+    "RAG / LLM":        "AI / LLM Engineering",
+    "Data Engineering": "Data Engineering",
+    "PostgreSQL":       "Backend / API Engineering",
+    "SQL":              "Data Engineering",
+    "Shell Scripting":  "DevOps / CI-CD",
+    "Go":               "Backend / API Engineering",
+    "Java":             "Backend / API Engineering",
+}
+
+
+def _skill_category(skill: str) -> str:
+    return _SKILL_TO_CATEGORY.get(skill, "General")
+
+
+def _evidence_candidate_to_website_candidate(c: Any) -> WebsiteAnalysisCandidate:
+    """Convert a scanner EvidenceCandidate to a WebsiteAnalysisCandidate for the review screen."""
+    confidence = "high" if c.detection_reason in _HIGH_CONFIDENCE_REASONS else "medium"
+    status = "suggested" if confidence == "high" else "needs_review"
+    action = _DETECTION_TO_ACTION.get(c.detection_reason, "Open GitHub Evidence")
+    return WebsiteAnalysisCandidate(
+        candidate_id=_cid(c.github_highlight_url, c.skill_name),
+        skill_name=c.skill_name,
+        skill_category=_skill_category(c.skill_name),
+        confidence=confidence,
+        evidence_title=f"{c.skill_name} — {c.project_title}",
+        evidence_summary=c.evidence_description,
+        source_url=c.github_highlight_url,
+        route_path=f"{c.file_path} L{c.line_start}–L{c.line_end}",
+        evidence_snippet=f"{c.file_path} ({c.detection_reason})",
+        evidence_type="github_repo",
+        action_label=action,
+        suggested_status=status,
+        evidence_source="github_repo",
+    )
+
+
+# ── Evidence merging (website + repo → combined review list) ─────────────────
+
+def _merge_candidates(
+    website: list[WebsiteAnalysisCandidate],
+    repo: list[WebsiteAnalysisCandidate],
+) -> list[WebsiteAnalysisCandidate]:
+    """Merge website and repo candidates; create a combined record for shared skills."""
+    web_by_skill: dict[str, WebsiteAnalysisCandidate] = {}
+    for c in website:
+        web_by_skill.setdefault(c.skill_name, c)
+
+    repo_by_skill: dict[str, WebsiteAnalysisCandidate] = {}
+    for c in repo:
+        repo_by_skill.setdefault(c.skill_name, c)
+
+    _conf_rank = {"high": 2, "medium": 1, "low": 0}
+
+    merged: list[WebsiteAnalysisCandidate] = []
+    seen: set[str] = set()
+
+    for skill in sorted(set(web_by_skill) | set(repo_by_skill)):
+        w = web_by_skill.get(skill)
+        r = repo_by_skill.get(skill)
+
+        if w and r:
+            # Combined evidence — confidence is at least "medium", often "high"
+            best = max(_conf_rank.get(w.confidence, 0), _conf_rank.get(r.confidence, 0))
+            merged_conf: str = "high" if best >= 1 else "medium"
+            merged.append(WebsiteAnalysisCandidate(
+                candidate_id=_cid(w.source_url + r.source_url, skill),
+                skill_name=skill,
+                skill_category=w.skill_category or r.skill_category,
+                confidence=merged_conf,
+                evidence_title=f"{skill} — website + GitHub repo",
+                evidence_summary=(
+                    f"Website: {w.evidence_summary[:150]} | "
+                    f"GitHub: {r.evidence_summary[:150]}"
+                ),
+                source_url=w.source_url,
+                route_path=w.route_path,
+                evidence_snippet=(
+                    f"Website ({w.route_path}): {w.evidence_snippet[:100]} | "
+                    f"GitHub ({r.route_path}): {r.evidence_snippet[:100]}"
+                ),
+                evidence_type="combined",
+                action_label=w.action_label,
+                suggested_status="suggested",
+                evidence_source="combined",
+                is_combined=True,
+                related_source_url=r.source_url,
+            ))
+            seen.add(skill)
+        elif w:
+            merged.append(w)
+            seen.add(skill)
+        elif r:
+            merged.append(r)
+            seen.add(skill)
+
+    # Sort: combined first (strongest), then by confidence, then suggested first
+    _status_rank = {"suggested": 0, "needs_review": 1}
+    _source_rank = {"combined": 0, "website": 1, "github_repo": 2}
+    merged.sort(key=lambda c: (
+        _source_rank.get(c.evidence_source, 9),
+        _status_rank.get(c.suggested_status, 9),
+        -_conf_rank.get(c.confidence, 0),
+    ))
+    return merged
+
+
 # ── Route result ──────────────────────────────────────────────────────────────
 
 class _RouteResult:
@@ -177,7 +350,12 @@ class WebsiteAnalyzerService:
         "Accept": "text/html,application/json,*/*;q=0.9",
     }
 
-    def analyze(self, url: str, skill_focus: str | None = None) -> WebsiteAnalyzeResponse:
+    def analyze(
+        self,
+        url: str,
+        skill_focus: str | None = None,
+        github_repo_url: str | None = None,
+    ) -> WebsiteAnalyzeResponse:
         safe, reason = _is_safe_url(url)
         if not safe:
             return WebsiteAnalyzeResponse(
@@ -193,10 +371,7 @@ class WebsiteAnalyzerService:
         openapi_data: dict[str, Any] | None = None
 
         for route in self.ROUTES:
-            if route == "/":
-                full_url = url if url.endswith("/") else url + "/"
-            else:
-                full_url = base.rstrip("/") + route
+            full_url = (url if url.endswith("/") else url + "/") if route == "/" else base.rstrip("/") + route
             rr = self._fetch(full_url)
             if rr is None:
                 continue
@@ -208,13 +383,68 @@ class WebsiteAnalyzerService:
                 except Exception:
                     pass
 
-        candidates = self._generate(base, url, route_results, openapi_data, skill_focus, warnings)
+        website_candidates = self._generate(base, url, route_results, openapi_data, skill_focus, warnings)
+
+        # ── J4E: optional connected GitHub repo scan ─────────────────────────
+        repo_candidates: list[WebsiteAnalysisCandidate] = []
+        clean_repo_url = (github_repo_url or "").strip()
+        if clean_repo_url:
+            parsed_repo = parse_github_repo_url(clean_repo_url)
+            if parsed_repo is None:
+                warnings.append(
+                    f"Could not parse GitHub repo URL '{clean_repo_url}'. "
+                    "Expected format: https://github.com/owner/repo"
+                )
+            else:
+                owner, repo_name = parsed_repo
+                try:
+                    from app.services.github_portfolio_scan_service import _ENV_GITHUB_TOKEN  # noqa: PLC0415
+                    gh_client = GitHubAPIClient(token=_ENV_GITHUB_TOKEN)
+                    scanner = PortfolioScanner(gh_client)
+                    raw_evidence = scanner.scan_repo_by_url(owner, repo_name)
+                    checked_urls.append(f"https://github.com/{owner}/{repo_name}")
+                    # Deduplicate by (file_path, line_start, skill_name)
+                    seen_repo: set[str] = set()
+                    for ev in raw_evidence:
+                        key = f"{ev.file_path}|{ev.line_start}|{ev.skill_name}"
+                        if key not in seen_repo:
+                            seen_repo.add(key)
+                            repo_candidates.append(_evidence_candidate_to_website_candidate(ev))
+                    if not raw_evidence:
+                        warnings.append(
+                            f"Connected repo '{owner}/{repo_name}' was scanned but no high-signal "
+                            "evidence files were found. The repo may use a language or structure "
+                            "the scanner does not yet recognise."
+                        )
+                except ValueError as exc:
+                    warnings.append(f"Connected repo scan failed: {exc}")
+                except Exception as exc:
+                    logger.warning("Repo scan failed for %s/%s: %s", owner, repo_name, exc)
+                    warnings.append(
+                        f"Connected repo scan for '{owner}/{repo_name}' could not be completed. "
+                        "Website evidence is shown below."
+                    )
+
+        # ── Merge website + repo candidates ──────────────────────────────────
+        if repo_candidates:
+            all_candidates = _merge_candidates(website_candidates, repo_candidates)
+        else:
+            all_candidates = website_candidates
+
+        web_count = sum(1 for c in all_candidates if c.evidence_source == "website")
+        repo_count = sum(1 for c in all_candidates if c.evidence_source == "github_repo")
+        combined_count = sum(1 for c in all_candidates if c.evidence_source == "combined")
+
         return WebsiteAnalyzeResponse(
             base_url=url,
-            candidates=candidates,
+            candidates=all_candidates,
             checked_urls=checked_urls,
             warnings=warnings,
-            candidate_count=len(candidates),
+            candidate_count=len(all_candidates),
+            website_candidate_count=web_count,
+            repo_candidate_count=repo_count,
+            combined_candidate_count=combined_count,
+            github_repo_url=clean_repo_url or None,
         )
 
     # ── Fetch ──────────────────────────────────────────────────────────────────

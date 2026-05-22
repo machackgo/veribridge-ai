@@ -121,6 +121,28 @@ class GitHubAPIClient:
 
         return ValueError(f"GitHub API rate limit reached. {hint}")
 
+    def get_repo(self, owner: str, repo: str) -> dict[str, Any] | None:
+        """Fetch metadata for a single repo; normalises language fields for _parse_repo."""
+        url = f"{self.GITHUB_API}/repos/{owner}/{repo}"
+        try:
+            with httpx.Client(timeout=self._timeout, follow_redirects=True) as client:
+                resp = client.get(url, headers=self._headers())
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if "languages" not in data:
+                        primary = data.get("language") or ""
+                        data["languages"] = {primary: 100} if primary else {}
+                    return data
+                if resp.status_code == 404:
+                    raise ValueError(f"GitHub repository '{owner}/{repo}' not found.")
+                if resp.status_code in (403, 429):
+                    raise self._rate_limit_error(resp)
+                return None
+        except ValueError:
+            raise
+        except (httpx.HTTPError, Exception):
+            return None
+
     def list_repos(self, username: str) -> list[dict[str, Any]]:
         url = f"{self.GITHUB_API}/users/{username}/repos"
         params = {"per_page": 100, "sort": "updated", "direction": "desc"}
@@ -196,6 +218,10 @@ class MockGitHubAPIClient:
     ) -> list[dict[str, Any]]:
         key = f"{owner}/{repo}"
         return self._trees.get(key, [])
+
+    def get_repo(self, owner: str, repo: str) -> dict[str, Any] | None:
+        """Not implemented in mock — returns None."""
+        return None
 
     def get_raw_file(
         self, owner: str, repo: str, branch: str, path: str
@@ -816,6 +842,20 @@ class PortfolioScanner:
             candidates.extend(repo_candidates)
 
         return candidates
+
+    def scan_repo_by_url(self, owner: str, repo_name: str) -> list[EvidenceCandidate]:
+        """Scan a single known repository without listing all user repos first.
+
+        Uses GET /repos/{owner}/{repo} for metadata, then scans the file tree
+        with the same logic as the full portfolio scan.
+        """
+        raw = self._github.get_repo(owner, repo_name)
+        if raw is None:
+            return []
+        repo_info = _parse_repo(raw)
+        if repo_info is None:
+            return []
+        return self._scan_repo(owner, repo_info)
 
     def _scan_repo(
         self, username: str, repo: RepoInfo

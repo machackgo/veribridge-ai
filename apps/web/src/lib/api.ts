@@ -423,6 +423,8 @@ export async function searchRecruiterCandidates(query: string): Promise<Candidat
 
 // ── Website AI Analyzer (Phase J4D) ──────────────────────────────────────────
 
+export type WebsiteEvidenceSource = "website" | "github_repo" | "combined"
+
 export type WebsiteAnalysisCandidate = {
   candidate_id: string
   skill_name: string
@@ -433,9 +435,15 @@ export type WebsiteAnalysisCandidate = {
   source_url: string
   route_path: string
   evidence_snippet: string
-  evidence_type: "deployed_website" | "api_docs" | "api_endpoint" | "website_content"
+  evidence_type: "deployed_website" | "api_docs" | "api_endpoint" | "website_content" | "github_repo" | "combined"
   action_label: string
   suggested_status: "suggested" | "needs_review"
+  /** J4E: which source produced this candidate */
+  evidence_source: WebsiteEvidenceSource
+  /** True when website + GitHub repo both provided evidence for this skill */
+  is_combined: boolean
+  /** For combined candidates: the other source URL */
+  related_source_url?: string | null
 }
 
 export type WebsiteAnalyzeResponse = {
@@ -444,11 +452,17 @@ export type WebsiteAnalyzeResponse = {
   checked_urls: string[]
   warnings: string[]
   candidate_count: number
+  /** J4E source counts */
+  website_candidate_count: number
+  repo_candidate_count: number
+  combined_candidate_count: number
+  github_repo_url?: string | null
 }
 
 export async function analyzeWebsite(params: {
   url: string
   skill_focus?: string | null
+  github_repo_url?: string | null
 }): Promise<WebsiteAnalyzeResponse> {
   const res = await fetchAPI("/api/v1/student/website-analysis/analyze", {
     method: "POST",

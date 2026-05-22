@@ -41,7 +41,7 @@ def analyze_website(
     )
     try:
         svc = WebsiteAnalyzerService()
-        return svc.analyze(url=body.url, skill_focus=body.skill_focus)
+        return svc.analyze(url=body.url, skill_focus=body.skill_focus, github_repo_url=body.github_repo_url)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
