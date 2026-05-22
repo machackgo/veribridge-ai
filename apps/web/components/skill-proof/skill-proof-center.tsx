@@ -299,13 +299,25 @@ function SavedEvidenceRow({
 
       {/* Website analyzer: route path (non-functional) */}
       {(isWebsiteAnalyzer || isCombined) && !isFunctional && routePath && (
-        <div style={{ fontFamily: "monospace", fontSize: 10, color: "var(--muted)" }}>
-          {routePath}
-          {evidenceTypeDetail && (
-            <span style={{ marginLeft: 8, fontFamily: "sans-serif", fontSize: 9, color: "#475569", background: "#f1f5f9", border: "1px solid #e2e8f0", borderRadius: 4, padding: "1px 5px" }}>
+        <div style={{ fontFamily: "monospace", fontSize: 10, color: "var(--muted)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: source === "github" ? 700 : 400, color: source === "github" ? "#1e293b" : "var(--muted)" }}>
+            {routePath}
+          </span>
+          {evidenceTypeDetail && source !== "github" && (
+            <span style={{ fontFamily: "sans-serif", fontSize: 9, color: "#475569", background: "#f1f5f9", border: "1px solid #e2e8f0", borderRadius: 4, padding: "1px 5px" }}>
               {evidenceTypeDetail}
             </span>
           )}
+          {/* For GitHub evidence, extract and show detection reason from evidence_snippet */}
+          {source === "github" && (() => {
+            const snippetVal = typeof meta.evidence_snippet === "string" ? meta.evidence_snippet : null
+            const reasonMatch = snippetVal?.match(/\(([^)]+)\)$/)
+            return reasonMatch ? (
+              <span style={{ fontFamily: "sans-serif", fontSize: 8, fontWeight: 700, color: "#1d4ed8", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 999, padding: "1px 6px" }}>
+                {reasonMatch[1]}
+              </span>
+            ) : null
+          })()}
         </div>
       )}
 

@@ -703,16 +703,36 @@ function GitHubEvidenceRow({ c }: { c: WebsiteAnalysisCandidate }) {
   const pathParts = c.route_path.split(" ")
   const filePath = pathParts[0] ?? c.route_path
   const lineRange = pathParts.slice(1).join(" ")
+  // Extract detection reason from evidence_snippet: "file.py (ML prediction/inference)"
+  const reasonMatch = c.evidence_snippet.match(/\(([^)]+)\)$/)
+  const detectionReason = reasonMatch ? reasonMatch[1] : null
+
   return (
-    <div style={{ padding: "7px 10px", borderRadius: 7, border: "1px solid #e2e8f0", background: "#f8fafc", marginBottom: 3 }}>
+    <div style={{ padding: "8px 11px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f8fafc", marginBottom: 4 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: "#1e293b" }}>
-            {filePath}
-            {lineRange && <span style={{ marginLeft: 8, fontWeight: 400, color: "#64748b" }}>{lineRange}</span>}
+        <div style={{ minWidth: 0, flex: 1 }}>
+          {/* File path + line range */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 3 }}>
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: "#1e293b" }}>
+              {filePath}
+            </span>
+            {lineRange && (
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 400, color: "#64748b" }}>
+                {lineRange}
+              </span>
+            )}
+            {detectionReason && (
+              <span style={{ fontSize: 8, fontWeight: 700, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe", borderRadius: 999, padding: "1px 6px", whiteSpace: "nowrap" }}>
+                {detectionReason}
+              </span>
+            )}
+            <span style={{ ...badgeBase, fontSize: 8, ...confidenceStyle(c.confidence), padding: "1px 6px" }}>
+              {c.confidence}
+            </span>
           </div>
-          <div style={{ fontSize: 10, color: "var(--ink-2)", marginTop: 2, lineHeight: 1.4 }}>
-            {c.evidence_summary.slice(0, 110)}{c.evidence_summary.length > 110 ? "…" : ""}
+          {/* Evidence summary */}
+          <div style={{ fontSize: 10, color: "var(--ink-2)", lineHeight: 1.4 }}>
+            {c.evidence_summary.slice(0, 120)}{c.evidence_summary.length > 120 ? "…" : ""}
           </div>
         </div>
         <a href={c.source_url} target="_blank" rel="noopener noreferrer"
@@ -720,6 +740,50 @@ function GitHubEvidenceRow({ c }: { c: WebsiteAnalysisCandidate }) {
           {c.action_label} →
         </a>
       </div>
+    </div>
+  )
+}
+
+// ── Proof source connection summary ───────────────────────────────────────────
+
+function SourceConnectionSummary({
+  websiteCount, combinedCount, functionalItems, repoCount, hasBrowserWorkflow,
+}: {
+  websiteCount: number; combinedCount: number
+  functionalItems: FunctionalVerificationCandidate[]
+  repoCount: number; hasBrowserWorkflow: boolean
+}) {
+  const passedTests = functionalItems.filter((fc) => fc.verified).length
+  type SourceEntry = { icon: string; label: string; detail: string; color: string }
+  const sources: SourceEntry[] = []
+
+  if (websiteCount + combinedCount > 0) {
+    sources.push({ icon: "🌐", label: "Website", detail: `${websiteCount + combinedCount} item${websiteCount + combinedCount !== 1 ? "s" : ""}`, color: "#1d4ed8" })
+  }
+  if (functionalItems.length > 0) {
+    sources.push({ icon: "✓", label: "API Verified", detail: `${passedTests} of ${functionalItems.length} test${functionalItems.length !== 1 ? "s" : ""} passed`, color: passedTests > 0 ? "#166534" : "#854d0e" })
+  }
+  if (hasBrowserWorkflow) {
+    sources.push({ icon: "📸", label: "Browser Screenshot", detail: "captured", color: "#5b21b6" })
+  }
+  if (repoCount > 0) {
+    sources.push({ icon: "⌨", label: "GitHub Code", detail: `${repoCount} file${repoCount !== 1 ? "s" : ""}`, color: "#1e293b" })
+  }
+
+  if (!sources.length) return null
+
+  return (
+    <div style={{ padding: "8px 10px", borderRadius: 8, background: "#f8fafc", border: "1px solid var(--line)", marginBottom: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ fontSize: 9, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 2 }}>
+        Proof Sources
+      </div>
+      {sources.map((src) => (
+        <div key={src.label} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+          <span>{src.icon}</span>
+          <span style={{ fontWeight: 600, color: src.color }}>{src.label}:</span>
+          <span style={{ color: "var(--ink-2)" }}>{src.detail}</span>
+        </div>
+      ))}
     </div>
   )
 }
@@ -732,12 +796,14 @@ function GroupedSkillCard({
   onToggle,
   atomicById,
   functionalById,
+  hasBrowserWorkflow = false,
 }: {
   group: GroupedWebsiteSkill
   isSelected: boolean
   onToggle: () => void
   atomicById: Map<string, WebsiteAnalysisCandidate>
   functionalById: Map<string, FunctionalVerificationCandidate>
+  hasBrowserWorkflow?: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -754,6 +820,7 @@ function GroupedSkillCard({
 
   const hasFunctionalPassed = functionalItems.some((fc) => fc.verified)
   const isPartial = group.is_partial
+  const hasGitHubEvidence = repoItems.length > 0
   const border = isSelected ? "#6366f1" : hasFunctionalPassed ? "#bbf7d0" : isPartial ? "#fcd34d" : "var(--line)"
   const bgHeader = isSelected ? "#f5f3ff" : "#fff"
 
@@ -793,7 +860,17 @@ function GroupedSkillCard({
             </span>
             {hasFunctionalPassed && (
               <span style={{ ...badgeBase, fontSize: 9, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
-                Live Test Passed
+                API Verified
+              </span>
+            )}
+            {hasBrowserWorkflow && (
+              <span style={{ ...badgeBase, fontSize: 9, background: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe" }}>
+                📸 Screenshot
+              </span>
+            )}
+            {hasGitHubEvidence && (
+              <span style={{ ...badgeBase, fontSize: 9, background: "#f1f5f9", color: "#1e293b", border: "1px solid #e2e8f0" }}>
+                ⌨ GitHub Code
               </span>
             )}
             {isPartial && (
@@ -860,6 +937,15 @@ function GroupedSkillCard({
             </div>
             <SystemGraph nodes={group.system_graph_nodes} />
           </div>
+
+          {/* Proof source connection summary */}
+          <SourceConnectionSummary
+            websiteCount={websiteItems.length}
+            combinedCount={combinedItems.length}
+            functionalItems={functionalItems}
+            repoCount={repoItems.length}
+            hasBrowserWorkflow={hasBrowserWorkflow}
+          />
 
           {/* Cloud platform inferred signal (AI Product Deployment / Cloud Deployment) */}
           {group.inferred_cloud_platform && (
@@ -1955,6 +2041,7 @@ export function WebsiteAIAnalyzerPanel({
                     onToggle={() => toggleGroup(group.group_id)}
                     atomicById={atomicById}
                     functionalById={functionalById}
+                    hasBrowserWorkflow={analyzeResult.browser_workflow_result?.screenshot_status === "captured"}
                   />
                 ))}
               </div>
