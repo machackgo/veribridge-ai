@@ -1161,22 +1161,29 @@ class WebsiteAnalyzerService:
         repo_count = sum(1 for c in all_candidates if c.evidence_source == "github_repo")
         combined_count = sum(1 for c in all_candidates if c.evidence_source == "combined")
 
-        # ── J4F: Functional verification ─────────────────────────────────────
+        # ── J4F / J4J: Functional verification — flag-based combined behavior ────
+        # run_api_verification and run_browser_verification can both be True
+        # simultaneously. test_mode is kept for backward compat only.
         functional_candidates: list[FunctionalVerificationCandidate] = []
-        test_mode = (functional_test_plan.test_mode if functional_test_plan else "auto")
 
-        if test_mode == "browser_ui":
+        _tp = functional_test_plan
+        _plan_only = _tp and _tp.test_mode == "plan_only"
+        _run_api = (
+            run_safe_tests
+            and (not _tp or _tp.run_api_verification)
+            and not _plan_only
+        )
+        _run_browser = (
+            bool(_tp and _tp.frontend_url and (_tp.frontend_url or "").strip())
+            and (not _tp or _tp.run_browser_verification)
+            and not _plan_only
+        )
+
+        if _plan_only:
             warnings.append(
-                "Browser UI workflow verification is not yet implemented. "
-                "API endpoint evidence is shown below. "
-                "Full browser UI testing coming soon."
+                "Test plan saved. No live endpoint tests were run per your settings."
             )
-        elif test_mode == "plan_only":
-            warnings.append(
-                "Test mode is set to 'Save test plan only'. No live endpoint tests were run. "
-                "Your test plan details have been recorded."
-            )
-        elif run_safe_tests:
+        elif _run_api:
             if openapi_data:
                 try:
                     functional_candidates = self._run_functional_verification(
@@ -1190,20 +1197,18 @@ class WebsiteAnalyzerService:
                     )
             else:
                 warnings.append(
-                    "Functional verification unavailable — no OpenAPI spec found at /openapi.json. "
-                    "Browser UI workflow verification coming soon."
+                    "Functional verification unavailable — no OpenAPI spec found at /openapi.json."
                 )
 
         # ── J4G: Group into high-level skill cards ────────────────────────────
         grouped_skills = _group_candidates(all_candidates, functional_candidates)
         grouped_skills = _post_process_groups(grouped_skills, base, all_candidates, functional_candidates)
 
-        # ── J4I: Browser UI workflow screenshot ───────────────────────────────
+        # ── J4I / J4J: Browser UI workflow screenshot ─────────────────────────
         browser_workflow_result: BrowserWorkflowVerificationResult | None = None
-        test_mode = (functional_test_plan.test_mode if functional_test_plan else "auto")
 
-        if test_mode == "browser_ui":
-            frontend_url = (functional_test_plan.frontend_url or "").strip() if functional_test_plan else ""
+        if _run_browser:
+            frontend_url = (_tp.frontend_url or "").strip() if _tp else ""
             if frontend_url:
                 safe_furl, reason_furl = _is_safe_url(frontend_url)
                 if not safe_furl:

@@ -420,9 +420,9 @@ export function StudentProofSubmissionPanel({
   const [agentGithubRepoUrl, setAgentGithubRepoUrl] = useState("")
   const [agentFunctionalTestPlan, setAgentFunctionalTestPlan] = useState<{
     whatToTest: string; testInput: string; expectedOutput: string
-    testMode: "auto" | "api_endpoint" | "browser_ui" | "plan_only"
     frontendUrl: string; browserWorkflowInstructions: string
-  }>({ whatToTest: "", testInput: "", expectedOutput: "", testMode: "auto", frontendUrl: "", browserWorkflowInstructions: "" })
+    runApiVerification: boolean; runBrowserVerification: boolean
+  }>({ whatToTest: "", testInput: "", expectedOutput: "", frontendUrl: "", browserWorkflowInstructions: "", runApiVerification: true, runBrowserVerification: true })
   // Pre-fills the scan panel when opened from AI Agent mode
   const [pendingScanUrl, setPendingScanUrl] = useState("")
 
@@ -470,7 +470,7 @@ export function StudentProofSubmissionPanel({
     setAgentUrl("")
     setAgentSkillFocus("")
     setAgentGithubRepoUrl("")
-    setAgentFunctionalTestPlan({ whatToTest: "", testInput: "", expectedOutput: "", testMode: "auto", frontendUrl: "", browserWorkflowInstructions: "" })
+    setAgentFunctionalTestPlan({ whatToTest: "", testInput: "", expectedOutput: "", frontendUrl: "", browserWorkflowInstructions: "", runApiVerification: true, runBrowserVerification: true })
     setAgentTimestampStart("")
     setAgentTimestampEnd("")
     setAgentTranscript("")

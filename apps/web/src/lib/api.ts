@@ -479,10 +479,13 @@ export type FunctionalTestPlan = {
   what_to_test?: string | null
   test_input?: string | null          // JSON or "key=value; key=value" pairs
   expected_output?: string | null
-  test_mode: "auto" | "api_endpoint" | "browser_ui" | "plan_only"
+  test_mode?: "auto" | "api_endpoint" | "browser_ui" | "plan_only"  // kept for backward compat
   /** J4I: browser UI workflow screenshot fields */
   frontend_url?: string | null        // Frontend URL with interactive UI
   browser_workflow_instructions?: string | null
+  /** J4J: explicit verification flags — both can be True simultaneously */
+  run_api_verification?: boolean
+  run_browser_verification?: boolean
 }
 
 /** J4I: Result of a Playwright-based browser UI workflow screenshot capture. */

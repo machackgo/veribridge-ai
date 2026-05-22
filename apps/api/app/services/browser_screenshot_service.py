@@ -64,7 +64,8 @@ _DEST_HINTS   = ["destination", "dest", "end", "to", "arrival", "dropoff", "goal
 _NAV_TIMEOUT       = 15_000
 _ACTION_TIMEOUT    = 5_000
 _POST_CLICK_WAIT   = 4_000   # min wait after click
-_OUTPUT_WAIT_MAX   = 15_000  # max additional wait for output indicators
+_OUTPUT_WAIT_MAX   = 30_000  # max wait for output (30s — cold starts can be slow)
+_LOADING_WAIT_MAX  = 12_000  # max wait for loading spinners to disappear
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -313,6 +314,51 @@ def _generate_proof_summary(
     return summary
 
 
+def _wait_for_loading_to_finish(page: Any, max_ms: int = _LOADING_WAIT_MAX) -> bool:
+    """Wait for loading/analyzing spinners and text to disappear.
+
+    Returns True if loading finished cleanly within max_ms.
+    Common patterns: "Analyzing...", spinner elements, aria-busy, disabled buttons.
+    """
+    _LOADING_TEXT_RE = re.compile(
+        r"\banalyzing\b|\bloading\b|\bplease wait\b|\bcalculating\b|\bprocessing\b",
+        re.IGNORECASE,
+    )
+    _SPINNER_SELECTORS = [
+        "[class*='spinner']:visible",
+        "[class*='loading']:visible",
+        "[class*='progress']:visible",
+        "[aria-busy='true']:visible",
+        "[class*='skeleton']:visible",
+    ]
+    end = time.time() + max_ms / 1000.0
+    while time.time() < end:
+        try:
+            # Check for loading text in visible page body
+            body = page.locator("body").inner_text(timeout=2_000)
+            has_loading_text = bool(_LOADING_TEXT_RE.search(body))
+
+            # Check for spinner elements
+            has_spinner = False
+            for sel in _SPINNER_SELECTORS:
+                try:
+                    if page.locator(sel).count() > 0:
+                        has_spinner = True
+                        break
+                except Exception:
+                    continue
+
+            if not has_loading_text and not has_spinner:
+                return True
+        except Exception:
+            pass
+        try:
+            page.wait_for_timeout(1_200)
+        except Exception:
+            break
+    return False
+
+
 def _attach_screenshot(page: Any, result: BrowserScreenshotResult) -> None:
     """Capture JPEG screenshot and attach as data URL."""
     try:
@@ -428,13 +474,21 @@ def run_browser_screenshot(
                 # ── Step 7: Wait for network idle ─────────────────────────────
                 try:
                     page.wait_for_load_state("networkidle", timeout=8_000)
-                    result.steps_run.append("Page settled after click")
+                    result.steps_run.append("Network settled after click")
                 except Exception:
                     page.wait_for_timeout(_POST_CLICK_WAIT)
-                    result.steps_run.append("Waited for page to stabilize")
+                    result.steps_run.append("Waited for page to stabilize after click")
 
-                # ── Step 8: Wait actively for output indicators ───────────────
-                result.steps_run.append("Waiting for output/result to appear...")
+                # ── Step 7b: Wait for loading indicators to disappear ─────────
+                result.steps_run.append("Waiting for loading/analyzing state to finish...")
+                loading_done = _wait_for_loading_to_finish(page, _LOADING_WAIT_MAX)
+                if loading_done:
+                    result.steps_run.append("Loading state finished — page ready for output")
+                else:
+                    result.steps_run.append("Loading state may still be active — attempting output detection")
+
+                # ── Step 8: Wait actively for output indicators (up to 30s) ───
+                result.steps_run.append("Waiting for output/result to appear (up to 30s for cold starts)...")
                 output_terms = _wait_for_output_terms(page, expected_output, _OUTPUT_WAIT_MAX)
                 result.output_terms_found = output_terms
 

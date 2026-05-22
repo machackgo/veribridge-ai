@@ -34,14 +34,23 @@ class WebsiteAnalysisCandidate(BaseModel):
 # ── J4H: Functional test plan (user-provided, optional) ──────────────────────
 
 class FunctionalTestPlan(BaseModel):
-    """User-supplied test plan for transparent functional verification."""
+    """User-supplied test plan for transparent functional verification.
+
+    J4J: run_api_verification and run_browser_verification explicitly control
+    which verification paths run. The test_mode field is kept for backward compat
+    but the boolean flags take precedence when both are present.
+    """
     what_to_test: str | None = Field(default=None, max_length=500)
     test_input: str | None = Field(default=None, max_length=2000)  # JSON or key=value
     expected_output: str | None = Field(default=None, max_length=500)
+    # Kept for backward compat; new callers use the boolean flags below
     test_mode: Literal["auto", "api_endpoint", "browser_ui", "plan_only"] = "auto"
     # J4I: browser UI workflow screenshot fields
     frontend_url: str | None = Field(default=None, max_length=2000)
     browser_workflow_instructions: str | None = Field(default=None, max_length=2000)
+    # J4J: explicit verification flags — both can be True simultaneously
+    run_api_verification: bool = Field(default=True)
+    run_browser_verification: bool = Field(default=True)
 
 
 # ── J4I: Browser UI workflow verification result ──────────────────────────────

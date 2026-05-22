@@ -960,9 +960,10 @@ type FunctionalTestPlanState = {
   whatToTest: string
   testInput: string
   expectedOutput: string
-  testMode: "auto" | "api_endpoint" | "browser_ui" | "plan_only"
   frontendUrl: string                  // J4I: frontend URL with interactive UI
   browserWorkflowInstructions: string  // J4I: step instructions for Playwright
+  runApiVerification: boolean          // J4J: verify API endpoints
+  runBrowserVerification: boolean      // J4J: verify frontend UI and capture screenshot
 }
 
 export function WebsiteAIAnalyzerPanel({
@@ -1060,7 +1061,7 @@ export function WebsiteAIAnalyzerPanel({
     setPanelStep("analyzing")
 
     // Staged work log messages — modular per analysis phase
-    const hasBrowserUI = functionalTestPlan.testMode === "browser_ui" && functionalTestPlan.frontendUrl.trim()
+    const hasBrowserUI = functionalTestPlan.runBrowserVerification && !!functionalTestPlan.frontendUrl.trim()
     const apiBase   = hasRepo ? 22000 : 8000
     const groupBase = hasRepo ? 31000 : 17000
     const bwBase    = hasRepo ? 38000 : 24000
@@ -1127,14 +1128,18 @@ export function WebsiteAIAnalyzerPanel({
         functionalTestPlan.expectedOutput.trim() ||
         functionalTestPlan.frontendUrl.trim()
       )
-      const testPlanPayload: FunctionalTestPlan | null = hasTestPlan || functionalTestPlan.testMode !== "auto"
+      // Build test plan — always include when any field is filled.
+      // run_api_verification + run_browser_verification drive the combined behavior.
+      const testPlanPayload: FunctionalTestPlan | null = hasTestPlan
         ? {
             what_to_test: functionalTestPlan.whatToTest.trim() || null,
             test_input: functionalTestPlan.testInput.trim() || null,
             expected_output: functionalTestPlan.expectedOutput.trim() || null,
-            test_mode: functionalTestPlan.testMode,
+            test_mode: "auto",
             frontend_url: functionalTestPlan.frontendUrl.trim() || null,
             browser_workflow_instructions: functionalTestPlan.browserWorkflowInstructions.trim() || null,
+            run_api_verification: functionalTestPlan.runApiVerification,
+            run_browser_verification: functionalTestPlan.runBrowserVerification && !!functionalTestPlan.frontendUrl.trim(),
           }
         : null
 
@@ -1586,93 +1591,89 @@ export function WebsiteAIAnalyzerPanel({
                   />
                 </div>
 
-                {/* Test mode */}
+                {/* Frontend App URL — always shown */}
+                <div style={{ display: "grid", gap: 3 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>
+                    Frontend App URL <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional — for browser screenshot)</span>
+                  </span>
+                  <input
+                    type="url"
+                    value={functionalTestPlan.frontendUrl}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      onFunctionalTestPlanChange({
+                        ...functionalTestPlan,
+                        frontendUrl: v,
+                        // Auto-enable browser verification when URL is typed
+                        runBrowserVerification: v.trim() ? true : functionalTestPlan.runBrowserVerification,
+                      })
+                    }}
+                    placeholder="https://your-frontend-app.vercel.app"
+                    style={inp}
+                  />
+                  <span style={{ fontSize: 10, color: "var(--muted)" }}>
+                    The page with visible input fields and buttons. VeriBridge will open it, fill fields, click the action button, and capture a screenshot.
+                  </span>
+                </div>
+
+                {/* Browser workflow instructions — shown when frontend URL is provided */}
+                {functionalTestPlan.frontendUrl.trim() && (
+                  <div style={{ display: "grid", gap: 3 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>
+                      Browser workflow instructions <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span>
+                    </span>
+                    <textarea
+                      value={functionalTestPlan.browserWorkflowInstructions}
+                      onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, browserWorkflowInstructions: e.target.value })}
+                      placeholder={"Open the website.\nFill the input fields with the test data above.\nClick Analyze / Predict / Submit / Search.\nWait for the result to appear.\nCapture screenshot of the output."}
+                      rows={3}
+                      style={{ ...inp, fontSize: 11, resize: "vertical" }}
+                    />
+                  </div>
+                )}
+
+                {/* Verification options — checkboxes, not mutually exclusive */}
                 <div style={{ display: "grid", gap: 4 }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>Test mode</span>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                    {([
-                      { value: "auto", label: "Auto-detect from OpenAPI spec", desc: "VeriBridge finds safe endpoints automatically" },
-                      { value: "api_endpoint", label: "API endpoint test (use my test input)", desc: "Use the input above for API endpoint tests" },
-                      { value: "plan_only", label: "Save test plan only (no live test)", desc: "Record this plan without running any tests" },
-                    ] as const).map(({ value, label, desc }) => (
-                      <label key={value} style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
-                        <input
-                          type="radio"
-                          name="test-mode"
-                          value={value}
-                          checked={functionalTestPlan.testMode === value}
-                          onChange={() => onFunctionalTestPlanChange({ ...functionalTestPlan, testMode: value })}
-                          style={{ marginTop: 2 }}
-                        />
-                        <div>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-2)" }}>{label}</div>
-                          <div style={{ fontSize: 10, color: "var(--muted)" }}>{desc}</div>
-                        </div>
-                      </label>
-                    ))}
-                    {/* Browser UI workflow screenshot — now enabled */}
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>Verification options</span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                     <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
                       <input
-                        type="radio"
-                        name="test-mode"
-                        value="browser_ui"
-                        checked={functionalTestPlan.testMode === "browser_ui"}
-                        onChange={() => onFunctionalTestPlanChange({ ...functionalTestPlan, testMode: "browser_ui" })}
+                        type="checkbox"
+                        checked={functionalTestPlan.runApiVerification}
+                        onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, runApiVerification: e.target.checked })}
+                        style={{ marginTop: 2 }}
+                      />
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-2)" }}>Verify API endpoints (if OpenAPI spec found)</div>
+                        <div style={{ fontSize: 10, color: "var(--muted)" }}>Run safe API endpoint tests with your test input and capture actual output</div>
+                      </div>
+                    </label>
+                    <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: functionalTestPlan.frontendUrl.trim() ? "pointer" : "not-allowed", opacity: functionalTestPlan.frontendUrl.trim() ? 1 : 0.5 }}>
+                      <input
+                        type="checkbox"
+                        checked={functionalTestPlan.runBrowserVerification}
+                        disabled={!functionalTestPlan.frontendUrl.trim()}
+                        onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, runBrowserVerification: e.target.checked })}
                         style={{ marginTop: 2 }}
                       />
                       <div>
                         <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-2)" }}>
-                          Browser UI workflow screenshot
+                          Verify frontend UI workflow and capture screenshot
                           <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0", borderRadius: 999, padding: "1px 6px" }}>
                             Playwright
                           </span>
                         </div>
                         <div style={{ fontSize: 10, color: "var(--muted)" }}>
-                          Open frontend → fill inputs → click button → capture screenshot
+                          {functionalTestPlan.frontendUrl.trim()
+                            ? "Open frontend → fill inputs → click button → capture screenshot after output"
+                            : "Requires Frontend App URL above"}
                         </div>
                       </div>
                     </label>
                   </div>
-
-                  {/* Browser UI conditional fields */}
-                  {functionalTestPlan.testMode === "browser_ui" && (
-                    <div style={{ borderTop: "1px solid #e0f2fe", paddingTop: 10, display: "grid", gap: 8 }}>
-                      <div style={{ fontSize: 10, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe", borderRadius: 6, padding: "6px 10px", lineHeight: 1.5 }}>
-                        Provide the <strong>frontend app URL</strong> — the page where users interact with the product.
-                        The backend/API URL above verifies endpoints; this URL captures the visible UI workflow screenshot.
-                      </div>
-                      <div style={{ display: "grid", gap: 3 }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>
-                          Frontend App URL <span style={{ fontWeight: 400, color: "#991b1b" }}>*</span>
-                        </span>
-                        <input
-                          type="url"
-                          value={functionalTestPlan.frontendUrl}
-                          onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, frontendUrl: e.target.value })}
-                          placeholder="https://your-frontend-app.vercel.app"
-                          style={inp}
-                        />
-                        <span style={{ fontSize: 10, color: "var(--muted)" }}>
-                          The page with visible input fields and buttons — not the backend API URL.
-                        </span>
-                      </div>
-                      <div style={{ display: "grid", gap: 3 }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>
-                          Browser workflow instructions <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span>
-                        </span>
-                        <textarea
-                          value={functionalTestPlan.browserWorkflowInstructions}
-                          onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, browserWorkflowInstructions: e.target.value })}
-                          placeholder={"Open the frontend website.\nFill the origin/source field.\nFill the destination/end field.\nClick Analyze Route / Predict / Submit.\nWait for output to appear.\nCapture screenshot."}
-                          rows={4}
-                          style={{ ...inp, fontSize: 11, resize: "vertical" }}
-                        />
-                        <span style={{ fontSize: 10, color: "var(--muted)" }}>
-                          VeriBridge auto-detects fields using the test input above. Add extra instructions if needed.
-                        </span>
-                      </div>
-                    </div>
-                  )}
+                  <div style={{ fontSize: 10, color: "var(--muted)", fontStyle: "italic", marginTop: 2 }}>
+                    Both can run together. VeriBridge combines API and browser verification into one Website Functionality Proof.
+                  </div>
                 </div>
               </div>
             )}
@@ -1768,20 +1769,52 @@ export function WebsiteAIAnalyzerPanel({
                   return parts.join(" · ") || "Functional verification"
                 })()}
               />
-              {/* API endpoint tests */}
-              {analyzeResult.functional_candidates.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {analyzeResult.functional_candidates.map((fc) => (
-                    <FunctionalRow key={fc.candidate_id} fc={fc} />
-                  ))}
+              {/* Combined test plan summary when both API + browser run */}
+              {analyzeResult.functional_candidates.length > 0 && analyzeResult.browser_workflow_result && (
+                <div style={{ background: "#f8fafc", border: "1px solid var(--line)", borderRadius: 8, padding: "9px 12px", fontSize: 11, color: "var(--ink-2)", lineHeight: 1.5 }}>
+                  <strong>One test plan, two verification paths:</strong> API endpoints verified with your test input,
+                  and the frontend UI was opened in a browser to capture a screenshot of the workflow.
                 </div>
               )}
-              {/* Browser UI workflow screenshot result */}
-              {analyzeResult.browser_workflow_result && (
-                <BrowserWorkflowResultSection result={analyzeResult.browser_workflow_result} />
+
+              {/* Backend / API Verification subsection */}
+              {analyzeResult.functional_candidates.length > 0 && (
+                <details open>
+                  <summary style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", cursor: "pointer", listStyle: "none", display: "flex", alignItems: "center", gap: 6, paddingBottom: 6, borderBottom: "1px solid var(--line)" }}>
+                    <span>▶</span>
+                    <span>Backend / API Verification ({analyzeResult.functional_candidates.length} endpoint{analyzeResult.functional_candidates.length !== 1 ? "s" : ""})</span>
+                    <span style={{ ...badgeBase, fontSize: 8, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe", marginLeft: "auto" }}>
+                      {analyzeResult.functional_candidates.filter(fc => fc.verified).length} passed
+                    </span>
+                  </summary>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 8 }}>
+                    {analyzeResult.functional_candidates.map((fc) => (
+                      <FunctionalRow key={fc.candidate_id} fc={fc} />
+                    ))}
+                  </div>
+                </details>
               )}
-              {/* Screenshot placeholder only when no browser_workflow_result */}
-              {!analyzeResult.browser_workflow_result && <ScreenshotPlaceholder />}
+
+              {/* Frontend UI Workflow Verification subsection */}
+              {analyzeResult.browser_workflow_result && (
+                <details open>
+                  <summary style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", cursor: "pointer", listStyle: "none", display: "flex", alignItems: "center", gap: 6, paddingBottom: 6, borderBottom: "1px solid var(--line)" }}>
+                    <span>▶</span>
+                    <span>Frontend UI Workflow Verification</span>
+                    <span style={{ ...badgeBase, fontSize: 8, background: analyzeResult.browser_workflow_result.screenshot_status === "captured" ? "#dcfce7" : "#fef9c3", color: analyzeResult.browser_workflow_result.screenshot_status === "captured" ? "#166534" : "#854d0e", border: `1px solid ${analyzeResult.browser_workflow_result.screenshot_status === "captured" ? "#bbf7d0" : "#fef08a"}`, marginLeft: "auto" }}>
+                      {analyzeResult.browser_workflow_result.screenshot_status === "captured" ? "Screenshot captured" : "See details"}
+                    </span>
+                  </summary>
+                  <div style={{ paddingTop: 8 }}>
+                    <BrowserWorkflowResultSection result={analyzeResult.browser_workflow_result} />
+                  </div>
+                </details>
+              )}
+
+              {/* Screenshot placeholder only when neither API nor browser ran */}
+              {analyzeResult.functional_candidates.length === 0 && !analyzeResult.browser_workflow_result && (
+                <ScreenshotPlaceholder />
+              )}
             </div>
           )}
 
