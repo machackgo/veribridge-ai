@@ -515,10 +515,27 @@ function EvidenceSourceCard({ item }: { item: SourceLinkItem }) {
       </div>
       {item.status !== "unavailable" ? (
         <>
-          <a href={item.url} target="_blank" rel="noopener noreferrer"
-            style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none" }}>
-            {item.actionLabel} →
-          </a>
+          {item.url.startsWith("data:image/") ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <img
+                src={item.url}
+                alt="Browser UI screenshot"
+                style={{ maxWidth: "100%", borderRadius: 6, border: "1px solid #e2e8f0", display: "block" }}
+              />
+              <a
+                href={item.url}
+                download="veribridge-browser-screenshot.jpg"
+                style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none" }}
+              >
+                Download Screenshot →
+              </a>
+            </div>
+          ) : (
+            <a href={item.url} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none" }}>
+              {item.actionLabel} →
+            </a>
+          )}
           {item.note && (
             <span style={{ fontSize: 9, color: "var(--muted)", fontStyle: "italic", lineHeight: 1.4 }}>
               {item.note}
