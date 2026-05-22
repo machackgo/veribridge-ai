@@ -1022,8 +1022,11 @@ export function GitHubPortfolioScanPanel({
                 Large scan may take longer. Smart Scan prioritizes the most relevant repositories first — we recommend keeping it on.
               </div>
             )}
-            <div style={{ fontSize: 11, color: "var(--muted)" }}>
-              For large profiles, VeriBridge scans the most relevant repositories first. Max 150 repos.
+            <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.6 }}>
+              For large profiles, VeriBridge scans the most relevant repositories first. Max 150 repos.{" "}
+              Unauthenticated scans are limited to 60 GitHub API requests/hour — configure{" "}
+              <code style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>GITHUB_TOKEN</code>{" "}
+              in the backend .env for reliable large-profile scanning.
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end" }}>

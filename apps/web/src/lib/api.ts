@@ -488,7 +488,21 @@ export async function scanGitHubPortfolio(params: {
     method: "POST",
     body: JSON.stringify(params),
   })
-  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  if (!res.ok) {
+    const body = await res.text()
+    // Parse structured error from FastAPI detail field — show clean message, not raw JSON
+    let userMessage = `Scan failed (HTTP ${res.status}).`
+    try {
+      const parsed = JSON.parse(body) as { detail?: { message?: string; code?: string } | string }
+      const detail = parsed.detail
+      if (detail && typeof detail === "object" && typeof detail.message === "string") {
+        userMessage = detail.message
+      } else if (typeof detail === "string") {
+        userMessage = detail
+      }
+    } catch { /* body was not JSON — use generic message */ }
+    throw new Error(userMessage)
+  }
   return res.json()
 }
 

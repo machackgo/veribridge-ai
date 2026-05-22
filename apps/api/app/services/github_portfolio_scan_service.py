@@ -7,9 +7,17 @@ Wraps the GitHubAPIClient so fork/archived filtering can be applied before scann
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Read once at module load — never log the value.
+_ENV_GITHUB_TOKEN: str | None = os.getenv("GITHUB_TOKEN") or None
+logger.info("GitHub token configured: %s", "yes" if _ENV_GITHUB_TOKEN else "no")
 
 # Add apps/api/ to sys.path so `from scripts.github_portfolio_scanner import ...` works
 _API_ROOT = Path(__file__).resolve().parents[2]
@@ -126,7 +134,9 @@ def run_portfolio_scan(
     if _override_client is not None:
         client: Any = _override_client
     else:
-        real_client = GitHubAPIClient(token=github_token)
+        # Prefer explicit caller-provided token, then fall back to env token.
+        effective_token = github_token or _ENV_GITHUB_TOKEN
+        real_client = GitHubAPIClient(token=effective_token)
         client = _FilteredGitHubAPIClient(real_client, include_forks, include_archived)
 
     scanner = PortfolioScanner(client)

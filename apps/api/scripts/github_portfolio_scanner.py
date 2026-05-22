@@ -85,10 +85,41 @@ class GitHubAPIClient:
         self._timeout = timeout
 
     def _headers(self) -> dict[str, str]:
-        h: dict[str, str] = {"Accept": "application/vnd.github.v3+json"}
+        h: dict[str, str] = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
         if self._token:
             h["Authorization"] = f"Bearer {self._token}"
         return h
+
+    def _rate_limit_error(self, resp: Any) -> ValueError:
+        """Build a helpful ValueError from a 403/429 rate-limit response."""
+        import datetime
+
+        remaining = resp.headers.get("X-RateLimit-Remaining", "?")
+        reset_ts = resp.headers.get("X-RateLimit-Reset")
+        reset_msg = ""
+        if reset_ts:
+            try:
+                dt = datetime.datetime.utcfromtimestamp(int(reset_ts))
+                reset_msg = f" Rate limit resets at {dt.strftime('%H:%M UTC')}."
+            except (ValueError, OSError):
+                pass
+
+        if self._token:
+            hint = (
+                "Authenticated GitHub rate limit reached."
+                f"{reset_msg} Try again after the reset or reduce Max Repos."
+            )
+        else:
+            hint = (
+                "Unauthenticated GitHub requests are limited to 60 per hour."
+                f"{reset_msg} "
+                "Add GITHUB_TOKEN to the backend .env for reliable scanning."
+            )
+
+        return ValueError(f"GitHub API rate limit reached. {hint}")
 
     def list_repos(self, username: str) -> list[dict[str, Any]]:
         url = f"{self.GITHUB_API}/users/{username}/repos"
@@ -99,15 +130,10 @@ class GitHubAPIClient:
                 if resp.status_code == 200:
                     return resp.json()
                 if resp.status_code == 404:
-                    # Username doesn't exist — raise so the service can return a clear error
-                    raise ValueError(f"GitHub user '{username}' not found (404).")
+                    raise ValueError(f"GitHub user '{username}' not found.")
                 if resp.status_code in (403, 429):
-                    # Rate-limit or forbidden — raise so the service can return a clear error
-                    raise ValueError(
-                        f"GitHub API rate limit reached (HTTP {resp.status_code}). "
-                        "Try again later or reduce max repos."
-                    )
-                # Other non-200 — log and return empty
+                    raise self._rate_limit_error(resp)
+                # Other non-200 — return empty, do not raise
                 return []
         except ValueError:
             raise
