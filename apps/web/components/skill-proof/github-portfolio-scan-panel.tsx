@@ -759,80 +759,168 @@ export function GitHubPortfolioScanPanel({
 
     setError(null)
 
-    // Steps 1-2 complete instantly, step 3 starts — set all at once before await
+    // Small helper: yields to the browser so React can flush a render between items
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    const total = candidates.length
+
+    // ── Initial progress state ────────────────────────────────────────────────
     let steps = createGitHubScanSaveSteps()
     steps = completeStep(steps, "prepare", {
-      countCurrent: candidates.length,
-      countTotal: candidates.length,
-      description: `${candidates.length} evidence item${candidates.length === 1 ? "" : "s"} selected.`,
+      countCurrent: total,
+      countTotal: total,
+      description: `${total} evidence item${total === 1 ? "" : "s"} selected.`,
+      agentCopy: `Reading ${total} selected grouped skills...`,
     })
-    steps = completeStep(steps, "duplicates", {
-      description: "Server will skip duplicates already in your profile.",
-    })
-    steps = startStep(steps, "save")
-    steps = updateStep(steps, "save", {
-      countCurrent: 0,
-      countTotal: candidates.length,
-      description: `Saving ${candidates.length} evidence item${candidates.length === 1 ? "" : "s"}…`,
+    steps = startStep(steps, "duplicates")
+    steps = updateStep(steps, "duplicates", {
+      description: "Checking each item against existing saved evidence...",
+      agentCopy: "Checking existing saved evidence...",
     })
 
-    setProcessingProgress(initialProgress(steps))
+    let progress = initialProgress(steps)
+    progress = appendWorkLogEntry(progress, `Preparing ${total} selected evidence items...`)
+    progress = appendWorkLogEntry(progress, "Saving items one at a time — checking duplicates per item...")
+    setProcessingProgress({ ...progress })
     setStep("importing")
 
-    try {
-      const result = await importSelectedGitHubPortfolioProofs(candidates)
+    // ── Per-item accumulation ─────────────────────────────────────────────────
+    let savedCount = 0
+    let skippedCount = 0
+    let failedCount = 0
+    const errMessages: string[] = []
+    const allResults: import("@/lib/api").GitHubPortfolioCandidateResult[] = []
+    const importedIds: string[] = []
 
-      // Advance remaining steps after the API returns
-      steps = completeStep(steps, "save", {
-        countCurrent: result.imported_count + result.skipped_duplicate_count,
-        countTotal: candidates.length,
-        description: `Saved ${result.imported_count}, skipped ${result.skipped_duplicate_count} duplicate${result.skipped_duplicate_count !== 1 ? "s" : ""}.`,
-      })
-      steps = completeStep(steps, "verify", {
-        description:
-          result.imported_count > 0
-            ? `Verification ran for ${result.imported_count} item${result.imported_count === 1 ? "" : "s"}.`
-            : "No new items to verify.",
-      })
-      steps = completeStep(steps, "graph", {
-        description: "Grouped skills, subskills, and system graphs updated.",
-      })
+    // Complete the duplicates step after the first item (it's checked per-call)
+    steps = completeStep(steps, "duplicates", {
+      description: "Duplicate check runs per item.",
+      agentCopy: "Checking existing saved evidence...",
+    })
+    steps = startStep(steps, "save")
 
-      onImportSuccess?.()
+    for (let i = 0; i < total; i++) {
+      const candidate = candidates[i]
+      const itemNum = i + 1
+      const label = `${candidate.skill_label} · ${candidate.repo_name}`
+      const syntheticPct = Math.round(20 + (i / total) * 50)  // 20%→70% during save loop
 
-      steps = completeStep(steps, "refresh")
-      steps = completeStep(steps, "complete", {
-        description: `Saved ${result.imported_count} · Skipped ${result.skipped_duplicate_count} duplicates · Failed ${result.failed_count}`,
+      // Update hero text + step count BEFORE API call so UI shows "Saving X of Y"
+      steps = updateStep(steps, "save", {
+        countCurrent: itemNum,
+        countTotal: total,
+        description: `Saving item ${itemNum} of ${total}…`,
+        agentCopy: `Saving GitHub proof ${itemNum} of ${total}...`,
       })
+      progress = appendWorkLogEntry(
+        { ...progress, steps, syntheticPercent: syntheticPct },
+        `Saving proof ${itemNum} of ${total} — ${label}`
+      )
+      setProcessingProgress({ ...progress })
+      await tick()  // let React render "Saving X of Y" before the network call
 
-      const errMessages = result.per_candidate_results
-        .filter((r) => r.status === "failed")
-        .map((r) => `${r.skill_label} (${r.repo_name}): ${r.message}`)
+      try {
+        const result = await importSelectedGitHubPortfolioProofs([candidate])
+        allResults.push(...result.per_candidate_results)
+        importedIds.push(...result.imported_evidence_ids)
 
-      setImportResult(result)
-      setProcessingProgress({
-        steps,
-        overallStatus: result.failed_count === candidates.length && result.imported_count === 0 ? "failed" : "completed",
-        savedCount: result.imported_count,
-        skippedCount: result.skipped_duplicate_count,
-        failedCount: result.failed_count,
-        errorMessages: errMessages,
-      })
-      setStep("done")
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Import failed. Please try again."
-      steps = failStep(steps, "save", msg)
-      setProcessingProgress({
-        steps,
-        overallStatus: "failed",
-        savedCount: 0,
-        skippedCount: 0,
-        failedCount: candidates.length,
-        errorMessages: [msg],
-      })
-      setError(msg)
-      setStep("review")
+        if (result.imported_count > 0) {
+          savedCount++
+          progress = appendWorkLogEntry(
+            { ...progress, steps },
+            `Saved — ${label}`,
+            "completed"
+          )
+        } else if (result.skipped_duplicate_count > 0) {
+          skippedCount++
+          progress = appendWorkLogEntry(
+            { ...progress, steps },
+            `Skipped duplicate — ${label}`,
+            "info"
+          )
+        } else if (result.failed_count > 0) {
+          failedCount++
+          const msg = result.per_candidate_results[0]?.message ?? "Unknown error"
+          errMessages.push(`${label}: ${msg}`)
+          progress = appendWorkLogEntry(
+            { ...progress, steps },
+            `Failed — ${label}: ${msg} — continuing`,
+            "error"
+          )
+        }
+      } catch (err) {
+        failedCount++
+        const msg = err instanceof Error ? err.message : "Unknown error"
+        errMessages.push(`${label}: ${msg}`)
+        allResults.push({
+          candidate_id: candidate.candidate_id,
+          skill_label: candidate.skill_label,
+          repo_name: candidate.repo_name,
+          status: "failed",
+          evidence_id: null,
+          message: msg,
+        })
+        progress = appendWorkLogEntry(
+          { ...progress, steps },
+          `Failed — ${label} — continuing`,
+          "error"
+        )
+      }
+
+      setProcessingProgress({ ...progress })
     }
+
+    // ── Post-loop: complete remaining steps ────────────────────────────────────
+    progress = appendWorkLogEntry(
+      { ...progress, steps },
+      `All ${total} items processed. Connecting evidence to skill categories...`
+    )
+
+    steps = completeStep(steps, "save", {
+      countCurrent: savedCount + skippedCount,
+      countTotal: total,
+      description: `Saved ${savedCount} · Skipped ${skippedCount} duplicates · Failed ${failedCount}`,
+      agentCopy: `Saved ${savedCount}, skipped ${skippedCount} duplicates, failed ${failedCount}.`,
+    })
+    steps = completeStep(steps, "verify", {
+      description: savedCount > 0 ? `Verification ran server-side for ${savedCount} item${savedCount !== 1 ? "s" : ""}.` : "No new items to verify.",
+    })
+    steps = completeStep(steps, "graph", {
+      description: "Skill Graph, subskills, and system graphs updated.",
+    })
+
+    progress = appendWorkLogEntry({ ...progress, steps }, "Updating your Skill Proof Center...")
+    onImportSuccess?.()
+
+    steps = completeStep(steps, "refresh")
+
+    const finalMsg = `Done — saved ${savedCount} · skipped ${skippedCount} duplicate${skippedCount !== 1 ? "s" : ""} · failed ${failedCount}`
+    steps = completeStep(steps, "complete", {
+      description: finalMsg,
+      agentCopy: finalMsg,
+    })
+    progress = appendWorkLogEntry({ ...progress, steps }, finalMsg, "completed")
+
+    const syntheticResult: import("@/lib/api").GitHubPortfolioImportResponse = {
+      imported_count: savedCount,
+      skipped_duplicate_count: skippedCount,
+      failed_count: failedCount,
+      imported_evidence_ids: importedIds,
+      per_candidate_results: allResults,
+    }
+
+    setImportResult(syntheticResult)
+    setProcessingProgress({
+      ...progress,
+      steps,
+      overallStatus: failedCount === total && savedCount === 0 ? "failed" : "completed",
+      savedCount,
+      skippedCount,
+      failedCount,
+      errorMessages: errMessages,
+      syntheticPercent: undefined,
+    })
+    setStep("done")
   }
 
   return (
