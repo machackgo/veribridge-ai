@@ -443,6 +443,37 @@ export type WebsiteAnalysisCandidate = {
   related_source_url?: string | null
 }
 
+// ── J4I: Browser workflow interfaces (future Playwright implementation) ─────────
+
+/**
+ * A single step in a browser workflow verification plan.
+ * TODO(J4J): implement a Playwright runner that executes these steps,
+ * captures screenshots, and attaches them to evidence.
+ */
+export type BrowserWorkflowStep = {
+  /** The browser action to perform. */
+  action: "open" | "fill" | "click" | "wait_for_text" | "screenshot"
+  /** CSS/XPath selector for the target element (if applicable). */
+  selector?: string | null
+  /** Value to fill or text to wait for. */
+  value?: string | null
+  /** Human-readable label for this step. */
+  label?: string | null
+}
+
+/**
+ * Full browser workflow test plan submitted by the user.
+ * Used by the future Playwright agent to open the site, run steps, and
+ * capture a screenshot proving the input→output workflow.
+ */
+export type BrowserWorkflowTestPlan = {
+  url: string
+  steps: BrowserWorkflowStep[]
+  expected_output?: string | null
+  screenshot_required: boolean
+  screenshot_url?: string | null
+}
+
 /** User-provided optional functional test plan. */
 export type FunctionalTestPlan = {
   what_to_test?: string | null
@@ -481,6 +512,12 @@ export type FunctionalVerificationCandidate = {
   response_summary?: string
   raw_response_json?: string | null
   response_truncated?: boolean
+  /** J4I: screenshot / browser workflow proof */
+  screenshot_url?: string | null
+  screenshot_caption?: string | null
+  screenshot_status?: "unavailable" | "manual" | "auto_captured"
+  browser_workflow_status?: "not_started" | "pending" | "completed" | "failed"
+  browser_workflow_notes?: string | null
 }
 
 /** J4G: High-level grouped skill card combining website, GitHub, and functional evidence. */

@@ -70,6 +70,12 @@ class FunctionalVerificationCandidate(BaseModel):
     response_summary: str = ""                # "risk_class: High; confidence: 0.82; routes_count: 3"
     raw_response_json: str | None = None      # JSON string, capped at 3 000 chars
     response_truncated: bool = False          # True when raw_response_json was capped
+    # J4I: screenshot / browser workflow proof
+    screenshot_url: str | None = None
+    screenshot_caption: str | None = None
+    screenshot_status: Literal["unavailable", "manual", "auto_captured"] = "unavailable"
+    browser_workflow_status: Literal["not_started", "pending", "completed", "failed"] = "not_started"
+    browser_workflow_notes: str | None = None
 
 
 # ── J4G: High-level grouped skill evidence ────────────────────────────────────

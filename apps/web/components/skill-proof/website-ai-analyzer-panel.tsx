@@ -289,14 +289,47 @@ function FunctionalRow({ fc }: { fc: FunctionalVerificationCandidate }) {
         </div>
       )}
 
-      {/* Scope + browser disclaimer */}
+      {/* Scope statement */}
       <div style={{ fontSize: 10, color: "#64748b", marginTop: 6 }}>
         {verified ? "✓ Verifies: API endpoint responded with expected output" : "⚠ API endpoint could not be fully verified"}
-        {" · "}
-        <span style={{ color: "#6366f1", fontStyle: "italic" }}>Browser UI workflow verification — coming soon</span>
       </div>
 
-      <div style={{ marginTop: 6 }}>
+      {/* ── Screenshot proof subsection ── */}
+      <div style={{ borderTop: "1px solid rgba(0,0,0,0.06)", marginTop: 10, paddingTop: 8 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+          Screenshot Proof
+        </div>
+        {fc.screenshot_url ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            <span style={{ ...badgeBase, fontSize: 9, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0", display: "inline-block" }}>
+              Screenshot Attached
+            </span>
+            {fc.screenshot_caption && (
+              <div style={{ fontSize: 11, color: "var(--ink-2)" }}>{fc.screenshot_caption}</div>
+            )}
+            <a href={fc.screenshot_url} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none" }}>
+              Open Screenshot →
+            </a>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            <span style={{ ...badgeBase, fontSize: 9, background: "#f8fafc", color: "#64748b", border: "1px solid #e2e8f0", display: "inline-block" }}>
+              Not captured yet
+            </span>
+            <div style={{ fontSize: 11, color: "var(--ink-2)", lineHeight: 1.5 }}>
+              {verified
+                ? "API endpoint was verified. Browser UI screenshot verification will capture the website input/output screen in the next phase."
+                : "API endpoint was tested. Browser UI screenshot verification coming next."}
+            </div>
+            <span style={{ fontSize: 9, fontWeight: 700, background: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 999, padding: "2px 8px", display: "inline-block" }}>
+              📸 Browser workflow screenshots — coming next
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 8 }}>
         <a href={endpoint_url} target="_blank" rel="noopener noreferrer"
           style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none" }}>
           Open endpoint →
@@ -432,6 +465,20 @@ function buildSourceLinks(result: WebsiteAnalyzeResponse): SourceLinkItem[] {
     if (seenFileUrls.size >= 6) break
   }
 
+  // Screenshot proof — only add source card if actual screenshot URL exists
+  const screenshotFcs = result.functional_candidates.filter((fc) => !!fc.screenshot_url)
+  for (const fc of screenshotFcs.slice(0, 3)) {
+    links.push({
+      id: `screenshot-${fc.candidate_id}`, icon: "📸",
+      title: "Screenshot Proof",
+      subtitle: fc.screenshot_caption || `${fc.method} ${(() => { try { return new URL(fc.endpoint_url).pathname } catch { return "" } })()}`,
+      status: "detected",
+      url: fc.screenshot_url!,
+      actionLabel: "Open Screenshot",
+      category: "website",
+    })
+  }
+
   return links
 }
 
@@ -495,21 +542,13 @@ function EvidenceSourceCard({ item }: { item: SourceLinkItem }) {
 
 function ScreenshotPlaceholder() {
   return (
-    <div style={{ border: "1px dashed #cbd5e1", borderRadius: 10, padding: "12px 14px", background: "#f8fafc" }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 5 }}>
-        Screenshot Proof
-      </div>
-      <div style={{ fontSize: 11, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 8 }}>
-        VeriBridge will open the website, enter test inputs, capture the output workflow, and attach a screenshot as proof.
-      </div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 9, fontWeight: 700, background: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 999, padding: "2px 8px" }}>
-          📸 Browser screenshots — coming soon
-        </span>
-        <span style={{ fontSize: 9, background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0", borderRadius: 999, padding: "2px 8px" }}>
-          API endpoint response captured above
-        </span>
-      </div>
+    <div style={{ border: "1px dashed #cbd5e1", borderRadius: 8, padding: "8px 14px", background: "#f8fafc", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 9, fontWeight: 700, background: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap", flexShrink: 0 }}>
+        📸 Browser workflow — coming next
+      </span>
+      <span style={{ fontSize: 11, color: "var(--muted)" }}>
+        Full Playwright-based workflow verification (open site → fill inputs → click → capture screenshot) will be added in the next phase.
+      </span>
     </div>
   )
 }
@@ -1161,6 +1200,12 @@ export function WebsiteAIAnalyzerPanel({
             verification_badge: fc.verified ? "Live Test Passed" : "Endpoint Detected",
             base_url: analyzeResult?.base_url ?? fc.endpoint_url,
             github_repo_url: analyzeResult?.github_repo_url ?? null,
+            // J4I: screenshot / browser workflow proof
+            screenshot_url: fc.screenshot_url ?? null,
+            screenshot_caption: fc.screenshot_caption ?? null,
+            screenshot_status: fc.screenshot_status ?? "unavailable",
+            browser_workflow_status: fc.browser_workflow_status ?? "not_started",
+            browser_workflow_notes: fc.browser_workflow_notes ?? null,
           },
         })
         try { await generateEvidenceAccessLinks(ev.id) } catch { /* best-effort */ }

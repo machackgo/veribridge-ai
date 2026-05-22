@@ -211,6 +211,10 @@ function SavedEvidenceRow({
   const whatToTest = typeof meta.what_to_test === "string" ? meta.what_to_test : null
   const expectedOutput = typeof meta.expected_output_description === "string" ? meta.expected_output_description : null
 
+  // J4I: screenshot / browser workflow metadata
+  const screenshotUrl     = typeof meta.screenshot_url     === "string" ? meta.screenshot_url     : null
+  const screenshotCaption = typeof meta.screenshot_caption === "string" ? meta.screenshot_caption : null
+
   // YouTube timestamp display
   const tsStart = typeof meta.timestamp_start_formatted === "string" ? meta.timestamp_start_formatted : null
   const tsEnd = typeof meta.timestamp_end_formatted === "string" ? meta.timestamp_end_formatted : null
@@ -374,11 +378,28 @@ function SavedEvidenceRow({
         </>
       )}
 
-      {/* Scope note for functional */}
+      {/* Scope note + screenshot proof for functional */}
       {isFunctional && (
-        <div style={{ fontSize: 10, color: "#64748b", fontStyle: "italic" }}>
-          {verified ? "✓ API endpoint responded with expected output" : "⚠ Endpoint detected — not fully verified"}
-          {" · Browser UI verification — coming soon"}
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ fontSize: 10, color: "#64748b", fontStyle: "italic" }}>
+            {verified ? "✓ API endpoint responded with expected output" : "⚠ Endpoint detected — not fully verified"}
+          </div>
+          {screenshotUrl ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ ...badgeBase, fontSize: 9, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
+                Screenshot Attached
+              </span>
+              {screenshotCaption && <span style={{ fontSize: 10, color: "var(--ink-2)" }}>{screenshotCaption}</span>}
+              <a href={screenshotUrl} target="_blank" rel="noopener noreferrer"
+                style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none" }}>
+                Open Screenshot →
+              </a>
+            </div>
+          ) : (
+            <span style={{ fontSize: 9, color: "var(--muted)", fontStyle: "italic" }}>
+              Browser screenshot not provided — API proof is verified.
+            </span>
+          )}
         </div>
       )}
 
