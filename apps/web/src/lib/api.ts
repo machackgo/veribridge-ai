@@ -421,6 +421,56 @@ export async function searchRecruiterCandidates(query: string): Promise<Candidat
   return res.json()
 }
 
+// ── Website AI Analyzer (Phase J4D) ──────────────────────────────────────────
+
+export type WebsiteAnalysisCandidate = {
+  candidate_id: string
+  skill_name: string
+  skill_category: string
+  confidence: "high" | "medium" | "low"
+  evidence_title: string
+  evidence_summary: string
+  source_url: string
+  route_path: string
+  evidence_snippet: string
+  evidence_type: "deployed_website" | "api_docs" | "api_endpoint" | "website_content"
+  action_label: string
+  suggested_status: "suggested" | "needs_review"
+}
+
+export type WebsiteAnalyzeResponse = {
+  base_url: string
+  candidates: WebsiteAnalysisCandidate[]
+  checked_urls: string[]
+  warnings: string[]
+  candidate_count: number
+}
+
+export async function analyzeWebsite(params: {
+  url: string
+  skill_focus?: string | null
+}): Promise<WebsiteAnalyzeResponse> {
+  const res = await fetchAPI("/api/v1/student/website-analysis/analyze", {
+    method: "POST",
+    body: JSON.stringify(params),
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    let userMessage = `Analysis failed (HTTP ${res.status}).`
+    try {
+      const parsed = JSON.parse(body) as { detail?: { message?: string } | string }
+      const detail = parsed.detail
+      if (detail && typeof detail === "object" && typeof detail.message === "string") {
+        userMessage = detail.message
+      } else if (typeof detail === "string") {
+        userMessage = detail
+      }
+    } catch { /* not JSON */ }
+    throw new Error(userMessage)
+  }
+  return res.json()
+}
+
 // ── GitHub Portfolio Scan (Phase J3B) ────────────────────────────────────────
 
 export type GitHubPortfolioSuggestedStatus = "suggested" | "needs_review" | "skipped"

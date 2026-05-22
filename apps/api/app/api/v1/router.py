@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     recruiter_candidates,
     skill_evidence,
     student,
+    website_analyzer,
     website_browser_verification_runs,
     website_semantic_verification_results,
     website_verification_runs,
@@ -57,6 +58,11 @@ api_router.include_router(
     website_semantic_verification_results.router,
     prefix="/student/skill-evidence",
     tags=["website-semantic-verification-results"],
+)
+api_router.include_router(
+    website_analyzer.router,
+    prefix="/student/website-analysis",
+    tags=["website-analysis"],
 )
 api_router.include_router(
     github_portfolio.router,

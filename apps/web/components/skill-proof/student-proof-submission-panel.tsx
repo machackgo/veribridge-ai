@@ -23,6 +23,7 @@ import {
 } from "./proof-verification-status"
 import { GitHubPortfolioScanPanel } from "./github-portfolio-scan-panel"
 import { SkillProofCenter } from "./skill-proof-center"
+import { WebsiteAIAnalyzerPanel } from "./website-ai-analyzer-panel"
 import {
   MultiSourceProofForm,
   SourceTypeSelector,
@@ -406,6 +407,8 @@ export function StudentProofSubmissionPanel({
   const [proofMode, setProofMode] = useState<ProofModalMode>("select")
   const [manualStep, setManualStep] = useState<ManualFlowStep>("source_select")
   const [selectedSourceType, setSelectedSourceType] = useState<EvidenceSourceType | null>(null)
+  // Website AI Analyzer (J4D) — shown inline in AI Agent mode
+  const [showWebsiteAnalyzer, setShowWebsiteAnalyzer] = useState(false)
   // AI Agent simple resource form state (J4B fix)
   const [agentSourceType, setAgentSourceType] = useState<EvidenceSourceType | null>(null)
   const [agentUrl, setAgentUrl] = useState("")
@@ -451,6 +454,7 @@ export function StudentProofSubmissionPanel({
     setManualStep("source_select")
     setSelectedSourceType(null)
     setSubmissionProgress(null)
+    setShowWebsiteAnalyzer(false)
     resetAgentForm()
   }
 
@@ -461,6 +465,7 @@ export function StudentProofSubmissionPanel({
     setAgentTimestampStart("")
     setAgentTimestampEnd("")
     setAgentTranscript("")
+    setShowWebsiteAnalyzer(false)
     setSubmissionError(null)
   }
 
@@ -955,15 +960,24 @@ export function StudentProofSubmissionPanel({
                   </div>
                 )}
 
-                {/* ── Mode: AI Agent — simple resource link form ── */}
-                {proofMode === "ai_agent" && agentSourceType && (
+                {/* ── Mode: AI Agent — website analyzer (J4D) ── */}
+                {proofMode === "ai_agent" && agentSourceType === "deployed_website" && (
+                  <WebsiteAIAnalyzerPanel
+                    initialUrl={agentUrl}
+                    initialSkillFocus={agentSkillFocus}
+                    onSaveComplete={() => void refreshEvidence()}
+                    onBack={resetAgentForm}
+                  />
+                )}
+
+                {/* ── Mode: AI Agent — simple resource link form (non-website sources) ── */}
+                {proofMode === "ai_agent" && agentSourceType && agentSourceType !== "deployed_website" && (
                   <div style={{ display: "grid", gap: 14 }}>
                     {/* Source header */}
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <div>
                         <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>
                           {agentSourceType === "github_repository" ? "GitHub Profile / Repo Scan"
-                            : agentSourceType === "deployed_website" ? "Website / Portfolio"
                             : agentSourceType === "linkedin_post" ? "LinkedIn Profile / Post"
                             : agentSourceType === "youtube_demo" ? "YouTube / Demo Video"
                             : agentSourceType === "google_drive_document" ? "Google Drive / Document"
@@ -972,8 +986,6 @@ export function StudentProofSubmissionPanel({
                         <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
                           {agentSourceType === "github_repository"
                             ? "Enter your GitHub profile URL. We'll scan your public repos automatically."
-                            : agentSourceType === "deployed_website"
-                            ? "Enter your live website URL. Only add links you own or have permission to share."
                             : "Enter the link. AI extraction will be added in an upcoming phase — your link will be saved now."}
                         </div>
                       </div>
@@ -989,7 +1001,6 @@ export function StudentProofSubmissionPanel({
                     <div style={{ display: "grid", gap: 4 }}>
                       <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
                         {agentSourceType === "github_repository" ? "GitHub profile or repo URL *"
-                          : agentSourceType === "deployed_website" ? "Website URL *"
                           : agentSourceType === "linkedin_post" ? "LinkedIn post or profile URL *"
                           : agentSourceType === "youtube_demo" ? "YouTube video URL *"
                           : agentSourceType === "google_drive_document" ? "Google Drive shareable link *"
@@ -1072,7 +1083,6 @@ export function StudentProofSubmissionPanel({
                       >
                         {submitting ? "Saving…"
                           : agentSourceType === "github_repository" ? "Scan GitHub with AI"
-                          : agentSourceType === "deployed_website" ? "Analyze Website with AI"
                           : "Save link for AI extraction"}
                       </button>
                     </div>
