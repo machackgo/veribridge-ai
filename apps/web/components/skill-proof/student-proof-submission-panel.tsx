@@ -416,6 +416,8 @@ export function StudentProofSubmissionPanel({
   const [agentTimestampStart, setAgentTimestampStart] = useState("")
   const [agentTimestampEnd, setAgentTimestampEnd] = useState("")
   const [agentTranscript, setAgentTranscript] = useState("")
+  // Website analyzer owns its form fields in the parent so they survive panel remounts
+  const [agentGithubRepoUrl, setAgentGithubRepoUrl] = useState("")
   // Pre-fills the scan panel when opened from AI Agent mode
   const [pendingScanUrl, setPendingScanUrl] = useState("")
 
@@ -462,6 +464,7 @@ export function StudentProofSubmissionPanel({
     setAgentSourceType(null)
     setAgentUrl("")
     setAgentSkillFocus("")
+    setAgentGithubRepoUrl("")
     setAgentTimestampStart("")
     setAgentTimestampEnd("")
     setAgentTranscript("")
@@ -963,8 +966,12 @@ export function StudentProofSubmissionPanel({
                 {/* ── Mode: AI Agent — website analyzer (J4D) ── */}
                 {proofMode === "ai_agent" && agentSourceType === "deployed_website" && (
                   <WebsiteAIAnalyzerPanel
-                    initialUrl={agentUrl}
-                    initialSkillFocus={agentSkillFocus}
+                    url={agentUrl}
+                    onUrlChange={setAgentUrl}
+                    skillFocus={agentSkillFocus}
+                    onSkillFocusChange={setAgentSkillFocus}
+                    githubRepoUrl={agentGithubRepoUrl}
+                    onGithubRepoUrlChange={setAgentGithubRepoUrl}
                     onSaveComplete={() => void refreshEvidence()}
                     onBack={resetAgentForm}
                   />

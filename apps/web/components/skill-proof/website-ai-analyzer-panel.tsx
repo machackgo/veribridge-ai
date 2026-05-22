@@ -90,7 +90,12 @@ const inp: CSSProperties = {
   fontSize: 13, outline: "none", boxSizing: "border-box",
 }
 
-// ── GitHub repo URL parser ────────────────────────────────────────────────────
+// ── Validation helpers ────────────────────────────────────────────────────────
+
+function isPublicHttpUrl(v: string): boolean {
+  const t = v.trim()
+  return t.startsWith("http://") || t.startsWith("https://")
+}
 
 function parseGitHubRepoUrl(url: string): { owner: string; repo: string } | null {
   const m = url.trim().match(/^(?:https?:\/\/)?github\.com\/([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_.\-]+?)\/?$/)
@@ -413,20 +418,26 @@ function GroupedSkillCard({
 type PanelStep = "form" | "analyzing" | "review" | "saving" | "done"
 
 export function WebsiteAIAnalyzerPanel({
-  initialUrl = "",
-  initialSkillFocus = "",
+  url,
+  onUrlChange,
+  skillFocus,
+  onSkillFocusChange,
+  githubRepoUrl,
+  onGithubRepoUrlChange,
   onSaveComplete,
   onBack,
 }: {
-  initialUrl?: string
-  initialSkillFocus?: string
+  /** Controlled: URL field value lives in the parent to survive panel remounts. */
+  url: string
+  onUrlChange: (v: string) => void
+  skillFocus: string
+  onSkillFocusChange: (v: string) => void
+  githubRepoUrl: string
+  onGithubRepoUrlChange: (v: string) => void
   onSaveComplete?: () => void
   onBack: () => void
 }) {
   const [panelStep, setPanelStep] = useState<PanelStep>("form")
-  const [url, setUrl] = useState(initialUrl)
-  const [skillFocus, setSkillFocus] = useState(initialSkillFocus)
-  const [githubRepoUrl, setGithubRepoUrl] = useState("")
   const [analyzeResult, setAnalyzeResult] = useState<WebsiteAnalyzeResponse | null>(null)
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set())
   const [showAtomicAccordion, setShowAtomicAccordion] = useState(false)
@@ -470,9 +481,9 @@ export function WebsiteAIAnalyzerPanel({
   async function handleAnalyze() {
     setError(null)
     const trimmedUrl = url.trim()
-    if (!trimmedUrl) { setError("Enter a website URL."); return }
-    if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
-      setError("URL must start with https:// or http://"); return
+    if (!trimmedUrl) { setError("Website URL is required."); return }
+    if (!isPublicHttpUrl(trimmedUrl)) {
+      setError("Enter a valid public http/https URL (e.g. https://your-app.run.app)."); return
     }
     const trimmedRepo = githubRepoUrl.trim()
     if (trimmedRepo && !parseGitHubRepoUrl(trimmedRepo)) {
@@ -788,37 +799,59 @@ export function WebsiteAIAnalyzerPanel({
             </div>
           </div>
 
+          {/* Website URL — controlled by parent state so it survives remounts */}
           <div style={{ display: "grid", gap: 4 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>Website URL *</span>
             <input
+              type="url"
+              autoFocus
+              autoComplete="url"
               value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              onChange={(e) => onUrlChange(e.target.value)}
+              onBlur={(e) => {
+                // Auto-prepend https:// if the user typed a bare domain
+                const v = e.target.value.trim()
+                if (v && !v.startsWith("http://") && !v.startsWith("https://")) {
+                  onUrlChange("https://" + v)
+                }
+              }}
               placeholder="https://your-app.run.app or https://your-portfolio.vercel.app"
-              style={inp}
+              style={{
+                ...inp,
+                borderColor: url.trim() && !isPublicHttpUrl(url) ? "#fca5a5" : "var(--line)",
+              }}
             />
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>Only public URLs. Private or localhost URLs are not supported.</span>
+            {url.trim() && !isPublicHttpUrl(url) ? (
+              <span style={{ fontSize: 11, color: "#991b1b" }}>Enter a valid public URL starting with https:// or http://</span>
+            ) : (
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>Only public URLs. Private or localhost URLs are not supported.</span>
+            )}
           </div>
 
+          {/* Skill focus */}
           <div style={{ display: "grid", gap: 4 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
               Skill focus <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span>
             </span>
             <input
               value={skillFocus}
-              onChange={(e) => setSkillFocus(e.target.value)}
+              onChange={(e) => onSkillFocusChange(e.target.value)}
               placeholder="e.g. FastAPI, Machine Learning, Cloud Deployment, Computer Vision"
               style={inp}
             />
             <span style={{ fontSize: 11, color: "var(--muted)" }}>Comma-separated skills to prioritize during analysis.</span>
           </div>
 
+          {/* Related GitHub repo */}
           <div style={{ display: "grid", gap: 4 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
               Related GitHub repository <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional but recommended)</span>
             </span>
             <input
+              type="url"
+              autoComplete="url"
               value={githubRepoUrl}
-              onChange={(e) => setGithubRepoUrl(e.target.value)}
+              onChange={(e) => onGithubRepoUrlChange(e.target.value)}
               placeholder="https://github.com/your-username/your-repo"
               style={inp}
             />
@@ -832,7 +865,18 @@ export function WebsiteAIAnalyzerPanel({
             <button type="button" onClick={onBack} style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
               ← Back
             </button>
-            <button type="button" onClick={() => void handleAnalyze()} style={{ border: "none", background: "var(--ink)", color: "#fff", borderRadius: 10, padding: "10px 18px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
+            <button
+              type="button"
+              disabled={!url.trim() || !isPublicHttpUrl(url)}
+              onClick={() => void handleAnalyze()}
+              style={{
+                border: "none",
+                background: !url.trim() || !isPublicHttpUrl(url) ? "var(--bg-2)" : "var(--ink)",
+                color: !url.trim() || !isPublicHttpUrl(url) ? "var(--muted)" : "#fff",
+                borderRadius: 10, padding: "10px 18px", fontWeight: 700, fontSize: 14,
+                cursor: !url.trim() || !isPublicHttpUrl(url) ? "not-allowed" : "pointer",
+              }}
+            >
               Analyze Website with AI
             </button>
           </div>
