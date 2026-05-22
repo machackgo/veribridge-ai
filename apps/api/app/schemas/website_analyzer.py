@@ -1,4 +1,4 @@
-"""Pydantic schemas for the Website AI Analyzer (Phase J4D/J4E)."""
+"""Pydantic schemas for the Website AI Analyzer (Phase J4D / J4E / J4F / J4G)."""
 
 from __future__ import annotations
 
@@ -29,11 +29,55 @@ class WebsiteAnalysisCandidate(BaseModel):
     related_source_url: str | None = None   # for combined: the other source URL
 
 
+# ── J4F: Functional verification candidate ────────────────────────────────────
+
+class FunctionalVerificationCandidate(BaseModel):
+    candidate_id: str
+    skill_name: str
+    skill_category: str
+    confidence: Literal["high", "medium", "low"]
+    evidence_title: str
+    evidence_summary: str
+    endpoint_url: str
+    method: str                      # "GET", "POST"
+    request_summary: str
+    response_fields_found: list[str]
+    status_code: int | None = None
+    verified: bool
+    verification_message: str
+    evidence_type: Literal["verified_workflow"] = "verified_workflow"
+    action_label: str = "View Endpoint"
+    suggested_status: Literal["suggested", "needs_review"] = "suggested"
+
+
+# ── J4G: High-level grouped skill evidence ────────────────────────────────────
+
+class GroupedWebsiteSkill(BaseModel):
+    group_id: str
+    skill_name: str           # "Machine Learning Engineering"
+    category: str             # same as skill_name by default
+    confidence: Literal["high", "medium", "low"]
+    sources: list[Literal["website", "github_repo", "functional", "combined"]]
+    subskills: list[str]      # atomic skill names that contribute to this group
+    evidence_count: int
+    website_count: int
+    repo_count: int
+    functional_count: int
+    combined_count: int
+    candidate_ids: list[str]            # all underlying candidate IDs (atomic + functional)
+    functional_candidate_ids: list[str] # only functional verification candidate IDs
+    system_graph_nodes: list[str]
+    system_graph_edges: list[tuple[str, str]]
+    suggested_status: Literal["suggested", "needs_review"]
+
+
+# ── Request / Response ────────────────────────────────────────────────────────
+
 class WebsiteAnalyzeRequest(BaseModel):
     url: str = Field(..., min_length=1, max_length=2000)
     skill_focus: str | None = Field(default=None, max_length=500)
-    # J4E: optional connected GitHub repo
     github_repo_url: str | None = Field(default=None, max_length=2000)
+    run_safe_tests: bool = Field(default=True)
 
     @field_validator("url")
     @classmethod
@@ -59,11 +103,18 @@ class WebsiteAnalyzeRequest(BaseModel):
 class WebsiteAnalyzeResponse(BaseModel):
     base_url: str
     candidates: list[WebsiteAnalysisCandidate]
+    # J4F: functional verification results
+    functional_candidates: list[FunctionalVerificationCandidate] = Field(default_factory=list)
+    # J4G: high-level grouped skill cards
+    grouped_skills: list[GroupedWebsiteSkill] = Field(default_factory=list)
     checked_urls: list[str]
     warnings: list[str]
     candidate_count: int
-    # J4E: source counts for the review summary
+    # J4E: source counts
     website_candidate_count: int = 0
     repo_candidate_count: int = 0
     combined_candidate_count: int = 0
+    # J4F: functional verification counts
+    functional_candidate_count: int = 0
+    functional_verification_available: bool = False
     github_repo_url: str | None = None

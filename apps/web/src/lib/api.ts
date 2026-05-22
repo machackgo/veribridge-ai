@@ -421,9 +421,9 @@ export async function searchRecruiterCandidates(query: string): Promise<Candidat
   return res.json()
 }
 
-// ── Website AI Analyzer (Phase J4D) ──────────────────────────────────────────
+// ── Website AI Analyzer (Phase J4D / J4E / J4F / J4G) ───────────────────────
 
-export type WebsiteEvidenceSource = "website" | "github_repo" | "combined"
+export type WebsiteEvidenceSource = "website" | "github_repo" | "combined" | "functional"
 
 export type WebsiteAnalysisCandidate = {
   candidate_id: string
@@ -438,24 +438,64 @@ export type WebsiteAnalysisCandidate = {
   evidence_type: "deployed_website" | "api_docs" | "api_endpoint" | "website_content" | "github_repo" | "combined"
   action_label: string
   suggested_status: "suggested" | "needs_review"
-  /** J4E: which source produced this candidate */
-  evidence_source: WebsiteEvidenceSource
-  /** True when website + GitHub repo both provided evidence for this skill */
+  evidence_source: "website" | "github_repo" | "combined"
   is_combined: boolean
-  /** For combined candidates: the other source URL */
   related_source_url?: string | null
+}
+
+/** J4F: Result of a live functional verification test on a safe endpoint. */
+export type FunctionalVerificationCandidate = {
+  candidate_id: string
+  skill_name: string
+  skill_category: string
+  confidence: "high" | "medium" | "low"
+  evidence_title: string
+  evidence_summary: string
+  endpoint_url: string
+  method: string
+  request_summary: string
+  response_fields_found: string[]
+  status_code: number | null
+  verified: boolean
+  verification_message: string
+  evidence_type: "verified_workflow"
+  action_label: string
+  suggested_status: "suggested" | "needs_review"
+}
+
+/** J4G: High-level grouped skill card combining website, GitHub, and functional evidence. */
+export type GroupedWebsiteSkill = {
+  group_id: string
+  skill_name: string
+  category: string
+  confidence: "high" | "medium" | "low"
+  sources: WebsiteEvidenceSource[]
+  subskills: string[]
+  evidence_count: number
+  website_count: number
+  repo_count: number
+  functional_count: number
+  combined_count: number
+  candidate_ids: string[]
+  functional_candidate_ids: string[]
+  system_graph_nodes: string[]
+  system_graph_edges: [string, string][]
+  suggested_status: "suggested" | "needs_review"
 }
 
 export type WebsiteAnalyzeResponse = {
   base_url: string
   candidates: WebsiteAnalysisCandidate[]
+  functional_candidates: FunctionalVerificationCandidate[]
+  grouped_skills: GroupedWebsiteSkill[]
   checked_urls: string[]
   warnings: string[]
   candidate_count: number
-  /** J4E source counts */
   website_candidate_count: number
   repo_candidate_count: number
   combined_candidate_count: number
+  functional_candidate_count: number
+  functional_verification_available: boolean
   github_repo_url?: string | null
 }
 
@@ -463,16 +503,23 @@ export async function analyzeWebsite(params: {
   url: string
   skill_focus?: string | null
   github_repo_url?: string | null
+  run_safe_tests?: boolean
 }): Promise<WebsiteAnalyzeResponse> {
+  const body = {
+    url: params.url,
+    skill_focus: params.skill_focus ?? null,
+    github_repo_url: params.github_repo_url ?? null,
+    run_safe_tests: params.run_safe_tests ?? true,
+  }
   const res = await fetchAPI("/api/v1/student/website-analysis/analyze", {
     method: "POST",
-    body: JSON.stringify(params),
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
-    const body = await res.text()
+    const rawBody = await res.text()
     let userMessage = `Analysis failed (HTTP ${res.status}).`
     try {
-      const parsed = JSON.parse(body) as { detail?: { message?: string } | string }
+      const parsed = JSON.parse(rawBody) as { detail?: { message?: string } | string }
       const detail = parsed.detail
       if (detail && typeof detail === "object" && typeof detail.message === "string") {
         userMessage = detail.message

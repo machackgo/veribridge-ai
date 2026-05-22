@@ -153,13 +153,17 @@ export function createGitHubScanProgressSteps(): ProofProcessingStep[] {
   ]
 }
 
-/** Steps for a future website/portfolio scan flow. */
-export function createWebsiteScanProgressSteps(): ProofProcessingStep[] {
+/** Steps for the website/portfolio AI analyzer scan flow (J4D/J4F/J4G). */
+export function createWebsiteScanProgressSteps(hasRepo = false): ProofProcessingStep[] {
   return [
-    makeStep("connect", "Reading website URL",     "Checking accessibility of the live URL.",                 "Reading your website..."),
-    makeStep("fetch",   "Fetching page content",   "Downloading visible page text and structure.",             "Fetching page content..."),
-    makeStep("analyze", "Analyzing content",       "Looking for skill signals in the page.",                   "Analyzing content for skill evidence..."),
-    makeStep("prepare", "Preparing results",       "Organizing evidence and matching skills.",                  "Preparing results..."),
+    makeStep("connect",   "Reading website URL",           "Checking accessibility of the live URL.",                       "Reading your website..."),
+    makeStep("fetch",     "Fetching page content",         "Downloading page content, metadata, /docs, and /openapi.json.", "Fetching website content and API spec..."),
+    makeStep("routes",    "Checking API routes",           "Inspecting /docs, /openapi.json, /health.",                     "Checking /docs, /openapi.json, and /health..."),
+    ...(hasRepo ? [makeStep("repo", "Scanning GitHub repo", "Fetching file tree and scanning code.", "Scanning connected GitHub repository...")] : []),
+    makeStep("verify",    "Running functional tests",      "Safely calling inference endpoints to verify live output.",      "Testing safe API endpoints with example data..."),
+    makeStep("extract",   "Extracting evidence",           "Mapping content and verification results to skill categories.", hasRepo ? "Merging website, repo, and functional evidence..." : "Extracting skill evidence..."),
+    makeStep("group",     "Grouping into skill cards",     "Organizing evidence into high-level grouped skills.",            "Building grouped skill review..."),
+    makeStep("prepare",   "Preparing review screen",       "Rendering skill system graphs and evidence cards.",              "Preparing your grouped review screen..."),
   ]
 }
 
