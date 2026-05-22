@@ -61,6 +61,17 @@ def scan_github_portfolio(
             include_archived=body.include_archived,
             smart_scan=body.smart_scan,
         )
+    except ValueError as exc:
+        # GitHub API errors raised explicitly (rate-limit, user-not-found, etc.)
+        msg = str(exc)
+        logger.warning(
+            "POST /student/github-portfolio/scan: GitHub API error for username=%s — %s",
+            github_username, msg,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "github_api_error", "message": msg},
+        ) from exc
     except SupabaseError as exc:
         raise _database_unavailable(exc) from exc
     except Exception as exc:

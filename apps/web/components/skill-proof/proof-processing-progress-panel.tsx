@@ -18,6 +18,8 @@ import {
   type ProofProcessingProgress,
   type ProofProcessingStatus,
   type ProofProcessingStep,
+  type WorkLogEntry,
+  type WorkLogStatus,
 } from "@/lib/proof-processing"
 
 // ── CSS keyframes (injected once per render tree) ─────────────────────────────
@@ -236,6 +238,67 @@ function StepIcon({ status }: { status: ProofProcessingStatus }) {
   return <div style={{ ...base, background: "#f1f5f9", color: "#94a3b8", border: "1px solid #e2e8f0" }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: "#cbd5e1", display: "block" }} /></div>
 }
 
+// ── Work log ─────────────────────────────────────────────────────────────────
+
+const workLogIconMap: Record<WorkLogStatus, { char: string; color: string }> = {
+  info:      { char: "›", color: "#64748b" },
+  running:   { char: "◎", color: "#4f46e5" },
+  completed: { char: "✓", color: "#22c55e" },
+  warning:   { char: "⚠", color: "#f59e0b" },
+  error:     { char: "✕", color: "#ef4444" },
+}
+
+function WorkLogView({ entries }: { entries: WorkLogEntry[] }) {
+  if (entries.length === 0) return null
+  return (
+    <div
+      style={{
+        borderTop: "1px solid var(--line)",
+        paddingTop: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        maxHeight: 220,
+        overflowY: "auto",
+      }}
+    >
+      {entries.map((entry) => {
+        const icon = workLogIconMap[entry.status] ?? workLogIconMap.info
+        const isRunning = entry.status === "running"
+        return (
+          <div
+            key={entry.id}
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "flex-start",
+              fontSize: 12,
+              lineHeight: 1.4,
+              animation: "vb-slidein 0.2s ease",
+            }}
+          >
+            <span
+              style={{
+                color: icon.color,
+                fontWeight: 700,
+                fontSize: isRunning ? 10 : 11,
+                flexShrink: 0,
+                marginTop: 1,
+                animation: isRunning ? "proof-pulse 1.2s infinite" : undefined,
+              }}
+            >
+              {icon.char}
+            </span>
+            <span style={{ color: isRunning ? "var(--ink-2)" : "var(--muted)", fontWeight: isRunning ? 600 : 400 }}>
+              {entry.message}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── AGENT mode view ───────────────────────────────────────────────────────────
 
 function AgentView({
@@ -249,7 +312,10 @@ function AgentView({
   canClose?: boolean
   extraDetails?: ReactNode
 }) {
-  const percent = calculateProgressPercent(progress.steps)
+  const calculatedPercent = calculateProgressPercent(progress.steps)
+  const percent = progress.syntheticPercent != null
+    ? Math.max(calculatedPercent, progress.syntheticPercent) // never go backwards
+    : calculatedPercent
   const isDone = progress.overallStatus === "completed" || progress.overallStatus === "failed"
   const isFailed = progress.overallStatus === "failed"
 
@@ -365,6 +431,11 @@ function AgentView({
             )
           })}
         </div>
+      )}
+
+      {/* Work log — progressive reveal of live actions */}
+      {(progress.workLog?.length ?? 0) > 0 && (
+        <WorkLogView entries={progress.workLog!} />
       )}
 
       {/* Summary banner */}

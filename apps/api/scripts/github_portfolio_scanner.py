@@ -96,10 +96,22 @@ class GitHubAPIClient:
         try:
             with httpx.Client(timeout=self._timeout, follow_redirects=True) as client:
                 resp = client.get(url, headers=self._headers(), params=params)
-                if resp.status_code != 200:
-                    return []
-                return resp.json()
-        except (httpx.HTTPError, ValueError):
+                if resp.status_code == 200:
+                    return resp.json()
+                if resp.status_code == 404:
+                    # Username doesn't exist — raise so the service can return a clear error
+                    raise ValueError(f"GitHub user '{username}' not found (404).")
+                if resp.status_code in (403, 429):
+                    # Rate-limit or forbidden — raise so the service can return a clear error
+                    raise ValueError(
+                        f"GitHub API rate limit reached (HTTP {resp.status_code}). "
+                        "Try again later or reduce max repos."
+                    )
+                # Other non-200 — log and return empty
+                return []
+        except ValueError:
+            raise
+        except (httpx.HTTPError, Exception):
             return []
 
     def get_file_tree(
@@ -721,6 +733,13 @@ def _smart_rank_repos(repos: list[RepoInfo]) -> list[RepoInfo]:
 
 # ── Portfolio scanner (main orchestrator) ─────────────────────────────────────
 
+class ScanStats:
+    """Populated by PortfolioScanner.scan() so the service layer can report metadata."""
+    repos_available: int = 0    # repos returned by list_repos (after fork/archived filter)
+    repos_selected: int = 0     # repos after smart_scan ranking + max_repos cap
+    repos_with_evidence: int = 0  # repos that produced ≥1 EvidenceCandidate
+
+
 class PortfolioScanner:
     """
     Orchestrates a full GitHub profile scan and produces EvidenceCandidates.
@@ -733,6 +752,7 @@ class PortfolioScanner:
 
     def __init__(self, github_client: GitHubAPIClient | MockGitHubAPIClient) -> None:
         self._github = github_client
+        self.stats = ScanStats()
 
     def scan(
         self,
@@ -746,11 +766,13 @@ class PortfolioScanner:
         raw_repos = self._github.list_repos(username)
         repo_infos = [_parse_repo(r) for r in raw_repos if _parse_repo(r) is not None]
 
-        # Filter
+        # Filter by explicit include/exclude lists
         if include_repos:
             repo_infos = [r for r in repo_infos if r.name in include_repos]
         if exclude_repos:
             repo_infos = [r for r in repo_infos if r.name not in exclude_repos]
+
+        self.stats.repos_available = len(repo_infos)
 
         # Smart Scan: rank repos by evidence-richness signals before applying the cap.
         # This ensures the most proof-bearing repos are prioritised for large profiles.
@@ -758,10 +780,13 @@ class PortfolioScanner:
             repo_infos = _smart_rank_repos(repo_infos)
 
         repo_infos = repo_infos[:max_repos]
+        self.stats.repos_selected = len(repo_infos)
 
         candidates: list[EvidenceCandidate] = []
         for repo in repo_infos:
             repo_candidates = self._scan_repo(username, repo)
+            if repo_candidates:
+                self.stats.repos_with_evidence += 1
             candidates.extend(repo_candidates)
 
         return candidates

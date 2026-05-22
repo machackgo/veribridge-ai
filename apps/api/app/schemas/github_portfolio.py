@@ -75,7 +75,11 @@ class GitHubPortfolioScanCandidate(BaseModel):
 
 class GitHubPortfolioScanResponse(BaseModel):
     github_username: str
-    repo_count_scanned: int
+    # ── Repo metadata (accurate counts for frontend messaging) ────────────────
+    repos_available_count: int = 0   # repos returned by GitHub API after fork/archived filter
+    repos_selected_count: int = 0    # repos actually attempted after smart_scan + max_repos cap
+    repo_count_scanned: int = 0      # repos that produced ≥1 evidence candidate (legacy, kept for compat)
+    # ── Evidence metadata ─────────────────────────────────────────────────────
     candidate_count: int
     detected_skill_count: int
     proof_candidates: list[GitHubPortfolioScanCandidate]

@@ -448,6 +448,11 @@ export type GitHubPortfolioScanCandidate = {
 
 export type GitHubPortfolioScanResponse = {
   github_username: string
+  /** Repos returned by GitHub API after fork/archived filter (accurate total). */
+  repos_available_count: number
+  /** Repos actually scanned after smart_scan ranking + max_repos cap. */
+  repos_selected_count: number
+  /** Repos that produced ≥1 evidence candidate (may be lower than repos_selected_count). */
   repo_count_scanned: number
   candidate_count: number
   detected_skill_count: number

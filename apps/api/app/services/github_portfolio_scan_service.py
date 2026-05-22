@@ -130,6 +130,8 @@ def run_portfolio_scan(
         client = _FilteredGitHubAPIClient(real_client, include_forks, include_archived)
 
     scanner = PortfolioScanner(client)
+    # ValueError is raised by GitHubAPIClient for rate-limit / 404 — let it propagate
+    # so the endpoint can return a meaningful HTTP error instead of an empty success.
     raw_candidates = scanner.scan(github_username, max_repos=max_repos, smart_scan=smart_scan)
 
     repo_names_scanned: set[str] = {c.repo_name for c in raw_candidates}
@@ -170,7 +172,9 @@ def run_portfolio_scan(
 
     return GitHubPortfolioScanResponse(
         github_username=github_username,
-        repo_count_scanned=len(repo_names_scanned),
+        repos_available_count=scanner.stats.repos_available,
+        repos_selected_count=scanner.stats.repos_selected,
+        repo_count_scanned=scanner.stats.repos_with_evidence,
         candidate_count=len(proof_candidates),
         detected_skill_count=len(skill_labels),
         proof_candidates=proof_candidates,

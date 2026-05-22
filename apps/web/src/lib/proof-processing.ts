@@ -24,6 +24,15 @@ export type ProofProcessingStep = {
   errorMessage?: string
 }
 
+export type WorkLogStatus = "info" | "running" | "completed" | "warning" | "error"
+
+export type WorkLogEntry = {
+  id: string
+  message: string
+  status: WorkLogStatus
+  timestamp?: number
+}
+
 export type ProofProcessingProgress = {
   steps: ProofProcessingStep[]
   overallStatus: "idle" | "running" | "completed" | "failed"
@@ -31,6 +40,14 @@ export type ProofProcessingProgress = {
   skippedCount: number
   failedCount: number
   errorMessages: string[]
+  /** Live work log entries that appear progressively during processing. */
+  workLog?: WorkLogEntry[]
+  /**
+   * Override the calculated progress % — used during long API waits to
+   * advance the bar honestly without faking per-item progress.
+   * Cleared (set to undefined) once real steps complete.
+   */
+  syntheticPercent?: number
 }
 
 // ── Step factory ──────────────────────────────────────────────────────────────
@@ -45,7 +62,17 @@ export function makeStep(
 }
 
 export function initialProgress(steps: ProofProcessingStep[]): ProofProcessingProgress {
-  return { steps, overallStatus: "running", savedCount: 0, skippedCount: 0, failedCount: 0, errorMessages: [] }
+  return { steps, overallStatus: "running", savedCount: 0, skippedCount: 0, failedCount: 0, errorMessages: [], workLog: [] }
+}
+
+/** Append a work log entry to an existing progress object (immutable). */
+export function appendWorkLogEntry(
+  progress: ProofProcessingProgress,
+  message: string,
+  status: WorkLogStatus = "info"
+): ProofProcessingProgress {
+  const entry: WorkLogEntry = { id: `wl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, message, status, timestamp: Date.now() }
+  return { ...progress, workLog: [...(progress.workLog ?? []), entry] }
 }
 
 // ── Step updaters (return new array — never mutate) ───────────────────────────

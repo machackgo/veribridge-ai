@@ -26,6 +26,7 @@ import {
   initialProgress,
   startStep,
   updateStep,
+  appendWorkLogEntry,
   type ProofProcessingProgress,
 } from "@/lib/proof-processing"
 import { ProofProcessingProgressPanel } from "./proof-processing-progress-panel"
@@ -590,7 +591,57 @@ export function GitHubPortfolioScanPanel({
     setScanProgress(initialProgress(steps))
     setStep("scanning")
 
-    // 90-second timeout to prevent infinite loading
+    // ── Staged work log messages during API wait ──────────────────────────────
+    // These are honest approximations of server-side phases. The API is one call
+    // so we can't get real per-repo progress. Messages are time-based.
+    const staged: Array<{ minElapsed: number; msg: string; status?: "info" | "warning" }> = [
+      { minElapsed: 0,     msg: "Checking GitHub profile access..." },
+      { minElapsed: 1500,  msg: "Fetching repository metadata from the GitHub API..." },
+      ...(isLargeProfile ? [
+        { minElapsed: 3000, msg: `Large profile detected. Smart Scan will prioritize the top ${maxRepos} repositories.`, status: "warning" as const },
+        { minElapsed: 4500, msg: "This keeps the scan fast and avoids noisy or inactive repositories." },
+      ] : [
+        { minElapsed: 3000, msg: "Applying Smart Scan priority ranking to repositories..." },
+      ]),
+      { minElapsed: 6000,  msg: `Ranking repos by README quality, topics, stars, and recent activity...` },
+      { minElapsed: 9000,  msg: `Selected the top ${maxRepos} repositories for evidence analysis.` },
+      { minElapsed: 13000, msg: "Reading repository README files and metadata..." },
+      { minElapsed: 17000, msg: "Inspecting source code, configuration, and deployment files..." },
+      { minElapsed: 21000, msg: "Looking for Dockerfiles, GitHub Actions, model artifacts, API files, and package configs..." },
+      { minElapsed: 26000, msg: "Extracting raw proof evidence from high-signal code sections..." },
+      { minElapsed: 31000, msg: "Still working — large profiles can take 30–90 seconds. Thank you for waiting...", status: "warning" as const },
+      { minElapsed: 46000, msg: "Normalizing skill names and deduplicating evidence across repositories..." },
+      { minElapsed: 61000, msg: "Almost there — finalizing evidence extraction..." },
+    ]
+
+    const startTime = Date.now()
+    let stagedIdx = 0
+    let currentProgress = initialProgress(steps)
+    setScanProgress(currentProgress)
+
+    // Interval: advances work log messages + synthetic progress bar every 500ms
+    const progressInterval = setInterval(() => {
+      const elapsed = Date.now() - startTime
+      let changed = false
+
+      // Add any due messages
+      while (stagedIdx < staged.length && elapsed >= staged[stagedIdx].minElapsed) {
+        currentProgress = appendWorkLogEntry(currentProgress, staged[stagedIdx].msg, staged[stagedIdx].status ?? "info")
+        stagedIdx++
+        changed = true
+      }
+
+      // Advance synthetic progress bar honestly: 25%→80% over 90 seconds
+      const syntheticPct = Math.min(80, 25 + (elapsed / 90_000) * 55)
+      if (Math.round(syntheticPct) !== currentProgress.syntheticPercent) {
+        currentProgress = { ...currentProgress, syntheticPercent: Math.round(syntheticPct) }
+        changed = true
+      }
+
+      if (changed) setScanProgress({ ...currentProgress })
+    }, 500)
+
+    // ── 90-second timeout ─────────────────────────────────────────────────────
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(
@@ -611,32 +662,65 @@ export function GitHubPortfolioScanPanel({
         }),
         timeoutPromise,
       ])
+      clearInterval(progressInterval)
       if (timeoutHandle) clearTimeout(timeoutHandle)
 
-      // Step 2: scan complete — show real counts
+      // Add final work log entries after API returns
+      const reposSelected = result.repos_selected_count || maxRepos
+      currentProgress = appendWorkLogEntry(currentProgress, `API returned — ${reposSelected} repositories scanned.`)
+      currentProgress = appendWorkLogEntry(currentProgress, `Normalizing skill names and deduplicating evidence...`)
+      currentProgress = appendWorkLogEntry(currentProgress, `Grouping evidence into hierarchical skill categories...`)
+      currentProgress = appendWorkLogEntry(currentProgress, `Building Skill System Graphs...`)
+      currentProgress = appendWorkLogEntry(currentProgress, `Preparing your grouped evidence review screen...`)
+
+      // Check for empty results and add helpful messages
+      if (result.repos_available_count === 0) {
+        currentProgress = appendWorkLogEntry(
+          currentProgress,
+          "No public repositories found. The profile may be private or have no public repos.",
+          "warning"
+        )
+      } else if (result.repos_selected_count === 0) {
+        currentProgress = appendWorkLogEntry(
+          currentProgress,
+          `${result.repos_available_count} repos found but all filtered out. Try enabling forks or archived repos.`,
+          "warning"
+        )
+      } else if (result.candidate_count === 0) {
+        currentProgress = appendWorkLogEntry(
+          currentProgress,
+          `Scanned ${result.repos_selected_count} repos but found no high-signal code evidence. The repos may not contain structured code files.`,
+          "warning"
+        )
+      }
+
+      // Complete all steps with real data
+      const finalMsg = result.candidate_count > 0
+        ? `Found ${result.candidate_count} evidence items across ${result.repos_selected_count} repos in ${result.detected_skill_count} skill types.`
+        : `Scan complete — ${result.repos_selected_count} repos scanned, no evidence items found.`
+      currentProgress = appendWorkLogEntry(currentProgress, finalMsg, "completed")
+
       steps = completeStep(steps, "scan", {
-        countCurrent: result.repo_count_scanned,
-        countTotal: result.repo_count_scanned,
-        description: `Scanned ${result.repo_count_scanned} repos · found ${result.candidate_count} evidence items.`,
-        agentCopy: `Found ${result.candidate_count} evidence items across ${result.repo_count_scanned} repos.`,
+        countCurrent: result.repos_selected_count,
+        countTotal: result.repos_selected_count,
+        description: `Scanned ${result.repos_selected_count} repos · found ${result.candidate_count} evidence items.`,
+        agentCopy: finalMsg,
       })
-      // Step 3: group (client-side, instant)
       steps = completeStep(steps, "group", {
         description: `Detected ${result.detected_skill_count} skill types.`,
         agentCopy: `Grouped into ${result.detected_skill_count} skill categories.`,
       })
-      // Step 4: prepare (instant)
       steps = completeStep(steps, "prepare", {
-        description: `Review is ready — ${result.candidate_count} evidence item${result.candidate_count === 1 ? "" : "s"} to review.`,
+        description: `Review is ready — ${result.candidate_count} evidence item${result.candidate_count === 1 ? "" : "s"}.`,
         agentCopy: "Review is ready.",
       })
+
       setScanProgress({
+        ...currentProgress,
         steps,
         overallStatus: "completed",
         savedCount: result.candidate_count,
-        skippedCount: 0,
-        failedCount: 0,
-        errorMessages: [],
+        syntheticPercent: undefined,  // let real step completion drive 100%
       })
 
       setScanResult(result)
@@ -648,17 +732,17 @@ export function GitHubPortfolioScanPanel({
       setSelected(autoSelect)
       setStep("review")
     } catch (err) {
+      clearInterval(progressInterval)
       if (timeoutHandle) clearTimeout(timeoutHandle)
       const msg = err instanceof Error ? err.message : "Scan failed. Please try again."
-      let failedSteps = steps
-      failedSteps = failStep(failedSteps, "scan", msg)
+      currentProgress = appendWorkLogEntry(currentProgress, msg, "error")
+      steps = failStep(steps, "scan", msg)
       setScanProgress({
-        steps: failedSteps,
+        ...currentProgress,
+        steps,
         overallStatus: "failed",
-        savedCount: 0,
-        skippedCount: 0,
-        failedCount: 0,
         errorMessages: [msg],
+        syntheticPercent: undefined,
       })
       setError(msg)
       setStep("form")
@@ -815,7 +899,7 @@ export function GitHubPortfolioScanPanel({
                 from{" "}
                 <strong>{scanResult.candidate_count} evidence location{scanResult.candidate_count !== 1 ? "s" : ""}</strong>{" "}
                 across{" "}
-                <strong>{scanResult.repo_count_scanned} repo{scanResult.repo_count_scanned !== 1 ? "s" : ""}</strong>.{" "}
+                <strong>{scanResult.repos_selected_count || scanResult.repo_count_scanned} repo{(scanResult.repos_selected_count || scanResult.repo_count_scanned) !== 1 ? "s" : ""}</strong>.{" "}
                 Select the skills you want to add to your profile.
               </p>
             )}
@@ -981,8 +1065,11 @@ export function GitHubPortfolioScanPanel({
                 }}
               >
                 <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>No proof candidates found.</div>
-                We scanned {scanResult.repo_count_scanned} repo{scanResult.repo_count_scanned !== 1 ? "s" : ""} but did not find
-                high-signal evidence. Try manual proof submission or adjust scan options.
+                {scanResult.repos_selected_count === 0 && scanResult.repos_available_count > 0
+                  ? `Found ${scanResult.repos_available_count} repos but all were filtered out. Try enabling "Include forks" or "Include archived".`
+                  : scanResult.repos_selected_count === 0
+                  ? "No public repositories were found for this profile."
+                  : `Scanned ${scanResult.repos_selected_count} repos but found no high-signal evidence. Try manual proof submission or adjust scan options.`}
               </div>
             ) : (
               <>
