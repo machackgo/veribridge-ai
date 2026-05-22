@@ -477,6 +477,7 @@ export async function scanGitHubPortfolio(params: {
   max_repos?: number
   include_forks?: boolean
   include_archived?: boolean
+  smart_scan?: boolean
 }): Promise<GitHubPortfolioScanResponse> {
   const res = await fetchAPI("/api/v1/student/github-portfolio/scan", {
     method: "POST",

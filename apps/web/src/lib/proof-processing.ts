@@ -114,6 +114,38 @@ export function getCurrentStepLabel(steps: ProofProcessingStep[]): string {
 
 // ── Step presets per flow ─────────────────────────────────────────────────────
 
+// ── Scan-phase step presets ───────────────────────────────────────────────────
+
+/** Steps for the GitHub portfolio scan itself (before review). */
+export function createGitHubScanProgressSteps(): ProofProcessingStep[] {
+  return [
+    makeStep("connect", "Connecting to GitHub",    "Connecting to the GitHub API.",                           "Connecting to GitHub..."),
+    makeStep("scan",    "Scanning repositories",   "Reading READMEs, code, configs, and deployment files.",   "Scanning repositories and reading evidence..."),
+    makeStep("group",   "Grouping skills",          "Connecting evidence to parent skill categories.",          "Grouping skills and building the Skill Graph..."),
+    makeStep("prepare", "Preparing review screen",  "Organizing grouped skills and system graphs.",             "Almost ready — preparing your review..."),
+  ]
+}
+
+/** Steps for a future website/portfolio scan flow. */
+export function createWebsiteScanProgressSteps(): ProofProcessingStep[] {
+  return [
+    makeStep("connect", "Reading website URL",     "Checking accessibility of the live URL.",                 "Reading your website..."),
+    makeStep("fetch",   "Fetching page content",   "Downloading visible page text and structure.",             "Fetching page content..."),
+    makeStep("analyze", "Analyzing content",       "Looking for skill signals in the page.",                   "Analyzing content for skill evidence..."),
+    makeStep("prepare", "Preparing results",       "Organizing evidence and matching skills.",                  "Preparing results..."),
+  ]
+}
+
+/** Generic step preset for future source scanners (LinkedIn, YouTube, Drive…). */
+export function createGenericSourceScanProgressSteps(sourceName: string): ProofProcessingStep[] {
+  return [
+    makeStep("connect", `Reading ${sourceName} link`, `Connecting to ${sourceName}.`,            `Reading your ${sourceName} link...`),
+    makeStep("fetch",   "Fetching content",            "Retrieving available content.",           "Fetching content..."),
+    makeStep("analyze", "Analyzing content",           "Looking for skill evidence.",             "Analyzing for skill evidence..."),
+    makeStep("prepare", "Preparing results",           "Matching evidence to skills.",            "Preparing results..."),
+  ]
+}
+
 /** Steps for saving selected grouped skills from GitHub portfolio scan. */
 export function createGitHubScanSaveSteps(): ProofProcessingStep[] {
   return [

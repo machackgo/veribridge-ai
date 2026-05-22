@@ -30,9 +30,17 @@ def extract_github_username(profile_url: str | None, username: str | None) -> st
 class GitHubPortfolioScanRequest(BaseModel):
     github_profile_url: str | None = Field(default=None, max_length=500)
     github_username: str | None = Field(default=None, max_length=100)
-    max_repos: int = Field(default=10, ge=1, le=50)
+    max_repos: int = Field(default=10, ge=1, le=150)
     include_forks: bool = False
     include_archived: bool = False
+    smart_scan: bool = Field(
+        default=True,
+        description=(
+            "When True, repos are ranked by evidence-richness signals "
+            "(has description, has topics, stars) before the max_repos cap is applied. "
+            "This prioritizes the most likely proof-bearing repositories for large profiles."
+        ),
+    )
 
     @model_validator(mode="after")
     def _require_identifier(self) -> "GitHubPortfolioScanRequest":

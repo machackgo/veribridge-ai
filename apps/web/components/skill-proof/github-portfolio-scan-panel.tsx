@@ -20,6 +20,7 @@ import {
 } from "@/lib/skill-grouping"
 import {
   createGitHubScanSaveSteps,
+  createGitHubScanProgressSteps,
   completeStep,
   failStep,
   initialProgress,
@@ -37,6 +38,7 @@ type ScanFormState = {
   maxRepos: string
   includeForks: boolean
   includeArchived: boolean
+  smartScan: boolean
 }
 
 const initialForm = (): ScanFormState => ({
@@ -44,6 +46,7 @@ const initialForm = (): ScanFormState => ({
   maxRepos: "10",
   includeForks: false,
   includeArchived: false,
+  smartScan: true,
 })
 
 function isGitHubProfileUrl(value: string): boolean {
@@ -473,6 +476,7 @@ export function GitHubPortfolioScanPanel({
   const [importResult, setImportResult] = useState<GitHubPortfolioImportResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [processingProgress, setProcessingProgress] = useState<ProofProcessingProgress | null>(null)
+  const [scanProgress, setScanProgress] = useState<ProofProcessingProgress | null>(null)
 
   // Group candidates into hierarchical skill groups
   const grouped = useMemo(
@@ -496,6 +500,8 @@ export function GitHubPortfolioScanPanel({
     setShowRaw(false)
     setImportResult(null)
     setError(null)
+    setScanProgress(null)
+    setProcessingProgress(null)
     onClose()
   }
 
@@ -556,23 +562,84 @@ export function GitHubPortfolioScanPanel({
       return
     }
     const maxRepos = parseInt(form.maxRepos, 10)
-    if (!Number.isFinite(maxRepos) || maxRepos < 1 || maxRepos > 50) {
-      setError("Max repos must be between 1 and 50.")
+    if (!Number.isFinite(maxRepos) || maxRepos < 1 || maxRepos > 150) {
+      setError("Max repos must be between 1 and 150. For large profiles, Smart Scan will prioritize the best repositories.")
       return
     }
 
-    setStep("scanning")
-    try {
-      const result = await scanGitHubPortfolio({
-        github_profile_url: url.includes("github.com") ? url : undefined,
-        github_username: url.includes("github.com") ? undefined : url,
-        max_repos: maxRepos,
-        include_forks: form.includeForks,
-        include_archived: form.includeArchived,
-      })
-      setScanResult(result)
+    const username = url.includes("github.com")
+      ? url.replace(/.*github\.com\//, "").replace(/\/$/, "")
+      : url
+    const isLargeProfile = maxRepos > 30
 
-      // Auto-select all high-confidence suggested candidates
+    // Build scan progress — steps 1-2 start before API call
+    let steps = createGitHubScanProgressSteps()
+    steps = completeStep(steps, "connect", {
+      description: `Connected to github.com/${username}.`,
+      agentCopy: `Connected to github.com/${username}.`,
+    })
+    steps = startStep(steps, "scan")
+    steps = updateStep(steps, "scan", {
+      description: isLargeProfile
+        ? `Smart Scan selected top ${maxRepos} repositories. Analyzing evidence…`
+        : `Scanning ${maxRepos} repositories…`,
+      agentCopy: isLargeProfile
+        ? `Large profile detected. Smart Scan is prioritizing the top ${maxRepos} relevant repositories…`
+        : `Reading READMEs, code files, and deployment configs…`,
+    })
+    setScanProgress(initialProgress(steps))
+    setStep("scanning")
+
+    // 90-second timeout to prevent infinite loading
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error("Scan timed out. Try reducing Max Repos or try again later.")),
+        90_000
+      )
+    })
+
+    try {
+      const result = await Promise.race([
+        scanGitHubPortfolio({
+          github_profile_url: url.includes("github.com") ? url : undefined,
+          github_username: url.includes("github.com") ? undefined : url,
+          max_repos: maxRepos,
+          include_forks: form.includeForks,
+          include_archived: form.includeArchived,
+          smart_scan: form.smartScan,
+        }),
+        timeoutPromise,
+      ])
+      if (timeoutHandle) clearTimeout(timeoutHandle)
+
+      // Step 2: scan complete — show real counts
+      steps = completeStep(steps, "scan", {
+        countCurrent: result.repo_count_scanned,
+        countTotal: result.repo_count_scanned,
+        description: `Scanned ${result.repo_count_scanned} repos · found ${result.candidate_count} evidence items.`,
+        agentCopy: `Found ${result.candidate_count} evidence items across ${result.repo_count_scanned} repos.`,
+      })
+      // Step 3: group (client-side, instant)
+      steps = completeStep(steps, "group", {
+        description: `Detected ${result.detected_skill_count} skill types.`,
+        agentCopy: `Grouped into ${result.detected_skill_count} skill categories.`,
+      })
+      // Step 4: prepare (instant)
+      steps = completeStep(steps, "prepare", {
+        description: `Review is ready — ${result.candidate_count} evidence item${result.candidate_count === 1 ? "" : "s"} to review.`,
+        agentCopy: "Review is ready.",
+      })
+      setScanProgress({
+        steps,
+        overallStatus: "completed",
+        savedCount: result.candidate_count,
+        skippedCount: 0,
+        failedCount: 0,
+        errorMessages: [],
+      })
+
+      setScanResult(result)
       const autoSelect = new Set(
         result.proof_candidates
           .filter((c) => c.suggested_status === "suggested")
@@ -581,7 +648,19 @@ export function GitHubPortfolioScanPanel({
       setSelected(autoSelect)
       setStep("review")
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Scan failed. Please try again.")
+      if (timeoutHandle) clearTimeout(timeoutHandle)
+      const msg = err instanceof Error ? err.message : "Scan failed. Please try again."
+      let failedSteps = steps
+      failedSteps = failStep(failedSteps, "scan", msg)
+      setScanProgress({
+        steps: failedSteps,
+        overallStatus: "failed",
+        savedCount: 0,
+        skippedCount: 0,
+        failedCount: 0,
+        errorMessages: [msg],
+      })
+      setError(msg)
       setStep("form")
     }
   }
@@ -716,7 +795,7 @@ export function GitHubPortfolioScanPanel({
               style={{ margin: "4px 0 0", fontSize: 22, fontWeight: 700, color: "var(--ink)" }}
             >
               {step === "form" && "Scan my GitHub profile"}
-              {step === "scanning" && "Scanning public repositories…"}
+              {step === "scanning" && "VeriBridge AI is scanning your GitHub profile"}
               {step === "review" && "Review grouped skill evidence"}
               {step === "importing" && "Saving selected skills…"}
               {step === "done" && "GitHub proof items imported"}
@@ -802,18 +881,32 @@ export function GitHubPortfolioScanPanel({
               </span>
             </label>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
               <label style={{ display: "grid", gap: 6 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>Max repos to scan</span>
                 <input
                   data-testid="github-scan-max-repos"
                   type="number"
                   min={1}
-                  max={50}
+                  max={150}
                   value={form.maxRepos}
                   onChange={(e) => setForm((prev) => ({ ...prev, maxRepos: e.target.value }))}
                   style={inputStyle}
                 />
+              </label>
+
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", paddingTop: 24 }}>
+                <input
+                  data-testid="github-scan-smart-scan"
+                  type="checkbox"
+                  checked={form.smartScan}
+                  onChange={(e) => setForm((prev) => ({ ...prev, smartScan: e.target.checked }))}
+                  style={{ width: 16, height: 16, cursor: "pointer" }}
+                />
+                <div>
+                  <div style={{ fontSize: 13, color: "var(--ink)", fontWeight: 600 }}>Smart Scan</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>Prioritize best repos</div>
+                </div>
               </label>
 
               <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", paddingTop: 24 }}>
@@ -839,6 +932,16 @@ export function GitHubPortfolioScanPanel({
               </label>
             </div>
 
+            {/* Large-profile hint */}
+            {parseInt(form.maxRepos, 10) > 50 && (
+              <div style={{ fontSize: 12, color: "#854d0e", background: "#fef9c3", border: "1px solid #fef08a", borderRadius: 8, padding: "8px 12px", lineHeight: 1.5 }}>
+                Large scan may take longer. Smart Scan prioritizes the most relevant repositories first — we recommend keeping it on.
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>
+              For large profiles, VeriBridge scans the most relevant repositories first. Max 150 repos.
+            </div>
+
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <button
                 type="button"
@@ -853,10 +956,12 @@ export function GitHubPortfolioScanPanel({
         )}
 
         {/* ── Scanning step ── */}
-        {step === "scanning" && (
-          <div style={{ padding: "32px 0", textAlign: "center", color: "var(--muted)", fontSize: 14 }}>
-            Scanning public repositories and grouping skill evidence — this may take a few seconds…
-          </div>
+        {step === "scanning" && scanProgress && (
+          <ProofProcessingProgressPanel
+            title="GitHub Scan"
+            progress={scanProgress}
+            canClose={false}
+          />
         )}
 
         {/* ── Review step ── */}

@@ -59,6 +59,7 @@ def scan_github_portfolio(
             max_repos=body.max_repos,
             include_forks=body.include_forks,
             include_archived=body.include_archived,
+            smart_scan=body.smart_scan,
         )
     except SupabaseError as exc:
         raise _database_unavailable(exc) from exc

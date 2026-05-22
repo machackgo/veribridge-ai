@@ -109,6 +109,7 @@ def run_portfolio_scan(
     max_repos: int = 10,
     include_forks: bool = False,
     include_archived: bool = False,
+    smart_scan: bool = True,
     github_token: str | None = None,
     _override_client: Any = None,
 ) -> GitHubPortfolioScanResponse:
@@ -129,7 +130,7 @@ def run_portfolio_scan(
         client = _FilteredGitHubAPIClient(real_client, include_forks, include_archived)
 
     scanner = PortfolioScanner(client)
-    raw_candidates = scanner.scan(github_username, max_repos=max_repos)
+    raw_candidates = scanner.scan(github_username, max_repos=max_repos, smart_scan=smart_scan)
 
     repo_names_scanned: set[str] = {c.repo_name for c in raw_candidates}
     skill_labels: set[str] = {c.skill_name for c in raw_candidates}

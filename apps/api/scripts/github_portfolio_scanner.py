@@ -692,6 +692,33 @@ def build_student_claim(
     )
 
 
+# ── Smart Scan ranking ────────────────────────────────────────────────────────
+
+def _smart_rank_repos(repos: list[RepoInfo]) -> list[RepoInfo]:
+    """
+    Rank repos by evidence-richness signals so the cap (max_repos) selects the
+    most proof-bearing repositories for large GitHub profiles.
+
+    Signal weights:
+    - Has non-empty description   → +4
+    - Has topics                  → +1.5 per topic, capped at +6
+    - Stars                       → +0.1 per star, capped at +3
+    - Recently updated order preserved as stable tie-breaker (GitHub API returns
+      repos sorted by pushed_at desc, so the slice after sorting keeps that bias
+      for equal-scored repos via Python's stable sort).
+    """
+    def score(r: RepoInfo) -> float:
+        s = 0.0
+        if r.description and r.description.strip():
+            s += 4.0
+        if r.topics:
+            s += min(len(r.topics) * 1.5, 6.0)
+        s += min(r.stars * 0.1, 3.0)
+        return s
+
+    return sorted(repos, key=score, reverse=True)
+
+
 # ── Portfolio scanner (main orchestrator) ─────────────────────────────────────
 
 class PortfolioScanner:
@@ -713,6 +740,7 @@ class PortfolioScanner:
         max_repos: int = 25,
         include_repos: list[str] | None = None,
         exclude_repos: list[str] | None = None,
+        smart_scan: bool = True,
     ) -> list[EvidenceCandidate]:
         """Scan `username`'s public GitHub repos and return evidence candidates."""
         raw_repos = self._github.list_repos(username)
@@ -723,6 +751,11 @@ class PortfolioScanner:
             repo_infos = [r for r in repo_infos if r.name in include_repos]
         if exclude_repos:
             repo_infos = [r for r in repo_infos if r.name not in exclude_repos]
+
+        # Smart Scan: rank repos by evidence-richness signals before applying the cap.
+        # This ensures the most proof-bearing repos are prioritised for large profiles.
+        if smart_scan:
+            repo_infos = _smart_rank_repos(repo_infos)
 
         repo_infos = repo_infos[:max_repos]
 
