@@ -472,10 +472,15 @@ export type FunctionalVerificationCandidate = {
   /** J4H transparency fields */
   test_input_source: "auto_generated" | "user_provided" | "schema_example"
   is_user_guided: boolean
-  verification_label: string          // "Auto-detected API test" | "User-guided API test"
-  request_body_summary: string        // "origin=Fenway Park; destination=Logan; num_segments=5"
+  verification_label: string
+  request_body_summary: string
   what_to_test?: string | null
   expected_output_description?: string | null
+  /** Actual response captured from the live endpoint */
+  response_preview?: Record<string, unknown> | null
+  response_summary?: string
+  raw_response_json?: string | null
+  response_truncated?: boolean
 }
 
 /** J4G: High-level grouped skill card combining website, GitHub, and functional evidence. */

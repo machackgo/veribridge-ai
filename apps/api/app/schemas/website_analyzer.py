@@ -65,6 +65,11 @@ class FunctionalVerificationCandidate(BaseModel):
     request_body_summary: str = ""   # "origin=Fenway Park; destination=Logan Airport; num_segments=5"
     what_to_test: str | None = None
     expected_output_description: str | None = None
+    # Actual response captured from the live endpoint
+    response_preview: dict | None = None      # key-value pairs extracted from JSON response
+    response_summary: str = ""                # "risk_class: High; confidence: 0.82; routes_count: 3"
+    raw_response_json: str | None = None      # JSON string, capped at 3 000 chars
+    response_truncated: bool = False          # True when raw_response_json was capped
 
 
 # ── J4G: High-level grouped skill evidence ────────────────────────────────────

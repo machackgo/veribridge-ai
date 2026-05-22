@@ -645,6 +645,87 @@ def _classify_high_level_group(skill_name: str, skill_category: str) -> str:
     return category_map.get(skill_category, skill_category or "General")
 
 
+_RAW_RESPONSE_MAX_CHARS = 3_000
+
+# Generic field-name fragments considered "important" at any nesting level
+_IMPORTANT_FIELD_FRAGMENTS: frozenset[str] = frozenset([
+    "prediction", "predict", "result", "output", "recommendation", "recommend",
+    "label", "class", "category", "status", "message", "score", "confidence",
+    "probability", "prob", "risk", "answer", "summary", "generated_text",
+    "caption", "text", "content", "index", "rank", "recommended",
+    "value", "amount", "distance", "duration", "condition",
+    "detected", "detection", "sentiment", "intent",
+])
+
+
+def _is_important(name: str) -> bool:
+    nl = name.lower()
+    return any(frag in nl for frag in _IMPORTANT_FIELD_FRAGMENTS)
+
+
+def _extract_response_preview(data: Any, max_entries: int = 12) -> dict[str, Any]:
+    """Generic extraction of important fields from any JSON response.
+
+    Works for ML APIs, business APIs, route/risk APIs, text/NLP APIs, etc.
+    Does not hardcode domain-specific field names — uses generic importance patterns.
+    """
+    if not isinstance(data, dict):
+        return {}
+
+    preview: dict[str, Any] = {}
+
+    def _safe_add(key: str, val: Any) -> None:
+        if len(preview) >= max_entries:
+            return
+        if isinstance(val, str) and len(val) > 120:
+            val = val[:120] + "…"
+        preview[key] = val
+
+    for key, val in data.items():
+        if len(preview) >= max_entries:
+            break
+
+        if isinstance(val, (str, int, float, bool)):
+            _safe_add(key, val)
+
+        elif isinstance(val, dict):
+            # For small dicts with scalar children, extract children with "important" names
+            # or where the parent key itself is important
+            parent_important = _is_important(key)
+            for sub_key, sub_val in val.items():
+                if len(preview) >= max_entries:
+                    break
+                if isinstance(sub_val, (str, int, float, bool)):
+                    if parent_important or _is_important(sub_key):
+                        _safe_add(f"{key}.{sub_key}", sub_val)
+
+        elif isinstance(val, list):
+            # Record the list length, then pull scalar fields from the first item
+            _safe_add(f"{key}_count", len(val))
+            if val and isinstance(val[0], dict):
+                for sub_key, sub_val in list(val[0].items())[:5]:
+                    if len(preview) >= max_entries:
+                        break
+                    if isinstance(sub_val, (str, int, float, bool)):
+                        if _is_important(sub_key) or _is_important(key):
+                            _safe_add(f"{key}[0].{sub_key}", sub_val)
+
+    return preview
+
+
+def _build_response_summary(preview: dict[str, Any]) -> str:
+    """Convert the preview dict to a short human-readable string."""
+    if not preview:
+        return ""
+    parts: list[str] = []
+    for k, v in list(preview.items())[:7]:
+        v_str = str(v)
+        if len(v_str) > 60:
+            v_str = v_str[:60] + "…"
+        parts.append(f"{k}: {v_str}")
+    return "; ".join(parts)
+
+
 def _parse_user_test_input(text: str) -> dict[str, Any] | None:
     """Parse a user-provided test input string into a dict.
 
@@ -1378,7 +1459,27 @@ class WebsiteAnalyzerService:
                 category = _infer_category_from_skill(skill)
                 status_code: int | None = result["status_code"]
                 response_fields: list[str] = result["response_fields"]
+                response_data: Any = result.get("response_data")
                 verified = status_code == 200 and bool(response_fields)
+
+                # ── Extract response preview + raw JSON ──────────────────────
+                response_preview: dict | None = None
+                response_summary = ""
+                raw_response_json: str | None = None
+                response_truncated = False
+                if response_data is not None:
+                    response_preview = _extract_response_preview(response_data) or None
+                    if response_preview:
+                        response_summary = _build_response_summary(response_preview)
+                    try:
+                        raw_json_str = json.dumps(response_data, ensure_ascii=False)
+                        if len(raw_json_str) > _RAW_RESPONSE_MAX_CHARS:
+                            raw_response_json = raw_json_str[:_RAW_RESPONSE_MAX_CHARS] + "\n…(truncated)"
+                            response_truncated = True
+                        else:
+                            raw_response_json = raw_json_str
+                    except Exception:
+                        pass
 
                 # ── Build evidence text ────────────────────────────────────
                 if verified:
@@ -1448,6 +1549,11 @@ class WebsiteAnalyzerService:
                     request_body_summary=body_summary,
                     what_to_test=test_plan.what_to_test if test_plan else None,
                     expected_output_description=test_plan.expected_output if test_plan else None,
+                    # Actual response output
+                    response_preview=response_preview,
+                    response_summary=response_summary,
+                    raw_response_json=raw_response_json,
+                    response_truncated=response_truncated,
                 ))
 
         if tested == 0 and paths:
@@ -1464,8 +1570,14 @@ class WebsiteAnalyzerService:
         method: str,
         body: dict | None,
     ) -> dict[str, Any]:
-        """Call an endpoint with SSRF protection and strict timeout."""
-        result: dict[str, Any] = {"status_code": None, "response_fields": [], "error": None}
+        """Call an endpoint with SSRF protection and strict timeout.
+
+        Returns dict with: status_code, response_fields, response_data, error.
+        response_data is the parsed JSON body (None for non-JSON or failed requests).
+        """
+        result: dict[str, Any] = {
+            "status_code": None, "response_fields": [], "response_data": None, "error": None,
+        }
         safe, reason = _is_safe_url(url)
         if not safe:
             result["error"] = reason
@@ -1486,6 +1598,7 @@ class WebsiteAnalyzerService:
                         try:
                             data = resp.json()
                             result["response_fields"] = _extract_response_fields(data)
+                            result["response_data"] = data
                         except Exception:
                             pass
         except httpx.TimeoutException:

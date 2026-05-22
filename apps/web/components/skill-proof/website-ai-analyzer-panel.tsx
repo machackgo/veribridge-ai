@@ -129,11 +129,13 @@ function SystemGraph({ nodes }: { nodes: string[] }) {
 // ── Functional verification row ───────────────────────────────────────────────
 
 function FunctionalRow({ fc }: { fc: FunctionalVerificationCandidate }) {
+  const [showRaw, setShowRaw] = useState(false)
   const {
     verified, status_code, evidence_title, verification_message,
     response_fields_found, method, endpoint_url,
     verification_label, test_input_source, is_user_guided,
     request_body_summary, what_to_test, expected_output_description,
+    response_preview, response_summary, raw_response_json, response_truncated,
   } = fc
 
   const bg     = verified ? "#f0fdf4" : status_code && status_code < 500 ? "#fef9c3" : "#fff7ed"
@@ -153,18 +155,29 @@ function FunctionalRow({ fc }: { fc: FunctionalVerificationCandidate }) {
     ? "Test input provided by user"
     : "Test input auto-generated from OpenAPI schema / default values"
 
+  // Format a preview value for display
+  function formatVal(v: unknown): string {
+    if (v === null || v === undefined) return "—"
+    if (typeof v === "object") return JSON.stringify(v).slice(0, 80)
+    const s = String(v)
+    return s.length > 80 ? s.slice(0, 80) + "…" : s
+  }
+
+  const hasPreview = response_preview && Object.keys(response_preview).length > 0
+
   return (
     <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: 8, padding: "11px 13px", marginBottom: 6 }}>
-      {/* Type + result badges */}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 7 }}>
+
+      {/* Type + result + endpoint badges */}
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 7 }}>
         <span style={{ ...badgeBase, fontSize: 9, background: typeBadge.bg, color: typeBadge.color, border: `1px solid ${typeBadge.border}` }}>
           {typeBadge.label}
         </span>
         <span style={{ ...badgeBase, fontSize: 9, background: resultBadge.bg, color: resultBadge.color, border: `1px solid ${resultBadge.border}` }}>
           {resultBadge.label}
         </span>
-        <span style={{ ...badgeBase, fontSize: 9, background: "#f8fafc", color: "#64748b", border: "1px solid #e2e8f0" }}>
-          {method} {new URL(endpoint_url).pathname}
+        <span style={{ ...badgeBase, fontSize: 9, background: "#f8fafc", color: "#64748b", border: "1px solid #e2e8f0", fontFamily: "monospace" }}>
+          {method} {(() => { try { return new URL(endpoint_url).pathname } catch { return endpoint_url } })()}
         </span>
         {status_code && (
           <span style={{ ...badgeBase, fontSize: 9, background: "#f8fafc", color: "#64748b", border: "1px solid #e2e8f0" }}>
@@ -173,56 +186,114 @@ function FunctionalRow({ fc }: { fc: FunctionalVerificationCandidate }) {
         )}
       </div>
 
-      {/* Title + message */}
-      <div style={{ fontWeight: 700, fontSize: 12, color: "var(--ink)", marginBottom: 4 }}>{evidence_title}</div>
-      <div style={{ fontSize: 11, color: "var(--ink-2)", lineHeight: 1.5, marginBottom: 6 }}>{verification_message}</div>
+      {/* Title */}
+      <div style={{ fontWeight: 700, fontSize: 12, color: "var(--ink)", marginBottom: 5 }}>{evidence_title}</div>
 
-      {/* What was tested */}
+      {/* What to test */}
       {what_to_test && (
         <div style={{ fontSize: 11, color: "var(--ink-2)", marginBottom: 4 }}>
           <strong>What to test:</strong> {what_to_test}
         </div>
       )}
 
-      {/* Test input summary */}
+      {/* Test input */}
       {request_body_summary && (
         <div style={{ fontSize: 11, color: "var(--ink-2)", marginBottom: 3 }}>
           <strong>Test input:</strong>{" "}
           <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{request_body_summary}</span>
         </div>
       )}
-
-      {/* Input source transparency */}
-      <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, fontStyle: "italic" }}>
+      <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 5, fontStyle: "italic" }}>
         {inputSourceNote}
       </div>
 
       {/* Expected output */}
       {expected_output_description && (
-        <div style={{ fontSize: 11, color: "var(--ink-2)", marginBottom: 4 }}>
+        <div style={{ fontSize: 11, color: "var(--ink-2)", marginBottom: 5 }}>
           <strong>Expected output:</strong> {expected_output_description}
         </div>
       )}
 
-      {/* Response fields */}
-      {response_fields_found.length > 0 && (
-        <div style={{ fontSize: 11, color: verified ? "#166534" : "var(--ink-2)", marginBottom: 4 }}>
+      {/* ── Actual output returned ── */}
+      {verified && (
+        <div style={{ borderTop: "1px solid rgba(0,0,0,0.08)", paddingTop: 8, marginTop: 5 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: "#166534", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 5 }}>
+            Actual output returned
+          </div>
+
+          {hasPreview ? (
+            <>
+              {/* Key-value preview table */}
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "3px 12px", marginBottom: 6 }}>
+                {Object.entries(response_preview!).slice(0, 10).map(([k, v]) => (
+                  <><span key={`k-${k}`} style={{ fontSize: 11, color: "#475569", fontFamily: "monospace", whiteSpace: "nowrap" }}>{k}:</span>
+                  <span key={`v-${k}`} style={{ fontSize: 11, color: "#166534", fontWeight: 600, wordBreak: "break-all" }}>{formatVal(v)}</span></>
+                ))}
+              </div>
+              {response_summary && (
+                <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 5 }}>
+                  Summary: {response_summary}
+                </div>
+              )}
+            </>
+          ) : response_fields_found.length > 0 ? (
+            <div style={{ fontSize: 11, color: "#475569", marginBottom: 5 }}>
+              Output values were not captured, but expected response fields were detected:{" "}
+              <span style={{ fontFamily: "monospace" }}>{response_fields_found.slice(0, 10).join(", ")}</span>
+            </div>
+          ) : (
+            <div style={{ fontSize: 11, color: "#475569", marginBottom: 5 }}>
+              Output values were not captured, but the endpoint returned HTTP 200.
+            </div>
+          )}
+
+          {/* Raw response accordion */}
+          {raw_response_json && (
+            <div style={{ marginTop: 4 }}>
+              <button
+                type="button"
+                onClick={() => setShowRaw((v) => !v)}
+                style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}
+              >
+                {showRaw ? "Hide raw response" : "Show raw response"}
+              </button>
+              {showRaw && (
+                <div style={{ marginTop: 5 }}>
+                  <pre style={{
+                    fontSize: 10, fontFamily: "monospace", background: "#f8fafc",
+                    border: "1px solid #e2e8f0", borderRadius: 6, padding: 8,
+                    overflowX: "auto", maxHeight: 220, overflowY: "auto",
+                    whiteSpace: "pre-wrap", wordBreak: "break-all", color: "#334155", margin: 0,
+                  }}>
+                    {raw_response_json}
+                  </pre>
+                  {response_truncated && (
+                    <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3, fontStyle: "italic" }}>
+                      Raw response truncated for readability.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Non-verified: show fields detected */}
+      {!verified && response_fields_found.length > 0 && (
+        <div style={{ fontSize: 11, color: "var(--ink-2)", marginBottom: 4 }}>
           <strong>Response fields found:</strong>{" "}
           <span style={{ fontFamily: "monospace" }}>{response_fields_found.slice(0, 10).join(", ")}</span>
         </div>
       )}
 
-      {/* Scope statement */}
-      <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>
+      {/* Scope + browser disclaimer */}
+      <div style={{ fontSize: 10, color: "#64748b", marginTop: 6 }}>
         {verified ? "✓ Verifies: API endpoint responded with expected output" : "⚠ API endpoint could not be fully verified"}
+        {" · "}
+        <span style={{ color: "#6366f1", fontStyle: "italic" }}>Browser UI workflow verification — coming soon</span>
       </div>
 
-      {/* Browser UI non-overclaim */}
-      <div style={{ fontSize: 10, color: "#6366f1", fontStyle: "italic" }}>
-        Browser UI workflow verification — coming soon
-      </div>
-
-      {/* Action link */}
       <div style={{ marginTop: 6 }}>
         <a href={endpoint_url} target="_blank" rel="noopener noreferrer"
           style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none" }}>
@@ -392,6 +463,46 @@ function GroupedSkillCard({
             </div>
             <SystemGraph nodes={group.system_graph_nodes} />
           </div>
+
+          {/* Cloud platform inferred signal (AI Product Deployment / Cloud Deployment) */}
+          {group.inferred_cloud_platform && (
+            <div style={{
+              background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10,
+              padding: "11px 13px", marginBottom: 14,
+            }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 7 }}>
+                <span style={{ ...badgeBase, fontSize: 9, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
+                  GCP Cloud Run inferred
+                </span>
+                <span style={{ ...badgeBase, fontSize: 9, background: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a" }}>
+                  Needs supporting docs for full proof
+                </span>
+              </div>
+
+              {/* Deployment pipeline visualization */}
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#166534", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6 }}>
+                Detected deployment pipeline
+              </div>
+              <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, marginBottom: 8 }}>
+                {(["Live URL", "API docs / OpenAPI", "Functional endpoint response"] as const).map((node, i, arr) => (
+                  <span key={`dp-${i}`} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    <span style={{ fontSize: 11, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0", borderRadius: 7, padding: "3px 9px", fontWeight: 600 }}>
+                      {node}
+                    </span>
+                    {i < arr.length - 1 && <span style={{ color: "#94a3b8", fontWeight: 700 }}>→</span>}
+                  </span>
+                ))}
+              </div>
+
+              <div style={{ fontSize: 11, color: "#166534", lineHeight: 1.5 }}>
+                <strong>{group.inferred_cloud_platform}</strong> inferred from the public URL domain (<code style={{ fontSize: 10 }}>run.app</code>).
+                The live URL confirms a cloud-hosted API with publicly accessible endpoints.
+              </div>
+              <div style={{ fontSize: 10, color: "#166534", marginTop: 5, fontStyle: "italic" }}>
+                Add Cloud Run service YAML, deployment screenshots, or architecture docs for verified GCP deployment proof.
+              </div>
+            </div>
+          )}
 
           {/* Partial proof honesty box */}
           {isPartial && group.partial_proof_message && (
@@ -828,9 +939,17 @@ export function WebsiteAIAnalyzerPanel({
             endpoint_url: fc.endpoint_url,
             method: fc.method,
             request_summary: fc.request_summary,
+            request_body_summary: fc.request_body_summary,
             response_fields_found: fc.response_fields_found,
+            response_preview: fc.response_preview ?? null,
+            response_summary: fc.response_summary ?? null,
             status_code: fc.status_code,
             verified: fc.verified,
+            verification_label: fc.verification_label,
+            is_user_guided: fc.is_user_guided,
+            test_input_source: fc.test_input_source,
+            what_to_test: fc.what_to_test ?? null,
+            expected_output_description: fc.expected_output_description ?? null,
             verification_badge: fc.verified ? "Live Test Passed" : "Endpoint Detected",
             base_url: analyzeResult?.base_url ?? fc.endpoint_url,
             github_repo_url: analyzeResult?.github_repo_url ?? null,
