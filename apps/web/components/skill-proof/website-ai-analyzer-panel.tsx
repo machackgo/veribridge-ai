@@ -215,7 +215,8 @@ function GroupedSkillCard({
     .map((id) => functionalById.get(id)!)
 
   const hasFunctionalPassed = functionalItems.some((fc) => fc.verified)
-  const border = isSelected ? "#6366f1" : hasFunctionalPassed ? "#bbf7d0" : "var(--line)"
+  const isPartial = group.is_partial
+  const border = isSelected ? "#6366f1" : hasFunctionalPassed ? "#bbf7d0" : isPartial ? "#fcd34d" : "var(--line)"
   const bgHeader = isSelected ? "#f5f3ff" : "#fff"
 
   return (
@@ -255,6 +256,16 @@ function GroupedSkillCard({
             {hasFunctionalPassed && (
               <span style={{ ...badgeBase, fontSize: 9, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
                 Live Test Passed
+              </span>
+            )}
+            {isPartial && (
+              <span style={{ ...badgeBase, fontSize: 9, background: "#fef9c3", color: "#92400e", border: "1px solid #fcd34d" }}>
+                Partial Evidence
+              </span>
+            )}
+            {group.inferred_cloud_platform && (
+              <span style={{ ...badgeBase, fontSize: 9, background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+                {group.inferred_cloud_platform} (inferred)
               </span>
             )}
           </div>
@@ -311,6 +322,44 @@ function GroupedSkillCard({
             </div>
             <SystemGraph nodes={group.system_graph_nodes} />
           </div>
+
+          {/* Partial proof honesty box */}
+          {isPartial && group.partial_proof_message && (
+            <div style={{
+              background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 10,
+              padding: "12px 14px", marginBottom: 14,
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                Partial Pipeline Evidence
+              </div>
+              <div style={{ fontSize: 12, color: "#78350f", lineHeight: 1.6, marginBottom: group.missing_proof_suggestions.length > 0 ? 10 : 0 }}>
+                {group.partial_proof_message}
+              </div>
+              {group.missing_proof_suggestions.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", marginBottom: 4 }}>
+                    To strengthen this skill:
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 }}>
+                    {group.missing_proof_suggestions.map((s, i) => {
+                      const isComingSoon = s.startsWith("📄")
+                      return (
+                        <li key={`ms-${i}`} style={{
+                          fontSize: 11,
+                          color: isComingSoon ? "#6366f1" : "#78350f",
+                          fontStyle: isComingSoon ? "italic" : "normal",
+                          listStyle: isComingSoon ? "none" : "disc",
+                          marginLeft: isComingSoon ? -16 : 0,
+                        }}>
+                          {s}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Functional verification */}
           {functionalItems.length > 0 && (

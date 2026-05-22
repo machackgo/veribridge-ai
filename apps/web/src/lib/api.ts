@@ -481,6 +481,11 @@ export type GroupedWebsiteSkill = {
   system_graph_nodes: string[]
   system_graph_edges: [string, string][]
   suggested_status: "suggested" | "needs_review"
+  /** Partial-proof honesty fields */
+  is_partial: boolean
+  partial_proof_message?: string | null
+  missing_proof_suggestions: string[]
+  inferred_cloud_platform?: string | null
 }
 
 export type WebsiteAnalyzeResponse = {

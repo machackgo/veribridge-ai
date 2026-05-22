@@ -644,6 +644,147 @@ def _classify_high_level_group(skill_name: str, skill_category: str) -> str:
     return category_map.get(skill_category, skill_category or "General")
 
 
+def _post_process_groups(
+    groups: list[GroupedWebsiteSkill],
+    base_url: str,
+    atomic: list[WebsiteAnalysisCandidate],
+    functional: list[FunctionalVerificationCandidate],
+) -> list[GroupedWebsiteSkill]:
+    """Apply honesty corrections, partial-proof messages, and cloud-platform
+    inference to groups that have incomplete pipeline evidence."""
+    atomic_by_id: dict[str, WebsiteAnalysisCandidate] = {c.candidate_id: c for c in atomic}
+    functional_by_id: dict[str, FunctionalVerificationCandidate] = {fc.candidate_id: fc for fc in functional}
+
+    # Detect cloud platform from base URL domain
+    hostname = (urlparse(base_url).hostname or "").lower()
+    inferred_cloud: str | None = None
+    if hostname.endswith(".run.app"):
+        inferred_cloud = "Google Cloud Run"
+    elif hostname.endswith(".azurewebsites.net"):
+        inferred_cloud = "Azure App Service"
+    elif hostname.endswith(".elasticbeanstalk.com"):
+        inferred_cloud = "AWS Elastic Beanstalk"
+    elif hostname.endswith(".herokuapp.com"):
+        inferred_cloud = "Heroku"
+    elif hostname.endswith(".onrender.com"):
+        inferred_cloud = "Render"
+    elif hostname.endswith(".railway.app"):
+        inferred_cloud = "Railway"
+
+    result: list[GroupedWebsiteSkill] = []
+    for group in groups:
+        group_atomic = [atomic_by_id[cid] for cid in group.candidate_ids if cid in atomic_by_id]
+        group_functional = [functional_by_id[cid] for cid in group.candidate_ids if cid in functional_by_id]
+
+        combined_text = " ".join(
+            f"{c.skill_name} {c.route_path} {c.evidence_snippet}".lower()
+            for c in group_atomic
+        )
+
+        def _has(*tokens: str) -> bool:
+            return any(t in combined_text for t in tokens)
+
+        has_dockerfile    = _has("dockerfile", "docker / containerization")
+        has_cicd          = _has(".github/workflows", "ci/cd", "github actions", "workflow")
+        has_cloud_config  = _has("cloud-run-service", "cloud_run", "cloudrun", "deploy.yaml", "cloud run", "terraform")
+        has_func_passed   = any(fc.verified for fc in group_functional)
+        has_live_url      = group.website_count > 0 or _has("live deployment", "deployed_website")
+
+        partial_proof_message: str | None = None
+        missing_proof_suggestions: list[str] = []
+        is_partial = False
+        inferred_platform: str | None = None
+        override_confidence: str | None = None
+        override_status: str | None = None
+
+        if group.skill_name == "MLOps":
+            found_parts: list[str] = []
+            missing_parts: list[str] = []
+
+            if has_dockerfile:
+                found_parts.append("Dockerfile")
+            if has_cicd:
+                found_parts.append("CI/CD workflow")
+            else:
+                missing_parts.append("CI/CD workflow (GitHub Actions / Cloud Build)")
+            if has_cloud_config:
+                found_parts.append("cloud deployment config")
+            else:
+                missing_parts.append("cloud deployment config (cloud-run-service.yaml / Terraform)")
+            if has_func_passed:
+                found_parts.append("live model serving — verified")
+            elif has_live_url:
+                found_parts.append("live API deployment")
+
+            missing_parts += [
+                "Artifact Registry / Container Registry configuration",
+                "deployment screenshots or architecture diagram",
+            ]
+
+            found_str = " + ".join(found_parts) if found_parts else "live deployment"
+            is_partial = not (has_dockerfile and has_cicd and has_cloud_config)
+            partial_proof_message = (
+                f"Partial MLOps pipeline evidence detected: {found_str}. "
+                "Add documentation, a deployment report, or screenshots to prove the full GCP deployment workflow."
+            )
+            missing_proof_suggestions = (
+                [f"Missing: {m}" for m in missing_parts]
+                + [
+                    "Add architecture diagram or deployment report (PDF/slides) showing Cloud Run / Cloud Build workflow",
+                    "Add deployment screenshots (Artifact Registry, Cloud Build logs, Cloud Run service dashboard)",
+                    "📄 Documentation / Report / Slides proof — coming next in VeriBridge",
+                ]
+            )
+            if is_partial and not has_cicd and not has_cloud_config:
+                override_confidence = "medium"
+                override_status = "needs_review"
+
+        elif group.skill_name in ("Cloud Deployment", "AI Product Deployment"):
+            if inferred_cloud:
+                inferred_platform = inferred_cloud
+                is_partial = not has_cloud_config
+                partial_proof_message = (
+                    f"Likely {inferred_cloud} deployment inferred from public URL domain "
+                    f"({hostname}). The live URL confirms a cloud-hosted API, but supporting "
+                    "documentation is needed for full deployment pipeline proof."
+                )
+                missing_proof_suggestions = [
+                    f"Add a README, deployment report, or slides showing the {inferred_cloud} setup",
+                    "Add Cloud Run service YAML or Terraform config to the GitHub repo",
+                    "Add deployment screenshots (service dashboard, build logs, resource configuration)",
+                    "Add an architecture diagram showing the full deployment pipeline",
+                    "📄 Documentation / Report / Slides proof — coming next in VeriBridge",
+                ]
+                if is_partial and group.confidence == "high":
+                    override_confidence = "medium"
+            elif has_live_url and not has_cloud_config:
+                is_partial = True
+                partial_proof_message = (
+                    "Live deployment URL detected. Add supporting documentation or configuration "
+                    "files to prove the full cloud deployment pipeline."
+                )
+                missing_proof_suggestions = [
+                    "Add cloud deployment config (cloud-run-service.yaml, Terraform, etc.) to the GitHub repo",
+                    "Add deployment screenshots or architecture diagram",
+                    "📄 Documentation / Report / Slides proof — coming next in VeriBridge",
+                ]
+                override_status = "needs_review"
+
+        updates: dict[str, Any] = {
+            "is_partial": is_partial,
+            "partial_proof_message": partial_proof_message,
+            "missing_proof_suggestions": missing_proof_suggestions,
+            "inferred_cloud_platform": inferred_platform,
+        }
+        if override_confidence:
+            updates["confidence"] = override_confidence
+        if override_status:
+            updates["suggested_status"] = override_status
+        result.append(group.model_copy(update=updates))
+
+    return result
+
+
 def _group_candidates(
     atomic: list[WebsiteAnalysisCandidate],
     functional: list[FunctionalVerificationCandidate],
@@ -894,6 +1035,7 @@ class WebsiteAnalyzerService:
 
         # ── J4G: Group into high-level skill cards ────────────────────────────
         grouped_skills = _group_candidates(all_candidates, functional_candidates)
+        grouped_skills = _post_process_groups(grouped_skills, base, all_candidates, functional_candidates)
 
         return WebsiteAnalyzeResponse(
             base_url=url,

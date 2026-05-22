@@ -69,6 +69,11 @@ class GroupedWebsiteSkill(BaseModel):
     system_graph_nodes: list[str]
     system_graph_edges: list[tuple[str, str]]
     suggested_status: Literal["suggested", "needs_review"]
+    # Honesty / partial-proof fields (J4H)
+    is_partial: bool = False
+    partial_proof_message: str | None = None
+    missing_proof_suggestions: list[str] = Field(default_factory=list)
+    inferred_cloud_platform: str | None = None
 
 
 # ── Request / Response ────────────────────────────────────────────────────────
