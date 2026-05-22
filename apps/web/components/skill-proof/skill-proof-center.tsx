@@ -9,7 +9,7 @@
  * This component is purely presentational — no write operations.
  */
 
-import { useMemo, useState } from "react"
+import { Fragment, useMemo, useState } from "react"
 import type { CSSProperties } from "react"
 import type { SkillEvidenceResponse } from "@/lib/api"
 import {
@@ -18,6 +18,7 @@ import {
   getEvidenceRedirectUrl,
   getEvidenceSourceLabel,
   mapEvidenceSourceType,
+  mapEvidenceSourceWithMeta,
   type ConfidenceLevel,
   type EvidenceSource,
   type GroupedSkillSuggestion,
@@ -67,6 +68,8 @@ function sourceBadgeStyle(source: EvidenceSource): CSSProperties {
     portfolio:    { bg: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" },
     manual:       { bg: "#faf5ff", color: "#6b21a8", border: "1px solid #e9d5ff" },
     google_drive: { bg: "#fefce8", color: "#713f12", border: "1px solid #fde68a" },
+    functional:   { bg: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" },
+    combined:     { bg: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe" },
     other:        { bg: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" },
   }
   const p = palette[source] ?? { bg: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" }
@@ -163,6 +166,8 @@ function SystemGraphView({ graph }: { graph: SkillSystemGraph }) {
 function savedEvidenceTypeString(source: EvidenceSource): string {
   if (source === "github") return "github repository"
   if (source === "website") return "deployed website"
+  if (source === "functional") return "functional"
+  if (source === "combined") return "combined"
   return source
 }
 
@@ -173,34 +178,78 @@ function SavedEvidenceRow({
   evidence: SkillEvidence
   redirectUrl: string | null
 }) {
+  const [showTestDetails, setShowTestDetails] = useState(false)
+
   const source = evidence.evidenceSource
-  const meta = evidence.displayMetadata
+  const meta = evidence.displayMetadata ?? {}
   const hasFileLocation = evidence.filePath && evidence.lineStart > 1
   const actionLabel = getEvidenceActionLabel(savedEvidenceTypeString(source), meta)
 
+  // Identify evidence kind from metadata
+  const proofKind = typeof meta.proof_kind === "string" ? meta.proof_kind : null
+  const isFunctional = source === "functional" || proofKind === "functional_verification"
+  const isWebsiteAnalyzer = proofKind === "website_ai_analysis"
+  const isCombined = source === "combined" || meta.evidence_source === "combined"
+
+  // Website analyzer metadata
+  const routePath = typeof meta.route_path === "string" ? meta.route_path : null
+  const evidenceTypeDetail = typeof meta.evidence_type_detail === "string" ? meta.evidence_type_detail : null
+  const baseUrl = typeof meta.base_url === "string" ? meta.base_url : null
+  const githubRepoUrl = typeof meta.github_repo_url === "string" ? meta.github_repo_url : null
+
+  // Functional verification metadata
+  const endpointMethod = typeof meta.method === "string" ? meta.method : null
+  const statusCode = typeof meta.status_code === "number" ? meta.status_code : null
+  const requestBodySummary = typeof meta.request_body_summary === "string" ? meta.request_body_summary : null
+  const responseSummary = typeof meta.response_summary === "string" ? meta.response_summary : null
+  const responsePreview = meta.response_preview && typeof meta.response_preview === "object"
+    ? (meta.response_preview as Record<string, unknown>) : null
+  const responseFieldsFound = Array.isArray(meta.response_fields_found) ? (meta.response_fields_found as string[]) : []
+  const verified = typeof meta.verified === "boolean" ? meta.verified : false
+  const verificationLabel = typeof meta.verification_label === "string" ? meta.verification_label : null
+  const isUserGuided = typeof meta.is_user_guided === "boolean" ? meta.is_user_guided : false
+  const whatToTest = typeof meta.what_to_test === "string" ? meta.what_to_test : null
+  const expectedOutput = typeof meta.expected_output_description === "string" ? meta.expected_output_description : null
+
   // YouTube timestamp display
-  const tsStart = typeof meta?.timestamp_start_formatted === "string" ? meta.timestamp_start_formatted : null
-  const tsEnd = typeof meta?.timestamp_end_formatted === "string" ? meta.timestamp_end_formatted : null
-  const transcriptSnippet = typeof meta?.transcript_snippet === "string" ? meta.transcript_snippet : null
+  const tsStart = typeof meta.timestamp_start_formatted === "string" ? meta.timestamp_start_formatted : null
+  const tsEnd = typeof meta.timestamp_end_formatted === "string" ? meta.timestamp_end_formatted : null
+  const transcriptSnippet = typeof meta.transcript_snippet === "string" ? meta.transcript_snippet : null
 
   // Google Drive / PDF detail
-  const pageNumber = typeof meta?.page_number === "string" ? meta.page_number : null
-  const sectionName = typeof meta?.section_name === "string" ? meta.section_name : null
+  const pageNumber = typeof meta.page_number === "string" ? meta.page_number : null
+  const sectionName = typeof meta.section_name === "string" ? meta.section_name : null
 
   // LinkedIn post summary
-  const postSummary = typeof meta?.post_summary === "string" ? meta.post_summary : null
+  const postSummary = typeof meta.post_summary === "string" ? meta.post_summary : null
 
   // Certificate details
-  const issuer = typeof meta?.issuer === "string" ? meta.issuer : null
-  const credentialId = typeof meta?.credential_id === "string" ? meta.credential_id : null
+  const issuer = typeof meta.issuer === "string" ? meta.issuer : null
+  const credentialId = typeof meta.credential_id === "string" ? meta.credential_id : null
+
+  // Secondary "Open Live Website" when primary link is not the homepage
+  const showSecondaryLiveLink =
+    (isWebsiteAnalyzer || isCombined) &&
+    baseUrl &&
+    redirectUrl &&
+    redirectUrl !== baseUrl &&
+    routePath !== "/" &&
+    routePath !== null
+
+  const rowBg = isFunctional
+    ? verified ? "#f0fdf4" : "#fef9c3"
+    : isCombined ? "#faf5ff" : "var(--bg-2)"
+  const rowBorder = isFunctional
+    ? verified ? "1px solid #bbf7d0" : "1px solid #fef08a"
+    : isCombined ? "1px solid #e9d5ff" : "1px solid var(--line)"
 
   return (
     <div
       style={{
         padding: "10px 12px",
-        border: "1px solid var(--line)",
+        border: rowBorder,
         borderRadius: 8,
-        background: "var(--bg-2)",
+        background: rowBg,
         display: "flex",
         flexDirection: "column",
         gap: 6,
@@ -211,21 +260,125 @@ function SavedEvidenceRow({
         <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink)" }}>
           {evidence.projectTitle}
         </div>
-        <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
+        <div style={{ display: "flex", gap: 5, flexShrink: 0, flexWrap: "wrap" }}>
           <span style={{ ...badgeBase, ...sourceBadgeStyle(source), fontSize: 9 }}>
             {getEvidenceSourceLabel(savedEvidenceTypeString(source))}
           </span>
+          {isFunctional && (
+            <span style={{ ...badgeBase, fontSize: 9, background: verified ? "#dcfce7" : "#fef9c3", color: verified ? "#166534" : "#854d0e", border: `1px solid ${verified ? "#bbf7d0" : "#fef08a"}` }}>
+              {verified ? "Verified" : "Endpoint Detected"}
+            </span>
+          )}
+          {(isUserGuided && isFunctional) && (
+            <span style={{ ...badgeBase, fontSize: 9, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe" }}>
+              {verificationLabel ?? "User-guided"}
+            </span>
+          )}
           <span style={{ ...badgeBase, ...statusStyle(evidence.suggestedStatus), fontSize: 9 }}>
             {statusLabel(evidence.suggestedStatus)}
           </span>
         </div>
       </div>
 
+      {/* Functional verification: method + route + status */}
+      {isFunctional && endpointMethod && routePath && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#1d4ed8" }}>{endpointMethod}</span>
+          <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--ink-2)" }}>{routePath}</span>
+          {statusCode && (
+            <span style={{ ...badgeBase, fontSize: 9, background: statusCode === 200 ? "#dcfce7" : "#fef9c3", color: statusCode === 200 ? "#166534" : "#854d0e", border: `1px solid ${statusCode === 200 ? "#bbf7d0" : "#fef08a"}` }}>
+              HTTP {statusCode}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Website analyzer: route path (non-functional) */}
+      {(isWebsiteAnalyzer || isCombined) && !isFunctional && routePath && (
+        <div style={{ fontFamily: "monospace", fontSize: 10, color: "var(--muted)" }}>
+          {routePath}
+          {evidenceTypeDetail && (
+            <span style={{ marginLeft: 8, fontFamily: "sans-serif", fontSize: 9, color: "#475569", background: "#f1f5f9", border: "1px solid #e2e8f0", borderRadius: 4, padding: "1px 5px" }}>
+              {evidenceTypeDetail}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* File location for GitHub evidence */}
       {hasFileLocation && (
         <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "var(--muted)" }}>
           {evidence.filePath}
           <span style={{ marginLeft: 6, fontWeight: 700 }}>L{evidence.lineStart}–L{evidence.lineEnd}</span>
+        </div>
+      )}
+
+      {/* Functional verification: what to test + expected output */}
+      {isFunctional && whatToTest && (
+        <div style={{ fontSize: 11, color: "var(--ink-2)" }}>
+          <strong>Tested:</strong> {whatToTest}
+        </div>
+      )}
+      {isFunctional && expectedOutput && (
+        <div style={{ fontSize: 11, color: "var(--ink-2)" }}>
+          <strong>Expected:</strong> {expectedOutput}
+        </div>
+      )}
+
+      {/* Functional verification: test input */}
+      {isFunctional && requestBodySummary && (
+        <div style={{ fontSize: 11, color: "var(--ink-2)" }}>
+          <strong>Test input:</strong>{" "}
+          <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{requestBodySummary}</span>
+        </div>
+      )}
+
+      {/* Functional verification: actual output */}
+      {isFunctional && responseSummary && (
+        <div style={{ fontSize: 11, color: verified ? "#166534" : "var(--ink-2)", fontWeight: 600 }}>
+          <strong style={{ fontWeight: 700 }}>Actual output:</strong> {responseSummary}
+        </div>
+      )}
+      {isFunctional && !responseSummary && responseFieldsFound.length > 0 && (
+        <div style={{ fontSize: 11, color: "var(--ink-2)" }}>
+          <strong>Response fields detected:</strong>{" "}
+          <span style={{ fontFamily: "monospace" }}>{responseFieldsFound.slice(0, 8).join(", ")}</span>
+        </div>
+      )}
+
+      {/* Expandable test details for functional evidence */}
+      {isFunctional && (responsePreview || requestBodySummary) && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowTestDetails((v) => !v)}
+            style={{ fontSize: 10, color: "var(--indigo)", background: "none", border: "none", cursor: "pointer", padding: 0, textAlign: "left", textDecoration: "underline", alignSelf: "flex-start" }}
+          >
+            {showTestDetails ? "Hide test details" : "Show test details"}
+          </button>
+          {showTestDetails && responsePreview && (
+            <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>
+                Response preview
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "3px 10px" }}>
+                {Object.entries(responsePreview).slice(0, 8).map(([k, v]) => (
+                  <Fragment key={`rp-${k}`}>
+                    <span style={{ fontSize: 10, color: "#475569", fontFamily: "monospace", whiteSpace: "nowrap" }}>{k}:</span>
+                    <span style={{ fontSize: 10, color: "#166534", fontWeight: 600 }}>{String(v).slice(0, 70)}</span>
+                  </Fragment>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Scope note for functional */}
+      {isFunctional && (
+        <div style={{ fontSize: 10, color: "#64748b", fontStyle: "italic" }}>
+          {verified ? "✓ API endpoint responded with expected output" : "⚠ Endpoint detected — not fully verified"}
+          {" · Browser UI verification — coming soon"}
         </div>
       )}
 
@@ -276,20 +429,48 @@ function SavedEvidenceRow({
         </div>
       )}
 
-      {/* Redirect link */}
-      {redirectUrl ? (
-        <a
-          href={redirectUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none", alignSelf: "flex-start" }}
-        >
-          {actionLabel} →
-        </a>
-      ) : source !== "manual" ? null : (
-        <span style={{ fontSize: 11, color: "var(--muted)" }}>No external link — stored as text proof</span>
-      )}
+      {/* Action links */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+        {redirectUrl ? (
+          <a
+            href={redirectUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none" }}
+          >
+            {actionLabel} →
+          </a>
+        ) : source !== "manual" ? null : (
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>No external link — stored as text proof</span>
+        )}
+
+        {/* Secondary "Open Live Website" for non-homepage website/combined evidence */}
+        {showSecondaryLiveLink && (
+          <a
+            href={baseUrl!}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            style={{ fontSize: 11, fontWeight: 600, color: "#1d4ed8", textDecoration: "none" }}
+          >
+            Open Live Website →
+          </a>
+        )}
+
+        {/* "Open GitHub Repo" secondary link for combined evidence */}
+        {isCombined && githubRepoUrl && (
+          <a
+            href={githubRepoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            style={{ fontSize: 11, fontWeight: 600, color: "#1e293b", textDecoration: "none" }}
+          >
+            Open GitHub Repo →
+          </a>
+        )}
+      </div>
     </div>
   )
 }
@@ -541,11 +722,12 @@ export function SkillProofCenter({
 
   const grouped = useMemo(() => groupSavedEvidence(evidence), [evidence])
 
-  // Tally sources across all evidence
+  // Tally sources across all evidence (use metadata-aware mapping)
   const sourceCounts = useMemo(() => {
     const counts = new Map<EvidenceSource, number>()
     for (const e of evidence) {
-      const src = mapEvidenceSourceType(e.evidence_type)
+      const meta = (e.metadata as Record<string, unknown> | undefined) ?? {}
+      const src = mapEvidenceSourceWithMeta(e.evidence_type, meta)
       counts.set(src, (counts.get(src) ?? 0) + 1)
     }
     return counts
@@ -632,7 +814,7 @@ export function SkillProofCenter({
                 const label =
                   src === "all"
                     ? `All (${grouped.length})`
-                    : `${getEvidenceSourceLabel(src === "github" ? "github repository" : src === "website" ? "deployed website" : src)} (${sourceCounts.get(src as EvidenceSource) ?? 0})`
+                    : `${getEvidenceSourceLabel(savedEvidenceTypeString(src as EvidenceSource))} (${sourceCounts.get(src as EvidenceSource) ?? 0})`
                 return (
                   <button
                     key={`filter-${src}`}

@@ -35,6 +35,8 @@ export type EvidenceSource =
   | "portfolio"
   | "manual"
   | "google_drive"
+  | "functional"   // functional verification (J4F)
+  | "combined"     // website + GitHub combined (J4E)
   | "other"
 
 export type SkillEvidence = {
@@ -608,18 +610,37 @@ export function isGroupPartiallySelected(group: GroupedSkillSuggestion, selected
 
 /** Maps an evidence_type string to a canonical EvidenceSource. */
 export function mapEvidenceSourceType(evidenceType: string): EvidenceSource {
-  const t = evidenceType.toLowerCase().trim()
+  // Normalise: lowercase + replace underscores so both "deployed_website" and
+  // "deployed website" resolve correctly.
+  const t = evidenceType.toLowerCase().trim().replace(/_/g, " ")
   if (t === "github repository") return "github"
   if (t === "deployed website") return "website"
-  if (t === "linkedin_post") return "linkedin"
+  if (t === "linkedin post" || t === "linkedin") return "linkedin"
   if (t === "certificate") return "certificate"
-  if (t === "youtube_demo") return "youtube"
-  if (t === "pdf_report") return "pdf"
-  if (t === "portfolio" || t === "portfolio_url") return "portfolio"
-  if (t === "google_drive_document" || t === "google_drive") return "google_drive"
-  if (t === "manual_entry" || t === "manual" || t === "resume_bullet") return "manual"
-  if (t === "other_link") return "other"
+  if (t === "youtube demo" || t === "youtube") return "youtube"
+  if (t === "pdf report" || t === "pdf") return "pdf"
+  if (t === "portfolio" || t === "portfolio url") return "portfolio"
+  if (t === "google drive document" || t === "google drive") return "google_drive"
+  if (t === "manual entry" || t === "manual" || t === "resume bullet") return "manual"
+  if (t === "functional" || t === "verified workflow") return "functional"
+  if (t === "combined") return "combined"
+  if (t === "other link") return "other"
   return "other"
+}
+
+/**
+ * Like mapEvidenceSourceType but also consults evidence metadata so that
+ * functional verification and combined evidence get the right source type
+ * even though they share "deployed_website" as evidence_type in the DB.
+ */
+export function mapEvidenceSourceWithMeta(
+  evidenceType: string,
+  metadata: Record<string, unknown>
+): EvidenceSource {
+  if (metadata.proof_kind === "functional_verification") return "functional"
+  if (metadata.evidence_source === "combined") return "combined"
+  if (metadata.evidence_source === "github_repo") return "github"
+  return mapEvidenceSourceType(evidenceType)
 }
 
 /** Human-readable label for a source type, used in badges. */
@@ -634,6 +655,8 @@ export function getEvidenceSourceLabel(evidenceType: string): string {
     portfolio: "Portfolio",
     manual: "Manual",
     google_drive: "Google Drive",
+    functional: "Verified Workflow",
+    combined: "Combined",
     other: "Other",
   }
   return labels[mapEvidenceSourceType(evidenceType)] ?? "Other"
@@ -641,12 +664,20 @@ export function getEvidenceSourceLabel(evidenceType: string): string {
 
 /**
  * CTA label for the redirect link on an evidence item.
- * Pass displayMetadata to get YouTube timestamp in the label.
+ * Uses the action_label stored in metadata when available (website analyzer
+ * and functional verification candidates store it explicitly).
  */
 export function getEvidenceActionLabel(
   evidenceType: string,
   displayMetadata?: Record<string, unknown>
 ): string {
+  // Use explicitly saved action label if present (set by website analyzer)
+  if (typeof displayMetadata?.action_label === "string" && displayMetadata.action_label) {
+    return displayMetadata.action_label
+  }
+  // Functional verification
+  if (displayMetadata?.proof_kind === "functional_verification") return "Open Tested Endpoint"
+
   const source = mapEvidenceSourceType(evidenceType)
   if (source === "youtube") {
     const ts = displayMetadata?.timestamp_start_formatted
@@ -662,6 +693,8 @@ export function getEvidenceActionLabel(
     portfolio: "Open Portfolio",
     manual: "View Proof Details",
     google_drive: "Open Drive Document",
+    functional: "Open Tested Endpoint",
+    combined: "Open Evidence",
     other: "Open Resource",
   }
   return labels[source] ?? "View Evidence"
@@ -671,12 +704,25 @@ export function getEvidenceActionLabel(
 export function getEvidenceRedirectUrl(evidence: SkillEvidenceResponse): string | null {
   const metadata = (evidence.metadata as Record<string, unknown> | undefined) ?? {}
 
-  if (evidence.evidence_type === "github repository") {
-    // Prefer the pre-built highlight URL stored in metadata
+  // Functional verification → prefer endpoint_url stored in metadata
+  if (metadata.proof_kind === "functional_verification") {
+    if (typeof metadata.endpoint_url === "string" && metadata.endpoint_url) return metadata.endpoint_url
+    return evidence.evidence_url ?? null
+  }
+
+  // GitHub evidence (both direct imports and website analyzer github_repo candidates)
+  if (
+    evidence.evidence_type === "github repository" ||
+    evidence.evidence_type === "github_repository" ||
+    metadata.evidence_source === "github_repo"
+  ) {
     if (typeof metadata.github_highlight_url === "string" && metadata.github_highlight_url) {
       return metadata.github_highlight_url
     }
-    // Fall back to building a URL from repo + file + lines
+    // evidence_url already holds the GitHub highlight URL for website analyzer github evidence
+    if (evidence.evidence_url && evidence.evidence_url.includes("github.com")) {
+      return evidence.evidence_url
+    }
     if (evidence.repository_url) {
       const base = evidence.repository_url.replace(/\/$/, "")
       if (evidence.file_path) {
@@ -714,7 +760,9 @@ function verificationStatusToConfidence(status: string): ConfidenceLevel {
 // Maps evidence_type to a plausible detection reason for grouping when metadata.selection_reason is absent
 const EVIDENCE_TYPE_TO_DEFAULT_REASON: Record<string, string> = {
   "github repository": "code line",
+  "github_repository": "code line",
   "deployed website": "live website demo",
+  "deployed_website": "live website demo",
   "linkedin_post": "linkedin post",
   "certificate": "certificate credential",
   "youtube_demo": "demo video",
@@ -794,7 +842,7 @@ export function groupSavedEvidence(evidence: SkillEvidenceResponse[]): GroupedSk
       suggestedStatus: e.verification_status,
       evidenceType: inferEvidenceType(e.file_path ?? "", selectionReason),
       skillLabel: e.skill_name,
-      evidenceSource: mapEvidenceSourceType(e.evidence_type),
+      evidenceSource: mapEvidenceSourceWithMeta(e.evidence_type, metadata),
       displayMetadata: typeof metadata === "object" && metadata !== null ? metadata : undefined,
     }
     return { evidence: ev, parentCategory: resolveSavedEvidenceParent(e) }
