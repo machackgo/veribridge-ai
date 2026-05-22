@@ -8,15 +8,28 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
+from app.core.config import get_settings
+
 logger = logging.getLogger(__name__)
 
-# Read once at module load — never log the value.
-_ENV_GITHUB_TOKEN: str | None = os.getenv("GITHUB_TOKEN") or None
+# Read token once at module load via Settings so pydantic_settings handles
+# .env loading — os.getenv() alone only works when the shell exports the var.
+# The secret value is never logged.
+def _load_github_token() -> str | None:
+    try:
+        secret = get_settings().github_token
+        if secret is None:
+            return None
+        val = secret.get_secret_value()
+        return val if val else None
+    except Exception:
+        return None
+
+_ENV_GITHUB_TOKEN: str | None = _load_github_token()
 logger.info("GitHub token configured: %s", "yes" if _ENV_GITHUB_TOKEN else "no")
 
 # Add apps/api/ to sys.path so `from scripts.github_portfolio_scanner import ...` works

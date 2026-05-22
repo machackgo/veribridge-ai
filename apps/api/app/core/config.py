@@ -57,6 +57,13 @@ class Settings(BaseSettings):
         default=SecretStr(""), alias="DATABASE_URL"
     )
 
+    # ── GitHub API ────────────────────────────────────────────────
+    # Optional personal access token for portfolio scanning.
+    # Without it GitHub enforces 60 unauthenticated req/hr.
+    # With it the limit rises to 5,000 req/hr.
+    # Required scopes: public_repo (read access to public repositories).
+    github_token: SecretStr | None = Field(default=None, alias="GITHUB_TOKEN")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

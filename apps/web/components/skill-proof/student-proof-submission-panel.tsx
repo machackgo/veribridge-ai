@@ -1082,9 +1082,7 @@ export function StudentProofSubmissionPanel({
                 {/* ── Mode: manual — GitHub / Website forms (existing logic) ── */}
                 {proofMode === "manual" && manualStep === "form" &&
                   (selectedSourceType === "github_repository" || selectedSourceType === "deployed_website") && (
-                  <><div>
-
-                </div><div role="tablist" aria-label="Proof evidence type" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <><div role="tablist" aria-label="Proof evidence type" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {(
                     [
                       ["github", "GitHub Code"],
