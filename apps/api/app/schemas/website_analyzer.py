@@ -71,6 +71,9 @@ class BrowserWorkflowVerificationResult(BaseModel):
     output_terms_found: list[str] = Field(default_factory=list)
     browser_workflow_status: Literal["passed", "partial", "failed"] = "failed"
     proof_summary: str = ""
+    # API metric → visual evidence matching
+    frontend_visible_output_text: str | None = None
+    matched_visual_metrics: list[dict] = Field(default_factory=list)
 
 
 class FunctionalVerificationCandidate(BaseModel):

@@ -488,6 +488,15 @@ export type FunctionalTestPlan = {
   run_browser_verification?: boolean
 }
 
+/** One API metric matched (or not) against visible browser page text. */
+export type MatchedVisualMetric = {
+  metric_key: string
+  api_value: string
+  visible_match: string | null
+  match_type: "exact" | "rounded" | "keyword" | "related" | "not_found"
+  note: string
+}
+
 /** J4I: Result of a Playwright-based browser UI workflow screenshot capture. */
 export type BrowserWorkflowVerificationResult = {
   success: boolean
@@ -504,6 +513,9 @@ export type BrowserWorkflowVerificationResult = {
   output_terms_found?: string[]
   browser_workflow_status?: "passed" | "partial" | "failed"
   proof_summary?: string
+  /** API metric → visual evidence matching */
+  frontend_visible_output_text?: string | null
+  matched_visual_metrics?: MatchedVisualMetric[]
 }
 
 /** J4F: Result of a live functional verification test on a safe endpoint. */

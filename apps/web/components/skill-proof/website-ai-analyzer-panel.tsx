@@ -17,6 +17,7 @@ import {
   type FunctionalVerificationCandidate,
   type FunctionalTestPlan,
   type GroupedWebsiteSkill,
+  type MatchedVisualMetric,
   type WebsiteAnalysisCandidate,
   type WebsiteAnalyzeResponse,
   type WebsiteEvidenceSource,
@@ -129,7 +130,7 @@ function SystemGraph({ nodes }: { nodes: string[] }) {
 
 // ── Functional verification row ───────────────────────────────────────────────
 
-function FunctionalRow({ fc }: { fc: FunctionalVerificationCandidate }) {
+function FunctionalRow({ fc, hasBrowserScreenshot = false }: { fc: FunctionalVerificationCandidate; hasBrowserScreenshot?: boolean }) {
   const [showRaw, setShowRaw] = useState(false)
   const {
     verified, status_code, evidence_title, verification_message,
@@ -295,39 +296,16 @@ function FunctionalRow({ fc }: { fc: FunctionalVerificationCandidate }) {
         {verified ? "✓ Verifies: API endpoint responded with expected output" : "⚠ API endpoint could not be fully verified"}
       </div>
 
-      {/* ── Screenshot proof subsection ── */}
-      <div style={{ borderTop: "1px solid rgba(0,0,0,0.06)", marginTop: 10, paddingTop: 8 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
-          Screenshot Proof
-        </div>
+      {/* ── Screenshot proof reference ── */}
+      <div style={{ borderTop: "1px solid rgba(0,0,0,0.06)", marginTop: 10, paddingTop: 6, fontSize: 10, color: "var(--muted)", fontStyle: "italic" }}>
         {fc.screenshot_url ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-            <span style={{ ...badgeBase, fontSize: 9, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0", display: "inline-block" }}>
-              Screenshot Attached
-            </span>
-            {fc.screenshot_caption && (
-              <div style={{ fontSize: 11, color: "var(--ink-2)" }}>{fc.screenshot_caption}</div>
-            )}
-            <a href={fc.screenshot_url} target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none" }}>
-              Open Screenshot →
-            </a>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-            <span style={{ ...badgeBase, fontSize: 9, background: "#f8fafc", color: "#64748b", border: "1px solid #e2e8f0", display: "inline-block" }}>
-              Not captured yet
-            </span>
-            <div style={{ fontSize: 11, color: "var(--ink-2)", lineHeight: 1.5 }}>
-              {verified
-                ? "API endpoint was verified. Browser UI screenshot verification will capture the website input/output screen in the next phase."
-                : "API endpoint was tested. Browser UI screenshot verification coming next."}
-            </div>
-            <span style={{ fontSize: 9, fontWeight: 700, background: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 999, padding: "2px 8px", display: "inline-block" }}>
-              📸 Browser workflow screenshots — coming next
-            </span>
-          </div>
-        )}
+          <a href={fc.screenshot_url} target="_blank" rel="noopener noreferrer"
+            style={{ color: "var(--indigo)", fontWeight: 600, textDecoration: "none", fontStyle: "normal" }}>
+            Open Screenshot → {fc.screenshot_caption ? `(${fc.screenshot_caption})` : ""}
+          </a>
+        ) : hasBrowserScreenshot
+          ? "📸 Browser UI screenshot captured — see Frontend UI Workflow Verification below"
+          : "📸 Browser UI workflow screenshot — coming next"}
       </div>
 
       <div style={{ marginTop: 8 }}>
@@ -637,6 +615,11 @@ function BrowserWorkflowResultSection({ result }: { result: BrowserWorkflowVerif
         </div>
       )}
 
+      {/* Metric-to-visual evidence matching */}
+      {result.matched_visual_metrics && result.matched_visual_metrics.length > 0 && (
+        <MetricToVisualSection metrics={result.matched_visual_metrics} />
+      )}
+
       {/* Steps accordion */}
       {result.steps_run.length > 0 && (
         <>
@@ -671,6 +654,72 @@ function ScreenshotPlaceholder() {
       <span style={{ fontSize: 11, color: "var(--muted)" }}>
         Full Playwright-based workflow verification (open site → fill inputs → click → capture screenshot) will be added in the next phase.
       </span>
+    </div>
+  )
+}
+
+// ── Metric-to-visual evidence matching section ────────────────────────────────
+
+function MetricToVisualSection({ metrics }: { metrics: MatchedVisualMetric[] }) {
+  if (!metrics.length) return null
+  const matched = metrics.filter((m) => m.match_type !== "not_found").length
+  return (
+    <div style={{ borderTop: "1px solid rgba(0,0,0,0.06)", marginTop: 10, paddingTop: 8 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>
+        API Metrics → Visual Evidence
+      </div>
+      <div style={{ fontSize: 10, color: matched > 0 ? "#166534" : "var(--muted)", marginBottom: 6 }}>
+        {matched} of {metrics.length} API output metrics detected in browser screenshot
+      </div>
+      <div style={{ display: "grid", gap: 3 }}>
+        {metrics.map((m) => {
+          const dotBg = m.match_type === "exact" ? "#22c55e" : m.match_type !== "not_found" ? "#f59e0b" : "#cbd5e1"
+          const textColor = m.match_type === "exact" ? "#166534" : m.match_type !== "not_found" ? "#854d0e" : "var(--muted)"
+          const statusLabel = m.match_type === "exact" ? "✓ exact"
+            : m.match_type === "rounded" ? "≈ rounded"
+            : m.match_type === "keyword" ? "✓ keyword"
+            : m.match_type === "related" ? "~ related"
+            : "– not found"
+          return (
+            <div key={`mm-${m.metric_key}`} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: dotBg, flexShrink: 0 }} />
+              <span style={{ fontFamily: "monospace", color: "#475569", minWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.metric_key}:</span>
+              <span style={{ fontWeight: 700, color: "var(--ink)", minWidth: 50 }}>{m.api_value.slice(0, 20)}</span>
+              <span style={{ color: textColor, fontStyle: "italic" }}>{statusLabel}</span>
+            </div>
+          )
+        })}
+      </div>
+      <div style={{ fontSize: 9, color: "var(--muted)", marginTop: 6, fontStyle: "italic" }}>
+        "Exact" = value found verbatim in page. "Related" = concept visible. "Not found" = not detected in captured text.
+      </div>
+    </div>
+  )
+}
+
+// ── GitHub evidence row (more prominent than generic AtomicRow) ───────────────
+
+function GitHubEvidenceRow({ c }: { c: WebsiteAnalysisCandidate }) {
+  const pathParts = c.route_path.split(" ")
+  const filePath = pathParts[0] ?? c.route_path
+  const lineRange = pathParts.slice(1).join(" ")
+  return (
+    <div style={{ padding: "7px 10px", borderRadius: 7, border: "1px solid #e2e8f0", background: "#f8fafc", marginBottom: 3 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: "#1e293b" }}>
+            {filePath}
+            {lineRange && <span style={{ marginLeft: 8, fontWeight: 400, color: "#64748b" }}>{lineRange}</span>}
+          </div>
+          <div style={{ fontSize: 10, color: "var(--ink-2)", marginTop: 2, lineHeight: 1.4 }}>
+            {c.evidence_summary.slice(0, 110)}{c.evidence_summary.length > 110 ? "…" : ""}
+          </div>
+        </div>
+        <a href={c.source_url} target="_blank" rel="noopener noreferrer"
+          style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }}>
+          {c.action_label} →
+        </a>
+      </div>
     </div>
   )
 }
@@ -937,13 +986,13 @@ function GroupedSkillCard({
             </div>
           )}
 
-          {/* GitHub evidence */}
+          {/* GitHub evidence — file paths shown prominently */}
           {repoItems.length > 0 && (
             <div>
               <div style={{ fontSize: 10, fontWeight: 700, color: "#1e293b", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>
-                GitHub Evidence
+                GitHub Code Evidence ({repoItems.length} file{repoItems.length !== 1 ? "s" : ""})
               </div>
-              {repoItems.map((c) => <AtomicRow key={c.candidate_id} c={c} />)}
+              {repoItems.map((c) => <GitHubEvidenceRow key={c.candidate_id} c={c} />)}
             </div>
           )}
         </div>
@@ -1789,7 +1838,11 @@ export function WebsiteAIAnalyzerPanel({
                   </summary>
                   <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 8 }}>
                     {analyzeResult.functional_candidates.map((fc) => (
-                      <FunctionalRow key={fc.candidate_id} fc={fc} />
+                      <FunctionalRow
+                        key={fc.candidate_id}
+                        fc={fc}
+                        hasBrowserScreenshot={analyzeResult.browser_workflow_result?.screenshot_status === "captured"}
+                      />
                     ))}
                   </div>
                 </details>

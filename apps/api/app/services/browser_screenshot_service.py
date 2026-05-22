@@ -83,6 +83,7 @@ class BrowserScreenshotResult:
     screenshot_data_url: str | None = None   # "data:image/jpeg;base64,..."
     error_message: str | None = None
     no_ui_detected: bool = False
+    frontend_visible_output_text: str | None = None  # body.innerText after workflow
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -359,6 +360,17 @@ def _wait_for_loading_to_finish(page: Any, max_ms: int = _LOADING_WAIT_MAX) -> b
     return False
 
 
+def _extract_visible_output_text(page: Any, max_chars: int = 3_000) -> str | None:
+    """Capture visible body text for API metric-to-visual matching."""
+    try:
+        text = page.locator("body").inner_text(timeout=3_000)
+        if len(text) > max_chars:
+            text = text[:max_chars] + "…"
+        return text.strip() or None
+    except Exception:
+        return None
+
+
 def _attach_screenshot(page: Any, result: BrowserScreenshotResult) -> None:
     """Capture JPEG screenshot and attach as data URL."""
     try:
@@ -504,6 +516,8 @@ def run_browser_screenshot(
                 # ── Step 9: Capture screenshot (AFTER output wait) ────────────
                 result.steps_run.append("Capturing screenshot of current page state")
                 _attach_screenshot(page, result)
+                # Also capture visible body text for metric-to-visual matching
+                result.frontend_visible_output_text = _extract_visible_output_text(page)
                 if result.screenshot_data_url:
                     result.steps_run.append("Screenshot captured successfully")
                     result.success = True

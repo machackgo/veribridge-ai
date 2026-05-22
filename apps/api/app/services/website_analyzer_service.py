@@ -789,6 +789,81 @@ def _build_request_body_summary(body: dict[str, Any] | None) -> str:
     return summary
 
 
+def _match_metrics_to_visible_text(
+    response_preview: dict[str, Any] | None,
+    visible_text: str | None,
+) -> list[dict[str, Any]]:
+    """Match API response preview metrics against visible browser page text.
+
+    Supports: exact string match, rounded numeric match, keyword match,
+    and key-concept related match.  Returns a list of match result dicts
+    for display in the recruiter proof view.
+    """
+    if not response_preview or not visible_text:
+        return []
+
+    text_lower = visible_text.lower()
+    results: list[dict[str, Any]] = []
+
+    for key, value in list(response_preview.items())[:12]:
+        if value is None:
+            continue
+
+        val_str = str(value)
+        val_lower = val_str.lower()
+        match_type = "not_found"
+        visible_match: str | None = None
+
+        # 1. Exact string match (≥2 chars)
+        if len(val_str) >= 2 and val_lower in text_lower:
+            match_type = "exact"
+            visible_match = val_str
+
+        # 2. Numeric rounded match
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            fval = float(value)
+            for rounded in (str(round(fval, 1)), str(int(fval))):
+                if rounded != "0" and rounded in text_lower:
+                    match_type = "rounded"
+                    visible_match = rounded
+                    break
+
+        # 3. String keyword match (individual words ≥3 chars)
+        elif isinstance(value, str) and len(value) > 2:
+            words = [w.strip().lower() for w in value.split() if len(w.strip()) >= 3]
+            for word in words[:4]:
+                if word in text_lower:
+                    match_type = "keyword"
+                    visible_match = word
+                    break
+
+        # 4. Key-concept related match (key name appears in page)
+        if match_type == "not_found":
+            key_words = re.split(r"[_.\[\]()]", key.lower())
+            for kw in key_words:
+                if len(kw) >= 4 and kw in text_lower:
+                    match_type = "related"
+                    visible_match = f"'{kw}' visible"
+                    break
+
+        note_map = {
+            "exact": "Exact value matched in page text",
+            "rounded": "Approximate value visible in page text",
+            "keyword": "Related keyword visible in page text",
+            "related": "Related concept visible in page text",
+            "not_found": "Not visible in captured page text",
+        }
+        results.append({
+            "metric_key": key,
+            "api_value": val_str,
+            "visible_match": visible_match,
+            "match_type": match_type,
+            "note": note_map.get(match_type, ""),
+        })
+
+    return results
+
+
 def _post_process_groups(
     groups: list[GroupedWebsiteSkill],
     base_url: str,
@@ -1237,6 +1312,17 @@ class WebsiteAnalyzerService:
                             "error" if bwr.error_message else
                             "not_captured"
                         )
+                        # ── Metric-to-visual matching ───────────────────────
+                        # Use the best verified API candidate's response_preview
+                        api_preview: dict[str, Any] | None = None
+                        for fc in functional_candidates:
+                            if fc.verified and fc.response_preview:
+                                api_preview = fc.response_preview
+                                break
+                        matched_metrics = _match_metrics_to_visible_text(
+                            api_preview, bwr.frontend_visible_output_text
+                        )
+
                         browser_workflow_result = BrowserWorkflowVerificationResult(
                             success=bwr.success,
                             frontend_url=frontend_url,
@@ -1251,6 +1337,8 @@ class WebsiteAnalyzerService:
                             output_terms_found=bwr.output_terms_found,
                             browser_workflow_status=bwr.browser_workflow_status,
                             proof_summary=bwr.proof_summary,
+                            frontend_visible_output_text=bwr.frontend_visible_output_text,
+                            matched_visual_metrics=matched_metrics,
                         )
                     except Exception as exc:
                         logger.warning("Browser UI workflow error: %s", exc)
