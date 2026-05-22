@@ -443,6 +443,14 @@ export type WebsiteAnalysisCandidate = {
   related_source_url?: string | null
 }
 
+/** User-provided optional functional test plan. */
+export type FunctionalTestPlan = {
+  what_to_test?: string | null
+  test_input?: string | null          // JSON or "key=value; key=value" pairs
+  expected_output?: string | null
+  test_mode: "auto" | "api_endpoint" | "browser_ui" | "plan_only"
+}
+
 /** J4F: Result of a live functional verification test on a safe endpoint. */
 export type FunctionalVerificationCandidate = {
   candidate_id: string
@@ -461,6 +469,13 @@ export type FunctionalVerificationCandidate = {
   evidence_type: "verified_workflow"
   action_label: string
   suggested_status: "suggested" | "needs_review"
+  /** J4H transparency fields */
+  test_input_source: "auto_generated" | "user_provided" | "schema_example"
+  is_user_guided: boolean
+  verification_label: string          // "Auto-detected API test" | "User-guided API test"
+  request_body_summary: string        // "origin=Fenway Park; destination=Logan; num_segments=5"
+  what_to_test?: string | null
+  expected_output_description?: string | null
 }
 
 /** J4G: High-level grouped skill card combining website, GitHub, and functional evidence. */
@@ -509,12 +524,14 @@ export async function analyzeWebsite(params: {
   skill_focus?: string | null
   github_repo_url?: string | null
   run_safe_tests?: boolean
+  functional_test_plan?: FunctionalTestPlan | null
 }): Promise<WebsiteAnalyzeResponse> {
   const body = {
     url: params.url,
     skill_focus: params.skill_focus ?? null,
     github_repo_url: params.github_repo_url ?? null,
     run_safe_tests: params.run_safe_tests ?? true,
+    functional_test_plan: params.functional_test_plan ?? null,
   }
   const res = await fetchAPI("/api/v1/student/website-analysis/analyze", {
     method: "POST",

@@ -14,6 +14,7 @@ import {
   createSkillEvidence,
   generateEvidenceAccessLinks,
   type FunctionalVerificationCandidate,
+  type FunctionalTestPlan,
   type GroupedWebsiteSkill,
   type WebsiteAnalysisCandidate,
   type WebsiteAnalyzeResponse,
@@ -128,41 +129,105 @@ function SystemGraph({ nodes }: { nodes: string[] }) {
 // ── Functional verification row ───────────────────────────────────────────────
 
 function FunctionalRow({ fc }: { fc: FunctionalVerificationCandidate }) {
-  const { verified, status_code, evidence_title, verification_message, response_fields_found, method, endpoint_url } = fc
-  const bg = verified ? "#f0fdf4" : status_code && status_code < 500 ? "#fef9c3" : "#fff7ed"
+  const {
+    verified, status_code, evidence_title, verification_message,
+    response_fields_found, method, endpoint_url,
+    verification_label, test_input_source, is_user_guided,
+    request_body_summary, what_to_test, expected_output_description,
+  } = fc
+
+  const bg     = verified ? "#f0fdf4" : status_code && status_code < 500 ? "#fef9c3" : "#fff7ed"
   const border = verified ? "#bbf7d0" : status_code && status_code < 500 ? "#fef08a" : "#fed7aa"
-  const badge = verified
-    ? { label: "LIVE TEST PASSED", bg: "#dcfce7", color: "#166534", border: "#bbf7d0" }
+
+  const resultBadge = verified
+    ? { label: "API ENDPOINT VERIFIED", bg: "#dcfce7", color: "#166534", border: "#bbf7d0" }
     : status_code
     ? { label: `HTTP ${status_code}`, bg: "#fef9c3", color: "#854d0e", border: "#fef08a" }
-    : { label: "UNAVAILABLE",      bg: "#f1f5f9", color: "#475569", border: "#e2e8f0" }
+    : { label: "VERIFICATION UNAVAILABLE", bg: "#f1f5f9", color: "#475569", border: "#e2e8f0" }
+
+  const typeBadge = is_user_guided
+    ? { label: verification_label || "User-guided API test", bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe" }
+    : { label: verification_label || "Auto-detected API test", bg: "#f8fafc", color: "#475569", border: "#cbd5e1" }
+
+  const inputSourceNote = test_input_source === "user_provided"
+    ? "Test input provided by user"
+    : "Test input auto-generated from OpenAPI schema / default values"
 
   return (
-    <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 6 }}>
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-        <span style={{ fontSize: 16, lineHeight: 1.4 }}>{verified ? "✓" : "⚠"}</span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 3 }}>
-            <span style={{ fontWeight: 700, fontSize: 13, color: "var(--ink)" }}>{evidence_title}</span>
-            <span style={{ ...badgeBase, fontSize: 9, background: badge.bg, color: badge.color, border: `1px solid ${badge.border}` }}>
-              {badge.label}
-            </span>
-          </div>
-          <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.5, marginBottom: 4 }}>{verification_message}</div>
-          {verified && response_fields_found.length > 0 && (
-            <div style={{ fontSize: 11, color: "#166534" }}>
-              Response fields: <span style={{ fontFamily: "monospace" }}>{response_fields_found.slice(0, 8).join(", ")}</span>
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 12, marginTop: 6 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", fontFamily: "monospace" }}>
-              {method} {endpoint_url}
-            </span>
-            <a href={endpoint_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none" }}>
-              Open endpoint →
-            </a>
-          </div>
+    <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: 8, padding: "11px 13px", marginBottom: 6 }}>
+      {/* Type + result badges */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 7 }}>
+        <span style={{ ...badgeBase, fontSize: 9, background: typeBadge.bg, color: typeBadge.color, border: `1px solid ${typeBadge.border}` }}>
+          {typeBadge.label}
+        </span>
+        <span style={{ ...badgeBase, fontSize: 9, background: resultBadge.bg, color: resultBadge.color, border: `1px solid ${resultBadge.border}` }}>
+          {resultBadge.label}
+        </span>
+        <span style={{ ...badgeBase, fontSize: 9, background: "#f8fafc", color: "#64748b", border: "1px solid #e2e8f0" }}>
+          {method} {new URL(endpoint_url).pathname}
+        </span>
+        {status_code && (
+          <span style={{ ...badgeBase, fontSize: 9, background: "#f8fafc", color: "#64748b", border: "1px solid #e2e8f0" }}>
+            HTTP {status_code}
+          </span>
+        )}
+      </div>
+
+      {/* Title + message */}
+      <div style={{ fontWeight: 700, fontSize: 12, color: "var(--ink)", marginBottom: 4 }}>{evidence_title}</div>
+      <div style={{ fontSize: 11, color: "var(--ink-2)", lineHeight: 1.5, marginBottom: 6 }}>{verification_message}</div>
+
+      {/* What was tested */}
+      {what_to_test && (
+        <div style={{ fontSize: 11, color: "var(--ink-2)", marginBottom: 4 }}>
+          <strong>What to test:</strong> {what_to_test}
         </div>
+      )}
+
+      {/* Test input summary */}
+      {request_body_summary && (
+        <div style={{ fontSize: 11, color: "var(--ink-2)", marginBottom: 3 }}>
+          <strong>Test input:</strong>{" "}
+          <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{request_body_summary}</span>
+        </div>
+      )}
+
+      {/* Input source transparency */}
+      <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, fontStyle: "italic" }}>
+        {inputSourceNote}
+      </div>
+
+      {/* Expected output */}
+      {expected_output_description && (
+        <div style={{ fontSize: 11, color: "var(--ink-2)", marginBottom: 4 }}>
+          <strong>Expected output:</strong> {expected_output_description}
+        </div>
+      )}
+
+      {/* Response fields */}
+      {response_fields_found.length > 0 && (
+        <div style={{ fontSize: 11, color: verified ? "#166534" : "var(--ink-2)", marginBottom: 4 }}>
+          <strong>Response fields found:</strong>{" "}
+          <span style={{ fontFamily: "monospace" }}>{response_fields_found.slice(0, 10).join(", ")}</span>
+        </div>
+      )}
+
+      {/* Scope statement */}
+      <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>
+        {verified ? "✓ Verifies: API endpoint responded with expected output" : "⚠ API endpoint could not be fully verified"}
+      </div>
+
+      {/* Browser UI non-overclaim */}
+      <div style={{ fontSize: 10, color: "#6366f1", fontStyle: "italic" }}>
+        Browser UI workflow verification — coming soon
+      </div>
+
+      {/* Action link */}
+      <div style={{ marginTop: 6 }}>
+        <a href={endpoint_url} target="_blank" rel="noopener noreferrer"
+          style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none" }}>
+          Open endpoint →
+        </a>
       </div>
     </div>
   )
@@ -417,6 +482,13 @@ function GroupedSkillCard({
 
 type PanelStep = "form" | "analyzing" | "review" | "saving" | "done"
 
+type FunctionalTestPlanState = {
+  whatToTest: string
+  testInput: string
+  expectedOutput: string
+  testMode: "auto" | "api_endpoint" | "plan_only"
+}
+
 export function WebsiteAIAnalyzerPanel({
   url,
   onUrlChange,
@@ -424,19 +496,23 @@ export function WebsiteAIAnalyzerPanel({
   onSkillFocusChange,
   githubRepoUrl,
   onGithubRepoUrlChange,
+  functionalTestPlan,
+  onFunctionalTestPlanChange,
   onSaveComplete,
   onBack,
 }: {
-  /** Controlled: URL field value lives in the parent to survive panel remounts. */
   url: string
   onUrlChange: (v: string) => void
   skillFocus: string
   onSkillFocusChange: (v: string) => void
   githubRepoUrl: string
   onGithubRepoUrlChange: (v: string) => void
+  functionalTestPlan: FunctionalTestPlanState
+  onFunctionalTestPlanChange: (plan: FunctionalTestPlanState) => void
   onSaveComplete?: () => void
   onBack: () => void
 }) {
+  const [showTestPlan, setShowTestPlan] = useState(false)
   const [panelStep, setPanelStep] = useState<PanelStep>("form")
   const [analyzeResult, setAnalyzeResult] = useState<WebsiteAnalyzeResponse | null>(null)
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set())
@@ -539,11 +615,26 @@ export function WebsiteAIAnalyzerPanel({
     }, 500)
 
     try {
+      const hasTestPlan = !!(
+        functionalTestPlan.whatToTest.trim() ||
+        functionalTestPlan.testInput.trim() ||
+        functionalTestPlan.expectedOutput.trim()
+      )
+      const testPlanPayload: FunctionalTestPlan | null = hasTestPlan || functionalTestPlan.testMode !== "auto"
+        ? {
+            what_to_test: functionalTestPlan.whatToTest.trim() || null,
+            test_input: functionalTestPlan.testInput.trim() || null,
+            expected_output: functionalTestPlan.expectedOutput.trim() || null,
+            test_mode: functionalTestPlan.testMode,
+          }
+        : null
+
       const result = await analyzeWebsite({
         url: trimmedUrl,
         skill_focus: skillFocus.trim() || null,
         github_repo_url: trimmedRepo || null,
         run_safe_tests: true,
+        functional_test_plan: testPlanPayload,
       })
       clearInterval(interval)
 
@@ -859,6 +950,117 @@ export function WebsiteAIAnalyzerPanel({
               Connecting the repo helps VeriBridge prove backend, ML, deployment, and MLOps skills —
               Dockerfiles, GitHub Actions, model files, API routes, README architecture.
             </span>
+          </div>
+
+          {/* Optional: Functional Test Plan */}
+          <div style={{ border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
+            <button
+              type="button"
+              onClick={() => setShowTestPlan((v) => !v)}
+              style={{
+                width: "100%", textAlign: "left", padding: "10px 14px", border: "none",
+                background: showTestPlan ? "#f0f9ff" : "#f8fafc", cursor: "pointer",
+                fontSize: 12, fontWeight: 600, color: "var(--ink-2)",
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+              }}
+            >
+              <span>
+                Optional: Functional Test Plan
+                {(functionalTestPlan.whatToTest || functionalTestPlan.testInput) && (
+                  <span style={{ marginLeft: 8, fontSize: 10, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe", borderRadius: 999, padding: "1px 6px" }}>
+                    configured
+                  </span>
+                )}
+              </span>
+              <span style={{ color: "var(--muted)" }}>{showTestPlan ? "▲" : "▼"}</span>
+            </button>
+
+            {showTestPlan && (
+              <div style={{ padding: "12px 14px", display: "grid", gap: 10, background: "#f0f9ff" }}>
+                <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>
+                  Guide VeriBridge on what to test and what input to use. Without this, the system auto-detects
+                  safe endpoints from the OpenAPI spec and uses default test values.
+                </div>
+
+                {/* What to test */}
+                <div style={{ display: "grid", gap: 3 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>What should VeriBridge test? <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span></span>
+                  <input
+                    value={functionalTestPlan.whatToTest}
+                    onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, whatToTest: e.target.value })}
+                    placeholder="e.g. Verify accident risk prediction returns a risk class and confidence score"
+                    style={inp}
+                  />
+                </div>
+
+                {/* Test input */}
+                <div style={{ display: "grid", gap: 3 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>Test input <span style={{ fontWeight: 400, color: "var(--muted)" }}>(JSON or key=value; pairs)</span></span>
+                  <textarea
+                    value={functionalTestPlan.testInput}
+                    onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, testInput: e.target.value })}
+                    placeholder={'origin=Fenway Park, Boston, MA; destination=Boston Logan International Airport, MA; num_segments=5\n\nor: {"origin": "Fenway Park, Boston, MA", "destination": "Boston Logan International Airport, MA"}'}
+                    rows={3}
+                    style={{ ...inp, fontFamily: "monospace", fontSize: 11, resize: "vertical" }}
+                  />
+                  <span style={{ fontSize: 10, color: "var(--muted)" }}>
+                    Used for POST inference endpoints (/predict, /classify, /recommend).
+                    If empty, auto-generated values are used.
+                  </span>
+                </div>
+
+                {/* Expected output */}
+                <div style={{ display: "grid", gap: 3 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>Expected output <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span></span>
+                  <input
+                    value={functionalTestPlan.expectedOutput}
+                    onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, expectedOutput: e.target.value })}
+                    placeholder="e.g. risk class, confidence score, route recommendation, segmented risk output"
+                    style={inp}
+                  />
+                </div>
+
+                {/* Test mode */}
+                <div style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>Test mode</span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    {([
+                      { value: "auto", label: "Auto-detect from OpenAPI spec", desc: "VeriBridge finds safe endpoints automatically" },
+                      { value: "api_endpoint", label: "API endpoint test (use my test input)", desc: "Use the input above for API endpoint tests" },
+                      { value: "plan_only", label: "Save test plan only (no live test)", desc: "Record this plan without running any tests" },
+                    ] as const).map(({ value, label, desc }) => (
+                      <label key={value} style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                        <input
+                          type="radio"
+                          name="test-mode"
+                          value={value}
+                          checked={functionalTestPlan.testMode === value}
+                          onChange={() => onFunctionalTestPlanChange({ ...functionalTestPlan, testMode: value })}
+                          style={{ marginTop: 2 }}
+                        />
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-2)" }}>{label}</div>
+                          <div style={{ fontSize: 10, color: "var(--muted)" }}>{desc}</div>
+                        </div>
+                      </label>
+                    ))}
+                    {/* Browser UI — coming soon */}
+                    <label style={{ display: "flex", alignItems: "flex-start", gap: 8, opacity: 0.5, cursor: "not-allowed" }}>
+                      <input type="radio" disabled style={{ marginTop: 2 }} />
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-2)" }}>
+                          Browser UI verification
+                          <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, background: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 999, padding: "1px 6px" }}>
+                            coming soon
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 10, color: "var(--muted)" }}>Full Playwright-based UI workflow test</div>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>

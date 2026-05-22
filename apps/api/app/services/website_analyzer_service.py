@@ -29,6 +29,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from app.schemas.website_analyzer import (
+    FunctionalTestPlan,
     FunctionalVerificationCandidate,
     GroupedWebsiteSkill,
     WebsiteAnalysisCandidate,
@@ -644,6 +645,68 @@ def _classify_high_level_group(skill_name: str, skill_category: str) -> str:
     return category_map.get(skill_category, skill_category or "General")
 
 
+def _parse_user_test_input(text: str) -> dict[str, Any] | None:
+    """Parse a user-provided test input string into a dict.
+
+    Accepts:
+    - JSON:          {"origin": "Fenway Park, Boston, MA", "destination": "..."}
+    - key=value:     origin=Fenway Park, Boston, MA; destination=Logan Airport; num_segments=5
+    - newline-sep:   same as semicolon-separated, one pair per line
+    """
+    text = text.strip()
+    if not text:
+        return None
+    # Try JSON first
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    # key=value or key: value pairs split on ; or newlines
+    result: dict[str, Any] = {}
+    delimiters = re.compile(r"[;\n]+")
+    kv_sep = re.compile(r"[=:]")
+    for raw in delimiters.split(text):
+        raw = raw.strip()
+        if not raw:
+            continue
+        m = kv_sep.search(raw)
+        if not m:
+            continue
+        key = raw[: m.start()].strip()
+        value = raw[m.end() :].strip()
+        if not key:
+            continue
+        # Coerce simple types
+        if value.lower() in ("true", "false"):
+            result[key] = value.lower() == "true"
+        elif re.fullmatch(r"-?\d+", value):
+            result[key] = int(value)
+        elif re.fullmatch(r"-?\d+\.\d+", value):
+            result[key] = float(value)
+        else:
+            result[key] = value
+    return result or None
+
+
+def _build_request_body_summary(body: dict[str, Any] | None) -> str:
+    """Build a compact human-readable summary of the test request body."""
+    if not body:
+        return ""
+    parts: list[str] = []
+    for k, v in list(body.items())[:7]:
+        v_str = str(v)
+        if len(v_str) > 55:
+            v_str = v_str[:55] + "…"
+        parts.append(f"{k}={v_str}")
+    summary = "; ".join(parts)
+    if len(body) > 7:
+        summary += f" (+{len(body) - 7} more)"
+    return summary
+
+
 def _post_process_groups(
     groups: list[GroupedWebsiteSkill],
     base_url: str,
@@ -933,6 +996,7 @@ class WebsiteAnalyzerService:
         skill_focus: str | None = None,
         github_repo_url: str | None = None,
         run_safe_tests: bool = True,
+        functional_test_plan: FunctionalTestPlan | None = None,
     ) -> WebsiteAnalyzeResponse:
         safe, reason = _is_safe_url(url)
         if not safe:
@@ -1017,10 +1081,25 @@ class WebsiteAnalyzerService:
 
         # ── J4F: Functional verification ─────────────────────────────────────
         functional_candidates: list[FunctionalVerificationCandidate] = []
-        if run_safe_tests:
+        test_mode = (functional_test_plan.test_mode if functional_test_plan else "auto")
+
+        if test_mode == "browser_ui":
+            warnings.append(
+                "Browser UI workflow verification is not yet implemented. "
+                "API endpoint evidence is shown below. "
+                "Full browser UI testing coming soon."
+            )
+        elif test_mode == "plan_only":
+            warnings.append(
+                "Test mode is set to 'Save test plan only'. No live endpoint tests were run. "
+                "Your test plan details have been recorded."
+            )
+        elif run_safe_tests:
             if openapi_data:
                 try:
-                    functional_candidates = self._run_functional_verification(base, openapi_data, warnings)
+                    functional_candidates = self._run_functional_verification(
+                        base, openapi_data, warnings, functional_test_plan
+                    )
                 except Exception as exc:
                     logger.warning("Functional verification error: %s", exc)
                     warnings.append(
@@ -1030,7 +1109,7 @@ class WebsiteAnalyzerService:
             else:
                 warnings.append(
                     "Functional verification unavailable — no OpenAPI spec found at /openapi.json. "
-                    "Browser-based click verification coming soon."
+                    "Browser UI workflow verification coming soon."
                 )
 
         # ── J4G: Group into high-level skill cards ────────────────────────────
@@ -1231,17 +1310,28 @@ class WebsiteAnalyzerService:
         base: str,
         openapi_data: dict[str, Any],
         warnings: list[str],
+        test_plan: FunctionalTestPlan | None = None,
     ) -> list[FunctionalVerificationCandidate]:
-        """Parse OpenAPI spec, find safe endpoints, and run live tests."""
+        """Parse OpenAPI spec, find safe endpoints, and run live tests.
+
+        If `test_plan.test_input` is provided and the method is POST, the
+        user-supplied values are used as the request body (user-guided test).
+        Otherwise the body is auto-generated from the OpenAPI schema.
+        """
         paths = openapi_data.get("paths") or {}
         candidates: list[FunctionalVerificationCandidate] = []
         tested = 0
 
-        # Prioritize POST predict/inference endpoints, then GET health, then others
+        # Parse user-provided input once (used for all POST endpoints if supplied)
+        user_body: dict[str, Any] | None = None
+        if test_plan and test_plan.test_input:
+            user_body = _parse_user_test_input(test_plan.test_input)
+
+        # Prioritize POST predict/inference, then GET health, then others
         path_items = list(paths.items())
         path_items.sort(key=lambda p: (
-            0 if any(frag in p[0].lower() for frag in ("predict", "inference", "infer", "classify")) else
-            1 if any(frag in p[0].lower() for frag in ("health", "status", "ping")) else 2
+            0 if any(f in p[0].lower() for f in ("predict", "inference", "infer", "classify")) else
+            1 if any(f in p[0].lower() for f in ("health", "status", "ping")) else 2
         ))
 
         for path, path_item in path_items:
@@ -1261,13 +1351,25 @@ class WebsiteAnalyzerService:
                     continue
 
                 endpoint_url = base.rstrip("/") + path
-                test_body: dict | None = None
+
+                # ── Build test body + track source ─────────────────────────
+                test_body: dict[str, Any] | None = None
+                test_input_source = "auto_generated"
+                is_user_guided = False
 
                 if method.upper() == "POST":
-                    request_body = operation.get("requestBody", {})
-                    test_body = _build_test_body(path, request_body, openapi_data)
-                    if test_body is None:
-                        continue  # Can't POST without a test body
+                    if user_body:
+                        test_body = user_body
+                        test_input_source = "user_provided"
+                        is_user_guided = True
+                    else:
+                        request_body = operation.get("requestBody", {})
+                        test_body = _build_test_body(path, request_body, openapi_data)
+                        if test_body is None:
+                            continue  # Can't POST without a body
+
+                body_summary = _build_request_body_summary(test_body)
+                verification_label = "User-guided API test" if is_user_guided else "Auto-detected API test"
 
                 result = self._call_endpoint_safely(endpoint_url, method, test_body)
                 tested += 1
@@ -1276,28 +1378,28 @@ class WebsiteAnalyzerService:
                 category = _infer_category_from_skill(skill)
                 status_code: int | None = result["status_code"]
                 response_fields: list[str] = result["response_fields"]
-
                 verified = status_code == 200 and bool(response_fields)
 
+                # ── Build evidence text ────────────────────────────────────
                 if verified:
                     confidence = "high"
                     suggested_status = "suggested"
-                    req_str = f"Safe {method.upper()} request with {len(test_body or {})} field(s)" if test_body else f"Safe {method.upper()} request"
                     verification_message = (
-                        f"VeriBridge sent a safe test request to {path} and verified that "
-                        f"the live API returned expected output. "
-                        f"Fields found: {', '.join(response_fields[:6])}."
+                        f"VeriBridge sent a safe {method.upper()} request to {path} and "
+                        f"verified the live API returned expected output. "
+                        f"Response fields: {', '.join(response_fields[:6])}. "
+                        f"This verifies: API endpoint responded with expected output. "
+                        "Browser UI workflow was not tested."
                     )
-                    evidence_title = f"Live {method.upper()} {path} — returned prediction output"
+                    evidence_title = f"{verification_label}: {method.upper()} {path} — API endpoint verified"
                 elif status_code is not None:
                     confidence = "medium"
                     suggested_status = "needs_review"
-                    req_str = f"Safe {method.upper()} {path}"
                     if status_code == 422:
                         verification_message = (
-                            f"Endpoint {path} responded with HTTP {status_code} (validation error). "
-                            "The endpoint exists but may require specific input format. "
-                            "Endpoint evidence is still detected from the OpenAPI spec."
+                            f"Endpoint {path} returned HTTP 422 (validation error). "
+                            "The endpoint exists but the test input may need adjustment. "
+                            "Endpoint evidence is detected from the OpenAPI spec."
                         )
                     elif status_code >= 500:
                         verification_message = (
@@ -1308,19 +1410,19 @@ class WebsiteAnalyzerService:
                     else:
                         verification_message = (
                             f"Endpoint {path} responded with HTTP {status_code}. "
-                            "Endpoint is accessible but full verification could not be confirmed."
+                            "Endpoint is accessible but response was not verified. "
+                            "Browser UI workflow was not tested."
                         )
-                    evidence_title = f"{method.upper()} {path} — endpoint accessible (HTTP {status_code})"
+                    evidence_title = f"{verification_label}: {method.upper()} {path} — HTTP {status_code}"
                 else:
                     confidence = "low"
                     suggested_status = "needs_review"
-                    req_str = f"Safe {method.upper()} {path}"
                     verification_message = (
-                        f"Functional verification of {path} could not complete. "
-                        "The endpoint may be offline or unreachable. "
-                        "Endpoint evidence is still detected from the OpenAPI spec."
+                        f"Could not reach {path} (timeout or network error). "
+                        "Endpoint evidence is still detected from the OpenAPI spec. "
+                        "Browser UI workflow was not tested."
                     )
-                    evidence_title = f"{method.upper()} {path} — verification unavailable"
+                    evidence_title = f"{verification_label}: {method.upper()} {path} — verification unavailable"
 
                 cid = _cid(endpoint_url + method.upper(), skill)
                 candidates.append(FunctionalVerificationCandidate(
@@ -1332,13 +1434,20 @@ class WebsiteAnalyzerService:
                     evidence_summary=verification_message,
                     endpoint_url=endpoint_url,
                     method=method.upper(),
-                    request_summary=req_str,
+                    request_summary=f"{method.upper()} {path}" + (f" ({len(test_body)} fields)" if test_body else ""),
                     response_fields_found=response_fields,
                     status_code=status_code,
                     verified=verified,
                     verification_message=verification_message,
                     action_label=f"Open {path}",
                     suggested_status=suggested_status,
+                    # Transparency fields
+                    test_input_source=test_input_source,
+                    is_user_guided=is_user_guided,
+                    verification_label=verification_label,
+                    request_body_summary=body_summary,
+                    what_to_test=test_plan.what_to_test if test_plan else None,
+                    expected_output_description=test_plan.expected_output if test_plan else None,
                 ))
 
         if tested == 0 and paths:

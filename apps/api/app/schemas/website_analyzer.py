@@ -31,6 +31,16 @@ class WebsiteAnalysisCandidate(BaseModel):
 
 # ── J4F: Functional verification candidate ────────────────────────────────────
 
+# ── J4H: Functional test plan (user-provided, optional) ──────────────────────
+
+class FunctionalTestPlan(BaseModel):
+    """User-supplied test plan for transparent functional verification."""
+    what_to_test: str | None = Field(default=None, max_length=500)
+    test_input: str | None = Field(default=None, max_length=2000)  # JSON or key=value
+    expected_output: str | None = Field(default=None, max_length=500)
+    test_mode: Literal["auto", "api_endpoint", "browser_ui", "plan_only"] = "auto"
+
+
 class FunctionalVerificationCandidate(BaseModel):
     candidate_id: str
     skill_name: str
@@ -48,6 +58,13 @@ class FunctionalVerificationCandidate(BaseModel):
     evidence_type: Literal["verified_workflow"] = "verified_workflow"
     action_label: str = "View Endpoint"
     suggested_status: Literal["suggested", "needs_review"] = "suggested"
+    # J4H: transparency fields
+    test_input_source: Literal["auto_generated", "user_provided", "schema_example"] = "auto_generated"
+    is_user_guided: bool = False
+    verification_label: str = "Auto-detected API test"
+    request_body_summary: str = ""   # "origin=Fenway Park; destination=Logan Airport; num_segments=5"
+    what_to_test: str | None = None
+    expected_output_description: str | None = None
 
 
 # ── J4G: High-level grouped skill evidence ────────────────────────────────────
@@ -83,6 +100,7 @@ class WebsiteAnalyzeRequest(BaseModel):
     skill_focus: str | None = Field(default=None, max_length=500)
     github_repo_url: str | None = Field(default=None, max_length=2000)
     run_safe_tests: bool = Field(default=True)
+    functional_test_plan: FunctionalTestPlan | None = Field(default=None)
 
     @field_validator("url")
     @classmethod

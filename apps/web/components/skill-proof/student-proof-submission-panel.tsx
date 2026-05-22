@@ -418,6 +418,10 @@ export function StudentProofSubmissionPanel({
   const [agentTranscript, setAgentTranscript] = useState("")
   // Website analyzer owns its form fields in the parent so they survive panel remounts
   const [agentGithubRepoUrl, setAgentGithubRepoUrl] = useState("")
+  const [agentFunctionalTestPlan, setAgentFunctionalTestPlan] = useState<{
+    whatToTest: string; testInput: string; expectedOutput: string
+    testMode: "auto" | "api_endpoint" | "plan_only"
+  }>({ whatToTest: "", testInput: "", expectedOutput: "", testMode: "auto" })
   // Pre-fills the scan panel when opened from AI Agent mode
   const [pendingScanUrl, setPendingScanUrl] = useState("")
 
@@ -465,6 +469,7 @@ export function StudentProofSubmissionPanel({
     setAgentUrl("")
     setAgentSkillFocus("")
     setAgentGithubRepoUrl("")
+    setAgentFunctionalTestPlan({ whatToTest: "", testInput: "", expectedOutput: "", testMode: "auto" as const })
     setAgentTimestampStart("")
     setAgentTimestampEnd("")
     setAgentTranscript("")
@@ -972,6 +977,8 @@ export function StudentProofSubmissionPanel({
                     onSkillFocusChange={setAgentSkillFocus}
                     githubRepoUrl={agentGithubRepoUrl}
                     onGithubRepoUrlChange={setAgentGithubRepoUrl}
+                    functionalTestPlan={agentFunctionalTestPlan}
+                    onFunctionalTestPlanChange={setAgentFunctionalTestPlan}
                     onSaveComplete={() => void refreshEvidence()}
                     onBack={resetAgentForm}
                   />

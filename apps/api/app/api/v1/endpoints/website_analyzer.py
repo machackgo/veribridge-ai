@@ -46,6 +46,7 @@ def analyze_website(
             skill_focus=body.skill_focus,
             github_repo_url=body.github_repo_url,
             run_safe_tests=body.run_safe_tests,
+            functional_test_plan=body.functional_test_plan,
         )
     except ValueError as exc:
         raise HTTPException(
