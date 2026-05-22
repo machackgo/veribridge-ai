@@ -12,6 +12,8 @@ export type ProofProcessingStep = {
   id: string
   label: string
   description: string
+  /** Natural-language agent copy shown as live action text in agent mode. */
+  agentCopy?: string
   status: ProofProcessingStatus
   startedAt?: number
   completedAt?: number
@@ -33,8 +35,13 @@ export type ProofProcessingProgress = {
 
 // ── Step factory ──────────────────────────────────────────────────────────────
 
-export function makeStep(id: string, label: string, description: string): ProofProcessingStep {
-  return { id, label, description, status: "pending" }
+export function makeStep(
+  id: string,
+  label: string,
+  description: string,
+  agentCopy?: string
+): ProofProcessingStep {
+  return { id, label, description, agentCopy, status: "pending" }
 }
 
 export function initialProgress(steps: ProofProcessingStep[]): ProofProcessingProgress {
@@ -110,48 +117,48 @@ export function getCurrentStepLabel(steps: ProofProcessingStep[]): string {
 /** Steps for saving selected grouped skills from GitHub portfolio scan. */
 export function createGitHubScanSaveSteps(): ProofProcessingStep[] {
   return [
-    makeStep("prepare", "Preparing selected skills", "Reading selected grouped skills and evidence items."),
-    makeStep("duplicates", "Checking for duplicates", "Comparing selected evidence against your saved proof."),
-    makeStep("save", "Saving proof evidence", "Uploading GitHub evidence links, file paths, and line ranges."),
-    makeStep("verify", "Running verification", "Matching evidence to skills and confidence levels on the server."),
-    makeStep("graph", "Building skill graph", "Updating grouped skills, subskills, source badges, and system graphs."),
-    makeStep("refresh", "Refreshing Skill Proof Center", "Reloading your saved evidence and updating your profile."),
-    makeStep("complete", "Complete", "All done."),
+    makeStep("prepare",   "Preparing selected skills",      "Reading selected grouped skills and evidence items.",       "Reading your selected grouped skills..."),
+    makeStep("duplicates","Checking for duplicates",        "Comparing selected evidence against your saved proof.",     "Checking what's already saved in your profile..."),
+    makeStep("save",      "Saving proof evidence",          "Uploading GitHub evidence links, file paths, and line ranges.", "Saving GitHub file and line proof..."),
+    makeStep("verify",    "Running verification",           "Matching evidence to skills and confidence levels on the server.", "Connecting evidence to your skill categories..."),
+    makeStep("graph",     "Building skill graph",           "Updating grouped skills, subskills, source badges, and system graphs.", "Updating grouped skills and the Skill Graph..."),
+    makeStep("refresh",   "Refreshing Skill Proof Center",  "Reloading your saved evidence and updating your profile.", "Updating your Skill Proof Center..."),
+    makeStep("complete",  "Complete",                       "All done.", "Done."),
   ]
 }
 
 /** Steps for manual GitHub code proof submission. */
 export function createManualGitHubSaveSteps(): ProofProcessingStep[] {
   return [
-    makeStep("validate", "Validating proof fields", "Checking required fields and formats."),
-    makeStep("save", "Saving proof evidence", "Creating your GitHub code proof record."),
-    makeStep("verify", "Running verification", "Running semantic verification and generating the recruiter report."),
-    makeStep("links", "Generating access links", "Creating recruiter-accessible evidence links."),
-    makeStep("refresh", "Refreshing Skill Proof Center", "Reloading your saved evidence."),
-    makeStep("complete", "Complete", "GitHub proof evidence saved."),
+    makeStep("validate", "Validating proof fields",       "Checking required fields and formats.",                         "Checking your proof details..."),
+    makeStep("save",     "Saving proof evidence",         "Creating your GitHub code proof record.",                       "Saving proof to your profile..."),
+    makeStep("verify",   "Running verification",          "Running semantic verification and generating the recruiter report.", "Running skill verification..."),
+    makeStep("links",    "Generating access links",       "Creating recruiter-accessible evidence links.",                 "Generating recruiter-accessible evidence links..."),
+    makeStep("refresh",  "Refreshing Skill Proof Center", "Reloading your saved evidence.",                               "Connecting proof to your Skill Graph..."),
+    makeStep("complete", "Complete",                      "GitHub proof evidence saved.",                                  "Proof saved successfully."),
   ]
 }
 
 /** Steps for manual website proof submission. */
 export function createWebsiteSaveSteps(): ProofProcessingStep[] {
   return [
-    makeStep("validate", "Validating website URL", "Checking the URL and proof fields."),
-    makeStep("save", "Saving website proof", "Creating the website proof record."),
-    makeStep("verify", "Running website verification", "AI checking your live website for skill demonstration."),
-    makeStep("links", "Generating access links", "Creating recruiter-accessible proof links."),
-    makeStep("refresh", "Refreshing Skill Proof Center", "Reloading your saved evidence."),
-    makeStep("complete", "Complete", "Website proof saved and verified."),
+    makeStep("validate", "Validating website URL",        "Checking the URL and proof fields.",                     "Reading your website link..."),
+    makeStep("save",     "Saving website proof",          "Creating the website proof record.",                     "Saving website proof source..."),
+    makeStep("verify",   "Running website verification",  "AI checking your live website for skill demonstration.", "Running website AI verification..."),
+    makeStep("links",    "Generating access links",       "Creating recruiter-accessible proof links.",             "Generating recruiter-accessible links..."),
+    makeStep("refresh",  "Refreshing Skill Proof Center", "Reloading your saved evidence.",                        "Connecting website proof to your Skill Graph..."),
+    makeStep("complete", "Complete",                      "Website proof saved and verified.",                      "Website proof saved."),
   ]
 }
 
 /** Steps for AI Agent link save (any source type). */
 export function createAgentLinkSaveSteps(): ProofProcessingStep[] {
   return [
-    makeStep("read", "Reading resource link", "Parsing the source URL and metadata."),
-    makeStep("save", "Saving source link", "Creating your proof evidence record."),
-    makeStep("queue", "Queuing for AI extraction", "Marking this source for future AI analysis."),
-    makeStep("links", "Generating access links", "Creating recruiter-accessible evidence links."),
-    makeStep("refresh", "Refreshing Skill Proof Center", "Reloading your saved evidence."),
-    makeStep("complete", "Complete", "Source link saved."),
+    makeStep("read",    "Reading resource link",          "Parsing the source URL and metadata.",                 "Reading your source link..."),
+    makeStep("save",    "Saving source link",             "Creating your proof evidence record.",                 "Saving evidence safely..."),
+    makeStep("queue",   "Queuing for AI extraction",      "Marking this source for future AI analysis.",          "Marking for future AI extraction..."),
+    makeStep("links",   "Generating access links",        "Creating recruiter-accessible evidence links.",        "Generating access links..."),
+    makeStep("refresh", "Refreshing Skill Proof Center",  "Reloading your saved evidence.",                      "Updating your Skill Proof Center..."),
+    makeStep("complete","Complete",                       "Source link saved.",                                   "Source link saved."),
   ]
 }
