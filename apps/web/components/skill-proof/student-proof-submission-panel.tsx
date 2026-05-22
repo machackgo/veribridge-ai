@@ -27,7 +27,14 @@ import {
   MultiSourceProofForm,
   SourceTypeSelector,
 } from "./multi-source-proof-form"
-import type { EvidenceSourceType } from "@/lib/evidence-sources"
+import {
+  type EvidenceSourceType,
+  sourceTypeToEvidenceType,
+  sourceTypeToBadgeLabel,
+  parseTimestampToSeconds,
+  formatSecondsAsTimestamp,
+  buildYouTubeTimestampUrl,
+} from "@/lib/evidence-sources"
 
 type SubmissionTab = "github" | "website"
 type ProofModalMode = "select" | "manual" | "ai_agent"
@@ -387,6 +394,15 @@ export function StudentProofSubmissionPanel({
   const [proofMode, setProofMode] = useState<ProofModalMode>("select")
   const [manualStep, setManualStep] = useState<ManualFlowStep>("source_select")
   const [selectedSourceType, setSelectedSourceType] = useState<EvidenceSourceType | null>(null)
+  // AI Agent simple resource form state (J4B fix)
+  const [agentSourceType, setAgentSourceType] = useState<EvidenceSourceType | null>(null)
+  const [agentUrl, setAgentUrl] = useState("")
+  const [agentSkillFocus, setAgentSkillFocus] = useState("")
+  const [agentTimestampStart, setAgentTimestampStart] = useState("")
+  const [agentTimestampEnd, setAgentTimestampEnd] = useState("")
+  const [agentTranscript, setAgentTranscript] = useState("")
+  // Pre-fills the scan panel when opened from AI Agent mode
+  const [pendingScanUrl, setPendingScanUrl] = useState("")
 
   const refreshEvidence = useCallback(async () => {
     setLoadingEvidence(true)
@@ -422,6 +438,78 @@ export function StudentProofSubmissionPanel({
     setProofMode("select")
     setManualStep("source_select")
     setSelectedSourceType(null)
+    resetAgentForm()
+  }
+
+  function resetAgentForm() {
+    setAgentSourceType(null)
+    setAgentUrl("")
+    setAgentSkillFocus("")
+    setAgentTimestampStart("")
+    setAgentTimestampEnd("")
+    setAgentTranscript("")
+    setSubmissionError(null)
+  }
+
+  async function handleAgentSubmit() {
+    if (!agentSourceType) return
+    setSubmissionError(null)
+
+    // GitHub: close modal and open the scan panel pre-filled with the URL
+    if (agentSourceType === "github_repository") {
+      setPendingScanUrl(agentUrl.trim())
+      closeModal()
+      setTimeout(() => setScanOpen(true), 50)
+      return
+    }
+
+    // All other sources: save as lightweight link evidence
+    const skill = agentSkillFocus.trim()
+    if (!skill) {
+      setSubmissionError("Enter the skill this evidence relates to.")
+      return
+    }
+    const url = agentUrl.trim()
+
+    const meta: Record<string, unknown> = {
+      evidence_title: `${skill} — ${sourceTypeToBadgeLabel(agentSourceType)} link`,
+      submission_source: "student_ai_agent_mode",
+      proof_kind: agentSourceType,
+      extraction_status: "queued",
+    }
+
+    if (agentSourceType === "youtube_demo") {
+      const startSec = parseTimestampToSeconds(agentTimestampStart)
+      const endSec = parseTimestampToSeconds(agentTimestampEnd)
+      if (startSec !== null) {
+        meta.timestamp_start_seconds = startSec
+        meta.timestamp_start_formatted = formatSecondsAsTimestamp(startSec)
+      }
+      if (endSec !== null) {
+        meta.timestamp_end_seconds = endSec
+        meta.timestamp_end_formatted = formatSecondsAsTimestamp(endSec)
+      }
+      if (agentTranscript.trim()) meta.transcript_snippet = agentTranscript.trim()
+    }
+
+    const evidenceUrl = agentSourceType === "youtube_demo" && url
+      ? (() => {
+          const startSec = parseTimestampToSeconds(agentTimestampStart)
+          return startSec !== null ? buildYouTubeTimestampUrl(url, startSec) : url
+        })()
+      : url || null
+
+    const payload: import("@/lib/api").SkillEvidencePayload = {
+      skill_name: skill,
+      evidence_type: sourceTypeToEvidenceType(agentSourceType),
+      evidence_url: evidenceUrl,
+      evidence_description: `AI Agent: ${sourceTypeToBadgeLabel(agentSourceType)} evidence saved for future extraction. Skill: ${skill}.`,
+      proof_visibility: "public",
+      metadata: meta,
+    }
+
+    await handleGenericSubmit(payload)
+    resetAgentForm()
   }
 
   function handleSourceSelect(sourceType: EvidenceSourceType) {
@@ -573,7 +661,8 @@ export function StudentProofSubmissionPanel({
       {scanOpen && (
         <GitHubPortfolioScanPanel
           onImportSuccess={() => void refreshEvidence()}
-          onClose={() => setScanOpen(false)}
+          onClose={() => { setScanOpen(false); setPendingScanUrl("") }}
+          initialProfileUrl={pendingScanUrl}
         />
       )}
 
@@ -756,72 +845,57 @@ export function StudentProofSubmissionPanel({
                   />
                 )}
 
-                {/* ── Mode: AI Agent ── */}
-                {proofMode === "ai_agent" && (
+                {/* ── Mode: AI Agent — card grid ── */}
+                {proofMode === "ai_agent" && !agentSourceType && (
                   <div style={{ display: "grid", gap: 14 }}>
                     <p style={{ margin: 0, fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>
-                      GitHub scanning is active. Other AI extraction — LinkedIn, YouTube, documents, certificates, portfolios — will be added in upcoming phases.
-                      You can save links from any source now; VeriBridge will organize them in your Skill Proof Center.
+                      Give VeriBridge your resource links. GitHub scanning is active now.
+                      LinkedIn, YouTube, documents, and certificate AI extraction will be added in upcoming phases — you can save links now.
                     </p>
 
-                    {/* Source cards */}
                     <div style={{ display: "grid", gap: 8 }}>
                       {([
                         {
-                          icon: "⌨", title: "GitHub Profile / Repo Scan", desc: "AI scans your public repos and extracts skill evidence automatically.",
-                          status: "active" as const,
-                          action: () => { closeModal(); setTimeout(() => setScanOpen(true), 50); },
-                          actionLabel: "Scan my GitHub profile",
+                          icon: "⌨", title: "GitHub Profile / Repo Scan",
+                          desc: "AI scans your public repositories and extracts skill evidence automatically.",
+                          status: "active" as const, sourceType: "github_repository" as EvidenceSourceType,
                         },
                         {
-                          icon: "🌐", title: "Website / Portfolio Scan", desc: "Submit a live deployed URL for AI verification of a running feature.",
-                          status: "active" as const,
-                          action: () => { handleSourceSelect("deployed_website"); setProofMode("manual"); },
-                          actionLabel: "Add website proof",
+                          icon: "🌐", title: "Website / Portfolio Scan",
+                          desc: "Submit a live deployed URL. AI checks your site for skill demonstration.",
+                          status: "active" as const, sourceType: "deployed_website" as EvidenceSourceType,
                         },
                         {
-                          icon: "💼", title: "LinkedIn Profile / Post Analysis", desc: "AI will read public LinkedIn posts and connect proof to skills.",
-                          status: "soon" as const,
-                          action: () => { handleSourceSelect("linkedin_post"); setProofMode("manual"); },
-                          actionLabel: "Save LinkedIn link now",
+                          icon: "💼", title: "LinkedIn Profile / Post Analysis",
+                          desc: "AI will read your public LinkedIn posts and connect proof to skills.",
+                          status: "soon" as const, sourceType: "linkedin_post" as EvidenceSourceType,
                         },
                         {
-                          icon: "▶", title: "YouTube / Demo Video Analysis", desc: "AI will analyze transcripts and timestamps to identify skill demonstrations.",
-                          status: "soon" as const,
-                          action: () => { handleSourceSelect("youtube_demo"); setProofMode("manual"); },
-                          actionLabel: "Save video link now",
+                          icon: "▶", title: "YouTube / Demo Video Analysis",
+                          desc: "AI will analyze transcripts and timestamps to identify skill demonstrations.",
+                          status: "soon" as const, sourceType: "youtube_demo" as EvidenceSourceType,
                         },
                         {
-                          icon: "📄", title: "Google Drive / Document Analysis", desc: "AI will read shared docs, slides, and reports for skill evidence.",
-                          status: "soon" as const,
-                          action: () => { handleSourceSelect("google_drive_document"); setProofMode("manual"); },
-                          actionLabel: "Save document link now",
+                          icon: "📄", title: "Google Drive / Document Analysis",
+                          desc: "AI will read shared docs, slides, and reports for skill evidence.",
+                          status: "soon" as const, sourceType: "google_drive_document" as EvidenceSourceType,
                         },
                         {
-                          icon: "🏅", title: "Certificate / Report Analysis", desc: "AI will verify certificates and extract skills from reports and papers.",
-                          status: "soon" as const,
-                          action: () => { setProofMode("manual"); setManualStep("source_select"); },
-                          actionLabel: "Save certificate link now",
+                          icon: "🏅", title: "Certificate / Report Analysis",
+                          desc: "AI will verify certificates and extract skills from reports and papers.",
+                          status: "soon" as const, sourceType: "certificate" as EvidenceSourceType,
                         },
                       ] as const).map((card) => (
                         <div
-                          key={`ai-card-${card.title}`}
-                          style={{
-                            border: "1px solid var(--line)",
-                            borderRadius: 12,
-                            padding: "14px 16px",
-                            display: "flex",
-                            alignItems: "flex-start",
-                            gap: 14,
-                          }}
+                          key={`ai-card-${card.sourceType}`}
+                          style={{ border: "1px solid var(--line)", borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "flex-start", gap: 14 }}
                         >
                           <span style={{ fontSize: 22, flexShrink: 0, marginTop: 2 }}>{card.icon}</span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                               <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{card.title}</span>
                               <span style={{
-                                fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase",
-                                padding: "2px 7px", borderRadius: 999,
+                                fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 999,
                                 ...(card.status === "active"
                                   ? { color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0" }
                                   : { color: "#854d0e", background: "#fef9c3", border: "1px solid #fef08a" }),
@@ -832,7 +906,7 @@ export function StudentProofSubmissionPanel({
                             <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>{card.desc}</p>
                             <button
                               type="button"
-                              onClick={card.action}
+                              onClick={() => { setAgentSourceType(card.sourceType); setSubmissionError(null); }}
                               style={{
                                 border: card.status === "active" ? "1px solid var(--ink)" : "1px solid var(--line-2)",
                                 background: card.status === "active" ? "var(--ink)" : "transparent",
@@ -840,7 +914,7 @@ export function StudentProofSubmissionPanel({
                                 borderRadius: 9, padding: "7px 12px", fontWeight: 600, fontSize: 12, cursor: "pointer",
                               }}
                             >
-                              {card.actionLabel}
+                              {card.status === "active" ? "Get started" : "Save link now"}
                             </button>
                           </div>
                         </div>
@@ -854,6 +928,130 @@ export function StudentProofSubmissionPanel({
                     >
                       ← Back
                     </button>
+                  </div>
+                )}
+
+                {/* ── Mode: AI Agent — simple resource link form ── */}
+                {proofMode === "ai_agent" && agentSourceType && (
+                  <div style={{ display: "grid", gap: 14 }}>
+                    {/* Source header */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>
+                          {agentSourceType === "github_repository" ? "GitHub Profile / Repo Scan"
+                            : agentSourceType === "deployed_website" ? "Website / Portfolio"
+                            : agentSourceType === "linkedin_post" ? "LinkedIn Profile / Post"
+                            : agentSourceType === "youtube_demo" ? "YouTube / Demo Video"
+                            : agentSourceType === "google_drive_document" ? "Google Drive / Document"
+                            : "Certificate / Report"}
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+                          {agentSourceType === "github_repository"
+                            ? "Enter your GitHub profile URL. We'll scan your public repos automatically."
+                            : agentSourceType === "deployed_website"
+                            ? "Enter your live website URL. Only add links you own or have permission to share."
+                            : "Enter the link. AI extraction will be added in an upcoming phase — your link will be saved now."}
+                        </div>
+                      </div>
+                    </div>
+
+                    {submissionError && (
+                      <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
+                        {submissionError}
+                      </div>
+                    )}
+
+                    {/* URL field — always shown */}
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
+                        {agentSourceType === "github_repository" ? "GitHub profile or repo URL *"
+                          : agentSourceType === "deployed_website" ? "Website URL *"
+                          : agentSourceType === "linkedin_post" ? "LinkedIn post or profile URL *"
+                          : agentSourceType === "youtube_demo" ? "YouTube video URL *"
+                          : agentSourceType === "google_drive_document" ? "Google Drive shareable link *"
+                          : "Certificate or document URL *"}
+                      </span>
+                      <input
+                        value={agentUrl}
+                        onChange={(e) => setAgentUrl(e.target.value)}
+                        placeholder={
+                          agentSourceType === "github_repository" ? "https://github.com/yourusername"
+                          : agentSourceType === "youtube_demo" ? "https://youtube.com/watch?v=..."
+                          : agentSourceType === "linkedin_post" ? "https://linkedin.com/in/... or linkedin.com/posts/..."
+                          : "https://..."
+                        }
+                        style={inputStyle}
+                      />
+                      <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                        Only add links you own or have permission to share.
+                      </span>
+                    </div>
+
+                    {/* Skill focus — for non-GitHub sources */}
+                    {agentSourceType !== "github_repository" && (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>Skill focus *</span>
+                        <input
+                          value={agentSkillFocus}
+                          onChange={(e) => setAgentSkillFocus(e.target.value)}
+                          placeholder="e.g. Machine Learning, FastAPI, Docker"
+                          style={inputStyle}
+                        />
+                        <span style={{ fontSize: 11, color: "var(--muted)" }}>Which skill does this evidence demonstrate?</span>
+                      </div>
+                    )}
+
+                    {/* YouTube: timestamp + transcript */}
+                    {agentSourceType === "youtube_demo" && (
+                      <>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                          <div style={{ display: "grid", gap: 4 }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>Start timestamp</span>
+                            <input value={agentTimestampStart} onChange={(e) => setAgentTimestampStart(e.target.value)} placeholder="05:12" style={inputStyle} />
+                          </div>
+                          <div style={{ display: "grid", gap: 4 }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>End timestamp</span>
+                            <input value={agentTimestampEnd} onChange={(e) => setAgentTimestampEnd(e.target.value)} placeholder="06:40" style={inputStyle} />
+                          </div>
+                        </div>
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>Transcript snippet <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span></span>
+                          <textarea
+                            value={agentTranscript}
+                            onChange={(e) => setAgentTranscript(e.target.value)}
+                            placeholder="e.g. Here I explain RandomForest model training with scikit-learn..."
+                            style={{ ...inputStyle, minHeight: 64, resize: "vertical", fontFamily: "inherit", lineHeight: 1.5 }}
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Footer */}
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+                      <button
+                        type="button"
+                        onClick={resetAgentForm}
+                        style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
+                      >
+                        ← Back to sources
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleAgentSubmit()}
+                        disabled={submitting}
+                        style={{
+                          border: "1px solid transparent",
+                          background: submitting ? "var(--bg-2)" : "var(--ink)",
+                          color: submitting ? "var(--muted)" : "#fff",
+                          borderRadius: 10, padding: "10px 18px", fontWeight: 700, fontSize: 14, cursor: submitting ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {submitting ? "Saving…"
+                          : agentSourceType === "github_repository" ? "Scan GitHub with AI"
+                          : agentSourceType === "deployed_website" ? "Analyze Website with AI"
+                          : "Save link for AI extraction"}
+                      </button>
+                    </div>
                   </div>
                 )}
 

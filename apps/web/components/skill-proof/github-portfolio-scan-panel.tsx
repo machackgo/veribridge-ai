@@ -443,12 +443,18 @@ function GroupedSkillCard({
 export function GitHubPortfolioScanPanel({
   onImportSuccess,
   onClose,
+  initialProfileUrl,
 }: {
   onImportSuccess?: () => void
   onClose: () => void
+  /** Pre-fill the GitHub profile URL field (used from AI Agent mode). */
+  initialProfileUrl?: string
 }) {
   const [step, setStep] = useState<ScanStep>("form")
-  const [form, setForm] = useState<ScanFormState>(initialForm)
+  const [form, setForm] = useState<ScanFormState>(() => ({
+    ...initialForm(),
+    profileUrl: initialProfileUrl ?? "",
+  }))
   const [scanResult, setScanResult] = useState<GitHubPortfolioScanResponse | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
