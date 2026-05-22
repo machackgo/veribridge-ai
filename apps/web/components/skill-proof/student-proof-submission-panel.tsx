@@ -755,7 +755,7 @@ export function StudentProofSubmissionPanel({
             position: "fixed",
             inset: 0,
             background: "rgba(15, 23, 42, 0.52)",
-            zIndex: 50,
+            zIndex: 200,
             display: "grid",
             placeItems: "center",
             padding: 20,

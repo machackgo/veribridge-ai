@@ -147,3 +147,70 @@ def test_user_expected_terms_counted_when_new():
         page, baseline, user_expected="confidence, recommended", max_wait_ms=5_000
     )
     assert detected is True
+
+
+# ── New tests for field validation helpers ─────────────────────────────────────
+
+from app.services.browser_screenshot_service import (
+    _keyword_in_value,
+    _origin_keywords,
+    _dest_keywords,
+    parse_test_input_for_browser,
+)
+
+
+def test_origin_keywords_fenway():
+    """Keywords extracted from Boston origin include 'Fenway'."""
+    kw = _origin_keywords("Fenway Park, Boston, MA")
+    assert any("fenway" in k.lower() for k in kw), f"Expected 'fenway' in {kw}"
+
+
+def test_dest_keywords_logan():
+    """Keywords extracted from Boston destination include 'Logan'."""
+    kw = _dest_keywords("Boston Logan International Airport, MA")
+    assert any("logan" in k.lower() for k in kw), f"Expected 'logan' in {kw}"
+
+
+def test_keyword_in_value_confirmed():
+    """_keyword_in_value returns True when keyword appears in field value."""
+    assert _keyword_in_value("Fenway Park, Boston, MA", ["fenway", "park"])
+    assert _keyword_in_value("Boston Logan International Airport", ["logan"])
+
+
+def test_keyword_in_value_rejected():
+    """_keyword_in_value returns False when keyword is absent or value is empty."""
+    assert not _keyword_in_value("", ["fenway"])
+    assert not _keyword_in_value(None, ["fenway"])
+    assert not _keyword_in_value("Boston Logan International Airport", ["fenway"])
+
+
+def test_parse_test_input_boston():
+    """Boston test input string is parsed into origin and destination correctly."""
+    test_input = (
+        "origin=Fenway Park, Boston, MA; "
+        "destination=Boston Logan International Airport, MA; "
+        "num_segments=5"
+    )
+    origin, destination, extra = parse_test_input_for_browser(test_input)
+    assert origin is not None, "Expected origin to be parsed"
+    assert "fenway" in (origin or "").lower(), f"Expected 'fenway' in origin: {origin}"
+    assert destination is not None, "Expected destination to be parsed"
+    assert "logan" in (destination or "").lower(), f"Expected 'logan' in destination: {destination}"
+    assert "num_segments" in extra, f"Expected num_segments in extra: {extra}"
+    assert extra["num_segments"] == "5"
+
+
+def test_keyword_min_length_filter():
+    """Keywords shorter than 3 chars are not matched."""
+    assert not _keyword_in_value("MA Boston", ["MA"])  # 2 chars — too short to be meaningful
+
+
+def test_origin_keywords_length():
+    """_origin_keywords returns non-empty list for any non-empty string."""
+    assert len(_origin_keywords("Boston")) > 0
+    assert len(_origin_keywords("X")) > 0
+
+
+def test_dest_keywords_length():
+    """_dest_keywords returns non-empty list for any non-empty string."""
+    assert len(_dest_keywords("Logan Airport")) > 0

@@ -345,6 +345,11 @@ def _generate_proof_summary(
             f"VeriBridge opened {frontend_url} but could not detect interactive input fields. "
             "Provide a frontend URL where users can enter data."
         )
+    if error_message and "Required input fields" in error_message:
+        return (
+            f"VeriBridge opened {frontend_url} but required input fields could not be confirmed. "
+            f"{error_message}"
+        )
     if error_message and not button_text:
         return (
             f"VeriBridge opened {frontend_url} but the browser workflow could not complete. "
@@ -446,6 +451,142 @@ def _attach_screenshot(page: Any, result: BrowserScreenshotResult) -> None:
         logger.warning("Screenshot capture failed: %s", exc)
 
 
+def _type_into_field(page: Any, hints: list[str], value: str) -> Any | None:
+    """Find a field by hints and type value char-by-char to trigger keyboard events.
+    Returns the locator if found, else None. Required for Google Places autocomplete.
+    """
+    pattern = re.compile("|".join(re.escape(h) for h in hints), re.IGNORECASE)
+    loc: Any = None
+    try:
+        candidate = (
+            page.get_by_label(pattern)
+            .or_(page.get_by_placeholder(pattern))
+            .first
+        )
+        if candidate.count() > 0 and candidate.is_visible(timeout=2_000):
+            loc = candidate
+    except Exception:
+        pass
+    if loc is None:
+        for hint in hints:
+            for attr in ("name", "id", "aria-label", "placeholder"):
+                try:
+                    sel = (
+                        f"input[{attr}*='{hint}' i]:visible,"
+                        f" textarea[{attr}*='{hint}' i]:visible"
+                    )
+                    candidate = page.locator(sel).first
+                    if candidate.count() > 0 and candidate.is_visible(timeout=2_000):
+                        loc = candidate
+                        break
+                except Exception:
+                    continue
+            if loc is not None:
+                break
+    if loc is None:
+        return None
+    try:
+        loc.click(timeout=_ACTION_TIMEOUT)
+        loc.fill("", timeout=2_000)
+        loc.press_sequentially(value, delay=60)
+        return loc
+    except Exception:
+        return None
+
+
+def _read_field_value(page: Any, hints: list[str]) -> str | None:
+    """Read the current value attribute of a field matching the hints."""
+    pattern = re.compile("|".join(re.escape(h) for h in hints), re.IGNORECASE)
+    try:
+        candidate = (
+            page.get_by_label(pattern)
+            .or_(page.get_by_placeholder(pattern))
+            .first
+        )
+        if candidate.count() > 0:
+            val = candidate.input_value(timeout=2_000)
+            return val.strip() if val else None
+    except Exception:
+        pass
+    for hint in hints:
+        for attr in ("name", "id", "aria-label", "placeholder"):
+            try:
+                sel = (
+                    f"input[{attr}*='{hint}' i]:visible,"
+                    f" textarea[{attr}*='{hint}' i]:visible"
+                )
+                candidate = page.locator(sel).first
+                if candidate.count() > 0:
+                    val = candidate.input_value(timeout=2_000)
+                    return val.strip() if val else None
+            except Exception:
+                continue
+    return None
+
+
+def _keyword_in_value(actual_value: str | None, keywords: list[str]) -> bool:
+    """Return True if any keyword (>=3 chars) appears in actual_value."""
+    if not actual_value:
+        return False
+    lower = actual_value.lower()
+    return any(kw.lower() in lower for kw in keywords if len(kw) >= 3)
+
+
+def _origin_keywords(origin: str) -> list[str]:
+    """Extract distinctive verification keywords from an origin string."""
+    words = [w.strip(",.") for w in origin.replace(",", " ").split() if len(w.strip(",.")) >= 4]
+    return words[:3] if words else [origin[:6].strip()]
+
+
+def _dest_keywords(destination: str) -> list[str]:
+    """Extract distinctive verification keywords from a destination string."""
+    words = [w.strip(",.") for w in destination.replace(",", " ").split() if len(w.strip(",.")) >= 4]
+    return words[:3] if words else [destination[:6].strip()]
+
+
+def _handle_autocomplete_smart(page: Any, keywords: list[str] | None = None) -> None:
+    """Wait for autocomplete dropdown and click best matching suggestion.
+
+    Tries to find a suggestion containing one of the given keywords.
+    Falls back to the first visible suggestion.
+    """
+    try:
+        page.wait_for_timeout(1_200)
+        for sel in [
+            ".pac-item:visible",
+            "[role='option']:visible",
+            "[role='listbox'] li:visible",
+            ".suggestion:visible",
+            "[class*='suggestion']:visible",
+            "[class*='autocomplete'] li:visible",
+            "[class*='dropdown'] li:visible",
+        ]:
+            try:
+                options = page.locator(sel).all()
+                if not options:
+                    continue
+                if keywords:
+                    for opt in options[:6]:
+                        try:
+                            text = opt.inner_text(timeout=1_000).lower()
+                            if any(kw.lower() in text for kw in keywords):
+                                if opt.is_visible(timeout=1_000):
+                                    opt.click(timeout=2_000)
+                                    page.wait_for_timeout(600)
+                                    return
+                        except Exception:
+                            continue
+                first = options[0]
+                if first.is_visible(timeout=1_000):
+                    first.click(timeout=2_000)
+                    page.wait_for_timeout(600)
+                    return
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def run_browser_screenshot(
@@ -512,21 +653,77 @@ def run_browser_screenshot(
 
                 result.steps_run.append(f"Found {visible_inputs} visible input field(s)")
 
-                # ── Step 3: Fill origin field ─────────────────────────────────
+                # ── Step 3: Fill and verify origin field ──────────────────────
+                origin_confirmed = False
+                origin_actual: str | None = None
                 if origin:
-                    if _try_fill(page, _ORIGIN_HINTS, origin):
-                        result.steps_run.append(f"Filled origin/source field: \"{origin}\"")
-                        _handle_autocomplete(page)
+                    origin_kw = _origin_keywords(origin)
+                    result.steps_run.append(
+                        f"Detected origin field — hints: {', '.join(_ORIGIN_HINTS)}"
+                    )
+                    type_loc = _type_into_field(page, _ORIGIN_HINTS, origin)
+                    if type_loc is not None:
+                        result.steps_run.append(f"Filled origin field with \"{origin}\"")
+                        _handle_autocomplete_smart(page, origin_kw)
+                        origin_actual = _read_field_value(page, _ORIGIN_HINTS)
+                        if _keyword_in_value(origin_actual, origin_kw):
+                            origin_confirmed = True
+                            result.steps_run.append(
+                                f"Confirmed origin field value: \"{origin_actual}\""
+                            )
+                        else:
+                            # Retry once with simpler fill
+                            if _try_fill(page, _ORIGIN_HINTS, origin):
+                                _handle_autocomplete(page)
+                                origin_actual = _read_field_value(page, _ORIGIN_HINTS)
+                                origin_confirmed = _keyword_in_value(origin_actual, origin_kw)
+                            if origin_confirmed:
+                                result.steps_run.append(
+                                    f"Confirmed origin field value (retry): \"{origin_actual}\""
+                                )
+                            else:
+                                result.steps_run.append(
+                                    f"Origin field value after fill: \"{origin_actual or 'empty'}\" "
+                                    f"— keyword match failed for {origin_kw}"
+                                )
                     else:
                         result.steps_run.append(
                             f"Origin field not found — tried: {', '.join(_ORIGIN_HINTS)}"
                         )
 
-                # ── Step 4: Fill destination field ────────────────────────────
+                # ── Step 4: Fill and verify destination field ─────────────────
+                dest_confirmed = False
+                dest_actual: str | None = None
                 if destination:
-                    if _try_fill(page, _DEST_HINTS, destination):
-                        result.steps_run.append(f"Filled destination/to field: \"{destination}\"")
-                        _handle_autocomplete(page)
+                    dest_kw = _dest_keywords(destination)
+                    result.steps_run.append(
+                        f"Detected destination field — hints: {', '.join(_DEST_HINTS)}"
+                    )
+                    type_loc = _type_into_field(page, _DEST_HINTS, destination)
+                    if type_loc is not None:
+                        result.steps_run.append(f"Filled destination field with \"{destination}\"")
+                        _handle_autocomplete_smart(page, dest_kw)
+                        dest_actual = _read_field_value(page, _DEST_HINTS)
+                        if _keyword_in_value(dest_actual, dest_kw):
+                            dest_confirmed = True
+                            result.steps_run.append(
+                                f"Confirmed destination field value: \"{dest_actual}\""
+                            )
+                        else:
+                            # Retry once with simpler fill
+                            if _try_fill(page, _DEST_HINTS, destination):
+                                _handle_autocomplete(page)
+                                dest_actual = _read_field_value(page, _DEST_HINTS)
+                                dest_confirmed = _keyword_in_value(dest_actual, dest_kw)
+                            if dest_confirmed:
+                                result.steps_run.append(
+                                    f"Confirmed destination field value (retry): \"{dest_actual}\""
+                                )
+                            else:
+                                result.steps_run.append(
+                                    f"Destination field value: \"{dest_actual or 'empty'}\" "
+                                    f"— could not confirm keyword {dest_kw}"
+                                )
                     else:
                         result.steps_run.append(
                             f"Destination field not found — tried: {', '.join(_DEST_HINTS)}"
@@ -537,74 +734,106 @@ def run_browser_screenshot(
                     if _try_fill(page, [fk], fv):
                         result.steps_run.append(f"Filled field '{fk}': \"{fv}\"")
 
+                # ── Step 5b: Validate required fields before proceeding ───────
+                required_fields_ok = True
+                if origin and not origin_confirmed:
+                    result.steps_run.append(
+                        f"Required field validation: origin not confirmed "
+                        f"(\"{origin_actual or 'empty'}\") — will not click Predict"
+                    )
+                    required_fields_ok = False
+                if destination and not dest_confirmed:
+                    result.steps_run.append(
+                        f"Required field validation: destination not confirmed "
+                        f"(\"{dest_actual or 'empty'}\") — will not click Predict"
+                    )
+                    required_fields_ok = False
+                if not required_fields_ok:
+                    result.steps_run.append(
+                        "Capturing screenshot of current state (required fields not confirmed)"
+                    )
+                    _attach_screenshot(page, result)
+                    result.frontend_visible_output_text = _extract_visible_output_text(page)
+                    result.browser_workflow_status = "partial"
+                    result.error_message = (
+                        "Required input fields could not be confirmed before clicking. "
+                        "Screenshot shows current browser state."
+                    )
+                    if result.screenshot_data_url:
+                        result.success = True
+
                 # ── Step 6: Capture baseline text BEFORE clicking ─────────────
                 result.steps_run.append("Capturing baseline page state before clicking...")
                 baseline_text = _capture_baseline_text(page)
 
-                # ── Step 7: Click safe submit button ──────────────────────────
-                btn_text = _click_safe_button(page)
-                if btn_text:
-                    result.button_text_clicked = btn_text
-                    result.steps_run.append(f"Clicked button: \"{btn_text}\"")
-                else:
-                    result.steps_run.append(
-                        "No safe submit button found — looked for: predict, analyze, "
-                        "submit, search, route, risk, calculate, run, find, generate"
-                    )
-
-                # ── Step 8: Wait for network / loading to settle ───────────────
-                try:
-                    page.wait_for_load_state("networkidle", timeout=8_000)
-                    result.steps_run.append("Network settled after click")
-                except Exception:
-                    page.wait_for_timeout(_POST_CLICK_WAIT)
-                    result.steps_run.append("Waited for page to stabilize after click")
-
-                result.steps_run.append("Waiting for loading/analyzing state to finish...")
-                loading_done = _wait_for_loading_to_finish(page, _LOADING_WAIT_MAX)
-                if loading_done:
-                    result.steps_run.append("Loading state finished — page ready for output detection")
-                else:
-                    result.steps_run.append("Loading may still be active — proceeding to output detection")
-
-                # ── Step 9: Wait for NEW content after click (up to 45s) ───────
-                result.steps_run.append(
-                    "Waiting for new output/result cards to appear (up to 45s for cold starts)..."
-                )
-                new_content_found, output_terms = _wait_for_new_content(
-                    page, baseline_text, expected_output, _OUTPUT_WAIT_MAX
-                )
-                result.output_terms_found = output_terms
-
-                if new_content_found and output_terms:
-                    result.expected_output_found = True
-                    result.output_text_found = ", ".join(output_terms[:5])
-                    result.steps_run.append(
-                        f"Final output detected — new content: {', '.join(output_terms[:6])}"
-                    )
-                else:
-                    result.steps_run.append(
-                        "Final output not confirmed before timeout — capturing current state"
-                    )
-
-                # ── Step 10: Capture screenshot (AFTER output detection) ────────
-                result.steps_run.append("Capturing screenshot of final browser state")
-                _attach_screenshot(page, result)
-                # Also capture visible body text for metric-to-visual matching
-                result.frontend_visible_output_text = _extract_visible_output_text(page)
-                if result.screenshot_data_url:
-                    result.success = True
-                    if result.expected_output_found:
-                        result.steps_run.append("Screenshot captured — final output visible")
-                        result.browser_workflow_status = "passed"
+                # ── Step 7: Click safe submit button (only when fields confirmed) ──
+                btn_text: str | None = None
+                if required_fields_ok:
+                    btn_text = _click_safe_button(page)
+                    if btn_text:
+                        result.button_text_clicked = btn_text
+                        result.steps_run.append(f"Predict button enabled: yes — clicked \"{btn_text}\"")
                     else:
                         result.steps_run.append(
-                            "Screenshot captured — final output not confirmed before timeout"
+                            "Predict button enabled: no — no safe submit button found; "
+                            "looked for: predict, analyze, submit, search, route, risk, calculate"
                         )
-                        result.browser_workflow_status = "partial"
-                else:
-                    result.steps_run.append("Screenshot could not be captured")
-                    result.browser_workflow_status = "partial" if btn_text else "failed"
+
+                # ── Steps 8-9: wait for output (only when fields ok + button clicked) ──
+                if required_fields_ok and btn_text:
+                    # Step 8: Wait for network / loading to settle
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=8_000)
+                        result.steps_run.append("Network settled after click")
+                    except Exception:
+                        page.wait_for_timeout(_POST_CLICK_WAIT)
+                        result.steps_run.append("Waited for page to stabilize after click")
+
+                    result.steps_run.append("Waiting for loading/analyzing state to finish...")
+                    loading_done = _wait_for_loading_to_finish(page, _LOADING_WAIT_MAX)
+                    if loading_done:
+                        result.steps_run.append("Loading state finished — page ready for output detection")
+                    else:
+                        result.steps_run.append("Loading may still be active — proceeding to output detection")
+
+                    # Step 9: Wait for NEW content after click (up to 45s)
+                    result.steps_run.append(
+                        "Waiting for new output/result cards to appear (up to 45s for cold starts)..."
+                    )
+                    new_content_found, output_terms = _wait_for_new_content(
+                        page, baseline_text, expected_output, _OUTPUT_WAIT_MAX
+                    )
+                    result.output_terms_found = output_terms
+
+                    if new_content_found and output_terms:
+                        result.expected_output_found = True
+                        result.output_text_found = ", ".join(output_terms[:5])
+                        result.steps_run.append(
+                            f"Final output detected — new content: {', '.join(output_terms[:6])}"
+                        )
+                    else:
+                        result.steps_run.append(
+                            "Final output not confirmed before timeout — capturing current state"
+                        )
+
+                # ── Step 10: Capture screenshot (AFTER output detection) ────────
+                if required_fields_ok and not result.screenshot_data_url:
+                    result.steps_run.append("Capturing screenshot of final browser state")
+                    _attach_screenshot(page, result)
+                    result.frontend_visible_output_text = _extract_visible_output_text(page)
+                    if result.screenshot_data_url:
+                        result.success = True
+                        if result.expected_output_found:
+                            result.steps_run.append("Screenshot captured — final output visible")
+                            result.browser_workflow_status = "passed"
+                        else:
+                            result.steps_run.append(
+                                "Screenshot captured — final output not confirmed before timeout"
+                            )
+                            result.browser_workflow_status = "partial"
+                    else:
+                        result.steps_run.append("Screenshot could not be captured")
+                        result.browser_workflow_status = "partial" if btn_text else "failed"
 
             finally:
                 browser.close()
