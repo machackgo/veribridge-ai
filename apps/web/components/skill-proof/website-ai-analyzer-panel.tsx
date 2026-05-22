@@ -13,6 +13,7 @@ import {
   analyzeWebsite,
   createSkillEvidence,
   generateEvidenceAccessLinks,
+  type BrowserWorkflowVerificationResult,
   type FunctionalVerificationCandidate,
   type FunctionalTestPlan,
   type GroupedWebsiteSkill,
@@ -465,7 +466,22 @@ function buildSourceLinks(result: WebsiteAnalyzeResponse): SourceLinkItem[] {
     if (seenFileUrls.size >= 6) break
   }
 
-  // Screenshot proof — only add source card if actual screenshot URL exists
+  // Browser UI workflow screenshot (from Playwright) — add card if captured
+  if (result.browser_workflow_result?.screenshot_data_url && result.browser_workflow_result.screenshot_status === "captured") {
+    const bwr = result.browser_workflow_result
+    links.push({
+      id: "browser-screenshot",
+      icon: "📸",
+      title: "Browser UI Screenshot",
+      subtitle: (() => { try { return new URL(bwr.frontend_url).hostname } catch { return bwr.frontend_url } })(),
+      status: "detected",
+      url: bwr.screenshot_data_url!,
+      actionLabel: "Open Screenshot",
+      category: "website",
+    })
+  }
+
+  // Per-candidate screenshot proof — only add source card if actual screenshot URL exists
   const screenshotFcs = result.functional_candidates.filter((fc) => !!fc.screenshot_url)
   for (const fc of screenshotFcs.slice(0, 3)) {
     links.push({
@@ -533,6 +549,102 @@ function EvidenceSourceCard({ item }: { item: SourceLinkItem }) {
         </>
       ) : (
         <span style={{ fontSize: 10, color: "var(--muted)", fontStyle: "italic" }}>Not found during analysis</span>
+      )}
+    </div>
+  )
+}
+
+// ── Browser workflow result section ──────────────────────────────────────────
+
+function BrowserWorkflowResultSection({ result }: { result: BrowserWorkflowVerificationResult }) {
+  const [showSteps, setShowSteps] = useState(false)
+
+  const badge = {
+    captured:     { label: "Browser UI Verified", bg: "#dcfce7", color: "#166534", border: "#bbf7d0" },
+    no_ui:        { label: "No UI Detected",       bg: "#fef9c3", color: "#854d0e", border: "#fef08a" },
+    error:        { label: "Verification Failed",  bg: "#fef2f2", color: "#991b1b", border: "#fecaca" },
+    not_captured: { label: "Not Captured",         bg: "#f8fafc", color: "#64748b", border: "#e2e8f0" },
+  }[result.screenshot_status] ?? { label: "Not Captured", bg: "#f8fafc", color: "#64748b", border: "#e2e8f0" }
+
+  const sectionBg = result.screenshot_status === "captured" ? "#f0fdf4" : "#fff"
+
+  return (
+    <div style={{ border: `1px solid ${badge.border}`, borderRadius: 12, padding: "14px 16px", background: sectionBg }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
+        <span style={{ fontSize: 18, flexShrink: 0 }}>📸</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: "var(--ink)" }}>Browser UI Workflow Verification</div>
+          <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "monospace", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {result.frontend_url}
+          </div>
+        </div>
+        <span style={{ ...badgeBase, fontSize: 9, background: badge.bg, color: badge.color, border: `1px solid ${badge.border}`, flexShrink: 0, whiteSpace: "nowrap" }}>
+          {badge.label}
+        </span>
+      </div>
+
+      {/* Expected output found */}
+      {result.expected_output_found && result.output_text_found && (
+        <div style={{ fontSize: 11, color: "#166534", marginBottom: 8 }}>
+          ✓ Expected output found in page: &ldquo;{result.output_text_found}&rdquo;
+        </div>
+      )}
+
+      {/* Error / no UI messages */}
+      {result.no_ui_detected && (
+        <div style={{ fontSize: 11, color: "#854d0e", marginBottom: 8, lineHeight: 1.5 }}>
+          No interactive input fields detected on this page. Provide the frontend URL
+          where users can enter data, or use API endpoint verification for backend-only services.
+        </div>
+      )}
+      {result.error_message && !result.no_ui_detected && (
+        <div style={{ fontSize: 11, color: "#991b1b", marginBottom: 8, lineHeight: 1.5 }}>
+          {result.error_message}
+        </div>
+      )}
+
+      {/* Screenshot preview */}
+      {result.screenshot_data_url && (
+        <div style={{ marginBottom: 10 }}>
+          <img
+            src={result.screenshot_data_url}
+            alt="Browser UI workflow screenshot"
+            style={{ maxWidth: "100%", borderRadius: 8, border: "1px solid #e2e8f0", display: "block" }}
+          />
+          {result.screenshot_caption && (
+            <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>{result.screenshot_caption}</div>
+          )}
+          <a
+            href={result.screenshot_data_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            download="veribridge-browser-screenshot.jpg"
+            style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none", display: "inline-block", marginTop: 6 }}
+          >
+            Open Screenshot →
+          </a>
+        </div>
+      )}
+
+      {/* Steps accordion */}
+      {result.steps_run.length > 0 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowSteps((v) => !v)}
+            style={{ fontSize: 10, color: "var(--indigo)", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}
+          >
+            {showSteps ? "Hide" : "Show"} workflow steps ({result.steps_run.length})
+          </button>
+          {showSteps && (
+            <ol style={{ margin: "6px 0 0", paddingLeft: 20, display: "flex", flexDirection: "column", gap: 2 }}>
+              {result.steps_run.map((step, i) => (
+                <li key={`bwstep-${i}`} style={{ fontSize: 11, color: "var(--ink-2)" }}>{step}</li>
+              ))}
+            </ol>
+          )}
+        </>
       )}
     </div>
   )
@@ -838,7 +950,9 @@ type FunctionalTestPlanState = {
   whatToTest: string
   testInput: string
   expectedOutput: string
-  testMode: "auto" | "api_endpoint" | "plan_only"
+  testMode: "auto" | "api_endpoint" | "browser_ui" | "plan_only"
+  frontendUrl: string                  // J4I: frontend URL with interactive UI
+  browserWorkflowInstructions: string  // J4I: step instructions for Playwright
 }
 
 export function WebsiteAIAnalyzerPanel({
@@ -976,7 +1090,8 @@ export function WebsiteAIAnalyzerPanel({
       const hasTestPlan = !!(
         functionalTestPlan.whatToTest.trim() ||
         functionalTestPlan.testInput.trim() ||
-        functionalTestPlan.expectedOutput.trim()
+        functionalTestPlan.expectedOutput.trim() ||
+        functionalTestPlan.frontendUrl.trim()
       )
       const testPlanPayload: FunctionalTestPlan | null = hasTestPlan || functionalTestPlan.testMode !== "auto"
         ? {
@@ -984,6 +1099,8 @@ export function WebsiteAIAnalyzerPanel({
             test_input: functionalTestPlan.testInput.trim() || null,
             expected_output: functionalTestPlan.expectedOutput.trim() || null,
             test_mode: functionalTestPlan.testMode,
+            frontend_url: functionalTestPlan.frontendUrl.trim() || null,
+            browser_workflow_instructions: functionalTestPlan.browserWorkflowInstructions.trim() || null,
           }
         : null
 
@@ -1220,6 +1337,47 @@ export function WebsiteAIAnalyzerPanel({
       setSaveProgress({ ...prog })
     }
 
+    // Save browser workflow screenshot as evidence (if captured)
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const _ar = analyzeResult!
+    if (_ar.browser_workflow_result?.screenshot_data_url &&
+        _ar.browser_workflow_result.screenshot_status === "captured") {
+      const bwr = _ar.browser_workflow_result
+      const bwrLabel = "Browser UI Workflow Screenshot"
+      prog = appendWorkLogEntry(
+        { ...prog, steps, syntheticPercent: Math.round(10 + ((total + 1) / (total + 1)) * 60) },
+        `Saving ${bwrLabel}...`
+      )
+      setSaveProgress({ ...prog })
+      await tick()
+      try {
+        await createSkillEvidence({
+          skill_name: functionalTestPlan.whatToTest.trim() || "Browser UI Workflow",
+          evidence_type: "deployed_website",
+          evidence_url: bwr.frontend_url,
+          evidence_description: `Browser UI workflow verified at ${bwr.frontend_url}. ${bwr.steps_run.length} steps run.${bwr.expected_output_found ? " Expected output found." : ""}`,
+          proof_visibility: "public",
+          metadata: {
+            submission_source: "website_ai_analyzer_browser_workflow",
+            proof_kind: "browser_workflow_verification",
+            frontend_url: bwr.frontend_url,
+            screenshot_url: bwr.screenshot_data_url,
+            screenshot_status: bwr.screenshot_status,
+            steps_run: bwr.steps_run,
+            expected_output_found: bwr.expected_output_found,
+            browser_workflow_status: bwr.success ? "completed" : "failed",
+            action_label: "Open Screenshot",
+            base_url: _ar.base_url,
+          },
+        })
+        savedCount++
+        prog = appendWorkLogEntry({ ...prog, steps }, `Saved — ${bwrLabel}`, "completed")
+      } catch {
+        prog = appendWorkLogEntry({ ...prog, steps }, "Could not save browser screenshot (optional)", "warning")
+      }
+      setSaveProgress({ ...prog })
+    }
+
     const finalMsg = `Done — saved ${savedCount} · failed ${failedCount}`
     steps = completeStep(steps, "save", { description: `Saved ${savedCount} · Failed ${failedCount}`, agentCopy: `Saved ${savedCount} evidence item${savedCount !== 1 ? "s" : ""}.` })
     steps = completeStep(steps, "links")
@@ -1416,20 +1574,69 @@ export function WebsiteAIAnalyzerPanel({
                         </div>
                       </label>
                     ))}
-                    {/* Browser UI — coming soon */}
-                    <label style={{ display: "flex", alignItems: "flex-start", gap: 8, opacity: 0.5, cursor: "not-allowed" }}>
-                      <input type="radio" disabled style={{ marginTop: 2 }} />
+                    {/* Browser UI workflow screenshot — now enabled */}
+                    <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                      <input
+                        type="radio"
+                        name="test-mode"
+                        value="browser_ui"
+                        checked={functionalTestPlan.testMode === "browser_ui"}
+                        onChange={() => onFunctionalTestPlanChange({ ...functionalTestPlan, testMode: "browser_ui" })}
+                        style={{ marginTop: 2 }}
+                      />
                       <div>
                         <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-2)" }}>
-                          Browser UI verification
-                          <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, background: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 999, padding: "1px 6px" }}>
-                            coming soon
+                          Browser UI workflow screenshot
+                          <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0", borderRadius: 999, padding: "1px 6px" }}>
+                            Playwright
                           </span>
                         </div>
-                        <div style={{ fontSize: 10, color: "var(--muted)" }}>Full Playwright-based UI workflow test</div>
+                        <div style={{ fontSize: 10, color: "var(--muted)" }}>
+                          Open frontend → fill inputs → click button → capture screenshot
+                        </div>
                       </div>
                     </label>
                   </div>
+
+                  {/* Browser UI conditional fields */}
+                  {functionalTestPlan.testMode === "browser_ui" && (
+                    <div style={{ borderTop: "1px solid #e0f2fe", paddingTop: 10, display: "grid", gap: 8 }}>
+                      <div style={{ fontSize: 10, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe", borderRadius: 6, padding: "6px 10px", lineHeight: 1.5 }}>
+                        Provide the <strong>frontend app URL</strong> — the page where users interact with the product.
+                        The backend/API URL above verifies endpoints; this URL captures the visible UI workflow screenshot.
+                      </div>
+                      <div style={{ display: "grid", gap: 3 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>
+                          Frontend App URL <span style={{ fontWeight: 400, color: "#991b1b" }}>*</span>
+                        </span>
+                        <input
+                          type="url"
+                          value={functionalTestPlan.frontendUrl}
+                          onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, frontendUrl: e.target.value })}
+                          placeholder="https://your-frontend-app.vercel.app"
+                          style={inp}
+                        />
+                        <span style={{ fontSize: 10, color: "var(--muted)" }}>
+                          The page with visible input fields and buttons — not the backend API URL.
+                        </span>
+                      </div>
+                      <div style={{ display: "grid", gap: 3 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>
+                          Browser workflow instructions <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span>
+                        </span>
+                        <textarea
+                          value={functionalTestPlan.browserWorkflowInstructions}
+                          onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, browserWorkflowInstructions: e.target.value })}
+                          placeholder={"Open the frontend website.\nFill the origin/source field.\nFill the destination/end field.\nClick Analyze Route / Predict / Submit.\nWait for output to appear.\nCapture screenshot."}
+                          rows={4}
+                          style={{ ...inp, fontSize: 11, resize: "vertical" }}
+                        />
+                        <span style={{ fontSize: 10, color: "var(--muted)" }}>
+                          VeriBridge auto-detects fields using the test input above. Add extra instructions if needed.
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1511,22 +1718,34 @@ export function WebsiteAIAnalyzerPanel({
           {/* ═══════════════════════════════════════════════════════════════
               SECTION 2 — Functional Verification
               ═══════════════════════════════════════════════════════════════ */}
-          {analyzeResult.functional_candidates.length > 0 && (
+          {(analyzeResult.functional_candidates.length > 0 || analyzeResult.browser_workflow_result) && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <SectionDivider
                 title="Website / API Functional Verification"
                 subtitle={(() => {
                   const n = analyzeResult.functional_candidates.length
                   const passed = analyzeResult.functional_candidates.filter((fc) => fc.verified).length
-                  return `${passed} of ${n} test${n !== 1 ? "s" : ""} returned verified output`
+                  const bwr = analyzeResult.browser_workflow_result
+                  const parts: string[] = []
+                  if (n > 0) parts.push(`${passed} of ${n} API test${n !== 1 ? "s" : ""} verified`)
+                  if (bwr?.screenshot_status === "captured") parts.push("browser screenshot captured")
+                  return parts.join(" · ") || "Functional verification"
                 })()}
               />
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {analyzeResult.functional_candidates.map((fc) => (
-                  <FunctionalRow key={fc.candidate_id} fc={fc} />
-                ))}
-              </div>
-              <ScreenshotPlaceholder />
+              {/* API endpoint tests */}
+              {analyzeResult.functional_candidates.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {analyzeResult.functional_candidates.map((fc) => (
+                    <FunctionalRow key={fc.candidate_id} fc={fc} />
+                  ))}
+                </div>
+              )}
+              {/* Browser UI workflow screenshot result */}
+              {analyzeResult.browser_workflow_result && (
+                <BrowserWorkflowResultSection result={analyzeResult.browser_workflow_result} />
+              )}
+              {/* Screenshot placeholder only when no browser_workflow_result */}
+              {!analyzeResult.browser_workflow_result && <ScreenshotPlaceholder />}
             </div>
           )}
 

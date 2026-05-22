@@ -29,6 +29,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from app.schemas.website_analyzer import (
+    BrowserWorkflowVerificationResult,
     FunctionalTestPlan,
     FunctionalVerificationCandidate,
     GroupedWebsiteSkill,
@@ -1071,7 +1072,7 @@ class WebsiteAnalyzerService:
         "Accept": "text/html,application/json,*/*;q=0.9",
     }
 
-    def analyze(
+    def analyze(  # noqa: C901
         self,
         url: str,
         skill_focus: str | None = None,
@@ -1197,6 +1198,65 @@ class WebsiteAnalyzerService:
         grouped_skills = _group_candidates(all_candidates, functional_candidates)
         grouped_skills = _post_process_groups(grouped_skills, base, all_candidates, functional_candidates)
 
+        # ── J4I: Browser UI workflow screenshot ───────────────────────────────
+        browser_workflow_result: BrowserWorkflowVerificationResult | None = None
+        test_mode = (functional_test_plan.test_mode if functional_test_plan else "auto")
+
+        if test_mode == "browser_ui":
+            frontend_url = (functional_test_plan.frontend_url or "").strip() if functional_test_plan else ""
+            if frontend_url:
+                safe_furl, reason_furl = _is_safe_url(frontend_url)
+                if not safe_furl:
+                    warnings.append(f"Frontend URL is not safe: {reason_furl}")
+                else:
+                    try:
+                        from app.services.browser_screenshot_service import (  # noqa: PLC0415
+                            parse_test_input_for_browser,
+                            run_browser_screenshot,
+                        )
+                        origin, destination, extra = parse_test_input_for_browser(
+                            functional_test_plan.test_input if functional_test_plan else None
+                        )
+                        bwr = run_browser_screenshot(
+                            frontend_url=frontend_url,
+                            origin=origin,
+                            destination=destination,
+                            extra_fields=extra,
+                            expected_output=(
+                                functional_test_plan.expected_output if functional_test_plan else None
+                            ),
+                        )
+                        screenshot_status: str = (
+                            "captured" if bwr.screenshot_data_url and bwr.success else
+                            "no_ui" if bwr.no_ui_detected else
+                            "error" if bwr.error_message else
+                            "not_captured"
+                        )
+                        browser_workflow_result = BrowserWorkflowVerificationResult(
+                            success=bwr.success,
+                            frontend_url=frontend_url,
+                            steps_run=bwr.steps_run,
+                            expected_output_found=bwr.expected_output_found,
+                            screenshot_data_url=bwr.screenshot_data_url,
+                            screenshot_caption=f"Browser UI workflow — {frontend_url}",
+                            error_message=bwr.error_message,
+                            no_ui_detected=bwr.no_ui_detected,
+                            screenshot_status=screenshot_status,
+                        )
+                    except Exception as exc:
+                        logger.warning("Browser UI workflow error: %s", exc)
+                        warnings.append(
+                            f"Browser UI workflow could not complete: {exc}. "
+                            "API endpoint evidence is still available."
+                        )
+            else:
+                warnings.append(
+                    "Browser UI workflow screenshot requires a Frontend App URL. "
+                    "The backend/API URL can verify endpoints but may not have a "
+                    "visible UI workflow. Provide the frontend URL where users "
+                    "interact with the product."
+                )
+
         return WebsiteAnalyzeResponse(
             base_url=url,
             candidates=all_candidates,
@@ -1211,6 +1271,7 @@ class WebsiteAnalyzerService:
             functional_candidate_count=len(functional_candidates),
             functional_verification_available=bool(functional_candidates),
             github_repo_url=clean_repo_url or None,
+            browser_workflow_result=browser_workflow_result,
         )
 
     # ── Fetch ──────────────────────────────────────────────────────────────────

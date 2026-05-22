@@ -39,6 +39,24 @@ class FunctionalTestPlan(BaseModel):
     test_input: str | None = Field(default=None, max_length=2000)  # JSON or key=value
     expected_output: str | None = Field(default=None, max_length=500)
     test_mode: Literal["auto", "api_endpoint", "browser_ui", "plan_only"] = "auto"
+    # J4I: browser UI workflow screenshot fields
+    frontend_url: str | None = Field(default=None, max_length=2000)
+    browser_workflow_instructions: str | None = Field(default=None, max_length=2000)
+
+
+# ── J4I: Browser UI workflow verification result ──────────────────────────────
+
+class BrowserWorkflowVerificationResult(BaseModel):
+    """Result of a Playwright-based browser UI workflow screenshot capture."""
+    success: bool
+    frontend_url: str
+    steps_run: list[str]
+    expected_output_found: bool
+    screenshot_data_url: str | None = None   # "data:image/jpeg;base64,..."
+    screenshot_caption: str | None = None
+    error_message: str | None = None
+    no_ui_detected: bool = False
+    screenshot_status: Literal["captured", "not_captured", "no_ui", "error"] = "not_captured"
 
 
 class FunctionalVerificationCandidate(BaseModel):
@@ -141,6 +159,8 @@ class WebsiteAnalyzeResponse(BaseModel):
     functional_candidates: list[FunctionalVerificationCandidate] = Field(default_factory=list)
     # J4G: high-level grouped skill cards
     grouped_skills: list[GroupedWebsiteSkill] = Field(default_factory=list)
+    # J4I: browser UI workflow screenshot result
+    browser_workflow_result: BrowserWorkflowVerificationResult | None = None
     checked_urls: list[str]
     warnings: list[str]
     candidate_count: int

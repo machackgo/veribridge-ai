@@ -480,6 +480,23 @@ export type FunctionalTestPlan = {
   test_input?: string | null          // JSON or "key=value; key=value" pairs
   expected_output?: string | null
   test_mode: "auto" | "api_endpoint" | "browser_ui" | "plan_only"
+  /** J4I: browser UI workflow screenshot fields */
+  frontend_url?: string | null        // Frontend URL with interactive UI
+  browser_workflow_instructions?: string | null
+}
+
+/** J4I: Result of a Playwright-based browser UI workflow screenshot capture. */
+export type BrowserWorkflowVerificationResult = {
+  success: boolean
+  frontend_url: string
+  steps_run: string[]
+  expected_output_found: boolean
+  screenshot_data_url?: string | null    // "data:image/jpeg;base64,..."
+  screenshot_caption?: string | null
+  error_message?: string | null
+  no_ui_detected: boolean
+  output_text_found?: string | null
+  screenshot_status: "captured" | "not_captured" | "no_ui" | "error"
 }
 
 /** J4F: Result of a live functional verification test on a safe endpoint. */
@@ -559,6 +576,8 @@ export type WebsiteAnalyzeResponse = {
   functional_candidate_count: number
   functional_verification_available: boolean
   github_repo_url?: string | null
+  /** J4I: browser UI workflow screenshot result */
+  browser_workflow_result?: BrowserWorkflowVerificationResult | null
 }
 
 export async function analyzeWebsite(params: {
