@@ -547,9 +547,9 @@ export function StudentProofSubmissionPanel({
     >
       <div style={{ display: "grid", gap: 12 }}>
         <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
-          Add GitHub code proof or a live website proof. Website proof is optional.
+          Add proof manually or let the AI agent scan your evidence sources — GitHub, LinkedIn, YouTube, documents, certificates, and more.
         </p>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div>
           <button
             type="button"
             data-testid="open-proof-submission-modal"
@@ -557,34 +557,15 @@ export function StudentProofSubmissionPanel({
             style={{
               border: "1px solid var(--line-2)",
               borderRadius: 11,
-              padding: "10px 14px",
+              padding: "10px 18px",
               background: "var(--ink)",
               color: "#fff",
-              width: "fit-content",
               fontWeight: 700,
               cursor: "pointer",
             }}
             onClick={() => setOpen(true)}
           >
             Add proof evidence
-          </button>
-          <button
-            type="button"
-            data-testid="open-github-scan-modal"
-            className="vb-btn-lift"
-            style={{
-              border: "1px solid var(--line-2)",
-              borderRadius: 11,
-              padding: "10px 14px",
-              background: "transparent",
-              color: "var(--ink)",
-              width: "fit-content",
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-            onClick={() => setScanOpen(true)}
-          >
-            Scan my GitHub profile
           </button>
         </div>
       </div>
@@ -777,49 +758,93 @@ export function StudentProofSubmissionPanel({
 
                 {/* ── Mode: AI Agent ── */}
                 {proofMode === "ai_agent" && (
-                  <div style={{ display: "grid", gap: 16 }}>
-                    <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: "#1d4ed8", lineHeight: 1.6 }}>
-                      GitHub scanning is active now. LinkedIn, YouTube, Google Drive, certificates, and portfolio AI extraction will be added in upcoming phases.
-                      You can still save links from these sources now and VeriBridge will organize them in your Skill Proof Center.
-                    </div>
+                  <div style={{ display: "grid", gap: 14 }}>
+                    <p style={{ margin: 0, fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>
+                      GitHub scanning is active. Other AI extraction — LinkedIn, YouTube, documents, certificates, portfolios — will be added in upcoming phases.
+                      You can save links from any source now; VeriBridge will organize them in your Skill Proof Center.
+                    </p>
 
-                    {/* GitHub — active */}
-                    <div style={{ border: "1px solid var(--line)", borderRadius: 12, padding: "16px 18px", display: "grid", gap: 10 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 20 }}>⌨</span>
-                        <div>
-                          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)" }}>GitHub</div>
-                          <div style={{ fontSize: 11, color: "var(--muted)" }}>AI scan is active — scans repos and extracts evidence automatically</div>
+                    {/* Source cards */}
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {([
+                        {
+                          icon: "⌨", title: "GitHub Profile / Repo Scan", desc: "AI scans your public repos and extracts skill evidence automatically.",
+                          status: "active" as const,
+                          action: () => { closeModal(); setTimeout(() => setScanOpen(true), 50); },
+                          actionLabel: "Scan my GitHub profile",
+                        },
+                        {
+                          icon: "🌐", title: "Website / Portfolio Scan", desc: "Submit a live deployed URL for AI verification of a running feature.",
+                          status: "active" as const,
+                          action: () => { handleSourceSelect("deployed_website"); setProofMode("manual"); },
+                          actionLabel: "Add website proof",
+                        },
+                        {
+                          icon: "💼", title: "LinkedIn Profile / Post Analysis", desc: "AI will read public LinkedIn posts and connect proof to skills.",
+                          status: "soon" as const,
+                          action: () => { handleSourceSelect("linkedin_post"); setProofMode("manual"); },
+                          actionLabel: "Save LinkedIn link now",
+                        },
+                        {
+                          icon: "▶", title: "YouTube / Demo Video Analysis", desc: "AI will analyze transcripts and timestamps to identify skill demonstrations.",
+                          status: "soon" as const,
+                          action: () => { handleSourceSelect("youtube_demo"); setProofMode("manual"); },
+                          actionLabel: "Save video link now",
+                        },
+                        {
+                          icon: "📄", title: "Google Drive / Document Analysis", desc: "AI will read shared docs, slides, and reports for skill evidence.",
+                          status: "soon" as const,
+                          action: () => { handleSourceSelect("google_drive_document"); setProofMode("manual"); },
+                          actionLabel: "Save document link now",
+                        },
+                        {
+                          icon: "🏅", title: "Certificate / Report Analysis", desc: "AI will verify certificates and extract skills from reports and papers.",
+                          status: "soon" as const,
+                          action: () => { setProofMode("manual"); setManualStep("source_select"); },
+                          actionLabel: "Save certificate link now",
+                        },
+                      ] as const).map((card) => (
+                        <div
+                          key={`ai-card-${card.title}`}
+                          style={{
+                            border: "1px solid var(--line)",
+                            borderRadius: 12,
+                            padding: "14px 16px",
+                            display: "flex",
+                            alignItems: "flex-start",
+                            gap: 14,
+                          }}
+                        >
+                          <span style={{ fontSize: 22, flexShrink: 0, marginTop: 2 }}>{card.icon}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{card.title}</span>
+                              <span style={{
+                                fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase",
+                                padding: "2px 7px", borderRadius: 999,
+                                ...(card.status === "active"
+                                  ? { color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0" }
+                                  : { color: "#854d0e", background: "#fef9c3", border: "1px solid #fef08a" }),
+                              }}>
+                                {card.status === "active" ? "Active" : "Coming soon"}
+                              </span>
+                            </div>
+                            <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>{card.desc}</p>
+                            <button
+                              type="button"
+                              onClick={card.action}
+                              style={{
+                                border: card.status === "active" ? "1px solid var(--ink)" : "1px solid var(--line-2)",
+                                background: card.status === "active" ? "var(--ink)" : "transparent",
+                                color: card.status === "active" ? "#fff" : "var(--ink-2)",
+                                borderRadius: 9, padding: "7px 12px", fontWeight: 600, fontSize: 12, cursor: "pointer",
+                              }}
+                            >
+                              {card.actionLabel}
+                            </button>
+                          </div>
                         </div>
-                        <span style={{ marginLeft: "auto", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 999, padding: "2px 8px" }}>
-                          Active
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => { closeModal(); setTimeout(() => setScanOpen(true), 50); }}
-                        style={{ border: "1px solid var(--ink)", background: "var(--ink)", color: "#fff", borderRadius: 10, padding: "10px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", alignSelf: "flex-start" }}
-                      >
-                        Scan my GitHub profile
-                      </button>
-                    </div>
-
-                    {/* Other sources — save link now */}
-                    <div style={{ border: "1px solid var(--line)", borderRadius: 12, padding: "16px 18px", display: "grid", gap: 10 }}>
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)", marginBottom: 4 }}>Other Sources — Save a Link Now</div>
-                        <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>
-                          Add LinkedIn posts, YouTube demos, Google Drive documents, certificates, or portfolios.
-                          AI extraction for these will be added in upcoming phases.
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => { setProofMode("manual"); setManualStep("source_select"); }}
-                        style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer", alignSelf: "flex-start" }}
-                      >
-                        Browse source types →
-                      </button>
+                      ))}
                     </div>
 
                     <button
