@@ -18,6 +18,16 @@ import {
   type SkillEvidence,
   type SkillSystemGraph,
 } from "@/lib/skill-grouping"
+import {
+  createGitHubScanSaveSteps,
+  completeStep,
+  failStep,
+  initialProgress,
+  startStep,
+  updateStep,
+  type ProofProcessingProgress,
+} from "@/lib/proof-processing"
+import { ProofProcessingProgressPanel } from "./proof-processing-progress-panel"
 
 type ScanStep = "form" | "scanning" | "review" | "importing" | "done"
 type FilterMode = "all" | "high" | "review"
@@ -462,6 +472,7 @@ export function GitHubPortfolioScanPanel({
   const [showRaw, setShowRaw] = useState(false)
   const [importResult, setImportResult] = useState<GitHubPortfolioImportResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [processingProgress, setProcessingProgress] = useState<ProofProcessingProgress | null>(null)
 
   // Group candidates into hierarchical skill groups
   const grouped = useMemo(
@@ -584,14 +595,79 @@ export function GitHubPortfolioScanPanel({
     }
 
     setError(null)
+
+    // Steps 1-2 complete instantly, step 3 starts — set all at once before await
+    let steps = createGitHubScanSaveSteps()
+    steps = completeStep(steps, "prepare", {
+      countCurrent: candidates.length,
+      countTotal: candidates.length,
+      description: `${candidates.length} evidence item${candidates.length === 1 ? "" : "s"} selected.`,
+    })
+    steps = completeStep(steps, "duplicates", {
+      description: "Server will skip duplicates already in your profile.",
+    })
+    steps = startStep(steps, "save")
+    steps = updateStep(steps, "save", {
+      countCurrent: 0,
+      countTotal: candidates.length,
+      description: `Saving ${candidates.length} evidence item${candidates.length === 1 ? "" : "s"}…`,
+    })
+
+    setProcessingProgress(initialProgress(steps))
     setStep("importing")
+
     try {
       const result = await importSelectedGitHubPortfolioProofs(candidates)
-      setImportResult(result)
-      setStep("done")
+
+      // Advance remaining steps after the API returns
+      steps = completeStep(steps, "save", {
+        countCurrent: result.imported_count + result.skipped_duplicate_count,
+        countTotal: candidates.length,
+        description: `Saved ${result.imported_count}, skipped ${result.skipped_duplicate_count} duplicate${result.skipped_duplicate_count !== 1 ? "s" : ""}.`,
+      })
+      steps = completeStep(steps, "verify", {
+        description:
+          result.imported_count > 0
+            ? `Verification ran for ${result.imported_count} item${result.imported_count === 1 ? "" : "s"}.`
+            : "No new items to verify.",
+      })
+      steps = completeStep(steps, "graph", {
+        description: "Grouped skills, subskills, and system graphs updated.",
+      })
+
       onImportSuccess?.()
+
+      steps = completeStep(steps, "refresh")
+      steps = completeStep(steps, "complete", {
+        description: `Saved ${result.imported_count} · Skipped ${result.skipped_duplicate_count} duplicates · Failed ${result.failed_count}`,
+      })
+
+      const errMessages = result.per_candidate_results
+        .filter((r) => r.status === "failed")
+        .map((r) => `${r.skill_label} (${r.repo_name}): ${r.message}`)
+
+      setImportResult(result)
+      setProcessingProgress({
+        steps,
+        overallStatus: result.failed_count === candidates.length && result.imported_count === 0 ? "failed" : "completed",
+        savedCount: result.imported_count,
+        skippedCount: result.skipped_duplicate_count,
+        failedCount: result.failed_count,
+        errorMessages: errMessages,
+      })
+      setStep("done")
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed. Please try again.")
+      const msg = err instanceof Error ? err.message : "Import failed. Please try again."
+      steps = failStep(steps, "save", msg)
+      setProcessingProgress({
+        steps,
+        overallStatus: "failed",
+        savedCount: 0,
+        skippedCount: 0,
+        failedCount: candidates.length,
+        errorMessages: [msg],
+      })
+      setError(msg)
       setStep("review")
     }
   }
@@ -961,85 +1037,33 @@ export function GitHubPortfolioScanPanel({
           </div>
         )}
 
-        {/* ── Importing step ── */}
-        {step === "importing" && (
-          <div style={{ padding: "32px 0", textAlign: "center", color: "var(--muted)", fontSize: 14 }}>
-            Saving selected proof items and running verification…
-          </div>
-        )}
-
-        {/* ── Done step ── */}
-        {step === "done" && importResult && (
-          <div style={{ display: "grid", gap: 16 }}>
-            <div
-              data-testid="github-scan-import-success"
-              style={{ border: "1px solid #bbf7d0", background: "#f0fdf4", borderRadius: 14, padding: "16px 18px" }}
-            >
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#166534", marginBottom: 4 }}>
-                {importResult.imported_count > 0
-                  ? `Imported ${importResult.imported_count} GitHub proof item${importResult.imported_count !== 1 ? "s" : ""}.`
-                  : "No new proof items were imported."}
-              </div>
-              {importResult.skipped_duplicate_count > 0 && (
-                <div style={{ fontSize: 13, color: "#166534", marginTop: 4 }}>
-                  {importResult.skipped_duplicate_count} duplicate{importResult.skipped_duplicate_count !== 1 ? "s" : ""} skipped — already in your profile.
-                </div>
-              )}
-              {importResult.failed_count > 0 && (
-                <div style={{ fontSize: 13, color: "#991b1b", marginTop: 4 }}>
-                  {importResult.failed_count} item{importResult.failed_count !== 1 ? "s" : ""} failed to import.
-                </div>
-              )}
-            </div>
-
-            {importResult.per_candidate_results.length > 0 && (
-              <div style={{ display: "grid", gap: 6, maxHeight: 320, overflowY: "auto" }}>
-                {importResult.per_candidate_results.map((r) => (
-                  <div
-                    key={`result-${r.candidate_id}`}
-                    style={{
-                      padding: "10px 12px",
-                      border: "1px solid var(--line)",
-                      borderRadius: 10,
-                      background: "var(--bg-2)",
-                      fontSize: 12,
-                      display: "grid",
-                      gridTemplateColumns: "auto 1fr",
-                      gap: 8,
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontWeight: 700,
-                        color:
-                          r.status === "imported"
-                            ? "var(--emerald)"
-                            : r.status === "skipped_duplicate"
-                              ? "var(--muted)"
-                              : "var(--rose)",
-                      }}
+        {/* ── Importing + Done steps — unified progress panel ── */}
+        {(step === "importing" || step === "done") && processingProgress && (
+          <ProofProcessingProgressPanel
+            title="Saving selected GitHub skills"
+            progress={processingProgress}
+            onClose={close}
+            canClose={step === "done"}
+            extraDetails={
+              importResult && importResult.per_candidate_results.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  {importResult.per_candidate_results.map((r) => (
+                    <div
+                      key={`result-${r.candidate_id}`}
+                      style={{ fontSize: 11, display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}
                     >
-                      {r.status === "imported" ? "✓" : r.status === "skipped_duplicate" ? "−" : "✕"}
-                    </span>
-                    <span style={{ color: "var(--ink-2)" }}>
-                      <strong>{r.skill_label}</strong> · {r.repo_name} · {r.message}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <button
-                type="button"
-                data-testid="github-scan-done"
-                onClick={close}
-                style={primaryBtnStyle}
-              >
-                Done
-              </button>
-            </div>
-          </div>
+                      <span style={{ fontWeight: 700, color: r.status === "imported" ? "#166534" : r.status === "skipped_duplicate" ? "#94a3b8" : "#991b1b" }}>
+                        {r.status === "imported" ? "✓" : r.status === "skipped_duplicate" ? "−" : "✕"}
+                      </span>
+                      <span style={{ color: "var(--ink-2)" }}>
+                        <strong>{r.skill_label}</strong> · {r.repo_name}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null
+            }
+          />
         )}
       </div>
     </div>

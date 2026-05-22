@@ -1,0 +1,157 @@
+/**
+ * proof-processing.ts — Phase J4
+ * Reusable types, utilities, and step presets for all proof saving and
+ * AI/NLP evidence processing progress flows.
+ */
+
+// ── Core types ────────────────────────────────────────────────────────────────
+
+export type ProofProcessingStatus = "pending" | "running" | "completed" | "skipped" | "failed"
+
+export type ProofProcessingStep = {
+  id: string
+  label: string
+  description: string
+  status: ProofProcessingStatus
+  startedAt?: number
+  completedAt?: number
+  /** Current item index (for live "X of Y" display). */
+  countCurrent?: number
+  /** Total item count for this step. */
+  countTotal?: number
+  errorMessage?: string
+}
+
+export type ProofProcessingProgress = {
+  steps: ProofProcessingStep[]
+  overallStatus: "idle" | "running" | "completed" | "failed"
+  savedCount: number
+  skippedCount: number
+  failedCount: number
+  errorMessages: string[]
+}
+
+// ── Step factory ──────────────────────────────────────────────────────────────
+
+export function makeStep(id: string, label: string, description: string): ProofProcessingStep {
+  return { id, label, description, status: "pending" }
+}
+
+export function initialProgress(steps: ProofProcessingStep[]): ProofProcessingProgress {
+  return { steps, overallStatus: "running", savedCount: 0, skippedCount: 0, failedCount: 0, errorMessages: [] }
+}
+
+// ── Step updaters (return new array — never mutate) ───────────────────────────
+
+export function updateStep(
+  steps: ProofProcessingStep[],
+  id: string,
+  patch: Partial<ProofProcessingStep>
+): ProofProcessingStep[] {
+  return steps.map((s) => (s.id === id ? { ...s, ...patch } : s))
+}
+
+export function startStep(steps: ProofProcessingStep[], id: string): ProofProcessingStep[] {
+  return updateStep(steps, id, { status: "running", startedAt: Date.now() })
+}
+
+export function completeStep(
+  steps: ProofProcessingStep[],
+  id: string,
+  patch?: Partial<ProofProcessingStep>
+): ProofProcessingStep[] {
+  return updateStep(steps, id, { status: "completed", completedAt: Date.now(), ...(patch ?? {}) })
+}
+
+export function skipStep(
+  steps: ProofProcessingStep[],
+  id: string,
+  patch?: Partial<ProofProcessingStep>
+): ProofProcessingStep[] {
+  return updateStep(steps, id, { status: "skipped", completedAt: Date.now(), ...(patch ?? {}) })
+}
+
+export function failStep(
+  steps: ProofProcessingStep[],
+  id: string,
+  errorMessage: string
+): ProofProcessingStep[] {
+  return updateStep(steps, id, { status: "failed", completedAt: Date.now(), errorMessage })
+}
+
+// ── Progress calculations ─────────────────────────────────────────────────────
+
+/** 0–100 based on how many steps are no longer "pending" or "running". */
+export function calculateProgressPercent(steps: ProofProcessingStep[]): number {
+  if (steps.length === 0) return 0
+  const done = steps.filter(
+    (s) => s.status === "completed" || s.status === "skipped" || s.status === "failed"
+  ).length
+  return Math.round((done / steps.length) * 100)
+}
+
+/** Label for the step currently running, or the last completed step. */
+export function getCurrentStepLabel(steps: ProofProcessingStep[]): string {
+  const running = steps.find((s) => s.status === "running")
+  if (running) {
+    if (running.countCurrent != null && running.countTotal != null) {
+      return `${running.label} — ${running.countCurrent} of ${running.countTotal}`
+    }
+    return running.label
+  }
+  const lastDone = [...steps].reverse().find(
+    (s) => s.status === "completed" || s.status === "skipped"
+  )
+  return lastDone?.label ?? "Starting…"
+}
+
+// ── Step presets per flow ─────────────────────────────────────────────────────
+
+/** Steps for saving selected grouped skills from GitHub portfolio scan. */
+export function createGitHubScanSaveSteps(): ProofProcessingStep[] {
+  return [
+    makeStep("prepare", "Preparing selected skills", "Reading selected grouped skills and evidence items."),
+    makeStep("duplicates", "Checking for duplicates", "Comparing selected evidence against your saved proof."),
+    makeStep("save", "Saving proof evidence", "Uploading GitHub evidence links, file paths, and line ranges."),
+    makeStep("verify", "Running verification", "Matching evidence to skills and confidence levels on the server."),
+    makeStep("graph", "Building skill graph", "Updating grouped skills, subskills, source badges, and system graphs."),
+    makeStep("refresh", "Refreshing Skill Proof Center", "Reloading your saved evidence and updating your profile."),
+    makeStep("complete", "Complete", "All done."),
+  ]
+}
+
+/** Steps for manual GitHub code proof submission. */
+export function createManualGitHubSaveSteps(): ProofProcessingStep[] {
+  return [
+    makeStep("validate", "Validating proof fields", "Checking required fields and formats."),
+    makeStep("save", "Saving proof evidence", "Creating your GitHub code proof record."),
+    makeStep("verify", "Running verification", "Running semantic verification and generating the recruiter report."),
+    makeStep("links", "Generating access links", "Creating recruiter-accessible evidence links."),
+    makeStep("refresh", "Refreshing Skill Proof Center", "Reloading your saved evidence."),
+    makeStep("complete", "Complete", "GitHub proof evidence saved."),
+  ]
+}
+
+/** Steps for manual website proof submission. */
+export function createWebsiteSaveSteps(): ProofProcessingStep[] {
+  return [
+    makeStep("validate", "Validating website URL", "Checking the URL and proof fields."),
+    makeStep("save", "Saving website proof", "Creating the website proof record."),
+    makeStep("verify", "Running website verification", "AI checking your live website for skill demonstration."),
+    makeStep("links", "Generating access links", "Creating recruiter-accessible proof links."),
+    makeStep("refresh", "Refreshing Skill Proof Center", "Reloading your saved evidence."),
+    makeStep("complete", "Complete", "Website proof saved and verified."),
+  ]
+}
+
+/** Steps for AI Agent link save (any source type). */
+export function createAgentLinkSaveSteps(): ProofProcessingStep[] {
+  return [
+    makeStep("read", "Reading resource link", "Parsing the source URL and metadata."),
+    makeStep("save", "Saving source link", "Creating your proof evidence record."),
+    makeStep("queue", "Queuing for AI extraction", "Marking this source for future AI analysis."),
+    makeStep("links", "Generating access links", "Creating recruiter-accessible evidence links."),
+    makeStep("refresh", "Refreshing Skill Proof Center", "Reloading your saved evidence."),
+    makeStep("complete", "Complete", "Source link saved."),
+  ]
+}

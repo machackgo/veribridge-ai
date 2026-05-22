@@ -27,6 +27,17 @@ import {
   MultiSourceProofForm,
   SourceTypeSelector,
 } from "./multi-source-proof-form"
+import { ProofProcessingProgressPanel } from "./proof-processing-progress-panel"
+import {
+  createManualGitHubSaveSteps,
+  createWebsiteSaveSteps,
+  createAgentLinkSaveSteps,
+  completeStep,
+  failStep,
+  initialProgress,
+  startStep,
+  type ProofProcessingProgress,
+} from "@/lib/proof-processing"
 import {
   type EvidenceSourceType,
   sourceTypeToEvidenceType,
@@ -388,6 +399,7 @@ export function StudentProofSubmissionPanel({
   const [submitting, setSubmitting] = useState(false)
   const [submissionSummary, setSubmissionSummary] = useState<SubmissionSummary | null>(null)
   const [submissionError, setSubmissionError] = useState<string | null>(null)
+  const [submissionProgress, setSubmissionProgress] = useState<ProofProcessingProgress | null>(null)
   const [githubForm, setGitHubForm] = useState<GitHubFormState>(initialGitHubForm)
   const [websiteForm, setWebsiteForm] = useState<WebsiteFormState>(initialWebsiteForm)
   // Mode selection state (J4B)
@@ -438,6 +450,7 @@ export function StudentProofSubmissionPanel({
     setProofMode("select")
     setManualStep("source_select")
     setSelectedSourceType(null)
+    setSubmissionProgress(null)
     resetAgentForm()
   }
 
@@ -526,22 +539,52 @@ export function StudentProofSubmissionPanel({
   async function handleGenericSubmit(payload: import("@/lib/api").SkillEvidencePayload) {
     setSubmitting(true)
     setSubmissionError(null)
+
+    const steps = createAgentLinkSaveSteps()
+    let prog = initialProgress(completeStep(steps, "read"))
+    prog = { ...prog, steps: startStep(prog.steps, "save") }
+    setSubmissionProgress(prog)
+
     try {
       const ev = await createSkillEvidence(payload)
+
+      prog = { ...prog, steps: completeStep(prog.steps, "save") }
+      prog = { ...prog, steps: completeStep(prog.steps, "queue") }
+      setSubmissionProgress(prog)
+
       try {
         await generateEvidenceAccessLinks(ev.id)
       } catch { /* best-effort */ }
+
       await refreshEvidence()
+
+      prog = { ...prog, steps: completeStep(prog.steps, "links") }
+      prog = { ...prog, steps: completeStep(prog.steps, "refresh") }
+
       const sourceName = typeof payload.metadata === "object" && payload.metadata !== null
         ? String((payload.metadata as Record<string, unknown>).proof_kind ?? payload.evidence_type)
         : payload.evidence_type
+
+      prog = {
+        ...prog,
+        steps: completeStep(prog.steps, "complete", {
+          description: `${sourceName} link saved for "${payload.skill_name}".`,
+        }),
+        overallStatus: "completed",
+        savedCount: 1,
+      }
+      setSubmissionProgress(prog)
+
       setSubmissionSummary({
         title: "Proof evidence saved.",
         message: `Your ${sourceName} proof for "${payload.skill_name}" has been added to your Skill Proof Center.`,
-        notes: ["Evidence added. AI verification or extraction will run in upcoming phases for this source type."],
+        notes: ["AI verification or extraction will run in upcoming phases for this source type."],
       })
     } catch (err) {
-      setSubmissionError(err instanceof Error ? err.message : "Submission failed.")
+      const msg = err instanceof Error ? err.message : "Submission failed."
+      prog = { ...prog, steps: failStep(prog.steps, "save", msg), overallStatus: "failed", failedCount: 1, errorMessages: [msg] }
+      setSubmissionProgress(prog)
+      setSubmissionError(msg)
     } finally {
       setSubmitting(false)
     }
@@ -602,15 +645,34 @@ export function StudentProofSubmissionPanel({
     }
 
     setSubmitting(true)
+    const isGitHub = activeTab === "github"
+    const steps = isGitHub ? createManualGitHubSaveSteps() : createWebsiteSaveSteps()
+
+    // Step 1: validate already passed above
+    let prog = initialProgress(completeStep(steps, "validate"))
+    setSubmissionProgress(prog)
+
+    // Step 2: save + verify (single async call wraps both)
+    prog = { ...prog, steps: startStep(prog.steps, "save") }
+    setSubmissionProgress(prog)
+
     try {
-      const summary =
-        activeTab === "github"
-          ? await runGitHubSubmission(githubForm, refreshEvidence)
-          : await runWebsiteSubmission(websiteForm, refreshEvidence)
+      const summary = isGitHub
+        ? await runGitHubSubmission(githubForm, refreshEvidence)
+        : await runWebsiteSubmission(websiteForm, refreshEvidence)
+
+      prog = { ...prog, steps: completeStep(prog.steps, "save") }
+      prog = { ...prog, steps: completeStep(prog.steps, "verify") }
+      prog = { ...prog, steps: completeStep(prog.steps, "links") }
+      prog = { ...prog, steps: completeStep(prog.steps, "refresh") }
+      prog = { ...prog, steps: completeStep(prog.steps, "complete", { description: summary.title }), overallStatus: "completed", savedCount: 1 }
+      setSubmissionProgress(prog)
       setSubmissionSummary(summary)
       notify?.(summary.title)
     } catch (error) {
       const message = error instanceof Error ? error.message : "Submission failed."
+      prog = { ...prog, steps: failStep(prog.steps, "save", message), overallStatus: "failed", failedCount: 1, errorMessages: [message] }
+      setSubmissionProgress(prog)
       setSubmissionError(message)
       notify?.(message)
     } finally {
@@ -703,57 +765,19 @@ export function StudentProofSubmissionPanel({
               gap: 18,
             }}
           >
-            {submissionSummary ? (
-              <div style={{ display: "grid", gap: 16 }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--muted)" }}>
-                    Completed
-                  </div>
-                  <h2 id="proof-submit-title" style={{ margin: "4px 0 0", fontSize: 24, color: "var(--ink)" }}>
-                    {submissionSummary.title}
-                  </h2>
-                  <p style={{ margin: "8px 0 0", color: "var(--muted)", fontSize: 14, lineHeight: 1.6 }}>
-                    {submissionSummary.message}
-                  </p>
-                </div>
-                {submissionSummary.notes.length > 0 ? (
-                  <div style={{ display: "grid", gap: 8 }}>
-                    {submissionSummary.notes.map((note, index) => (
-                      <div
-                        key={`${note}-${index}`}
-                        style={{
-                          border: "1px solid var(--line)",
-                          borderRadius: 12,
-                          background: "var(--bg-2)",
-                          padding: "10px 12px",
-                          color: "var(--ink-2)",
-                          fontSize: 13,
-                          lineHeight: 1.5,
-                        }}
-                      >
-                        {note}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-                <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                  <button
-                    type="button"
-                    onClick={closeModal}
-                    style={{
-                      border: "1px solid var(--line)",
-                      background: "var(--ink)",
-                      color: "#fff",
-                      borderRadius: 10,
-                      padding: "10px 14px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Done
-                  </button>
-                </div>
-              </div>
+            {submissionProgress && (submissionSummary || submissionProgress.overallStatus === "failed") ? (
+              <ProofProcessingProgressPanel
+                title={activeTab === "github" ? "Saving GitHub proof" : selectedSourceType === "deployed_website" ? "Saving website proof" : "Saving proof evidence"}
+                progress={submissionProgress}
+                onClose={closeModal}
+                canClose
+              />
+            ) : submitting && submissionProgress ? (
+              <ProofProcessingProgressPanel
+                title={activeTab === "github" ? "Saving GitHub proof" : "Saving proof evidence"}
+                progress={submissionProgress}
+                canClose={false}
+              />
             ) : (
               <>
                 {/* ── Dynamic header ── */}
