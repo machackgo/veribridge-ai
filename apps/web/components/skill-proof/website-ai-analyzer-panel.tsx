@@ -342,6 +342,7 @@ type SourceLinkItem = {
   url: string
   actionLabel: string
   category: "website" | "api" | "github"
+  note?: string   // optional supplementary context shown below the action button
 }
 
 const _GH_FILE_PRIORITY: Record<string, number> = {
@@ -357,13 +358,27 @@ function buildSourceLinks(result: WebsiteAnalyzeResponse): SourceLinkItem[] {
   const checkedSet = new Set(result.checked_urls)
   const base = result.base_url.replace(/\/$/, "")
 
-  // Live website
-  const liveOk = checkedSet.has(result.base_url) || checkedSet.has(base + "/") || checkedSet.has(base)
+  // Live website — determine status from multiple signals.
+  // Many API-only services (FastAPI, Flask) return 404 or redirect at "/" so the
+  // homepage never lands in checked_urls, but /openapi.json or endpoints still work.
+  const liveHomepageOk = checkedSet.has(result.base_url) || checkedSet.has(base + "/") || checkedSet.has(base)
+  const anyDomainUrlChecked = result.checked_urls.some((u) => u.startsWith(base + "/") || u === base)
+  const anyFunctionalEndpointReached = result.functional_candidates.some(
+    (fc) => fc.status_code !== null && fc.endpoint_url.startsWith(base)
+  )
+  const serviceReachable = liveHomepageOk || anyDomainUrlChecked || anyFunctionalEndpointReached
+  const liveStatus: SourceStatus = liveHomepageOk ? "accessible" : serviceReachable ? "detected" : "unavailable"
+  const isApiService = !liveHomepageOk && serviceReachable
+  const hostname = (() => { try { return new URL(result.base_url).hostname } catch { return result.base_url } })()
   links.push({
-    id: "live-website", icon: "🌐", title: "Live Website",
-    subtitle: (() => { try { return new URL(result.base_url).hostname } catch { return result.base_url } })(),
-    status: liveOk ? "accessible" : "unavailable",
-    url: result.base_url, actionLabel: "Open Live Website", category: "website",
+    id: "live-website", icon: "🌐",
+    title: isApiService ? "Live Website / API Service" : "Live Website",
+    subtitle: hostname,
+    status: liveStatus,
+    url: result.base_url,
+    actionLabel: "Open Live Website",
+    category: "website",
+    note: isApiService ? "Base page not detected, but API service is reachable at this domain." : undefined,
   })
 
   // OpenAPI spec
@@ -458,10 +473,17 @@ function EvidenceSourceCard({ item }: { item: SourceLinkItem }) {
         </span>
       </div>
       {item.status !== "unavailable" ? (
-        <a href={item.url} target="_blank" rel="noopener noreferrer"
-          style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none" }}>
-          {item.actionLabel} →
-        </a>
+        <>
+          <a href={item.url} target="_blank" rel="noopener noreferrer"
+            style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none" }}>
+            {item.actionLabel} →
+          </a>
+          {item.note && (
+            <span style={{ fontSize: 9, color: "var(--muted)", fontStyle: "italic", lineHeight: 1.4 }}>
+              {item.note}
+            </span>
+          )}
+        </>
       ) : (
         <span style={{ fontSize: 10, color: "var(--muted)", fontStyle: "italic" }}>Not found during analysis</span>
       )}
