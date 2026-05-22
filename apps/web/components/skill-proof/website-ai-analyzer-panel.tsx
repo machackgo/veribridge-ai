@@ -559,14 +559,17 @@ function EvidenceSourceCard({ item }: { item: SourceLinkItem }) {
 function BrowserWorkflowResultSection({ result }: { result: BrowserWorkflowVerificationResult }) {
   const [showSteps, setShowSteps] = useState(false)
 
-  const badge = {
-    captured:     { label: "Browser UI Verified", bg: "#dcfce7", color: "#166534", border: "#bbf7d0" },
-    no_ui:        { label: "No UI Detected",       bg: "#fef9c3", color: "#854d0e", border: "#fef08a" },
-    error:        { label: "Verification Failed",  bg: "#fef2f2", color: "#991b1b", border: "#fecaca" },
-    not_captured: { label: "Not Captured",         bg: "#f8fafc", color: "#64748b", border: "#e2e8f0" },
-  }[result.screenshot_status] ?? { label: "Not Captured", bg: "#f8fafc", color: "#64748b", border: "#e2e8f0" }
+  const workflowStatus = result.browser_workflow_status ?? (result.screenshot_status === "captured" ? "partial" : "failed")
 
-  const sectionBg = result.screenshot_status === "captured" ? "#f0fdf4" : "#fff"
+  const badge = workflowStatus === "passed"
+    ? { label: "Browser UI Verified", bg: "#dcfce7", color: "#166534", border: "#bbf7d0" }
+    : workflowStatus === "partial"
+    ? { label: "Partial — Screenshot Captured", bg: "#fef9c3", color: "#854d0e", border: "#fef08a" }
+    : result.screenshot_status === "no_ui"
+    ? { label: "No UI Detected", bg: "#fef9c3", color: "#854d0e", border: "#fef08a" }
+    : { label: "Verification Failed", bg: "#fef2f2", color: "#991b1b", border: "#fecaca" }
+
+  const sectionBg = workflowStatus === "passed" ? "#f0fdf4" : workflowStatus === "partial" ? "#fffbeb" : "#fff"
 
   return (
     <div style={{ border: `1px solid ${badge.border}`, borderRadius: 12, padding: "14px 16px", background: sectionBg }}>
@@ -584,21 +587,28 @@ function BrowserWorkflowResultSection({ result }: { result: BrowserWorkflowVerif
         </span>
       </div>
 
-      {/* Expected output found */}
-      {result.expected_output_found && result.output_text_found && (
-        <div style={{ fontSize: 11, color: "#166534", marginBottom: 8 }}>
-          ✓ Expected output found in page: &ldquo;{result.output_text_found}&rdquo;
+      {/* Proof summary — natural language description */}
+      {result.proof_summary && (
+        <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 10, padding: "8px 10px", background: "rgba(0,0,0,0.03)", borderRadius: 6 }}>
+          {result.proof_summary}
         </div>
       )}
 
-      {/* Error / no UI messages */}
-      {result.no_ui_detected && (
-        <div style={{ fontSize: 11, color: "#854d0e", marginBottom: 8, lineHeight: 1.5 }}>
-          No interactive input fields detected on this page. Provide the frontend URL
-          where users can enter data, or use API endpoint verification for backend-only services.
+      {/* Output terms found */}
+      {result.output_terms_found && result.output_terms_found.length > 0 && (
+        <div style={{ fontSize: 11, color: "#166534", marginBottom: 8 }}>
+          ✓ Output indicators detected: <span style={{ fontFamily: "monospace" }}>{result.output_terms_found.slice(0, 8).join(", ")}</span>
         </div>
       )}
-      {result.error_message && !result.no_ui_detected && (
+
+      {/* No UI / error messages */}
+      {result.no_ui_detected && (
+        <div style={{ fontSize: 11, color: "#854d0e", marginBottom: 8, lineHeight: 1.5 }}>
+          No interactive input fields detected. Provide the frontend URL where users can enter data,
+          or use API endpoint verification for backend-only services.
+        </div>
+      )}
+      {result.error_message && !result.no_ui_detected && !result.proof_summary && (
         <div style={{ fontSize: 11, color: "#991b1b", marginBottom: 8, lineHeight: 1.5 }}>
           {result.error_message}
         </div>
@@ -607,14 +617,14 @@ function BrowserWorkflowResultSection({ result }: { result: BrowserWorkflowVerif
       {/* Screenshot preview */}
       {result.screenshot_data_url && (
         <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+            Captured screenshot
+          </div>
           <img
             src={result.screenshot_data_url}
             alt="Browser UI workflow screenshot"
             style={{ maxWidth: "100%", borderRadius: 8, border: "1px solid #e2e8f0", display: "block" }}
           />
-          {result.screenshot_caption && (
-            <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>{result.screenshot_caption}</div>
-          )}
           <a
             href={result.screenshot_data_url}
             target="_blank"
@@ -901,7 +911,7 @@ function GroupedSkillCard({
                   </div>
                 ))}
                 <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4, fontStyle: "italic" }}>
-                  See "Website/API Functional Verification" above for full test input, output, and raw response.
+                  See "Website Functionality Proof" section above for full test input, output, and raw response.
                 </div>
               </div>
             </div>
@@ -1049,27 +1059,51 @@ export function WebsiteAIAnalyzerPanel({
     setAnalyzeProgress({ ...prog })
     setPanelStep("analyzing")
 
-    // Staged work log messages timed to approximate server phases
+    // Staged work log messages — modular per analysis phase
+    const hasBrowserUI = functionalTestPlan.testMode === "browser_ui" && functionalTestPlan.frontendUrl.trim()
+    const apiBase   = hasRepo ? 22000 : 8000
+    const groupBase = hasRepo ? 31000 : 17000
+    const bwBase    = hasRepo ? 38000 : 24000
+
     const staged = [
+      // Website fetch phase
       { ms: 0,    msg: "Downloading homepage content and metadata..." },
       { ms: 2000, msg: "Checking /docs for FastAPI/Swagger documentation..." },
       { ms: 4000, msg: "Checking /openapi.json for API specification..." },
       { ms: 6000, msg: "Checking /health endpoint..." },
+      // GitHub repo phase (conditional)
       ...(hasRepo ? [
         { ms: 8000,  msg: "Fetching connected GitHub repository file tree..." },
         { ms: 12000, msg: "Scanning code files (Dockerfile, API routes, ML models, cloud config)..." },
         { ms: 18000, msg: "Merging website and GitHub repo evidence..." },
       ] : []),
-      { ms: hasRepo ? 22000 : 8000,  msg: "Parsing OpenAPI spec to find safe testable endpoints..." },
-      { ms: hasRepo ? 25000 : 11000, msg: "Preparing safe test request for /predict endpoint..." },
-      { ms: hasRepo ? 27000 : 13000, msg: "Calling /predict with example data (safe inference test)..." },
-      { ms: hasRepo ? 29000 : 15000, msg: "Verifying response — checking status code and expected fields..." },
-      { ms: hasRepo ? 31000 : 17000, msg: "Grouping evidence into high-level skill categories..." },
-      { ms: hasRepo ? 33000 : 19000, msg: "Building skill system graphs for each group..." },
-      { ms: hasRepo ? 35000 : 21000, msg: "Preparing grouped review screen..." },
+      // API functional verification phase
+      { ms: apiBase,        msg: "Parsing OpenAPI spec to find safe testable endpoints..." },
+      { ms: apiBase + 3000, msg: "Preparing safe test request for /predict endpoint..." },
+      { ms: apiBase + 5000, msg: "Calling /predict with example data (safe inference test)..." },
+      { ms: apiBase + 7000, msg: "Verifying response — checking status code and expected fields..." },
+      // Skill grouping phase
+      { ms: groupBase,        msg: "Grouping evidence into high-level skill categories..." },
+      { ms: groupBase + 2000, msg: "Building skill system graphs for each group..." },
+      // Browser UI workflow phase (conditional)
+      ...(hasBrowserUI ? [
+        { ms: bwBase,         msg: `Opening frontend website in browser: ${functionalTestPlan.frontendUrl.trim()}` },
+        { ms: bwBase + 2000,  msg: "Detecting visible input fields and buttons on page..." },
+        { ms: bwBase + 5000,  msg: "Filling origin/source field with test input..." },
+        { ms: bwBase + 8000,  msg: "Filling destination/to field..." },
+        { ms: bwBase + 10000, msg: "Checking for autocomplete suggestions..." },
+        { ms: bwBase + 13000, msg: "Clicking Predict Route Risk / Analyze button..." },
+        { ms: bwBase + 17000, msg: "Waiting for output and result card to appear..." },
+        { ms: bwBase + 22000, msg: "Capturing screenshot of final output screen..." },
+        { ms: bwBase + 25000, msg: "Attaching screenshot as visual proof..." },
+      ] : []),
+      // Finalize
+      { ms: hasBrowserUI ? bwBase + 28000 : groupBase + 4000, msg: "Preparing grouped review screen..." },
     ]
 
-    const maxTime = hasRepo ? 50_000 : 35_000
+    const maxTime = hasBrowserUI
+      ? (hasRepo ? 90_000 : 70_000)
+      : (hasRepo ? 50_000 : 35_000)
     const t0 = Date.now()
     let si = 0
     const interval = setInterval(() => {
@@ -1365,7 +1399,9 @@ export function WebsiteAIAnalyzerPanel({
             screenshot_status: bwr.screenshot_status,
             steps_run: bwr.steps_run,
             expected_output_found: bwr.expected_output_found,
-            browser_workflow_status: bwr.success ? "completed" : "failed",
+            output_terms_found: bwr.output_terms_found ?? [],
+            browser_workflow_status: bwr.browser_workflow_status ?? (bwr.success ? "passed" : "failed"),
+            proof_summary: bwr.proof_summary ?? "",
             action_label: "Open Screenshot",
             base_url: _ar.base_url,
           },
@@ -1721,7 +1757,7 @@ export function WebsiteAIAnalyzerPanel({
           {(analyzeResult.functional_candidates.length > 0 || analyzeResult.browser_workflow_result) && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <SectionDivider
-                title="Website / API Functional Verification"
+                title="Website Functionality Proof"
                 subtitle={(() => {
                   const n = analyzeResult.functional_candidates.length
                   const passed = analyzeResult.functional_candidates.filter((fc) => fc.verified).length

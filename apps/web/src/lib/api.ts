@@ -497,6 +497,10 @@ export type BrowserWorkflowVerificationResult = {
   no_ui_detected: boolean
   output_text_found?: string | null
   screenshot_status: "captured" | "not_captured" | "no_ui" | "error"
+  /** J4J: richer result fields */
+  output_terms_found?: string[]
+  browser_workflow_status?: "passed" | "partial" | "failed"
+  proof_summary?: string
 }
 
 /** J4F: Result of a live functional verification test on a safe endpoint. */

@@ -1242,6 +1242,10 @@ class WebsiteAnalyzerService:
                             error_message=bwr.error_message,
                             no_ui_detected=bwr.no_ui_detected,
                             screenshot_status=screenshot_status,
+                            output_text_found=bwr.output_text_found,
+                            output_terms_found=bwr.output_terms_found,
+                            browser_workflow_status=bwr.browser_workflow_status,
+                            proof_summary=bwr.proof_summary,
                         )
                     except Exception as exc:
                         logger.warning("Browser UI workflow error: %s", exc)

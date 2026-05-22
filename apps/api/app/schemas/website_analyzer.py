@@ -57,6 +57,11 @@ class BrowserWorkflowVerificationResult(BaseModel):
     error_message: str | None = None
     no_ui_detected: bool = False
     screenshot_status: Literal["captured", "not_captured", "no_ui", "error"] = "not_captured"
+    # J4J: richer result fields
+    output_text_found: str | None = None
+    output_terms_found: list[str] = Field(default_factory=list)
+    browser_workflow_status: Literal["passed", "partial", "failed"] = "failed"
+    proof_summary: str = ""
 
 
 class FunctionalVerificationCandidate(BaseModel):
