@@ -329,6 +329,169 @@ function AtomicRow({ c }: { c: WebsiteAnalysisCandidate }) {
   )
 }
 
+// ── Source link helpers (Section 1) ──────────────────────────────────────────
+
+type SourceStatus = "accessible" | "detected" | "scanned" | "unavailable"
+
+type SourceLinkItem = {
+  id: string
+  icon: string
+  title: string
+  subtitle: string
+  status: SourceStatus
+  url: string
+  actionLabel: string
+  category: "website" | "api" | "github"
+}
+
+const _GH_FILE_PRIORITY: Record<string, number> = {
+  "Open Dockerfile": 1, "Open Training Code": 2, "Open Model Code": 3,
+  "Open Inference Code": 4, "Open API Code": 5, "Open API Handler": 6,
+  "Open CI/CD Config": 7, "Open LLM Code": 8, "Open NLP Code": 9,
+  "Open Data Code": 10, "Open Evaluation Code": 11, "Open Metrics Code": 12,
+  "Open React Code": 13,
+}
+
+function buildSourceLinks(result: WebsiteAnalyzeResponse): SourceLinkItem[] {
+  const links: SourceLinkItem[] = []
+  const checkedSet = new Set(result.checked_urls)
+  const base = result.base_url.replace(/\/$/, "")
+
+  // Live website
+  const liveOk = checkedSet.has(result.base_url) || checkedSet.has(base + "/") || checkedSet.has(base)
+  links.push({
+    id: "live-website", icon: "🌐", title: "Live Website",
+    subtitle: (() => { try { return new URL(result.base_url).hostname } catch { return result.base_url } })(),
+    status: liveOk ? "accessible" : "unavailable",
+    url: result.base_url, actionLabel: "Open Live Website", category: "website",
+  })
+
+  // OpenAPI spec
+  const openApiUrl = `${base}/openapi.json`
+  if (checkedSet.has(openApiUrl)) {
+    links.push({ id: "openapi-spec", icon: "📋", title: "API Specification", subtitle: "/openapi.json",
+      status: "detected", url: openApiUrl, actionLabel: "Open API Spec", category: "api" })
+  }
+
+  // API docs
+  const docsUrl = `${base}/docs`
+  if (checkedSet.has(docsUrl)) {
+    links.push({ id: "api-docs", icon: "📚", title: "API Documentation", subtitle: "/docs",
+      status: "detected", url: docsUrl, actionLabel: "Open API Docs", category: "api" })
+  }
+
+  // Health check
+  const healthUrl = `${base}/health`
+  if (checkedSet.has(healthUrl)) {
+    links.push({ id: "health", icon: "💚", title: "Health Check", subtitle: "/health",
+      status: "detected", url: healthUrl, actionLabel: "Open Health Check", category: "api" })
+  }
+
+  // GitHub repo
+  if (result.github_repo_url) {
+    const repoScanned = result.checked_urls.some((u) => u.includes("github.com"))
+    links.push({
+      id: "github-repo", icon: "⌨", title: "GitHub Repository",
+      subtitle: (() => { try { return result.github_repo_url!.replace("https://github.com/", "") } catch { return "" } })(),
+      status: repoScanned ? "scanned" : "detected",
+      url: result.github_repo_url!, actionLabel: "Open Repository", category: "github",
+    })
+  }
+
+  // Important GitHub file links (deduplicated, prioritised, capped at 6)
+  const seenFileUrls = new Set<string>()
+  const fileCandidates = result.candidates
+    .filter((c) => c.evidence_source === "github_repo" &&
+      c.source_url.includes("github.com") && c.action_label !== "Open GitHub Evidence")
+    .sort((a, b) => (_GH_FILE_PRIORITY[a.action_label] ?? 50) - (_GH_FILE_PRIORITY[b.action_label] ?? 50))
+
+  for (const c of fileCandidates) {
+    if (seenFileUrls.has(c.source_url)) continue
+    seenFileUrls.add(c.source_url)
+    links.push({
+      id: `gh-file-${c.candidate_id}`, icon: "📄",
+      title: c.action_label.replace(/^Open /, ""),
+      subtitle: c.route_path.split(" ")[0] ?? c.route_path,
+      status: "detected", url: c.source_url, actionLabel: c.action_label, category: "github",
+    })
+    if (seenFileUrls.size >= 6) break
+  }
+
+  return links
+}
+
+// ── Section divider ───────────────────────────────────────────────────────────
+
+function SectionDivider({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div style={{ borderBottom: "2px solid var(--line)", paddingBottom: 8 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: "var(--ink)", letterSpacing: "-0.01em" }}>{title}</div>
+      {subtitle && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{subtitle}</div>}
+    </div>
+  )
+}
+
+// ── Evidence source card ──────────────────────────────────────────────────────
+
+function EvidenceSourceCard({ item }: { item: SourceLinkItem }) {
+  const styles = {
+    accessible: { bg: "#f0fdf4", color: "#166534", border: "#bbf7d0", label: "Accessible" },
+    detected:   { bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe", label: "Detected" },
+    scanned:    { bg: "#faf5ff", color: "#5b21b6", border: "#e9d5ff", label: "Scanned" },
+    unavailable:{ bg: "#f8fafc", color: "#94a3b8", border: "#e2e8f0", label: "Not found" },
+  } as const
+  const s = styles[item.status]
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", background: "#fff", display: "flex", flexDirection: "column", gap: 7 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 6, minWidth: 0 }}>
+          <span style={{ fontSize: 15, flexShrink: 0, lineHeight: 1.3 }}>{item.icon}</span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink)" }}>{item.title}</div>
+            <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "monospace", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {item.subtitle}
+            </div>
+          </div>
+        </div>
+        <span style={{ ...badgeBase, fontSize: 8, background: s.bg, color: s.color, border: `1px solid ${s.border}`, flexShrink: 0, whiteSpace: "nowrap" }}>
+          {s.label}
+        </span>
+      </div>
+      {item.status !== "unavailable" ? (
+        <a href={item.url} target="_blank" rel="noopener noreferrer"
+          style={{ fontSize: 11, fontWeight: 600, color: "var(--indigo)", textDecoration: "none" }}>
+          {item.actionLabel} →
+        </a>
+      ) : (
+        <span style={{ fontSize: 10, color: "var(--muted)", fontStyle: "italic" }}>Not found during analysis</span>
+      )}
+    </div>
+  )
+}
+
+// ── Screenshot placeholder ────────────────────────────────────────────────────
+
+function ScreenshotPlaceholder() {
+  return (
+    <div style={{ border: "1px dashed #cbd5e1", borderRadius: 10, padding: "12px 14px", background: "#f8fafc" }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 5 }}>
+        Screenshot Proof
+      </div>
+      <div style={{ fontSize: 11, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 8 }}>
+        VeriBridge will open the website, enter test inputs, capture the output workflow, and attach a screenshot as proof.
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 9, fontWeight: 700, background: "#ede9fe", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 999, padding: "2px 8px" }}>
+          📸 Browser screenshots — coming soon
+        </span>
+        <span style={{ fontSize: 9, background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0", borderRadius: 999, padding: "2px 8px" }}>
+          API endpoint response captured above
+        </span>
+      </div>
+    </div>
+  )
+}
+
 // ── Grouped skill card ────────────────────────────────────────────────────────
 
 function GroupedSkillCard({
@@ -544,15 +707,30 @@ function GroupedSkillCard({
             </div>
           )}
 
-          {/* Functional verification */}
+          {/* Compact functional reference — full details are in Section 2 above */}
           {functionalItems.length > 0 && (
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#166534", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>
-                Functional Verification
+            <div style={{
+              padding: "9px 12px", borderRadius: 8, marginBottom: 14,
+              background: hasFunctionalPassed ? "#f0fdf4" : "#fef9c3",
+              border: `1px solid ${hasFunctionalPassed ? "#bbf7d0" : "#fef08a"}`,
+              display: "flex", alignItems: "flex-start", gap: 10,
+            }}>
+              <span style={{ fontSize: 16, flexShrink: 0, lineHeight: 1 }}>{hasFunctionalPassed ? "✓" : "⚠"}</span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: hasFunctionalPassed ? "#166534" : "#854d0e" }}>
+                  {hasFunctionalPassed
+                    ? `Verified by ${functionalItems.length} functional test${functionalItems.length !== 1 ? "s" : ""}`
+                    : `Referenced in ${functionalItems.length} functional test${functionalItems.length !== 1 ? "s" : ""}`}
+                </div>
+                {functionalItems.map((fc) => (
+                  <div key={`fref-${fc.candidate_id}`} style={{ fontSize: 10, color: hasFunctionalPassed ? "#166534" : "#854d0e", fontFamily: "monospace", marginTop: 2 }}>
+                    {fc.method} {(() => { try { return new URL(fc.endpoint_url).pathname } catch { return fc.endpoint_url } })()} · HTTP {fc.status_code ?? "—"}{fc.verified ? " ✓" : ""}
+                  </div>
+                ))}
+                <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4, fontStyle: "italic" }}>
+                  See "Website/API Functional Verification" above for full test input, output, and raw response.
+                </div>
               </div>
-              {functionalItems.map((fc) => (
-                <FunctionalRow key={fc.candidate_id} fc={fc} />
-              ))}
             </div>
           )}
 
@@ -654,6 +832,12 @@ export function WebsiteAIAnalyzerPanel({
       return next
     })
   }
+
+  // Source links for Section 1 (Evidence Sources)
+  const sourceLinks = useMemo(
+    () => (analyzeResult ? buildSourceLinks(analyzeResult) : []),
+    [analyzeResult]
+  )
 
   // Total unique candidate IDs across selected groups
   const totalSelectedCandidateIds = useMemo(() => {
@@ -1211,17 +1395,18 @@ export function WebsiteAIAnalyzerPanel({
         <ProofProcessingProgressPanel title="Website AI Analysis" progress={analyzeProgress} canClose={false} />
       )}
 
-      {/* ── Review ── */}
+      {/* ── Review — 3-section layout ── */}
       {panelStep === "review" && analyzeResult && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
 
-          {/* Header */}
+          {/* Analysis summary header */}
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)", marginBottom: 4 }}>
-              Review grouped skill evidence
+              Website + GitHub evidence review
             </div>
             <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.7 }}>
-              Found <strong style={{ color: "var(--ink-2)" }}>{analyzeResult.grouped_skills.length}</strong> grouped skill{analyzeResult.grouped_skills.length !== 1 ? "s" : ""} from {analyzeResult.candidate_count} evidence item{analyzeResult.candidate_count !== 1 ? "s" : ""}.
+              Found <strong style={{ color: "var(--ink-2)" }}>{analyzeResult.grouped_skills.length}</strong> grouped skill{analyzeResult.grouped_skills.length !== 1 ? "s" : ""} from{" "}
+              <strong style={{ color: "var(--ink-2)" }}>{analyzeResult.candidate_count}</strong> evidence item{analyzeResult.candidate_count !== 1 ? "s" : ""}.
               {analyzeResult.functional_verification_available && (() => {
                 const passed = analyzeResult.functional_candidates.filter((fc) => fc.verified).length
                 return passed > 0
@@ -1234,24 +1419,6 @@ export function WebsiteAIAnalyzerPanel({
             </div>
           </div>
 
-          {/* Source legend */}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: 11, color: "var(--muted)" }}>
-            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ ...badgeBase, ...sourceBadgeStyle("functional"), fontSize: 9 }}>Verified Workflow</span> live endpoint tested
-            </span>
-            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ ...badgeBase, ...sourceBadgeStyle("combined"), fontSize: 9 }}>Combined</span> website + GitHub
-            </span>
-            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ ...badgeBase, ...sourceBadgeStyle("website"), fontSize: 9 }}>Website</span> website only
-            </span>
-            {analyzeResult.github_repo_url && (
-              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <span style={{ ...badgeBase, ...sourceBadgeStyle("github_repo"), fontSize: 9 }}>GitHub</span> repo only
-              </span>
-            )}
-          </div>
-
           {/* Warnings */}
           {analyzeResult.warnings.length > 0 && (
             <div style={{ background: "#fef9c3", border: "1px solid #fef08a", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#854d0e", lineHeight: 1.5 }}>
@@ -1259,11 +1426,51 @@ export function WebsiteAIAnalyzerPanel({
             </div>
           )}
 
-          {/* No groups fallback */}
+          {/* ═══════════════════════════════════════════════════════════════
+              SECTION 1 — Evidence Sources
+              ═══════════════════════════════════════════════════════════════ */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <SectionDivider
+              title="Evidence Sources"
+              subtitle="Click any source to verify in a new tab"
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 8 }}>
+              {sourceLinks.map((item) => (
+                <EvidenceSourceCard key={item.id} item={item} />
+              ))}
+            </div>
+          </div>
+
+          {/* ═══════════════════════════════════════════════════════════════
+              SECTION 2 — Functional Verification
+              ═══════════════════════════════════════════════════════════════ */}
+          {analyzeResult.functional_candidates.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <SectionDivider
+                title="Website / API Functional Verification"
+                subtitle={(() => {
+                  const n = analyzeResult.functional_candidates.length
+                  const passed = analyzeResult.functional_candidates.filter((fc) => fc.verified).length
+                  return `${passed} of ${n} test${n !== 1 ? "s" : ""} returned verified output`
+                })()}
+              />
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {analyzeResult.functional_candidates.map((fc) => (
+                  <FunctionalRow key={fc.candidate_id} fc={fc} />
+                ))}
+              </div>
+              <ScreenshotPlaceholder />
+            </div>
+          )}
+
+          {/* ═══════════════════════════════════════════════════════════════
+              SECTION 3 — Skills Detected
+              ═══════════════════════════════════════════════════════════════ */}
           {analyzeResult.grouped_skills.length === 0 ? (
+            /* No-evidence fallback */
             <div style={{ border: "1px dashed var(--line-2)", borderRadius: 12, padding: 20, textAlign: "center", color: "var(--muted)", fontSize: 13 }}>
-              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>No evidence candidates found.</div>
-              <div style={{ marginBottom: 12 }}>The website responded but no strong skill signals were detected automatically.</div>
+              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>No skill evidence detected.</div>
+              <div style={{ marginBottom: 12 }}>The website responded but no strong skill signals were found. You can save the website link as manual proof.</div>
               <button
                 type="button"
                 onClick={() => void (async () => {
@@ -1282,11 +1489,7 @@ export function WebsiteAIAnalyzerPanel({
                       evidence_url: analyzeResult.base_url,
                       evidence_description: `Live website at ${analyzeResult.base_url}. Skill focus: ${skillFocus || "general web development"}.`,
                       proof_visibility: "public",
-                      metadata: {
-                        evidence_title: `Live website — ${analyzeResult.base_url}`,
-                        submission_source: "website_ai_analyzer_fallback",
-                        proof_kind: "website_ai_analysis",
-                      },
+                      metadata: { evidence_title: `Live website — ${analyzeResult.base_url}`, submission_source: "website_ai_analyzer_fallback", proof_kind: "website_ai_analysis" },
                     })
                     try { await generateEvidenceAccessLinks(ev.id) } catch { /* best-effort */ }
                     onSaveComplete?.()
@@ -1308,28 +1511,27 @@ export function WebsiteAIAnalyzerPanel({
               </button>
             </div>
           ) : (
-            <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <SectionDivider
+                title={`Skills Detected — ${analyzeResult.grouped_skills.length} group${analyzeResult.grouped_skills.length !== 1 ? "s" : ""}`}
+                subtitle="Select the skills you want to save to your profile"
+              />
+
               {/* Group selection controls */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <span style={{ fontSize: 12, color: "var(--ink-2)", fontWeight: 600 }}>
-                  {selectedGroupIds.size} of {analyzeResult.grouped_skills.length} skill group{analyzeResult.grouped_skills.length !== 1 ? "s" : ""} selected
+                  {selectedGroupIds.size} of {analyzeResult.grouped_skills.length} selected
                   {totalSelectedCandidateIds.size > 0 && (
                     <span style={{ fontWeight: 400, color: "var(--muted)" }}> ({totalSelectedCandidateIds.size} evidence item{totalSelectedCandidateIds.size !== 1 ? "s" : ""})</span>
                   )}
                 </span>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedGroupIds(new Set(analyzeResult.grouped_skills.map((g) => g.group_id)))}
-                    style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 8, padding: "6px 12px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
-                  >
+                  <button type="button" onClick={() => setSelectedGroupIds(new Set(analyzeResult.grouped_skills.map((g) => g.group_id)))}
+                    style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 8, padding: "6px 12px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
                     Select all
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedGroupIds(new Set())}
-                    style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 8, padding: "6px 12px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
-                  >
+                  <button type="button" onClick={() => setSelectedGroupIds(new Set())}
+                    style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 8, padding: "6px 12px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
                     Deselect all
                   </button>
                 </div>
@@ -1349,35 +1551,22 @@ export function WebsiteAIAnalyzerPanel({
                 ))}
               </div>
 
-              {/* Atomic evidence accordion (debug) */}
+              {/* Advanced: raw evidence accordion */}
               <div style={{ border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
-                <button
-                  type="button"
-                  onClick={() => setShowAtomicAccordion((v) => !v)}
-                  style={{
-                    width: "100%", textAlign: "left", padding: "10px 14px",
-                    border: "none", background: "#f8fafc", cursor: "pointer",
-                    fontSize: 12, fontWeight: 600, color: "var(--ink-2)",
-                    display: "flex", justifyContent: "space-between", alignItems: "center",
-                  }}
-                >
-                  <span>Show all raw evidence ({analyzeResult.candidates.length} atomic item{analyzeResult.candidates.length !== 1 ? "s" : ""})</span>
+                <button type="button" onClick={() => setShowAtomicAccordion((v) => !v)}
+                  style={{ width: "100%", textAlign: "left", padding: "10px 14px", border: "none", background: "#f8fafc", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "var(--ink-2)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>Show all raw evidence ({analyzeResult.candidates.length} atomic + {analyzeResult.functional_candidates.length} functional items)</span>
                   <span>{showAtomicAccordion ? "↑" : "↓"}</span>
                 </button>
                 {showAtomicAccordion && (
-                  <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6, maxHeight: 360, overflowY: "auto" }}>
+                  <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 5, maxHeight: 360, overflowY: "auto" }}>
                     {analyzeResult.candidates.map((c) => (
-                      <div key={c.candidate_id} style={{
-                        padding: "8px 10px", borderRadius: 8,
-                        border: `1px solid ${c.is_combined ? "#ddd6fe" : "var(--line)"}`,
-                        background: c.is_combined ? "#faf5ff" : "#fff",
-                        fontSize: 12,
-                      }}>
+                      <div key={c.candidate_id} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${c.is_combined ? "#ddd6fe" : "var(--line)"}`, background: c.is_combined ? "#faf5ff" : "#fff", fontSize: 11 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                           <span style={{ fontWeight: 600, color: "var(--ink)" }}>{c.skill_name}</span>
                           <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                            <span style={{ ...badgeBase, ...sourceBadgeStyle(c.evidence_source), fontSize: 9 }}>{sourceLabel(c.evidence_source)}</span>
-                            <span style={{ ...badgeBase, ...confidenceStyle(c.confidence), fontSize: 9 }}>{c.confidence}</span>
+                            <span style={{ ...badgeBase, ...sourceBadgeStyle(c.evidence_source), fontSize: 8 }}>{sourceLabel(c.evidence_source)}</span>
+                            <span style={{ ...badgeBase, ...confidenceStyle(c.confidence), fontSize: 8 }}>{c.confidence}</span>
                           </div>
                         </div>
                         <div style={{ color: "var(--muted)", marginTop: 2, fontFamily: "monospace", fontSize: 10 }}>{c.route_path}</div>
@@ -1385,16 +1574,13 @@ export function WebsiteAIAnalyzerPanel({
                     ))}
                     {analyzeResult.functional_candidates.length > 0 && (
                       <>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: "#166534", marginTop: 6 }}>Functional verification candidates</div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: "#166534", marginTop: 6 }}>Functional verification</div>
                         {analyzeResult.functional_candidates.map((fc) => (
-                          <div key={fc.candidate_id} style={{
-                            padding: "8px 10px", borderRadius: 8,
-                            border: "1px solid #bbf7d0", background: "#f0fdf4", fontSize: 12,
-                          }}>
+                          <div key={fc.candidate_id} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid #bbf7d0", background: "#f0fdf4", fontSize: 11 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                               <span style={{ fontWeight: 600, color: "var(--ink)" }}>{fc.skill_name}</span>
-                              <span style={{ ...badgeBase, fontSize: 9, background: fc.verified ? "#dcfce7" : "#fef9c3", color: fc.verified ? "#166534" : "#854d0e", border: `1px solid ${fc.verified ? "#bbf7d0" : "#fef08a"}` }}>
-                                {fc.verified ? "Live Test Passed" : fc.status_code ? `HTTP ${fc.status_code}` : "Unavailable"}
+                              <span style={{ ...badgeBase, fontSize: 8, background: fc.verified ? "#dcfce7" : "#fef9c3", color: fc.verified ? "#166534" : "#854d0e", border: `1px solid ${fc.verified ? "#bbf7d0" : "#fef08a"}` }}>
+                                {fc.verified ? "Verified" : fc.status_code ? `HTTP ${fc.status_code}` : "Unavailable"}
                               </span>
                             </div>
                             <div style={{ color: "var(--muted)", marginTop: 2, fontFamily: "monospace", fontSize: 10 }}>{fc.method} {fc.endpoint_url}</div>
@@ -1408,7 +1594,8 @@ export function WebsiteAIAnalyzerPanel({
 
               {/* Footer */}
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                <button type="button" onClick={() => setPanelStep("form")} style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+                <button type="button" onClick={() => setPanelStep("form")}
+                  style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
                   ← Back
                 </button>
                 <button
@@ -1424,11 +1611,11 @@ export function WebsiteAIAnalyzerPanel({
                   }}
                 >
                   {selectedGroupIds.size > 0
-                    ? `Save ${selectedGroupIds.size} grouped skill${selectedGroupIds.size !== 1 ? "s" : ""} to profile`
+                    ? `Save ${selectedGroupIds.size} grouped skill${selectedGroupIds.size !== 1 ? "s" : ""} and evidence to profile`
                     : "Select skills to save"}
                 </button>
               </div>
-            </>
+            </div>
           )}
         </div>
       )}
