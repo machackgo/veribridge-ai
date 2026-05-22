@@ -7,7 +7,7 @@
  * Flow: form → analyzing → review (grouped) → saving → done.
  */
 
-import { useMemo, useState } from "react"
+import { Fragment, useMemo, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   analyzeWebsite,
@@ -226,8 +226,10 @@ function FunctionalRow({ fc }: { fc: FunctionalVerificationCandidate }) {
               {/* Key-value preview table */}
               <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "3px 12px", marginBottom: 6 }}>
                 {Object.entries(response_preview!).slice(0, 10).map(([k, v]) => (
-                  <><span key={`k-${k}`} style={{ fontSize: 11, color: "#475569", fontFamily: "monospace", whiteSpace: "nowrap" }}>{k}:</span>
-                  <span key={`v-${k}`} style={{ fontSize: 11, color: "#166534", fontWeight: 600, wordBreak: "break-all" }}>{formatVal(v)}</span></>
+                  <Fragment key={`preview-${k}`}>
+                    <span style={{ fontSize: 11, color: "#475569", fontFamily: "monospace", whiteSpace: "nowrap" }}>{k}:</span>
+                    <span style={{ fontSize: 11, color: "#166534", fontWeight: 600, wordBreak: "break-all" }}>{formatVal(v)}</span>
+                  </Fragment>
                 ))}
               </div>
               {response_summary && (
