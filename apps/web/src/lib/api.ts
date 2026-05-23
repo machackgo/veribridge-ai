@@ -942,3 +942,59 @@ export async function startExtensionProofSession(
   if (!res.ok) throw new Error(`Start session failed (HTTP ${res.status}).`)
   return res.json()
 }
+
+// ── Extension Proof GitHub Analysis ──────────────────────────────────────────
+
+export type ExtensionProofGitHubAnalysisStatus =
+  | "success"
+  | "failed"
+  | "private_or_unavailable"
+
+export type ExtensionProofGitHubAnalysisResponse = {
+  id: string
+  proof_session_id: string
+  repo_url: string
+  status: ExtensionProofGitHubAnalysisStatus
+  detected_stack: string[]
+  detected_features: string[]
+  matched_claimed_skills: string[]
+  missing_claimed_skills: string[]
+  evidence_files: string[]
+  confidence_score: number
+  warnings: string[]
+  recruiter_summary: string
+  created_at: string
+  updated_at: string | null
+}
+
+export async function analyzeExtensionProofGitHub(
+  sessionId: string,
+  githubUrl: string,
+  claimedSkills: string[]
+): Promise<ExtensionProofGitHubAnalysisResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/analyze/github`,
+    {
+      method: "POST",
+      body: JSON.stringify({ github_url: githubUrl, claimed_skills: claimedSkills }),
+    }
+  )
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `GitHub analysis failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json()
+}
+
+export async function getExtensionProofGitHubAnalysis(
+  sessionId: string
+): Promise<ExtensionProofGitHubAnalysisResponse | null> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/analysis/github`
+  )
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Get GitHub analysis failed (HTTP ${res.status}).`)
+  return res.json()
+}

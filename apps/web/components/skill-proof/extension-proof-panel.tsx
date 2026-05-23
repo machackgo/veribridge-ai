@@ -14,10 +14,12 @@
 import { useEffect, useState } from "react"
 import type { CSSProperties } from "react"
 import {
+  analyzeExtensionProofGitHub,
   createExtensionProofSession,
   createSkillEvidence,
   getExtensionProofSession,
   startExtensionProofSession,
+  type ExtensionProofGitHubAnalysisResponse,
   type ExtensionProofSessionResponse,
   type ExtensionProofSessionStatus,
 } from "@/lib/api"
@@ -361,6 +363,171 @@ function StatusMessage({
   return null
 }
 
+// ── GitHub Analysis result card ───────────────────────────────────────────────
+
+function GitHubAnalysisCard({
+  analysis,
+  onReanalyze,
+  reanalyzing,
+}: {
+  analysis: ExtensionProofGitHubAnalysisResponse
+  onReanalyze: () => void
+  reanalyzing: boolean
+}) {
+  const isSuccess = analysis.status === "success"
+  const isPrivate = analysis.status === "private_or_unavailable"
+  const confidencePct = Math.round(analysis.confidence_score * 100)
+
+  const headerBg    = isSuccess ? "#f0fdf4" : isPrivate ? "#fef9c3" : "#fef2f2"
+  const headerBorder= isSuccess ? "#d1fae5" : isPrivate ? "#fde68a" : "#fecaca"
+  const headerColor = isSuccess ? "#065f46" : isPrivate ? "#78350f" : "#991b1b"
+  const headerLabel = isSuccess ? "✓ Analysis complete" : isPrivate ? "⚠ Repo unavailable" : "✗ Analysis failed"
+
+  return (
+    <div
+      style={{
+        border: "1px solid var(--line)",
+        borderRadius: 12,
+        background: "#fff",
+        overflow: "hidden",
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          background: headerBg,
+          borderBottom: `1px solid ${headerBorder}`,
+          padding: "12px 16px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 700, color: headerColor }}>
+          {headerLabel}
+        </span>
+        <button
+          type="button"
+          onClick={onReanalyze}
+          disabled={reanalyzing}
+          style={{
+            border: "1px solid var(--line-2)",
+            background: "transparent",
+            color: "var(--ink-2)",
+            borderRadius: 8,
+            padding: "4px 10px",
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: reanalyzing ? "not-allowed" : "pointer",
+            opacity: reanalyzing ? 0.5 : 1,
+          }}
+        >
+          {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
+        </button>
+      </div>
+
+      <div style={{ padding: "14px 16px", display: "grid", gap: 14 }}>
+        {/* Confidence */}
+        {isSuccess && (
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                Confidence
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: confidencePct >= 60 ? "#065f46" : confidencePct >= 35 ? "#92400e" : "#991b1b" }}>
+                {confidencePct}%
+              </span>
+            </div>
+            <div style={{ height: 6, background: "#f1f5f9", borderRadius: 999, overflow: "hidden" }}>
+              <div
+                style={{
+                  height: "100%",
+                  width: `${confidencePct}%`,
+                  background: confidencePct >= 60 ? "#16a34a" : confidencePct >= 35 ? "#d97706" : "#dc2626",
+                  borderRadius: 999,
+                  transition: "width 0.4s ease",
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Detected stack */}
+        {analysis.detected_stack.length > 0 && (
+          <div style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Detected Stack
+            </span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {analysis.detected_stack.map((tech) => (
+                <span
+                  key={tech}
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "3px 9px",
+                    borderRadius: 999,
+                    background: "#f1f5f9",
+                    color: "#334155",
+                    border: "1px solid #e2e8f0",
+                  }}
+                >
+                  {tech}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Skill match */}
+        {(analysis.matched_claimed_skills.length > 0 || analysis.missing_claimed_skills.length > 0) && (
+          <div style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Skill Match
+            </span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {analysis.matched_claimed_skills.map((s) => (
+                <span key={s} style={{ fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 999, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
+                  ✓ {s}
+                </span>
+              ))}
+              {analysis.missing_claimed_skills.map((s) => (
+                <span key={s} style={{ fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 999, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
+                  ✗ {s}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Recruiter summary */}
+        {analysis.recruiter_summary && (
+          <div style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Recruiter Summary
+            </span>
+            <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.65 }}>
+              {analysis.recruiter_summary}
+            </p>
+          </div>
+        )}
+
+        {/* Warnings */}
+        {analysis.warnings.length > 0 && (
+          <div style={{ display: "grid", gap: 4 }}>
+            {analysis.warnings.map((w, i) => (
+              <p key={i} style={{ margin: 0, fontSize: 11, color: "#92400e", lineHeight: 1.55 }}>
+                ⚠ {w}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ExtensionProofPanel({
@@ -377,6 +544,9 @@ export function ExtensionProofPanel({
   const [creating, setCreating]       = useState(false)
   const [starting, setStarting]       = useState(false)
   const [pollingActive, setPoll]      = useState(false)
+  const [githubAnalysis, setGithubAnalysis] = useState<ExtensionProofGitHubAnalysisResponse | null>(null)
+  const [analyzingGitHub, setAnalyzingGitHub] = useState(false)
+  const [githubAnalysisError, setGithubAnalysisError] = useState<string | null>(null)
 
   // ── Polling ───────────────────────────────────────────────────────────────
 
@@ -476,6 +646,25 @@ export function ExtensionProofPanel({
       setError(err instanceof Error ? err.message : "Failed to start proof session.")
     } finally {
       setStarting(false)
+    }
+  }
+
+  // ── Analyze GitHub ────────────────────────────────────────────────────────
+
+  async function handleAnalyzeGitHub() {
+    if (!session || !form.githubUrl.trim()) return
+    setAnalyzingGitHub(true)
+    setGithubAnalysisError(null)
+    try {
+      const claimedSkills = form.skillName.trim()
+        ? form.skillName.split(",").map((s) => s.trim()).filter(Boolean)
+        : []
+      const result = await analyzeExtensionProofGitHub(session.id, form.githubUrl.trim(), claimedSkills)
+      setGithubAnalysis(result)
+    } catch (err) {
+      setGithubAnalysisError(err instanceof Error ? err.message : "GitHub analysis failed.")
+    } finally {
+      setAnalyzingGitHub(false)
     }
   }
 
@@ -734,6 +923,48 @@ export function ExtensionProofPanel({
         {/* Status-aware message card */}
         {!isExpired && (
           <StatusMessage status={session.status} pollingActive={pollingActive} />
+        )}
+
+        {/* GitHub Analysis */}
+        {form.githubUrl && (["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status) && (
+          <div style={{ display: "grid", gap: 10 }}>
+            {!githubAnalysis && (
+              <button
+                type="button"
+                onClick={() => void handleAnalyzeGitHub()}
+                disabled={analyzingGitHub}
+                style={{
+                  border: "1px solid #1d4ed8",
+                  background: analyzingGitHub ? "#eff6ff" : "#1d4ed8",
+                  color: analyzingGitHub ? "#1d4ed8" : "#fff",
+                  borderRadius: 10,
+                  padding: "9px 16px",
+                  fontWeight: 600,
+                  fontSize: 13,
+                  cursor: analyzingGitHub ? "not-allowed" : "pointer",
+                  width: "100%",
+                }}
+              >
+                {analyzingGitHub ? "Analyzing GitHub repo…" : "⬡ Analyze GitHub Evidence"}
+              </button>
+            )}
+            {githubAnalysisError && (
+              <div
+                role="alert"
+                style={{
+                  border: "1px solid #fecaca",
+                  background: "#fef2f2",
+                  color: "#991b1b",
+                  borderRadius: 10,
+                  padding: "8px 12px",
+                  fontSize: 12,
+                }}
+              >
+                {githubAnalysisError}
+              </div>
+            )}
+            {githubAnalysis && <GitHubAnalysisCard analysis={githubAnalysis} onReanalyze={() => void handleAnalyzeGitHub()} reanalyzing={analyzingGitHub} />}
+          </div>
         )}
 
         {/* Expired */}
