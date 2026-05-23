@@ -586,9 +586,10 @@ export function ExtensionProofPanel({
               VeriBridge Extension is now recording
             </div>
             <p style={{ margin: 0, fontSize: 12, color: "#064e3b", lineHeight: 1.7 }}>
-              Use the VeriBridge Chrome Extension to record your workflow. When done, click{" "}
-              <strong>Stop &amp; Send Proof</strong> in the extension. This page will update
-              automatically when your proof is received.
+              A floating VeriBridge recorder bar will appear on your website while recording. Use
+              it to stop and send proof without switching tabs. You can also use{" "}
+              <strong>Stop &amp; Send Proof</strong> in the extension popup as a fallback. This
+              page will update automatically when your proof is received.
             </p>
             {pollingActive && (
               <p style={{ margin: 0, fontSize: 11, color: "#16a34a" }}>
