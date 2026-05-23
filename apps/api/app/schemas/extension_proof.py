@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 
-ExtensionProofSessionStatus = Literal["pending", "active", "completed", "expired"]
+ExtensionProofSessionStatus = Literal[
+    "created",
+    "waiting_for_extension",
+    "recording",
+    "uploaded_pending_analysis",
+    "analyzing",
+    "completed",
+    "expired",
+]
 
 
 class ExtensionProofSessionCreate(BaseModel):
@@ -29,5 +37,36 @@ class ExtensionProofSessionResponse(BaseModel):
     user_id: str
     skill_evidence_id: str
     status: ExtensionProofSessionStatus
+    started_at: str | None = None
+    proof_upload_id: str | None = None
     created_at: str
     updated_at: str
+
+
+class ExtensionProofStartResponse(ExtensionProofSessionResponse):
+    pass
+
+
+class ExtensionProofUploadRequest(BaseModel):
+    workflow_events: list[dict[str, Any]] = Field(default_factory=list)
+    screenshots: list[dict[str, Any]] | None = None
+    browser_metadata: dict[str, Any] | None = None
+    extension_version: str | None = None
+    started_at: str | None = None
+    stopped_at: str | None = None
+    student_final_note: str | None = Field(default=None, max_length=2000)
+
+
+class ExtensionProofUploadResponse(BaseModel):
+    id: str
+    user_id: str
+    skill_evidence_id: str
+    status: ExtensionProofSessionStatus
+    started_at: str | None = None
+    proof_upload_id: str
+    created_at: str
+    updated_at: str
+
+
+class ExtensionProofCompleteResponse(ExtensionProofSessionResponse):
+    pass
