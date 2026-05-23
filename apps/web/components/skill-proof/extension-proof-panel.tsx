@@ -68,13 +68,13 @@ const STATUS_CONFIG: Record<
   ExtensionProofSessionStatus,
   { bg: string; color: string; border: string; label: string }
 > = {
-  created:                   { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0", label: "Created" },
-  waiting_for_extension:     { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "Waiting" },
-  recording:                 { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "Recording" },
-  uploaded_pending_analysis: { bg: "#dbeafe", color: "#1d4ed8", border: "#bfdbfe", label: "Uploaded" },
-  analyzing:                 { bg: "#ede9fe", color: "#5b21b6", border: "#ddd6fe", label: "Analyzing" },
-  completed:                 { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "Complete" },
-  expired:                   { bg: "#fef2f2", color: "#991b1b", border: "#fecaca", label: "Expired" },
+  created:                   { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0", label: "CREATED" },
+  waiting_for_extension:     { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "WAITING" },
+  recording:                 { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "RECORDING" },
+  uploaded_pending_analysis: { bg: "#dbeafe", color: "#1d4ed8", border: "#bfdbfe", label: "UPLOADED" },
+  analyzing:                 { bg: "#ede9fe", color: "#5b21b6", border: "#ddd6fe", label: "ANALYZING" },
+  completed:                 { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "COMPLETE" },
+  expired:                   { bg: "#fef2f2", color: "#991b1b", border: "#fecaca", label: "EXPIRED" },
 }
 
 function StatusBadge({ status }: { status: ExtensionProofSessionStatus }) {
@@ -85,8 +85,7 @@ function StatusBadge({ status }: { status: ExtensionProofSessionStatus }) {
         fontSize: 10,
         fontWeight: 700,
         letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        padding: "3px 8px",
+        padding: "3px 9px",
         borderRadius: 999,
         background: c.bg,
         color: c.color,
@@ -99,95 +98,105 @@ function StatusBadge({ status }: { status: ExtensionProofSessionStatus }) {
   )
 }
 
-// ── Status timeline ───────────────────────────────────────────────────────────
+// ── Session stepper ───────────────────────────────────────────────────────────
 
-const TIMELINE_STEPS: Array<{
-  label: string
-  statuses: ExtensionProofSessionStatus[]
-}> = [
-  { label: "Session created", statuses: ["created", "waiting_for_extension"] },
+const STEPPER_STEPS: Array<{ label: string; statuses: ExtensionProofSessionStatus[] }> = [
+  { label: "Session Created", statuses: ["created", "waiting_for_extension"] },
   { label: "Recording",       statuses: ["recording"] },
-  { label: "Proof uploaded",  statuses: ["uploaded_pending_analysis"] },
+  { label: "Proof Uploaded",  statuses: ["uploaded_pending_analysis"] },
   { label: "Analyzing",       statuses: ["analyzing"] },
   { label: "Complete",        statuses: ["completed"] },
 ]
 
-function timelineIndex(status: ExtensionProofSessionStatus): number {
-  return TIMELINE_STEPS.findIndex(s => (s.statuses as string[]).includes(status))
+function stepperIndex(status: ExtensionProofSessionStatus): number {
+  return STEPPER_STEPS.findIndex(s => (s.statuses as string[]).includes(status))
 }
 
-function SessionTimeline({ status }: { status: ExtensionProofSessionStatus }) {
-  const currentIdx = timelineIndex(status)
+function SessionStepper({ status }: { status: ExtensionProofSessionStatus }) {
+  const currentIdx = stepperIndex(status)
 
   return (
-    <div>
-      <div
-        style={{
-          fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          color: "var(--muted)",
-          marginBottom: 12,
-        }}
-      >
-        Session progress
-      </div>
+    <div style={{ padding: "4px 0 8px" }}>
       <div style={{ display: "flex", alignItems: "flex-start" }}>
-        {TIMELINE_STEPS.map((step, i) => {
+        {STEPPER_STEPS.map((step, i) => {
           const isDone    = i < currentIdx
           const isCurrent = i === currentIdx
+
+          const circleSize = 28
+          const circleBg =
+            isDone    ? "#065f46" :
+            isCurrent ? "#1d4ed8" :
+            "#fff"
+          const circleBorder =
+            isDone || isCurrent ? "none" : "2px solid #cbd5e1"
+          const circleShadow =
+            isCurrent ? "0 0 0 4px #dbeafe" : "none"
+          const circleColor =
+            isDone || isCurrent ? "#fff" : "#94a3b8"
+          const circleContent = isDone ? "✓" : String(i + 1)
+          const circleFontSize = isDone ? 13 : 11
+
+          const labelColor =
+            isCurrent ? "#1d4ed8" :
+            isDone    ? "#334155" :
+            "#94a3b8"
+          const labelWeight = isCurrent ? 700 : isDone ? 500 : 400
 
           return (
             <div
               key={step.label}
               style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}
             >
-              {/* Connector + dot row */}
+              {/* Left arm + circle + right arm */}
               <div style={{ display: "flex", alignItems: "center", width: "100%" }}>
-                {/* Left arm */}
                 <div
                   style={{
                     flex: 1,
                     height: 2,
-                    background: i === 0 ? "transparent" : isDone || isCurrent ? "#065f46" : "#e2e8f0",
+                    background: i === 0 ? "transparent" : isDone ? "#065f46" : "#e2e8f0",
                   }}
                 />
-                {/* Dot */}
                 <div
                   style={{
-                    width:  isCurrent ? 14 : 10,
-                    height: isCurrent ? 14 : 10,
+                    width: circleSize,
+                    height: circleSize,
                     borderRadius: "50%",
                     flexShrink: 0,
-                    background:  isDone ? "#065f46" : isCurrent ? "#16a34a" : "#e2e8f0",
-                    boxShadow:   isCurrent ? "0 0 0 3px #dcfce7" : "none",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: circleBg,
+                    border: circleBorder,
+                    boxShadow: circleShadow,
+                    color: circleColor,
+                    fontSize: circleFontSize,
+                    fontWeight: 700,
                   }}
-                />
-                {/* Right arm */}
+                >
+                  {circleContent}
+                </div>
                 <div
                   style={{
                     flex: 1,
                     height: 2,
                     background:
-                      i === TIMELINE_STEPS.length - 1
+                      i === STEPPER_STEPS.length - 1
                         ? "transparent"
-                        : isDone
-                          ? "#065f46"
-                          : "#e2e8f0",
+                        : isDone ? "#065f46" : "#e2e8f0",
                   }}
                 />
               </div>
+
               {/* Label */}
               <div
                 style={{
-                  marginTop: 6,
-                  fontSize: 10,
-                  fontWeight: isCurrent ? 700 : 400,
-                  color: isCurrent ? "#065f46" : isDone ? "#475569" : "#94a3b8",
+                  marginTop: 8,
+                  fontSize: 11,
+                  fontWeight: labelWeight,
+                  color: labelColor,
                   textAlign: "center",
-                  lineHeight: 1.3,
-                  paddingInline: 2,
+                  lineHeight: 1.35,
+                  paddingInline: 4,
                 }}
               >
                 {step.label}
@@ -198,6 +207,158 @@ function SessionTimeline({ status }: { status: ExtensionProofSessionStatus }) {
       </div>
     </div>
   )
+}
+
+// ── Status-aware message card ─────────────────────────────────────────────────
+
+function StatusMessage({
+  status,
+  pollingActive,
+}: {
+  status: ExtensionProofSessionStatus
+  pollingActive: boolean
+}) {
+  if (status === "created" || status === "waiting_for_extension") {
+    return (
+      <div
+        style={{
+          border: "1px solid #e2e8f0",
+          borderRadius: 12,
+          background: "#f8fafc",
+          padding: "14px 16px",
+          display: "grid",
+          gap: 4,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>
+          Proof session created
+        </div>
+        <p style={{ margin: 0, fontSize: 12, color: "#64748b", lineHeight: 1.65 }}>
+          Proof session created. Start your demo when ready.
+        </p>
+      </div>
+    )
+  }
+
+  if (status === "recording") {
+    return (
+      <div
+        style={{
+          border: "1px solid #d1fae5",
+          borderRadius: 12,
+          background: "#f0fdf4",
+          padding: "14px 16px",
+          display: "grid",
+          gap: 8,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              flexShrink: 0,
+              background: "#16a34a",
+            }}
+          />
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
+            VeriBridge Extension is recording
+          </span>
+        </div>
+        <p style={{ margin: 0, fontSize: 12, color: "#064e3b", lineHeight: 1.7 }}>
+          A floating VeriBridge recorder bar will appear on your website while recording. Use
+          it to stop and send proof without switching tabs. You can also use{" "}
+          <strong>Stop &amp; Send Proof</strong> in the extension popup as a fallback. This
+          page will update automatically when your proof is received.
+        </p>
+        {pollingActive && (
+          <p style={{ margin: 0, fontSize: 11, color: "#16a34a" }}>
+            Listening for proof upload…
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  if (status === "uploaded_pending_analysis") {
+    return (
+      <div
+        style={{
+          border: "1px solid #bfdbfe",
+          borderRadius: 12,
+          background: "#eff6ff",
+          padding: "14px 16px",
+          display: "grid",
+          gap: 8,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>
+          ✓ Proof uploaded successfully
+        </div>
+        <p style={{ margin: 0, fontSize: 12, color: "#1e3a8a", lineHeight: 1.7 }}>
+          Your workflow proof has been received. Next, VeriBridge will analyze your recorded
+          workflow, GitHub repository, and website evidence.
+        </p>
+        {pollingActive && (
+          <p style={{ margin: 0, fontSize: 11, color: "#2563eb" }}>
+            Waiting for analysis to begin…
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  if (status === "analyzing") {
+    return (
+      <div
+        style={{
+          border: "1px solid #ddd6fe",
+          borderRadius: 12,
+          background: "#faf5ff",
+          padding: "14px 16px",
+          display: "grid",
+          gap: 8,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>
+          Verification analysis in progress
+        </div>
+        <p style={{ margin: 0, fontSize: 12, color: "#4c1d95", lineHeight: 1.7 }}>
+          VeriBridge is comparing your GitHub repo, website, and workflow proof.
+        </p>
+        {pollingActive && (
+          <p style={{ margin: 0, fontSize: 11, color: "#7c3aed" }}>
+            Analysis running…
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  if (status === "completed") {
+    return (
+      <div
+        style={{
+          border: "1px solid #d1fae5",
+          borderRadius: 12,
+          background: "#f0fdf4",
+          padding: "14px 16px",
+          display: "grid",
+          gap: 6,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
+          ✓ Proof submitted — analysis complete
+        </div>
+        <p style={{ margin: 0, fontSize: 12, color: "#064e3b", lineHeight: 1.5 }}>
+          Your proof walkthrough has been analyzed. Check your Skill Proof Center for the result.
+        </p>
+      </div>
+    )
+  }
+
+  return null
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -551,8 +712,8 @@ export function ExtensionProofPanel({
           </div>
         </div>
 
-        {/* Status timeline */}
-        <SessionTimeline status={session.status} />
+        {/* Session stepper */}
+        <SessionStepper status={session.status} />
 
         {error && (
           <div
@@ -570,53 +731,9 @@ export function ExtensionProofPanel({
           </div>
         )}
 
-        {/* Recording instruction (visible while extension is expected to be recording) */}
-        {hasStarted && !isCompleted && !isExpired && (
-          <div
-            style={{
-              border: "1px solid #d1fae5",
-              borderRadius: 12,
-              background: "#f0fdf4",
-              padding: "14px 16px",
-              display: "grid",
-              gap: 8,
-            }}
-          >
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
-              VeriBridge Extension is now recording
-            </div>
-            <p style={{ margin: 0, fontSize: 12, color: "#064e3b", lineHeight: 1.7 }}>
-              A floating VeriBridge recorder bar will appear on your website while recording. Use
-              it to stop and send proof without switching tabs. You can also use{" "}
-              <strong>Stop &amp; Send Proof</strong> in the extension popup as a fallback. This
-              page will update automatically when your proof is received.
-            </p>
-            {pollingActive && (
-              <p style={{ margin: 0, fontSize: 11, color: "#16a34a" }}>
-                Listening for proof upload…
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Completed */}
-        {isCompleted && (
-          <div
-            style={{
-              border: "1px solid #d1fae5",
-              borderRadius: 12,
-              background: "#f0fdf4",
-              padding: "14px 16px",
-            }}
-          >
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
-              Proof submitted — AI analysis complete
-            </div>
-            <p style={{ margin: "6px 0 0", fontSize: 12, color: "#064e3b", lineHeight: 1.5 }}>
-              Your proof walkthrough has been analyzed. Check your Skill Proof Center for the
-              result.
-            </p>
-          </div>
+        {/* Status-aware message card */}
+        {!isExpired && (
+          <StatusMessage status={session.status} pollingActive={pollingActive} />
         )}
 
         {/* Expired */}
