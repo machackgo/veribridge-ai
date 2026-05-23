@@ -26,6 +26,7 @@ import {
 import { GitHubPortfolioScanPanel } from "./github-portfolio-scan-panel"
 import { SkillProofCenter } from "./skill-proof-center"
 import { WebsiteAIAnalyzerPanel } from "./website-ai-analyzer-panel"
+import { ExtensionProofPanel } from "./extension-proof-panel"
 import {
   MultiSourceProofForm,
   SourceTypeSelector,
@@ -51,7 +52,7 @@ import {
 } from "@/lib/evidence-sources"
 
 type SubmissionTab = "github" | "website"
-type ProofModalMode = "select" | "manual" | "ai_agent"
+type ProofModalMode = "select" | "manual" | "ai_agent" | "extension_proof"
 type ManualFlowStep = "source_select" | "form"
 
 type SubmissionSummary = {
@@ -824,6 +825,7 @@ export function StudentProofSubmissionPanel({
                     <h2 id="proof-submit-title" style={{ margin: "4px 0 0", fontSize: 24, color: "var(--ink)" }}>
                       {proofMode === "select" ? "How do you want to add proof?"
                         : proofMode === "ai_agent" ? "AI Agent — Multi-Source Proof"
+                        : proofMode === "extension_proof" ? "Private Website Proof with VeriBridge Extension"
                         : manualStep === "source_select" ? "Select evidence source"
                         : selectedSourceType === "github_repository" ? "GitHub Code Proof"
                         : selectedSourceType === "deployed_website" ? "Live Website Proof"
@@ -873,6 +875,26 @@ export function StudentProofSubmissionPanel({
                         </button>
                       ))}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => { setProofMode("extension_proof"); setSubmissionError(null); }}
+                      style={{
+                        border: "1px solid var(--line)",
+                        borderRadius: 14,
+                        padding: "20px 18px",
+                        background: "#fff",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 8,
+                        transition: "border-color 0.1s",
+                        width: "100%",
+                      }}
+                    >
+                      <span style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>🔒 Private Website Proof with VeriBridge Extension</span>
+                      <span style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>Use the VeriBridge Chrome Extension to record a live walkthrough of your private project website in your own browser. Works for private dashboards and websites that use Google login.</span>
+                    </button>
                   </div>
                 )}
 
@@ -1123,6 +1145,14 @@ export function StudentProofSubmissionPanel({
                       </button>
                     </div>
                   </div>
+                )}
+
+                {/* ── Mode: extension_proof ── */}
+                {proofMode === "extension_proof" && (
+                  <ExtensionProofPanel
+                    onBack={() => setProofMode("select")}
+                    onSessionComplete={() => void refreshEvidence()}
+                  />
                 )}
 
                 {/* ── Mode: manual — GitHub / Website forms (existing logic) ── */}

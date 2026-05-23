@@ -875,3 +875,70 @@ export async function getWebsiteProofSession(
   if (!res.ok) throw new Error(`Get session failed (HTTP ${res.status}).`)
   return res.json()
 }
+
+// ── Extension Proof Sessions ──────────────────────────────────────────────────
+
+export type ExtensionProofSessionStatus =
+  | "created"
+  | "waiting_for_extension"
+  | "recording"
+  | "uploaded_pending_analysis"
+  | "analyzing"
+  | "completed"
+  | "expired"
+
+export type ExtensionProofSessionResponse = {
+  id: string
+  user_id: string
+  skill_evidence_id: string
+  status: ExtensionProofSessionStatus
+  started_at: string | null
+  proof_upload_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export async function createExtensionProofSession(
+  skillEvidenceId: string
+): Promise<ExtensionProofSessionResponse> {
+  const res = await fetchAPI("/api/v1/student/extension-proof/sessions", {
+    method: "POST",
+    body: JSON.stringify({ skill_evidence_id: skillEvidenceId }),
+  })
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Session create failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json()
+}
+
+export async function getExtensionProofSession(
+  sessionId: string
+): Promise<ExtensionProofSessionResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}`
+  )
+  if (res.status === 404) throw new Error("Extension proof session not found.")
+  if (!res.ok) throw new Error(`Get session failed (HTTP ${res.status}).`)
+  return res.json()
+}
+
+export async function startExtensionProofSession(
+  sessionId: string
+): Promise<ExtensionProofSessionResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/start`,
+    { method: "POST" }
+  )
+  if (res.status === 404) throw new Error("Extension proof session not found.")
+  if (res.status === 409) {
+    const raw = await res.text()
+    let msg = "Session is not in a startable state."
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  if (!res.ok) throw new Error(`Start session failed (HTTP ${res.status}).`)
+  return res.json()
+}
