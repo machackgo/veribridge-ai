@@ -12,6 +12,7 @@ interface InternalState {
   stoppedAt: string | null
   status: RecordingStatus
   statusMessage: string
+  lastUploadError: string | null
 }
 
 const state: InternalState = {
@@ -24,6 +25,7 @@ const state: InternalState = {
   stoppedAt: null,
   status: "idle",
   statusMessage: "Ready",
+  lastUploadError: null,
 }
 
 async function broadcastToAllTabs(message: unknown): Promise<void> {
@@ -46,6 +48,7 @@ function publicState(): ExtensionState {
     stoppedAt: state.stoppedAt,
     status: state.status,
     statusMessage: state.statusMessage,
+    lastUploadError: state.lastUploadError,
   }
 }
 
@@ -71,6 +74,7 @@ chrome.runtime.onMessage.addListener(
         state.stoppedAt = null
         state.status = "recording"
         state.statusMessage = "Recording…"
+        state.lastUploadError = null
         void broadcastToAllTabs({ type: "START_CAPTURING" })
         sendResponse({ ok: true })
         break
@@ -80,17 +84,19 @@ chrome.runtime.onMessage.addListener(
         state.isRecording = false
         state.stoppedAt = new Date().toISOString()
         state.status = "stopped"
-        state.statusMessage = `Stopped — ${state.events.length} event(s) captured.`
+        state.statusMessage = `Stopped — ${state.events.length} event(s) captured. Click Send Proof to upload.`
         void broadcastToAllTabs({ type: "STOP_CAPTURING" })
         sendResponse({ ok: true })
         break
 
       case "SEND_PROOF": {
+        // Guard against duplicate simultaneous uploads
+        if (state.status === "uploading") {
+          sendResponse({ ok: false, error: "Upload already in progress." })
+          break
+        }
         const { finalNote } = (msg.payload ?? {}) as { finalNote: string | null }
-        void sendProof(finalNote).then(
-          () => sendResponse({ ok: true }),
-          (err: unknown) => sendResponse({ ok: false, error: String(err) })
-        )
+        void sendProof(finalNote).then((result) => sendResponse(result))
         return true // keep message channel open for async response
       }
 
@@ -106,7 +112,6 @@ chrome.runtime.onMessage.addListener(
           sendResponse({ ok: false, reason: "different session active" })
           break
         }
-        // Persist for popup pre-fill across service-worker restarts
         void chrome.storage.local.set({ currentSessionId: session_id })
         if (!state.isRecording) {
           state.sessionId = session_id
@@ -127,11 +132,15 @@ chrome.runtime.onMessage.addListener(
   }
 )
 
-async function sendProof(finalNote: string | null): Promise<void> {
-  if (!state.sessionId) throw new Error("No session ID configured.")
+async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error?: string }> {
+  if (!state.sessionId) {
+    const err = "No session ID. Enter a session ID in the extension popup."
+    return { ok: false, error: err }
+  }
 
   state.status = "uploading"
   state.statusMessage = "Uploading proof…"
+  state.lastUploadError = null
 
   const payload = {
     workflow_events: state.events,
@@ -150,18 +159,40 @@ async function sendProof(finalNote: string | null): Promise<void> {
   const headers: Record<string, string> = { "Content-Type": "application/json" }
   if (state.authToken) headers["Authorization"] = `Bearer ${state.authToken}`
 
-  const resp = await fetch(
-    `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/upload`,
-    { method: "POST", headers, body: JSON.stringify(payload) }
-  )
+  try {
+    const resp = await fetch(
+      `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/upload`,
+      { method: "POST", headers, body: JSON.stringify(payload) }
+    )
 
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "")
-    state.status = "error"
-    state.statusMessage = `Upload failed (${resp.status}): ${body.slice(0, 120)}`
-    throw new Error(state.statusMessage)
+    if (!resp.ok) {
+      let errorMsg = `HTTP ${resp.status}`
+      try {
+        const rawBody = await resp.text()
+        const parsed = JSON.parse(rawBody) as { detail?: { message?: string } | string }
+        const detail = parsed?.detail
+        errorMsg =
+          (typeof detail === "object" ? detail?.message : detail)
+          ?? rawBody.slice(0, 120)
+          ?? errorMsg
+      } catch { /* keep HTTP status string */ }
+
+      state.status = "upload_failed"
+      state.statusMessage = `Upload failed: ${errorMsg}`
+      state.lastUploadError = errorMsg
+      return { ok: false, error: errorMsg }
+    }
+
+    state.status = "uploaded"
+    state.statusMessage = "Proof uploaded successfully ✓"
+    state.lastUploadError = null
+    return { ok: true }
+
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : "Network error — check your connection."
+    state.status = "upload_failed"
+    state.statusMessage = `Upload failed: ${errorMsg}`
+    state.lastUploadError = errorMsg
+    return { ok: false, error: errorMsg }
   }
-
-  state.status = "uploaded"
-  state.statusMessage = "Proof uploaded successfully ✓"
 }

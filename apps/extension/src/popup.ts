@@ -19,7 +19,6 @@ const detectedBanner  = el("detectedBanner")
 // Restore persisted inputs.
 // currentSessionId is written by the background when a session is detected from a page URL.
 chrome.storage.local.get(["sessionId", "apiUrl", "authToken", "currentSessionId"], (data) => {
-  // Auto-detected session takes priority for pre-fill, then last manually-typed value
   const preFill = (data.currentSessionId as string | undefined) ?? (data.sessionId as string | undefined) ?? ""
   if (preFill) sessionIdInput.value = preFill
   apiUrlInput.value = (data.apiUrl as string | undefined) ?? "http://localhost:8000"
@@ -37,33 +36,38 @@ authTokenInput.addEventListener("input", () => {
 })
 
 const DOT_CLASS: Record<RecordingStatus, string> = {
-  idle:      "",
-  ready:     "ready",
-  recording: "recording",
-  stopped:   "stopped",
-  uploading: "stopped",
-  uploaded:  "uploaded",
-  error:     "error",
+  idle:         "",
+  ready:        "ready",
+  recording:    "recording",
+  stopped:      "stopped",
+  uploading:    "stopped",
+  uploaded:     "uploaded",
+  upload_failed: "error",
+  error:        "error",
 }
 
 function applyState(state: ExtensionState): void {
   statusDot.className = `status-dot ${DOT_CLASS[state.status] ?? ""}`.trim()
   statusText.textContent = state.statusMessage
+
   eventCountEl.textContent =
     state.eventCount > 0 ? `${state.eventCount} event(s) captured` : ""
 
-  // Pre-fill session ID if the field is currently empty and the background has one
+  // Pre-fill session ID if the field is currently empty and the background has one.
   if (state.sessionId && !sessionIdInput.value.trim()) {
     sessionIdInput.value = state.sessionId
   }
 
-  // Show detection banner when a session has been auto-detected but recording hasn't started
+  // Show detection banner when a session has been auto-detected but recording hasn't started.
   detectedBanner.style.display = state.status === "ready" ? "" : "none"
 
-  btnStart.disabled = state.isRecording
+  btnStart.disabled = state.isRecording || state.status === "uploading"
   btnStop.disabled = !state.isRecording
+  // Enable Send for stopped, upload_failed (retry), and error states.
   btnSend.disabled =
-    state.isRecording || !["stopped", "error"].includes(state.status)
+    state.isRecording ||
+    state.status === "uploading" ||
+    !["stopped", "upload_failed", "error"].includes(state.status)
 }
 
 function refreshState(): void {
@@ -75,8 +79,6 @@ function refreshState(): void {
 
 refreshState()
 const poll = setInterval(refreshState, 1000)
-
-// Clean up poll when popup is closed
 window.addEventListener("unload", () => clearInterval(poll))
 
 btnStart.addEventListener("click", () => {
@@ -109,10 +111,11 @@ btnSend.addEventListener("click", () => {
     (resp: { ok: boolean; error?: string }) => {
       if (chrome.runtime.lastError) {
         statusText.textContent = `Error: ${chrome.runtime.lastError.message ?? "unknown"}`
+        btnSend.disabled = false
         return
       }
-      if (!resp.ok) {
-        statusText.textContent = resp.error ?? "Upload failed."
+      if (!resp?.ok && resp?.error) {
+        statusText.textContent = `Upload failed: ${resp.error}`
       }
       refreshState()
     }

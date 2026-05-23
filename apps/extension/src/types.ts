@@ -14,12 +14,13 @@ export interface WorkflowEvent {
 
 export type RecordingStatus =
   | "idle"
-  | "ready"       // session auto-detected from page URL, not yet recording
+  | "ready"          // session auto-detected from page URL, not yet recording
   | "recording"
   | "stopped"
   | "uploading"
   | "uploaded"
-  | "error"
+  | "upload_failed"
+  | "error"          // legacy alias kept for backward compat
 
 export interface ExtensionState {
   sessionId: string
@@ -31,4 +32,5 @@ export interface ExtensionState {
   stoppedAt: string | null
   status: RecordingStatus
   statusMessage: string
+  lastUploadError: string | null
 }
