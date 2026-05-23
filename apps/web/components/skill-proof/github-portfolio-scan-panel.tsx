@@ -1,6 +1,7 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { createPortal } from "react-dom"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   importSelectedGitHubPortfolioProofs,
@@ -479,6 +480,16 @@ export function GitHubPortfolioScanPanel({
   const [processingProgress, setProcessingProgress] = useState<ProofProcessingProgress | null>(null)
   const [scanProgress, setScanProgress] = useState<ProofProcessingProgress | null>(null)
 
+  // Modal ref — used to reset scroll to top when panel mounts/opens
+  const modalContentRef = useRef<HTMLDivElement>(null)
+
+  // Lock body scroll while panel is mounted; scroll modal to top on mount
+  useEffect(() => {
+    document.body.style.overflow = "hidden"
+    modalContentRef.current?.scrollTo({ top: 0 })
+    return () => { document.body.style.overflow = "" }
+  }, [])
+
   // Group candidates into hierarchical skill groups
   const grouped = useMemo(
     () => (scanResult ? groupProofSuggestions(scanResult.proof_candidates) : []),
@@ -923,7 +934,7 @@ export function GitHubPortfolioScanPanel({
     setStep("done")
   }
 
-  return (
+  return createPortal(
     <div
       role="presentation"
       data-testid="github-scan-modal-backdrop"
@@ -932,20 +943,24 @@ export function GitHubPortfolioScanPanel({
         position: "fixed",
         inset: 0,
         background: "rgba(15, 23, 42, 0.52)",
-        zIndex: 50,
-        display: "grid",
-        placeItems: "center",
-        padding: 20,
+        zIndex: 200,
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        overflowY: "auto",
+        padding: "24px 20px",
       }}
     >
       <div
+        ref={modalContentRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="github-scan-title"
         data-testid="github-scan-modal"
         style={{
+          position: "relative",
           width: "min(960px, 100%)",
-          maxHeight: "min(94vh, 980px)",
+          maxHeight: "calc(100vh - 48px)",
           overflow: "auto",
           borderRadius: 18,
           background: "#fff",
@@ -954,6 +969,7 @@ export function GitHubPortfolioScanPanel({
           padding: 24,
           display: "grid",
           gap: 20,
+          margin: "0 auto",
         }}
       >
         {/* Header */}
@@ -1349,7 +1365,8 @@ export function GitHubPortfolioScanPanel({
           />
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
