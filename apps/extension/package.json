@@ -1,0 +1,15 @@
+{
+  "name": "veribridge-extension",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/background.ts src/popup.ts src/content.ts --bundle --outdir=dist --target=chrome112 --platform=browser",
+    "dev": "esbuild src/background.ts src/popup.ts src/content.ts --bundle --outdir=dist --target=chrome112 --platform=browser --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.260",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.4.0"
+  }
+}
