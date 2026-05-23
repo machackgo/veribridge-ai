@@ -292,14 +292,22 @@ export function ExtensionProofPanel({
       const updated = await startExtensionProofSession(session.id)
       setSession(updated)
 
-      // Open the website in a new tab with session ID injected as a query param
+      // Open the website in a new tab with session ID injected as a query param.
+      // URL.searchParams.set preserves all existing params and adds/overwrites only ours.
+      const targetUrl = form.websiteUrl.trim()
       try {
-        const url = new URL(form.websiteUrl.trim())
+        const url = new URL(targetUrl)
         url.searchParams.set("veribridge_session_id", session.id)
         window.open(url.toString(), "_blank", "noopener,noreferrer")
       } catch {
-        // Fallback for edge-case URLs
-        window.open(form.websiteUrl.trim(), "_blank", "noopener,noreferrer")
+        // Fallback: URL couldn't be parsed (shouldn't happen after isHttpUrl validation),
+        // append the param manually so session detection still works.
+        const sep = targetUrl.includes("?") ? "&" : "?"
+        window.open(
+          `${targetUrl}${sep}veribridge_session_id=${encodeURIComponent(session.id)}`,
+          "_blank",
+          "noopener,noreferrer"
+        )
       }
 
       setPoll(true)

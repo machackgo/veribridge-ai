@@ -4,20 +4,24 @@ function el<T extends HTMLElement>(id: string): T {
   return document.getElementById(id) as T
 }
 
-const sessionIdInput = el<HTMLInputElement>("sessionId")
-const apiUrlInput = el<HTMLInputElement>("apiUrl")
-const authTokenInput = el<HTMLInputElement>("authToken")
-const finalNoteInput = el<HTMLTextAreaElement>("finalNote")
-const btnStart = el<HTMLButtonElement>("btnStart")
-const btnStop = el<HTMLButtonElement>("btnStop")
-const btnSend = el<HTMLButtonElement>("btnSend")
-const statusDot = el("statusDot")
-const statusText = el("statusText")
-const eventCountEl = el("eventCount")
+const sessionIdInput  = el<HTMLInputElement>("sessionId")
+const apiUrlInput     = el<HTMLInputElement>("apiUrl")
+const authTokenInput  = el<HTMLInputElement>("authToken")
+const finalNoteInput  = el<HTMLTextAreaElement>("finalNote")
+const btnStart        = el<HTMLButtonElement>("btnStart")
+const btnStop         = el<HTMLButtonElement>("btnStop")
+const btnSend         = el<HTMLButtonElement>("btnSend")
+const statusDot       = el("statusDot")
+const statusText      = el("statusText")
+const eventCountEl    = el("eventCount")
+const detectedBanner  = el("detectedBanner")
 
-// Restore persisted inputs
-chrome.storage.local.get(["sessionId", "apiUrl", "authToken"], (data) => {
-  if (data.sessionId) sessionIdInput.value = data.sessionId as string
+// Restore persisted inputs.
+// currentSessionId is written by the background when a session is detected from a page URL.
+chrome.storage.local.get(["sessionId", "apiUrl", "authToken", "currentSessionId"], (data) => {
+  // Auto-detected session takes priority for pre-fill, then last manually-typed value
+  const preFill = (data.currentSessionId as string | undefined) ?? (data.sessionId as string | undefined) ?? ""
+  if (preFill) sessionIdInput.value = preFill
   apiUrlInput.value = (data.apiUrl as string | undefined) ?? "http://localhost:8000"
   if (data.authToken) authTokenInput.value = data.authToken as string
 })
@@ -33,12 +37,13 @@ authTokenInput.addEventListener("input", () => {
 })
 
 const DOT_CLASS: Record<RecordingStatus, string> = {
-  idle: "",
+  idle:      "",
+  ready:     "ready",
   recording: "recording",
-  stopped: "stopped",
+  stopped:   "stopped",
   uploading: "stopped",
-  uploaded: "uploaded",
-  error: "error",
+  uploaded:  "uploaded",
+  error:     "error",
 }
 
 function applyState(state: ExtensionState): void {
@@ -46,6 +51,14 @@ function applyState(state: ExtensionState): void {
   statusText.textContent = state.statusMessage
   eventCountEl.textContent =
     state.eventCount > 0 ? `${state.eventCount} event(s) captured` : ""
+
+  // Pre-fill session ID if the field is currently empty and the background has one
+  if (state.sessionId && !sessionIdInput.value.trim()) {
+    sessionIdInput.value = state.sessionId
+  }
+
+  // Show detection banner when a session has been auto-detected but recording hasn't started
+  detectedBanner.style.display = state.status === "ready" ? "" : "none"
 
   btnStart.disabled = state.isRecording
   btnStop.disabled = !state.isRecording

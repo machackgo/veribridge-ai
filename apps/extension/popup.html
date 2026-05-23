@@ -103,6 +103,7 @@
       flex-shrink: 0;
       background: #9ca3af;
     }
+    .status-dot.ready { background: #0284c7; }
     .status-dot.recording {
       background: #16a34a;
       animation: pulse 1.1s ease-in-out infinite;
@@ -160,6 +161,13 @@
   <div class="field">
     <label for="sessionId">Session ID</label>
     <input id="sessionId" type="text" placeholder="Paste session ID from dashboard" />
+  </div>
+
+  <!-- Shown when content script detects veribridge_session_id in the page URL -->
+  <div id="detectedBanner" style="display:none; margin-bottom:10px;">
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 10px;font-size:11px;color:#166534;line-height:1.55;">
+      ✓ Proof session detected from VeriBridge. You can start recording.
+    </div>
   </div>
 
   <details>

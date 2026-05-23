@@ -97,3 +97,27 @@ chrome.runtime.onMessage.addListener((msg: { type: string }) => {
   if (msg.type === "START_CAPTURING") start()
   else if (msg.type === "STOP_CAPTURING") stop()
 })
+
+// ── Session detection ──────────────────────────────────────────────────────────
+// Runs once at document_idle. Reads veribridge_session_id from the URL and
+// notifies the background service worker so it can pre-fill the popup.
+
+function detectSessionFromUrl(): void {
+  const params = new URLSearchParams(location.search)
+  const sessionId = params.get("veribridge_session_id")
+  if (!sessionId) return
+
+  chrome.runtime
+    .sendMessage({
+      type: "SESSION_DETECTED_FROM_PAGE",
+      payload: {
+        session_id: sessionId,
+        page_url: location.href,
+        page_title: document.title,
+        detected_at: new Date().toISOString(),
+      },
+    })
+    .catch(() => undefined)
+}
+
+detectSessionFromUrl()

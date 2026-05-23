@@ -94,6 +94,30 @@ chrome.runtime.onMessage.addListener(
         return true // keep message channel open for async response
       }
 
+      case "SESSION_DETECTED_FROM_PAGE": {
+        const { session_id } = msg.payload as {
+          session_id: string
+          page_url: string
+          page_title: string
+          detected_at: string
+        }
+        // Never overwrite a different actively-recording session
+        if (state.isRecording && state.sessionId !== session_id) {
+          sendResponse({ ok: false, reason: "different session active" })
+          break
+        }
+        // Persist for popup pre-fill across service-worker restarts
+        void chrome.storage.local.set({ currentSessionId: session_id })
+        if (!state.isRecording) {
+          state.sessionId = session_id
+          state.status = "ready"
+          state.statusMessage =
+            "Proof session detected from VeriBridge. You can start recording."
+        }
+        sendResponse({ ok: true })
+        break
+      }
+
       case "WORKFLOW_EVENT":
         if (state.isRecording) {
           state.events.push(msg.payload as WorkflowEvent)

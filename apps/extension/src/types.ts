@@ -14,6 +14,7 @@ export interface WorkflowEvent {
 
 export type RecordingStatus =
   | "idle"
+  | "ready"       // session auto-detected from page URL, not yet recording
   | "recording"
   | "stopped"
   | "uploading"
