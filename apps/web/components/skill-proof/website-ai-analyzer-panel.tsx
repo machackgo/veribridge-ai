@@ -1106,16 +1106,26 @@ function GroupedSkillCard({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
+import {
+  WORKFLOW_BLUEPRINTS,
+  getBlueprintById,
+  buildEnrichedExpectedOutput,
+  type WorkflowBlueprint,
+  type WorkflowCheckpoint,
+} from "./workflow-blueprints"
+
 type PanelStep = "form" | "analyzing" | "review" | "saving" | "done"
 
-type FunctionalTestPlanState = {
+export type FunctionalTestPlanState = {
   whatToTest: string
   testInput: string
   expectedOutput: string
-  frontendUrl: string                  // J4I: frontend URL with interactive UI
-  browserWorkflowInstructions: string  // J4I: step instructions for Playwright
-  runApiVerification: boolean          // J4J: verify API endpoints
-  runBrowserVerification: boolean      // J4J: verify frontend UI and capture screenshot
+  frontendUrl: string
+  browserWorkflowInstructions: string
+  runApiVerification: boolean
+  runBrowserVerification: boolean
+  websiteAppType: string          // Workflow Blueprint id
+  checkpoints: WorkflowCheckpoint[]
 }
 
 export function WebsiteAIAnalyzerPanel({
@@ -1287,11 +1297,21 @@ export function WebsiteAIAnalyzerPanel({
       )
       // Build test plan — always include when any field is filled.
       // run_api_verification + run_browser_verification drive the combined behavior.
+      const blueprint = getBlueprintById(functionalTestPlan.websiteAppType)
+      const enrichedExpected = buildEnrichedExpectedOutput(
+        functionalTestPlan.expectedOutput.trim(),
+        blueprint,
+      )
+      // Append checkpoint expected texts so backend detection covers all checkpoints
+      const checkpointExpected = (functionalTestPlan.checkpoints || [])
+        .map((c) => c.expected).filter(Boolean).join("; ")
+      const finalExpected = [enrichedExpected, checkpointExpected].filter(Boolean).join(". ") || null
+
       const testPlanPayload: FunctionalTestPlan | null = hasTestPlan
         ? {
             what_to_test: functionalTestPlan.whatToTest.trim() || null,
             test_input: functionalTestPlan.testInput.trim() || null,
-            expected_output: functionalTestPlan.expectedOutput.trim() || null,
+            expected_output: finalExpected,
             test_mode: "auto",
             frontend_url: functionalTestPlan.frontendUrl.trim() || null,
             browser_workflow_instructions: functionalTestPlan.browserWorkflowInstructions.trim() || null,
@@ -1537,6 +1557,10 @@ export function WebsiteAIAnalyzerPanel({
             screenshot_status: fc.screenshot_status ?? "unavailable",
             browser_workflow_status: fc.browser_workflow_status ?? "not_started",
             browser_workflow_notes: fc.browser_workflow_notes ?? null,
+            // Workflow blueprint context
+            website_app_type: functionalTestPlan.websiteAppType || null,
+            website_app_type_label: getBlueprintById(functionalTestPlan.websiteAppType)?.label ?? null,
+            workflow_checkpoints: functionalTestPlan.checkpoints?.length ? functionalTestPlan.checkpoints : null,
             // Attach global browser workflow result so this evidence item stays
             // self-contained after reload (screenshot + metrics embedded here)
             browser_screenshot_url: analyzeResult?.browser_workflow_result?.screenshot_data_url ?? null,
@@ -1586,6 +1610,9 @@ export function WebsiteAIAnalyzerPanel({
             evidence_title: `Browser UI Workflow — ${(() => { try { return new URL(bwr.frontend_url).hostname } catch { return bwr.frontend_url } })()}`,
             submission_source: "website_ai_analyzer_browser_workflow",
             proof_kind: "browser_workflow_verification",
+            website_app_type: functionalTestPlan.websiteAppType || null,
+            website_app_type_label: getBlueprintById(functionalTestPlan.websiteAppType)?.label ?? null,
+            workflow_checkpoints: functionalTestPlan.checkpoints?.length ? functionalTestPlan.checkpoints : null,
             frontend_url: bwr.frontend_url,
             screenshot_url: bwr.screenshot_data_url,
             screenshot_caption: bwr.expected_output_found
@@ -1746,24 +1773,85 @@ export function WebsiteAIAnalyzerPanel({
                   safe endpoints from the OpenAPI spec and uses default test values.
                 </div>
 
-                {/* What to test */}
+                {/* ── Website/App Type selector (Workflow Blueprint) ── */}
+                <div style={{ display: "grid", gap: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>
+                    Website / App Type
+                    <span style={{ fontWeight: 400, color: "var(--muted)", marginLeft: 6 }}>
+                      — sets smart placeholders and output detection
+                    </span>
+                  </span>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
+                    {WORKFLOW_BLUEPRINTS.map((bp) => {
+                      const active = functionalTestPlan.websiteAppType === bp.id
+                      return (
+                        <button
+                          key={bp.id}
+                          type="button"
+                          onClick={() => {
+                            const updated: typeof functionalTestPlan = {
+                              ...functionalTestPlan,
+                              websiteAppType: bp.id,
+                              checkpoints:
+                                bp.supportsCheckpoints && !(functionalTestPlan.checkpoints?.length)
+                                  ? (bp.defaultCheckpoints ?? []).map((c) => ({ ...c }))
+                                  : (functionalTestPlan.checkpoints ?? []),
+                            }
+                            onFunctionalTestPlanChange(updated)
+                          }}
+                          style={{
+                            border: active ? "2px solid var(--ink)" : "1px solid var(--line)",
+                            borderRadius: 8,
+                            padding: "6px 10px",
+                            background: active ? "var(--ink)" : "#fff",
+                            color: active ? "#fff" : "var(--ink-2)",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            textAlign: "left",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            transition: "all 0.1s",
+                          }}
+                        >
+                          <span style={{ fontSize: 14 }}>{bp.icon}</span>
+                          <span>{bp.label}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {functionalTestPlan.websiteAppType && (
+                    <div style={{ fontSize: 10, color: "var(--indigo)", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {(getBlueprintById(functionalTestPlan.websiteAppType)?.likelySkills ?? []).map((s) => (
+                        <span key={s} style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, padding: "1px 6px" }}>{s}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {(() => {
+                  const bp: WorkflowBlueprint | null = getBlueprintById(functionalTestPlan.websiteAppType)
+                  return (
+                    <>
+                {/* What to test — dynamic placeholder */}
                 <div style={{ display: "grid", gap: 3 }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>What should VeriBridge test? <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span></span>
                   <input
                     value={functionalTestPlan.whatToTest}
                     onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, whatToTest: e.target.value })}
-                    placeholder="e.g. Verify accident risk prediction returns a risk class and confidence score"
+                    placeholder={bp?.objectivePlaceholder ?? "e.g. Verify accident risk prediction returns a risk class and confidence score"}
                     style={inp}
                   />
                 </div>
 
-                {/* Test input */}
+                {/* Test input — dynamic placeholder */}
                 <div style={{ display: "grid", gap: 3 }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>Test input <span style={{ fontWeight: 400, color: "var(--muted)" }}>(JSON or key=value; pairs)</span></span>
                   <textarea
                     value={functionalTestPlan.testInput}
                     onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, testInput: e.target.value })}
-                    placeholder={'origin=Fenway Park, Boston, MA; destination=Boston Logan International Airport, MA; num_segments=5\n\nor: {"origin": "Fenway Park, Boston, MA", "destination": "Boston Logan International Airport, MA"}'}
+                    placeholder={bp?.inputPlaceholder ?? 'origin=Fenway Park, Boston, MA; destination=Boston Logan International Airport, MA; num_segments=5\n\nor: {"origin": "Fenway Park, Boston, MA", "destination": "Boston Logan International Airport, MA"}'}
                     rows={3}
                     style={{ ...inp, fontFamily: "monospace", fontSize: 11, resize: "vertical" }}
                   />
@@ -1773,13 +1861,13 @@ export function WebsiteAIAnalyzerPanel({
                   </span>
                 </div>
 
-                {/* Expected output */}
+                {/* Expected output — dynamic placeholder */}
                 <div style={{ display: "grid", gap: 3 }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>Expected output <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span></span>
                   <input
                     value={functionalTestPlan.expectedOutput}
                     onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, expectedOutput: e.target.value })}
-                    placeholder="e.g. risk class, confidence score, route recommendation, segmented risk output"
+                    placeholder={bp?.expectedOutputPlaceholder ?? "e.g. risk class, confidence score, route recommendation, segmented risk output"}
                     style={inp}
                   />
                 </div>
@@ -1797,7 +1885,6 @@ export function WebsiteAIAnalyzerPanel({
                       onFunctionalTestPlanChange({
                         ...functionalTestPlan,
                         frontendUrl: v,
-                        // Auto-enable browser verification when URL is typed
                         runBrowserVerification: v.trim() ? true : functionalTestPlan.runBrowserVerification,
                       })
                     }}
@@ -1809,7 +1896,7 @@ export function WebsiteAIAnalyzerPanel({
                   </span>
                 </div>
 
-                {/* Browser workflow instructions — shown when frontend URL is provided */}
+                {/* Browser workflow instructions — dynamic placeholder */}
                 {functionalTestPlan.frontendUrl.trim() && (
                   <div style={{ display: "grid", gap: 3 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>
@@ -1818,12 +1905,83 @@ export function WebsiteAIAnalyzerPanel({
                     <textarea
                       value={functionalTestPlan.browserWorkflowInstructions}
                       onChange={(e) => onFunctionalTestPlanChange({ ...functionalTestPlan, browserWorkflowInstructions: e.target.value })}
-                      placeholder={"Open the website.\nFill the input fields with the test data above.\nClick Analyze / Predict / Submit / Search.\nWait for the result to appear.\nCapture screenshot of the output."}
+                      placeholder={bp?.workflowPlaceholder ?? "Open the website.\nFill the input fields with the test data above.\nClick Analyze / Predict / Submit / Search.\nWait for the result to appear.\nCapture screenshot of the output."}
                       rows={3}
                       style={{ ...inp, fontSize: 11, resize: "vertical" }}
                     />
                   </div>
                 )}
+
+                {/* Workflow Checkpoints — shown for SaaS / multi-step blueprint */}
+                {bp?.supportsCheckpoints && (
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)" }}>
+                        Workflow Checkpoints
+                        <span style={{ fontWeight: 400, color: "var(--muted)", marginLeft: 6 }}>— verify each step before proceeding</span>
+                      </span>
+                      {(functionalTestPlan.checkpoints || []).length < 5 && (
+                        <button
+                          type="button"
+                          onClick={() => onFunctionalTestPlanChange({
+                            ...functionalTestPlan,
+                            checkpoints: [...(functionalTestPlan.checkpoints || []), { title: "", expected: "" }],
+                          })}
+                          style={{ fontSize: 10, fontWeight: 700, color: "var(--indigo)", background: "none", border: "1px solid #bfdbfe", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}
+                        >
+                          + Add Checkpoint
+                        </button>
+                      )}
+                    </div>
+                    {(functionalTestPlan.checkpoints || []).map((cp, idx) => (
+                      <div key={`cp-${idx}`} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "8px 10px", background: "#fff", display: "grid", gap: 5 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)" }}>Checkpoint {idx + 1}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = [...(functionalTestPlan.checkpoints || [])]
+                              next.splice(idx, 1)
+                              onFunctionalTestPlanChange({ ...functionalTestPlan, checkpoints: next })
+                            }}
+                            style={{ fontSize: 10, color: "#991b1b", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <input
+                          value={cp.title}
+                          onChange={(e) => {
+                            const next = [...(functionalTestPlan.checkpoints || [])]
+                            next[idx] = { ...next[idx], title: e.target.value }
+                            onFunctionalTestPlanChange({ ...functionalTestPlan, checkpoints: next })
+                          }}
+                          placeholder="Checkpoint title — e.g. GitHub URL input accepted"
+                          style={{ ...inp, fontSize: 11 }}
+                        />
+                        <input
+                          value={cp.expected}
+                          onChange={(e) => {
+                            const next = [...(functionalTestPlan.checkpoints || [])]
+                            next[idx] = { ...next[idx], expected: e.target.value }
+                            onFunctionalTestPlanChange({ ...functionalTestPlan, checkpoints: next })
+                          }}
+                          placeholder="Expected visible state — e.g. Analyze GitHub appears"
+                          style={{ ...inp, fontSize: 11 }}
+                        />
+                      </div>
+                    ))}
+                    {(functionalTestPlan.checkpoints || []).length === 0 && (
+                      <div style={{ fontSize: 10, color: "var(--muted)", fontStyle: "italic" }}>
+                        No checkpoints added. Click "+ Add Checkpoint" to verify intermediate workflow steps.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                    </>
+                  )
+                })()}
 
                 {/* Verification options — checkboxes, not mutually exclusive */}
                 <div style={{ display: "grid", gap: 4 }}>

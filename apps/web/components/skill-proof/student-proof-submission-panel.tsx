@@ -3,6 +3,7 @@
 import { createPortal } from "react-dom"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { CSSProperties } from "react"
+import type { FunctionalTestPlanState } from "./website-ai-analyzer-panel"
 import {
   createGithubRecruiterProofReport,
   createGithubSemanticVerificationResult,
@@ -419,11 +420,11 @@ export function StudentProofSubmissionPanel({
   const [agentTranscript, setAgentTranscript] = useState("")
   // Website analyzer owns its form fields in the parent so they survive panel remounts
   const [agentGithubRepoUrl, setAgentGithubRepoUrl] = useState("")
-  const [agentFunctionalTestPlan, setAgentFunctionalTestPlan] = useState<{
-    whatToTest: string; testInput: string; expectedOutput: string
-    frontendUrl: string; browserWorkflowInstructions: string
-    runApiVerification: boolean; runBrowserVerification: boolean
-  }>({ whatToTest: "", testInput: "", expectedOutput: "", frontendUrl: "", browserWorkflowInstructions: "", runApiVerification: true, runBrowserVerification: true })
+  const [agentFunctionalTestPlan, setAgentFunctionalTestPlan] = useState<FunctionalTestPlanState>({
+    whatToTest: "", testInput: "", expectedOutput: "", frontendUrl: "",
+    browserWorkflowInstructions: "", runApiVerification: true, runBrowserVerification: true,
+    websiteAppType: "", checkpoints: [],
+  })
   // Pre-fills the scan panel when opened from AI Agent mode
   const [pendingScanUrl, setPendingScanUrl] = useState("")
 
@@ -485,7 +486,7 @@ export function StudentProofSubmissionPanel({
     setAgentUrl("")
     setAgentSkillFocus("")
     setAgentGithubRepoUrl("")
-    setAgentFunctionalTestPlan({ whatToTest: "", testInput: "", expectedOutput: "", frontendUrl: "", browserWorkflowInstructions: "", runApiVerification: true, runBrowserVerification: true })
+    setAgentFunctionalTestPlan({ whatToTest: "", testInput: "", expectedOutput: "", frontendUrl: "", browserWorkflowInstructions: "", runApiVerification: true, runBrowserVerification: true, websiteAppType: "", checkpoints: [] })
     setAgentTimestampStart("")
     setAgentTimestampEnd("")
     setAgentTranscript("")

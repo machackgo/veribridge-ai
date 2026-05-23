@@ -31,6 +31,7 @@ class ProofProjectSummary(BaseModel):
     screenshot_caption: str | None = None
     api_verified: bool = False
     api_output_summary: str | None = None
+    website_app_type_label: str | None = None
 
 
 class VerifiedSkillSummary(BaseModel):

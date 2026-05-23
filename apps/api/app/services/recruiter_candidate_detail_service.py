@@ -290,6 +290,7 @@ def _build_detail(
         screenshot_caption: str | None = None
         api_verified = False
         api_output_parts: list[str] = []
+        website_app_type_label: str | None = None
         for row in rows:
             meta = row.get("metadata") or {}
             if not isinstance(meta, dict):
@@ -310,6 +311,10 @@ def _build_detail(
             # API verification
             if meta.get("proof_kind") == "functional_verification" and meta.get("verified") is True:
                 api_verified = True
+            # Website/App type label
+            atl = meta.get("website_app_type_label")
+            if isinstance(atl, str) and atl.strip() and website_app_type_label is None:
+                website_app_type_label = atl.strip()
             # API output summary
             for key in ("response_summary", "proof_summary", "browser_proof_summary"):
                 rs = meta.get(key)
@@ -333,6 +338,7 @@ def _build_detail(
                 screenshot_caption=screenshot_caption,
                 api_verified=api_verified,
                 api_output_summary=api_output_summary,
+                website_app_type_label=website_app_type_label,
             )
         )
 

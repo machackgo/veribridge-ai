@@ -191,6 +191,10 @@ function SavedEvidenceRow({
   const isBrowserWorkflow = proofKind === "browser_workflow_verification"
   const isWebsiteAnalyzer = proofKind === "website_ai_analysis"
   const isCombined = source === "combined" || meta.evidence_source === "combined"
+  const appTypeLabel = typeof meta.website_app_type_label === "string" ? meta.website_app_type_label : null
+  const workflowCheckpoints = Array.isArray(meta.workflow_checkpoints)
+    ? (meta.workflow_checkpoints as Array<{ title: string; expected: string }>)
+    : []
 
   // Website analyzer metadata
   const routePath = typeof meta.route_path === "string" ? meta.route_path : null
@@ -290,6 +294,11 @@ function SavedEvidenceRow({
           {(isUserGuided && isFunctional) && (
             <span style={{ ...badgeBase, fontSize: 9, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe" }}>
               {verificationLabel ?? "User-guided"}
+            </span>
+          )}
+          {appTypeLabel && (
+            <span style={{ ...badgeBase, fontSize: 9, background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
+              {appTypeLabel}
             </span>
           )}
           <span style={{ ...badgeBase, ...statusStyle(evidence.suggestedStatus), fontSize: 9 }}>
@@ -422,6 +431,20 @@ function SavedEvidenceRow({
               style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none" }}>
               Open Live Frontend →
             </a>
+          )}
+          {/* Workflow checkpoints */}
+          {workflowCheckpoints.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              <div style={{ fontSize: 9, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                Workflow Checkpoints
+              </div>
+              {workflowCheckpoints.map((cp, i) => (
+                <div key={`wcp-${i}`} style={{ fontSize: 10, color: "var(--ink-2)", display: "flex", gap: 6 }}>
+                  <span style={{ fontWeight: 700, color: "var(--muted)" }}>{i + 1}.</span>
+                  <span>{cp.title}{cp.expected ? ` — ${cp.expected}` : ""}</span>
+                </div>
+              ))}
+            </div>
           )}
           {/* Output terms detected */}
           {outputTermsFound.length > 0 && (

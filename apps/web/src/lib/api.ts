@@ -757,6 +757,7 @@ export type ProofProjectSummary = {
   screenshot_caption?: string | null
   api_verified?: boolean
   api_output_summary?: string | null
+  website_app_type_label?: string | null
 }
 
 export type VerifiedSkillSummary = {

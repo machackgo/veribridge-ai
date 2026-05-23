@@ -417,6 +417,13 @@ function DetailProofProjectCard({ project }: { project: import("@/lib/api").Proo
         </div>
       )}
 
+      {/* Website/App Type badge */}
+      {project.website_app_type_label && (
+        <div style={{ fontSize: 10, color: "#0369a1", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 4, padding: "2px 7px", display: "inline-block" }}>
+          {project.website_app_type_label}
+        </div>
+      )}
+
       {/* API verification badge */}
       {project.api_verified && (
         <div style={{ fontSize: 11, color: "#166534", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
