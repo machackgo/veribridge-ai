@@ -1435,12 +1435,30 @@ export function WebsiteAIAnalyzerPanel({
 
       try {
         const evidenceType = candidate.evidence_source === "github_repo" ? "github repository" : "deployed_website"
+        // Parse line range from route_path format "path/to/file.py L10-45"
+        let atomicLineStart: number | undefined
+        let atomicLineEnd: number | undefined
+        let atomicFilePath: string | undefined
+        if (candidate.evidence_source === "github_repo") {
+          const routeParts = candidate.route_path.split(" ")
+          atomicFilePath = routeParts[0]
+          const lineRangePart = routeParts.find(p => /^L\d/.test(p))
+          if (lineRangePart) {
+            const mRange = lineRangePart.match(/^L(\d+)-(\d+)$/)
+            const mSingle = !mRange ? lineRangePart.match(/^L(\d+)$/) : null
+            if (mRange) { atomicLineStart = parseInt(mRange[1], 10); atomicLineEnd = parseInt(mRange[2], 10) }
+            else if (mSingle) { atomicLineStart = parseInt(mSingle[1], 10); atomicLineEnd = atomicLineStart }
+          }
+        }
         const ev = await createSkillEvidence({
           skill_name: candidate.skill_name,
           evidence_type: evidenceType,
           evidence_url: candidate.source_url,
           evidence_description: candidate.evidence_summary,
           proof_visibility: "public",
+          file_path: atomicFilePath ?? null,
+          line_start: atomicLineStart,
+          line_end: atomicLineEnd,
           metadata: {
             evidence_title: candidate.evidence_title,
             submission_source: "website_ai_analyzer",
@@ -1513,12 +1531,23 @@ export function WebsiteAIAnalyzerPanel({
             verification_badge: fc.verified ? "Live Test Passed" : "Endpoint Detected",
             base_url: analyzeResult?.base_url ?? fc.endpoint_url,
             github_repo_url: analyzeResult?.github_repo_url ?? null,
-            // J4I: screenshot / browser workflow proof
+            // J4I: per-candidate screenshot (usually null for API-only candidates)
             screenshot_url: fc.screenshot_url ?? null,
             screenshot_caption: fc.screenshot_caption ?? null,
             screenshot_status: fc.screenshot_status ?? "unavailable",
             browser_workflow_status: fc.browser_workflow_status ?? "not_started",
             browser_workflow_notes: fc.browser_workflow_notes ?? null,
+            // Attach global browser workflow result so this evidence item stays
+            // self-contained after reload (screenshot + metrics embedded here)
+            browser_screenshot_url: analyzeResult?.browser_workflow_result?.screenshot_data_url ?? null,
+            browser_screenshot_caption: analyzeResult?.browser_workflow_result?.screenshot_status === "captured"
+              ? "Browser UI workflow screenshot — final output state" : null,
+            browser_workflow_status_global: analyzeResult?.browser_workflow_result?.browser_workflow_status ?? null,
+            browser_proof_summary: analyzeResult?.browser_workflow_result?.proof_summary ?? null,
+            output_terms_found: analyzeResult?.browser_workflow_result?.output_terms_found ?? [],
+            matched_visual_metrics: analyzeResult?.browser_workflow_result?.matched_visual_metrics ?? [],
+            frontend_visible_output_text: analyzeResult?.browser_workflow_result?.frontend_visible_output_text ?? null,
+            frontend_url: analyzeResult?.browser_workflow_result?.frontend_url ?? null,
           },
         })
         try { await generateEvidenceAccessLinks(ev.id) } catch { /* best-effort */ }
@@ -1554,18 +1583,25 @@ export function WebsiteAIAnalyzerPanel({
           evidence_description: `Browser UI workflow verified at ${bwr.frontend_url}. ${bwr.steps_run.length} steps run.${bwr.expected_output_found ? " Expected output found." : ""}`,
           proof_visibility: "public",
           metadata: {
+            evidence_title: `Browser UI Workflow — ${(() => { try { return new URL(bwr.frontend_url).hostname } catch { return bwr.frontend_url } })()}`,
             submission_source: "website_ai_analyzer_browser_workflow",
             proof_kind: "browser_workflow_verification",
             frontend_url: bwr.frontend_url,
             screenshot_url: bwr.screenshot_data_url,
+            screenshot_caption: bwr.expected_output_found
+              ? "Final UI output after workflow execution — output confirmed"
+              : "Browser UI state at workflow completion",
             screenshot_status: bwr.screenshot_status,
             steps_run: bwr.steps_run,
             expected_output_found: bwr.expected_output_found,
             output_terms_found: bwr.output_terms_found ?? [],
+            matched_visual_metrics: bwr.matched_visual_metrics ?? [],
+            frontend_visible_output_text: bwr.frontend_visible_output_text ?? null,
             browser_workflow_status: bwr.browser_workflow_status ?? (bwr.success ? "passed" : "failed"),
             proof_summary: bwr.proof_summary ?? "",
             action_label: "Open Screenshot",
             base_url: _ar.base_url,
+            github_repo_url: _ar.github_repo_url ?? null,
           },
         })
         savedCount++

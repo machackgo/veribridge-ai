@@ -284,6 +284,41 @@ def _build_detail(
                     )
                 )
 
+        # Extract proof verification fields from metadata
+        _MAX_SCREENSHOT_LEN = 2 * 1024 * 1024  # 2 MB generous limit for base64 images
+        screenshot_url: str | None = None
+        screenshot_caption: str | None = None
+        api_verified = False
+        api_output_parts: list[str] = []
+        for row in rows:
+            meta = row.get("metadata") or {}
+            if not isinstance(meta, dict):
+                continue
+            # Screenshot: prefer browser_screenshot_url then screenshot_url
+            for key in ("browser_screenshot_url", "screenshot_url"):
+                su = meta.get(key)
+                if (
+                    isinstance(su, str)
+                    and su.startswith("data:image/")
+                    and len(su) <= _MAX_SCREENSHOT_LEN
+                    and screenshot_url is None
+                ):
+                    screenshot_url = su
+                    caption = meta.get("browser_screenshot_caption") or meta.get("screenshot_caption")
+                    screenshot_caption = str(caption).strip() if isinstance(caption, str) else None
+                    break
+            # API verification
+            if meta.get("proof_kind") == "functional_verification" and meta.get("verified") is True:
+                api_verified = True
+            # API output summary
+            for key in ("response_summary", "proof_summary", "browser_proof_summary"):
+                rs = meta.get(key)
+                if isinstance(rs, str) and rs.strip() and rs not in api_output_parts:
+                    api_output_parts.append(rs.strip())
+                    break
+
+        api_output_summary = "; ".join(api_output_parts[:2]) if api_output_parts else None
+
         proof_projects.append(
             ProofProjectSummary(
                 project_title=group["project_title"],
@@ -294,6 +329,10 @@ def _build_detail(
                 recruiter_summary=recruiter_summary,
                 associated_skill_labels=skill_labels,
                 evidence_access_links=link_items,
+                screenshot_url=screenshot_url,
+                screenshot_caption=screenshot_caption,
+                api_verified=api_verified,
+                api_output_summary=api_output_summary,
             )
         )
 

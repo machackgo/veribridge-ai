@@ -188,6 +188,7 @@ function SavedEvidenceRow({
   // Identify evidence kind from metadata
   const proofKind = typeof meta.proof_kind === "string" ? meta.proof_kind : null
   const isFunctional = source === "functional" || proofKind === "functional_verification"
+  const isBrowserWorkflow = proofKind === "browser_workflow_verification"
   const isWebsiteAnalyzer = proofKind === "website_ai_analysis"
   const isCombined = source === "combined" || meta.evidence_source === "combined"
 
@@ -214,6 +215,19 @@ function SavedEvidenceRow({
   // J4I: screenshot / browser workflow metadata
   const screenshotUrl     = typeof meta.screenshot_url     === "string" ? meta.screenshot_url     : null
   const screenshotCaption = typeof meta.screenshot_caption === "string" ? meta.screenshot_caption : null
+  // Fallback: browser screenshot attached to functional verification items
+  const browserScreenshotUrl     = typeof meta.browser_screenshot_url     === "string" ? meta.browser_screenshot_url     : null
+  const browserScreenshotCaption = typeof meta.browser_screenshot_caption === "string" ? meta.browser_screenshot_caption : null
+  // Use whichever screenshot is available
+  const effectiveScreenshotUrl     = screenshotUrl ?? browserScreenshotUrl
+  const effectiveScreenshotCaption = screenshotCaption ?? browserScreenshotCaption
+  const matchedVisualMetrics = Array.isArray(meta.matched_visual_metrics)
+    ? (meta.matched_visual_metrics as Array<{ metric_key: string; api_value: string; match_type: string }>)
+    : []
+  const outputTermsFound = Array.isArray(meta.output_terms_found) ? (meta.output_terms_found as string[]) : []
+  const browserProofSummary = typeof meta.browser_proof_summary === "string" ? meta.browser_proof_summary
+    : typeof meta.proof_summary === "string" ? meta.proof_summary : null
+  const frontendUrl = typeof meta.frontend_url === "string" ? meta.frontend_url : null
 
   // YouTube timestamp display
   const tsStart = typeof meta.timestamp_start_formatted === "string" ? meta.timestamp_start_formatted : null
@@ -390,29 +404,71 @@ function SavedEvidenceRow({
         </>
       )}
 
-      {/* Scope note + screenshot proof for functional */}
-      {isFunctional && (
+      {/* Scope note + screenshot proof for functional / browser-workflow items */}
+      {(isFunctional || isBrowserWorkflow) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <div style={{ fontSize: 10, color: "#64748b", fontStyle: "italic" }}>
-            {verified ? "✓ API endpoint responded with expected output" : "⚠ Endpoint detected — not fully verified"}
-          </div>
-          {screenshotUrl ? (
+          {isFunctional && (
+            <div style={{ fontSize: 10, color: "#64748b", fontStyle: "italic" }}>
+              {verified ? "✓ API endpoint responded with expected output" : "⚠ Endpoint detected — not fully verified"}
+            </div>
+          )}
+          {/* Browser proof summary */}
+          {browserProofSummary && (
+            <div style={{ fontSize: 10, color: "var(--ink-2)", lineHeight: 1.5 }}>{browserProofSummary}</div>
+          )}
+          {/* Frontend URL link */}
+          {frontendUrl && (
+            <a href={frontendUrl} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none" }}>
+              Open Live Frontend →
+            </a>
+          )}
+          {/* Output terms detected */}
+          {outputTermsFound.length > 0 && (
+            <div style={{ fontSize: 9, color: "#166534" }}>
+              Output detected: <span style={{ fontFamily: "monospace" }}>{outputTermsFound.slice(0, 6).join(", ")}</span>
+            </div>
+          )}
+          {/* Metric-to-visual matching */}
+          {matchedVisualMetrics.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <div style={{ fontSize: 9, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                API Metrics → Visual Evidence
+              </div>
+              {matchedVisualMetrics.slice(0, 4).map((m, i) => {
+                const dot = m.match_type === "exact" ? "#22c55e" : m.match_type !== "not_found" ? "#f59e0b" : "#cbd5e1"
+                const label = m.match_type === "exact" ? "✓ exact" : m.match_type === "keyword" ? "✓ keyword" : m.match_type !== "not_found" ? "~ related" : "– not found"
+                return (
+                  <div key={`mvc-${i}`} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9 }}>
+                    <span style={{ width: 5, height: 5, borderRadius: "50%", background: dot, flexShrink: 0 }} />
+                    <span style={{ fontFamily: "monospace", color: "#475569", minWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.metric_key}:</span>
+                    <span style={{ fontWeight: 700, color: "var(--ink)" }}>{String(m.api_value).slice(0, 18)}</span>
+                    <span style={{ color: "#64748b", fontStyle: "italic" }}>{label}</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {/* Screenshot */}
+          {effectiveScreenshotUrl ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <span style={{ ...badgeBase, fontSize: 9, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
                   Screenshot Attached
                 </span>
-                {screenshotCaption && <span style={{ fontSize: 10, color: "var(--ink-2)" }}>{screenshotCaption}</span>}
+                {effectiveScreenshotCaption && (
+                  <span style={{ fontSize: 10, color: "var(--ink-2)" }}>{effectiveScreenshotCaption}</span>
+                )}
               </div>
-              {screenshotUrl.startsWith("data:image/") ? (
+              {effectiveScreenshotUrl.startsWith("data:image/") ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                   <img
-                    src={screenshotUrl}
+                    src={effectiveScreenshotUrl}
                     alt="Browser UI screenshot"
                     style={{ maxWidth: "100%", borderRadius: 6, border: "1px solid #e2e8f0", display: "block" }}
                   />
                   <a
-                    href={screenshotUrl}
+                    href={effectiveScreenshotUrl}
                     download="veribridge-browser-screenshot.jpg"
                     style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none" }}
                   >
@@ -420,17 +476,17 @@ function SavedEvidenceRow({
                   </a>
                 </div>
               ) : (
-                <a href={screenshotUrl} target="_blank" rel="noopener noreferrer"
+                <a href={effectiveScreenshotUrl} target="_blank" rel="noopener noreferrer"
                   style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none" }}>
                   Open Screenshot →
                 </a>
               )}
             </div>
-          ) : (
+          ) : isFunctional ? (
             <span style={{ fontSize: 9, color: "var(--muted)", fontStyle: "italic" }}>
               Browser screenshot not provided — API proof is verified.
             </span>
-          )}
+          ) : null}
         </div>
       )}
 

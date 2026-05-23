@@ -26,6 +26,11 @@ class ProofProjectSummary(BaseModel):
     recruiter_summary: str | None = None
     associated_skill_labels: list[str]
     evidence_access_links: list[EvidenceAccessLinkItem]
+    # Verification proof fields
+    screenshot_url: str | None = None
+    screenshot_caption: str | None = None
+    api_verified: bool = False
+    api_output_summary: str | None = None
 
 
 class VerifiedSkillSummary(BaseModel):

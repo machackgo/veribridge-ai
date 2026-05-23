@@ -753,6 +753,10 @@ export type ProofProjectSummary = {
   recruiter_summary?: string | null
   associated_skill_labels: string[]
   evidence_access_links: EvidenceAccessLinkItem[]
+  screenshot_url?: string | null
+  screenshot_caption?: string | null
+  api_verified?: boolean
+  api_output_summary?: string | null
 }
 
 export type VerifiedSkillSummary = {

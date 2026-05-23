@@ -488,3 +488,135 @@ def test_detail_endpoint_does_not_conflict_with_search():
     res = client.get("/api/v1/recruiter/candidates/search?query=")
     assert res.status_code == 200
     assert "results" in res.json()
+
+
+# ── Proof metadata persistence tests ─────────────────────────────────────────
+
+_FAKE_SCREENSHOT = "data:image/jpeg;base64,/9j/fakeimagedata=="
+
+
+def test_proof_project_includes_screenshot_url_from_metadata():
+    """ProofProjectSummary.screenshot_url is populated from evidence metadata."""
+    db = _make_db(
+        profiles=[_make_profile(user_id="u1")],
+        evidence=[
+            _make_evidence(
+                id="ev-bw",
+                user_id="u1",
+                skill_name="ML Engineering",
+                evidence_type="deployed website",
+                metadata={
+                    "evidence_title": "Browser UI Workflow — boston-app.run.app",
+                    "proof_kind": "browser_workflow_verification",
+                    "screenshot_url": _FAKE_SCREENSHOT,
+                    "screenshot_caption": "Final UI output after workflow execution",
+                    "browser_workflow_status": "passed",
+                },
+            )
+        ],
+    )
+    result = RecruiterCandidateDetailService(db).get_candidate_detail("u1")
+    assert len(result.proof_projects) == 1
+    proj = result.proof_projects[0]
+    assert proj.screenshot_url == _FAKE_SCREENSHOT
+    assert proj.screenshot_caption == "Final UI output after workflow execution"
+
+
+def test_proof_project_includes_browser_screenshot_url_fallback():
+    """browser_screenshot_url in metadata (functional candidates) is surfaced."""
+    db = _make_db(
+        profiles=[_make_profile(user_id="u1")],
+        evidence=[
+            _make_evidence(
+                id="ev-fc",
+                user_id="u1",
+                skill_name="Backend API",
+                evidence_type="deployed website",
+                metadata={
+                    "evidence_title": "FastAPI prediction endpoint",
+                    "proof_kind": "functional_verification",
+                    "verified": True,
+                    "browser_screenshot_url": _FAKE_SCREENSHOT,
+                    "browser_screenshot_caption": "Browser UI workflow screenshot",
+                    "response_summary": "Risk class: High, Confidence: 0.82",
+                },
+            )
+        ],
+    )
+    result = RecruiterCandidateDetailService(db).get_candidate_detail("u1")
+    proj = result.proof_projects[0]
+    assert proj.screenshot_url == _FAKE_SCREENSHOT
+    assert proj.api_verified is True
+
+
+def test_proof_project_api_verified_true_when_functional_verified():
+    """api_verified is True when any evidence row has proof_kind=functional_verification + verified=True."""
+    db = _make_db(
+        profiles=[_make_profile(user_id="u1")],
+        evidence=[
+            _make_evidence(
+                id="ev-1",
+                user_id="u1",
+                evidence_type="deployed website",
+                metadata={
+                    "evidence_title": "Prediction endpoint test",
+                    "proof_kind": "functional_verification",
+                    "verified": True,
+                    "response_summary": "Returned risk_class=High",
+                },
+            )
+        ],
+    )
+    result = RecruiterCandidateDetailService(db).get_candidate_detail("u1")
+    proj = result.proof_projects[0]
+    assert proj.api_verified is True
+    assert proj.api_output_summary is not None
+    assert "risk_class" in (proj.api_output_summary or "").lower() or "returned" in (proj.api_output_summary or "").lower()
+
+
+def test_proof_project_api_verified_false_when_not_verified():
+    """api_verified stays False when verified field is absent or False."""
+    db = _make_db(
+        profiles=[_make_profile(user_id="u1")],
+        evidence=[
+            _make_evidence(
+                id="ev-1",
+                user_id="u1",
+                evidence_type="deployed website",
+                metadata={"proof_kind": "functional_verification", "verified": False},
+            )
+        ],
+    )
+    result = RecruiterCandidateDetailService(db).get_candidate_detail("u1")
+    assert result.proof_projects[0].api_verified is False
+
+
+def test_proof_project_screenshot_url_omitted_when_oversized():
+    """Screenshots exceeding the 2MB size limit are not forwarded to recruiter."""
+    oversized = "data:image/jpeg;base64," + ("A" * (3 * 1024 * 1024))
+    db = _make_db(
+        profiles=[_make_profile(user_id="u1")],
+        evidence=[
+            _make_evidence(
+                id="ev-1",
+                user_id="u1",
+                evidence_type="deployed website",
+                metadata={"proof_kind": "browser_workflow_verification", "screenshot_url": oversized},
+            )
+        ],
+    )
+    result = RecruiterCandidateDetailService(db).get_candidate_detail("u1")
+    assert result.proof_projects[0].screenshot_url is None
+
+
+def test_proof_project_screenshot_url_none_when_no_metadata():
+    """Fields default to None when evidence has no proof metadata."""
+    db = _make_db(
+        profiles=[_make_profile(user_id="u1")],
+        evidence=[_make_evidence(id="ev-1", user_id="u1")],
+    )
+    result = RecruiterCandidateDetailService(db).get_candidate_detail("u1")
+    proj = result.proof_projects[0]
+    assert proj.screenshot_url is None
+    assert proj.api_verified is False
+    assert proj.api_output_summary is None

@@ -416,6 +416,42 @@ function DetailProofProjectCard({ project }: { project: import("@/lib/api").Proo
           ))}
         </div>
       )}
+
+      {/* API verification badge */}
+      {project.api_verified && (
+        <div style={{ fontSize: 11, color: "#166534", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 4, padding: "2px 7px", fontSize: 10 }}>
+            ✓ API Verified
+          </span>
+          {project.api_output_summary && (
+            <span style={{ fontSize: 10, color: "var(--ink-2)", fontWeight: 400 }}>{project.api_output_summary.slice(0, 140)}</span>
+          )}
+        </div>
+      )}
+
+      {/* Browser screenshot proof */}
+      {project.screenshot_url && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            Browser Screenshot Proof
+          </div>
+          {project.screenshot_caption && (
+            <div style={{ fontSize: 10, color: "var(--ink-2)" }}>{project.screenshot_caption}</div>
+          )}
+          <img
+            src={project.screenshot_url}
+            alt="Browser UI workflow proof screenshot"
+            style={{ maxWidth: "100%", borderRadius: 6, border: "1px solid #e2e8f0", display: "block" }}
+          />
+          <a
+            href={project.screenshot_url}
+            download="proof-screenshot.jpg"
+            style={{ fontSize: 10, color: "var(--indigo)", fontWeight: 600, textDecoration: "none" }}
+          >
+            Download Screenshot →
+          </a>
+        </div>
+      )}
     </div>
   )
 }
