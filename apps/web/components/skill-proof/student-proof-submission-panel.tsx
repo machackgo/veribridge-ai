@@ -1,6 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { createPortal } from "react-dom"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   createGithubRecruiterProofReport,
@@ -426,6 +427,9 @@ export function StudentProofSubmissionPanel({
   // Pre-fills the scan panel when opened from AI Agent mode
   const [pendingScanUrl, setPendingScanUrl] = useState("")
 
+  // Modal content ref — used to scroll to top on open
+  const modalContentRef = useRef<HTMLDivElement>(null)
+
   const refreshEvidence = useCallback(async () => {
     setLoadingEvidence(true)
     try {
@@ -448,6 +452,17 @@ export function StudentProofSubmissionPanel({
       setSubmissionError(null)
       setSubmitting(false)
     }
+  }, [open])
+
+  // Lock body scroll while modal is open; scroll modal content to top on each open
+  useEffect(() => {
+    if (open) {
+      document.body.style.overflow = "hidden"
+      modalContentRef.current?.scrollTo({ top: 0 })
+    } else {
+      document.body.style.overflow = ""
+    }
+    return () => { document.body.style.overflow = "" }
   }, [open])
 
   function closeModal() {
@@ -745,7 +760,7 @@ export function StudentProofSubmissionPanel({
       {/* Skill Proof Center — grouped hierarchical view of all saved evidence */}
       <SkillProofCenter evidence={evidence} loading={loadingEvidence} />
 
-      {open && (
+      {open && createPortal(
         <div
           role="presentation"
           onClick={(event) => {
@@ -756,19 +771,23 @@ export function StudentProofSubmissionPanel({
             inset: 0,
             background: "rgba(15, 23, 42, 0.52)",
             zIndex: 200,
-            display: "grid",
-            placeItems: "center",
-            padding: 20,
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            overflowY: "auto",
+            padding: "24px 20px",
           }}
         >
           <div
+            ref={modalContentRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="proof-submit-title"
             data-testid="proof-submission-modal"
             style={{
+              position: "relative",
               width: "min(900px, 100%)",
-              maxHeight: "min(90vh, 920px)",
+              maxHeight: "calc(100vh - 48px)",
               overflow: "auto",
               borderRadius: 18,
               background: "#fff",
@@ -777,6 +796,7 @@ export function StudentProofSubmissionPanel({
               padding: 20,
               display: "grid",
               gap: 18,
+              margin: "0 auto",
             }}
           >
             {submissionProgress && (submissionSummary || submissionProgress.overallStatus === "failed") ? (
@@ -1379,7 +1399,8 @@ export function StudentProofSubmissionPanel({
               </>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </section>
   )
