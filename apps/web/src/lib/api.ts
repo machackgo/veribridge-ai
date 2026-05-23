@@ -795,3 +795,83 @@ export async function fetchRecruiterCandidateDetail(
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
   return res.json()
 }
+
+// ── Controlled browser proof sessions (Manual Login Handoff) ─────────────────
+
+export type WebsiteProofSessionStatus =
+  | "created" | "running" | "waiting_for_manual_login" | "authenticated_ready"
+  | "resumed" | "completed" | "partial" | "failed" | "expired"
+
+export type WebsiteProofSessionResponse = {
+  session_id: string
+  status: WebsiteProofSessionStatus
+  auth_mode: string
+  login_url?: string | null
+  login_screenshot?: string | null
+  final_screenshot?: string | null
+  final_page_text?: string | null
+  steps_run: string[]
+  proof_summary?: string | null
+  error_message?: string | null
+  expires_at: string
+  created_at: string
+}
+
+export async function createWebsiteProofSession(params: {
+  website_url: string
+  frontend_url?: string | null
+  auth_mode?: string
+  test_input?: string | null
+  expected_output?: string | null
+  workflow_instructions?: string | null
+}): Promise<WebsiteProofSessionResponse> {
+  const res = await fetchAPI("/api/v1/student/website-proof/sessions", {
+    method: "POST",
+    body: JSON.stringify({
+      website_url: params.website_url,
+      frontend_url: params.frontend_url ?? null,
+      auth_mode: params.auth_mode ?? "manual_login_handoff",
+      test_input: params.test_input ?? null,
+      expected_output: params.expected_output ?? null,
+      workflow_instructions: params.workflow_instructions ?? null,
+    }),
+  })
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Session create failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json()
+}
+
+export async function resumeWebsiteProofSession(
+  sessionId: string
+): Promise<WebsiteProofSessionResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/website-proof/sessions/${encodeURIComponent(sessionId)}/resume`,
+    { method: "POST" }
+  )
+  if (res.status === 404) throw new Error("Proof session not found or expired.")
+  if (res.status === 410) throw new Error("Proof session expired. Please start a new session.")
+  if (!res.ok) throw new Error(`Resume failed (HTTP ${res.status}).`)
+  return res.json()
+}
+
+export async function closeWebsiteProofSession(sessionId: string): Promise<void> {
+  await fetchAPI(
+    `/api/v1/student/website-proof/sessions/${encodeURIComponent(sessionId)}/close`,
+    { method: "POST" }
+  )
+}
+
+export async function getWebsiteProofSession(
+  sessionId: string
+): Promise<WebsiteProofSessionResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/website-proof/sessions/${encodeURIComponent(sessionId)}`
+  )
+  if (res.status === 404) throw new Error("Proof session not found or expired.")
+  if (!res.ok) throw new Error(`Get session failed (HTTP ${res.status}).`)
+  return res.json()
+}

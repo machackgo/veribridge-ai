@@ -12,6 +12,7 @@ from app.api.v1.endpoints import (
     student,
     website_analyzer,
     website_browser_verification_runs,
+    website_proof_sessions,
     website_semantic_verification_results,
     website_verification_runs,
 )
@@ -73,6 +74,11 @@ api_router.include_router(
     recruiter_candidates.router,
     prefix="/recruiter/candidates",
     tags=["recruiter-candidates"],
+)
+api_router.include_router(
+    website_proof_sessions.router,
+    prefix="/student/website-proof/sessions",
+    tags=["website-proof-sessions"],
 )
 api_router.include_router(
     debug.router,

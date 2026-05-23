@@ -11,8 +11,11 @@ import { Fragment, useMemo, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   analyzeWebsite,
+  closeWebsiteProofSession,
   createSkillEvidence,
+  createWebsiteProofSession,
   generateEvidenceAccessLinks,
+  resumeWebsiteProofSession,
   type BrowserWorkflowVerificationResult,
   type FunctionalVerificationCandidate,
   type FunctionalTestPlan,
@@ -21,6 +24,7 @@ import {
   type WebsiteAnalysisCandidate,
   type WebsiteAnalyzeResponse,
   type WebsiteEvidenceSource,
+  type WebsiteProofSessionResponse,
 } from "@/lib/api"
 import {
   appendWorkLogEntry,
@@ -1114,7 +1118,9 @@ import {
   type WorkflowCheckpoint,
 } from "./workflow-blueprints"
 
-type PanelStep = "form" | "analyzing" | "review" | "saving" | "done"
+type PanelStep = "form" | "analyzing" | "review" | "saving" | "done" | "login_handoff"
+
+export type AuthMode = "public" | "manual_login_handoff" | "test_account" | "partial_only"
 
 export type FunctionalTestPlanState = {
   whatToTest: string
@@ -1124,8 +1130,9 @@ export type FunctionalTestPlanState = {
   browserWorkflowInstructions: string
   runApiVerification: boolean
   runBrowserVerification: boolean
-  websiteAppType: string          // Workflow Blueprint id
+  websiteAppType: string
   checkpoints: WorkflowCheckpoint[]
+  authMode: AuthMode
 }
 
 export function WebsiteAIAnalyzerPanel({
@@ -1159,6 +1166,10 @@ export function WebsiteAIAnalyzerPanel({
   const [analyzeProgress, setAnalyzeProgress] = useState<ProofProcessingProgress | null>(null)
   const [saveProgress, setSaveProgress] = useState<ProofProcessingProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Manual Login Handoff session state
+  const [proofSession, setProofSession] = useState<WebsiteProofSessionResponse | null>(null)
+  const [sessionWorking, setSessionWorking] = useState(false)
+  const [sessionError, setSessionError] = useState<string | null>(null)
 
   const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
@@ -1198,6 +1209,105 @@ export function WebsiteAIAnalyzerPanel({
   }, [selectedGroupIds, analyzeResult])
 
   // ── Analyze ────────────────────────────────────────────────────────────────
+
+  // ── Manual Login Handoff handlers ─────────────────────────────────────────
+
+  async function handleStartLoginHandoff() {
+    setError(null)
+    setSessionError(null)
+    const trimmedUrl = url.trim()
+    const frontendUrl = functionalTestPlan.frontendUrl.trim() || trimmedUrl
+    if (!trimmedUrl) { setError("Website URL is required."); return }
+    setSessionWorking(true)
+    try {
+      const blueprint = getBlueprintById(functionalTestPlan.websiteAppType)
+      const enriched = buildEnrichedExpectedOutput(functionalTestPlan.expectedOutput.trim(), blueprint)
+      const session = await createWebsiteProofSession({
+        website_url: trimmedUrl,
+        frontend_url: frontendUrl || null,
+        auth_mode: functionalTestPlan.authMode,
+        test_input: functionalTestPlan.testInput.trim() || null,
+        expected_output: enriched || null,
+        workflow_instructions: functionalTestPlan.browserWorkflowInstructions.trim() || null,
+      })
+      setProofSession(session)
+      if (session.status === "completed" || session.status === "partial") {
+        setPanelStep("login_handoff")
+      } else {
+        setPanelStep("login_handoff")
+      }
+    } catch (err) {
+      setSessionError(err instanceof Error ? err.message : "Failed to start session.")
+    } finally {
+      setSessionWorking(false)
+    }
+  }
+
+  async function handleContinueVerification() {
+    if (!proofSession) return
+    setSessionError(null)
+    setSessionWorking(true)
+    try {
+      const result = await resumeWebsiteProofSession(proofSession.session_id)
+      setProofSession(result)
+    } catch (err) {
+      setSessionError(err instanceof Error ? err.message : "Resume failed.")
+    } finally {
+      setSessionWorking(false)
+    }
+  }
+
+  async function handleCancelSession() {
+    if (!proofSession) { setPanelStep("form"); return }
+    try { await closeWebsiteProofSession(proofSession.session_id) } catch { /* best-effort */ }
+    setProofSession(null)
+    setSessionError(null)
+    setPanelStep("form")
+  }
+
+  async function handleSaveAuthenticatedProof() {
+    if (!proofSession) return
+    setSessionWorking(true)
+    try {
+      const blueprint = getBlueprintById(functionalTestPlan.websiteAppType)
+      const ev = await createSkillEvidence({
+        skill_name: functionalTestPlan.whatToTest.trim() || blueprint?.likelySkills[0] || "Browser Workflow",
+        evidence_type: "deployed_website",
+        evidence_url: proofSession.login_url ?? url.trim() ?? undefined,
+        evidence_description: proofSession.proof_summary ?? `Authenticated workflow proof at ${url.trim()}.`,
+        proof_visibility: "public",
+        metadata: {
+          evidence_title: `Authenticated Workflow — ${(() => { try { return new URL(url.trim()).hostname } catch { return url.trim() } })()}`,
+          submission_source: "website_ai_analyzer_login_handoff",
+          proof_kind: "authenticated_browser_workflow",
+          auth_mode: proofSession.auth_mode,
+          auth_status: proofSession.status === "completed" ? "authenticated_workflow_verified" : "login_required_partial",
+          manual_login_handoff_used: proofSession.auth_mode === "manual_login_handoff",
+          website_app_type: functionalTestPlan.websiteAppType || null,
+          website_app_type_label: blueprint?.label ?? null,
+          browser_screenshot_url: proofSession.final_screenshot ?? proofSession.login_screenshot ?? null,
+          screenshot_status: proofSession.final_screenshot ? "captured" : "login_only",
+          steps_run: proofSession.steps_run,
+          proof_summary: proofSession.proof_summary,
+          login_required_detected: !!proofSession.login_url,
+          base_url: url.trim(),
+          github_repo_url: githubRepoUrl.trim() || null,
+          workflow_checkpoints: functionalTestPlan.checkpoints?.length ? functionalTestPlan.checkpoints : null,
+        },
+      })
+      try { await generateEvidenceAccessLinks(ev.id) } catch { /* best-effort */ }
+      onSaveComplete?.()
+      try { await closeWebsiteProofSession(proofSession.session_id) } catch { /* best-effort */ }
+      setProofSession(null)
+      setPanelStep("done")
+    } catch (err) {
+      setSessionError(err instanceof Error ? err.message : "Save failed.")
+    } finally {
+      setSessionWorking(false)
+    }
+  }
+
+  // ── Standard analyze (public auth mode) ───────────────────────────────────
 
   async function handleAnalyze() {
     setError(null)
@@ -1743,6 +1853,59 @@ export function WebsiteAIAnalyzerPanel({
             </span>
           </div>
 
+          {/* Authentication Mode */}
+          <div style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>Authentication Mode</span>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+              {([
+                { id: "public",               label: "🔓 Public / No login",        desc: "No login required" },
+                { id: "manual_login_handoff", label: "🔐 Manual Login Handoff",     desc: "Controlled browser session" },
+                { id: "partial_only",         label: "📸 Partial Proof Only",        desc: "Capture login page only" },
+                { id: "test_account",         label: "🧪 Test Account",              desc: "Demo credentials (placeholder)" },
+              ] as const).map((m) => {
+                const active = functionalTestPlan.authMode === m.id
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => onFunctionalTestPlanChange({ ...functionalTestPlan, authMode: m.id as import("./website-ai-analyzer-panel").AuthMode })}
+                    style={{
+                      border: active ? "2px solid var(--ink)" : "1px solid var(--line)",
+                      borderRadius: 8, padding: "7px 10px",
+                      background: active ? "var(--ink)" : "#fff",
+                      color: active ? "#fff" : "var(--ink-2)",
+                      fontSize: 11, fontWeight: 600, cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <div>{m.label}</div>
+                    <div style={{ fontSize: 9, fontWeight: 400, opacity: 0.75 }}>{m.desc}</div>
+                  </button>
+                )
+              })}
+            </div>
+            {functionalTestPlan.authMode === "manual_login_handoff" && (
+              <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#0369a1", lineHeight: 1.5 }}>
+                <strong>Manual Login Handoff:</strong> VeriBridge opens a controlled browser session.
+                Log in manually in the browser window, then click Continue Verification.
+                Passwords are never saved or transmitted.
+                <div style={{ marginTop: 4, fontSize: 10, color: "#0c4a6e", fontStyle: "italic" }}>
+                  Use a test/demo account when possible. VeriBridge does not store passwords, OAuth tokens, or cookies.
+                </div>
+              </div>
+            )}
+            {functionalTestPlan.authMode === "partial_only" && (
+              <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#9a3412", lineHeight: 1.5 }}>
+                VeriBridge will open the site, detect the login page, capture a screenshot, and save it as partial proof without attempting login.
+              </div>
+            )}
+            {functionalTestPlan.authMode === "test_account" && (
+              <div style={{ background: "#fef9c3", border: "1px solid #fef08a", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#854d0e", lineHeight: 1.5 }}>
+                Test account credentials support coming soon. Use a demo/test account only. Credentials are never stored.
+              </div>
+            )}
+          </div>
+
           {/* Optional: Functional Test Plan */}
           <div style={{ border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
             <button
@@ -2034,27 +2197,182 @@ export function WebsiteAIAnalyzerPanel({
             <button type="button" onClick={onBack} style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
               ← Back
             </button>
-            <button
-              type="button"
-              disabled={!url.trim() || !isPublicHttpUrl(url)}
-              onClick={() => void handleAnalyze()}
-              style={{
-                border: "none",
-                background: !url.trim() || !isPublicHttpUrl(url) ? "var(--bg-2)" : "var(--ink)",
-                color: !url.trim() || !isPublicHttpUrl(url) ? "var(--muted)" : "#fff",
-                borderRadius: 10, padding: "10px 18px", fontWeight: 700, fontSize: 14,
-                cursor: !url.trim() || !isPublicHttpUrl(url) ? "not-allowed" : "pointer",
-              }}
-            >
-              Analyze Website with AI
-            </button>
+            {functionalTestPlan.authMode === "manual_login_handoff" || functionalTestPlan.authMode === "partial_only" ? (
+              <button
+                type="button"
+                disabled={!url.trim() || !isPublicHttpUrl(url) || sessionWorking}
+                onClick={() => void handleStartLoginHandoff()}
+                style={{
+                  border: "none",
+                  background: !url.trim() || !isPublicHttpUrl(url) || sessionWorking ? "var(--bg-2)" : "#0369a1",
+                  color: !url.trim() || !isPublicHttpUrl(url) || sessionWorking ? "var(--muted)" : "#fff",
+                  borderRadius: 10, padding: "10px 18px", fontWeight: 700, fontSize: 14,
+                  cursor: !url.trim() || !isPublicHttpUrl(url) || sessionWorking ? "not-allowed" : "pointer",
+                }}
+              >
+                {sessionWorking ? "Opening browser…" : functionalTestPlan.authMode === "manual_login_handoff" ? "Open Controlled Browser Session" : "Capture Login Page Proof"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!url.trim() || !isPublicHttpUrl(url)}
+                onClick={() => void handleAnalyze()}
+                style={{
+                  border: "none",
+                  background: !url.trim() || !isPublicHttpUrl(url) ? "var(--bg-2)" : "var(--ink)",
+                  color: !url.trim() || !isPublicHttpUrl(url) ? "var(--muted)" : "#fff",
+                  borderRadius: 10, padding: "10px 18px", fontWeight: 700, fontSize: 14,
+                  cursor: !url.trim() || !isPublicHttpUrl(url) ? "not-allowed" : "pointer",
+                }}
+              >
+                Analyze Website with AI
+              </button>
+            )}
           </div>
+          {sessionError && (
+            <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
+              {sessionError}
+            </div>
+          )}
         </div>
       )}
 
       {/* ── Analyzing progress ── */}
       {panelStep === "analyzing" && analyzeProgress && (
         <ProofProcessingProgressPanel title="Website AI Analysis" progress={analyzeProgress} canClose={false} />
+      )}
+
+      {/* ── Login Handoff panel ── */}
+      {panelStep === "login_handoff" && proofSession && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 4 }}>
+              {proofSession.status === "completed" ? "Proof Captured" : proofSession.status === "partial" ? "Partial Proof Captured" : "Manual Login Handoff"}
+            </div>
+            <h2 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 700, color: "var(--ink)" }}>
+              {proofSession.status === "completed"
+                ? "Authenticated workflow verified"
+                : proofSession.status === "partial"
+                ? "Partial proof captured — review before saving"
+                : "Login required — controlled browser session open"}
+            </h2>
+          </div>
+
+          {/* Status badges */}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
+              background: proofSession.status === "completed" ? "#dcfce7" : proofSession.status === "waiting_for_manual_login" ? "#fef9c3" : "#fef2f2",
+              color: proofSession.status === "completed" ? "#166534" : proofSession.status === "waiting_for_manual_login" ? "#854d0e" : "#991b1b",
+              border: `1px solid ${proofSession.status === "completed" ? "#bbf7d0" : proofSession.status === "waiting_for_manual_login" ? "#fef08a" : "#fecaca"}` }}>
+              Status: {proofSession.status.replace(/_/g, " ")}
+            </span>
+            {proofSession.auth_mode === "manual_login_handoff" && (
+              <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 4, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe" }}>
+                🔐 Manual Login Handoff
+              </span>
+            )}
+          </div>
+
+          {/* Instructions when waiting */}
+          {proofSession.status === "waiting_for_manual_login" && (
+            <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 10, padding: "12px 14px", fontSize: 12, color: "#0369a1", lineHeight: 1.6 }}>
+              <strong>Browser session is open.</strong> Complete login in the browser window that appeared on your screen, then click <strong>Continue Verification</strong> below.
+              <br /><br />
+              Use a test/demo account when possible. VeriBridge does not store passwords, tokens, or cookies.
+              {proofSession.login_url && (
+                <div style={{ marginTop: 6, fontSize: 11, fontFamily: "monospace", color: "#0c4a6e" }}>
+                  Current URL: <a href={proofSession.login_url} target="_blank" rel="noopener noreferrer" style={{ color: "#0369a1" }}>{proofSession.login_url}</a>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Error */}
+          {sessionError && (
+            <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
+              {sessionError}
+            </div>
+          )}
+
+          {/* Screenshot */}
+          {(proofSession.final_screenshot || proofSession.login_screenshot) && (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+                {proofSession.final_screenshot ? "Final browser state" : "Login page captured"}
+              </div>
+              <img
+                src={proofSession.final_screenshot ?? proofSession.login_screenshot ?? ""}
+                alt="Browser proof screenshot"
+                style={{ maxWidth: "100%", borderRadius: 8, border: "1px solid #e2e8f0", display: "block" }}
+              />
+            </div>
+          )}
+
+          {/* Proof summary */}
+          {proofSession.proof_summary && (
+            <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6, padding: "8px 10px", background: "rgba(0,0,0,0.03)", borderRadius: 6 }}>
+              {proofSession.proof_summary}
+            </div>
+          )}
+
+          {/* Steps accordion */}
+          {proofSession.steps_run.length > 0 && (
+            <details>
+              <summary style={{ fontSize: 11, color: "var(--indigo)", cursor: "pointer", fontWeight: 600 }}>
+                Browser steps ({proofSession.steps_run.length})
+              </summary>
+              <ol style={{ margin: "6px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 2 }}>
+                {proofSession.steps_run.map((step, i) => (
+                  <li key={`ls-${i}`} style={{ fontSize: 11, color: "var(--ink-2)" }}>{step}</li>
+                ))}
+              </ol>
+            </details>
+          )}
+
+          {/* Action buttons */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {proofSession.status === "waiting_for_manual_login" && (
+              <button
+                type="button"
+                disabled={sessionWorking}
+                onClick={() => void handleContinueVerification()}
+                style={{ background: "#0369a1", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 700, fontSize: 14, cursor: sessionWorking ? "not-allowed" : "pointer" }}
+              >
+                {sessionWorking ? "Checking login…" : "Continue Verification"}
+              </button>
+            )}
+            {(proofSession.status === "completed" || proofSession.status === "partial") && (
+              <button
+                type="button"
+                disabled={sessionWorking}
+                onClick={() => void handleSaveAuthenticatedProof()}
+                style={{ background: "var(--ink)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 700, fontSize: 14, cursor: sessionWorking ? "not-allowed" : "pointer" }}
+              >
+                {sessionWorking ? "Saving…" : "Save Proof"}
+              </button>
+            )}
+            {proofSession.status === "waiting_for_manual_login" && (
+              <button
+                type="button"
+                disabled={sessionWorking}
+                onClick={() => void (() => {
+                  setProofSession((s) => s ? { ...s, status: "partial" } : s)
+                })()}
+                style={{ background: "transparent", color: "var(--ink-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
+              >
+                Capture Partial Proof Only
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={sessionWorking}
+              onClick={() => void handleCancelSession()}
+              style={{ background: "transparent", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 10, padding: "10px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
+            >
+              Cancel and Close Session
+            </button>
+          </div>
+        </div>
       )}
 
       {/* ── Review — 3-section layout ── */}

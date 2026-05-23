@@ -189,9 +189,12 @@ function SavedEvidenceRow({
   const proofKind = typeof meta.proof_kind === "string" ? meta.proof_kind : null
   const isFunctional = source === "functional" || proofKind === "functional_verification"
   const isBrowserWorkflow = proofKind === "browser_workflow_verification"
+  const isAuthWorkflow = proofKind === "authenticated_browser_workflow"
   const isWebsiteAnalyzer = proofKind === "website_ai_analysis"
   const isCombined = source === "combined" || meta.evidence_source === "combined"
   const appTypeLabel = typeof meta.website_app_type_label === "string" ? meta.website_app_type_label : null
+  const authStatus = typeof meta.auth_status === "string" ? meta.auth_status : null
+  const manualLoginUsed = meta.manual_login_handoff_used === true
   const workflowCheckpoints = Array.isArray(meta.workflow_checkpoints)
     ? (meta.workflow_checkpoints as Array<{ title: string; expected: string }>)
     : []
@@ -299,6 +302,16 @@ function SavedEvidenceRow({
           {appTypeLabel && (
             <span style={{ ...badgeBase, fontSize: 9, background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd" }}>
               {appTypeLabel}
+            </span>
+          )}
+          {isAuthWorkflow && (
+            <span style={{ ...badgeBase, fontSize: 9, background: authStatus === "authenticated_workflow_verified" ? "#dcfce7" : "#fef9c3", color: authStatus === "authenticated_workflow_verified" ? "#166534" : "#854d0e", border: `1px solid ${authStatus === "authenticated_workflow_verified" ? "#bbf7d0" : "#fef08a"}` }}>
+              {authStatus === "authenticated_workflow_verified" ? "🔐 Auth Verified" : "🔐 Login Required (Partial)"}
+            </span>
+          )}
+          {manualLoginUsed && !isAuthWorkflow && (
+            <span style={{ ...badgeBase, fontSize: 9, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe" }}>
+              Manual Login Handoff
             </span>
           )}
           <span style={{ ...badgeBase, ...statusStyle(evidence.suggestedStatus), fontSize: 9 }}>
@@ -413,8 +426,8 @@ function SavedEvidenceRow({
         </>
       )}
 
-      {/* Scope note + screenshot proof for functional / browser-workflow items */}
-      {(isFunctional || isBrowserWorkflow) && (
+      {/* Scope note + screenshot proof for functional / browser-workflow / auth-workflow items */}
+      {(isFunctional || isBrowserWorkflow || isAuthWorkflow) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           {isFunctional && (
             <div style={{ fontSize: 10, color: "#64748b", fontStyle: "italic" }}>
