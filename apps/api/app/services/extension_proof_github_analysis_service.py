@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -62,6 +63,11 @@ _REQS_STACK: dict[str, str] = {
     "twilio": "Twilio",
     "pytest": "pytest",
     "hypothesis": "Hypothesis",
+    "streamlit": "Streamlit",
+    "gradio": "Gradio",
+    "dash": "Plotly Dash",
+    "shiny": "R Shiny",
+    "r-shiny": "R Shiny",
 }
 
 _NPM_STACK: dict[str, str] = {
@@ -109,10 +115,10 @@ _NPM_STACK: dict[str, str] = {
     "esbuild": "esbuild",
 }
 
-# normalized skill label → tech terms that count as matching
+# normalized skill label → stack tech terms that count as matching
 _SKILL_ALIASES: dict[str, list[str]] = {
     "python": ["FastAPI", "Django", "Flask", "Starlette", "aiohttp", "Pandas", "NumPy", "scikit-learn", "PyTorch", "TensorFlow", "Keras"],
-    "javascript": ["React", "Next.js", "Vue", "Angular", "Express", "Fastify", "NestJS", "Socket.IO"],
+    "javascript": ["React", "Next.js", "Vue", "Angular", "Express", "Fastify", "NestJS", "Socket.IO", "JavaScript"],
     "typescript": ["TypeScript", "React", "Next.js", "NestJS", "tRPC"],
     "react": ["React", "Next.js", "Remix"],
     "next.js": ["Next.js"],
@@ -139,6 +145,9 @@ _SKILL_ALIASES: dict[str, list[str]] = {
     "docker": ["Docker"],
     "devops": ["Docker", "AWS", "Google Cloud", "Azure"],
     "aws": ["AWS"],
+    "gcp": ["Google Cloud"],
+    "google cloud": ["Google Cloud"],
+    "google cloud platform": ["Google Cloud"],
     "cloud": ["AWS", "Google Cloud", "Azure", "Supabase", "Firebase"],
     "testing": ["pytest", "Jest", "Vitest", "Playwright", "Cypress", "Hypothesis"],
     "graphql": ["GraphQL", "Apollo"],
@@ -152,9 +161,33 @@ _SKILL_ALIASES: dict[str, list[str]] = {
     "tailwind": ["Tailwind CSS"],
     "tailwindcss": ["Tailwind CSS"],
     "prisma": ["Prisma"],
+    # ML/AI demo frameworks
+    "streamlit": ["Streamlit"],
+    "gradio": ["Gradio"],
+    "hugging face": ["HuggingFace Transformers"],
+    "huggingface": ["HuggingFace Transformers"],
+    "hf": ["HuggingFace Transformers"],
+    "plotly dash": ["Plotly Dash"],
+    "dash": ["Plotly Dash"],
+    # Data viz and analysis
+    "plotly": ["Plotly"],
+    "matplotlib": ["Matplotlib"],
+    "seaborn": ["Seaborn"],
+    "data visualization": ["Plotly", "Matplotlib", "Seaborn", "Plotly Dash"],
+    "visualization": ["Plotly", "Matplotlib", "Seaborn"],
+    "data analysis": ["Pandas", "NumPy", "Matplotlib", "Seaborn"],
+    "jupyter": ["Pandas", "NumPy"],
+    "jupyter notebook": ["Pandas", "NumPy"],
+    # Frontend / build tools
+    "vite": ["Vite"],
+    "webpack": ["Webpack"],
+    "html": ["HTML"],
+    "css": ["CSS", "Tailwind CSS"],
+    "expressjs": ["Express"],
+    "nestjs": ["NestJS"],
 }
 
-# Files to fetch from the repo root and common subdirectory locations
+# Files fetched from repo root and common frontend subdirectory locations
 _FILES_TO_PROBE = [
     "README.md",
     "requirements.txt",
@@ -167,48 +200,155 @@ _FILES_TO_PROBE = [
     "Makefile",
     "frontend/package.json",
     "client/package.json",
+    "index.html",
+    "app.py",
 ]
 
-# ── Context-aware skill matching helpers ─────────────────────────────────────
+# ── Generic deployment platform matching ─────────────────────────────────────
+#
+# Each entry describes a hosting / cloud platform. A skill is "weakly matched"
+# when ANY of: live URL contains a known pattern, README mentions a platform
+# keyword, OR a stack indicator is detected AND deployment config is present.
+#
+# skill_names    — lowercase claim variants that map to this platform
+# url_patterns   — substrings of the live URL that identify this platform
+# readme_keywords — text substrings in the README that suggest this platform
+# stack_indicators — detected_stack items that corroborate the platform claim
 
-# ML stack tech terms (lowercase) used to confirm domain skills
-_ML_STACK_TERMS_LOWER = frozenset({
-    "scikit-learn", "pytorch", "tensorflow", "keras", "xgboost", "lightgbm",
+_DEPLOYMENT_PLATFORMS: list[dict[str, Any]] = [
+    {
+        "skill_names": {"google cloud run", "cloud run", "gcp cloud run"},
+        "url_patterns": ["run.app", "appspot.com"],
+        "readme_keywords": ["cloud run", "gcp", "gcloud", "google cloud", "container registry", "cloud build"],
+        "stack_indicators": ["Google Cloud", "Docker"],
+    },
+    {
+        "skill_names": {"google cloud", "gcp", "google cloud platform"},
+        "url_patterns": ["run.app", "appspot.com", ".firebaseapp.com", ".web.app"],
+        "readme_keywords": ["google cloud", "gcp", "gcloud", "bigquery", "cloud storage", "cloud sql", "cloud build"],
+        "stack_indicators": ["Google Cloud"],
+    },
+    {
+        "skill_names": {
+            "aws", "amazon web services", "aws ecs", "aws ec2",
+            "elastic beanstalk", "aws app runner", "aws lambda", "aws fargate",
+        },
+        "url_patterns": ["elasticbeanstalk.com", "apprunner.awsapps.com", ".amazonaws.com"],
+        "readme_keywords": [
+            "aws", "amazon web services", "ec2", "ecs", "elastic beanstalk",
+            "app runner", "lambda", "cloudformation", "cdk", "fargate",
+        ],
+        "stack_indicators": ["AWS"],
+    },
+    {
+        "skill_names": {
+            "azure", "microsoft azure", "azure container apps",
+            "azure app service", "azure kubernetes service", "aks",
+        },
+        "url_patterns": ["azurewebsites.net", "azurecontainerapps.io"],
+        "readme_keywords": [
+            "azure", "azure container apps", "azure app service",
+            "aks", "acr", "azure functions", "bicep",
+        ],
+        "stack_indicators": ["Azure"],
+    },
+    {
+        "skill_names": {"vercel"},
+        "url_patterns": ["vercel.app", ".vercel.app"],
+        "readme_keywords": ["vercel", "deploy to vercel", "deployed on vercel", "vercel deployment"],
+        "stack_indicators": ["Next.js"],
+    },
+    {
+        "skill_names": {"render", "render.com"},
+        "url_patterns": ["onrender.com"],
+        "readme_keywords": ["render.com", "onrender.com", "deploy on render", "deployed on render"],
+        "stack_indicators": [],
+    },
+    {
+        "skill_names": {"railway", "railway.app"},
+        "url_patterns": ["railway.app", ".railway.app", "up.railway.app"],
+        "readme_keywords": ["railway.app", "deploy on railway", "deployed on railway"],
+        "stack_indicators": [],
+    },
+    {
+        "skill_names": {"heroku"},
+        "url_patterns": ["herokuapp.com"],
+        "readme_keywords": ["heroku", "deployed on heroku", "procfile"],
+        "stack_indicators": [],
+    },
+    {
+        "skill_names": {"netlify"},
+        "url_patterns": ["netlify.app", ".netlify.app"],
+        "readme_keywords": ["netlify", "deployed on netlify", "netlify deployment"],
+        "stack_indicators": [],
+    },
+    {
+        "skill_names": {"fly.io", "fly", "flyio"},
+        "url_patterns": [".fly.dev"],
+        "readme_keywords": ["fly.io", "flyctl", "fly deploy"],
+        "stack_indicators": [],
+    },
+    {
+        "skill_names": {"digitalocean", "digital ocean", "digitalocean app platform"},
+        "url_patterns": ["ondigitalocean.app", ".digitalocean.com"],
+        "readme_keywords": ["digitalocean", "digital ocean", "doctl"],
+        "stack_indicators": [],
+    },
+    {
+        "skill_names": {"hugging face spaces", "hf spaces", "huggingface spaces"},
+        "url_patterns": [".hf.space", "huggingface.co/spaces"],
+        "readme_keywords": [
+            "hugging face spaces", "hf spaces", "spaces.huggingface.co",
+            "deployed on hugging face", "deploy to hugging face",
+        ],
+        "stack_indicators": ["HuggingFace Transformers", "Gradio"],
+    },
+    {
+        "skill_names": {"streamlit cloud", "streamlit community cloud", "streamlit sharing"},
+        "url_patterns": ["streamlit.app", ".streamlit.app"],
+        "readme_keywords": ["streamlit cloud", "streamlit sharing", "streamlit.app", "share.streamlit.io"],
+        "stack_indicators": ["Streamlit"],
+    },
+    {
+        "skill_names": {"github pages"},
+        "url_patterns": [".github.io"],
+        "readme_keywords": ["github pages", "github.io", "deploy to github pages", "github-pages"],
+        "stack_indicators": ["HTML"],
+    },
+]
+
+# ── Frontend framework partial matching ───────────────────────────────────────
+#
+# When a student claims a frontend framework but it is not in the detected
+# stack (no package.json or no framework dependency found), and a live website
+# URL was recorded, we treat this as partial evidence: the live UI was
+# observed but source files were not confirmed.
+
+_FRONTEND_FRAMEWORK_SKILLS = frozenset({
+    "react", "vue", "angular", "svelte", "solid", "solidjs",
+    "next.js", "nextjs", "remix", "astro", "sveltekit",
+    "nuxt", "nuxt.js", "nuxtjs", "gatsby",
 })
 
-# Domain skills that can be matched from page title / proof objective + ML stack
-# "strong" keywords → matched when ML stack present; "weak" keywords → weakly matched
-_DOMAIN_RISK_SKILLS: dict[str, dict[str, list[str]]] = {
-    "route risk prediction": {
-        "title_keywords": ["route risk", "accident risk", "risk predictor", "risk prediction", "route predictor"],
-        "readme_keywords": ["route risk", "accident risk", "risk prediction", "rerouting", "route", "accident", "prediction"],
-    },
-    "route risk": {
-        "title_keywords": ["route risk", "accident risk"],
-        "readme_keywords": ["route risk", "accident risk", "route", "risk"],
-    },
-    "accident risk prediction": {
-        "title_keywords": ["accident risk", "route risk", "risk predictor"],
-        "readme_keywords": ["accident risk", "route risk", "accident", "prediction"],
-    },
-}
+# ── Generic domain-skill matching ─────────────────────────────────────────────
+#
+# For skills that are neither in the stack nor a known deployment platform
+# nor a frontend framework, we extract significant terms from the claimed
+# skill name and check whether those terms appear in the aggregated project
+# context (README + page title + proof objective).
+#
+# This approach is project-agnostic: it works for any domain skill
+# (e.g. "Product Recommendation", "Traffic Flow Analysis", "Fraud Detection")
+# as long as the claimed terms appear in the available text signals.
 
-# Fallback README keywords for skills not specially handled above
-# Provides weak evidence when the skill isn't found in detected_stack
-_README_WEAK_SKILLS: dict[str, list[str]] = {
-    "react": ["react", "jsx", "reactjs", "create-react-app"],
-    "vue": ["vue.js", "vuejs", "vue 3", "vue 2"],
-    "angular": ["angular", "angularjs"],
-    "svelte": ["svelte", "sveltekit"],
-    "google cloud": ["google cloud", "gcp", "gcloud", "cloud storage", "bigquery"],
-}
-
-# Live URL substring patterns that weakly support a skill
-_LIVE_URL_WEAK_SKILLS: dict[str, list[str]] = {
-    "google cloud run": ["run.app", "appspot.com"],
-    "cloud run": ["run.app", "appspot.com"],
-    "google cloud": ["run.app", "appspot.com"],
-}
+_STOPWORDS = frozenset({
+    # Common English connectors
+    "and", "or", "the", "a", "an", "for", "with", "using",
+    "based", "in", "on", "of", "to", "via", "from", "by",
+    "that", "this", "as", "at",
+    # Generic tech suffixes that carry no signal on their own
+    "api", "sdk", "app",
+})
 
 
 # ── Pure analysis function ────────────────────────────────────────────────────
@@ -224,7 +364,7 @@ def analyze_github_repo(
 
     now = datetime.now(timezone.utc).isoformat()
 
-    # Normalise: split comma-separated skill strings so "FastAPI, React" → two entries.
+    # Split comma-separated skill strings so "FastAPI, React" → two entries.
     normalized: list[str] = []
     for s in (claimed_skills or []):
         normalized.extend(part.strip() for part in s.split(",") if part.strip())
@@ -247,7 +387,6 @@ def analyze_github_repo(
             "created_at": now,
         }
 
-    # Normalise to base repo URL (strip branch/blob/file paths).
     normalized_repo_url = f"https://github.com/{repo_ref.owner}/{repo_ref.repo}"
 
     fetched: dict[str, str | None] = {}
@@ -255,8 +394,6 @@ def analyze_github_repo(
         result = fetch_public_github_file(normalized_repo_url, file_path)
         if result.ok and result.content:
             fetched[file_path] = result.content
-        elif result.status_code and result.status_code == 404:
-            fetched[file_path] = None
         else:
             fetched[file_path] = None
 
@@ -312,10 +449,10 @@ def analyze_github_repo(
     }
 
 
-# ── Detection helpers ─────────────────────────────────────────────────────────
+# ── Stack detection ───────────────────────────────────────────────────────────
 
 def _parse_package_json_deps(pkg_content: str, stack: set[str]) -> None:
-    """Parse a package.json string and add detected techs to stack in-place."""
+    """Parse a package.json string and add detected techs into stack in-place."""
     stack.add("JavaScript")
     try:
         data = json.loads(pkg_content)
@@ -363,6 +500,26 @@ def _detect_stack(fetched: dict[str, str | None]) -> list[str]:
     if fetched.get("docker-compose.yml") or fetched.get("docker-compose.yaml"):
         stack.add("Docker Compose")
 
+    if fetched.get("index.html"):
+        stack.add("HTML")
+        stack.add("CSS")
+        stack.add("JavaScript")  # almost always co-present with a plain HTML site
+
+    app_py = fetched.get("app.py")
+    if app_py:
+        app_py_lower = app_py.lower()
+        if "import streamlit" in app_py_lower or "from streamlit" in app_py_lower:
+            stack.add("Streamlit")
+            stack.add("Python")
+        if "import gradio" in app_py_lower or "from gradio" in app_py_lower:
+            stack.add("Gradio")
+            stack.add("Python")
+        if not any(t == "Python" for t in stack) and (
+            "import flask" in app_py_lower or "import fastapi" in app_py_lower
+            or "from flask" in app_py_lower or "from fastapi" in app_py_lower
+        ):
+            stack.add("Python")
+
     return sorted(stack)
 
 
@@ -371,16 +528,12 @@ def _detect_features(fetched: dict[str, str | None], stack: list[str]) -> list[s
 
     if fetched.get("README.md"):
         features.append("readme")
-
     if fetched.get("Dockerfile"):
         features.append("docker")
-
     if fetched.get("docker-compose.yml") or fetched.get("docker-compose.yaml"):
         features.append("docker_compose")
-
     if fetched.get(".env.example"):
         features.append("env_config")
-
     if fetched.get("Makefile"):
         features.append("makefile")
 
@@ -408,7 +561,97 @@ def _detect_features(fetched: dict[str, str | None], stack: list[str]) -> list[s
     if fetched.get("Dockerfile"):
         features.append("deployment")
 
+    # ML demo / interactive app frameworks
+    if "Streamlit" in stack:
+        features.append("streamlit_app")
+    if "Gradio" in stack:
+        features.append("gradio_app")
+
+    # Data visualisation projects
+    viz_techs = {"Plotly", "Matplotlib", "Seaborn", "Plotly Dash"}
+    if any(t in stack for t in viz_techs):
+        features.append("data_visualization")
+
+    # Plain HTML/CSS/JS site (no Node or Python build system)
+    if "HTML" in stack:
+        features.append("html_frontend")
+
     return features
+
+
+# ── Skill matching ─────────────────────────────────────────────────────────────
+
+def _extract_significant_terms(skill: str) -> list[str]:
+    """Split a skill name into meaningful tokens, removing stopwords and punctuation."""
+    tokens = re.sub(r"[^a-z0-9\s]", "", skill.lower()).split()
+    return [t for t in tokens if t not in _STOPWORDS and len(t) >= 3]
+
+
+def _term_in_text(term: str, text: str) -> bool:
+    """Return True if term appears as a whole word in text."""
+    return bool(re.search(r"\b" + re.escape(term) + r"\b", text))
+
+
+def _match_deployment_skill(
+    sk: str,
+    stack_lower: set[str],
+    features_set: set[str],
+    readme: str,
+    url_lower: str,
+) -> str | None:
+    """Check if sk is a known deployment platform and whether evidence exists.
+
+    Returns:
+        "weakly"  — platform claim has supporting evidence
+        "missing" — known platform but no evidence found
+        None      — not a deployment platform claim at all
+    """
+    for platform in _DEPLOYMENT_PLATFORMS:
+        if sk not in platform["skill_names"]:
+            continue
+
+        url_hit = any(p in url_lower for p in platform["url_patterns"])
+        readme_hit = any(kw in readme for kw in platform["readme_keywords"])
+        stack_hit = any(si.lower() in stack_lower for si in platform["stack_indicators"])
+        has_deploy_config = "deployment" in features_set or "docker" in features_set
+
+        # Any of: live URL confirms platform, README mentions it,
+        # or relevant stack is detected alongside a deployment config.
+        if url_hit or readme_hit or (stack_hit and has_deploy_config):
+            return "weakly"
+        return "missing"
+
+    return None
+
+
+def _match_domain_skill(sk: str, context_text: str) -> str:
+    """Generic domain-skill matching by term overlap with project context.
+
+    Extracts significant terms from the claimed skill name and checks whether
+    they appear as whole words in the combined project context (README +
+    page title + proof objective).
+
+    Returns "weakly" when enough terms match, "missing" otherwise.
+    This function is intentionally project-agnostic.
+    """
+    terms = _extract_significant_terms(sk)
+    if not terms:
+        return "missing"
+
+    if len(terms) == 1:
+        # Single-term skills need the term to be substantive (≥ 4 chars)
+        # and appear literally in the context.
+        term = terms[0]
+        if len(term) < 4:
+            return "missing"
+        return "weakly" if _term_in_text(term, context_text) else "missing"
+
+    # Multi-term skills: require at least 2 matching terms (covers ≥ 50% for
+    # 2-word skills, ≥ 50% for longer ones).  Prevents single common-word hits
+    # from producing false positives.
+    hits = sum(1 for term in terms if _term_in_text(term, context_text))
+    required = min(2, len(terms))
+    return "weakly" if hits >= required else "missing"
 
 
 def _match_skills(
@@ -420,11 +663,18 @@ def _match_skills(
     live_page_title: str = "",
     proof_objective: str = "",
 ) -> tuple[list[str], list[str], list[str]]:
-    """Return (matched, weakly_matched, missing) for each claimed skill.
+    """Classify each claimed skill into one of three tiers.
 
-    matched      — confirmed by dependency files (strongest evidence)
-    weakly_matched — suggested by README text, live URL, page title, or deployment context
-    missing      — no evidence found in any source
+    matched        — confirmed by dependency files (strongest, file-based evidence)
+    weakly_matched — supported by deployment signals, live URL, README text,
+                     page title, proof objective, or observed live frontend
+    missing        — no evidence found in any source
+
+    The matching pipeline is entirely project-agnostic:
+    1. Direct stack match via _SKILL_ALIASES + detected_stack
+    2. Deployment platform match (generic cloud/hosting patterns)
+    3. Frontend framework partial match (live site observed, no source evidence)
+    4. Generic domain-skill matching (claimed terms in project context)
     """
     if not claimed_skills:
         return [], [], []
@@ -433,7 +683,13 @@ def _match_skills(
     features_set = set(detected_features or [])
     readme = ((fetched_files or {}).get("README.md") or "").lower()
     url_lower = (live_website_url or "").lower()
-    context_lower = (live_page_title or "").lower() + " " + (proof_objective or "").lower()
+
+    # Aggregate context for domain-skill matching (README + page title + objective)
+    context_text = (
+        readme + " "
+        + (live_page_title or "").lower() + " "
+        + (proof_objective or "").lower()
+    )
 
     matched: list[str] = []
     weakly: list[str] = []
@@ -443,68 +699,41 @@ def _match_skills(
         sk = skill.lower().strip()
         aliases = _SKILL_ALIASES.get(sk, [skill])
 
-        # 1. Direct stack match — dependency files confirmed
+        # ── Step 1: Direct stack match (dependency files) ─────────────────────
         if any(a.lower() in stack_lower for a in aliases) or sk in stack_lower:
             matched.append(skill)
             continue
 
-        # 2. Domain skill: route / accident risk prediction
-        #    Full match when page title/objective confirms it AND ML stack is present.
-        #    Weak match when README mentions relevant domain terms.
-        if sk in _DOMAIN_RISK_SKILLS:
-            spec = _DOMAIN_RISK_SKILLS[sk]
-            has_ml = bool(stack_lower & _ML_STACK_TERMS_LOWER)
-            title_hit = any(kw in context_lower for kw in spec["title_keywords"])
-            readme_hit = any(kw in readme for kw in spec["readme_keywords"])
-            if title_hit and has_ml:
-                matched.append(skill)
-            elif title_hit or (readme_hit and has_ml):
-                weakly.append(skill)
-            elif readme_hit:
-                weakly.append(skill)
-            else:
-                missing.append(skill)
-            continue
-
-        # 3. Google Cloud Run — weakly supported from deployment context
-        if sk in ("google cloud run", "cloud run"):
-            has_gcloud = "google cloud" in stack_lower
-            has_docker = bool({"docker", "docker compose"} & stack_lower)
-            has_deploy = "deployment" in features_set
-            url_hit = any(p in url_lower for p in ("run.app", "appspot.com"))
-            readme_hit = any(
-                kw in readme
-                for kw in ("cloud run", "google cloud", "gcp", "gcloud", "container registry", "cloud build")
-            )
-            if (has_gcloud or readme_hit) and (has_docker or has_deploy or url_hit):
-                weakly.append(skill)
-            elif url_hit or readme_hit:
-                weakly.append(skill)
-            else:
-                missing.append(skill)
-            continue
-
-        # 4. Google Maps API — weakly supported from README mentions
-        if sk in ("google maps api", "google maps", "maps api"):
-            readme_hit = any(
-                kw in readme
-                for kw in ("google maps", "maps api", "geocod", "gmaps", "directions api", "places api", "maps javascript")
-            )
-            if readme_hit:
-                weakly.append(skill)
-            else:
-                missing.append(skill)
-            continue
-
-        # 5. Generic README keyword weak match
-        readme_kws = _README_WEAK_SKILLS.get(sk)
-        if readme_kws and any(kw in readme for kw in readme_kws):
+        # ── Step 2: Deployment platform (generic cloud / hosting) ─────────────
+        deploy_result = _match_deployment_skill(sk, stack_lower, features_set, readme, url_lower)
+        if deploy_result == "weakly":
             weakly.append(skill)
             continue
+        elif deploy_result == "missing":
+            # Recognised as a deployment claim but no evidence found
+            missing.append(skill)
+            continue
 
-        # 6. Live URL weak match
-        url_patterns = _LIVE_URL_WEAK_SKILLS.get(sk)
-        if url_patterns and any(p in url_lower for p in url_patterns):
+        # ── Step 3: Frontend framework — live UI without source evidence ───────
+        # React/Vue/Angular etc. require source files for a full match.
+        # If a live website was recorded but no framework files were found,
+        # mark as partial: "live UI observed, but source not confirmed."
+        if sk in _FRONTEND_FRAMEWORK_SKILLS:
+            if live_website_url:
+                weakly.append(skill)
+            else:
+                # No live URL either — fall back to generic domain matching
+                # (handles the case where README describes the framework)
+                if _match_domain_skill(sk, context_text) == "weakly":
+                    weakly.append(skill)
+                else:
+                    missing.append(skill)
+            continue
+
+        # ── Step 4: Generic domain-skill matching ─────────────────────────────
+        # Compare claimed skill terms against aggregated project context.
+        # Works for any domain skill without project-specific hardcoding.
+        if _match_domain_skill(sk, context_text) == "weakly":
             weakly.append(skill)
             continue
 
@@ -512,6 +741,8 @@ def _match_skills(
 
     return matched, weakly, missing
 
+
+# ── Scoring and reporting ─────────────────────────────────────────────────────
 
 def _compute_confidence(
     accessible_files: list[str],
@@ -533,7 +764,7 @@ def _compute_confidence(
         match_ratio = min(effective / len(claimed_skills), 1.0)
         score += match_ratio * 0.45
 
-    # bonus for having key indicator files
+    # bonus for key indicator files
     if "README.md" in accessible_files:
         score += 0.04
     if any(f in accessible_files for f in ("requirements.txt", "package.json", "pyproject.toml")):
@@ -563,7 +794,9 @@ def _build_warnings(
         warnings.append("No README.md found. Adding documentation would improve recruiter visibility.")
 
     if not any(f in accessible_files for f in ("requirements.txt", "package.json", "pyproject.toml")):
-        warnings.append("No dependency file found (requirements.txt, package.json, or pyproject.toml). Stack detection may be incomplete.")
+        # Plain HTML/CSS/JS sites legitimately have no dependency file
+        if "HTML" not in detected_stack:
+            warnings.append("No dependency file found (requirements.txt, package.json, or pyproject.toml). Stack detection may be incomplete.")
 
     return warnings
 
@@ -598,6 +831,10 @@ def _build_summary(
         "database": "database integration",
         "env_config": "environment configuration",
         "deployment": "deployment configuration",
+        "streamlit_app": "a Streamlit web application",
+        "gradio_app": "a Gradio ML demo",
+        "data_visualization": "data visualisation",
+        "html_frontend": "a plain HTML/CSS/JS frontend",
     }
     notable = [feature_labels[f] for f in detected_features if f in feature_labels]
     if notable:
@@ -692,8 +929,7 @@ class ExtensionProofGitHubAnalysisService:
             rows = resp.data or []
             if not rows:
                 return None
-            row = rows[0]
-            return self._normalize_row(row)
+            return self._normalize_row(rows[0])
         except Exception:
             logger.exception("get_latest: failed to query extension_proof_github_analysis")
             return None
@@ -701,11 +937,7 @@ class ExtensionProofGitHubAnalysisService:
     def _store_result(self, user_id: str, session_id: str, result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(self._client, dict):
             store = self._client.setdefault("extension_proof_github_analysis", {})
-            row = {
-                "id": str(uuid4()),
-                **result,
-                "user_id": user_id,
-            }
+            row = {"id": str(uuid4()), **result, "user_id": user_id}
             store[session_id] = row
             return row
 
