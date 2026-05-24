@@ -14,6 +14,8 @@ import {
   analyzeExtensionProofGitHub,
   getExtensionProofGitHubAnalysis,
   getWorkflowPrivacyScan,
+  analyzeProjectDefense,
+  getProjectDefenseAnalysis,
   type ExtensionProofSessionResponse,
   type ExtensionProofSessionStatus,
   type LiveWebsiteCheckConfidence,
@@ -23,6 +25,7 @@ import {
   type ExtensionProofGitHubAnalysisResponse,
   type WorkflowPrivacyScanResponse,
   type WorkflowPrivacyScanStatus,
+  type ProjectDefenseAnalysisResponse,
   type ReadinessLevel,
 } from "@/lib/api"
 
@@ -98,6 +101,15 @@ const GITHUB_STAGES: Array<{ key: string; label: string }> = [
   { key: "matching_skills",     label: "Matching repo evidence to claimed skills" },
   { key: "checking_missing",    label: "Checking missing evidence and risk flags" },
   { key: "generating_summary",  label: "Generating recruiter-readable summary" },
+  { key: "saving_result",       label: "Saving result" },
+]
+
+const DEFENSE_STAGES: Array<{ key: string; label: string }> = [
+  { key: "scanning_privacy",    label: "Scanning for sensitive data" },
+  { key: "analyzing_transcript", label: "Analyzing transcript content" },
+  { key: "detecting_skills",    label: "Detecting skills mentioned" },
+  { key: "scoring_consistency", label: "Scoring evidence consistency" },
+  { key: "generating_summary",  label: "Generating recruiter summary" },
   { key: "saving_result",       label: "Saving result" },
 ]
 
@@ -1602,6 +1614,7 @@ function computeReadinessReport({
   liveCheck,
   githubAnalysis,
   privacyScan,
+  defenseAnalysis,
 }: {
   sessionStatus: ExtensionProofSessionStatus
   urlType: UrlType
@@ -1610,6 +1623,7 @@ function computeReadinessReport({
   liveCheck: LiveWebsiteCheckResponse | null
   githubAnalysis: ExtensionProofGitHubAnalysisResponse | null
   privacyScan: WorkflowPrivacyScanResponse | null
+  defenseAnalysis?: ProjectDefenseAnalysisResponse | null
 }): ReadinessReport {
   const isLocal = isLocal_(urlType)
   const sessionUploaded = (["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(sessionStatus)
@@ -1703,7 +1717,7 @@ function computeReadinessReport({
     } else if (wfWeaklySet.has(lc) || ghWeaklySet.has(lc)) {
       partially.push(skill)
     } else {
-      needsMoreEvidence.push(`${skill} — no strong evidence detected`)
+      needsMoreEvidence.push(`${skill} — not yet supported by current evidence`)
     }
   }
 
@@ -1742,6 +1756,54 @@ function computeReadinessReport({
   if (recruiterText.trim().length > 30) {
     score += 5
     contributors.push({ label: "Meaningful recruiter summary present", points: 5, type: "positive" })
+  }
+
+  // ── Defense analysis contributions ────────────────────────────────────────
+  if (defenseAnalysis) {
+    const defTranscriptWords = defenseAnalysis.transcript_text.trim().split(/\s+/).filter(Boolean).length
+
+    score += 10
+    contributors.push({ label: "Project defense transcript analyzed", points: 10, type: "positive" })
+    explanation.push("Project defense transcript was analyzed.")
+
+    if (defenseAnalysis.consistency_with_evidence_score >= 50) {
+      score += 10
+      contributors.push({ label: "Defense explanation consistent with evidence", points: 10, type: "positive" })
+      explanation.push("Defense explanation is consistent with existing evidence.")
+    }
+    if (defenseAnalysis.ownership_signal_score >= 40) {
+      score += 5
+      contributors.push({ label: "Ownership signals present in defense", points: 5, type: "positive" })
+    }
+    if (defenseAnalysis.technical_depth_score >= 40) {
+      score += 5
+      contributors.push({ label: "Technical depth shown in defense", points: 5, type: "positive" })
+    }
+
+    // Defense deductions
+    if (defTranscriptWords < 50) {
+      score = Math.max(0, score - 5)
+      contributors.push({ label: "Defense transcript too short", points: -5, type: "negative" })
+    }
+    if (defenseAnalysis.privacy_scan_status === "flagged") {
+      score = Math.max(0, score - 10)
+      contributors.push({ label: "Defense transcript flagged by privacy scan", points: -10, type: "negative" })
+      riskFlags.push("Defense transcript was flagged by privacy scan")
+    }
+    const hasDefenseContradiction = defenseAnalysis.risk_flags.some(f =>
+      f.toLowerCase().includes("contradiction") ||
+      f.toLowerCase().includes("borrowed") ||
+      f.toLowerCase().includes("did not write")
+    )
+    if (hasDefenseContradiction) {
+      score = Math.max(0, score - 10)
+      contributors.push({ label: "Contradiction signal detected in defense", points: -10, type: "negative" })
+      riskFlags.push("Contradiction detected in project defense transcript")
+    }
+    if (defenseAnalysis.overall_defense_score < 30 && defTranscriptWords >= 50) {
+      score = Math.max(0, score - 5)
+      contributors.push({ label: "Defense explanation quality below threshold", points: -5, type: "negative" })
+    }
   }
 
   // ── Deductions ────────────────────────────────────────────────────────────
@@ -1816,6 +1878,16 @@ function computeReadinessReport({
     nextActions.push(`${tip.skill}: ${tip.tip}`)
   }
   if (hasWf && workflowAnalysis!.human_review_needed) nextActions.push("Request a faculty or human review — AI confidence is low for this recording.")
+  // Defense-specific nudges
+  if (!defenseAnalysis && sessionUploaded && hasWf) {
+    nextActions.push("Submit a Project Defense transcript explaining what you built, your role, tools used, and the technical decisions you made.")
+  }
+  if (defenseAnalysis && defenseAnalysis.privacy_scan_status === "flagged") {
+    nextActions.push("Re-submit your defense transcript — remove any passwords, API keys, or personal data before resubmitting.")
+  }
+  if (defenseAnalysis && defenseAnalysis.overall_defense_score < 30) {
+    nextActions.push("Strengthen your defense explanation with specific technical details: the problem you solved, your role, key tools, and what you would improve next.")
+  }
 
   // Recruiter summary
   const sources: string[] = []
@@ -2340,6 +2412,343 @@ function PrivacyWarningBox({
   )
 }
 
+// ── Project Defense components ────────────────────────────────────────────────
+
+function ProjectDefenseResultCard({ analysis }: { analysis: ProjectDefenseAnalysisResponse }) {
+  const overallScore = analysis.overall_defense_score
+  const scoreColor =
+    overallScore >= 70 ? "#166534" :
+    overallScore >= 50 ? "#854d0e" :
+    overallScore >= 30 ? "#c2410c" :
+    "#991b1b"
+  const scoreBg =
+    overallScore >= 70 ? "#f0fdf4" :
+    overallScore >= 50 ? "#fffbeb" :
+    overallScore >= 30 ? "#fff7ed" :
+    "#fef2f2"
+  const scoreBorder =
+    overallScore >= 70 ? "#d1fae5" :
+    overallScore >= 50 ? "#fef08a" :
+    overallScore >= 30 ? "#fed7aa" :
+    "#fecaca"
+
+  const privacyCfg = {
+    clean:    { label: "Privacy: Clean",    color: "#166534", bg: "#dcfce7", border: "#bbf7d0" },
+    redacted: { label: "Privacy: Redacted", color: "#1d4ed8", bg: "#dbeafe", border: "#bfdbfe" },
+    flagged:  { label: "Privacy: Flagged",  color: "#991b1b", bg: "#fef2f2", border: "#fecaca" },
+  }[analysis.privacy_scan_status] ?? { label: "Privacy: Unknown", color: "#64748b", bg: "#f8fafc", border: "#e2e8f0" }
+
+  return (
+    <div style={{ border: `1px solid ${scoreBorder}`, borderRadius: 14, overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{
+        background: scoreBg, borderBottom: `1px solid ${scoreBorder}`,
+        padding: "12px 16px",
+        display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap",
+      }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: scoreColor }}>Project Defense — AI Reviewed</div>
+          <div style={{ fontSize: 11, color: scoreColor, opacity: 0.8, marginTop: 2 }}>
+            Transcript analysed · Evidence consistency checked
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ fontSize: 11, color: scoreColor }}>Defense Score</span>
+            <span style={{ fontSize: 16, fontWeight: 800, color: scoreColor }}>
+              {overallScore}<span style={{ fontSize: 10, fontWeight: 400 }}>/100</span>
+            </span>
+          </div>
+          <span style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: "0.07em", padding: "3px 9px", borderRadius: 999,
+            background: privacyCfg.bg, color: privacyCfg.color, border: `1px solid ${privacyCfg.border}`,
+          }}>
+            {privacyCfg.label.toUpperCase()}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ padding: "14px 16px", display: "grid", gap: 14 }}>
+        {/* Score breakdown — 2-col grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          {([
+            { label: "Evidence Consistency", score: analysis.consistency_with_evidence_score },
+            { label: "Explanation Clarity",  score: analysis.explanation_clarity_score },
+            { label: "Ownership Signals",    score: analysis.ownership_signal_score },
+            { label: "Technical Depth",      score: analysis.technical_depth_score },
+          ] as Array<{ label: string; score: number }>).map(({ label, score }) => {
+            const c  = score >= 70 ? "#166534" : score >= 50 ? "#854d0e" : "#991b1b"
+            const bg = score >= 70 ? "#f0fdf4" : score >= 50 ? "#fffbeb" : "#fef2f2"
+            const br = score >= 70 ? "#d1fae5" : score >= 50 ? "#fef08a" : "#fecaca"
+            return (
+              <div key={label} style={{ padding: "8px 10px", borderRadius: 9, background: bg, border: `1px solid ${br}` }}>
+                <div style={{ fontSize: 10, color: c, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3 }}>{label}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: c }}>{score}<span style={{ fontSize: 10, fontWeight: 400 }}>/100</span></div>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Recruiter summary */}
+        <AnalysisSection title="Recruiter Summary">
+          <div style={{ background: scoreBg, border: `1px solid ${scoreBorder}`, borderRadius: 10, padding: "10px 12px" }}>
+            <p style={{ margin: 0, fontSize: 12, color: scoreColor, lineHeight: 1.7, fontStyle: "italic" }}>
+              {analysis.recruiter_summary}
+            </p>
+          </div>
+        </AnalysisSection>
+
+        {/* Skills */}
+        {analysis.skills_mentioned.length > 0 && (
+          <AnalysisSection title="Skills Mentioned in Defense">
+            <div style={{ display: "grid", gap: 8 }}>
+              {analysis.skills_explained_well.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: "#065f46", fontWeight: 600, marginBottom: 4 }}>Well explained</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {analysis.skills_explained_well.map(s => (
+                      <SkillPill key={s} label={s} variant="supported" />
+                    ))}
+                  </div>
+                </div>
+              )}
+              {analysis.skills_missing_from_explanation.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: "#9a3412", fontWeight: 600, marginBottom: 4 }}>Skill needs stronger explanation</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {analysis.skills_missing_from_explanation.map(s => (
+                      <SkillPill key={s} label={s} variant="unsupported" />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </AnalysisSection>
+        )}
+
+        {/* Risk flags */}
+        {analysis.risk_flags.length > 0 && (
+          <AnalysisSection title="Flags">
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4 }}>
+              {analysis.risk_flags.map((f, i) => (
+                <li key={i} style={{ display: "flex", gap: 7, alignItems: "flex-start", fontSize: 12, color: "#9a3412", lineHeight: 1.55 }}>
+                  <span style={{ flexShrink: 0, marginTop: 2 }}>⚠</span><span>{f}</span>
+                </li>
+              ))}
+            </ul>
+          </AnalysisSection>
+        )}
+
+        {/* Recommended improvements */}
+        {analysis.recommended_improvements.length > 0 && (
+          <AnalysisSection title="How to Strengthen This Explanation">
+            <BulletList items={analysis.recommended_improvements} color="#1e40af" />
+          </AnalysisSection>
+        )}
+
+        {/* Privacy flagged warning */}
+        {analysis.privacy_scan_status === "flagged" && (
+          <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "8px 12px" }}>
+            <p style={{ margin: 0, fontSize: 11, color: "#9a3412", lineHeight: 1.6 }}>
+              <strong>Privacy flag detected</strong> — this transcript is hidden from recruiter view.
+              Review and resubmit without passwords, API keys, tokens, or personal information.
+            </p>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+          <p style={{ margin: 0, fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>
+            This analysis is based on transcript text only — video content is not analysed.
+            Final verification remains pending until all evidence steps are complete.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProjectDefenseSection({
+  session,
+  defenseAnalysis,
+  defenseVideoUrl,
+  defenseTranscript,
+  defenseAnalyzing,
+  defenseAnalyzeError,
+  defenseSimProgress,
+  defenseSimStageIdx,
+  onVideoUrlChange,
+  onTranscriptChange,
+  onAnalyze,
+}: {
+  session: ExtensionProofSessionResponse
+  defenseAnalysis: ProjectDefenseAnalysisResponse | null
+  defenseVideoUrl: string
+  defenseTranscript: string
+  defenseAnalyzing: boolean
+  defenseAnalyzeError: string | null
+  defenseSimProgress: number
+  defenseSimStageIdx: number
+  onVideoUrlChange: (v: string) => void
+  onTranscriptChange: (v: string) => void
+  onAnalyze: () => void
+}) {
+  const uploadedOrLater: ExtensionProofSessionStatus[] = ["uploaded_pending_analysis", "analyzing", "completed"]
+  if (!uploadedOrLater.includes(session.status)) return null
+
+  const transcriptWords = defenseTranscript.trim().split(/\s+/).filter(Boolean).length
+  const canAnalyze = transcriptWords >= 30 && !defenseAnalyzing
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      {/* Section header */}
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>
+          Project Defense Transcript
+        </h3>
+        <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6 }}>
+          Explain what you built, how it works, and what skills this evidence proves.
+        </p>
+      </div>
+
+      {/* Input form card */}
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
+        <div style={{ background: "#f9fafb", borderBottom: "1px solid #e5e7eb", padding: "12px 16px" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>
+            {defenseAnalysis ? "Update Your Defense Transcript" : "Submit Your Defense Transcript"}
+          </div>
+          <p style={{ margin: "3px 0 0", fontSize: 11, color: "#6b7280", lineHeight: 1.55 }}>
+            Describe the problem you solved, what you built, your role, the tools you used, key
+            technical decisions, limitations, and what you would improve next. Recruiters may see
+            this summary alongside your recording and GitHub evidence.
+          </p>
+        </div>
+
+        <div style={{ padding: "14px 16px", display: "grid", gap: 12 }}>
+          {/* Optional video URL */}
+          <div style={{ display: "grid", gap: 4 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
+              Video URL{" "}
+              <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span>
+            </label>
+            <input
+              value={defenseVideoUrl}
+              onChange={(e) => onVideoUrlChange(e.target.value)}
+              placeholder="https://loom.com/share/... or YouTube/Drive/Vimeo link"
+              disabled={defenseAnalyzing}
+              style={inp}
+            />
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>
+              Attach a Loom, YouTube, or Drive video of your project walkthrough (optional — transcript is what gets analysed).
+            </span>
+          </div>
+
+          {/* Transcript textarea */}
+          <div style={{ display: "grid", gap: 4 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
+              Transcript <span style={{ color: "#dc2626" }}>*</span>
+            </label>
+            <textarea
+              value={defenseTranscript}
+              onChange={(e) => onTranscriptChange(e.target.value)}
+              disabled={defenseAnalyzing}
+              placeholder="Paste your project explanation transcript here. Explain the problem, what you built, your role, tools used, main workflow, technical decisions, limitations, and future improvements."
+              style={{ ...inp, minHeight: 150, resize: "vertical", fontFamily: "inherit", lineHeight: 1.55 }}
+            />
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                Aim for at least 100 words. Be specific about your role and technical choices.
+              </span>
+              <span style={{
+                fontSize: 11, fontWeight: 600,
+                color: transcriptWords < 30 ? "#dc2626" : transcriptWords < 80 ? "#ca8a04" : "#166534",
+              }}>
+                {transcriptWords} words
+              </span>
+            </div>
+          </div>
+
+          {/* Analyze button */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={onAnalyze}
+              disabled={!canAnalyze}
+              title={transcriptWords < 30 ? "Write at least 30 words before analyzing." : undefined}
+              style={{
+                border: "1px solid transparent",
+                background: !canAnalyze ? "var(--bg-2)" : "#065f46",
+                color: !canAnalyze ? "var(--muted)" : "#fff",
+                borderRadius: 10, padding: "10px 20px",
+                fontWeight: 700, fontSize: 14,
+                cursor: !canAnalyze ? "not-allowed" : "pointer",
+              }}
+            >
+              {defenseAnalyzing
+                ? "Analyzing…"
+                : defenseAnalysis
+                ? "Re-analyze Defense"
+                : "Analyze Project Defense"}
+            </button>
+            {transcriptWords > 0 && transcriptWords < 30 && (
+              <span style={{ fontSize: 11, color: "#dc2626" }}>Need at least 30 words to analyze</span>
+            )}
+          </div>
+
+          {/* Error */}
+          {defenseAnalyzeError && !defenseAnalyzing && (
+            <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#991b1b" }}>
+              {defenseAnalyzeError}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* In-progress stages */}
+      {defenseAnalyzing && (
+        <div style={{ border: "1px solid #d1fae5", borderRadius: 12, background: "#f0fdf4", padding: "14px 16px", display: "grid", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>Analyzing defense transcript…</div>
+            <p style={{ margin: "4px 0 0", fontSize: 12, color: "#064e3b", lineHeight: 1.65 }}>
+              VeriBridge is reviewing your explanation. This usually takes 5–15 seconds.
+            </p>
+          </div>
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+              <span style={{ fontSize: 11, color: "#16a34a" }}>Analysis in progress</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#065f46" }}>{defenseSimProgress}%</span>
+            </div>
+            <div style={{ height: 6, background: "#bbf7d0", borderRadius: 999 }}>
+              <div style={{ height: 6, borderRadius: 999, background: "#16a34a", width: `${defenseSimProgress}%`, transition: "width 0.4s ease" }} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            {DEFENSE_STAGES.map((stage, i) => {
+              const isDone    = i < defenseSimStageIdx
+              const isCurrent = i === defenseSimStageIdx
+              return (
+                <div key={stage.key} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: isDone ? "#065f46" : isCurrent ? "#16a34a" : "#94a3b8", width: 14, flexShrink: 0, textAlign: "center" }}>
+                    {isDone ? "✓" : isCurrent ? "…" : "○"}
+                  </span>
+                  <span style={{ fontSize: 12, color: isDone ? "#064e3b" : isCurrent ? "#166534" : "#94a3b8" }}>
+                    {stage.label}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Result card */}
+      {defenseAnalysis && !defenseAnalyzing && (
+        <ProjectDefenseResultCard analysis={defenseAnalysis} />
+      )}
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ExtensionProofPanel({
@@ -2384,6 +2793,15 @@ export function ExtensionProofPanel({
   const [liveCheckStageIdx, setLiveCheckStageIdx]  = useState(0)
   const liveCheckTimeoutRef                 = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Project defense transcript state
+  const [defenseAnalysis, setDefenseAnalysis] = useState<ProjectDefenseAnalysisResponse | null>(null)
+  const [defenseVideoUrl, setDefenseVideoUrl] = useState("")
+  const [defenseTranscript, setDefenseTranscript] = useState("")
+  const [defenseAnalyzing, setDefenseAnalyzing] = useState(false)
+  const [defenseAnalyzeError, setDefenseAnalyzeError] = useState<string | null>(null)
+  const [defenseSimProgress, setDefenseSimProgress] = useState(0)
+  const [defenseSimStageIdx, setDefenseSimStageIdx] = useState(0)
+
   // Derived from form.websiteUrl — available in both form and session_active steps.
   const urlType = classifyUrl(form.websiteUrl)
   const local = isLocal(urlType)
@@ -2406,6 +2824,7 @@ export function ExtensionProofPanel({
       liveCheck,
       githubAnalysis,
       privacyScan,
+      defenseAnalysis,
     })
   }, [
     session?.id, session?.status,
@@ -2416,6 +2835,9 @@ export function ExtensionProofPanel({
     githubAnalysis?.id,
     privacyScan?.status,
     privacyScan?.redacted_fields_count,
+    defenseAnalysis?.id,
+    defenseAnalysis?.overall_defense_score,
+    defenseAnalysis?.privacy_scan_status,
   ])
 
   // ── Polling ───────────────────────────────────────────────────────────────
@@ -2493,6 +2915,24 @@ export function ExtensionProofPanel({
     }).catch(() => undefined)
   }, [session?.id, session?.status, privacyScan])
 
+  // ── Auto-fetch project defense analysis ───────────────────────────────────
+  // Load a previously submitted defense transcript on modal load.
+  useEffect(() => {
+    if (!session) return
+    if (defenseAnalysis) return
+    const uploadedOrLater: ExtensionProofSessionStatus[] = [
+      "uploaded_pending_analysis", "analyzing", "completed",
+    ]
+    if (!uploadedOrLater.includes(session.status)) return
+    void getProjectDefenseAnalysis(session.id).then((r) => {
+      if (r) {
+        setDefenseAnalysis(r)
+        if (r.video_url) setDefenseVideoUrl(r.video_url)
+        setDefenseTranscript(r.transcript_text)
+      }
+    }).catch(() => undefined)
+  }, [session?.id, session?.status, defenseAnalysis])
+
   // ── Simulated progress for live check ────────────────────────────────────
   useEffect(() => {
     if (!liveChecking) {
@@ -2565,6 +3005,30 @@ export function ExtensionProofPanel({
     )
     return () => timers.forEach(clearTimeout)
   }, [analyzing])
+
+  // ── Simulated progress for defense analysis ────────────────────────────────
+  useEffect(() => {
+    if (!defenseAnalyzing) {
+      setDefenseSimProgress(0)
+      setDefenseSimStageIdx(0)
+      return
+    }
+    const schedule = [
+      { delay: 200,  stageIdx: 0, progress: 18 },
+      { delay: 700,  stageIdx: 1, progress: 35 },
+      { delay: 1400, stageIdx: 2, progress: 52 },
+      { delay: 2200, stageIdx: 3, progress: 68 },
+      { delay: 3200, stageIdx: 4, progress: 82 },
+      { delay: 4200, stageIdx: 5, progress: 93 },
+    ]
+    const timers = schedule.map(({ delay, stageIdx, progress }) =>
+      setTimeout(() => {
+        setDefenseSimStageIdx(stageIdx)
+        setDefenseSimProgress(progress)
+      }, delay)
+    )
+    return () => timers.forEach(clearTimeout)
+  }, [defenseAnalyzing])
 
   // ── Analyze workflow ──────────────────────────────────────────────────────
 
@@ -2685,6 +3149,33 @@ export function ExtensionProofPanel({
       setGithubAnalyzeError(err instanceof Error ? err.message : "GitHub analysis failed. Please try again.")
     } finally {
       if (!cancelled) setGithubAnalyzing(false)
+    }
+  }
+
+  // ── Analyze project defense transcript ────────────────────────────────────
+
+  async function handleDefenseAnalysis() {
+    if (!session) return
+    if (defenseTranscript.trim().split(/\s+/).filter(Boolean).length < 30) return
+
+    setDefenseAnalyzing(true)
+    setDefenseAnalyzeError(null)
+
+    try {
+      const result = await analyzeProjectDefense(session.id, {
+        video_url: defenseVideoUrl.trim() || null,
+        transcript_text: defenseTranscript.trim(),
+        claimed_skills: parseSkills(),
+        proof_objective: form.proofObjective.trim(),
+        workflow_summary: workflowAnalysis?.workflow_summary ?? "",
+        github_summary: githubAnalysis?.recruiter_summary ?? "",
+        live_check_summary: liveCheck?.recruiter_summary ?? "",
+      })
+      setDefenseAnalysis(result)
+    } catch (err) {
+      setDefenseAnalyzeError(err instanceof Error ? err.message : "Defense analysis failed. Please try again.")
+    } finally {
+      setDefenseAnalyzing(false)
     }
   }
 
@@ -3236,6 +3727,21 @@ export function ExtensionProofPanel({
             liveCheck={liveCheck}
           />
         )}
+
+        {/* ── Project Defense Transcript ─────────────────────────────────── */}
+        <ProjectDefenseSection
+          session={session}
+          defenseAnalysis={defenseAnalysis}
+          defenseVideoUrl={defenseVideoUrl}
+          defenseTranscript={defenseTranscript}
+          defenseAnalyzing={defenseAnalyzing}
+          defenseAnalyzeError={defenseAnalyzeError}
+          defenseSimProgress={defenseSimProgress}
+          defenseSimStageIdx={defenseSimStageIdx}
+          onVideoUrlChange={setDefenseVideoUrl}
+          onTranscriptChange={setDefenseTranscript}
+          onAnalyze={() => void handleDefenseAnalysis()}
+        />
 
         {/* ── Verification Readiness Report ──────────────────────────────── */}
         {/* Shown once proof is uploaded and at least some analysis has run.
