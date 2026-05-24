@@ -127,13 +127,17 @@ chrome.runtime.onMessage.addListener(
         break
       }
 
-      case "DISMISS_UPLOAD_SUCCESS":
-        // Store which session's success bar was dismissed so the content script
-        // never re-shows it, even if a poll returns "uploaded" for the same session.
-        console.log(`Background stored dismissed session: ${state.sessionId}`)
-        state.dismissedForSessionId = state.sessionId
+      case "DISMISS_UPLOAD_SUCCESS": {
+        // Accept an explicit sessionId from the content script payload so the
+        // target page's session ID is always used, even if background state has
+        // drifted (e.g. a second tab detected a different session).
+        const providedId = (msg.payload as { sessionId?: string } | undefined)?.sessionId
+        const sid = providedId ?? state.sessionId
+        console.log(`Background stored dismissed session: ${sid}`)
+        state.dismissedForSessionId = sid
         sendResponse({ ok: true })
         break
+      }
 
       case "WORKFLOW_EVENT":
         if (state.isRecording) {

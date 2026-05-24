@@ -33,13 +33,38 @@ interface StateSnapshot {
 
 let capturing = false
 let barHost: HTMLElement | null = null
+let barShadow: ShadowRoot | null = null
 
 // Set to true if the extension is reloaded while this content script is running.
 // All chrome.runtime calls are gated on this flag to prevent uncaught exceptions.
 let contextInvalidated = false
 
-// Timer reference for auto-dismissing the bar after a successful upload.
 let autoDismissTimer: ReturnType<typeof setTimeout> | null = null
+let barPoll: ReturnType<typeof setInterval> | null = null
+let barMinimized = false
+let lastState: StateSnapshot | null = null
+
+// ── Local dismiss storage ─────────────────────────────────────────────────────
+// Persists dismissed state in sessionStorage so it survives polling restarts and
+// extension context loss without depending on the background service worker.
+
+function dismissedStorageKey(sessionId: string): string {
+  return `veribridge:dismissed-upload-success:${sessionId}`
+}
+
+function isLocallyDismissed(sessionId: string): boolean {
+  try {
+    return sessionStorage.getItem(dismissedStorageKey(sessionId)) === "true"
+  } catch {
+    return false
+  }
+}
+
+function setLocallyDismissed(sessionId: string): void {
+  try {
+    sessionStorage.setItem(dismissedStorageKey(sessionId), "true")
+  } catch { /* storage unavailable — best effort */ }
+}
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 
@@ -69,8 +94,6 @@ function safeMeta(el: Element): Partial<WorkflowEvent> {
 }
 
 // ── Extension context safety ──────────────────────────────────────────────────
-// Wraps every chrome.runtime.sendMessage call so that extension reloads
-// (which invalidate the extension context) never produce uncaught errors.
 
 async function safeSendMessage<T = unknown>(message: unknown): Promise<T | null> {
   if (contextInvalidated) return null
@@ -86,33 +109,16 @@ async function safeSendMessage<T = unknown>(message: unknown): Promise<T | null>
       contextInvalidated = true
       handleContextInvalidated()
     }
-    // "The message port closed before a response was received" is harmless for
-    // fire-and-forget messages (e.g. WORKFLOW_EVENT) — just return null.
     return null
   }
 }
 
 function handleContextInvalidated(): void {
-  // Stop the polling interval so we don't keep trying to reach the dead background.
-  if (barPoll) {
-    clearInterval(barPoll)
-    barPoll = null
-  }
-  if (autoDismissTimer) {
-    clearTimeout(autoDismissTimer)
-    autoDismissTimer = null
-  }
+  // Stop all timers, then remove the bar entirely so users don't see a
+  // broken "Extension reloaded" overlay. A console warning is enough.
+  console.warn("VeriBridge: extension reloaded — refresh this page to continue.")
   stopCapture()
-  // Replace bar contents with a reload notice — do not hide it so the user sees the message.
-  if (barShadow) {
-    barShadow.innerHTML = `<style>${BAR_CSS}</style>
-      <div class="bar">
-        <div class="logo">VB</div>
-        <div class="info">
-          <span class="msg er">Extension reloaded — refresh this page to continue.</span>
-        </div>
-      </div>`
-  }
+  hideFloatingBar()
 }
 
 // ── Event capture ─────────────────────────────────────────────────────────────
@@ -168,14 +174,11 @@ chrome.runtime.onMessage.addListener((msg: { type: string }) => {
     showFloatingBar()
   } else if (msg.type === "STOP_CAPTURING") {
     stopCapture()
-    // Keep bar visible in stopped state so user can still send proof.
     refreshBar()
   }
 })
 
 // ── Session detection ──────────────────────────────────────────────────────────
-// Reads veribridge_session_id from the URL once at document_idle and notifies
-// the background service worker so it can pre-fill the popup.
 
 function detectSessionFromUrl(): void {
   const params = new URLSearchParams(location.search)
@@ -204,10 +207,7 @@ void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
 
 // ── Floating recorder bar ──────────────────────────────────────────────────────
 
-let barShadow: ShadowRoot | null = null
-let barPoll: ReturnType<typeof setInterval> | null = null
-let barMinimized = false
-let lastState: StateSnapshot | null = null
+const BAR_HOST_ID = "veribridge-recorder-host"
 
 function fmtTime(totalSeconds: number): string {
   const m = Math.floor(totalSeconds / 60).toString().padStart(2, "0")
@@ -215,8 +215,6 @@ function fmtTime(totalSeconds: number): string {
   return `${m}:${s}`
 }
 
-// Bug 1 fix: use stoppedAt as the end time when the recording is not active,
-// so the timer freezes the moment Stop is clicked.
 function elapsedSecs(startedAt: string | null, stoppedAt: string | null): number {
   if (!startedAt) return 0
   const end = stoppedAt ? new Date(stoppedAt).getTime() : Date.now()
@@ -269,14 +267,10 @@ const BAR_CSS = `
 .b-icon:hover{color:#d1d5db}
 `
 
-// Bug 2/4 fix: bar is driven entirely by background status — no local barUploadPhase.
-// Any state change (whether triggered by popup or floating bar) is reflected here
-// within one poll cycle (≤1 second).
 function buildBarHTML(s: StateSnapshot | null): string {
   const status = s?.status ?? "idle"
   const rec    = s?.isRecording ?? false
   const count  = s?.eventCount ?? 0
-  // Bug 1 fix: pass stoppedAt so timer freezes after Stop.
   const secs   = elapsedSecs(s?.startedAt ?? null, s?.stoppedAt ?? null)
 
   if (barMinimized) {
@@ -291,7 +285,6 @@ function buildBarHTML(s: StateSnapshot | null): string {
   let acts = ""
 
   if (status === "uploading") {
-    // No buttons during upload to prevent duplicate sends.
     info = `<span class="msg up">Uploading proof…</span>`
 
   } else if (status === "uploaded") {
@@ -299,7 +292,6 @@ function buildBarHTML(s: StateSnapshot | null): string {
     acts = `<button class="btn b-dismiss" id="vb-dismiss">Dismiss</button>`
 
   } else if (status === "upload_failed" || status === "error") {
-    // Bug 3 fix: show actual error reason from background state.
     const reason = (s?.lastUploadError ?? "Unknown error").slice(0, 55)
     info = `<span class="msg er">Upload failed: ${reason}</span>`
     acts = `
@@ -308,7 +300,6 @@ function buildBarHTML(s: StateSnapshot | null): string {
     `
 
   } else if (status === "recording" || rec) {
-    // Active recording: pulsing red dot, live timer, Stop + Stop & Send.
     info = `
       <div class="dot rec"></div>
       <span class="lbl">Recording</span>
@@ -322,7 +313,6 @@ function buildBarHTML(s: StateSnapshot | null): string {
     `
 
   } else if (status === "stopped") {
-    // Bug 6 fix: stopped state with frozen timer, amber dot, clear Send Proof CTA.
     info = `
       <div class="dot stp"></div>
       <span class="lbl">Stopped</span>
@@ -361,11 +351,27 @@ function wireBarButtons(): void {
     renderBar(null)
   })
   barShadow.getElementById("vb-dismiss")?.addEventListener("click", () => {
-    console.log("Dismiss clicked")
-    void safeSendMessage({ type: "DISMISS_UPLOAD_SUCCESS" }).then(() => {
-      console.log("Dismiss message sent")
-      hideFloatingBar()
-      console.log("Floating bar hidden for session")
+    const sessionId = lastState?.sessionId ?? ""
+    console.log("Dismiss clicked on target page")
+
+    // Store local flag and remove DOM immediately — do NOT wait for the background
+    // message. This is the real guard; background message is best-effort.
+    if (sessionId) {
+      setLocallyDismissed(sessionId)
+      console.log(`Stored local dismissed flag for session: ${sessionId}`)
+    }
+    hideFloatingBar()
+
+    // Notify background so other tabs and future poll cycles also skip the bar.
+    void safeSendMessage({
+      type: "DISMISS_UPLOAD_SUCCESS",
+      payload: { sessionId },
+    }).then((r) => {
+      if (r !== null) {
+        console.log("Sent DISMISS_UPLOAD_SUCCESS to background")
+      } else {
+        console.log("Background dismiss failed, using local fallback")
+      }
     })
   })
 }
@@ -373,41 +379,41 @@ function wireBarButtons(): void {
 async function onBarStop(): Promise<void> {
   stopCapture()
   await safeSendMessage({ type: "STOP_RECORDING" })
-  // Force immediate bar refresh — don't wait for the next poll tick.
   const s = await safeSendMessage<StateSnapshot>({ type: "GET_STATE" })
   if (s) renderBar(s)
 }
 
-// "Stop & Send" and "Send Proof" (after stop) and "Retry" all call this.
 async function onBarStopAndSend(): Promise<void> {
   if (capturing) {
-    // Stop first and wait briefly for background to process STOP_RECORDING.
     await onBarStop()
     await new Promise<void>((r) => setTimeout(r, 200))
   }
-
-  // SEND_PROOF is async in the background (return true keeps channel open).
-  // This await resolves only after the upload completes (success or failure).
-  // During the upload the 1-second poll keeps the bar updated to "Uploading…".
   await safeSendMessage({ type: "SEND_PROOF", payload: { finalNote: null } })
-
-  // Force an immediate refresh so the bar shows the final state without waiting
-  // for the next poll cycle.
   const s = await safeSendMessage<StateSnapshot>({ type: "GET_STATE" })
   if (s) renderBar(s)
+}
+
+function shouldSkipRender(s: StateSnapshot): boolean {
+  if (s.status !== "uploaded") return false
+  const sid = s.sessionId
+  if (!sid) return false
+  // Local flag: works even when background messaging is unavailable.
+  if (isLocallyDismissed(sid)) {
+    console.log("Skip render because local dismissed flag exists")
+    return true
+  }
+  // Background flag: set by DISMISS_UPLOAD_SUCCESS handler.
+  if (s.dismissedForSessionId === sid) {
+    return true
+  }
+  return false
 }
 
 function fetchAndRender(): void {
   void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
     if (!s) return
 
-    // If the user already dismissed the success bar for this session, keep it
-    // hidden and stop polling — do not re-render or restart the auto-dismiss timer.
-    if (
-      s.status === "uploaded" &&
-      s.sessionId &&
-      s.dismissedForSessionId === s.sessionId
-    ) {
+    if (shouldSkipRender(s)) {
       hideFloatingBar()
       return
     }
@@ -416,12 +422,14 @@ function fetchAndRender(): void {
 
     // Auto-dismiss bar 5 seconds after a successful upload.
     if (s.status === "uploaded" && !autoDismissTimer) {
+      const sessionId = s.sessionId ?? ""
       autoDismissTimer = setTimeout(() => {
         console.log("Auto-dismissing success bar")
-        void safeSendMessage({ type: "DISMISS_UPLOAD_SUCCESS" }).then(() => {
-          hideFloatingBar()
-          autoDismissTimer = null
-        })
+        if (sessionId) setLocallyDismissed(sessionId)
+        hideFloatingBar()
+        autoDismissTimer = null
+        // Notify background best-effort.
+        void safeSendMessage({ type: "DISMISS_UPLOAD_SUCCESS", payload: { sessionId } })
       }, 5000)
     }
   })
@@ -429,20 +437,26 @@ function fetchAndRender(): void {
 
 function showFloatingBar(): void {
   if (!barHost) {
-    const host = document.createElement("div")
-    host.id = "veribridge-recorder-host"
-    // Use setAttribute so !important flags prevent page CSS from overriding position:fixed.
-    host.setAttribute(
-      "style",
-      "all:initial!important;position:fixed!important;bottom:20px!important;" +
-      "right:20px!important;z-index:2147483647!important;pointer-events:auto!important;"
-    )
-    ;(document.body ?? document.documentElement).appendChild(host)
-    barHost = host
-    barShadow = host.attachShadow({ mode: "open" })
+    // Reuse a leftover host from a previous content script execution in this tab
+    // rather than creating a duplicate element.
+    const existing = document.getElementById(BAR_HOST_ID) as HTMLElement | null
+    if (existing) {
+      barHost = existing
+      barShadow = existing.shadowRoot
+    } else {
+      const host = document.createElement("div")
+      host.id = BAR_HOST_ID
+      host.setAttribute(
+        "style",
+        "all:initial!important;position:fixed!important;bottom:20px!important;" +
+        "right:20px!important;z-index:2147483647!important;pointer-events:auto!important;"
+      )
+      ;(document.body ?? document.documentElement).appendChild(host)
+      barHost = host
+      barShadow = host.attachShadow({ mode: "open" })
+    }
   }
 
-  barHost.style.display = ""
   barMinimized = false
   fetchAndRender()
 
@@ -454,11 +468,20 @@ function showFloatingBar(): void {
 function hideFloatingBar(): void {
   if (barPoll) { clearInterval(barPoll); barPoll = null }
   if (autoDismissTimer) { clearTimeout(autoDismissTimer); autoDismissTimer = null }
-  if (barHost) barHost.style.display = "none"
+  // Remove the DOM node entirely rather than setting display:none.
+  // This prevents any stale poll response from re-rendering the bar through
+  // the still-attached shadow root.
+  if (barHost) {
+    barHost.remove()
+    barHost = null
+    barShadow = null
+    lastState = null
+    console.log("Removed floating bar DOM")
+  }
 }
 
 function refreshBar(): void {
-  if (barHost && barHost.style.display !== "none") {
+  if (barHost) {
     fetchAndRender()
   }
 }
