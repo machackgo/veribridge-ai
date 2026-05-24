@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user_id, get_db
 from app.schemas.extension_proof_workflow_analysis import (
+    AnalysisStage,
     WorkflowAnalyzeRequest,
     WorkflowAnalysisResponse,
 )
@@ -16,6 +17,7 @@ from app.services.extension_proof_workflow_analysis_service import (
     ExtensionProofWorkflowAnalysisService,
     InvalidAnalysisStateError,
     SessionNotFoundError,
+    _build_completed_stages,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,6 +100,8 @@ def get_workflow_analysis(
 
 
 def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
+    db_saved = bool(row.get("_db_saved", True))
+    stages = [AnalysisStage(**s) for s in _build_completed_stages(db_saved=db_saved)]
     return WorkflowAnalysisResponse(
         id=str(row.get("id", "")),
         proof_session_id=str(row.get("proof_session_id", "")),
@@ -115,6 +119,9 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
         recruiter_summary=str(row.get("recruiter_summary", "")),
         student_improvement_suggestions=row.get("student_improvement_suggestions") or [],
         human_review_needed=bool(row.get("human_review_needed", False)),
+        progress=100,
+        current_stage="AI reviewed",
+        stages=stages,
         created_at=str(row.get("created_at", "")),
         updated_at=row.get("updated_at"),
     )

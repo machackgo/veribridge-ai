@@ -162,10 +162,12 @@ class ExtensionProofWorkflowAnalysisService:
     ) -> dict[str, Any]:
         """Run workflow analysis and persist the result.
 
-        Transitions the session from uploaded_pending_analysis → analyzing
-        (if not already analyzing), then computes and stores the analysis.
-        Returns the stored row dict.
+        Computes the analysis in-memory first, then persists best-effort.
+        Always returns a result dict — never raises due to DB failures.
+        A '_db_saved' key indicates whether the result was persisted.
         """
+        logger.info("WORKFLOW_ANALYSIS_START session=%s user=%s", session_id, user_id)
+
         session = self._get_session(user_id, session_id)
         current_status = session.get("status", "")
 
@@ -175,11 +177,34 @@ class ExtensionProofWorkflowAnalysisService:
                 f"Allowed from: {sorted(_VALID_ANALYZE_FROM)}."
             )
 
-        # Advance session to 'analyzing' if it hasn't moved yet.
+        # Advance session to 'analyzing' if not already there — best-effort.
         if current_status == "uploaded_pending_analysis":
-            self._update_session_status(user_id, session_id, "analyzing")
+            try:
+                self._update_session_status(user_id, session_id, "analyzing")
+            except Exception:
+                logger.warning(
+                    "WORKFLOW_ANALYSIS_STATUS_ANALYZING_FAILED session=%s",
+                    session_id, exc_info=True,
+                )
 
+        logger.info("WORKFLOW_ANALYSIS_LOADING_METADATA session=%s", session_id)
         proof_data: dict[str, Any] = session.get("proof_data") or {}
+
+        event_count = len(proof_data.get("workflow_events") or [])
+        logger.info(
+            "WORKFLOW_ANALYSIS_READING_TIMELINE session=%s events=%d",
+            session_id, event_count,
+        )
+        logger.info(
+            "WORKFLOW_ANALYSIS_MATCHING_OBJECTIVE session=%s objective=%r",
+            session_id, (proof_objective or "")[:80],
+        )
+        logger.info(
+            "WORKFLOW_ANALYSIS_MATCHING_SKILLS session=%s skills=%s",
+            session_id, claimed_skills,
+        )
+        logger.info("WORKFLOW_ANALYSIS_GENERATING_SUMMARY session=%s", session_id)
+
         result = _analyze_workflow(
             proof_data=proof_data,
             claimed_skills=claimed_skills,
@@ -189,7 +214,46 @@ class ExtensionProofWorkflowAnalysisService:
             github_url=github_url,
         )
 
-        row = self._upsert_result(user_id, session_id, result)
+        logger.info("WORKFLOW_ANALYSIS_DB_INSERT_START session=%s", session_id)
+        db_saved = False
+        row: dict[str, Any]
+        try:
+            row = self._upsert_result(user_id, session_id, result)
+            db_saved = True
+            logger.info("WORKFLOW_ANALYSIS_DB_INSERT_SUCCESS session=%s", session_id)
+        except Exception:
+            logger.warning(
+                "WORKFLOW_ANALYSIS_DB_INSERT_FAILED session=%s — degrading to in-memory result",
+                session_id, exc_info=True,
+            )
+            now = _now()
+            row = {
+                "id": f"mem-{session_id[:8]}",
+                "user_id": user_id,
+                "proof_session_id": session_id,
+                "analyzer_version": ANALYZER_VERSION,
+                "created_at": now,
+                "updated_at": now,
+                **result,
+            }
+
+        # Move session to completed regardless of whether DB write succeeded.
+        try:
+            self._update_session_status(user_id, session_id, "completed")
+        except Exception:
+            logger.warning(
+                "WORKFLOW_ANALYSIS_STATUS_COMPLETED_FAILED session=%s",
+                session_id, exc_info=True,
+            )
+
+        row["_db_saved"] = db_saved
+        logger.info(
+            "WORKFLOW_ANALYSIS_COMPLETE session=%s score=%d confidence=%s db_saved=%s",
+            session_id,
+            result.get("evidence_strength_score", 0),
+            result.get("workflow_confidence", ""),
+            db_saved,
+        )
         return row
 
     def get_latest(self, user_id: str, session_id: str) -> dict[str, Any] | None:
@@ -203,17 +267,24 @@ class ExtensionProofWorkflowAnalysisService:
                     return row
             return None
 
-        result = (
-            self._client.table(_TABLE)
-            .select("*")
-            .eq("user_id", user_id)
-            .eq("proof_session_id", session_id)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        rows = getattr(result, "data", []) or []
-        return rows[0] if rows else None
+        try:
+            result = (
+                self._client.table(_TABLE)
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("proof_session_id", session_id)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+            return rows[0] if rows else None
+        except Exception:
+            logger.warning(
+                "WORKFLOW_ANALYSIS_GET_LATEST_FAILED session=%s — table may not exist yet",
+                session_id, exc_info=True,
+            )
+            return None
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
@@ -297,6 +368,22 @@ class ExtensionProofWorkflowAnalysisService:
         if rows:
             return rows[0]
         return insert_data
+
+
+# ── Stage helpers ─────────────────────────────────────────────────────────────
+
+def _build_completed_stages(db_saved: bool = True) -> list[dict[str, Any]]:
+    """Return the 8-stage list for a completed workflow analysis."""
+    return [
+        {"key": "loading_metadata",   "label": "Loading session metadata",   "status": "complete"},
+        {"key": "reading_timeline",   "label": "Reading workflow timeline",   "status": "complete"},
+        {"key": "matching_objective", "label": "Matching proof objective",    "status": "complete"},
+        {"key": "matching_skills",    "label": "Matching claimed skills",     "status": "complete"},
+        {"key": "generating_summary", "label": "Generating evidence summary", "status": "complete"},
+        {"key": "db_insert",          "label": "Saving results",             "status": "complete" if db_saved else "failed"},
+        {"key": "video_to_text",      "label": "Video to text analysis",      "status": "coming_soon"},
+        {"key": "github_analysis",    "label": "GitHub code analysis",        "status": "coming_soon"},
+    ]
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────

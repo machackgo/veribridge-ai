@@ -14,6 +14,8 @@ WorkflowAnalysisType = Literal[
 
 WorkflowConfidence = Literal["high", "medium", "low", "insufficient"]
 
+AnalysisStageStatus = Literal["pending", "in_progress", "complete", "failed", "coming_soon"]
+
 
 class WorkflowAnalyzeRequest(BaseModel):
     claimed_skills: list[str] = Field(
@@ -38,6 +40,12 @@ class WorkflowAnalyzeRequest(BaseModel):
     )
 
 
+class AnalysisStage(BaseModel):
+    key: str
+    label: str
+    status: AnalysisStageStatus
+
+
 class WorkflowAnalysisResponse(BaseModel):
     id: str
     proof_session_id: str
@@ -60,6 +68,12 @@ class WorkflowAnalysisResponse(BaseModel):
     student_improvement_suggestions: list[str]
 
     human_review_needed: bool
+
+    # Progress tracking — computed at response time, not stored in DB.
+    # After successful analysis all stages are "complete" and progress = 100.
+    progress: int = Field(default=100, ge=0, le=100)
+    current_stage: str = "AI reviewed"
+    stages: list[AnalysisStage] = Field(default_factory=list)
 
     created_at: str
     updated_at: str | None = None

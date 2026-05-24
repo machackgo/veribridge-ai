@@ -1008,6 +1008,19 @@ export type WorkflowAnalysisType =
 
 export type WorkflowConfidence = "high" | "medium" | "low" | "insufficient"
 
+export type WorkflowAnalysisStageStatus =
+  | "pending"
+  | "in_progress"
+  | "complete"
+  | "failed"
+  | "coming_soon"
+
+export type WorkflowAnalysisStage = {
+  key: string
+  label: string
+  status: WorkflowAnalysisStageStatus
+}
+
 export type WorkflowAnalysisResponse = {
   id: string
   proof_session_id: string
@@ -1025,6 +1038,9 @@ export type WorkflowAnalysisResponse = {
   recruiter_summary: string
   student_improvement_suggestions: string[]
   human_review_needed: boolean
+  progress: number
+  current_stage: string
+  stages: WorkflowAnalysisStage[]
   created_at: string
   updated_at: string | null
 }

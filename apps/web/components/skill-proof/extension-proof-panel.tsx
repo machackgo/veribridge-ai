@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useEffect, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   createExtensionProofSession,
@@ -58,7 +58,17 @@ function isLocal(t: UrlType): boolean {
 const POLLING_STATUSES: ExtensionProofSessionStatus[] = [
   "recording",
   "uploaded_pending_analysis",
-  "analyzing",
+]
+
+const ANALYSIS_STAGES: Array<{ key: string; label: string; comingSoon?: boolean }> = [
+  { key: "loading_metadata",   label: "Loading session metadata" },
+  { key: "reading_timeline",   label: "Reading workflow timeline" },
+  { key: "matching_objective", label: "Matching proof objective" },
+  { key: "matching_skills",    label: "Matching claimed skills" },
+  { key: "generating_summary", label: "Generating evidence summary" },
+  { key: "db_insert",          label: "Saving results" },
+  { key: "video_to_text",      label: "Video to text analysis", comingSoon: true },
+  { key: "github_analysis",    label: "GitHub code analysis",   comingSoon: true },
 ]
 
 const inp: CSSProperties = {
@@ -99,7 +109,7 @@ const STATUS_CONFIG: Record<
   recording:                 { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "RECORDING" },
   uploaded_pending_analysis: { bg: "#dbeafe", color: "#1d4ed8", border: "#bfdbfe", label: "WORKFLOW UPLOADED" },
   analyzing:                 { bg: "#ede9fe", color: "#5b21b6", border: "#ddd6fe", label: "ANALYZING" },
-  completed:                 { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "FULLY VERIFIED" },
+  completed:                 { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "ANALYSIS COMPLETE" },
   expired:                   { bg: "#fef2f2", color: "#991b1b", border: "#fecaca", label: "EXPIRED" },
 }
 
@@ -425,20 +435,6 @@ function StatusMessage({
     )
   }
 
-  if (status === "analyzing") {
-    return (
-      <div style={{ border: "1px solid #ddd6fe", borderRadius: 12, background: "#faf5ff", padding: "14px 16px", display: "grid", gap: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>Verification analysis in progress</div>
-        <p style={{ margin: 0, fontSize: 12, color: "#4c1d95", lineHeight: 1.7 }}>
-          VeriBridge is reviewing your submitted evidence. Final verification is still pending.
-        </p>
-        {pollingActive && (
-          <p style={{ margin: 0, fontSize: 11, color: "#7c3aed" }}>Analysis running…</p>
-        )}
-      </div>
-    )
-  }
-
   if (status === "completed") {
     const title = local ? "✓ Local workflow evidence complete" : "✓ Website workflow evidence complete"
     return (
@@ -452,6 +448,70 @@ function StatusMessage({
   }
 
   return null
+}
+
+// ── Workflow Analysis In-Progress ─────────────────────────────────────────────
+
+function WorkflowAnalysisInProgress({
+  simProgress,
+  simStageIdx,
+}: {
+  simProgress: number
+  simStageIdx: number
+}) {
+  return (
+    <div style={{ border: "1px solid #ddd6fe", borderRadius: 12, background: "#faf5ff", padding: "14px 16px", display: "grid", gap: 12 }}>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>Analyzing workflow evidence…</div>
+        <p style={{ margin: "4px 0 0", fontSize: 12, color: "#4c1d95", lineHeight: 1.65 }}>
+          VeriBridge is reviewing your recorded workflow. This usually takes 10–30 seconds.
+        </p>
+      </div>
+
+      {/* Progress bar */}
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+          <span style={{ fontSize: 11, color: "#7c3aed" }}>Analysis in progress</span>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "#5b21b6" }}>{simProgress}%</span>
+        </div>
+        <div style={{ height: 6, background: "#ede9fe", borderRadius: 999 }}>
+          <div
+            style={{
+              height: 6, borderRadius: 999, background: "#7c3aed",
+              width: `${simProgress}%`, transition: "width 0.5s ease",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Stage checklist */}
+      <div style={{ display: "grid", gap: 6 }}>
+        {ANALYSIS_STAGES.map((stage, i) => {
+          if (stage.comingSoon) {
+            return (
+              <div key={stage.key} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ fontSize: 12, color: "#cbd5e1", width: 14, flexShrink: 0, textAlign: "center" }}>—</span>
+                <span style={{ fontSize: 12, color: "#94a3b8" }}>{stage.label}</span>
+                <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: "auto" }}>Coming soon</span>
+              </div>
+            )
+          }
+          const isDone = i <= simStageIdx
+          const isCurrent = i === simStageIdx + 1
+          return (
+            <div key={stage.key} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: isDone ? "#065f46" : isCurrent ? "#5b21b6" : "#94a3b8", width: 14, flexShrink: 0, textAlign: "center" }}>
+                {isDone ? "✓" : isCurrent ? "…" : "○"}
+              </span>
+              <span style={{ fontSize: 12, color: isDone ? "#064e3b" : isCurrent ? "#4c1d95" : "#94a3b8" }}>
+                {stage.label}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 // ── Workflow Analysis Card ────────────────────────────────────────────────────
@@ -665,6 +725,10 @@ export function ExtensionProofPanel({
   const [workflowAnalysis, setWorkflowAnalysis] = useState<WorkflowAnalysisResponse | null>(null)
   const [analyzing, setAnalyzing]       = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
+  const [analyzeTimedOut, setAnalyzeTimedOut] = useState(false)
+  const [simProgress, setSimProgress]   = useState(0)
+  const [simStageIdx, setSimStageIdx]   = useState(-1)
+  const analyzeTimeoutRef               = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Derived from form.websiteUrl — available in both form and session_active steps.
   const urlType = classifyUrl(form.websiteUrl)
@@ -694,15 +758,40 @@ export function ExtensionProofPanel({
   }, [pollingActive, session, onSessionComplete])
 
   // ── Auto-fetch workflow analysis ──────────────────────────────────────────
-  // When the session is in analyzing/completed, try to load an existing result.
+  // When session reaches completed, try to load any persisted result.
   useEffect(() => {
     if (!session) return
-    if (!["analyzing", "completed"].includes(session.status)) return
+    if (session.status !== "completed") return
     if (workflowAnalysis) return
     void getWorkflowAnalysis(session.id).then((r) => {
       if (r) setWorkflowAnalysis(r)
     }).catch(() => undefined)
   }, [session?.id, session?.status, workflowAnalysis])
+
+  // ── Simulated progress during analysis ────────────────────────────────────
+  useEffect(() => {
+    if (!analyzing) {
+      setSimProgress(0)
+      setSimStageIdx(-1)
+      return
+    }
+    const schedule: Array<{ delay: number; stageIdx: number; progress: number }> = [
+      { delay: 300,  stageIdx: 0, progress: 8  },
+      { delay: 900,  stageIdx: 1, progress: 20 },
+      { delay: 1600, stageIdx: 2, progress: 35 },
+      { delay: 2500, stageIdx: 3, progress: 50 },
+      { delay: 3600, stageIdx: 4, progress: 65 },
+      { delay: 4800, stageIdx: 5, progress: 78 },
+      { delay: 6200, stageIdx: 5, progress: 90 },
+    ]
+    const timers = schedule.map(({ delay, stageIdx, progress }) =>
+      setTimeout(() => {
+        setSimStageIdx(stageIdx)
+        setSimProgress(progress)
+      }, delay)
+    )
+    return () => timers.forEach(clearTimeout)
+  }, [analyzing])
 
   // ── Analyze workflow ──────────────────────────────────────────────────────
 
@@ -710,6 +799,17 @@ export function ExtensionProofPanel({
     if (!session) return
     setAnalyzing(true)
     setAnalyzeError(null)
+    setAnalyzeTimedOut(false)
+
+    let cancelled = false
+    const timeoutId = setTimeout(() => {
+      cancelled = true
+      setAnalyzeTimedOut(true)
+      setAnalyzing(false)
+      setAnalyzeError("Analysis timed out after 90 seconds. Please retry.")
+    }, 90_000)
+    analyzeTimeoutRef.current = timeoutId
+
     try {
       const result = await analyzeWorkflowEvidence(session.id, {
         claimed_skills: form.skillName.trim() ? [form.skillName.trim()] : [],
@@ -718,14 +818,20 @@ export function ExtensionProofPanel({
         url_type: urlType,
         github_url: form.githubUrl.trim() || null,
       })
+      if (cancelled) return
+      clearTimeout(timeoutId)
+      analyzeTimeoutRef.current = null
       setWorkflowAnalysis(result)
-      // Refresh session — status may have moved to 'analyzing'
+      setPoll(false)
       const updated = await getExtensionProofSession(session.id)
-      setSession(updated)
+      if (!cancelled) setSession(updated)
     } catch (err) {
+      if (cancelled) return
+      clearTimeout(timeoutId)
+      analyzeTimeoutRef.current = null
       setAnalyzeError(err instanceof Error ? err.message : "Analysis failed. Please try again.")
     } finally {
-      setAnalyzing(false)
+      if (!cancelled) setAnalyzing(false)
     }
   }
 
@@ -1023,8 +1129,8 @@ export function ExtensionProofPanel({
           />
         )}
 
-        {/* Analyze Workflow Evidence button — shown when proof is uploaded and analysis not yet done */}
-        {session.status === "uploaded_pending_analysis" && !workflowAnalysis && (
+        {/* Analyze button — shown when uploaded and not yet analyzing */}
+        {session.status === "uploaded_pending_analysis" && !workflowAnalysis && !analyzing && (
           <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 10 }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>Ready to analyze your workflow</div>
@@ -1034,40 +1140,70 @@ export function ExtensionProofPanel({
                 This is a Workflow Timeline Analysis — it does not replace GitHub evidence or final verification.
               </p>
             </div>
-            {analyzeError && (
-              <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 8, padding: "7px 10px", fontSize: 12 }}>
-                {analyzeError}
-              </div>
-            )}
             <div>
               <button
                 type="button"
                 onClick={() => void handleAnalyze()}
-                disabled={analyzing}
                 style={{
                   border: "1px solid transparent",
-                  background: analyzing ? "var(--bg-2)" : "#1d4ed8",
-                  color: analyzing ? "var(--muted)" : "#fff",
+                  background: "#1d4ed8",
+                  color: "#fff",
                   borderRadius: 10, padding: "10px 20px",
                   fontWeight: 700, fontSize: 14,
-                  cursor: analyzing ? "not-allowed" : "pointer",
+                  cursor: "pointer",
                 }}
               >
-                {analyzing ? "Analyzing workflow…" : "Analyze Workflow Evidence"}
+                Analyze Workflow Evidence
               </button>
             </div>
           </div>
         )}
 
-        {/* In-progress analysis indicator */}
-        {analyzing && (
-          <div style={{ border: "1px solid #ddd6fe", borderRadius: 12, background: "#faf5ff", padding: "14px 16px", display: "grid", gap: 6 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>Analyzing workflow…</div>
-            <p style={{ margin: 0, fontSize: 12, color: "#4c1d95", lineHeight: 1.65 }}>
-              Evaluating your recorded workflow, matched skills, and evidence quality.
-            </p>
+        {/* Error display — always visible, outside any conditional container */}
+        {analyzeError && !workflowAnalysis && (
+          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 10, padding: "10px 14px", display: "grid", gap: 8 }}>
+            <div style={{ color: "#991b1b", fontSize: 12 }}>{analyzeError}</div>
+            {!analyzing && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => void handleAnalyze()}
+                  style={{
+                    border: "1px solid #dc2626", background: "transparent", color: "#991b1b",
+                    borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer",
+                  }}
+                >
+                  Retry Analysis
+                </button>
+              </div>
+            )}
           </div>
         )}
+
+        {/* Stuck analyzing state — session is analyzing but no active request and no error */}
+        {session.status === "analyzing" && !workflowAnalysis && !analyzing && !analyzeError && (
+          <div style={{ border: "1px solid #ddd6fe", borderRadius: 12, background: "#faf5ff", padding: "14px 16px", display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>Analysis in progress</div>
+            <p style={{ margin: 0, fontSize: 12, color: "#4c1d95", lineHeight: 1.65 }}>
+              Workflow analysis was started in a previous attempt. Click Retry to re-run the analysis.
+            </p>
+            <div>
+              <button
+                type="button"
+                onClick={() => void handleAnalyze()}
+                style={{
+                  border: "1px solid transparent", background: "#6d28d9", color: "#fff",
+                  borderRadius: 10, padding: "8px 18px", fontWeight: 700, fontSize: 13, cursor: "pointer",
+                }}
+              >
+                Retry Analysis
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* In-progress analysis with simulated progress stages */}
+        {analyzing && <WorkflowAnalysisInProgress simProgress={simProgress} simStageIdx={simStageIdx} />}
 
         {/* Workflow analysis result card */}
         {workflowAnalysis && <WorkflowAnalysisCard analysis={workflowAnalysis} />}
