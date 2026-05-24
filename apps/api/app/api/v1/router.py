@@ -20,6 +20,7 @@ from app.api.v1.endpoints import (
     website_proof_sessions,
     website_semantic_verification_results,
     website_verification_runs,
+    verification_readiness,
     workflow_privacy_scan,
 )
 
@@ -110,6 +111,11 @@ api_router.include_router(
     workflow_privacy_scan.router,
     prefix="/student/extension-proof/sessions",
     tags=["workflow-privacy-scan"],
+)
+api_router.include_router(
+    verification_readiness.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["verification-readiness"],
 )
 api_router.include_router(
     website_proof_sessions.router,

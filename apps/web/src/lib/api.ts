@@ -1272,3 +1272,41 @@ export async function getSkillEvidenceProfiles(): Promise<SkillEvidenceProfile[]
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
   return res.json()
 }
+
+// ── Verification Readiness Report ─────────────────────────────────────────────
+
+export type ReadinessLevel = "strong" | "moderate" | "weak" | "insufficient"
+
+/**
+ * Computed readiness report from GET /student/extension-proof/sessions/:id/readiness
+ *
+ * IMPORTANT: final_verification_status is NEVER "complete" — it is only
+ * "pending" or "ready_for_review".  Final Verification completion is a
+ * separate VeriBridge reviewer step.
+ */
+export type VerificationReadinessReport = {
+  proof_session_id: string
+  readiness_score: number          // 0–100
+  readiness_level: ReadinessLevel
+  final_verification_status: "pending" | "ready_for_review"
+  strongly_supported_skills: string[]
+  partially_supported_skills: string[]
+  needs_more_evidence: string[]
+  risk_flags: string[]
+  recommended_next_actions: string[]
+  recruiter_summary: string
+  is_local_only: boolean
+  has_github_evidence: boolean
+  computed_at: string
+}
+
+export async function getVerificationReadiness(
+  sessionId: string
+): Promise<VerificationReadinessReport | null> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/readiness`
+  )
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Get readiness report failed (HTTP ${res.status}).`)
+  return res.json()
+}

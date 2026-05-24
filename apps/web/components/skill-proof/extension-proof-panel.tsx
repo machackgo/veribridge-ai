@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useEffect, useRef, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   createExtensionProofSession,
@@ -23,6 +23,7 @@ import {
   type ExtensionProofGitHubAnalysisResponse,
   type WorkflowPrivacyScanResponse,
   type WorkflowPrivacyScanStatus,
+  type ReadinessLevel,
 } from "@/lib/api"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -353,18 +354,36 @@ function buildEvidenceItems(
     {
       key: "final",
       label: "Final Verification",
+      // Status is always "pending" — the label override below handles "Ready for Review".
+      // This feature NEVER marks Final Verification as "complete".
       getStatus: () => "pending",
     },
   ]
 }
 
-function evidenceLabelOverride(key: string, s: EvidenceItemStatus): string {
+function evidenceLabelOverride(key: string, s: EvidenceItemStatus, finalVerificationReady = false): string {
   if (key === "workflow_analysis" && s === "complete") return "AI Reviewed"
   if (key === "workflow_analysis" && s === "uploading") return "In Progress"
   if (key === "github" && s === "complete") return "AI Reviewed"
   if (key === "github" && s === "uploading") return "Analyzing…"
   if (key === "live_check" && s === "uploading") return "Checking…"
+  // Final Verification: show "Ready for Review" when readiness >= 80 and privacy clean.
+  // NEVER show "Complete" — that requires a separate VeriBridge reviewer step.
+  if (key === "final" && s === "pending" && finalVerificationReady) return "Ready for Review"
   return evidenceLabel(s)
+}
+
+function evidenceFinalStyle(key: string, s: EvidenceItemStatus, finalVerificationReady: boolean): CSSProperties {
+  if (key === "final" && s === "pending" && finalVerificationReady) {
+    // "Ready for Review" — blue tint, distinct from "pending" (gray) and "complete" (green)
+    return { color: "#1d4ed8", background: "#eff6ff", border: "1px solid #bfdbfe" }
+  }
+  return evidenceItemStyle(s)
+}
+
+function evidenceFinalIcon(key: string, s: EvidenceItemStatus, finalVerificationReady: boolean): string {
+  if (key === "final" && s === "pending" && finalVerificationReady) return "→"
+  return evidenceIcon(s)
 }
 
 function EvidenceChecklist({
@@ -376,6 +395,7 @@ function EvidenceChecklist({
   hasGithubUrl,
   githubAnalysis,
   githubAnalyzing,
+  finalVerificationReady = false,
 }: {
   status: ExtensionProofSessionStatus
   urlType: UrlType
@@ -385,6 +405,11 @@ function EvidenceChecklist({
   hasGithubUrl: boolean
   githubAnalysis: ExtensionProofGitHubAnalysisResponse | null
   githubAnalyzing: boolean
+  /** When true, "Final Verification" shows as "Ready for Review" (blue).
+   *  This is set when readiness score >= 80 and privacy scan is not flagged.
+   *  It does NOT mark Final Verification as complete — that requires a
+   *  separate VeriBridge reviewer step. */
+  finalVerificationReady?: boolean
 }) {
   const items = buildEvidenceItems(urlType, analysis, liveCheck, liveChecking, hasGithubUrl, githubAnalysis, githubAnalyzing)
   return (
@@ -397,7 +422,8 @@ function EvidenceChecklist({
       <div style={{ padding: "10px 14px", display: "grid", gap: 7 }}>
         {items.map((item) => {
           const s = item.getStatus(status)
-          const style = evidenceItemStyle(s)
+          const isFinalReady = item.key === "final" && s === "pending" && finalVerificationReady
+          const style = evidenceFinalStyle(item.key, s, finalVerificationReady)
           return (
             <div
               key={item.key}
@@ -407,13 +433,15 @@ function EvidenceChecklist({
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, lineHeight: 1 }}>{evidenceIcon(s)}</span>
-                <span style={{ fontSize: 12, fontWeight: s === "complete" ? 600 : 400 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, lineHeight: 1 }}>
+                  {evidenceFinalIcon(item.key, s, finalVerificationReady)}
+                </span>
+                <span style={{ fontSize: 12, fontWeight: (s === "complete" || isFinalReady) ? 600 : 400 }}>
                   {item.label}
                 </span>
               </div>
               <span style={{ fontSize: 11, fontWeight: 600 }}>
-                {evidenceLabelOverride(item.key, s)}
+                {evidenceLabelOverride(item.key, s, finalVerificationReady)}
               </span>
             </div>
           )
@@ -1413,6 +1441,433 @@ function GitHubAnalysisCard({
   )
 }
 
+// ── Verification Readiness ────────────────────────────────────────────────────
+
+// Mirror of the Python compute_readiness_report — computed in-browser from
+// existing React state so the report renders instantly without an extra fetch.
+
+type ReadinessReport = {
+  readiness_score: number
+  readiness_level: ReadinessLevel
+  final_verification_status: "pending" | "ready_for_review"
+  // NOTE: "complete" is intentionally absent — this feature never marks
+  // Final Verification complete.
+  strongly_supported_skills: string[]
+  partially_supported_skills: string[]
+  needs_more_evidence: string[]
+  risk_flags: string[]
+  recommended_next_actions: string[]
+  recruiter_summary: string
+  is_local_only: boolean
+}
+
+function computeReadinessReport({
+  sessionStatus,
+  urlType,
+  claimedSkills,
+  workflowAnalysis,
+  liveCheck,
+  githubAnalysis,
+  privacyScan,
+}: {
+  sessionStatus: ExtensionProofSessionStatus
+  urlType: UrlType
+  claimedSkills: string[]
+  workflowAnalysis: WorkflowAnalysisResponse | null
+  liveCheck: LiveWebsiteCheckResponse | null
+  githubAnalysis: ExtensionProofGitHubAnalysisResponse | null
+  privacyScan: WorkflowPrivacyScanResponse | null
+}): ReadinessReport {
+  const isLocal = isLocal_(urlType)
+  const sessionUploaded = (["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(sessionStatus)
+
+  let score = 0
+  const riskFlags: string[] = []
+  const needsMoreEvidence: string[] = []
+  const nextActions: string[] = []
+
+  // +15 workflow evidence uploaded
+  if (sessionUploaded) score += 15
+
+  // +15 workflow analysis complete
+  const hasWf = workflowAnalysis !== null
+  if (hasWf) score += 15
+
+  // +15 GitHub evidence AI reviewed
+  const githubProvided = githubAnalysis !== null
+  const githubOk = githubProvided && githubAnalysis!.status === "success"
+  if (githubOk) {
+    score += 15
+  } else if (githubProvided && !githubOk) {
+    riskFlags.push("GitHub repository could not be accessed or is private")
+  }
+
+  // +15 live website check (deployed only)
+  const liveOk = !isLocal && liveCheck !== null && liveCheck.is_reachable
+  if (liveOk) {
+    score += 15
+  } else if (!isLocal && liveCheck !== null && !liveCheck.is_reachable) {
+    riskFlags.push("Deployed website is not publicly accessible")
+  }
+
+  // +10 privacy scan safe
+  const privacyStatus = privacyScan?.status ?? null
+  if (privacyStatus === "clean" || privacyStatus === "redacted") {
+    score += 10
+  } else if (privacyStatus === "flagged") {
+    riskFlags.push("Privacy scan flagged — potential sensitive data in recording")
+  }
+
+  // Skill analysis
+  const wfSupported    = (workflowAnalysis?.supported_skills ?? []).map(s => s.toLowerCase())
+  const wfWeakly       = (workflowAnalysis?.weakly_supported_skills ?? []).map(s => s.toLowerCase())
+  const ghMatched      = githubOk ? (githubAnalysis!.matched_claimed_skills).map(s => s.toLowerCase()) : []
+  const ghWeakly       = githubOk ? (githubAnalysis!.weakly_matched_claimed_skills ?? []).map(s => s.toLowerCase()) : []
+  const wfSupportedSet = new Set(wfSupported)
+  const wfWeaklySet    = new Set(wfWeakly)
+  const ghMatchedSet   = new Set(ghMatched)
+  const ghWeaklySet    = new Set(ghWeakly)
+
+  const strongly: string[] = []
+  const partially: string[] = []
+
+  for (const skill of claimedSkills) {
+    const lc = skill.toLowerCase()
+    if (wfSupportedSet.has(lc) || ghMatchedSet.has(lc)) {
+      strongly.push(skill)
+    } else if (wfWeaklySet.has(lc) || ghWeaklySet.has(lc)) {
+      partially.push(skill)
+    } else {
+      needsMoreEvidence.push(`${skill} — no strong evidence detected`)
+    }
+  }
+
+  // +15 at least one strongly supported
+  if (strongly.length > 0) {
+    score += 15
+  } else {
+    score = Math.max(0, score - 10)
+  }
+
+  // +10 cross-evidence confirmation
+  const crossConfirmed = strongly.filter(s => wfSupportedSet.has(s.toLowerCase()) && ghMatchedSet.has(s.toLowerCase()))
+  if (crossConfirmed.length > 0) score += 10
+
+  // +5 recruiter summary exists
+  const recruiterText = workflowAnalysis?.recruiter_summary ?? githubAnalysis?.recruiter_summary ?? ""
+  if (recruiterText.trim().length > 30) score += 5
+
+  // ── Deductions ────────────────────────────────────────────────────────────
+  const wfRiskFlags = workflowAnalysis?.risk_flags ?? []
+  const shortRecording = wfRiskFlags.some(f => ["short", "brief", "too short"].some(kw => f.toLowerCase().includes(kw)))
+  if (shortRecording) {
+    score = Math.max(0, score - 10)
+    riskFlags.push("Recording is brief — a longer walkthrough would strengthen evidence")
+  }
+
+  if (privacyStatus === "flagged") score = Math.max(0, score - 15)
+
+  const wfMissing = workflowAnalysis?.missing_evidence ?? []
+  const missingPenalty = Math.min(wfMissing.length * 5, 15)
+  score = Math.max(0, score - missingPenalty)
+  for (const item of wfMissing) needsMoreEvidence.push(item)
+
+  if (!isLocal && liveCheck !== null && !liveCheck.is_reachable) score = Math.max(0, score - 10)
+  if (githubProvided && !githubOk) score = Math.max(0, score - 10)
+
+  // Privacy cap
+  if (privacyStatus === "flagged") score = Math.min(score, 59)
+  score = Math.max(0, Math.min(100, score))
+
+  const level: ReadinessLevel =
+    score >= 80 ? "strong" :
+    score >= 60 ? "moderate" :
+    score >= 40 ? "weak" :
+    "insufficient"
+
+  // INVARIANT: "complete" is never emitted here.
+  const fvStatus: "pending" | "ready_for_review" =
+    score >= 80 && privacyStatus !== "flagged" ? "ready_for_review" : "pending"
+
+  // Recommended actions
+  if (!sessionUploaded) nextActions.push("Upload your workflow recording to begin evidence analysis.")
+  if (sessionUploaded && !hasWf) nextActions.push("Run Workflow Evidence Analysis to get an AI review of your recording.")
+  if (privacyStatus === "flagged") nextActions.push("Re-record the workflow using demo accounts and sample data. Avoid passwords, API keys, tokens, and personal information.")
+  if (shortRecording) nextActions.push("Record a longer 2–3 minute walkthrough showing the main feature from input to output end-to-end.")
+  if (!isLocal && liveCheck === null && sessionUploaded) nextActions.push("Run the Live Website Check to confirm your deployed site is publicly accessible.")
+  if (!isLocal && liveCheck !== null && !liveCheck.is_reachable) nextActions.push("Confirm the deployed app is running and publicly reachable, then re-run the Live Website Check.")
+  if (!githubProvided && sessionUploaded) nextActions.push("Add a public GitHub repository URL and run GitHub Evidence Analysis to provide code-level proof of your work.")
+  if (githubProvided && !githubOk) nextActions.push("Make the GitHub repository public or verify the repository URL, then re-run GitHub Evidence Analysis.")
+  if (githubOk) {
+    const features = githubAnalysis!.detected_features ?? []
+    if (!features.includes("readme")) nextActions.push("Add a README with a project overview, setup instructions, and usage examples.")
+    if (!features.includes("deployment") && !isLocal) nextActions.push("Add deployment configuration or documentation to your repository.")
+  }
+  const unsupported = claimedSkills.filter(s => !strongly.map(x => x.toLowerCase()).includes(s.toLowerCase()) && !partially.map(x => x.toLowerCase()).includes(s.toLowerCase()))
+  if (unsupported.length > 0) nextActions.push(`Record a walkthrough that clearly demonstrates: ${unsupported.slice(0, 3).join(", ")}.`)
+  if (hasWf && workflowAnalysis!.human_review_needed) nextActions.push("Request a faculty or human review — AI confidence is low for this recording.")
+
+  // Recruiter summary
+  const sources: string[] = []
+  if (sessionUploaded) sources.push("workflow recording")
+  if (liveOk) sources.push("live website confirmation")
+  if (githubOk) sources.push("GitHub repository analysis")
+  const joinSources = (lst: string[]) =>
+    lst.length === 0 ? "" :
+    lst.length === 1 ? lst[0] :
+    lst.length === 2 ? `${lst[0]} and ${lst[1]}` :
+    `${lst.slice(0, -1).join(", ")}, and ${lst[lst.length - 1]}`
+
+  let recruiterSummary: string
+  if (sources.length === 0 || !hasWf) {
+    recruiterSummary = "Insufficient evidence has been submitted for recruiter review. Complete the workflow analysis and available evidence steps."
+  } else if (level === "strong") {
+    recruiterSummary = `This evidence package is strongly ready for recruiter review. The ${joinSources(sources)} support the claimed skills with high confidence.`
+  } else if (level === "moderate") {
+    const skillNote = strongly.length > 0
+      ? ` ${strongly.length} skill(s) have strong support${partially.length > 0 ? ` and ${partially.length} have partial evidence` : ""}.`
+      : ""
+    recruiterSummary = `This evidence package is moderately ready for recruiter review. The ${joinSources(sources)} support several claimed skills, but some still need clearer evidence.${skillNote}`
+  } else if (level === "weak") {
+    recruiterSummary = "This evidence package is partially assembled. Some evidence steps are incomplete. Follow the recommended next actions to improve readiness."
+  } else {
+    recruiterSummary = "Insufficient evidence to support recruiter review. Upload a recording, run the available analyses, and confirm site accessibility."
+  }
+
+  // Deduplicate
+  const seen = new Set<string>()
+  const uniqueActions = nextActions.filter(a => { if (seen.has(a)) return false; seen.add(a); return true })
+  const uniqueNeeds = [...new Set(needsMoreEvidence)]
+  const uniqueFlags = [...new Set(riskFlags)]
+
+  return {
+    readiness_score: score,
+    readiness_level: level,
+    final_verification_status: fvStatus,
+    strongly_supported_skills: strongly,
+    partially_supported_skills: partially,
+    needs_more_evidence: uniqueNeeds,
+    risk_flags: uniqueFlags,
+    recommended_next_actions: uniqueActions,
+    recruiter_summary: recruiterSummary,
+    is_local_only: isLocal,
+  }
+}
+
+// Alias to avoid shadowing isLocal already defined as a variable in the main component
+function isLocal_(t: UrlType): boolean {
+  return t === "localhost_url" || t === "local_network_url"
+}
+
+// ── Readiness level config ─────────────────────────────────────────────────────
+
+const READINESS_LEVEL_CONFIG: Record<
+  ReadinessLevel,
+  { bg: string; border: string; color: string; badgeBg: string; badgeColor: string; badgeBorder: string; label: string; icon: string }
+> = {
+  strong:       { bg: "#f0fdf4", border: "#d1fae5", color: "#065f46", badgeBg: "#dcfce7", badgeColor: "#166534", badgeBorder: "#bbf7d0", label: "Strong Readiness",      icon: "✦" },
+  moderate:     { bg: "#fffbeb", border: "#fef08a", color: "#78350f", badgeBg: "#fef9c3", badgeColor: "#854d0e", badgeBorder: "#fef08a", label: "Moderate Readiness",    icon: "◑" },
+  weak:         { bg: "#fff7ed", border: "#fed7aa", color: "#9a3412", badgeBg: "#ffedd5", badgeColor: "#c2410c", badgeBorder: "#fed7aa", label: "Weak Readiness",        icon: "◔" },
+  insufficient: { bg: "#fef2f2", border: "#fecaca", color: "#991b1b", badgeBg: "#fee2e2", badgeColor: "#991b1b", badgeBorder: "#fecaca", label: "Insufficient Evidence", icon: "○" },
+}
+
+function ReadinessScoreBar({ score, level }: { score: number; level: ReadinessLevel }) {
+  const cfg = READINESS_LEVEL_CONFIG[level]
+  const trackColor =
+    level === "strong" ? "#d1fae5" :
+    level === "moderate" ? "#fef08a" :
+    level === "weak" ? "#fed7aa" :
+    "#fecaca"
+  const fillColor =
+    level === "strong" ? "#16a34a" :
+    level === "moderate" ? "#ca8a04" :
+    level === "weak" ? "#ea580c" :
+    "#dc2626"
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ flex: 1, height: 8, background: trackColor, borderRadius: 999 }}>
+        <div
+          style={{
+            height: 8, borderRadius: 999, background: fillColor,
+            width: `${score}%`, transition: "width 0.6s ease",
+          }}
+        />
+      </div>
+      <span style={{ fontSize: 14, fontWeight: 800, color: cfg.color, minWidth: 36, textAlign: "right" }}>
+        {score}<span style={{ fontSize: 10, fontWeight: 500 }}>/100</span>
+      </span>
+    </div>
+  )
+}
+
+function VerificationReadinessReportCard({
+  report,
+}: {
+  report: ReadinessReport
+}) {
+  const cfg = READINESS_LEVEL_CONFIG[report.readiness_level]
+  const fvReady = report.final_verification_status === "ready_for_review"
+
+  return (
+    <div style={{ border: `1px solid ${cfg.border}`, borderRadius: 14, overflow: "hidden" }}>
+      {/* ── Header ── */}
+      <div style={{
+        background: cfg.bg,
+        borderBottom: `1px solid ${cfg.border}`,
+        padding: "14px 16px",
+        display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+        gap: 12, flexWrap: "wrap",
+      }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: cfg.color }}>
+            Verification Readiness Report
+          </div>
+          <div style={{ fontSize: 11, color: cfg.color, opacity: 0.8, marginTop: 2 }}>
+            Evidence readiness for recruiter review. Final verification is still pending.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {/* Readiness level badge */}
+          <span style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: "0.07em",
+            padding: "3px 10px", borderRadius: 999,
+            background: cfg.badgeBg, color: cfg.badgeColor, border: `1px solid ${cfg.badgeBorder}`,
+          }}>
+            {cfg.icon} {cfg.label.toUpperCase()}
+          </span>
+          {/* Final verification status */}
+          <span style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: "0.06em",
+            padding: "3px 10px", borderRadius: 999,
+            background: fvReady ? "#dbeafe" : "#f1f5f9",
+            color: fvReady ? "#1d4ed8" : "#475569",
+            border: `1px solid ${fvReady ? "#bfdbfe" : "#e2e8f0"}`,
+          }}>
+            {fvReady ? "→ READY FOR REVIEW" : "⏳ FINAL VERIFICATION PENDING"}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ padding: "16px 16px", display: "grid", gap: 16 }}>
+        {/* ── Score bar ── */}
+        <ReadinessScoreBar score={report.readiness_score} level={report.readiness_level} />
+
+        {/* ── Localhost note ── */}
+        {report.is_local_only && (
+          <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "8px 12px" }}>
+            <p style={{ margin: 0, fontSize: 11, color: "#9a3412", lineHeight: 1.6 }}>
+              <strong>Local-only workflow evidence</strong> — live website check not applicable. Add a GitHub repository or deploy the project for stronger verification.
+            </p>
+          </div>
+        )}
+
+        {/* ── Overall summary ── */}
+        <div style={{ background: "#fff", border: `1px solid ${cfg.border}`, borderRadius: 10, padding: "10px 12px" }}>
+          <p style={{ margin: 0, fontSize: 12, color: cfg.color, lineHeight: 1.7 }}>
+            {report.recruiter_summary}
+          </p>
+        </div>
+
+        {/* ── Skill support grid ── */}
+        {(report.strongly_supported_skills.length > 0 || report.partially_supported_skills.length > 0) && (
+          <div style={{ display: "grid", gap: 10, gridTemplateColumns: report.strongly_supported_skills.length > 0 && report.partially_supported_skills.length > 0 ? "1fr 1fr" : "1fr" }}>
+            {report.strongly_supported_skills.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#065f46", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+                  ✓ Strongly Supported
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                  {report.strongly_supported_skills.map((s) => (
+                    <span key={s} style={{ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
+                      {s}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {report.partially_supported_skills.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#854d0e", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+                  ◑ Partially Supported
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                  {report.partially_supported_skills.map((s) => (
+                    <span key={s} style={{ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999, background: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a" }}>
+                      {s}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Needs more evidence ── */}
+        {report.needs_more_evidence.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#9a3412", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+              ✗ Needs More Evidence
+            </div>
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 3 }}>
+              {report.needs_more_evidence.map((item, i) => (
+                <li key={i} style={{ display: "flex", gap: 7, alignItems: "flex-start", fontSize: 12, color: "#9a3412", lineHeight: 1.55 }}>
+                  <span style={{ flexShrink: 0, marginTop: 2, color: "#fca5a5" }}>•</span>
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* ── Risk flags ── */}
+        {report.risk_flags.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#991b1b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+              ⚠ Risk Flags
+            </div>
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 3 }}>
+              {report.risk_flags.map((f, i) => (
+                <li key={i} style={{ display: "flex", gap: 7, alignItems: "flex-start", fontSize: 12, color: "#991b1b", lineHeight: 1.55 }}>
+                  <span style={{ flexShrink: 0, marginTop: 2 }}>⚠</span>
+                  <span>{f}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* ── Recommended next actions ── */}
+        {report.recommended_next_actions.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#1e40af", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+              → Recommended Next Actions
+            </div>
+            <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4 }}>
+              {report.recommended_next_actions.map((action, i) => (
+                <li key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "#1e3a8a", lineHeight: 1.55 }}>
+                  <span style={{ flexShrink: 0, fontWeight: 700, color: "#3b82f6", minWidth: 16 }}>{i + 1}.</span>
+                  <span>{action}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
+        {/* ── Footer ── */}
+        <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+          <p style={{ margin: 0, fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>
+            This readiness report is computed automatically from all available evidence.
+            A score of 80+ marks this evidence package as ready for recruiter review.{" "}
+            <strong>Final Verification</strong> must be completed separately by a VeriBridge reviewer
+            and is not triggered by this report.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Privacy Guard components ──────────────────────────────────────────────────
 
 const PRIVACY_SCAN_CONFIG: Record<
@@ -1624,6 +2079,36 @@ export function ExtensionProofPanel({
   // Derived from form.websiteUrl — available in both form and session_active steps.
   const urlType = classifyUrl(form.websiteUrl)
   const local = isLocal(urlType)
+
+  // ── Verification Readiness Report (computed from existing state) ──────────
+  // Re-computed whenever any piece of evidence changes. No extra API call needed.
+  const readinessReport = useMemo<ReadinessReport | null>(() => {
+    if (!session) return null
+    const uploadedOrLater: ExtensionProofSessionStatus[] = [
+      "uploaded_pending_analysis", "analyzing", "completed",
+    ]
+    if (!uploadedOrLater.includes(session.status)) return null
+    return computeReadinessReport({
+      sessionStatus: session.status,
+      urlType,
+      claimedSkills: form.skillName.trim()
+        ? form.skillName.split(",").map(s => s.trim()).filter(Boolean)
+        : [],
+      workflowAnalysis,
+      liveCheck,
+      githubAnalysis,
+      privacyScan,
+    })
+  }, [
+    session?.id, session?.status,
+    urlType,
+    form.skillName,
+    workflowAnalysis?.id,
+    liveCheck?.id,
+    githubAnalysis?.id,
+    privacyScan?.status,
+    privacyScan?.redacted_fields_count,
+  ])
 
   // ── Polling ───────────────────────────────────────────────────────────────
 
@@ -2189,6 +2674,7 @@ export function ExtensionProofPanel({
           hasGithubUrl={!!form.githubUrl.trim()}
           githubAnalysis={githubAnalysis}
           githubAnalyzing={githubAnalyzing}
+          finalVerificationReady={readinessReport?.final_verification_status === "ready_for_review"}
         />
 
         {/* Privacy scan badge — shown once proof is uploaded */}
@@ -2441,6 +2927,14 @@ export function ExtensionProofPanel({
             githubAnalysis={githubAnalysis}
             liveCheck={liveCheck}
           />
+        )}
+
+        {/* ── Verification Readiness Report ──────────────────────────────── */}
+        {/* Shown once proof is uploaded and at least some analysis has run.
+            Computes score from existing state — no extra network fetch.
+            Final Verification is NEVER marked complete from this component. */}
+        {readinessReport && (
+          <VerificationReadinessReportCard report={readinessReport} />
         )}
 
         {/* Expired */}
