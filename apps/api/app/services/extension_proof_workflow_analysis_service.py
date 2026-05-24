@@ -143,7 +143,35 @@ _SKILL_ALIASES: dict[str, str] = {
     "huggingface": "HuggingFace",
     "openai": "OpenAI",
     "anthropic": "Anthropic",
+    "sqlalchemy": "SQLAlchemy",
+    "mlops": "MLOps",
+    "google cloud": "Google Cloud",
+    "cloud run": "Google Cloud",
+    "gcp": "Google Cloud",
+    "aws": "AWS",
+    "azure": "Azure",
+    "google maps": "Google Maps API",
 }
+
+# Skills that are implemented in back-end code and are NOT directly observable
+# in a browser recording.  When a student claims one of these skills, the
+# workflow analysis will classify it as "requires_code_evidence" rather than
+# "unsupported", and the recruiter summary will explain that GitHub / code
+# review evidence is needed to verify the skill.
+_REQUIRES_CODE_EVIDENCE: frozenset[str] = frozenset({
+    "fastapi", "django", "flask", "starlette", "aiohttp", "tornado",
+    "sqlalchemy", "alembic", "prisma", "drizzle",
+    "docker", "docker compose", "kubernetes",
+    "pytorch", "tensorflow", "keras", "scikit-learn", "sklearn",
+    "xgboost", "lightgbm", "machine learning", "ml", "deep learning", "mlops",
+    "celery", "redis", "mongodb", "postgresql", "postgres",
+    "langchain", "llamaindex", "huggingface", "openai", "anthropic",
+    "google cloud", "cloud run", "gcp", "aws", "azure",
+    "python",  # Python itself is a code skill; the UI may show Python results
+    "sqlalchemy", "alembic",
+    "fastai", "ray", "dask", "airflow", "prefect",
+    "github actions", "ci/cd",
+})
 
 
 class ExtensionProofWorkflowAnalysisService:
@@ -410,6 +438,12 @@ def _analyze_workflow(
     started_at_str: str | None = proof_data.get("started_at")
     stopped_at_str: str | None = proof_data.get("stopped_at")
 
+    # Normalise: split any comma-separated skill strings ("FastAPI, React" → two entries).
+    normalized_skills: list[str] = []
+    for s in (claimed_skills or []):
+        normalized_skills.extend(part.strip() for part in s.split(",") if part.strip())
+    claimed_skills = normalized_skills
+
     # ── Categorize events ─────────────────────────────────────────────────────
     page_visits  = [e for e in events if e.get("type") == "page_visit"]
     clicks       = [e for e in events if e.get("type") == "click"]
@@ -423,7 +457,6 @@ def _analyze_workflow(
         for e in (page_visits + navigations)
         if e.get("page_url") and not _is_chrome_internal(e.get("page_url", ""))
     ))
-    visited_domains = list(dict.fromkeys(_extract_domain(u) for u in visited_urls if u))
     visited_titles = list(dict.fromkeys(
         t for e in (page_visits + navigations)
         if (t := (e.get("page_title") or "").strip())
@@ -436,7 +469,7 @@ def _analyze_workflow(
     inferred_tech = _infer_tech_stack(visited_urls, visited_titles, original_url)
 
     # ── Skill matching ────────────────────────────────────────────────────────
-    supported, weakly, unsupported = _match_skills(
+    supported, weakly, unsupported, skill_obs = _match_skills(
         claimed_skills, inferred_tech, proof_objective, original_url, url_type
     )
 
@@ -463,7 +496,7 @@ def _analyze_workflow(
 
     # ── Missing evidence ──────────────────────────────────────────────────────
     missing_evidence = _determine_missing_evidence(
-        claimed_skills, supported, weakly, url_type, github_url, visited_urls
+        claimed_skills, supported, weakly, url_type, github_url, visited_urls, skill_obs
     )
 
     # ── Risk flags ────────────────────────────────────────────────────────────
@@ -478,11 +511,11 @@ def _analyze_workflow(
     )
     recruiter_summary = _build_recruiter_summary(
         proof_objective, visited_urls, supported, weakly, unsupported,
-        url_type, duration_secs, score, confidence, github_url
+        url_type, duration_secs, score, confidence, github_url, skill_obs
     )
     suggestions = _build_suggestions(
         url_type, duration_secs, len(events), len(clicks), len(inputs),
-        supported, weakly, unsupported, github_url
+        supported, weakly, unsupported, github_url, skill_obs
     )
 
     human_review_needed = confidence in ("low", "insufficient") or score < 35
@@ -553,6 +586,13 @@ def _infer_tech_stack(
     return tech
 
 
+# ── Skill observability helpers ───────────────────────────────────────────────
+
+def _is_code_evidence_skill(canonical: str) -> bool:
+    """Return True if this skill lives in back-end code, not in browser UI."""
+    return canonical.lower() in _REQUIRES_CODE_EVIDENCE
+
+
 # ── Skill matching ────────────────────────────────────────────────────────────
 
 def _normalize_skill(skill: str) -> str:
@@ -574,10 +614,20 @@ def _match_skills(
     proof_objective: str,
     original_url: str,
     url_type: str,
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], dict[str, str]]:
+    """Classify each claimed skill against observable browser evidence.
+
+    Returns (supported, weakly_supported, unsupported, skill_observability) where
+    skill_observability maps canonical skill name → one of:
+      "supported"             — directly observed in the workflow
+      "requires_code_evidence"— back-end/code skill; needs GitHub to verify
+      "from_objective"        — mentioned in proof objective but not detected
+      "unsupported"           — no evidence at all
+    """
     supported: list[str] = []
     weakly: list[str] = []
     unsupported: list[str] = []
+    observability: dict[str, str] = {}
 
     objective_lower = proof_objective.lower()
     inferred_lower = {t.lower() for t in inferred_tech}
@@ -602,24 +652,35 @@ def _match_skills(
             or raw.lower() in objective_lower
         )
 
+        is_code_skill = _is_code_evidence_skill(canonical)
+
         if direct_match:
             if is_local:
                 # For localhost, even a direct match is only weakly supported —
                 # we can see the app is running but not verify the implementation.
                 weakly.append(canonical)
+                observability[canonical] = "from_objective" if objective_mentions else "requires_code_evidence"
             else:
                 supported.append(canonical)
+                observability[canonical] = "supported"
+        elif is_code_skill:
+            # Back-end/code skill not visible in browser — classify as
+            # "requires_code_evidence" (weakly) rather than "unsupported".
+            weakly.append(canonical)
+            observability[canonical] = "requires_code_evidence"
         elif objective_mentions:
             weakly.append(canonical)
+            observability[canonical] = "from_objective"
         else:
             unsupported.append(canonical)
+            observability[canonical] = "unsupported"
 
     # Deduplicate while preserving order
     def _dedup(lst: list[str]) -> list[str]:
         seen: set[str] = set()
         return [x for x in lst if not (x in seen or seen.add(x))]  # type: ignore[func-returns-value]
 
-    return _dedup(supported), _dedup(weakly), _dedup(unsupported)
+    return _dedup(supported), _dedup(weakly), _dedup(unsupported), observability
 
 
 # ── Evidence strength scoring ─────────────────────────────────────────────────
@@ -794,8 +855,10 @@ def _determine_missing_evidence(
     url_type: str,
     github_url: str | None,
     visited_urls: list[str],
+    skill_obs: dict[str, str] | None = None,
 ) -> list[str]:
     missing: list[str] = []
+    skill_obs = skill_obs or {}
 
     is_local = url_type in ("localhost_url", "local_network_url")
 
@@ -808,13 +871,25 @@ def _determine_missing_evidence(
     elif not any("github.com" in u for u in visited_urls):
         missing.append("GitHub repository was not visited during the recording session")
 
-    unsupported_skills = [
+    # Skills that require code evidence (back-end skills not visible in browser)
+    code_evidence_skills = [
+        s for s in weakly
+        if skill_obs.get(s) == "requires_code_evidence"
+    ]
+    if code_evidence_skills:
+        skills_str = ", ".join(code_evidence_skills[:3])
+        missing.append(
+            f"GitHub repository analysis to verify back-end/code skill(s): {skills_str} "
+            "(these skills are implemented in code, not directly visible in a browser recording)"
+        )
+
+    # Skills with genuinely no evidence (not code skills, not mentioned in objective)
+    truly_unsupported = [
         s for s in claimed_skills
         if s not in supported and s not in weakly
     ]
-    if unsupported_skills:
-        for skill in unsupported_skills[:3]:
-            missing.append(f"Observable evidence for claimed skill: {skill}")
+    for skill in truly_unsupported[:3]:
+        missing.append(f"Observable evidence for claimed skill: {skill}")
 
     if not visited_urls:
         missing.append("Any recorded page visits — no pages were captured in the workflow")
@@ -926,11 +1001,13 @@ def _build_recruiter_summary(
     score: int,
     confidence: str,
     github_url: str | None,
+    skill_obs: dict[str, str] | None = None,
 ) -> str:
     is_local = url_type in ("localhost_url", "local_network_url")
     duration_label = _fmt_duration(duration_secs)
     page_label = f"{len(visited_urls)} page(s)" if visited_urls else "no recorded pages"
     app_label = "a locally-running application" if is_local else "a live web application"
+    skill_obs = skill_obs or {}
 
     lines: list[str] = []
 
@@ -944,16 +1021,30 @@ def _build_recruiter_summary(
     if proof_objective:
         lines.append(f"The student intended to demonstrate: \"{proof_objective.strip()[:200]}\"")
 
-    # Skills
+    # Skills — directly supported by browser workflow
     if supported:
         lines.append(
             f"The workflow provides supporting evidence for: {', '.join(supported)}."
         )
+
+    # Skills — weakly supported; split into code-evidence vs. objective-mentioned
     if weakly:
-        lines.append(
-            f"The workflow provides partial or indirect evidence for: {', '.join(weakly)}. "
-            "These skills are consistent with the recorded workflow but cannot be fully confirmed from timeline data alone."
-        )
+        code_evidence = [s for s in weakly if skill_obs.get(s) == "requires_code_evidence"]
+        indirect = [s for s in weakly if skill_obs.get(s) != "requires_code_evidence"]
+
+        for skill in code_evidence:
+            lines.append(
+                f"{skill} was not directly observable in the browser workflow — "
+                f"this is a back-end/code skill. "
+                f"GitHub repository analysis is recommended to verify it."
+            )
+        if indirect:
+            lines.append(
+                f"The workflow provides partial or indirect evidence for: {', '.join(indirect)}. "
+                "These skills are consistent with the recorded workflow but cannot be fully "
+                "confirmed from browser timeline data alone."
+            )
+
     if unsupported:
         lines.append(
             f"No observable evidence was found for: {', '.join(unsupported)}. "
@@ -993,8 +1084,10 @@ def _build_suggestions(
     weakly: list[str],
     unsupported: list[str],
     github_url: str | None,
+    skill_obs: dict[str, str] | None = None,
 ) -> list[str]:
     suggestions: list[str] = []
+    skill_obs = skill_obs or {}
 
     if url_type in ("localhost_url", "local_network_url"):
         suggestions.append(
@@ -1002,7 +1095,17 @@ def _build_suggestions(
             "can independently access and verify it"
         )
 
-    if not github_url:
+    # Highlight code skills that need GitHub verification
+    code_evidence_skills = [
+        s for s in weakly if skill_obs.get(s) == "requires_code_evidence"
+    ]
+    if code_evidence_skills and not github_url:
+        skills_str = ", ".join(code_evidence_skills[:3])
+        suggestions.append(
+            f"Add a public GitHub repository URL — back-end/code skill(s) {skills_str} cannot "
+            "be verified from the browser recording alone and require repository analysis"
+        )
+    elif not github_url:
         suggestions.append(
             "Add a GitHub repository URL to allow code-level verification of your implementation"
         )
@@ -1026,15 +1129,21 @@ def _build_suggestions(
             "navigate to the relevant part of your app during the recording"
         )
 
-    if weakly and not unsupported:
+    indirect_weakly = [s for s in weakly if skill_obs.get(s) == "from_objective"]
+    if indirect_weakly and not unsupported:
         suggestions.append(
             "Consider showing specific features that directly demonstrate your claimed skills "
             "(e.g., triggering an API call, running a model inference, submitting a database query)"
         )
 
-    suggestions.append(
-        "Once GitHub evidence is added, run GitHub analysis to strengthen the overall verification score"
-    )
+    if github_url:
+        suggestions.append(
+            "Run GitHub Evidence Analysis to verify back-end and code skills from your repository"
+        )
+    else:
+        suggestions.append(
+            "Once GitHub evidence is added, run GitHub analysis to strengthen the overall verification score"
+        )
 
     return suggestions
 

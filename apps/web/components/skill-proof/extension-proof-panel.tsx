@@ -967,6 +967,141 @@ function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse
   )
 }
 
+// ── Combined evidence summary ─────────────────────────────────────────────────
+
+// Skills implemented in back-end code that are NOT directly visible in a browser.
+const _CODE_EVIDENCE_SKILLS = new Set([
+  "fastapi", "django", "flask", "starlette", "sqlalchemy", "alembic",
+  "docker", "docker compose", "kubernetes",
+  "pytorch", "tensorflow", "keras", "scikit-learn", "machine learning", "ml",
+  "deep learning", "mlops", "celery", "redis", "mongodb", "postgresql",
+  "langchain", "llamaindex", "huggingface", "openai", "anthropic",
+  "python", "google cloud", "cloud run", "gcp", "aws", "azure",
+])
+
+function workflowSkillLabel(
+  skill: string,
+  analysis: WorkflowAnalysisResponse,
+): { text: string; color: string } {
+  const lower = skill.toLowerCase()
+  if (analysis.supported_skills.some(s => s.toLowerCase() === lower))
+    return { text: "Directly supported", color: "#166534" }
+  if (analysis.weakly_supported_skills.some(s => s.toLowerCase() === lower)) {
+    if (_CODE_EVIDENCE_SKILLS.has(lower))
+      return { text: "Not directly visible — requires code evidence", color: "#854d0e" }
+    return { text: "Partially supported", color: "#854d0e" }
+  }
+  if (analysis.unsupported_skills.some(s => s.toLowerCase() === lower))
+    return { text: "No evidence found", color: "#991b1b" }
+  return { text: "Not evaluated", color: "#94a3b8" }
+}
+
+function githubSkillLabel(
+  skill: string,
+  analysis: ExtensionProofGitHubAnalysisResponse,
+): { text: string; color: string } {
+  if (analysis.status !== "success") return { text: "Repo unavailable", color: "#991b1b" }
+  const lower = skill.toLowerCase()
+  if (analysis.matched_claimed_skills.some(s => s.toLowerCase() === lower))
+    return { text: "Supported", color: "#166534" }
+  if (analysis.missing_claimed_skills.some(s => s.toLowerCase() === lower))
+    return { text: "Not detected in repo", color: "#991b1b" }
+  return { text: "—", color: "#94a3b8" }
+}
+
+function overallSkillLabel(
+  skill: string,
+  workflowAnalysis: WorkflowAnalysisResponse,
+  githubAnalysis: ExtensionProofGitHubAnalysisResponse,
+): { text: string; color: string } {
+  const lower = skill.toLowerCase()
+  const wfSupported = workflowAnalysis.supported_skills.some(s => s.toLowerCase() === lower)
+  const ghSupported = githubAnalysis.status === "success" &&
+    githubAnalysis.matched_claimed_skills.some(s => s.toLowerCase() === lower)
+  if (wfSupported && ghSupported) return { text: "Supported (workflow + GitHub)", color: "#166534" }
+  if (wfSupported) return { text: "Supported (workflow)", color: "#166534" }
+  if (ghSupported) return { text: "Supported (GitHub)", color: "#166534" }
+  return { text: "Pending further review", color: "#64748b" }
+}
+
+function CombinedEvidenceSummaryCard({
+  claimedSkills,
+  workflowAnalysis,
+  githubAnalysis,
+  liveCheck,
+}: {
+  claimedSkills: string[]
+  workflowAnalysis: WorkflowAnalysisResponse
+  githubAnalysis: ExtensionProofGitHubAnalysisResponse
+  liveCheck: LiveWebsiteCheckResponse | null
+}) {
+  if (!claimedSkills.length) return null
+
+  return (
+    <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
+      <div style={{
+        background: "#f9fafb", borderBottom: "1px solid #e5e7eb",
+        padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+      }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>Cross-Evidence Skill Summary</div>
+          <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+            How each claimed skill is supported across evidence sources
+          </div>
+        </div>
+        <span style={{
+          fontSize: 9, fontWeight: 700, letterSpacing: "0.08em",
+          padding: "3px 8px", borderRadius: 6,
+          background: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a",
+        }}>
+          FINAL VERIFICATION PENDING
+        </span>
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: "#f3f4f6", borderBottom: "1px solid #e5e7eb" }}>
+              {["Skill", "Workflow Evidence", "GitHub Evidence", "Live Website", "Overall"].map(h => (
+                <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontWeight: 600, color: "#374151", fontSize: 11, whiteSpace: "nowrap" }}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {claimedSkills.map((skill, i) => {
+              const wf = workflowSkillLabel(skill, workflowAnalysis)
+              const gh = githubSkillLabel(skill, githubAnalysis)
+              const overall = overallSkillLabel(skill, workflowAnalysis, githubAnalysis)
+              const liveLabel = liveCheck
+                ? liveCheck.is_reachable ? { text: "App reachable", color: "#166534" } : { text: "Not reachable", color: "#991b1b" }
+                : { text: "N/A", color: "#94a3b8" }
+              return (
+                <tr key={skill} style={{ borderBottom: i < claimedSkills.length - 1 ? "1px solid #f3f4f6" : "none" }}>
+                  <td style={{ padding: "9px 12px", fontWeight: 600, color: "#111827", whiteSpace: "nowrap" }}>{skill}</td>
+                  <td style={{ padding: "9px 12px", color: wf.color }}>{wf.text}</td>
+                  <td style={{ padding: "9px 12px", color: gh.color }}>{gh.text}</td>
+                  <td style={{ padding: "9px 12px", color: liveLabel.color }}>{liveLabel.text}</td>
+                  <td style={{ padding: "9px 12px", color: overall.color, fontWeight: 600 }}>{overall.text}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ padding: "10px 14px", borderTop: "1px solid #f3f4f6", background: "#f9fafb" }}>
+        <p style={{ margin: 0, fontSize: 11, color: "#6b7280", lineHeight: 1.55 }}>
+          This summary combines workflow timeline, GitHub repository, and live website evidence.
+          Final Verification remains pending until all evidence is reviewed.
+          Back-end skills (FastAPI, Docker, ML models, etc.) require code/repository evidence — they are not visible in browser recordings.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // ── GitHub Analysis components ────────────────────────────────────────────────
 
 function GitHubAnalysisInProgress({
@@ -1436,6 +1571,13 @@ export function ExtensionProofPanel({
 
   // ── Analyze workflow ──────────────────────────────────────────────────────
 
+  // Parse comma-separated skill names from the form field into a clean array.
+  function parseSkills(): string[] {
+    return form.skillName.trim()
+      ? form.skillName.split(",").map(s => s.trim()).filter(Boolean)
+      : []
+  }
+
   async function handleAnalyze() {
     if (!session) return
     setAnalyzing(true)
@@ -1453,7 +1595,7 @@ export function ExtensionProofPanel({
 
     try {
       const result = await analyzeWorkflowEvidence(session.id, {
-        claimed_skills: form.skillName.trim() ? [form.skillName.trim()] : [],
+        claimed_skills: parseSkills(),
         proof_objective: form.proofObjective.trim(),
         original_url: form.websiteUrl.trim(),
         url_type: urlType,
@@ -1530,8 +1672,7 @@ export function ExtensionProofPanel({
     githubAnalyzeTimeoutRef.current = timeoutId
 
     try {
-      const claimedSkills = form.skillName.trim() ? [form.skillName.trim()] : []
-      const result = await analyzeExtensionProofGitHub(session.id, githubUrl, claimedSkills)
+      const result = await analyzeExtensionProofGitHub(session.id, githubUrl, parseSkills())
       if (cancelled) return
       clearTimeout(timeoutId)
       githubAnalyzeTimeoutRef.current = null
@@ -2065,6 +2206,16 @@ export function ExtensionProofPanel({
         {/* GitHub analysis result */}
         {githubAnalysis && !githubAnalyzing && (
           <GitHubAnalysisCard analysis={githubAnalysis} onRerun={() => void handleGitHubAnalysis()} />
+        )}
+
+        {/* ── Combined evidence summary — shown when both analyses exist ── */}
+        {workflowAnalysis && githubAnalysis && !githubAnalyzing && (
+          <CombinedEvidenceSummaryCard
+            claimedSkills={parseSkills()}
+            workflowAnalysis={workflowAnalysis}
+            githubAnalysis={githubAnalysis}
+            liveCheck={liveCheck}
+          />
         )}
 
         {/* Expired */}

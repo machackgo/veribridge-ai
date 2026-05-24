@@ -178,6 +178,12 @@ def analyze_github_repo(
 
     now = datetime.now(timezone.utc).isoformat()
 
+    # Normalise: split comma-separated skill strings so "FastAPI, React" → two entries.
+    normalized: list[str] = []
+    for s in (claimed_skills or []):
+        normalized.extend(part.strip() for part in s.split(",") if part.strip())
+    claimed_skills = normalized
+
     repo_ref = parse_github_repo_url(repo_url)
     if repo_ref is None:
         return {
@@ -194,9 +200,12 @@ def analyze_github_repo(
             "created_at": now,
         }
 
+    # Normalise to base repo URL (strip branch/blob/file paths).
+    normalized_repo_url = f"https://github.com/{repo_ref.owner}/{repo_ref.repo}"
+
     fetched: dict[str, str | None] = {}
     for file_path in _FILES_TO_PROBE:
-        result = fetch_public_github_file(repo_url, file_path)
+        result = fetch_public_github_file(normalized_repo_url, file_path)
         if result.ok and result.content:
             fetched[file_path] = result.content
         elif result.status_code and result.status_code == 404:
@@ -208,7 +217,7 @@ def analyze_github_repo(
 
     if not accessible_files:
         return {
-            "repo_url": repo_url,
+            "repo_url": normalized_repo_url,
             "status": "private_or_unavailable",
             "detected_stack": [],
             "detected_features": [],
@@ -226,10 +235,10 @@ def analyze_github_repo(
     matched, missing = _match_skills(claimed_skills, detected_stack)
     confidence = _compute_confidence(accessible_files, detected_stack, matched, claimed_skills)
     warnings = _build_warnings(accessible_files, detected_stack, matched, claimed_skills)
-    summary = _build_summary(repo_url, detected_stack, detected_features, matched, missing, confidence)
+    summary = _build_summary(normalized_repo_url, detected_stack, detected_features, matched, missing, confidence)
 
     return {
-        "repo_url": repo_url,
+        "repo_url": normalized_repo_url,
         "status": "success",
         "detected_stack": detected_stack,
         "detected_features": detected_features,
