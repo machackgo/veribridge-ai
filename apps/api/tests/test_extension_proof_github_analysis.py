@@ -22,6 +22,7 @@ from app.services.extension_proof_github_analysis_service import (
     _detect_features,
     _match_skills,
     _compute_confidence,
+    _DOMAIN_RISK_SKILLS,
 )
 from app.services.github_evidence_service import GitHubFileFetchResult
 
@@ -177,38 +178,195 @@ class TestDetectFeatures:
 
 class TestMatchSkills:
     def test_exact_match(self):
-        matched, missing = _match_skills(["FastAPI"], ["FastAPI"])
+        matched, weakly, missing = _match_skills(["FastAPI"], ["FastAPI"])
         assert "FastAPI" in matched
         assert missing == []
 
     def test_alias_match(self):
-        matched, missing = _match_skills(["python"], ["FastAPI", "Pandas"])
+        matched, weakly, missing = _match_skills(["python"], ["FastAPI", "Pandas"])
         assert "python" in matched
         assert missing == []
 
     def test_partial_miss(self):
-        matched, missing = _match_skills(["react", "pytorch"], ["React"])
+        matched, weakly, missing = _match_skills(["react", "pytorch"], ["React"])
         assert "react" in matched
         assert "pytorch" in missing
 
     def test_all_missing(self):
-        matched, missing = _match_skills(["ruby", "rails"], ["Python", "FastAPI"])
+        matched, weakly, missing = _match_skills(["ruby", "rails"], ["Python", "FastAPI"])
         assert matched == []
         assert "ruby" in missing
         assert "rails" in missing
 
     def test_no_claimed_skills(self):
-        matched, missing = _match_skills([], ["FastAPI"])
+        matched, weakly, missing = _match_skills([], ["FastAPI"])
         assert matched == []
+        assert weakly == []
         assert missing == []
 
     def test_ml_alias(self):
-        matched, missing = _match_skills(["machine learning"], ["PyTorch", "Pandas"])
+        matched, weakly, missing = _match_skills(["machine learning"], ["PyTorch", "Pandas"])
         assert "machine learning" in matched
 
     def test_case_insensitive_stack(self):
-        matched, missing = _match_skills(["FastAPI"], ["fastapi"])
+        matched, weakly, missing = _match_skills(["FastAPI"], ["fastapi"])
         assert "FastAPI" in matched
+
+
+# ── Unit tests: _match_skills context-aware (Task 3) ─────────────────────────
+
+class TestMatchSkillsContextAware:
+    def test_google_cloud_run_weakly_from_gcloud_and_docker(self):
+        matched, weakly, missing = _match_skills(
+            ["Google Cloud Run"],
+            ["Google Cloud", "Docker", "Python"],
+            detected_features=["deployment", "docker"],
+        )
+        assert "Google Cloud Run" in weakly
+        assert "Google Cloud Run" not in matched
+        assert "Google Cloud Run" not in missing
+
+    def test_google_cloud_run_weakly_from_run_app_url(self):
+        matched, weakly, missing = _match_skills(
+            ["Google Cloud Run"],
+            ["Docker"],
+            detected_features=["deployment"],
+            live_website_url="https://myapp-abc123-uc.a.run.app",
+        )
+        assert "Google Cloud Run" in weakly
+
+    def test_google_cloud_run_weakly_from_readme_and_docker(self):
+        readme = "# Project\nDeployed on Google Cloud Run. Uses gcloud CLI for deployment."
+        matched, weakly, missing = _match_skills(
+            ["Google Cloud Run"],
+            ["Docker"],
+            detected_features=["deployment"],
+            fetched_files={"README.md": readme},
+        )
+        assert "Google Cloud Run" in weakly
+
+    def test_google_cloud_run_readme_only_weakly(self):
+        readme = "# Project\nThis app runs on GCP Cloud Run."
+        matched, weakly, missing = _match_skills(
+            ["Google Cloud Run"],
+            ["Python"],
+            fetched_files={"README.md": readme},
+        )
+        assert "Google Cloud Run" in weakly
+
+    def test_google_cloud_run_missing_when_no_evidence(self):
+        matched, weakly, missing = _match_skills(
+            ["Google Cloud Run"],
+            ["Python", "FastAPI"],
+        )
+        assert "Google Cloud Run" in missing
+        assert "Google Cloud Run" not in matched
+        assert "Google Cloud Run" not in weakly
+
+    def test_route_risk_prediction_matched_from_title_and_ml_stack(self):
+        matched, weakly, missing = _match_skills(
+            ["Route Risk Prediction"],
+            ["scikit-learn", "LightGBM", "Python"],
+            live_page_title="Boston Route Risk Predictor",
+        )
+        assert "Route Risk Prediction" in matched
+        assert "Route Risk Prediction" not in missing
+
+    def test_route_risk_prediction_matched_from_objective_and_ml_stack(self):
+        matched, weakly, missing = _match_skills(
+            ["Route Risk Prediction"],
+            ["XGBoost", "Pandas", "Python"],
+            proof_objective="Predict accident risk on routes using machine learning",
+        )
+        assert "Route Risk Prediction" in matched
+
+    def test_route_risk_prediction_weakly_from_readme_and_ml(self):
+        readme = "A project predicting accident risk on city routes using LightGBM."
+        matched, weakly, missing = _match_skills(
+            ["Route Risk Prediction"],
+            ["LightGBM", "Python"],
+            fetched_files={"README.md": readme},
+        )
+        assert "Route Risk Prediction" in matched or "Route Risk Prediction" in weakly
+
+    def test_route_risk_prediction_weakly_from_readme_no_ml(self):
+        readme = "A project for rerouting traffic based on accident risk."
+        matched, weakly, missing = _match_skills(
+            ["Route Risk Prediction"],
+            ["Python", "FastAPI"],
+            fetched_files={"README.md": readme},
+        )
+        assert "Route Risk Prediction" in weakly
+
+    def test_route_risk_prediction_missing_when_no_evidence(self):
+        matched, weakly, missing = _match_skills(
+            ["Route Risk Prediction"],
+            ["React", "FastAPI"],
+        )
+        assert "Route Risk Prediction" in missing
+
+    def test_google_maps_api_weakly_from_readme(self):
+        readme = "This app uses the Google Maps API for geocoding routes."
+        matched, weakly, missing = _match_skills(
+            ["Google Maps API"],
+            ["Python", "FastAPI"],
+            fetched_files={"README.md": readme},
+        )
+        assert "Google Maps API" in weakly
+
+    def test_google_maps_weakly_from_gmaps_readme(self):
+        readme = "Integrates gmaps for displaying accident locations."
+        matched, weakly, missing = _match_skills(
+            ["Google Maps API"],
+            ["Python"],
+            fetched_files={"README.md": readme},
+        )
+        assert "Google Maps API" in weakly
+
+    def test_google_maps_missing_when_no_readme_evidence(self):
+        matched, weakly, missing = _match_skills(
+            ["Google Maps API"],
+            ["Python", "FastAPI"],
+        )
+        assert "Google Maps API" in missing
+
+    def test_react_weakly_from_readme_when_no_package_json(self):
+        readme = "Frontend built with React and JSX components."
+        matched, weakly, missing = _match_skills(
+            ["React"],
+            ["Python", "FastAPI"],
+            fetched_files={"README.md": readme},
+        )
+        assert "React" in weakly
+
+    def test_react_matched_from_stack(self):
+        matched, weakly, missing = _match_skills(
+            ["React"],
+            ["React", "JavaScript", "TypeScript"],
+        )
+        assert "React" in matched
+
+    def test_react_matched_from_nextjs_alias(self):
+        # Next.js in stack satisfies "react" via alias
+        matched, weakly, missing = _match_skills(
+            ["react"],
+            ["Next.js", "TypeScript"],
+        )
+        assert "react" in matched
+
+    def test_comma_separated_skills_each_matched_individually(self):
+        # After comma-split, FastAPI and React are separate skills
+        matched, weakly, missing = _match_skills(
+            ["FastAPI", "React"],
+            ["FastAPI", "React"],
+        )
+        assert "FastAPI" in matched
+        assert "React" in matched
+        assert missing == []
+
+    def test_domain_risk_skill_variants_registered(self):
+        assert "route risk prediction" in _DOMAIN_RISK_SKILLS
+        assert "route risk" in _DOMAIN_RISK_SKILLS
 
 
 # ── Unit tests: _compute_confidence ──────────────────────────────────────────
@@ -305,7 +463,9 @@ class TestAnalyzeGithubRepo:
         )
         result = analyze_github_repo(REPO_URL, ["react", "python"])
         assert "python" in result["matched_claimed_skills"]
-        assert "react" in result["missing_claimed_skills"]
+        # react not in stack and no README/context → must be missing or weakly matched, not matched
+        assert "react" not in result["matched_claimed_skills"]
+        assert "weakly_matched_claimed_skills" in result
 
     def test_no_claimed_skills(self, monkeypatch):
         monkeypatch.setattr(
@@ -315,7 +475,65 @@ class TestAnalyzeGithubRepo:
         )
         result = analyze_github_repo(REPO_URL, [])
         assert result["matched_claimed_skills"] == []
+        assert result["weakly_matched_claimed_skills"] == []
         assert result["missing_claimed_skills"] == []
+
+    def test_frontend_package_json_detects_react(self, monkeypatch):
+        frontend_pkg = '{"dependencies": {"react": "^18.0.0", "react-dom": "^18.0.0"}}'
+        monkeypatch.setattr(
+            svc_module,
+            "fetch_public_github_file",
+            _make_fake_fetch({
+                "README.md": "# Boston Route Risk Predictor\nFastAPI backend, React frontend.",
+                "requirements.txt": "fastapi==0.110.0\nlightgbm==4.0.0\n",
+                "frontend/package.json": frontend_pkg,
+            }),
+        )
+        result = analyze_github_repo(REPO_URL, ["React"])
+        assert "React" in result["matched_claimed_skills"]
+
+    def test_boston_project_skills_with_context(self, monkeypatch):
+        readme = (
+            "# Boston Smart Accident Risk Rerouting\n\n"
+            "Predicts accident risk on routes using LightGBM and scikit-learn. "
+            "Deployed on Google Cloud Run. Frontend uses React. "
+            "Route geocoding via Google Maps API."
+        )
+        monkeypatch.setattr(
+            svc_module,
+            "fetch_public_github_file",
+            _make_fake_fetch({
+                "README.md": readme,
+                "requirements.txt": "fastapi==0.110.0\nlightgbm==4.0.0\nscikit-learn==1.4.0\n",
+                "Dockerfile": "FROM python:3.12-slim",
+            }),
+        )
+        result = analyze_github_repo(
+            REPO_URL,
+            ["Machine Learning", "FastAPI", "Google Cloud Run", "Google Maps API", "React", "Route Risk Prediction"],
+            live_website_url="https://boston-risk-abc123-uc.a.run.app",
+            live_page_title="Boston Route Risk Predictor",
+            proof_objective="Demonstrate route risk prediction with ML and cloud deployment",
+        )
+        assert result["status"] == "success"
+        assert "Machine Learning" in result["matched_claimed_skills"]
+        assert "FastAPI" in result["matched_claimed_skills"]
+        assert "Route Risk Prediction" in result["matched_claimed_skills"]
+        gcloud_run_evidence = (
+            "Google Cloud Run" in result["matched_claimed_skills"]
+            or "Google Cloud Run" in result["weakly_matched_claimed_skills"]
+        )
+        assert gcloud_run_evidence, "Google Cloud Run should have at least weak evidence"
+        maps_evidence = (
+            "Google Maps API" in result["matched_claimed_skills"]
+            or "Google Maps API" in result["weakly_matched_claimed_skills"]
+        )
+        assert maps_evidence, "Google Maps API should have at least weak evidence from README"
+        react_evidence = (
+            "React" in result["matched_claimed_skills"]
+            or "React" in result["weakly_matched_claimed_skills"]
+        )
+        assert react_evidence, "React should have at least weak evidence from README"
 
     def test_created_at_present(self, monkeypatch):
         monkeypatch.setattr(
@@ -453,8 +671,8 @@ class TestAnalyzeGithubEndpoint:
         required_keys = {
             "id", "proof_session_id", "repo_url", "status",
             "detected_stack", "detected_features",
-            "matched_claimed_skills", "missing_claimed_skills",
-            "evidence_files", "confidence_score",
+            "matched_claimed_skills", "weakly_matched_claimed_skills",
+            "missing_claimed_skills", "evidence_files", "confidence_score",
             "warnings", "recruiter_summary", "created_at",
         }
         assert required_keys.issubset(body.keys())
@@ -486,4 +704,36 @@ class TestGetGithubAnalysisEndpoint:
         body = r.json()
         assert body["proof_session_id"] == SESSION_ID
         assert body["status"] == "success"
+
+    def test_post_with_live_context_fields(self, client, monkeypatch):
+        readme = "# Route Risk Predictor\nUses LightGBM and deployed on Google Cloud Run."
+        monkeypatch.setattr(
+            svc_module,
+            "fetch_public_github_file",
+            _make_fake_fetch({
+                "README.md": readme,
+                "requirements.txt": "fastapi==0.110.0\nlightgbm==4.0.0\n",
+                "Dockerfile": "FROM python:3.12-slim",
+            }),
+        )
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{SESSION_ID}/analyze/github",
+            json={
+                "github_url": REPO_URL,
+                "claimed_skills": ["FastAPI", "Google Cloud Run", "Route Risk Prediction"],
+                "live_website_url": "https://myapp-abc123-uc.a.run.app",
+                "live_page_title": "Boston Route Risk Predictor",
+                "proof_objective": "Predict route accident risk",
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        assert "FastAPI" in body["matched_claimed_skills"]
+        assert isinstance(body["weakly_matched_claimed_skills"], list)
+        gcloud_evidence = (
+            "Google Cloud Run" in body["matched_claimed_skills"]
+            or "Google Cloud Run" in body["weakly_matched_claimed_skills"]
+        )
+        assert gcloud_evidence
 

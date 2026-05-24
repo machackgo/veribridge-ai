@@ -958,6 +958,7 @@ export type ExtensionProofGitHubAnalysisResponse = {
   detected_stack: string[]
   detected_features: string[]
   matched_claimed_skills: string[]
+  weakly_matched_claimed_skills: string[]
   missing_claimed_skills: string[]
   evidence_files: string[]
   confidence_score: number
@@ -967,16 +968,29 @@ export type ExtensionProofGitHubAnalysisResponse = {
   updated_at: string | null
 }
 
+export type AnalyzeGitHubOptions = {
+  liveWebsiteUrl?: string
+  livePageTitle?: string
+  proofObjective?: string
+}
+
 export async function analyzeExtensionProofGitHub(
   sessionId: string,
   githubUrl: string,
-  claimedSkills: string[]
+  claimedSkills: string[],
+  options: AnalyzeGitHubOptions = {}
 ): Promise<ExtensionProofGitHubAnalysisResponse> {
   const res = await fetchAPI(
     `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/analyze/github`,
     {
       method: "POST",
-      body: JSON.stringify({ github_url: githubUrl, claimed_skills: claimedSkills }),
+      body: JSON.stringify({
+        github_url: githubUrl,
+        claimed_skills: claimedSkills,
+        live_website_url: options.liveWebsiteUrl ?? "",
+        live_page_title: options.livePageTitle ?? "",
+        proof_objective: options.proofObjective ?? "",
+      }),
     }
   )
   if (!res.ok) {

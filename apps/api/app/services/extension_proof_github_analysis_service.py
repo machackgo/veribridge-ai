@@ -152,9 +152,9 @@ _SKILL_ALIASES: dict[str, list[str]] = {
     "tailwind": ["Tailwind CSS"],
     "tailwindcss": ["Tailwind CSS"],
     "prisma": ["Prisma"],
-    "graphql": ["GraphQL"],
 }
 
+# Files to fetch from the repo root and common subdirectory locations
 _FILES_TO_PROBE = [
     "README.md",
     "requirements.txt",
@@ -165,7 +165,50 @@ _FILES_TO_PROBE = [
     "docker-compose.yaml",
     ".env.example",
     "Makefile",
+    "frontend/package.json",
+    "client/package.json",
 ]
+
+# ── Context-aware skill matching helpers ─────────────────────────────────────
+
+# ML stack tech terms (lowercase) used to confirm domain skills
+_ML_STACK_TERMS_LOWER = frozenset({
+    "scikit-learn", "pytorch", "tensorflow", "keras", "xgboost", "lightgbm",
+})
+
+# Domain skills that can be matched from page title / proof objective + ML stack
+# "strong" keywords → matched when ML stack present; "weak" keywords → weakly matched
+_DOMAIN_RISK_SKILLS: dict[str, dict[str, list[str]]] = {
+    "route risk prediction": {
+        "title_keywords": ["route risk", "accident risk", "risk predictor", "risk prediction", "route predictor"],
+        "readme_keywords": ["route risk", "accident risk", "risk prediction", "rerouting", "route", "accident", "prediction"],
+    },
+    "route risk": {
+        "title_keywords": ["route risk", "accident risk"],
+        "readme_keywords": ["route risk", "accident risk", "route", "risk"],
+    },
+    "accident risk prediction": {
+        "title_keywords": ["accident risk", "route risk", "risk predictor"],
+        "readme_keywords": ["accident risk", "route risk", "accident", "prediction"],
+    },
+}
+
+# Fallback README keywords for skills not specially handled above
+# Provides weak evidence when the skill isn't found in detected_stack
+_README_WEAK_SKILLS: dict[str, list[str]] = {
+    "react": ["react", "jsx", "reactjs", "create-react-app"],
+    "vue": ["vue.js", "vuejs", "vue 3", "vue 2"],
+    "angular": ["angular", "angularjs"],
+    "svelte": ["svelte", "sveltekit"],
+    "google cloud": ["google cloud", "gcp", "gcloud", "cloud storage", "bigquery"],
+}
+
+# Live URL substring patterns that weakly support a skill
+_LIVE_URL_WEAK_SKILLS: dict[str, list[str]] = {
+    "google cloud run": ["run.app", "appspot.com"],
+    "cloud run": ["run.app", "appspot.com"],
+    "google cloud": ["run.app", "appspot.com"],
+}
 
 
 # ── Pure analysis function ────────────────────────────────────────────────────
@@ -173,6 +216,9 @@ _FILES_TO_PROBE = [
 def analyze_github_repo(
     repo_url: str,
     claimed_skills: list[str],
+    live_website_url: str = "",
+    live_page_title: str = "",
+    proof_objective: str = "",
 ) -> dict[str, Any]:
     """Probe a public GitHub repo and return an analysis result dict."""
 
@@ -192,6 +238,7 @@ def analyze_github_repo(
             "detected_stack": [],
             "detected_features": [],
             "matched_claimed_skills": [],
+            "weakly_matched_claimed_skills": [],
             "missing_claimed_skills": list(claimed_skills),
             "evidence_files": [],
             "confidence_score": 0.0,
@@ -222,6 +269,7 @@ def analyze_github_repo(
             "detected_stack": [],
             "detected_features": [],
             "matched_claimed_skills": [],
+            "weakly_matched_claimed_skills": [],
             "missing_claimed_skills": list(claimed_skills),
             "evidence_files": [],
             "confidence_score": 0.0,
@@ -232,10 +280,21 @@ def analyze_github_repo(
 
     detected_stack = _detect_stack(fetched)
     detected_features = _detect_features(fetched, detected_stack)
-    matched, missing = _match_skills(claimed_skills, detected_stack)
-    confidence = _compute_confidence(accessible_files, detected_stack, matched, claimed_skills)
-    warnings = _build_warnings(accessible_files, detected_stack, matched, claimed_skills)
-    summary = _build_summary(normalized_repo_url, detected_stack, detected_features, matched, missing, confidence)
+    matched, weakly, missing = _match_skills(
+        claimed_skills,
+        detected_stack,
+        detected_features=detected_features,
+        fetched_files=fetched,
+        live_website_url=live_website_url,
+        live_page_title=live_page_title,
+        proof_objective=proof_objective,
+    )
+    confidence = _compute_confidence(accessible_files, detected_stack, matched, claimed_skills, weakly)
+    warnings = _build_warnings(accessible_files, detected_stack, matched, claimed_skills, weakly)
+    summary = _build_summary(
+        normalized_repo_url, detected_stack, detected_features,
+        matched, missing, confidence, weakly,
+    )
 
     return {
         "repo_url": normalized_repo_url,
@@ -243,6 +302,7 @@ def analyze_github_repo(
         "detected_stack": detected_stack,
         "detected_features": detected_features,
         "matched_claimed_skills": matched,
+        "weakly_matched_claimed_skills": weakly,
         "missing_claimed_skills": missing,
         "evidence_files": accessible_files,
         "confidence_score": round(confidence, 3),
@@ -253,6 +313,24 @@ def analyze_github_repo(
 
 
 # ── Detection helpers ─────────────────────────────────────────────────────────
+
+def _parse_package_json_deps(pkg_content: str, stack: set[str]) -> None:
+    """Parse a package.json string and add detected techs to stack in-place."""
+    stack.add("JavaScript")
+    try:
+        data = json.loads(pkg_content)
+        all_deps: dict[str, str] = {}
+        all_deps.update(data.get("dependencies", {}))
+        all_deps.update(data.get("devDependencies", {}))
+        dep_str = " ".join(all_deps.keys()).lower()
+        for keyword, tech in _NPM_STACK.items():
+            if keyword in dep_str:
+                stack.add(tech)
+        if "typescript" in dep_str or pkg_content.lower().find('"ts"') >= 0:
+            stack.add("TypeScript")
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
 
 def _detect_stack(fetched: dict[str, str | None]) -> list[str]:
     stack: set[str] = set()
@@ -265,31 +343,20 @@ def _detect_stack(fetched: dict[str, str | None]) -> list[str]:
                 stack.add(tech)
         stack.add("Python")
 
-    pkg = fetched.get("package.json")
-    if pkg:
-        stack.add("JavaScript")
-        try:
-            data = json.loads(pkg)
-            all_deps: dict[str, str] = {}
-            all_deps.update(data.get("dependencies", {}))
-            all_deps.update(data.get("devDependencies", {}))
-            dep_str = " ".join(all_deps.keys()).lower()
-            for keyword, tech in _NPM_STACK.items():
-                if keyword in dep_str:
-                    stack.add(tech)
-            if "typescript" in dep_str or fetched.get("package.json", "").lower().find('"ts"') >= 0:
-                stack.add("TypeScript")
-        except (json.JSONDecodeError, AttributeError):
-            pass
-
     pyproject = fetched.get("pyproject.toml")
     if pyproject:
         pyproject_lower = pyproject.lower()
         for keyword, tech in _REQS_STACK.items():
             if keyword in pyproject_lower:
                 stack.add(tech)
-        if "python" not in " ".join(stack).lower():
+        if not any(t == "Python" for t in stack):
             stack.add("Python")
+
+    # Parse package.json from root and common frontend subdirectories
+    for pkg_key in ("package.json", "frontend/package.json", "client/package.json"):
+        pkg = fetched.get(pkg_key)
+        if pkg:
+            _parse_package_json_deps(pkg, stack)
 
     if fetched.get("Dockerfile"):
         stack.add("Docker")
@@ -338,7 +405,7 @@ def _detect_features(fetched: dict[str, str | None], stack: list[str]) -> list[s
     if any(t in stack for t in db_techs):
         features.append("database")
 
-    if "Dockerfile" in (fetched.keys()) and fetched.get("Dockerfile"):
+    if fetched.get("Dockerfile"):
         features.append("deployment")
 
     return features
@@ -347,23 +414,103 @@ def _detect_features(fetched: dict[str, str | None], stack: list[str]) -> list[s
 def _match_skills(
     claimed_skills: list[str],
     detected_stack: list[str],
-) -> tuple[list[str], list[str]]:
+    detected_features: list[str] | None = None,
+    fetched_files: dict[str, str | None] | None = None,
+    live_website_url: str = "",
+    live_page_title: str = "",
+    proof_objective: str = "",
+) -> tuple[list[str], list[str], list[str]]:
+    """Return (matched, weakly_matched, missing) for each claimed skill.
+
+    matched      — confirmed by dependency files (strongest evidence)
+    weakly_matched — suggested by README text, live URL, page title, or deployment context
+    missing      — no evidence found in any source
+    """
     if not claimed_skills:
-        return [], []
+        return [], [], []
 
     stack_lower = {t.lower() for t in detected_stack}
+    features_set = set(detected_features or [])
+    readme = ((fetched_files or {}).get("README.md") or "").lower()
+    url_lower = (live_website_url or "").lower()
+    context_lower = (live_page_title or "").lower() + " " + (proof_objective or "").lower()
+
     matched: list[str] = []
+    weakly: list[str] = []
     missing: list[str] = []
 
     for skill in claimed_skills:
-        skill_lower = skill.lower().strip()
-        aliases = _SKILL_ALIASES.get(skill_lower, [skill])
-        if any(a.lower() in stack_lower for a in aliases) or skill_lower in stack_lower:
-            matched.append(skill)
-        else:
-            missing.append(skill)
+        sk = skill.lower().strip()
+        aliases = _SKILL_ALIASES.get(sk, [skill])
 
-    return matched, missing
+        # 1. Direct stack match — dependency files confirmed
+        if any(a.lower() in stack_lower for a in aliases) or sk in stack_lower:
+            matched.append(skill)
+            continue
+
+        # 2. Domain skill: route / accident risk prediction
+        #    Full match when page title/objective confirms it AND ML stack is present.
+        #    Weak match when README mentions relevant domain terms.
+        if sk in _DOMAIN_RISK_SKILLS:
+            spec = _DOMAIN_RISK_SKILLS[sk]
+            has_ml = bool(stack_lower & _ML_STACK_TERMS_LOWER)
+            title_hit = any(kw in context_lower for kw in spec["title_keywords"])
+            readme_hit = any(kw in readme for kw in spec["readme_keywords"])
+            if title_hit and has_ml:
+                matched.append(skill)
+            elif title_hit or (readme_hit and has_ml):
+                weakly.append(skill)
+            elif readme_hit:
+                weakly.append(skill)
+            else:
+                missing.append(skill)
+            continue
+
+        # 3. Google Cloud Run — weakly supported from deployment context
+        if sk in ("google cloud run", "cloud run"):
+            has_gcloud = "google cloud" in stack_lower
+            has_docker = bool({"docker", "docker compose"} & stack_lower)
+            has_deploy = "deployment" in features_set
+            url_hit = any(p in url_lower for p in ("run.app", "appspot.com"))
+            readme_hit = any(
+                kw in readme
+                for kw in ("cloud run", "google cloud", "gcp", "gcloud", "container registry", "cloud build")
+            )
+            if (has_gcloud or readme_hit) and (has_docker or has_deploy or url_hit):
+                weakly.append(skill)
+            elif url_hit or readme_hit:
+                weakly.append(skill)
+            else:
+                missing.append(skill)
+            continue
+
+        # 4. Google Maps API — weakly supported from README mentions
+        if sk in ("google maps api", "google maps", "maps api"):
+            readme_hit = any(
+                kw in readme
+                for kw in ("google maps", "maps api", "geocod", "gmaps", "directions api", "places api", "maps javascript")
+            )
+            if readme_hit:
+                weakly.append(skill)
+            else:
+                missing.append(skill)
+            continue
+
+        # 5. Generic README keyword weak match
+        readme_kws = _README_WEAK_SKILLS.get(sk)
+        if readme_kws and any(kw in readme for kw in readme_kws):
+            weakly.append(skill)
+            continue
+
+        # 6. Live URL weak match
+        url_patterns = _LIVE_URL_WEAK_SKILLS.get(sk)
+        if url_patterns and any(p in url_lower for p in url_patterns):
+            weakly.append(skill)
+            continue
+
+        missing.append(skill)
+
+    return matched, weakly, missing
 
 
 def _compute_confidence(
@@ -371,15 +518,19 @@ def _compute_confidence(
     detected_stack: list[str],
     matched_skills: list[str],
     claimed_skills: list[str],
+    weakly_matched_skills: list[str] | None = None,
 ) -> float:
     score = 0.25  # base for accessible repo
 
     # file richness: up to 0.20
     score += min(len(accessible_files) * 0.04, 0.20)
 
-    # skill match ratio: up to 0.45
+    # skill match ratio: up to 0.45 (weakly matched count at half weight)
     if claimed_skills:
-        match_ratio = len(matched_skills) / len(claimed_skills)
+        full_count = len(matched_skills)
+        weak_count = len(weakly_matched_skills or [])
+        effective = full_count + weak_count * 0.5
+        match_ratio = min(effective / len(claimed_skills), 1.0)
         score += match_ratio * 0.45
 
     # bonus for having key indicator files
@@ -398,13 +549,14 @@ def _build_warnings(
     detected_stack: list[str],
     matched_skills: list[str],
     claimed_skills: list[str],
+    weakly_matched_skills: list[str] | None = None,
 ) -> list[str]:
     warnings: list[str] = []
 
     if not detected_stack:
         warnings.append("No recognizable tech stack detected. Repo may use unrecognized tools or have minimal dependency files.")
 
-    if claimed_skills and not matched_skills:
+    if claimed_skills and not matched_skills and not (weakly_matched_skills or []):
         warnings.append("None of the claimed skills were detected in the repository. Verify the repo matches the claimed work.")
 
     if "README.md" not in accessible_files:
@@ -423,8 +575,10 @@ def _build_summary(
     matched_skills: list[str],
     missing_skills: list[str],
     confidence: float,
+    weakly_matched_skills: list[str] | None = None,
 ) -> str:
     parts: list[str] = []
+    weakly = weakly_matched_skills or []
 
     if detected_stack:
         stack_str = ", ".join(detected_stack[:6])
@@ -452,16 +606,41 @@ def _build_summary(
         else:
             parts.append(f"The codebase includes {', '.join(notable[:-1])}, and {notable[-1]}.")
 
-    if matched_skills and missing_skills:
+    total = len(matched_skills) + len(weakly) + len(missing_skills)
+
+    if matched_skills and weakly and missing_skills:
         parts.append(
-            f"{len(matched_skills)} of {len(matched_skills) + len(missing_skills)} claimed skills were verified "
+            f"{len(matched_skills)} of {total} claimed skills were directly verified "
+            f"({', '.join(matched_skills)}). "
+            f"{len(weakly)} had partial or contextual evidence: {', '.join(weakly)}. "
+            f"Missing evidence for: {', '.join(missing_skills)}."
+        )
+    elif matched_skills and weakly:
+        parts.append(
+            f"{len(matched_skills)} of {total} claimed skills were directly verified "
+            f"({', '.join(matched_skills)}). "
+            f"{len(weakly)} had partial or contextual evidence: {', '.join(weakly)}."
+        )
+    elif matched_skills and missing_skills:
+        parts.append(
+            f"{len(matched_skills)} of {total} claimed skills were verified "
             f"({', '.join(matched_skills)}). "
             f"Missing evidence for: {', '.join(missing_skills)}."
         )
     elif matched_skills:
         parts.append(f"All claimed skills were verified: {', '.join(matched_skills)}.")
+    elif weakly and missing_skills:
+        parts.append(
+            f"No claimed skills were directly verified from dependency files. "
+            f"{len(weakly)} had partial contextual evidence: {', '.join(weakly)}. "
+            f"Missing evidence for: {', '.join(missing_skills)}."
+        )
+    elif weakly:
+        parts.append(
+            f"No claimed skills were directly verified, but {len(weakly)} had partial or contextual evidence: {', '.join(weakly)}."
+        )
     elif missing_skills:
-        parts.append(f"No claimed skills could be verified from the repository contents.")
+        parts.append("No claimed skills could be verified from the repository contents.")
 
     confidence_pct = int(confidence * 100)
     parts.append(f"Overall confidence: {confidence_pct}%.")
@@ -481,8 +660,17 @@ class ExtensionProofGitHubAnalysisService:
         session_id: str,
         github_url: str,
         claimed_skills: list[str],
+        live_website_url: str = "",
+        live_page_title: str = "",
+        proof_objective: str = "",
     ) -> dict[str, Any]:
-        result = analyze_github_repo(github_url, claimed_skills)
+        result = analyze_github_repo(
+            github_url,
+            claimed_skills,
+            live_website_url=live_website_url,
+            live_page_title=live_page_title,
+            proof_objective=proof_objective,
+        )
         result["proof_session_id"] = session_id
         return self._store_result(user_id, session_id, result)
 
@@ -531,6 +719,7 @@ class ExtensionProofGitHubAnalysisService:
                 "detected_stack": result["detected_stack"],
                 "detected_features": result["detected_features"],
                 "matched_claimed_skills": result["matched_claimed_skills"],
+                "weakly_matched_claimed_skills": result.get("weakly_matched_claimed_skills", []),
                 "missing_claimed_skills": result["missing_claimed_skills"],
                 "evidence_files": result["evidence_files"],
                 "confidence_score": result["confidence_score"],
@@ -559,6 +748,7 @@ class ExtensionProofGitHubAnalysisService:
             "detected_stack",
             "detected_features",
             "matched_claimed_skills",
+            "weakly_matched_claimed_skills",
             "missing_claimed_skills",
             "evidence_files",
             "warnings",

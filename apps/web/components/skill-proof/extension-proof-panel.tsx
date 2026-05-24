@@ -1004,6 +1004,8 @@ function githubSkillLabel(
   const lower = skill.toLowerCase()
   if (analysis.matched_claimed_skills.some(s => s.toLowerCase() === lower))
     return { text: "Supported", color: "#166534" }
+  if ((analysis.weakly_matched_claimed_skills ?? []).some(s => s.toLowerCase() === lower))
+    return { text: "Partial evidence", color: "#854d0e" }
   if (analysis.missing_claimed_skills.some(s => s.toLowerCase() === lower))
     return { text: "Not detected in repo", color: "#991b1b" }
   return { text: "—", color: "#94a3b8" }
@@ -1016,11 +1018,15 @@ function overallSkillLabel(
 ): { text: string; color: string } {
   const lower = skill.toLowerCase()
   const wfSupported = workflowAnalysis.supported_skills.some(s => s.toLowerCase() === lower)
-  const ghSupported = githubAnalysis.status === "success" &&
+  const ghMatched = githubAnalysis.status === "success" &&
     githubAnalysis.matched_claimed_skills.some(s => s.toLowerCase() === lower)
-  if (wfSupported && ghSupported) return { text: "Supported (workflow + GitHub)", color: "#166534" }
+  const ghWeakly = githubAnalysis.status === "success" &&
+    (githubAnalysis.weakly_matched_claimed_skills ?? []).some(s => s.toLowerCase() === lower)
+
+  if (wfSupported && ghMatched) return { text: "Supported (workflow + GitHub)", color: "#166534" }
   if (wfSupported) return { text: "Supported (workflow)", color: "#166534" }
-  if (ghSupported) return { text: "Supported (GitHub)", color: "#166534" }
+  if (ghMatched) return { text: "Supported (GitHub)", color: "#166534" }
+  if (ghWeakly) return { text: "Partial evidence (GitHub)", color: "#854d0e" }
   return { text: "Pending further review", color: "#64748b" }
 }
 
@@ -1317,7 +1323,7 @@ function GitHubAnalysisCard({
         )}
 
         {/* Skill matching */}
-        {(analysis.matched_claimed_skills.length > 0 || analysis.missing_claimed_skills.length > 0) && (
+        {(analysis.matched_claimed_skills.length > 0 || (analysis.weakly_matched_claimed_skills ?? []).length > 0 || analysis.missing_claimed_skills.length > 0) && (
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
               Skills Assessment
@@ -1331,6 +1337,19 @@ function GitHubAnalysisCard({
                       <span key={s} style={{
                         fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
                         background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0",
+                      }}>{s}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(analysis.weakly_matched_claimed_skills ?? []).length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: "#854d0e", fontWeight: 600, marginBottom: 4 }}>Partial / contextual evidence</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {(analysis.weakly_matched_claimed_skills ?? []).map((s) => (
+                      <span key={s} style={{
+                        fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
+                        background: "#fefce8", color: "#854d0e", border: "1px solid #fef08a",
                       }}>{s}</span>
                     ))}
                   </div>
@@ -1672,7 +1691,11 @@ export function ExtensionProofPanel({
     githubAnalyzeTimeoutRef.current = timeoutId
 
     try {
-      const result = await analyzeExtensionProofGitHub(session.id, githubUrl, parseSkills())
+      const result = await analyzeExtensionProofGitHub(session.id, githubUrl, parseSkills(), {
+        liveWebsiteUrl: liveCheck?.final_url ?? form.websiteUrl.trim(),
+        livePageTitle: liveCheck?.page_title ?? "",
+        proofObjective: form.proofObjective.trim(),
+      })
       if (cancelled) return
       clearTimeout(timeoutId)
       githubAnalyzeTimeoutRef.current = null

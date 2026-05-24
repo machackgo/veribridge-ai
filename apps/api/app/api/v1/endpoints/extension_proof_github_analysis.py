@@ -39,6 +39,9 @@ def analyze_github(
             session_id=session_id,
             github_url=body.github_url,
             claimed_skills=body.claimed_skills,
+            live_website_url=body.live_website_url,
+            live_page_title=body.live_page_title,
+            proof_objective=body.proof_objective,
         )
     except Exception as exc:
         logger.exception("POST analyze/github: unexpected error for session %s", session_id)
@@ -86,6 +89,7 @@ def _to_response(row: dict[str, Any]) -> ExtensionProofGitHubAnalysisResponse:
         detected_stack=row.get("detected_stack") or [],
         detected_features=row.get("detected_features") or [],
         matched_claimed_skills=row.get("matched_claimed_skills") or [],
+        weakly_matched_claimed_skills=row.get("weakly_matched_claimed_skills") or [],
         missing_claimed_skills=row.get("missing_claimed_skills") or [],
         evidence_files=row.get("evidence_files") or [],
         confidence_score=float(row.get("confidence_score", 0.0)),

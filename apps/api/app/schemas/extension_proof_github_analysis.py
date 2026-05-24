@@ -19,6 +19,9 @@ class ExtensionProofGitHubAnalyzeRequest(BaseModel):
         default_factory=list,
         description="Skills to match against the detected stack",
     )
+    live_website_url: str = Field(default="", description="Live URL of the deployed project (for contextual matching)")
+    live_page_title: str = Field(default="", description="Page title of the live site (for domain skill inference)")
+    proof_objective: str = Field(default="", description="Workflow proof objective text (for domain skill inference)")
 
 
 class ExtensionProofGitHubAnalysisResponse(BaseModel):
@@ -29,6 +32,7 @@ class ExtensionProofGitHubAnalysisResponse(BaseModel):
     detected_stack: list[str]
     detected_features: list[str]
     matched_claimed_skills: list[str]
+    weakly_matched_claimed_skills: list[str] = []
     missing_claimed_skills: list[str]
     evidence_files: list[str]
     confidence_score: float
