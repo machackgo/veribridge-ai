@@ -12,6 +12,7 @@ from app.api.v1.endpoints import (
     health,
     recruiter_candidates,
     skill_evidence,
+    skill_evidence_profile,
     student,
     website_analyzer,
     website_browser_verification_runs,
@@ -32,6 +33,11 @@ api_router.include_router(
     skill_evidence.router,
     prefix="/student/skill-evidence",
     tags=["skill-evidence"],
+)
+api_router.include_router(
+    skill_evidence_profile.router,
+    prefix="/student/skill-evidence-profiles",
+    tags=["skill-evidence-profiles"],
 )
 api_router.include_router(
     website_verification_runs.router,

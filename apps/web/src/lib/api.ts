@@ -1090,3 +1090,59 @@ export async function getWorkflowAnalysis(
   if (!res.ok) throw new Error(`Get workflow analysis failed (HTTP ${res.status}).`)
   return res.json()
 }
+
+// ── Skill Evidence Profiles ───────────────────────────────────────────────────
+
+export type EvidenceLevel =
+  | "self_claimed"
+  | "workflow_evidence_complete"
+  | "workflow_analysis_ai_reviewed"
+  | "multi_source_ai_reviewed"
+  | "final_verification_ready"
+
+export type EvidenceSourceStatus = {
+  key: string
+  label: string
+  status: "complete" | "pending" | "unavailable"
+}
+
+export type EvidenceAttemptSummary = {
+  evidence_id: string
+  session_id: string | null
+  session_status: string | null
+  has_analysis: boolean
+  skill_name: string
+  submitted_at: string
+}
+
+export type SkillEvidenceProfile = {
+  profile_id: string
+  primary_skill_name: string
+  all_skill_names: string[]
+  proof_objective: string | null
+  evidence_url: string | null
+  github_url: string | null
+  url_type: string
+  evidence_level: EvidenceLevel
+  evidence_level_label: string
+  has_workflow_proof: boolean
+  has_workflow_analysis: boolean
+  has_github_evidence: boolean
+  confidence: string
+  evidence_strength_score: number | null
+  workflow_analysis_summary: string | null
+  latest_session_id: string | null
+  latest_session_status: string | null
+  evidence_sources: EvidenceSourceStatus[]
+  missing_evidence: string[]
+  submission_count: number
+  first_submitted_at: string
+  last_updated_at: string
+  history: EvidenceAttemptSummary[]
+}
+
+export async function getSkillEvidenceProfiles(): Promise<SkillEvidenceProfile[]> {
+  const res = await fetchAPI("/api/v1/student/skill-evidence-profiles")
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`)
+  return res.json()
+}

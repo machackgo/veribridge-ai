@@ -14,8 +14,10 @@ import {
   executeWebsiteVerificationRun,
   generateEvidenceAccessLinks,
   generateWebsiteVerificationPlan,
+  getSkillEvidenceProfiles,
   listSkillEvidence,
   updateSkillEvidence,
+  type SkillEvidenceProfile,
   type SkillEvidenceResponse,
 } from "@/lib/api"
 import {
@@ -400,6 +402,7 @@ export function StudentProofSubmissionPanel({
   const [activeTab, setActiveTab] = useState<SubmissionTab>("github")
   const [loadingEvidence, setLoadingEvidence] = useState(true)
   const [evidence, setEvidence] = useState<SkillEvidenceResponse[]>([])
+  const [profiles, setProfiles] = useState<SkillEvidenceProfile[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [submissionSummary, setSubmissionSummary] = useState<SubmissionSummary | null>(null)
   const [submissionError, setSubmissionError] = useState<string | null>(null)
@@ -435,10 +438,15 @@ export function StudentProofSubmissionPanel({
   const refreshEvidence = useCallback(async () => {
     setLoadingEvidence(true)
     try {
-      const results = await listSkillEvidence()
-      setEvidence(results)
+      const [evidenceResult, profilesResult] = await Promise.allSettled([
+        listSkillEvidence(),
+        getSkillEvidenceProfiles(),
+      ])
+      setEvidence(evidenceResult.status === "fulfilled" ? evidenceResult.value : [])
+      setProfiles(profilesResult.status === "fulfilled" ? profilesResult.value : [])
     } catch {
       setEvidence([])
+      setProfiles([])
     } finally {
       setLoadingEvidence(false)
     }
@@ -760,7 +768,12 @@ export function StudentProofSubmissionPanel({
       )}
 
       {/* Skill Proof Center — grouped hierarchical view of all saved evidence */}
-      <SkillProofCenter evidence={evidence} loading={loadingEvidence} />
+      <SkillProofCenter
+        evidence={evidence}
+        loading={loadingEvidence}
+        profiles={profiles}
+        onRefreshProfiles={() => void refreshEvidence()}
+      />
 
       {open && createPortal(
         <div

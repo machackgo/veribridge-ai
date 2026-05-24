@@ -11,7 +11,8 @@
 
 import { Fragment, useMemo, useState } from "react"
 import type { CSSProperties } from "react"
-import type { SkillEvidenceResponse } from "@/lib/api"
+import type { SkillEvidenceResponse, SkillEvidenceProfile } from "@/lib/api"
+import { WorkflowEvidenceProfileCard } from "./workflow-evidence-profile-card"
 import {
   groupSavedEvidence,
   getEvidenceActionLabel,
@@ -853,29 +854,45 @@ function groupHasSource(group: GroupedSkillSuggestion, source: EvidenceSource): 
 
 // ── Main component ────────────────────────────────────────────────────────────
 
+// Evidence types that are covered by WorkflowEvidenceProfileCard — excluded from groupSavedEvidence
+const EXTENSION_PROOF_EVIDENCE_TYPES = new Set([
+  "local development (extension proof)",
+  "private website (extension proof)",
+])
+
 export function SkillProofCenter({
   evidence,
   loading,
+  profiles = [],
+  onRefreshProfiles,
 }: {
   evidence: SkillEvidenceResponse[]
   loading: boolean
+  profiles?: SkillEvidenceProfile[]
+  onRefreshProfiles?: () => void
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all")
   const [showRaw, setShowRaw] = useState(false)
 
-  const grouped = useMemo(() => groupSavedEvidence(evidence), [evidence])
+  // Filter out extension proof evidence — those are shown via WorkflowEvidenceProfileCard
+  const nonExtensionEvidence = useMemo(
+    () => evidence.filter((e) => !EXTENSION_PROOF_EVIDENCE_TYPES.has(e.evidence_type)),
+    [evidence]
+  )
 
-  // Tally sources across all evidence (use metadata-aware mapping)
+  const grouped = useMemo(() => groupSavedEvidence(nonExtensionEvidence), [nonExtensionEvidence])
+
+  // Tally sources across non-extension-proof evidence (use metadata-aware mapping)
   const sourceCounts = useMemo(() => {
     const counts = new Map<EvidenceSource, number>()
-    for (const e of evidence) {
+    for (const e of nonExtensionEvidence) {
       const meta = (e.metadata as Record<string, unknown> | undefined) ?? {}
       const src = mapEvidenceSourceWithMeta(e.evidence_type, meta)
       counts.set(src, (counts.get(src) ?? 0) + 1)
     }
     return counts
-  }, [evidence])
+  }, [nonExtensionEvidence])
 
   const filteredGroups = useMemo(() => {
     if (sourceFilter === "all") return grouped
@@ -892,6 +909,8 @@ export function SkillProofCenter({
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────
+
+  const hasAnyContent = profiles.length > 0 || evidence.length > 0
 
   return (
     <section
@@ -923,7 +942,7 @@ export function SkillProofCenter({
       )}
 
       {/* Empty state */}
-      {!loading && evidence.length === 0 && (
+      {!loading && !hasAnyContent && (
         <div
           style={{
             border: "1px dashed var(--line-2)",
@@ -942,6 +961,22 @@ export function SkillProofCenter({
         </div>
       )}
 
+      {/* Extension proof profiles — one card per unique project */}
+      {!loading && profiles.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--muted)" }}>
+            Workflow Proof Evidence ({profiles.length} project{profiles.length !== 1 ? "s" : ""})
+          </div>
+          {profiles.map((profile) => (
+            <WorkflowEvidenceProfileCard
+              key={`wep-${profile.profile_id}`}
+              profile={profile}
+              onRefresh={onRefreshProfiles}
+            />
+          ))}
+        </div>
+      )}
+
       {/* Grouped skill cards */}
       {!loading && grouped.length > 0 && (
         <>
@@ -949,7 +984,7 @@ export function SkillProofCenter({
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
             <div style={{ fontSize: 12, color: "var(--muted)" }}>
               <strong style={{ color: "var(--ink-2)" }}>{grouped.length}</strong> grouped skill{grouped.length !== 1 ? "s" : ""} from{" "}
-              <strong style={{ color: "var(--ink-2)" }}>{evidence.length}</strong> evidence item{evidence.length !== 1 ? "s" : ""}
+              <strong style={{ color: "var(--ink-2)" }}>{nonExtensionEvidence.length}</strong> evidence item{nonExtensionEvidence.length !== 1 ? "s" : ""}
             </div>
 
             {/* Source filter tabs */}
@@ -1015,12 +1050,12 @@ export function SkillProofCenter({
                 color: "var(--ink-2)",
               }}
             >
-              <span>Advanced: all saved evidence ({evidence.length} items)</span>
+              <span>Advanced: all saved evidence ({nonExtensionEvidence.length} items)</span>
               <span>{showRaw ? "▲" : "▼"}</span>
             </button>
             {showRaw && (
               <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
-                {evidence.map((e) => {
+                {nonExtensionEvidence.map((e) => {
                   const redirectUrl = getEvidenceRedirectUrl(e)
                   const src = mapEvidenceSourceType(e.evidence_type)
                   const meta = (e.metadata as Record<string, unknown> | undefined) ?? {}
