@@ -1,8 +1,63 @@
 // Content script — injected into every page; only captures events while recording is active.
 // Never collects cookies, localStorage, sessionStorage, or password values.
 
+// ── Sensitive field detection ──────────────────────────────────────────────────
+
+/**
+ * Matches field names / labels / placeholders that indicate sensitive inputs.
+ * The check is project-agnostic — it covers passwords, API keys, tokens, PII,
+ * payment card data, and bank account fields across any website or app type.
+ */
 const SENSITIVE_RE =
-  /password|pass\b|token|secret|api_key|apikey|card|cvv|ssn|otp|2fa|mfa|authorization|bearer/i
+  /password|passcode|pass\b|token|secret|api[\s_\-]?key|apikey|access[\s_\-]?key|private[\s_\-]?key|bearer|auth(?:entication|orization|token)?|credential|ssn|social[\s_\-]?security|credit[\s_\-]?card|card[\s_\-]?number|cvv|cvc|expir|bank|routing|account[\s_\-]?number|otp|2fa|mfa/i
+
+// ── Sensitive URL query parameters ────────────────────────────────────────────
+
+/**
+ * Query parameter names that often carry secret values.
+ * Any URL with one of these parameters will have the value replaced with
+ * [REDACTED] before it is stored in the workflow timeline.
+ */
+const SENSITIVE_QUERY_PARAMS = new Set([
+  "token",
+  "access_token",
+  "id_token",
+  "refresh_token",
+  "api_key",
+  "key",
+  "secret",
+  "password",
+  "code",
+  "auth",
+  "session",
+  "jwt",
+])
+
+/**
+ * Redact sensitive query parameters from a URL string.
+ * Operates on any URL (deployed, localhost, local network, etc.).
+ * Returns the original string unchanged if it cannot be parsed or has no sensitive params.
+ */
+function redactSensitiveQueryParams(url: string): string {
+  if (!url || url.startsWith("chrome://") || url.startsWith("about:")) return url
+  try {
+    const parsed = new URL(url)
+    let changed = false
+    for (const k of [...parsed.searchParams.keys()]) {
+      if (SENSITIVE_QUERY_PARAMS.has(k.toLowerCase())) {
+        parsed.searchParams.set(k, "[REDACTED]")
+        changed = true
+      }
+    }
+    return changed ? parsed.toString() : url
+  } catch {
+    // Non-standard URL — use regex-based fallback (handles data: URLs, etc.)
+    return url.replace(
+      /([?&])(token|access_token|id_token|refresh_token|api_key|key|secret|password|code|auth|session|jwt)(=[^&]*)/gi,
+      "$1$2=[REDACTED]",
+    )
+  }
+}
 
 interface WorkflowEvent {
   type: "page_visit" | "click" | "input_change" | "tab_opened" | "navigation"
@@ -72,13 +127,29 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
+/**
+ * Returns the current page URL with sensitive query parameters already redacted.
+ * Use this everywhere instead of `location.href` when storing events.
+ */
+function safePageUrl(): string {
+  return redactSensitiveQueryParams(location.href)
+}
+
+/**
+ * Returns true if the input element should never have its value stored.
+ * Checks: input type, name, id, placeholder, aria-label, label text, autocomplete.
+ */
 function isSensitive(el: HTMLInputElement): boolean {
-  return (
-    el.type === "password" ||
-    SENSITIVE_RE.test(el.name ?? "") ||
-    SENSITIVE_RE.test(el.id ?? "") ||
-    SENSITIVE_RE.test(el.getAttribute("autocomplete") ?? "")
-  )
+  if (el.type === "password") return true
+  const attrs = [
+    el.name ?? "",
+    el.id ?? "",
+    el.getAttribute("placeholder") ?? "",
+    el.getAttribute("aria-label") ?? "",
+    el.getAttribute("autocomplete") ?? "",
+    el.getAttribute("data-field") ?? "",
+  ]
+  return attrs.some((a) => SENSITIVE_RE.test(a))
 }
 
 function safeMeta(el: Element): Partial<WorkflowEvent> {
@@ -134,7 +205,7 @@ function handleClick(e: Event): void {
   emit({
     type: "click",
     timestamp: nowIso(),
-    page_url: location.href,
+    page_url: safePageUrl(),
     page_title: document.title,
     ...safeMeta(target),
   })
@@ -146,17 +217,20 @@ function handleChange(e: Event): void {
   emit({
     type: "input_change",
     timestamp: nowIso(),
-    page_url: location.href,
+    page_url: safePageUrl(),
     page_title: document.title,
     ...safeMeta(target),
-    value: isSensitive(target) ? "[REDACTED]" : undefined,
+    // Sensitive inputs: store a redaction marker instead of any value.
+    // The marker [REDACTED_SENSITIVE_FIELD] lets the backend privacy scan
+    // count how many fields the extension already masked.
+    value: isSensitive(target) ? "[REDACTED_SENSITIVE_FIELD]" : undefined,
   })
 }
 
 function startCapture(): void {
   if (capturing) return
   capturing = true
-  emit({ type: "page_visit", timestamp: nowIso(), page_url: location.href, page_title: document.title })
+  emit({ type: "page_visit", timestamp: nowIso(), page_url: safePageUrl(), page_title: document.title })
   document.addEventListener("click", handleClick, { capture: true, passive: true })
   document.addEventListener("change", handleChange, { capture: true, passive: true })
 }
@@ -188,7 +262,7 @@ function detectSessionFromUrl(): void {
     type: "SESSION_DETECTED_FROM_PAGE",
     payload: {
       session_id: sessionId,
-      page_url: location.href,
+      page_url: safePageUrl(),
       page_title: document.title,
       detected_at: nowIso(),
     },

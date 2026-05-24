@@ -2,6 +2,50 @@
 
 import type { WorkflowEvent, ExtensionState, RecordingStatus } from "./types"
 
+// ── URL privacy redaction ─────────────────────────────────────────────────────
+// Mirrors the same set used in content.ts. Defined here independently because
+// the background service worker and content scripts run in separate V8 contexts.
+
+const _SENSITIVE_QUERY_PARAMS = new Set([
+  "token",
+  "access_token",
+  "id_token",
+  "refresh_token",
+  "api_key",
+  "key",
+  "secret",
+  "password",
+  "code",
+  "auth",
+  "session",
+  "jwt",
+])
+
+/**
+ * Redact sensitive query parameters from a URL string before storing it in
+ * workflow events or tracked-URL lists.  Returns the original string unchanged
+ * if it cannot be parsed or contains no sensitive parameters.
+ */
+function redactUrl(url: string): string {
+  if (!url || url.startsWith("chrome://") || url.startsWith("about:")) return url
+  try {
+    const parsed = new URL(url)
+    let changed = false
+    for (const k of [...parsed.searchParams.keys()]) {
+      if (_SENSITIVE_QUERY_PARAMS.has(k.toLowerCase())) {
+        parsed.searchParams.set(k, "[REDACTED]")
+        changed = true
+      }
+    }
+    return changed ? parsed.toString() : url
+  } catch {
+    return url.replace(
+      /([?&])(token|access_token|id_token|refresh_token|api_key|key|secret|password|code|auth|session|jwt)(=[^&]*)/gi,
+      "$1$2=[REDACTED]",
+    )
+  }
+}
+
 interface InternalState {
   sessionId: string
   apiUrl: string
@@ -180,7 +224,7 @@ chrome.tabs.onCreated.addListener((tab) => {
     state.events.push({
       type: "tab_opened",
       timestamp: new Date().toISOString(),
-      page_url: tab.url ?? tab.pendingUrl ?? "",
+      page_url: redactUrl(tab.url ?? tab.pendingUrl ?? ""),
       page_title: tab.title ?? "",
     })
   }
@@ -193,16 +237,17 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!url || url.startsWith("chrome://") || url === "about:blank" || url === "about:newtab") return
 
   // Record navigation when a tracked tab moves to a different URL.
+  const safeUrl = redactUrl(url)
   const lastUrl = state.trackedTabUrls.get(tabId)
-  if (lastUrl !== undefined && lastUrl !== url) {
+  if (lastUrl !== undefined && lastUrl !== safeUrl) {
     state.events.push({
       type: "navigation",
       timestamp: new Date().toISOString(),
-      page_url: url,
+      page_url: safeUrl,
       page_title: tab.title ?? "",
     })
   }
-  state.trackedTabUrls.set(tabId, url)
+  state.trackedTabUrls.set(tabId, safeUrl)
 
   // Proactively ask the content script in this tab to start capturing.
   // Complements the init-check in content.ts for cases where the service
@@ -224,7 +269,7 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     ...new Set(
       state.events
         .filter((e) => e.type === "page_visit" || e.type === "navigation")
-        .map((e) => e.page_url)
+        .map((e) => redactUrl(e.page_url))
         .filter(Boolean)
     ),
   ]

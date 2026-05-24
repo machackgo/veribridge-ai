@@ -13,6 +13,7 @@ import {
   getWorkflowAnalysis,
   analyzeExtensionProofGitHub,
   getExtensionProofGitHubAnalysis,
+  getWorkflowPrivacyScan,
   type ExtensionProofSessionResponse,
   type ExtensionProofSessionStatus,
   type LiveWebsiteCheckConfidence,
@@ -20,6 +21,8 @@ import {
   type WorkflowAnalysisResponse,
   type WorkflowConfidence,
   type ExtensionProofGitHubAnalysisResponse,
+  type WorkflowPrivacyScanResponse,
+  type WorkflowPrivacyScanStatus,
 } from "@/lib/api"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -1410,6 +1413,170 @@ function GitHubAnalysisCard({
   )
 }
 
+// ── Privacy Guard components ──────────────────────────────────────────────────
+
+const PRIVACY_SCAN_CONFIG: Record<
+  WorkflowPrivacyScanStatus,
+  { bg: string; color: string; border: string; icon: string; label: string }
+> = {
+  clean:    { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", icon: "🛡️", label: "Privacy scan: Clean" },
+  redacted: { bg: "#dbeafe", color: "#1d4ed8", border: "#bfdbfe", icon: "🔒", label: "Privacy scan: Redacted" },
+  flagged:  { bg: "#fef2f2", color: "#991b1b", border: "#fecaca", icon: "⚠️", label: "Privacy scan: Needs Review" },
+}
+
+function PrivacyScanBadge({
+  scan,
+  onReRecord,
+}: {
+  scan: WorkflowPrivacyScanResponse
+  onReRecord: () => void
+}) {
+  const cfg = PRIVACY_SCAN_CONFIG[scan.status] ?? PRIVACY_SCAN_CONFIG.clean
+
+  return (
+    <div style={{ border: `1px solid ${cfg.border}`, borderRadius: 12, overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{
+        background: cfg.bg,
+        borderBottom: `1px solid ${cfg.border}`,
+        padding: "10px 14px",
+        display: "flex", alignItems: "center", gap: 8,
+      }}>
+        <span style={{ fontSize: 14 }}>{cfg.icon}</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: cfg.color }}>{cfg.label}</span>
+      </div>
+
+      <div style={{ padding: "10px 14px", display: "grid", gap: 8, background: "#fff" }}>
+        {/* Summary */}
+        <p style={{ margin: 0, fontSize: 12, color: "#334155", lineHeight: 1.65 }}>
+          {scan.scan_summary}
+        </p>
+
+        {/* Redacted counts (for 'redacted' status) */}
+        {scan.status === "redacted" && (scan.redacted_fields_count > 0 || scan.redacted_urls_count > 0) && (
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {scan.redacted_fields_count > 0 && (
+              <span style={{ fontSize: 11, color: "#1d4ed8", background: "#eff6ff", padding: "2px 8px", borderRadius: 999, border: "1px solid #bfdbfe" }}>
+                {scan.redacted_fields_count} field(s) masked
+              </span>
+            )}
+            {scan.redacted_urls_count > 0 && (
+              <span style={{ fontSize: 11, color: "#1d4ed8", background: "#eff6ff", padding: "2px 8px", borderRadius: 999, border: "1px solid #bfdbfe" }}>
+                {scan.redacted_urls_count} URL param(s) redacted
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Flagged: risk details + actions */}
+        {scan.status === "flagged" && (
+          <>
+            {scan.risk_flags.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#9a3412", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+                  Detected Issues
+                </div>
+                <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 3 }}>
+                  {scan.risk_flags.map((f, i) => (
+                    <li key={i} style={{ fontSize: 11, color: "#991b1b", display: "flex", gap: 6 }}>
+                      <span style={{ flexShrink: 0 }}>•</span><span>{f}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "8px 12px" }}>
+              <p style={{ margin: 0, fontSize: 11, color: "#9a3412", lineHeight: 1.6 }}>
+                <strong>This proof is hidden from recruiter and public view</strong> until it is reviewed or re-recorded.
+                Re-record using demo or sample data. Avoid passwords, API keys, tokens, and personal information.
+              </p>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+              <button
+                type="button"
+                onClick={onReRecord}
+                style={{
+                  fontSize: 12, fontWeight: 600, padding: "7px 14px", borderRadius: 8,
+                  border: "1px solid transparent", background: "#dc2626", color: "#fff", cursor: "pointer",
+                }}
+              >
+                Re-record Proof
+              </button>
+              <button
+                type="button"
+                onClick={() => { /* TODO: mark-private API */ alert("Proof marked as private. It will not appear in recruiter view.") }}
+                style={{
+                  fontSize: 12, fontWeight: 600, padding: "7px 14px", borderRadius: 8,
+                  border: "1px solid #e2e8f0", background: "transparent", color: "#475569", cursor: "pointer",
+                }}
+              >
+                Keep Private
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Pre-recording privacy warning shown on the proof form.
+ * Includes a required acknowledgment checkbox.
+ */
+function PrivacyWarningBox({
+  acknowledged,
+  onToggle,
+}: {
+  acknowledged: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div style={{ border: "1px solid #fcd34d", borderRadius: 12, background: "#fffbeb", padding: "14px 16px", display: "grid", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+        <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>🛡️</span>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#92400e" }}>Privacy Guard — Read before recording</div>
+          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#78350f", lineHeight: 1.7 }}>
+            Before recording, avoid showing <strong>passwords, API keys, tokens, private dashboards, SSNs, payment info,
+            or any confidential data</strong>. Use demo accounts, sample data, or test environments whenever possible.
+          </p>
+          <p style={{ margin: "6px 0 0", fontSize: 11, color: "#92400e", lineHeight: 1.6 }}>
+            VeriBridge automatically masks common sensitive fields and URL parameters, but you should still
+            avoid navigating to pages that display real credentials or private personal information.
+            Recordings that contain sensitive data are <strong>hidden from recruiter view</strong> until reviewed.
+          </p>
+        </div>
+      </div>
+
+      <label
+        style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", userSelect: "none" }}
+        onClick={onToggle}
+      >
+        <div
+          style={{
+            width: 16, height: 16, borderRadius: 4, flexShrink: 0, marginTop: 1,
+            border: `2px solid ${acknowledged ? "#d97706" : "#d97706"}`,
+            background: acknowledged ? "#d97706" : "transparent",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >
+          {acknowledged && (
+            <svg viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="#fff" strokeWidth="2">
+              <polyline points="1.5,6 5,9.5 10.5,2.5" />
+            </svg>
+          )}
+        </div>
+        <span style={{ fontSize: 12, color: "#78350f", lineHeight: 1.5 }}>
+          I understand and will avoid showing sensitive information during this recording.
+        </span>
+      </label>
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ExtensionProofPanel({
@@ -1430,6 +1597,10 @@ export function ExtensionProofPanel({
   const [analyzing, setAnalyzing]       = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
   const [analyzeTimedOut, setAnalyzeTimedOut] = useState(false)
+
+  // Privacy Guard state
+  const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false)
+  const [privacyScan, setPrivacyScan] = useState<WorkflowPrivacyScanResponse | null>(null)
   const [simProgress, setSimProgress]   = useState(0)
   const [simStageIdx, setSimStageIdx]   = useState(-1)
   const analyzeTimeoutRef               = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1514,6 +1685,20 @@ export function ExtensionProofPanel({
       if (r) setGithubAnalysis(r)
     }).catch(() => undefined)
   }, [session?.id, session?.status, githubAnalysis, form.githubUrl])
+
+  // ── Auto-fetch privacy scan ───────────────────────────────────────────────
+  // Load the scan result once proof is uploaded (scan runs automatically on upload).
+  useEffect(() => {
+    if (!session) return
+    if (privacyScan) return
+    const uploadedOrLater: ExtensionProofSessionStatus[] = [
+      "uploaded_pending_analysis", "analyzing", "completed",
+    ]
+    if (!uploadedOrLater.includes(session.status)) return
+    void getWorkflowPrivacyScan(session.id).then((r) => {
+      if (r) setPrivacyScan(r)
+    }).catch(() => undefined)
+  }, [session?.id, session?.status, privacyScan])
 
   // ── Simulated progress for live check ────────────────────────────────────
   useEffect(() => {
@@ -1791,18 +1976,20 @@ export function ExtensionProofPanel({
 
     return (
       <div style={{ display: "grid", gap: 18 }}>
-        {/* Info + privacy banner */}
-        <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 10 }}>
+        {/* Info banner */}
+        <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px" }}>
           <p style={{ margin: 0, fontSize: 12, color: "#1e40af", lineHeight: 1.6 }}>
             Use the VeriBridge Chrome Extension to record a live walkthrough of your project
             website in your own browser. Works for deployed sites, private dashboards, and
             local development servers on <code style={{ fontSize: 11 }}>localhost</code>.
           </p>
-          <p style={{ margin: 0, fontSize: 11, color: "#3b82f6", lineHeight: 1.5, borderTop: "1px solid #bfdbfe", paddingTop: 10 }}>
-            <strong>Privacy:</strong> VeriBridge records project workflow evidence only. Do not show
-            personal data. Passwords and sensitive fields are masked by the extension and backend.
-          </p>
         </div>
+
+        {/* Privacy Guard warning + acknowledgment checkbox */}
+        <PrivacyWarningBox
+          acknowledged={privacyAcknowledged}
+          onToggle={() => setPrivacyAcknowledged((v) => !v)}
+        />
 
         {/* Local URL warning */}
         {showLocalWarning && (
@@ -1911,8 +2098,15 @@ export function ExtensionProofPanel({
           <button
             type="button"
             onClick={() => void handleCreate()}
-            disabled={creating}
-            style={{ border: "1px solid transparent", background: creating ? "var(--bg-2)" : "var(--ink)", color: creating ? "var(--muted)" : "#fff", borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: creating ? "not-allowed" : "pointer" }}
+            disabled={creating || !privacyAcknowledged}
+            title={!privacyAcknowledged ? "Please acknowledge the privacy warning above first." : undefined}
+            style={{
+              border: "1px solid transparent",
+              background: creating || !privacyAcknowledged ? "var(--bg-2)" : "var(--ink)",
+              color: creating || !privacyAcknowledged ? "var(--muted)" : "#fff",
+              borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14,
+              cursor: creating || !privacyAcknowledged ? "not-allowed" : "pointer",
+            }}
           >
             {creating
               ? "Creating session…"
@@ -1996,6 +2190,14 @@ export function ExtensionProofPanel({
           githubAnalysis={githubAnalysis}
           githubAnalyzing={githubAnalyzing}
         />
+
+        {/* Privacy scan badge — shown once proof is uploaded */}
+        {privacyScan && (
+          <PrivacyScanBadge
+            scan={privacyScan}
+            onReRecord={onBack}
+          />
+        )}
 
         {error && (
           <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>

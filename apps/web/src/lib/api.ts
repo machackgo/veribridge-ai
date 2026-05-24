@@ -896,6 +896,9 @@ export type ExtensionProofSessionResponse = {
   proof_upload_id: string | null
   created_at: string
   updated_at: string
+  // Privacy Guard fields — present in upload responses, absent in session-only responses
+  privacy_scan_status?: WorkflowPrivacyScanStatus | null
+  privacy_scan_summary?: string | null
 }
 
 export async function createExtensionProofSession(
@@ -1165,6 +1168,52 @@ export async function getLiveWebsiteCheck(
   )
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`Get live website check failed (HTTP ${res.status}).`)
+  return res.json()
+}
+
+// ── Workflow Privacy Scan ─────────────────────────────────────────────────────
+
+export type WorkflowPrivacyScanStatus = "clean" | "redacted" | "flagged"
+
+export type WorkflowPrivacyScanResponse = {
+  id: string | null
+  user_id: string
+  proof_session_id: string
+  status: WorkflowPrivacyScanStatus
+  risk_flags: string[]
+  redacted_fields_count: number
+  redacted_urls_count: number
+  contains_sensitive_data: boolean
+  scan_summary: string
+  created_at: string | null
+  updated_at: string | null
+}
+
+export async function runWorkflowPrivacyScan(
+  sessionId: string
+): Promise<WorkflowPrivacyScanResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/privacy-scan`,
+    { method: "POST" }
+  )
+  if (res.status === 404) throw new Error("Extension proof session not found.")
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Privacy scan failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json()
+}
+
+export async function getWorkflowPrivacyScan(
+  sessionId: string
+): Promise<WorkflowPrivacyScanResponse | null> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/privacy-scan`
+  )
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Get privacy scan failed (HTTP ${res.status}).`)
   return res.json()
 }
 

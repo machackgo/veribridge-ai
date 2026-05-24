@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -14,6 +15,8 @@ from app.schemas.extension_proof import (
     ExtensionProofUploadRequest,
     ExtensionProofUploadResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 _TABLE = "extension_proof_sessions"
 
@@ -119,6 +122,14 @@ class ExtensionProofSessionService:
             "tracked_urls": payload.tracked_urls,
             "external_tabs_opened": payload.external_tabs_opened,
         }
+
+        # ── Privacy scan (run before committing to DB) ─────────────────────
+        from app.services.workflow_privacy_scan_service import (  # local import avoids circular
+            WorkflowPrivacyScanService,
+            scan_proof_data,
+        )
+        scan_result = scan_proof_data(safe_data)
+
         row = self._apply_updates(
             row, user_id, session_id,
             {
@@ -128,7 +139,16 @@ class ExtensionProofSessionService:
                 "updated_at": _now(),
             },
         )
-        return _to_upload_response(row)
+
+        # Store scan result in dedicated table (non-critical — never fails the upload)
+        try:
+            WorkflowPrivacyScanService(self._client).store_scan(
+                user_id, session_id, scan_result
+            )
+        except Exception as exc:
+            logger.warning("Privacy scan store failed (non-critical): %s", exc)
+
+        return _to_upload_response(row, scan_result)
 
     # ── Complete ──────────────────────────────────────────────────────────────
 
@@ -225,7 +245,13 @@ def _to_response(row: dict[str, Any]) -> ExtensionProofSessionResponse:
     )
 
 
-def _to_upload_response(row: dict[str, Any]) -> ExtensionProofUploadResponse:
+def _to_upload_response(
+    row: dict[str, Any],
+    scan_result: "Any | None" = None,
+) -> ExtensionProofUploadResponse:
+    from app.services.workflow_privacy_scan_service import PrivacyScanResult
+    privacy_status = scan_result.status if isinstance(scan_result, PrivacyScanResult) else None
+    privacy_summary = scan_result.scan_summary if isinstance(scan_result, PrivacyScanResult) else None
     return ExtensionProofUploadResponse(
         id=str(row["id"]),
         user_id=str(row["user_id"]),
@@ -235,6 +261,8 @@ def _to_upload_response(row: dict[str, Any]) -> ExtensionProofUploadResponse:
         proof_upload_id=str(row["proof_upload_id"]),
         created_at=str(row.get("created_at") or ""),
         updated_at=str(row.get("updated_at") or ""),
+        privacy_scan_status=privacy_status,
+        privacy_scan_summary=privacy_summary,
     )
 
 

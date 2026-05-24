@@ -70,6 +70,9 @@ class ExtensionProofUploadResponse(BaseModel):
     proof_upload_id: str
     created_at: str
     updated_at: str
+    # Privacy Guard: scan result injected after upload (optional — no-op for old clients)
+    privacy_scan_status: str | None = None    # 'clean' | 'redacted' | 'flagged'
+    privacy_scan_summary: str | None = None
 
 
 class ExtensionProofCompleteResponse(ExtensionProofSessionResponse):
