@@ -761,6 +761,29 @@ export function ExtensionProofPanel({
           />
         )}
 
+        {/* Recorded workflow — shown once proof has been uploaded */}
+        {(["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status) && (
+          <div style={{ border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ background: "var(--bg-2)", borderBottom: "1px solid var(--line)", padding: "9px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                Recorded Workflow Pages
+              </span>
+            </div>
+            <div style={{ padding: "12px 14px", display: "grid", gap: 6 }}>
+              <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6 }}>
+                Your complete workflow was captured, including any new tabs opened from the original page during recording.
+                All visited pages, clicks, and navigation events are included in the uploaded proof.
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                <span style={{ fontSize: 11, color: "#16a34a", fontWeight: 600 }}>✓</span>
+                <span style={{ fontSize: 11, color: "var(--ink-2)" }}>
+                  {local ? "Local workflow pages recorded" : "Multi-tab workflow pages recorded"}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Expired */}
         {isExpired && (
           <div style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 12, padding: "14px 16px" }}>

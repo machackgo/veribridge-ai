@@ -1,5 +1,5 @@
 export interface WorkflowEvent {
-  type: "page_visit" | "click" | "input_change"
+  type: "page_visit" | "click" | "input_change" | "tab_opened" | "navigation"
   timestamp: string
   page_url: string
   page_title: string
@@ -36,4 +36,7 @@ export interface ExtensionState {
   // Session ID for which the upload-success bar was dismissed by the user.
   // When this equals sessionId, the floating bar stays hidden until a new recording.
   dismissedForSessionId: string
+  // Tab tracking — IDs of tabs currently being recorded in this session.
+  trackedTabIds: number[]
+  originalTabId: number | null
 }

@@ -5,7 +5,7 @@ const SENSITIVE_RE =
   /password|pass\b|token|secret|api_key|apikey|card|cvv|ssn|otp|2fa|mfa|authorization|bearer/i
 
 interface WorkflowEvent {
-  type: "page_visit" | "click" | "input_change"
+  type: "page_visit" | "click" | "input_change" | "tab_opened" | "navigation"
   timestamp: string
   page_url: string
   page_title: string

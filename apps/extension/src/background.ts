@@ -14,6 +14,10 @@ interface InternalState {
   statusMessage: string
   lastUploadError: string | null
   dismissedForSessionId: string
+  // Tab tracking — maintained across the lifetime of one recording session.
+  trackedTabIds: Set<number>
+  originalTabId: number | null
+  trackedTabUrls: Map<number, string>  // last known URL per tracked tab (for navigation detection)
 }
 
 const state: InternalState = {
@@ -28,6 +32,9 @@ const state: InternalState = {
   statusMessage: "Ready",
   lastUploadError: null,
   dismissedForSessionId: "",
+  trackedTabIds: new Set(),
+  originalTabId: null,
+  trackedTabUrls: new Map(),
 }
 
 async function broadcastToAllTabs(message: unknown): Promise<void> {
@@ -52,11 +59,13 @@ function publicState(): ExtensionState {
     statusMessage: state.statusMessage,
     lastUploadError: state.lastUploadError,
     dismissedForSessionId: state.dismissedForSessionId,
+    trackedTabIds: [...state.trackedTabIds],
+    originalTabId: state.originalTabId,
   }
 }
 
 chrome.runtime.onMessage.addListener(
-  (msg: { type: string; payload?: unknown }, _sender, sendResponse) => {
+  (msg: { type: string; payload?: unknown }, sender: chrome.runtime.MessageSender, sendResponse) => {
     switch (msg.type) {
       case "GET_STATE":
         sendResponse(publicState())
@@ -79,6 +88,12 @@ chrome.runtime.onMessage.addListener(
         state.statusMessage = "Recording…"
         state.lastUploadError = null
         state.dismissedForSessionId = ""  // new session clears any prior dismiss
+        // Reset tab tracking — seed with the original tab detected from the page URL.
+        state.trackedTabIds = new Set()
+        state.trackedTabUrls = new Map()
+        if (state.originalTabId !== null) {
+          state.trackedTabIds.add(state.originalTabId)
+        }
         void broadcastToAllTabs({ type: "START_CAPTURING" })
         sendResponse({ ok: true })
         break
@@ -116,6 +131,11 @@ chrome.runtime.onMessage.addListener(
           sendResponse({ ok: false, reason: "different session active" })
           break
         }
+        // Remember which tab holds the VeriBridge proof URL so we can seed
+        // trackedTabIds when recording starts.
+        if (sender.tab?.id !== undefined) {
+          state.originalTabId = sender.tab.id
+        }
         void chrome.storage.local.set({ currentSessionId: session_id })
         if (!state.isRecording) {
           state.sessionId = session_id
@@ -148,6 +168,48 @@ chrome.runtime.onMessage.addListener(
   }
 )
 
+// ── Tab tracking ──────────────────────────────────────────────────────────────
+// When a tab is opened from a tracked tab during recording, automatically add it
+// to the tracked set and tell its content script to start capturing once loaded.
+
+chrome.tabs.onCreated.addListener((tab) => {
+  if (!state.isRecording || tab.id === undefined) return
+  const opener = tab.openerTabId
+  if (opener !== undefined && state.trackedTabIds.has(opener)) {
+    state.trackedTabIds.add(tab.id)
+    state.events.push({
+      type: "tab_opened",
+      timestamp: new Date().toISOString(),
+      page_url: tab.url ?? tab.pendingUrl ?? "",
+      page_title: tab.title ?? "",
+    })
+  }
+})
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!state.isRecording || !state.trackedTabIds.has(tabId)) return
+  if (changeInfo.status !== "complete") return
+  const url = tab.url
+  if (!url || url.startsWith("chrome://") || url === "about:blank" || url === "about:newtab") return
+
+  // Record navigation when a tracked tab moves to a different URL.
+  const lastUrl = state.trackedTabUrls.get(tabId)
+  if (lastUrl !== undefined && lastUrl !== url) {
+    state.events.push({
+      type: "navigation",
+      timestamp: new Date().toISOString(),
+      page_url: url,
+      page_title: tab.title ?? "",
+    })
+  }
+  state.trackedTabUrls.set(tabId, url)
+
+  // Proactively ask the content script in this tab to start capturing.
+  // Complements the init-check in content.ts for cases where the service
+  // worker was idle when the tab first loaded.
+  chrome.tabs.sendMessage(tabId, { type: "START_CAPTURING" }).catch(() => undefined)
+})
+
 async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error?: string }> {
   if (!state.sessionId) {
     const err = "No session ID. Enter a session ID in the extension popup."
@@ -157,6 +219,15 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
   state.status = "uploading"
   state.statusMessage = "Uploading proof…"
   state.lastUploadError = null
+
+  const trackedUrls = [
+    ...new Set(
+      state.events
+        .filter((e) => e.type === "page_visit" || e.type === "navigation")
+        .map((e) => e.page_url)
+        .filter(Boolean)
+    ),
+  ]
 
   const payload = {
     workflow_events: state.events,
@@ -170,6 +241,10 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     started_at: state.startedAt,
     stopped_at: state.stoppedAt ?? new Date().toISOString(),
     student_final_note: finalNote ?? null,
+    // Multi-tab tracking metadata — stored in the proof upload for later review.
+    tracked_tab_count: state.trackedTabIds.size,
+    tracked_urls: trackedUrls,
+    external_tabs_opened: state.events.filter((e) => e.type === "tab_opened").length,
   }
 
   const headers: Record<string, string> = { "Content-Type": "application/json" }
