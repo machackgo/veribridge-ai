@@ -11,12 +11,15 @@ import {
   startExtensionProofSession,
   analyzeWorkflowEvidence,
   getWorkflowAnalysis,
+  analyzeExtensionProofGitHub,
+  getExtensionProofGitHubAnalysis,
   type ExtensionProofSessionResponse,
   type ExtensionProofSessionStatus,
   type LiveWebsiteCheckConfidence,
   type LiveWebsiteCheckResponse,
   type WorkflowAnalysisResponse,
   type WorkflowConfidence,
+  type ExtensionProofGitHubAnalysisResponse,
 } from "@/lib/api"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -81,6 +84,17 @@ const ANALYSIS_STAGES: Array<{ key: string; label: string; comingSoon?: boolean 
   { key: "db_insert",          label: "Saving results" },
   { key: "video_to_text",      label: "Video to text analysis", comingSoon: true },
   { key: "github_analysis",    label: "GitHub code analysis",   comingSoon: true },
+]
+
+const GITHUB_STAGES: Array<{ key: string; label: string }> = [
+  { key: "validating_url",      label: "Validating GitHub URL" },
+  { key: "fetching_metadata",   label: "Fetching repository metadata" },
+  { key: "reading_readme",      label: "Reading README and file tree" },
+  { key: "detecting_langs",     label: "Detecting languages and frameworks" },
+  { key: "matching_skills",     label: "Matching repo evidence to claimed skills" },
+  { key: "checking_missing",    label: "Checking missing evidence and risk flags" },
+  { key: "generating_summary",  label: "Generating recruiter-readable summary" },
+  { key: "saving_result",       label: "Saving result" },
 ]
 
 const inp: CSSProperties = {
@@ -285,11 +299,27 @@ function liveCheckStatus(
   return "failed"
 }
 
+function githubEvidenceStatus(
+  hasGithubUrl: boolean,
+  githubAnalysis: ExtensionProofGitHubAnalysisResponse | null,
+  githubAnalyzing: boolean,
+): EvidenceItemStatus {
+  if (!hasGithubUrl) return "pending"
+  if (githubAnalyzing) return "uploading"
+  if (!githubAnalysis) return "pending"
+  if (githubAnalysis.status === "success") return "complete"
+  if (githubAnalysis.status === "private_or_unavailable") return "failed"
+  return "failed"
+}
+
 function buildEvidenceItems(
   urlType: UrlType,
   analysis: WorkflowAnalysisResponse | null,
   liveCheck: LiveWebsiteCheckResponse | null,
   liveChecking: boolean,
+  hasGithubUrl: boolean,
+  githubAnalysis: ExtensionProofGitHubAnalysisResponse | null,
+  githubAnalyzing: boolean,
 ): Array<{
   key: string
   label: string
@@ -310,7 +340,7 @@ function buildEvidenceItems(
     {
       key: "github",
       label: "GitHub Evidence",
-      getStatus: () => "pending",
+      getStatus: () => githubEvidenceStatus(hasGithubUrl, githubAnalysis, githubAnalyzing),
     },
     {
       key: "live_check",
@@ -328,6 +358,8 @@ function buildEvidenceItems(
 function evidenceLabelOverride(key: string, s: EvidenceItemStatus): string {
   if (key === "workflow_analysis" && s === "complete") return "AI Reviewed"
   if (key === "workflow_analysis" && s === "uploading") return "In Progress"
+  if (key === "github" && s === "complete") return "AI Reviewed"
+  if (key === "github" && s === "uploading") return "Analyzing…"
   if (key === "live_check" && s === "uploading") return "Checking…"
   return evidenceLabel(s)
 }
@@ -338,14 +370,20 @@ function EvidenceChecklist({
   analysis,
   liveCheck,
   liveChecking,
+  hasGithubUrl,
+  githubAnalysis,
+  githubAnalyzing,
 }: {
   status: ExtensionProofSessionStatus
   urlType: UrlType
   analysis: WorkflowAnalysisResponse | null
   liveCheck: LiveWebsiteCheckResponse | null
   liveChecking: boolean
+  hasGithubUrl: boolean
+  githubAnalysis: ExtensionProofGitHubAnalysisResponse | null
+  githubAnalyzing: boolean
 }) {
-  const items = buildEvidenceItems(urlType, analysis, liveCheck, liveChecking)
+  const items = buildEvidenceItems(urlType, analysis, liveCheck, liveChecking, hasGithubUrl, githubAnalysis, githubAnalyzing)
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden" }}>
       <div style={{ background: "var(--bg-2)", borderBottom: "1px solid var(--line)", padding: "9px 14px" }}>
@@ -929,6 +967,295 @@ function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse
   )
 }
 
+// ── GitHub Analysis components ────────────────────────────────────────────────
+
+function GitHubAnalysisInProgress({
+  simProgress,
+  simStageIdx,
+}: {
+  simProgress: number
+  simStageIdx: number
+}) {
+  return (
+    <div style={{ border: "1px solid #d1d5db", borderRadius: 12, background: "#f9fafb", padding: "14px 16px", display: "grid", gap: 12 }}>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>GitHub Evidence Analysis in Progress</div>
+        <p style={{ margin: "4px 0 0", fontSize: 12, color: "#374151", lineHeight: 1.65 }}>
+          VeriBridge is analysing your GitHub repository. This usually takes 10–30 seconds.
+        </p>
+      </div>
+
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+          <span style={{ fontSize: 11, color: "#6b7280" }}>Analysis in progress</span>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "#111827" }}>{simProgress}%</span>
+        </div>
+        <div style={{ height: 6, background: "#e5e7eb", borderRadius: 999 }}>
+          <div
+            style={{
+              height: 6, borderRadius: 999, background: "#111827",
+              width: `${simProgress}%`, transition: "width 0.5s ease",
+            }}
+          />
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gap: 6 }}>
+        {GITHUB_STAGES.map((stage, i) => {
+          const isDone = i < simStageIdx
+          const isCurrent = i === simStageIdx
+          return (
+            <div key={stage.key} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <span style={{
+                fontSize: 12, fontWeight: 700,
+                color: isDone ? "#065f46" : isCurrent ? "#111827" : "#9ca3af",
+                width: 14, flexShrink: 0, textAlign: "center",
+              }}>
+                {isDone ? "✓" : isCurrent ? "…" : "○"}
+              </span>
+              <span style={{ fontSize: 12, color: isDone ? "#064e3b" : isCurrent ? "#111827" : "#9ca3af" }}>
+                {stage.label}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function confidenceScoreToLabel(score: number): { label: string; bg: string; color: string; border: string } {
+  if (score >= 0.7) return { label: "HIGH", bg: "#dcfce7", color: "#166534", border: "#bbf7d0" }
+  if (score >= 0.4) return { label: "MEDIUM", bg: "#fef9c3", color: "#854d0e", border: "#fef08a" }
+  if (score > 0) return { label: "LOW", bg: "#fef2f2", color: "#991b1b", border: "#fecaca" }
+  return { label: "INSUFFICIENT", bg: "#f1f5f9", color: "#475569", border: "#e2e8f0" }
+}
+
+function GitHubAnalysisCard({
+  analysis,
+  onRerun,
+}: {
+  analysis: ExtensionProofGitHubAnalysisResponse
+  onRerun: () => void
+}) {
+  const success = analysis.status === "success"
+  const unavailable = analysis.status === "private_or_unavailable"
+  const conf = confidenceScoreToLabel(analysis.confidence_score)
+  const confidencePct = Math.round(analysis.confidence_score * 100)
+
+  const headerBg    = success ? "#f9fafb" : "#fef2f2"
+  const headerBorder = success ? "#e5e7eb" : "#fecaca"
+  const headerTitle = success ? "#111827" : "#991b1b"
+  const headerSub   = success ? "#6b7280" : "#dc2626"
+
+  const FEATURE_LABELS: Record<string, string> = {
+    readme:           "README",
+    docker:           "Docker",
+    docker_compose:   "Docker Compose",
+    testing:          "Automated tests",
+    machine_learning: "Machine learning",
+    ai_llm:           "AI / LLM",
+    api_framework:    "API framework",
+    database:         "Database",
+    env_config:       "Env config",
+    deployment:       "Deployment config",
+    makefile:         "Makefile",
+  }
+
+  return (
+    <div style={{ border: `1px solid ${success ? "#e5e7eb" : "#fecaca"}`, borderRadius: 14, overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{
+        background: headerBg,
+        borderBottom: `1px solid ${headerBorder}`,
+        padding: "12px 16px",
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap",
+      }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: headerTitle }}>
+            GitHub Evidence Analysis — {success ? "AI Reviewed" : unavailable ? "Repository Unavailable" : "Failed"}
+          </div>
+          <div style={{ fontSize: 11, color: headerSub, marginTop: 2 }}>
+            {success ? "Repository analysed · evidence extracted" : unavailable ? "Repository is private or could not be reached" : "Analysis encountered an error"}
+          </div>
+        </div>
+        {success && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <span style={{ fontSize: 11, color: "#6b7280" }}>Confidence</span>
+              <span style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>
+                {confidencePct}<span style={{ fontSize: 10, fontWeight: 500 }}>%</span>
+              </span>
+            </div>
+            <span style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", padding: "3px 9px",
+              borderRadius: 999, background: conf.bg, color: conf.color, border: `1px solid ${conf.border}`,
+            }}>
+              {conf.label}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: "14px 16px", display: "grid", gap: 14 }}>
+        {/* Repo URL */}
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+          <span style={{ fontSize: 11, color: "var(--muted)", minWidth: 100, flexShrink: 0 }}>Repository</span>
+          <a
+            href={analysis.repo_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: 12, color: "#1d4ed8", wordBreak: "break-all", textDecoration: "none" }}
+          >
+            {analysis.repo_url} ↗
+          </a>
+        </div>
+
+        {/* Recruiter summary */}
+        {analysis.recruiter_summary && (
+          <div style={{
+            background: success ? "#f9fafb" : "#fef2f2",
+            border: `1px solid ${success ? "#e5e7eb" : "#fecaca"}`,
+            borderRadius: 10, padding: "10px 12px",
+          }}>
+            <p style={{ margin: 0, fontSize: 12, color: success ? "#374151" : "#991b1b", lineHeight: 1.7, fontStyle: "italic" }}>
+              {analysis.recruiter_summary}
+            </p>
+          </div>
+        )}
+
+        {/* Detected stack */}
+        {analysis.detected_stack.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              Detected Stack
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {analysis.detected_stack.map((tech) => (
+                <span key={tech} style={{
+                  fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
+                  background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe",
+                }}>
+                  {tech}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Detected features */}
+        {analysis.detected_features.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              Detected Features
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {analysis.detected_features.map((feat) => (
+                <span key={feat} style={{
+                  fontSize: 11, fontWeight: 500, padding: "3px 8px", borderRadius: 999,
+                  background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0",
+                }}>
+                  {FEATURE_LABELS[feat] ?? feat}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Evidence files */}
+        {analysis.evidence_files.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              Evidence Files Found
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {analysis.evidence_files.map((f) => (
+                <span key={f} style={{
+                  fontSize: 11, fontFamily: "monospace", padding: "3px 8px", borderRadius: 6,
+                  background: "#f8fafc", color: "#334155", border: "1px solid #e2e8f0",
+                }}>
+                  {f}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Skill matching */}
+        {(analysis.matched_claimed_skills.length > 0 || analysis.missing_claimed_skills.length > 0) && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              Skills Assessment
+            </div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {analysis.matched_claimed_skills.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: "#065f46", fontWeight: 600, marginBottom: 4 }}>Evidence supports</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {analysis.matched_claimed_skills.map((s) => (
+                      <span key={s} style={{
+                        fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
+                        background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0",
+                      }}>{s}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {analysis.missing_claimed_skills.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: "#991b1b", fontWeight: 600, marginBottom: 4 }}>No evidence found for</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {analysis.missing_claimed_skills.map((s) => (
+                      <span key={s} style={{
+                        fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
+                        background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca",
+                      }}>{s}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Warnings / risk flags */}
+        {analysis.warnings.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#9a3412", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+              Risk Flags
+            </div>
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 3 }}>
+              {analysis.warnings.map((w, i) => (
+                <li key={i} style={{ fontSize: 11, color: "#854d0e", display: "flex", gap: 6 }}>
+                  <span style={{ flexShrink: 0 }}>⚠</span><span>{w}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Footer note */}
+        <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <p style={{ margin: 0, fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
+            GitHub Evidence: AI Reviewed. Final verification remains pending until all evidence steps are complete.
+          </p>
+          <button
+            type="button"
+            onClick={onRerun}
+            style={{
+              fontSize: 11, fontWeight: 600, padding: "6px 14px", borderRadius: 8,
+              border: "1px solid var(--line-2)", background: "transparent",
+              color: "var(--ink-2)", cursor: "pointer", flexShrink: 0,
+            }}
+          >
+            Re-run Analysis
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ExtensionProofPanel({
@@ -952,6 +1279,14 @@ export function ExtensionProofPanel({
   const [simProgress, setSimProgress]   = useState(0)
   const [simStageIdx, setSimStageIdx]   = useState(-1)
   const analyzeTimeoutRef               = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // GitHub evidence analysis state
+  const [githubAnalysis, setGithubAnalysis]       = useState<ExtensionProofGitHubAnalysisResponse | null>(null)
+  const [githubAnalyzing, setGithubAnalyzing]     = useState(false)
+  const [githubAnalyzeError, setGithubAnalyzeError] = useState<string | null>(null)
+  const [githubSimProgress, setGithubSimProgress] = useState(0)
+  const [githubSimStageIdx, setGithubSimStageIdx] = useState(0)
+  const githubAnalyzeTimeoutRef                   = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Live website check state
   const [liveCheck, setLiveCheck]           = useState<LiveWebsiteCheckResponse | null>(null)
@@ -1011,6 +1346,21 @@ export function ExtensionProofPanel({
     }).catch(() => undefined)
   }, [session?.id, session?.status, liveCheck, urlType])
 
+  // ── Auto-fetch GitHub analysis ────────────────────────────────────────────
+  // When session has proof uploaded and a GitHub URL, load any persisted result.
+  useEffect(() => {
+    if (!session) return
+    if (!form.githubUrl.trim()) return
+    if (githubAnalysis) return
+    const uploadedOrLater: ExtensionProofSessionStatus[] = [
+      "uploaded_pending_analysis", "analyzing", "completed",
+    ]
+    if (!uploadedOrLater.includes(session.status)) return
+    void getExtensionProofGitHubAnalysis(session.id).then((r) => {
+      if (r) setGithubAnalysis(r)
+    }).catch(() => undefined)
+  }, [session?.id, session?.status, githubAnalysis, form.githubUrl])
+
   // ── Simulated progress for live check ────────────────────────────────────
   useEffect(() => {
     if (!liveChecking) {
@@ -1033,6 +1383,31 @@ export function ExtensionProofPanel({
     )
     return () => timers.forEach(clearTimeout)
   }, [liveChecking])
+
+  // ── Simulated progress for GitHub analysis ────────────────────────────────
+  useEffect(() => {
+    if (!githubAnalyzing) {
+      setGithubSimProgress(0)
+      setGithubSimStageIdx(0)
+      return
+    }
+    const schedule = [
+      { delay: 250,  stageIdx: 0, progress: 15 },
+      { delay: 800,  stageIdx: 1, progress: 30 },
+      { delay: 1600, stageIdx: 2, progress: 45 },
+      { delay: 2600, stageIdx: 3, progress: 60 },
+      { delay: 3700, stageIdx: 4, progress: 75 },
+      { delay: 5000, stageIdx: 5, progress: 85 },
+      { delay: 6500, stageIdx: 6, progress: 92 },
+    ]
+    const timers = schedule.map(({ delay, stageIdx, progress }) =>
+      setTimeout(() => {
+        setGithubSimStageIdx(stageIdx)
+        setGithubSimProgress(progress)
+      }, delay)
+    )
+    return () => timers.forEach(clearTimeout)
+  }, [githubAnalyzing])
 
   // ── Simulated progress during analysis ────────────────────────────────────
   useEffect(() => {
@@ -1131,6 +1506,43 @@ export function ExtensionProofPanel({
       setLiveCheckError(err instanceof Error ? err.message : "Live website check failed. Please try again.")
     } finally {
       if (!cancelled) setLiveChecking(false)
+    }
+  }
+
+  // ── Run GitHub evidence analysis ──────────────────────────────────────────
+
+  async function handleGitHubAnalysis() {
+    if (!session) return
+    const githubUrl = form.githubUrl.trim()
+    if (!githubUrl) return
+
+    setGithubAnalyzing(true)
+    setGithubAnalyzeError(null)
+    setGithubAnalysis(null)
+
+    let cancelled = false
+    const timeoutId = setTimeout(() => {
+      cancelled = true
+      setGithubAnalyzing(false)
+      setGithubAnalyzeError("GitHub analysis timed out after 90 seconds. Please retry.")
+      if (githubAnalyzeTimeoutRef.current === timeoutId) githubAnalyzeTimeoutRef.current = null
+    }, 90_000)
+    githubAnalyzeTimeoutRef.current = timeoutId
+
+    try {
+      const claimedSkills = form.skillName.trim() ? [form.skillName.trim()] : []
+      const result = await analyzeExtensionProofGitHub(session.id, githubUrl, claimedSkills)
+      if (cancelled) return
+      clearTimeout(timeoutId)
+      githubAnalyzeTimeoutRef.current = null
+      setGithubAnalysis(result)
+    } catch (err) {
+      if (cancelled) return
+      clearTimeout(timeoutId)
+      githubAnalyzeTimeoutRef.current = null
+      setGithubAnalyzeError(err instanceof Error ? err.message : "GitHub analysis failed. Please try again.")
+    } finally {
+      if (!cancelled) setGithubAnalyzing(false)
     }
   }
 
@@ -1416,6 +1828,9 @@ export function ExtensionProofPanel({
           analysis={workflowAnalysis}
           liveCheck={liveCheck}
           liveChecking={liveChecking}
+          hasGithubUrl={!!form.githubUrl.trim()}
+          githubAnalysis={githubAnalysis}
+          githubAnalyzing={githubAnalyzing}
         />
 
         {error && (
@@ -1580,6 +1995,76 @@ export function ExtensionProofPanel({
         {/* Live check result */}
         {liveCheck && (
           <LiveWebsiteCheckCard check={liveCheck} onRetry={() => void handleLiveCheck()} />
+        )}
+
+        {/* ── GitHub Evidence Analysis ────────────────────────────────── */}
+
+        {/* No GitHub URL provided */}
+        {!form.githubUrl.trim() && (["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status) && (
+          <div style={{ border: "1px solid #e2e8f0", borderRadius: 12, background: "#f8fafc", padding: "12px 14px", display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>GitHub Evidence: Not Provided</div>
+            <p style={{ margin: 0, fontSize: 11, color: "#64748b", lineHeight: 1.6 }}>
+              No GitHub URL was submitted with this proof session. Add a public GitHub repository to strengthen your evidence.
+            </p>
+          </div>
+        )}
+
+        {/* Run GitHub analysis button — shown when GitHub URL provided, proof uploaded, and not yet analyzed */}
+        {form.githubUrl.trim() && (["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status) && !githubAnalysis && !githubAnalyzing && (
+          <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, background: "#f9fafb", padding: "14px 16px", display: "grid", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>Run GitHub Evidence Analysis</div>
+              <p style={{ margin: "4px 0 0", fontSize: 12, color: "#374151", lineHeight: 1.65 }}>
+                VeriBridge will fetch your public repository, detect the tech stack, match claimed skills, and generate a recruiter-readable evidence report.
+              </p>
+              <p style={{ margin: "6px 0 0", fontSize: 11, color: "#6b7280" }}>
+                Repo: <span style={{ fontFamily: "monospace" }}>{form.githubUrl.trim()}</span>
+              </p>
+            </div>
+            <div>
+              <button
+                type="button"
+                onClick={() => void handleGitHubAnalysis()}
+                style={{
+                  border: "1px solid transparent", background: "#111827", color: "#fff",
+                  borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: "pointer",
+                }}
+              >
+                Run GitHub Evidence Analysis
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* GitHub analysis error */}
+        {githubAnalyzeError && !githubAnalysis && (
+          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 10, padding: "10px 14px", display: "grid", gap: 8 }}>
+            <div style={{ color: "#991b1b", fontSize: 12 }}>{githubAnalyzeError}</div>
+            {!githubAnalyzing && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => void handleGitHubAnalysis()}
+                  style={{
+                    border: "1px solid #dc2626", background: "transparent", color: "#991b1b",
+                    borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer",
+                  }}
+                >
+                  Retry GitHub Analysis
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* GitHub analysis in progress */}
+        {githubAnalyzing && (
+          <GitHubAnalysisInProgress simProgress={githubSimProgress} simStageIdx={githubSimStageIdx} />
+        )}
+
+        {/* GitHub analysis result */}
+        {githubAnalysis && !githubAnalyzing && (
+          <GitHubAnalysisCard analysis={githubAnalysis} onRerun={() => void handleGitHubAnalysis()} />
         )}
 
         {/* Expired */}
