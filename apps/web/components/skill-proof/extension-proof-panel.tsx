@@ -1,25 +1,12 @@
 "use client"
 
-/**
- * extension-proof-panel.tsx
- * Private Website Proof with VeriBridge Extension — Phase 1C
- *
- * Flow:
- *   form → creating → session_active (recording → uploaded → analyzing → complete)
- *
- * The panel manages all its own state. The parent only needs to supply
- * onBack and onSessionComplete callbacks.
- */
-
 import { useEffect, useState } from "react"
 import type { CSSProperties } from "react"
 import {
-  analyzeExtensionProofGitHub,
   createExtensionProofSession,
   createSkillEvidence,
   getExtensionProofSession,
   startExtensionProofSession,
-  type ExtensionProofGitHubAnalysisResponse,
   type ExtensionProofSessionResponse,
   type ExtensionProofSessionStatus,
 } from "@/lib/api"
@@ -64,6 +51,17 @@ function wordCount(s: string): number {
   return s.trim().match(/\S+/g)?.length ?? 0
 }
 
+function fmtTimestamp(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    })
+  } catch {
+    return iso
+  }
+}
+
 // ── Status badge ──────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<
@@ -73,9 +71,9 @@ const STATUS_CONFIG: Record<
   created:                   { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0", label: "CREATED" },
   waiting_for_extension:     { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "WAITING" },
   recording:                 { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "RECORDING" },
-  uploaded_pending_analysis: { bg: "#dbeafe", color: "#1d4ed8", border: "#bfdbfe", label: "UPLOADED" },
+  uploaded_pending_analysis: { bg: "#dbeafe", color: "#1d4ed8", border: "#bfdbfe", label: "WORKFLOW UPLOADED" },
   analyzing:                 { bg: "#ede9fe", color: "#5b21b6", border: "#ddd6fe", label: "ANALYZING" },
-  completed:                 { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "COMPLETE" },
+  completed:                 { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "FULLY VERIFIED" },
   expired:                   { bg: "#fef2f2", color: "#991b1b", border: "#fecaca", label: "EXPIRED" },
 }
 
@@ -107,7 +105,7 @@ const STEPPER_STEPS: Array<{ label: string; statuses: ExtensionProofSessionStatu
   { label: "Recording",       statuses: ["recording"] },
   { label: "Proof Uploaded",  statuses: ["uploaded_pending_analysis"] },
   { label: "Analyzing",       statuses: ["analyzing"] },
-  { label: "Complete",        statuses: ["completed"] },
+  { label: "Final Verified",  statuses: ["completed"] },
 ]
 
 function stepperIndex(status: ExtensionProofSessionStatus): number {
@@ -149,7 +147,6 @@ function SessionStepper({ status }: { status: ExtensionProofSessionStatus }) {
               key={step.label}
               style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}
             >
-              {/* Left arm + circle + right arm */}
               <div style={{ display: "flex", alignItems: "center", width: "100%" }}>
                 <div
                   style={{
@@ -189,7 +186,6 @@ function SessionStepper({ status }: { status: ExtensionProofSessionStatus }) {
                 />
               </div>
 
-              {/* Label */}
               <div
                 style={{
                   marginTop: 8,
@@ -211,14 +207,130 @@ function SessionStepper({ status }: { status: ExtensionProofSessionStatus }) {
   )
 }
 
+// ── Evidence checklist ────────────────────────────────────────────────────────
+
+type EvidenceItemStatus = "complete" | "uploading" | "pending" | "failed"
+
+function evidenceItemStyle(s: EvidenceItemStatus): CSSProperties {
+  if (s === "complete")  return { color: "#065f46", background: "#f0fdf4", border: "1px solid #d1fae5" }
+  if (s === "uploading") return { color: "#1d4ed8", background: "#eff6ff", border: "1px solid #bfdbfe" }
+  if (s === "failed")    return { color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca" }
+  return { color: "#64748b", background: "#f8fafc", border: "1px solid #e2e8f0" }
+}
+
+function evidenceIcon(s: EvidenceItemStatus): string {
+  if (s === "complete")  return "✓"
+  if (s === "uploading") return "↑"
+  if (s === "failed")    return "✗"
+  return "○"
+}
+
+function evidenceLabel(s: EvidenceItemStatus): string {
+  if (s === "complete")  return "Complete"
+  if (s === "uploading") return "Uploading"
+  if (s === "failed")    return "Failed"
+  return "Pending"
+}
+
+function workflowEvidenceStatus(status: ExtensionProofSessionStatus): EvidenceItemStatus {
+  if (status === "expired") return "failed"
+  if (["uploaded_pending_analysis", "analyzing", "completed"].includes(status)) return "complete"
+  return "pending"
+}
+
+const EVIDENCE_ITEMS: Array<{
+  key: string
+  label: string
+  getStatus: (s: ExtensionProofSessionStatus) => EvidenceItemStatus
+}> = [
+  {
+    key: "workflow",
+    label: "Website Workflow Evidence",
+    getStatus: workflowEvidenceStatus,
+  },
+  {
+    key: "github",
+    label: "GitHub Evidence",
+    getStatus: () => "pending",
+  },
+  {
+    key: "live_check",
+    label: "Live Website Check",
+    getStatus: () => "pending",
+  },
+  {
+    key: "final",
+    label: "Final Verification",
+    getStatus: () => "pending",
+  },
+]
+
+function EvidenceChecklist({ status }: { status: ExtensionProofSessionStatus }) {
+  return (
+    <div
+      style={{
+        border: "1px solid var(--line)",
+        borderRadius: 12,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          background: "var(--bg-2)",
+          borderBottom: "1px solid var(--line)",
+          padding: "9px 14px",
+        }}
+      >
+        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          Verification Checklist
+        </span>
+      </div>
+      <div style={{ padding: "10px 14px", display: "grid", gap: 7 }}>
+        {EVIDENCE_ITEMS.map((item) => {
+          const s = item.getStatus(status)
+          const style = evidenceItemStyle(s)
+          return (
+            <div
+              key={item.key}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                padding: "7px 10px",
+                borderRadius: 8,
+                ...style,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, lineHeight: 1 }}>
+                  {evidenceIcon(s)}
+                </span>
+                <span style={{ fontSize: 12, fontWeight: s === "complete" ? 600 : 400 }}>
+                  {item.label}
+                </span>
+              </div>
+              <span style={{ fontSize: 11, fontWeight: 600 }}>
+                {evidenceLabel(s)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ── Status-aware message card ─────────────────────────────────────────────────
 
 function StatusMessage({
   status,
   pollingActive,
+  session,
 }: {
   status: ExtensionProofSessionStatus
   pollingActive: boolean
+  session: ExtensionProofSessionResponse
 }) {
   if (status === "created" || status === "waiting_for_extension") {
     return (
@@ -296,17 +408,33 @@ function StatusMessage({
         }}
       >
         <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>
-          ✓ Proof uploaded successfully
+          ✓ Website workflow evidence uploaded
         </div>
         <p style={{ margin: 0, fontSize: 12, color: "#1e3a8a", lineHeight: 1.7 }}>
-          Your workflow proof has been received. Next, VeriBridge will analyze your recorded
-          workflow, GitHub repository, and website evidence.
+          Workflow proof uploaded. GitHub analysis and final verification are still pending.
         </p>
-        {pollingActive && (
-          <p style={{ margin: 0, fontSize: 11, color: "#2563eb" }}>
-            Waiting for analysis to begin…
-          </p>
-        )}
+        <div style={{ display: "grid", gap: 4, borderTop: "1px solid #bfdbfe", paddingTop: 8 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <span style={{ fontSize: 11, color: "#3b82f6", minWidth: 80, flexShrink: 0 }}>Session ID</span>
+            <span style={{ fontSize: 11, color: "#1e40af", fontFamily: "monospace", wordBreak: "break-all" }}>
+              {session.id}
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <span style={{ fontSize: 11, color: "#3b82f6", minWidth: 80, flexShrink: 0 }}>Uploaded at</span>
+            <span style={{ fontSize: 11, color: "#1e40af" }}>
+              {fmtTimestamp(session.updated_at)}
+            </span>
+          </div>
+          {session.proof_upload_id && (
+            <div style={{ display: "flex", gap: 8 }}>
+              <span style={{ fontSize: 11, color: "#3b82f6", minWidth: 80, flexShrink: 0 }}>Proof ID</span>
+              <span style={{ fontSize: 11, color: "#1e40af", fontFamily: "monospace", wordBreak: "break-all" }}>
+                {session.proof_upload_id}
+              </span>
+            </div>
+          )}
+        </div>
       </div>
     )
   }
@@ -327,7 +455,7 @@ function StatusMessage({
           Verification analysis in progress
         </div>
         <p style={{ margin: 0, fontSize: 12, color: "#4c1d95", lineHeight: 1.7 }}>
-          VeriBridge is comparing your GitHub repo, website, and workflow proof.
+          VeriBridge is reviewing your submitted evidence. Final verification is still pending.
         </p>
         {pollingActive && (
           <p style={{ margin: 0, fontSize: 11, color: "#7c3aed" }}>
@@ -351,181 +479,16 @@ function StatusMessage({
         }}
       >
         <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
-          ✓ Proof submitted — analysis complete
+          ✓ Website workflow evidence complete
         </div>
         <p style={{ margin: 0, fontSize: 12, color: "#064e3b", lineHeight: 1.5 }}>
-          Your proof walkthrough has been analyzed. Check your Skill Proof Center for the result.
+          Your proof walkthrough has been reviewed. Check your Skill Proof Center for the full verification result.
         </p>
       </div>
     )
   }
 
   return null
-}
-
-// ── GitHub Analysis result card ───────────────────────────────────────────────
-
-function GitHubAnalysisCard({
-  analysis,
-  onReanalyze,
-  reanalyzing,
-}: {
-  analysis: ExtensionProofGitHubAnalysisResponse
-  onReanalyze: () => void
-  reanalyzing: boolean
-}) {
-  const isSuccess = analysis.status === "success"
-  const isPrivate = analysis.status === "private_or_unavailable"
-  const confidencePct = Math.round(analysis.confidence_score * 100)
-
-  const headerBg    = isSuccess ? "#f0fdf4" : isPrivate ? "#fef9c3" : "#fef2f2"
-  const headerBorder= isSuccess ? "#d1fae5" : isPrivate ? "#fde68a" : "#fecaca"
-  const headerColor = isSuccess ? "#065f46" : isPrivate ? "#78350f" : "#991b1b"
-  const headerLabel = isSuccess ? "✓ Analysis complete" : isPrivate ? "⚠ Repo unavailable" : "✗ Analysis failed"
-
-  return (
-    <div
-      style={{
-        border: "1px solid var(--line)",
-        borderRadius: 12,
-        background: "#fff",
-        overflow: "hidden",
-      }}
-    >
-      {/* Header */}
-      <div
-        style={{
-          background: headerBg,
-          borderBottom: `1px solid ${headerBorder}`,
-          padding: "12px 16px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-        }}
-      >
-        <span style={{ fontSize: 13, fontWeight: 700, color: headerColor }}>
-          {headerLabel}
-        </span>
-        <button
-          type="button"
-          onClick={onReanalyze}
-          disabled={reanalyzing}
-          style={{
-            border: "1px solid var(--line-2)",
-            background: "transparent",
-            color: "var(--ink-2)",
-            borderRadius: 8,
-            padding: "4px 10px",
-            fontSize: 11,
-            fontWeight: 600,
-            cursor: reanalyzing ? "not-allowed" : "pointer",
-            opacity: reanalyzing ? 0.5 : 1,
-          }}
-        >
-          {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
-        </button>
-      </div>
-
-      <div style={{ padding: "14px 16px", display: "grid", gap: 14 }}>
-        {/* Confidence */}
-        {isSuccess && (
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                Confidence
-              </span>
-              <span style={{ fontSize: 13, fontWeight: 700, color: confidencePct >= 60 ? "#065f46" : confidencePct >= 35 ? "#92400e" : "#991b1b" }}>
-                {confidencePct}%
-              </span>
-            </div>
-            <div style={{ height: 6, background: "#f1f5f9", borderRadius: 999, overflow: "hidden" }}>
-              <div
-                style={{
-                  height: "100%",
-                  width: `${confidencePct}%`,
-                  background: confidencePct >= 60 ? "#16a34a" : confidencePct >= 35 ? "#d97706" : "#dc2626",
-                  borderRadius: 999,
-                  transition: "width 0.4s ease",
-                }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Detected stack */}
-        {analysis.detected_stack.length > 0 && (
-          <div style={{ display: "grid", gap: 6 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-              Detected Stack
-            </span>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-              {analysis.detected_stack.map((tech) => (
-                <span
-                  key={tech}
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    padding: "3px 9px",
-                    borderRadius: 999,
-                    background: "#f1f5f9",
-                    color: "#334155",
-                    border: "1px solid #e2e8f0",
-                  }}
-                >
-                  {tech}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Skill match */}
-        {(analysis.matched_claimed_skills.length > 0 || analysis.missing_claimed_skills.length > 0) && (
-          <div style={{ display: "grid", gap: 6 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-              Skill Match
-            </span>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-              {analysis.matched_claimed_skills.map((s) => (
-                <span key={s} style={{ fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 999, background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" }}>
-                  ✓ {s}
-                </span>
-              ))}
-              {analysis.missing_claimed_skills.map((s) => (
-                <span key={s} style={{ fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 999, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
-                  ✗ {s}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Recruiter summary */}
-        {analysis.recruiter_summary && (
-          <div style={{ display: "grid", gap: 6 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-              Recruiter Summary
-            </span>
-            <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.65 }}>
-              {analysis.recruiter_summary}
-            </p>
-          </div>
-        )}
-
-        {/* Warnings */}
-        {analysis.warnings.length > 0 && (
-          <div style={{ display: "grid", gap: 4 }}>
-            {analysis.warnings.map((w, i) => (
-              <p key={i} style={{ margin: 0, fontSize: 11, color: "#92400e", lineHeight: 1.55 }}>
-                ⚠ {w}
-              </p>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -537,16 +500,13 @@ export function ExtensionProofPanel({
   onBack: () => void
   onSessionComplete?: () => void
 }) {
-  const [step, setStep]               = useState<PanelStep>("form")
-  const [form, setForm]               = useState<FormState>({ websiteUrl: "", githubUrl: "", skillName: "", proofObjective: "" })
-  const [session, setSession]         = useState<ExtensionProofSessionResponse | null>(null)
-  const [error, setError]             = useState<string | null>(null)
-  const [creating, setCreating]       = useState(false)
-  const [starting, setStarting]       = useState(false)
-  const [pollingActive, setPoll]      = useState(false)
-  const [githubAnalysis, setGithubAnalysis] = useState<ExtensionProofGitHubAnalysisResponse | null>(null)
-  const [analyzingGitHub, setAnalyzingGitHub] = useState(false)
-  const [githubAnalysisError, setGithubAnalysisError] = useState<string | null>(null)
+  const [step, setStep]           = useState<PanelStep>("form")
+  const [form, setForm]           = useState<FormState>({ websiteUrl: "", githubUrl: "", skillName: "", proofObjective: "" })
+  const [session, setSession]     = useState<ExtensionProofSessionResponse | null>(null)
+  const [error, setError]         = useState<string | null>(null)
+  const [creating, setCreating]   = useState(false)
+  const [starting, setStarting]   = useState(false)
+  const [pollingActive, setPoll]  = useState(false)
 
   // ── Polling ───────────────────────────────────────────────────────────────
 
@@ -591,7 +551,6 @@ export function ExtensionProofPanel({
 
     setCreating(true)
     try {
-      // Create a skill evidence record as the anchor for this session
       const evidence = await createSkillEvidence({
         skill_name:           form.skillName.trim(),
         evidence_type:        "private website (extension proof)",
@@ -623,16 +582,12 @@ export function ExtensionProofPanel({
       const updated = await startExtensionProofSession(session.id)
       setSession(updated)
 
-      // Open the website in a new tab with session ID injected as a query param.
-      // URL.searchParams.set preserves all existing params and adds/overwrites only ours.
       const targetUrl = form.websiteUrl.trim()
       try {
         const url = new URL(targetUrl)
         url.searchParams.set("veribridge_session_id", session.id)
         window.open(url.toString(), "_blank", "noopener,noreferrer")
       } catch {
-        // Fallback: URL couldn't be parsed (shouldn't happen after isHttpUrl validation),
-        // append the param manually so session detection still works.
         const sep = targetUrl.includes("?") ? "&" : "?"
         window.open(
           `${targetUrl}${sep}veribridge_session_id=${encodeURIComponent(session.id)}`,
@@ -646,25 +601,6 @@ export function ExtensionProofPanel({
       setError(err instanceof Error ? err.message : "Failed to start proof session.")
     } finally {
       setStarting(false)
-    }
-  }
-
-  // ── Analyze GitHub ────────────────────────────────────────────────────────
-
-  async function handleAnalyzeGitHub() {
-    if (!session || !form.githubUrl.trim()) return
-    setAnalyzingGitHub(true)
-    setGithubAnalysisError(null)
-    try {
-      const claimedSkills = form.skillName.trim()
-        ? form.skillName.split(",").map((s) => s.trim()).filter(Boolean)
-        : []
-      const result = await analyzeExtensionProofGitHub(session.id, form.githubUrl.trim(), claimedSkills)
-      setGithubAnalysis(result)
-    } catch (err) {
-      setGithubAnalysisError(err instanceof Error ? err.message : "GitHub analysis failed.")
-    } finally {
-      setAnalyzingGitHub(false)
     }
   }
 
@@ -848,6 +784,18 @@ export function ExtensionProofPanel({
 
     return (
       <div style={{ display: "grid", gap: 18 }}>
+        {/* Section title */}
+        <div style={{ display: "grid", gap: 4 }}>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>
+            Website Workflow Evidence
+          </h3>
+          <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6 }}>
+            This evidence shows a recorded workflow of the submitted website or application. It
+            verifies that the app was demonstrated, but it is not the final skill verification
+            by itself.
+          </p>
+        </div>
+
         {/* Session card */}
         <div
           style={{
@@ -868,7 +816,7 @@ export function ExtensionProofPanel({
             }}
           >
             <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>
-              Extension Proof Session
+              Website Workflow Evidence Session
             </span>
             <StatusBadge status={session.status} />
           </div>
@@ -904,6 +852,9 @@ export function ExtensionProofPanel({
         {/* Session stepper */}
         <SessionStepper status={session.status} />
 
+        {/* Evidence checklist */}
+        <EvidenceChecklist status={session.status} />
+
         {error && (
           <div
             role="alert"
@@ -922,49 +873,7 @@ export function ExtensionProofPanel({
 
         {/* Status-aware message card */}
         {!isExpired && (
-          <StatusMessage status={session.status} pollingActive={pollingActive} />
-        )}
-
-        {/* GitHub Analysis */}
-        {form.githubUrl && (["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status) && (
-          <div style={{ display: "grid", gap: 10 }}>
-            {!githubAnalysis && (
-              <button
-                type="button"
-                onClick={() => void handleAnalyzeGitHub()}
-                disabled={analyzingGitHub}
-                style={{
-                  border: "1px solid #1d4ed8",
-                  background: analyzingGitHub ? "#eff6ff" : "#1d4ed8",
-                  color: analyzingGitHub ? "#1d4ed8" : "#fff",
-                  borderRadius: 10,
-                  padding: "9px 16px",
-                  fontWeight: 600,
-                  fontSize: 13,
-                  cursor: analyzingGitHub ? "not-allowed" : "pointer",
-                  width: "100%",
-                }}
-              >
-                {analyzingGitHub ? "Analyzing GitHub repo…" : "⬡ Analyze GitHub Evidence"}
-              </button>
-            )}
-            {githubAnalysisError && (
-              <div
-                role="alert"
-                style={{
-                  border: "1px solid #fecaca",
-                  background: "#fef2f2",
-                  color: "#991b1b",
-                  borderRadius: 10,
-                  padding: "8px 12px",
-                  fontSize: 12,
-                }}
-              >
-                {githubAnalysisError}
-              </div>
-            )}
-            {githubAnalysis && <GitHubAnalysisCard analysis={githubAnalysis} onReanalyze={() => void handleAnalyzeGitHub()} reanalyzing={analyzingGitHub} />}
-          </div>
+          <StatusMessage status={session.status} pollingActive={pollingActive} session={session} />
         )}
 
         {/* Expired */}
