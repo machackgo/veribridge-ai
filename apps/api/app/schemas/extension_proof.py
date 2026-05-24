@@ -55,6 +55,10 @@ class ExtensionProofUploadRequest(BaseModel):
     started_at: str | None = None
     stopped_at: str | None = None
     student_final_note: str | None = Field(default=None, max_length=2000)
+    # Multi-tab tracking metadata from the extension background service worker
+    tracked_tab_count: int | None = None
+    tracked_urls: list[str] | None = None
+    external_tabs_opened: int | None = None
 
 
 class ExtensionProofUploadResponse(BaseModel):

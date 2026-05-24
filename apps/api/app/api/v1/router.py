@@ -5,6 +5,7 @@ from app.api.v1.endpoints import (
     evidence_access_links,
     extension_proof,
     extension_proof_github_analysis,
+    extension_proof_workflow_analysis,
     github_portfolio,
     github_recruiter_proof_reports,
     github_semantic_verification_results,
@@ -86,6 +87,11 @@ api_router.include_router(
     extension_proof_github_analysis.router,
     prefix="/student/extension-proof/sessions",
     tags=["extension-proof-github-analysis"],
+)
+api_router.include_router(
+    extension_proof_workflow_analysis.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["extension-proof-workflow-analysis"],
 )
 api_router.include_router(
     website_proof_sessions.router,

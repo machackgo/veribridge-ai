@@ -1,14 +1,18 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import React, { useEffect, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   createExtensionProofSession,
   createSkillEvidence,
   getExtensionProofSession,
   startExtensionProofSession,
+  analyzeWorkflowEvidence,
+  getWorkflowAnalysis,
   type ExtensionProofSessionResponse,
   type ExtensionProofSessionStatus,
+  type WorkflowAnalysisResponse,
+  type WorkflowConfidence,
 } from "@/lib/api"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -123,11 +127,11 @@ function StatusBadge({ status }: { status: ExtensionProofSessionStatus }) {
 // ── Session stepper ───────────────────────────────────────────────────────────
 
 const STEPPER_STEPS: Array<{ label: string; statuses: ExtensionProofSessionStatus[] }> = [
-  { label: "Session Created", statuses: ["created", "waiting_for_extension"] },
-  { label: "Recording",       statuses: ["recording"] },
-  { label: "Proof Uploaded",  statuses: ["uploaded_pending_analysis"] },
-  { label: "Analyzing",       statuses: ["analyzing"] },
-  { label: "Final Verified",  statuses: ["completed"] },
+  { label: "Session Created",       statuses: ["created", "waiting_for_extension"] },
+  { label: "Recording",             statuses: ["recording"] },
+  { label: "Proof Uploaded",        statuses: ["uploaded_pending_analysis"] },
+  { label: "Analyzing",             statuses: ["analyzing"] },
+  { label: "Final Verification",    statuses: ["completed"] },
 ]
 
 function stepperIndex(status: ExtensionProofSessionStatus): number {
@@ -238,7 +242,19 @@ function workflowEvidenceStatus(status: ExtensionProofSessionStatus): EvidenceIt
   return "pending"
 }
 
-function buildEvidenceItems(urlType: UrlType): Array<{
+function workflowAnalysisStatus(
+  sessionStatus: ExtensionProofSessionStatus,
+  analysis: WorkflowAnalysisResponse | null,
+): EvidenceItemStatus {
+  if (analysis) return "complete"
+  if (sessionStatus === "analyzing") return "uploading"
+  return "pending"
+}
+
+function buildEvidenceItems(
+  urlType: UrlType,
+  analysis: WorkflowAnalysisResponse | null,
+): Array<{
   key: string
   label: string
   getStatus: (s: ExtensionProofSessionStatus) => EvidenceItemStatus
@@ -249,6 +265,11 @@ function buildEvidenceItems(urlType: UrlType): Array<{
       key: "workflow",
       label: local ? "Local Workflow Evidence" : "Website Workflow Evidence",
       getStatus: workflowEvidenceStatus,
+    },
+    {
+      key: "workflow_analysis",
+      label: "Workflow Analysis",
+      getStatus: (s) => workflowAnalysisStatus(s, analysis),
     },
     {
       key: "github",
@@ -268,14 +289,22 @@ function buildEvidenceItems(urlType: UrlType): Array<{
   ]
 }
 
+function evidenceLabelOverride(key: string, s: EvidenceItemStatus): string {
+  if (key === "workflow_analysis" && s === "complete") return "AI Reviewed"
+  if (key === "workflow_analysis" && s === "uploading") return "In Progress"
+  return evidenceLabel(s)
+}
+
 function EvidenceChecklist({
   status,
   urlType,
+  analysis,
 }: {
   status: ExtensionProofSessionStatus
   urlType: UrlType
+  analysis: WorkflowAnalysisResponse | null
 }) {
-  const items = buildEvidenceItems(urlType)
+  const items = buildEvidenceItems(urlType, analysis)
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden" }}>
       <div style={{ background: "var(--bg-2)", borderBottom: "1px solid var(--line)", padding: "9px 14px" }}>
@@ -301,7 +330,9 @@ function EvidenceChecklist({
                   {item.label}
                 </span>
               </div>
-              <span style={{ fontSize: 11, fontWeight: 600 }}>{evidenceLabel(s)}</span>
+              <span style={{ fontSize: 11, fontWeight: 600 }}>
+                {evidenceLabelOverride(item.key, s)}
+              </span>
             </div>
           )
         })}
@@ -423,6 +454,198 @@ function StatusMessage({
   return null
 }
 
+// ── Workflow Analysis Card ────────────────────────────────────────────────────
+
+const CONFIDENCE_CONFIG: Record<WorkflowConfidence, { bg: string; color: string; border: string; label: string }> = {
+  high:         { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "HIGH" },
+  medium:       { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "MEDIUM" },
+  low:          { bg: "#fef2f2", color: "#991b1b", border: "#fecaca", label: "LOW" },
+  insufficient: { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0", label: "INSUFFICIENT" },
+}
+
+function AnalysisSection({
+  title,
+  children,
+}: {
+  title: string
+  children: React.ReactNode
+}) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function SkillPill({ label, variant }: { label: string; variant: "supported" | "weak" | "unsupported" }) {
+  const styles = {
+    supported:   { bg: "#dcfce7", color: "#166534", border: "#bbf7d0" },
+    weak:        { bg: "#fef9c3", color: "#854d0e", border: "#fef08a" },
+    unsupported: { bg: "#fef2f2", color: "#991b1b", border: "#fecaca" },
+  }[variant]
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
+      background: styles.bg, color: styles.color, border: `1px solid ${styles.border}`,
+    }}>
+      {label}
+    </span>
+  )
+}
+
+function BulletList({ items, color = "var(--ink-2)" }: { items: string[]; color?: string }) {
+  if (!items.length) return <span style={{ fontSize: 12, color: "var(--muted)" }}>None</span>
+  return (
+    <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4 }}>
+      {items.map((item, i) => (
+        <li key={i} style={{ display: "flex", gap: 7, alignItems: "flex-start", fontSize: 12, color, lineHeight: 1.55 }}>
+          <span style={{ flexShrink: 0, marginTop: 2, color: "var(--muted)" }}>•</span>
+          <span>{item}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse }) {
+  const conf = CONFIDENCE_CONFIG[analysis.workflow_confidence] ?? CONFIDENCE_CONFIG.insufficient
+  const analysisTypeLabel =
+    analysis.analysis_type === "timeline_only" ? "Workflow Timeline Analysis"
+    : analysis.analysis_type === "video_frame_analysis" ? "Video Frame Analysis"
+    : "Full Multimodal Analysis"
+
+  return (
+    <div style={{ border: "1px solid #bfdbfe", borderRadius: 14, overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{ background: "#eff6ff", borderBottom: "1px solid #bfdbfe", padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>Workflow Evidence Analysis</div>
+          <div style={{ fontSize: 11, color: "#3b82f6", marginTop: 2 }}>AI Reviewed · {analysisTypeLabel}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {/* Evidence strength score */}
+          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ fontSize: 11, color: "#3b82f6" }}>Evidence Strength</span>
+            <span style={{ fontSize: 14, fontWeight: 800, color: "#1e40af" }}>
+              {analysis.evidence_strength_score}<span style={{ fontSize: 10, fontWeight: 500 }}>/100</span>
+            </span>
+          </div>
+          {/* Confidence badge */}
+          <span style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", padding: "3px 9px",
+            borderRadius: 999, background: conf.bg, color: conf.color, border: `1px solid ${conf.border}`,
+          }}>
+            {conf.label} CONFIDENCE
+          </span>
+        </div>
+      </div>
+
+      <div style={{ padding: "16px 16px", display: "grid", gap: 16 }}>
+        {/* Summary */}
+        <AnalysisSection title="Summary">
+          <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.7 }}>
+            {analysis.workflow_summary}
+          </p>
+        </AnalysisSection>
+
+        {/* Skills */}
+        <AnalysisSection title="Skills Assessment">
+          <div style={{ display: "grid", gap: 8 }}>
+            {(analysis.supported_skills.length > 0 || analysis.weakly_supported_skills.length > 0 || analysis.unsupported_skills.length > 0) ? (
+              <>
+                {analysis.supported_skills.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "#065f46", fontWeight: 600, marginBottom: 4 }}>Evidence supports</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                      {analysis.supported_skills.map((s) => <SkillPill key={s} label={s} variant="supported" />)}
+                    </div>
+                  </div>
+                )}
+                {analysis.weakly_supported_skills.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "#854d0e", fontWeight: 600, marginBottom: 4 }}>Partially supported</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                      {analysis.weakly_supported_skills.map((s) => <SkillPill key={s} label={s} variant="weak" />)}
+                    </div>
+                  </div>
+                )}
+                {analysis.unsupported_skills.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "#991b1b", fontWeight: 600, marginBottom: 4 }}>No observable evidence</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                      {analysis.unsupported_skills.map((s) => <SkillPill key={s} label={s} variant="unsupported" />)}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>No skills were claimed for this session</span>
+            )}
+          </div>
+        </AnalysisSection>
+
+        {/* Demonstrated actions */}
+        {analysis.demonstrated_actions.length > 0 && (
+          <AnalysisSection title="Demonstrated Workflow">
+            <BulletList items={analysis.demonstrated_actions} />
+          </AnalysisSection>
+        )}
+
+        {/* Recruiter summary */}
+        <AnalysisSection title="Recruiter Summary">
+          <div style={{ background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px" }}>
+            <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.7, fontStyle: "italic" }}>
+              {analysis.recruiter_summary}
+            </p>
+          </div>
+        </AnalysisSection>
+
+        {/* Missing evidence and risk flags */}
+        {(analysis.missing_evidence.length > 0 || analysis.risk_flags.length > 0) && (
+          <div style={{ display: "grid", gap: 12, gridTemplateColumns: analysis.missing_evidence.length > 0 && analysis.risk_flags.length > 0 ? "1fr 1fr" : "1fr" }}>
+            {analysis.missing_evidence.length > 0 && (
+              <AnalysisSection title="Missing Evidence">
+                <BulletList items={analysis.missing_evidence} color="#854d0e" />
+              </AnalysisSection>
+            )}
+            {analysis.risk_flags.length > 0 && (
+              <AnalysisSection title="Risk Flags">
+                <BulletList items={analysis.risk_flags} color="#991b1b" />
+              </AnalysisSection>
+            )}
+          </div>
+        )}
+
+        {/* Improvement suggestions */}
+        {analysis.student_improvement_suggestions.length > 0 && (
+          <AnalysisSection title="Suggestions to Strengthen Your Proof">
+            <BulletList items={analysis.student_improvement_suggestions} color="#1e40af" />
+          </AnalysisSection>
+        )}
+
+        {/* Human review needed */}
+        {analysis.human_review_needed && (
+          <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#9a3412" }}>
+            Human review recommended — confidence is low. A VeriBridge reviewer may follow up.
+          </div>
+        )}
+
+        {/* Footer note */}
+        <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+          <p style={{ margin: 0, fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
+            This is a Workflow Timeline Analysis based on recorded browser events. Visual video
+            analysis is not yet available. Final verification remains pending until GitHub
+            evidence, live website check (if applicable), and all other evidence steps are complete.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ExtensionProofPanel({
@@ -432,13 +655,16 @@ export function ExtensionProofPanel({
   onBack: () => void
   onSessionComplete?: () => void
 }) {
-  const [step, setStep]           = useState<PanelStep>("form")
-  const [form, setForm]           = useState<FormState>({ websiteUrl: "", githubUrl: "", skillName: "", proofObjective: "" })
-  const [session, setSession]     = useState<ExtensionProofSessionResponse | null>(null)
-  const [error, setError]         = useState<string | null>(null)
-  const [creating, setCreating]   = useState(false)
-  const [starting, setStarting]   = useState(false)
-  const [pollingActive, setPoll]  = useState(false)
+  const [step, setStep]                 = useState<PanelStep>("form")
+  const [form, setForm]                 = useState<FormState>({ websiteUrl: "", githubUrl: "", skillName: "", proofObjective: "" })
+  const [session, setSession]           = useState<ExtensionProofSessionResponse | null>(null)
+  const [error, setError]               = useState<string | null>(null)
+  const [creating, setCreating]         = useState(false)
+  const [starting, setStarting]         = useState(false)
+  const [pollingActive, setPoll]        = useState(false)
+  const [workflowAnalysis, setWorkflowAnalysis] = useState<WorkflowAnalysisResponse | null>(null)
+  const [analyzing, setAnalyzing]       = useState(false)
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null)
 
   // Derived from form.websiteUrl — available in both form and session_active steps.
   const urlType = classifyUrl(form.websiteUrl)
@@ -466,6 +692,42 @@ export function ExtensionProofPanel({
     }, 3000)
     return () => clearTimeout(t)
   }, [pollingActive, session, onSessionComplete])
+
+  // ── Auto-fetch workflow analysis ──────────────────────────────────────────
+  // When the session is in analyzing/completed, try to load an existing result.
+  useEffect(() => {
+    if (!session) return
+    if (!["analyzing", "completed"].includes(session.status)) return
+    if (workflowAnalysis) return
+    void getWorkflowAnalysis(session.id).then((r) => {
+      if (r) setWorkflowAnalysis(r)
+    }).catch(() => undefined)
+  }, [session?.id, session?.status, workflowAnalysis])
+
+  // ── Analyze workflow ──────────────────────────────────────────────────────
+
+  async function handleAnalyze() {
+    if (!session) return
+    setAnalyzing(true)
+    setAnalyzeError(null)
+    try {
+      const result = await analyzeWorkflowEvidence(session.id, {
+        claimed_skills: form.skillName.trim() ? [form.skillName.trim()] : [],
+        proof_objective: form.proofObjective.trim(),
+        original_url: form.websiteUrl.trim(),
+        url_type: urlType,
+        github_url: form.githubUrl.trim() || null,
+      })
+      setWorkflowAnalysis(result)
+      // Refresh session — status may have moved to 'analyzing'
+      const updated = await getExtensionProofSession(session.id)
+      setSession(updated)
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : "Analysis failed. Please try again.")
+    } finally {
+      setAnalyzing(false)
+    }
+  }
 
   // ── Create session ────────────────────────────────────────────────────────
 
@@ -743,7 +1005,7 @@ export function ExtensionProofPanel({
         <SessionStepper status={session.status} />
 
         {/* Evidence checklist */}
-        <EvidenceChecklist status={session.status} urlType={urlType} />
+        <EvidenceChecklist status={session.status} urlType={urlType} analysis={workflowAnalysis} />
 
         {error && (
           <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
@@ -761,28 +1023,54 @@ export function ExtensionProofPanel({
           />
         )}
 
-        {/* Recorded workflow — shown once proof has been uploaded */}
-        {(["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status) && (
-          <div style={{ border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden" }}>
-            <div style={{ background: "var(--bg-2)", borderBottom: "1px solid var(--line)", padding: "9px 14px", display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                Recorded Workflow Pages
-              </span>
-            </div>
-            <div style={{ padding: "12px 14px", display: "grid", gap: 6 }}>
-              <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6 }}>
-                Your complete workflow was captured, including any new tabs opened from the original page during recording.
-                All visited pages, clicks, and navigation events are included in the uploaded proof.
+        {/* Analyze Workflow Evidence button — shown when proof is uploaded and analysis not yet done */}
+        {session.status === "uploaded_pending_analysis" && !workflowAnalysis && (
+          <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>Ready to analyze your workflow</div>
+              <p style={{ margin: "4px 0 0", fontSize: 12, color: "#1e3a8a", lineHeight: 1.65 }}>
+                VeriBridge will analyze your recorded workflow timeline to identify which claimed skills
+                are supported, what interactions were demonstrated, and what evidence is still missing.
+                This is a Workflow Timeline Analysis — it does not replace GitHub evidence or final verification.
               </p>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
-                <span style={{ fontSize: 11, color: "#16a34a", fontWeight: 600 }}>✓</span>
-                <span style={{ fontSize: 11, color: "var(--ink-2)" }}>
-                  {local ? "Local workflow pages recorded" : "Multi-tab workflow pages recorded"}
-                </span>
+            </div>
+            {analyzeError && (
+              <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 8, padding: "7px 10px", fontSize: 12 }}>
+                {analyzeError}
               </div>
+            )}
+            <div>
+              <button
+                type="button"
+                onClick={() => void handleAnalyze()}
+                disabled={analyzing}
+                style={{
+                  border: "1px solid transparent",
+                  background: analyzing ? "var(--bg-2)" : "#1d4ed8",
+                  color: analyzing ? "var(--muted)" : "#fff",
+                  borderRadius: 10, padding: "10px 20px",
+                  fontWeight: 700, fontSize: 14,
+                  cursor: analyzing ? "not-allowed" : "pointer",
+                }}
+              >
+                {analyzing ? "Analyzing workflow…" : "Analyze Workflow Evidence"}
+              </button>
             </div>
           </div>
         )}
+
+        {/* In-progress analysis indicator */}
+        {analyzing && (
+          <div style={{ border: "1px solid #ddd6fe", borderRadius: 12, background: "#faf5ff", padding: "14px 16px", display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>Analyzing workflow…</div>
+            <p style={{ margin: 0, fontSize: 12, color: "#4c1d95", lineHeight: 1.65 }}>
+              Evaluating your recorded workflow, matched skills, and evidence quality.
+            </p>
+          </div>
+        )}
+
+        {/* Workflow analysis result card */}
+        {workflowAnalysis && <WorkflowAnalysisCard analysis={workflowAnalysis} />}
 
         {/* Expired */}
         {isExpired && (

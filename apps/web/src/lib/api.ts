@@ -998,3 +998,79 @@ export async function getExtensionProofGitHubAnalysis(
   if (!res.ok) throw new Error(`Get GitHub analysis failed (HTTP ${res.status}).`)
   return res.json()
 }
+
+// ── Extension Proof Workflow Analysis ────────────────────────────────────────
+
+export type WorkflowAnalysisType =
+  | "timeline_only"
+  | "video_frame_analysis"
+  | "full_multimodal_analysis"
+
+export type WorkflowConfidence = "high" | "medium" | "low" | "insufficient"
+
+export type WorkflowAnalysisResponse = {
+  id: string
+  proof_session_id: string
+  analysis_type: WorkflowAnalysisType
+  analyzer_version: string
+  workflow_summary: string
+  demonstrated_actions: string[]
+  supported_skills: string[]
+  weakly_supported_skills: string[]
+  unsupported_skills: string[]
+  evidence_strength_score: number
+  workflow_confidence: WorkflowConfidence
+  missing_evidence: string[]
+  risk_flags: string[]
+  recruiter_summary: string
+  student_improvement_suggestions: string[]
+  human_review_needed: boolean
+  created_at: string
+  updated_at: string | null
+}
+
+export type WorkflowAnalyzeRequest = {
+  claimed_skills: string[]
+  proof_objective: string
+  original_url: string
+  url_type: string
+  github_url?: string | null
+}
+
+export async function analyzeWorkflowEvidence(
+  sessionId: string,
+  request: WorkflowAnalyzeRequest
+): Promise<WorkflowAnalysisResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/analyze/workflow`,
+    {
+      method: "POST",
+      body: JSON.stringify(request),
+    }
+  )
+  if (res.status === 404) throw new Error("Extension proof session not found.")
+  if (res.status === 409) {
+    const raw = await res.text()
+    let msg = "Session is not in an analyzable state."
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Workflow analysis failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json()
+}
+
+export async function getWorkflowAnalysis(
+  sessionId: string
+): Promise<WorkflowAnalysisResponse | null> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/analysis/workflow`
+  )
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Get workflow analysis failed (HTTP ${res.status}).`)
+  return res.json()
+}

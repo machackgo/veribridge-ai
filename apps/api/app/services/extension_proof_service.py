@@ -114,6 +114,10 @@ class ExtensionProofSessionService:
             "started_at": payload.started_at,
             "stopped_at": payload.stopped_at,
             "student_final_note": payload.student_final_note,
+            # Multi-tab tracking metadata
+            "tracked_tab_count": payload.tracked_tab_count,
+            "tracked_urls": payload.tracked_urls,
+            "external_tabs_opened": payload.external_tabs_opened,
         }
         row = self._apply_updates(
             row, user_id, session_id,
