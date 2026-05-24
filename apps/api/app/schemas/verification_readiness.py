@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,3 +34,28 @@ class VerificationReadinessReport(BaseModel):
     is_local_only: bool = False
     has_github_evidence: bool = False
     computed_at: str = ""
+
+    # ── Personalized recommendations ──────────────────────────────────────
+    score_contributors: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Per-contributor breakdown of the score. "
+            "Each entry: {label, points, type} where type is "
+            "'positive' (earned), 'negative' (deduction), or 'info' (not yet earned)."
+        ),
+    )
+    score_explanation: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable sentences explaining why the score is what it is, "
+            "e.g. 'Workflow evidence was uploaded and analyzed.' or "
+            "'Recording was brief, which lowered confidence.'"
+        ),
+    )
+    skill_improvement_tips: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Skill-specific improvement tips for partially- or unsupported skills. "
+            "Each entry: {skill, status, category, tip}."
+        ),
+    )

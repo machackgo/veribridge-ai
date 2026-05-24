@@ -124,4 +124,7 @@ def get_verification_readiness(
         is_local_only=result.is_local_only,
         has_github_evidence=result.has_github_evidence,
         computed_at=result.computed_at,
+        score_contributors=result.score_contributors,
+        score_explanation=result.score_explanation,
+        skill_improvement_tips=result.skill_improvement_tips,
     )

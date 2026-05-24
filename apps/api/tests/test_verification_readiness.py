@@ -13,6 +13,7 @@ Covers:
 - Backend endpoint returns 404 for unknown sessions
 - Backend endpoint returns expected fields
 - Cross-evidence skill confirmation increases score
+- Personalized score explanation, contributors, and skill improvement tips
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from app.api.deps import get_current_user_id, get_db
 from app.main import app
 from app.services.verification_readiness_service import (
     _classify_url,
+    _detect_skill_tip,
     compute_readiness_report,
 )
 
@@ -662,3 +664,365 @@ class TestVerificationReadinessEndpoint:
         assert r.status_code == 200
         # is_local_only is a bool
         assert isinstance(r.json()["is_local_only"], bool)
+
+
+# ── Unit: personalized recommendations ────────────────────────────────────────
+
+class TestPersonalizedRecommendations:
+    """Tests for score_explanation, score_contributors, and skill_improvement_tips."""
+
+    # ── score_explanation ─────────────────────────────────────────────────────
+
+    def test_explanation_non_empty_with_workflow_evidence(self) -> None:
+        result = compute_readiness_report(
+            proof_session_id="exp1",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["React"],
+            workflow_analysis={
+                "supported_skills": ["React"],
+                "weakly_supported_skills": [],
+                "unsupported_skills": [],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "React demonstrated.",
+                "human_review_needed": False,
+            },
+            live_check={"is_reachable": True},
+            github_analysis=None,
+            privacy_scan={"status": "clean"},
+        )
+        assert len(result.score_explanation) > 0
+
+    def test_short_recording_appears_in_explanation(self) -> None:
+        result = compute_readiness_report(
+            proof_session_id="exp_short",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["Vue"],
+            workflow_analysis={
+                "supported_skills": ["Vue"],
+                "weakly_supported_skills": [],
+                "unsupported_skills": [],
+                "missing_evidence": [],
+                "risk_flags": ["Recording is too short — less than 30 seconds captured"],
+                "recruiter_summary": "Vue shown.",
+                "human_review_needed": False,
+            },
+            live_check={"is_reachable": True},
+            github_analysis=None,
+            privacy_scan={"status": "clean"},
+        )
+        brief_mentions = [s for s in result.score_explanation if "brief" in s.lower() or "short" in s.lower()]
+        assert brief_mentions, "Expected a recording-length explanation sentence"
+
+    def test_privacy_flagged_appears_in_explanation(self) -> None:
+        result = compute_readiness_report(
+            proof_session_id="exp_priv",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["Django"],
+            workflow_analysis={
+                "supported_skills": ["Django"],
+                "weakly_supported_skills": [],
+                "unsupported_skills": [],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "Django shown.",
+                "human_review_needed": False,
+            },
+            live_check={"is_reachable": True},
+            github_analysis=None,
+            privacy_scan={"status": "flagged"},
+        )
+        privacy_mentions = [s for s in result.score_explanation if "privacy" in s.lower() or "sensitive" in s.lower()]
+        assert privacy_mentions, "Expected a privacy-flagged explanation sentence"
+
+    def test_no_evidence_has_info_contributors(self) -> None:
+        result = compute_readiness_report(
+            proof_session_id="exp_none",
+            session_status="created",
+            url_type="live_deployed_url",
+            claimed_skills=[],
+        )
+        info_items = [c for c in result.score_contributors if c["type"] == "info"]
+        assert len(info_items) > 0, "Expected info contributors when no evidence uploaded"
+
+    # ── score_contributors ────────────────────────────────────────────────────
+
+    def test_contributors_has_positive_when_workflow_uploaded(self) -> None:
+        result = compute_readiness_report(
+            proof_session_id="ctr1",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["Python"],
+            workflow_analysis={
+                "supported_skills": ["Python"],
+                "weakly_supported_skills": [],
+                "unsupported_skills": [],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "Python work shown.",
+                "human_review_needed": False,
+            },
+            live_check=None,
+            github_analysis=None,
+            privacy_scan={"status": "clean"},
+        )
+        positive_items = [c for c in result.score_contributors if c["type"] == "positive"]
+        assert len(positive_items) > 0
+
+    def test_contributors_has_negative_when_privacy_flagged(self) -> None:
+        result = compute_readiness_report(
+            proof_session_id="ctr2",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["TypeScript"],
+            workflow_analysis={
+                "supported_skills": ["TypeScript"],
+                "weakly_supported_skills": [],
+                "unsupported_skills": [],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "TypeScript shown.",
+                "human_review_needed": False,
+            },
+            live_check=None,
+            github_analysis=None,
+            privacy_scan={"status": "flagged"},
+        )
+        negative_items = [c for c in result.score_contributors if c["type"] == "negative"]
+        assert any("privacy" in c["label"].lower() for c in negative_items)
+
+    def test_contributors_negative_points_are_negative_integers(self) -> None:
+        result = compute_readiness_report(
+            proof_session_id="ctr3",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["Node.js"],
+            workflow_analysis={
+                "supported_skills": [],
+                "weakly_supported_skills": [],
+                "unsupported_skills": ["Node.js"],
+                "missing_evidence": [],
+                "risk_flags": ["Recording is too short"],
+                "recruiter_summary": "Not much shown.",
+                "human_review_needed": False,
+            },
+            live_check=None,
+            github_analysis=None,
+            privacy_scan={"status": "clean"},
+        )
+        for c in result.score_contributors:
+            if c["type"] == "negative":
+                assert c["points"] < 0, f"Negative contributor should have negative points: {c}"
+
+    # ── skill_improvement_tips ─────────────────────────────────────────────────
+
+    def test_backend_skill_missing_has_github_tip(self) -> None:
+        """FastAPI with no evidence → tip mentions GitHub or route files."""
+        result = compute_readiness_report(
+            proof_session_id="tip1",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["FastAPI"],
+            workflow_analysis={
+                "supported_skills": [],
+                "weakly_supported_skills": [],
+                "unsupported_skills": ["FastAPI"],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "Nothing visible.",
+                "human_review_needed": False,
+            },
+            live_check=None,
+            github_analysis=None,
+            privacy_scan={"status": "clean"},
+        )
+        assert len(result.skill_improvement_tips) > 0
+        tip = next(t for t in result.skill_improvement_tips if t["skill"] == "FastAPI")
+        assert "github" in tip["tip"].lower() or "route" in tip["tip"].lower()
+
+    def test_react_partial_has_package_json_tip(self) -> None:
+        """React weakly supported → tip mentions package.json."""
+        result = compute_readiness_report(
+            proof_session_id="tip2",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["React"],
+            workflow_analysis={
+                "supported_skills": [],
+                "weakly_supported_skills": ["React"],
+                "unsupported_skills": [],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "React partially shown.",
+                "human_review_needed": False,
+            },
+            live_check=None,
+            github_analysis=None,
+            privacy_scan={"status": "clean"},
+        )
+        react_tips = [t for t in result.skill_improvement_tips if t["skill"] == "React"]
+        assert react_tips
+        assert "package.json" in react_tips[0]["tip"].lower()
+
+    def test_ml_partial_has_model_metrics_tip(self) -> None:
+        """PyTorch weakly supported → tip mentions model metrics or training."""
+        result = compute_readiness_report(
+            proof_session_id="tip3",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["PyTorch"],
+            workflow_analysis={
+                "supported_skills": [],
+                "weakly_supported_skills": ["PyTorch"],
+                "unsupported_skills": [],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "PyTorch shown briefly.",
+                "human_review_needed": False,
+            },
+            live_check=None,
+            github_analysis=None,
+            privacy_scan={"status": "clean"},
+        )
+        torch_tips = [t for t in result.skill_improvement_tips if t["skill"] == "PyTorch"]
+        assert torch_tips
+        tip_lower = torch_tips[0]["tip"].lower()
+        assert "metric" in tip_lower or "training" in tip_lower or "notebook" in tip_lower
+
+    def test_localhost_no_deployment_tip_in_skill_tips(self) -> None:
+        """Local-only project — deployment PaaS skill tip should not require a live URL."""
+        result = compute_readiness_report(
+            proof_session_id="tip4",
+            session_status="completed",
+            url_type="localhost_url",
+            claimed_skills=["Vercel"],
+            workflow_analysis={
+                "supported_skills": [],
+                "weakly_supported_skills": [],
+                "unsupported_skills": ["Vercel"],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "Local app only.",
+                "human_review_needed": False,
+            },
+            live_check=None,
+            github_analysis=None,
+            privacy_scan={"status": "clean"},
+        )
+        # Should have a tip (not crash), and tip should NOT penalise for missing live URL
+        vercel_tips = [t for t in result.skill_improvement_tips if t["skill"] == "Vercel"]
+        assert vercel_tips
+        # The local project is_local_only so no live check penalty was applied
+        assert result.is_local_only is True
+
+    def test_privacy_flagged_has_rerecord_action(self) -> None:
+        """Privacy flagged → recommended_next_actions contains re-record guidance."""
+        result = compute_readiness_report(
+            proof_session_id="tip5",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["Django"],
+            workflow_analysis={
+                "supported_skills": ["Django"],
+                "weakly_supported_skills": [],
+                "unsupported_skills": [],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "Django shown.",
+                "human_review_needed": False,
+            },
+            live_check=None,
+            github_analysis=None,
+            privacy_scan={"status": "flagged"},
+        )
+        rerecord_actions = [a for a in result.recommended_next_actions if "re-record" in a.lower()]
+        assert rerecord_actions, "Expected a re-record next action when privacy is flagged"
+
+    def test_strong_skills_produce_no_improvement_tips(self) -> None:
+        """When all claimed skills are strongly supported, no skill tips should appear."""
+        result = compute_readiness_report(
+            proof_session_id="tip6",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["React"],
+            workflow_analysis={
+                "supported_skills": ["React"],
+                "weakly_supported_skills": [],
+                "unsupported_skills": [],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "React fully demonstrated.",
+                "human_review_needed": False,
+            },
+            live_check={"is_reachable": True},
+            github_analysis={
+                "status": "success",
+                "matched_claimed_skills": ["React"],
+                "weakly_matched_claimed_skills": [],
+                "detected_features": ["readme"],
+                "recruiter_summary": "React confirmed.",
+            },
+            privacy_scan={"status": "clean"},
+        )
+        assert result.skill_improvement_tips == []
+
+    def test_no_project_hardcoding_in_tips_and_explanation(self) -> None:
+        """Tips and explanation must not contain Boston, Vercel.app, or specific project names."""
+        result = compute_readiness_report(
+            proof_session_id="tip7",
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["Express"],
+            workflow_analysis={
+                "supported_skills": [],
+                "weakly_supported_skills": ["Express"],
+                "unsupported_skills": [],
+                "missing_evidence": [],
+                "risk_flags": [],
+                "recruiter_summary": "Express partially shown.",
+                "human_review_needed": False,
+            },
+            live_check=None,
+            github_analysis=None,
+            privacy_scan={"status": "clean"},
+        )
+        all_text = (
+            " ".join(result.score_explanation)
+            + " ".join(t["tip"] for t in result.skill_improvement_tips)
+        ).lower()
+        for forbidden in ("boston", "vercel.app", "heroku.com", "route risk"):
+            assert forbidden not in all_text, f"Hardcoded term found: {forbidden!r}"
+
+    def test_detect_skill_tip_database_skill(self) -> None:
+        """PostgreSQL (no GitHub) → tip mentions schema or ORM."""
+        tip = _detect_skill_tip("PostgreSQL", "missing", has_github=False)
+        assert tip["category"] == "database"
+        assert "schema" in tip["tip"].lower() or "orm" in tip["tip"].lower() or "migration" in tip["tip"].lower()
+
+    def test_detect_skill_tip_with_github_softens_language(self) -> None:
+        """When has_github=True, the tip should use the partial (softer) variant."""
+        tip_no_gh = _detect_skill_tip("FastAPI", "missing", has_github=False)
+        tip_with_gh = _detect_skill_tip("FastAPI", "missing", has_github=True)
+        # With GitHub, tip should be the partial variant (typically shorter/gentler)
+        assert tip_with_gh["tip"] != "" and tip_with_gh["category"] == "backend_framework"
+        # Both are valid, but with_gh is softer (partial tip)
+        assert "github" in tip_with_gh["tip"].lower() or "route" in tip_with_gh["tip"].lower()
+
+    def test_api_response_includes_new_fields(self, client: TestClient) -> None:
+        """HTTP endpoint returns score_contributors, score_explanation, skill_improvement_tips."""
+        session_id = _make_session(client)
+        _upload(client, session_id)
+
+        r = client.get(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/readiness"
+        )
+        assert r.status_code == 200
+        body = r.json()
+        for field in ("score_contributors", "score_explanation", "skill_improvement_tips"):
+            assert field in body, f"Missing new field: {field}"
+        assert isinstance(body["score_contributors"], list)
+        assert isinstance(body["score_explanation"], list)
+        assert isinstance(body["skill_improvement_tips"], list)

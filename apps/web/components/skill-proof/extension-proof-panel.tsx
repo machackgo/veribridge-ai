@@ -1446,6 +1446,19 @@ function GitHubAnalysisCard({
 // Mirror of the Python compute_readiness_report — computed in-browser from
 // existing React state so the report renders instantly without an extra fetch.
 
+type ScoreContributor = {
+  label: string
+  points: number
+  type: "positive" | "negative" | "info"
+}
+
+type SkillImprovementTip = {
+  skill: string
+  status: "partial" | "missing"
+  category: string
+  tip: string
+}
+
 type ReadinessReport = {
   readiness_score: number
   readiness_level: ReadinessLevel
@@ -1459,6 +1472,126 @@ type ReadinessReport = {
   recommended_next_actions: string[]
   recruiter_summary: string
   is_local_only: boolean
+  // ── Personalized recommendations ───────────────────────────────────────
+  score_contributors: ScoreContributor[]
+  score_explanation: string[]
+  skill_improvement_tips: SkillImprovementTip[]
+}
+
+// ── Skill improvement tips ─────────────────────────────────────────────────────
+
+type SkillTipEntry = {
+  category: string
+  patterns: string[]
+  tip_missing: string
+  tip_partial: string
+}
+
+const SKILL_TIPS: SkillTipEntry[] = [
+  {
+    category: "backend_framework",
+    patterns: ["fastapi", "flask", "django", "express", "node.js", "nodejs", "spring", "rails", "laravel", "gin", "actix"],
+    tip_missing: "Backend frameworks aren't visible in the browser. Add a public GitHub repo with route/controller files or API documentation.",
+    tip_partial: "Strengthen backend evidence by adding API route files, controller code, or Swagger/OpenAPI docs to your GitHub repo.",
+  },
+  {
+    category: "ml_framework",
+    patterns: ["pytorch", "tensorflow", "keras", "scikit-learn", "sklearn", "xgboost", "lightgbm", "hugging face", "huggingface"],
+    tip_missing: "Add model metrics, a Jupyter notebook, training script, or an inference demo to make ML skills verifiable.",
+    tip_partial: "Strengthen ML evidence by adding model evaluation metrics, a training script, or a notebook with results.",
+  },
+  {
+    category: "llm_agent",
+    patterns: ["langchain", "openai", "rag", "llm", "gpt", "llama", "autogen", "crewai"],
+    tip_missing: "Show a prompt→response flow. Add agent or RAG pipeline code to your GitHub repository.",
+    tip_partial: "Add the agent/RAG code, chain definition, or sample prompt-response pairs to your GitHub repository.",
+  },
+  {
+    category: "frontend_framework",
+    patterns: ["react", "vue", "angular", "next.js", "nextjs", "svelte", "nuxt", "remix"],
+    tip_missing: "Show multi-view navigation in your recording. Add package.json and component files to your GitHub repository.",
+    tip_partial: "Add component source files and package.json to your GitHub repository to confirm the frontend framework used.",
+  },
+  {
+    category: "ts_js",
+    patterns: ["typescript", "javascript"],
+    tip_missing: "Add source files to a public GitHub repository.",
+    tip_partial: "Add TypeScript/JavaScript source files to GitHub to confirm usage.",
+  },
+  {
+    category: "containers",
+    patterns: ["docker", "kubernetes", "k8s", "helm", "container"],
+    tip_missing: "Add a Dockerfile, docker-compose.yml, or Kubernetes manifests to your GitHub repository.",
+    tip_partial: "Add container configuration files (Dockerfile, compose, or K8s manifests) to GitHub.",
+  },
+  {
+    category: "cicd",
+    patterns: ["github actions", "circleci", "gitlab ci", "jenkins", "travis", "ci/cd", "pipeline"],
+    tip_missing: "Add CI/CD workflow configuration files to your GitHub repository (e.g., .github/workflows/).",
+    tip_partial: "Add or expand your CI/CD workflow configuration files in GitHub.",
+  },
+  {
+    category: "deployment_paas",
+    patterns: ["vercel", "heroku", "netlify", "render", "railway", "fly.io"],
+    tip_missing: "A live URL helps confirm deployment. Add a deployment README section or config file to GitHub.",
+    tip_partial: "Add a deployment README section or deployment config file to strengthen evidence.",
+  },
+  {
+    category: "cloud_platform",
+    patterns: ["aws", "gcp", "azure", "google cloud", "amazon web services"],
+    tip_missing: "Add IaC files, deployment scripts, or cloud architecture documentation to your GitHub repository.",
+    tip_partial: "Add cloud config files (Terraform, CloudFormation, or deployment docs) to GitHub.",
+  },
+  {
+    category: "api_design",
+    patterns: ["rest", "graphql", "swagger", "openapi"],
+    tip_missing: "Show a Swagger/OpenAPI UI in your recording or add API route definitions to your GitHub repository.",
+    tip_partial: "Add API schema files (OpenAPI spec, route definitions) to your GitHub repository.",
+  },
+  {
+    category: "maps_geo",
+    patterns: ["google maps", "mapbox", "leaflet", "geo", "geospatial", "mapping"],
+    tip_missing: "Show map interactions in your recording and add the map API integration source code to GitHub.",
+    tip_partial: "Add the map integration source code showing API usage to your GitHub repository.",
+  },
+  {
+    category: "database",
+    patterns: ["postgresql", "postgres", "mysql", "mongodb", "redis", "sqlite", "prisma", "sqlalchemy", "typeorm", "orm"],
+    tip_missing: "Databases aren't visible in the browser. Add schema files, migrations, or ORM model definitions to your GitHub repository.",
+    tip_partial: "Add database schema, migration files, or ORM models to GitHub to confirm database usage.",
+  },
+  {
+    category: "data_science",
+    patterns: ["pandas", "numpy", "matplotlib", "seaborn", "jupyter", "data analysis", "scipy"],
+    tip_missing: "Show data analysis results in your recording and add a notebook or data pipeline script to GitHub.",
+    tip_partial: "Add a Jupyter notebook or data pipeline script with analysis results to your GitHub repository.",
+  },
+  {
+    category: "programming_language",
+    patterns: ["python", "java", "golang", "rust", "c++", "c#", "kotlin", "swift", "ruby", "php"],
+    tip_missing: "Add a public GitHub repository with source code to confirm this language is used.",
+    tip_partial: "Add more source files in this language to your GitHub repository.",
+  },
+]
+
+function detectSkillTip(
+  skill: string,
+  status: "partial" | "missing",
+  hasGithub: boolean
+): SkillImprovementTip {
+  const lc = skill.toLowerCase()
+  for (const entry of SKILL_TIPS) {
+    if (entry.patterns.some(p => lc.includes(p))) {
+      const tip = status === "partial" || hasGithub ? entry.tip_partial : entry.tip_missing
+      return { skill, status, category: entry.category, tip }
+    }
+  }
+  return {
+    skill,
+    status,
+    category: "general",
+    tip: "Show this skill explicitly in your recording and add supporting code to a public GitHub repository.",
+  }
 }
 
 function computeReadinessReport({
@@ -1485,37 +1618,69 @@ function computeReadinessReport({
   const riskFlags: string[] = []
   const needsMoreEvidence: string[] = []
   const nextActions: string[] = []
+  const contributors: ScoreContributor[] = []
+  const explanation: string[] = []
 
   // +15 workflow evidence uploaded
-  if (sessionUploaded) score += 15
+  if (sessionUploaded) {
+    score += 15
+    contributors.push({ label: "Workflow recording uploaded", points: 15, type: "positive" })
+    explanation.push("Workflow evidence was uploaded.")
+  } else {
+    contributors.push({ label: "Workflow recording not yet uploaded", points: 15, type: "info" })
+  }
 
   // +15 workflow analysis complete
   const hasWf = workflowAnalysis !== null
-  if (hasWf) score += 15
+  if (hasWf) {
+    score += 15
+    contributors.push({ label: "Workflow evidence AI-reviewed", points: 15, type: "positive" })
+    explanation.push("Workflow analysis is complete.")
+  } else if (sessionUploaded) {
+    contributors.push({ label: "Workflow evidence not yet AI-reviewed", points: 15, type: "info" })
+  }
 
   // +15 GitHub evidence AI reviewed
   const githubProvided = githubAnalysis !== null
   const githubOk = githubProvided && githubAnalysis!.status === "success"
   if (githubOk) {
     score += 15
+    contributors.push({ label: "GitHub evidence AI-reviewed", points: 15, type: "positive" })
+    explanation.push("GitHub repository was analysed successfully.")
   } else if (githubProvided && !githubOk) {
     riskFlags.push("GitHub repository could not be accessed or is private")
+    explanation.push("GitHub repository could not be accessed.")
+  } else if (sessionUploaded) {
+    contributors.push({ label: "No GitHub repository linked", points: 15, type: "info" })
   }
 
   // +15 live website check (deployed only)
   const liveOk = !isLocal && liveCheck !== null && liveCheck.is_reachable
   if (liveOk) {
     score += 15
+    contributors.push({ label: "Deployed website is publicly reachable", points: 15, type: "positive" })
+    explanation.push("Deployed website is publicly accessible.")
+  } else if (isLocal) {
+    contributors.push({ label: "Live check not applicable (local-only project)", points: 0, type: "info" })
   } else if (!isLocal && liveCheck !== null && !liveCheck.is_reachable) {
     riskFlags.push("Deployed website is not publicly accessible")
+    explanation.push("Deployed website could not be confirmed as publicly accessible.")
+  } else if (!isLocal && liveCheck === null && sessionUploaded) {
+    contributors.push({ label: "Live website check not yet run", points: 15, type: "info" })
   }
 
   // +10 privacy scan safe
   const privacyStatus = privacyScan?.status ?? null
   if (privacyStatus === "clean" || privacyStatus === "redacted") {
     score += 10
+    const privLabel = privacyStatus === "redacted" ? "Privacy scan passed with redactions applied" : "Privacy scan is clean"
+    contributors.push({ label: privLabel, points: 10, type: "positive" })
+    explanation.push(`${privLabel}.`)
   } else if (privacyStatus === "flagged") {
     riskFlags.push("Privacy scan flagged — potential sensitive data in recording")
+    explanation.push("Privacy scan flagged sensitive data — score will be capped at Weak.")
+  } else if (sessionUploaded) {
+    contributors.push({ label: "Privacy scan not yet run", points: 10, type: "info" })
   }
 
   // Skill analysis
@@ -1542,38 +1707,75 @@ function computeReadinessReport({
     }
   }
 
+  const unsupportedSkills = claimedSkills.filter(
+    s => !strongly.includes(s) && !partially.includes(s)
+  )
+
   // +15 at least one strongly supported
   if (strongly.length > 0) {
     score += 15
+    const names = strongly.slice(0, 3).join(", ") + (strongly.length > 3 ? " …" : "")
+    contributors.push({ label: `Strong skill support (${strongly.length} skill(s) confirmed)`, points: 15, type: "positive" })
+    explanation.push(`${strongly.length} claimed skill(s) strongly supported by evidence: ${names}.`)
   } else {
     score = Math.max(0, score - 10)
+    contributors.push({ label: "No claimed skills with strong support", points: -10, type: "negative" })
+    explanation.push("No claimed skills have strong evidence support.")
+  }
+  if (partially.length > 0) {
+    explanation.push(`${partially.length} claimed skill(s) have partial evidence support.`)
+  }
+  if (unsupportedSkills.length > 0) {
+    explanation.push(`${unsupportedSkills.length} claimed skill(s) have no supporting evidence yet.`)
   }
 
   // +10 cross-evidence confirmation
   const crossConfirmed = strongly.filter(s => wfSupportedSet.has(s.toLowerCase()) && ghMatchedSet.has(s.toLowerCase()))
-  if (crossConfirmed.length > 0) score += 10
+  if (crossConfirmed.length > 0) {
+    score += 10
+    contributors.push({ label: `Cross-evidence confirmation (${crossConfirmed.length} skill(s) in workflow + GitHub)`, points: 10, type: "positive" })
+    explanation.push(`${crossConfirmed.length} skill(s) confirmed in both workflow and GitHub evidence.`)
+  }
 
   // +5 recruiter summary exists
   const recruiterText = workflowAnalysis?.recruiter_summary ?? githubAnalysis?.recruiter_summary ?? ""
-  if (recruiterText.trim().length > 30) score += 5
+  if (recruiterText.trim().length > 30) {
+    score += 5
+    contributors.push({ label: "Meaningful recruiter summary present", points: 5, type: "positive" })
+  }
 
   // ── Deductions ────────────────────────────────────────────────────────────
   const wfRiskFlags = workflowAnalysis?.risk_flags ?? []
   const shortRecording = wfRiskFlags.some(f => ["short", "brief", "too short"].some(kw => f.toLowerCase().includes(kw)))
   if (shortRecording) {
     score = Math.max(0, score - 10)
+    contributors.push({ label: "Recording is brief", points: -10, type: "negative" })
     riskFlags.push("Recording is brief — a longer walkthrough would strengthen evidence")
+    explanation.push("Recording was brief, which lowered confidence.")
   }
 
-  if (privacyStatus === "flagged") score = Math.max(0, score - 15)
+  if (privacyStatus === "flagged") {
+    score = Math.max(0, score - 15)
+    contributors.push({ label: "Privacy scan flagged sensitive data", points: -15, type: "negative" })
+  }
 
   const wfMissing = workflowAnalysis?.missing_evidence ?? []
-  const missingPenalty = Math.min(wfMissing.length * 5, 15)
-  score = Math.max(0, score - missingPenalty)
+  if (wfMissing.length > 0) {
+    const missingPenalty = Math.min(wfMissing.length * 5, 15)
+    score = Math.max(0, score - missingPenalty)
+    contributors.push({ label: `Missing evidence items (${wfMissing.length} item(s) flagged)`, points: -missingPenalty, type: "negative" })
+    explanation.push(`${wfMissing.length} evidence item(s) flagged as missing from the workflow analysis.`)
+  }
   for (const item of wfMissing) needsMoreEvidence.push(item)
 
-  if (!isLocal && liveCheck !== null && !liveCheck.is_reachable) score = Math.max(0, score - 10)
-  if (githubProvided && !githubOk) score = Math.max(0, score - 10)
+  if (!isLocal && liveCheck !== null && !liveCheck.is_reachable) {
+    score = Math.max(0, score - 10)
+    contributors.push({ label: "Deployed website not publicly accessible", points: -10, type: "negative" })
+  }
+  if (githubProvided && !githubOk) {
+    score = Math.max(0, score - 10)
+    contributors.push({ label: "GitHub repository inaccessible", points: -10, type: "negative" })
+  }
 
   // Privacy cap
   if (privacyStatus === "flagged") score = Math.min(score, 59)
@@ -1589,7 +1791,13 @@ function computeReadinessReport({
   const fvStatus: "pending" | "ready_for_review" =
     score >= 80 && privacyStatus !== "flagged" ? "ready_for_review" : "pending"
 
-  // Recommended actions
+  // ── Skill improvement tips ─────────────────────────────────────────────────
+  const skillTips: SkillImprovementTip[] = [
+    ...partially.map(s => detectSkillTip(s, "partial", githubProvided)),
+    ...unsupportedSkills.map(s => detectSkillTip(s, "missing", githubProvided)),
+  ]
+
+  // ── Recommended actions ───────────────────────────────────────────────────
   if (!sessionUploaded) nextActions.push("Upload your workflow recording to begin evidence analysis.")
   if (sessionUploaded && !hasWf) nextActions.push("Run Workflow Evidence Analysis to get an AI review of your recording.")
   if (privacyStatus === "flagged") nextActions.push("Re-record the workflow using demo accounts and sample data. Avoid passwords, API keys, tokens, and personal information.")
@@ -1603,8 +1811,10 @@ function computeReadinessReport({
     if (!features.includes("readme")) nextActions.push("Add a README with a project overview, setup instructions, and usage examples.")
     if (!features.includes("deployment") && !isLocal) nextActions.push("Add deployment configuration or documentation to your repository.")
   }
-  const unsupported = claimedSkills.filter(s => !strongly.map(x => x.toLowerCase()).includes(s.toLowerCase()) && !partially.map(x => x.toLowerCase()).includes(s.toLowerCase()))
-  if (unsupported.length > 0) nextActions.push(`Record a walkthrough that clearly demonstrates: ${unsupported.slice(0, 3).join(", ")}.`)
+  // Skill-specific actions from improvement tips
+  for (const tip of skillTips) {
+    nextActions.push(`${tip.skill}: ${tip.tip}`)
+  }
   if (hasWf && workflowAnalysis!.human_review_needed) nextActions.push("Request a faculty or human review — AI confidence is low for this recording.")
 
   // Recruiter summary
@@ -1651,6 +1861,9 @@ function computeReadinessReport({
     recommended_next_actions: uniqueActions,
     recruiter_summary: recruiterSummary,
     is_local_only: isLocal,
+    score_contributors: contributors,
+    score_explanation: explanation,
+    skill_improvement_tips: skillTips,
   }
 }
 
@@ -1753,6 +1966,62 @@ function VerificationReadinessReportCard({
         {/* ── Score bar ── */}
         <ReadinessScoreBar score={report.readiness_score} level={report.readiness_level} />
 
+        {/* ── Why this score? ── */}
+        {report.score_explanation.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              Why this score?
+            </div>
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 3 }}>
+              {report.score_explanation.map((sentence, i) => (
+                <li key={i} style={{ display: "flex", gap: 7, alignItems: "flex-start", fontSize: 12, color: "#334155", lineHeight: 1.6 }}>
+                  <span style={{ flexShrink: 0, color: "#94a3b8", marginTop: 2 }}>•</span>
+                  <span>{sentence}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* ── Score breakdown ── */}
+        {report.score_contributors.filter(c => c.type !== "info").length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              Score Breakdown
+            </div>
+            <div style={{ display: "grid", gap: 3 }}>
+              {report.score_contributors.filter(c => c.type !== "info").map((c, i) => (
+                <div key={i} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "4px 8px", borderRadius: 6,
+                  background: c.type === "positive" ? "#f0fdf4" : "#fef2f2",
+                  border: `1px solid ${c.type === "positive" ? "#d1fae5" : "#fecaca"}`,
+                }}>
+                  <span style={{ fontSize: 11, color: "#334155" }}>{c.label}</span>
+                  <span style={{
+                    fontSize: 11, fontWeight: 700, minWidth: 36, textAlign: "right",
+                    color: c.type === "positive" ? "#166534" : "#991b1b",
+                  }}>
+                    {c.points > 0 ? `+${c.points}` : c.points}
+                  </span>
+                </div>
+              ))}
+              {report.score_contributors.filter(c => c.type === "info" && c.points > 0).map((c, i) => (
+                <div key={`info-${i}`} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "4px 8px", borderRadius: 6,
+                  background: "#f8fafc", border: "1px solid #e2e8f0",
+                }}>
+                  <span style={{ fontSize: 11, color: "#64748b", fontStyle: "italic" }}>{c.label}</span>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", minWidth: 56, textAlign: "right" }}>
+                    +{c.points} avail.
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ── Localhost note ── */}
         {report.is_local_only && (
           <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "8px 12px" }}>
@@ -1851,6 +2120,45 @@ function VerificationReadinessReportCard({
                 </li>
               ))}
             </ol>
+          </div>
+        )}
+
+        {/* ── Skill-specific improvement tips ── */}
+        {report.skill_improvement_tips.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#1e40af", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              💡 Skill-Specific Tips
+            </div>
+            <div style={{ display: "grid", gap: 7 }}>
+              {report.skill_improvement_tips.map((tip, i) => (
+                <div key={i} style={{
+                  background: "#f8fafc", border: "1px solid #e2e8f0",
+                  borderRadius: 9, padding: "8px 12px",
+                }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 700,
+                      padding: "2px 8px", borderRadius: 999,
+                      background: tip.status === "partial" ? "#fef9c3" : "#fee2e2",
+                      color: tip.status === "partial" ? "#854d0e" : "#991b1b",
+                      border: `1px solid ${tip.status === "partial" ? "#fef08a" : "#fecaca"}`,
+                    }}>
+                      {tip.skill}
+                    </span>
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, letterSpacing: "0.06em",
+                      color: tip.status === "partial" ? "#92400e" : "#7f1d1d",
+                      textTransform: "uppercase",
+                    }}>
+                      {tip.status === "partial" ? "Partial Evidence" : "No Evidence"}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: 12, color: "#334155", lineHeight: 1.6 }}>
+                    {tip.tip}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

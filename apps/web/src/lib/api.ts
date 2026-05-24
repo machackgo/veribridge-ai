@@ -1284,6 +1284,19 @@ export type ReadinessLevel = "strong" | "moderate" | "weak" | "insufficient"
  * "pending" or "ready_for_review".  Final Verification completion is a
  * separate VeriBridge reviewer step.
  */
+export type ScoreContributor = {
+  label: string
+  points: number            // positive = earned, negative = deducted
+  type: "positive" | "negative" | "info"  // info = not yet earned
+}
+
+export type SkillImprovementTip = {
+  skill: string
+  status: "partial" | "missing"
+  category: string
+  tip: string
+}
+
 export type VerificationReadinessReport = {
   proof_session_id: string
   readiness_score: number          // 0–100
@@ -1298,6 +1311,10 @@ export type VerificationReadinessReport = {
   is_local_only: boolean
   has_github_evidence: boolean
   computed_at: string
+  // ── Personalized recommendations ───────────────────────────────────────
+  score_contributors: ScoreContributor[]
+  score_explanation: string[]
+  skill_improvement_tips: SkillImprovementTip[]
 }
 
 export async function getVerificationReadiness(
