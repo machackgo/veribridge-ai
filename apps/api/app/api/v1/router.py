@@ -11,6 +11,7 @@ from app.api.v1.endpoints import (
     github_semantic_verification_results,
     health,
     live_website_check,
+    project_defense_analysis,
     recruiter_candidates,
     skill_evidence,
     skill_evidence_profile,
@@ -111,6 +112,11 @@ api_router.include_router(
     workflow_privacy_scan.router,
     prefix="/student/extension-proof/sessions",
     tags=["workflow-privacy-scan"],
+)
+api_router.include_router(
+    project_defense_analysis.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["project-defense-analysis"],
 )
 api_router.include_router(
     verification_readiness.router,

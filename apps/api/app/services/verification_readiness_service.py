@@ -350,6 +350,7 @@ def compute_readiness_report(
     live_check: dict[str, Any] | None = None,
     github_analysis: dict[str, Any] | None = None,
     privacy_scan: dict[str, Any] | None = None,
+    defense_analysis: dict[str, Any] | None = None,
 ) -> VerificationReadinessResult:
     """
     Compute a readiness score (0–100) and full report from all available evidence.
@@ -362,6 +363,10 @@ def compute_readiness_report(
         Skills the student claims — extracted from the session row.
     workflow_analysis, live_check, github_analysis, privacy_scan:
         Stored evidence rows (plain dicts).  Pass None for any not yet run.
+    defense_analysis:
+        Stored project defense transcript analysis row (plain dict).
+        Pass None if no defense transcript has been submitted yet.
+        Missing defense does NOT break the readiness report.
     """
     if url_type is None:
         url_type = _classify_url(website_url)
@@ -466,7 +471,7 @@ def compute_readiness_report(
         elif lc in wf_weakly_lc or lc in gh_weakly_lc:
             partially.append(skill)
         else:
-            needs_more_evidence.append(f"{skill} — no strong evidence detected")
+            needs_more_evidence.append(f"{skill} — not yet supported by current evidence")
 
     # +15  at least one skill strongly supported
     if strongly:
@@ -523,6 +528,81 @@ def compute_readiness_report(
     if recruiter_text and len(recruiter_text.strip()) > 30:
         score += 5
         contributors.append({"label": "Meaningful recruiter summary present", "points": 5, "type": "positive"})
+
+    # ── Project Defense Transcript contributions ───────────────────────────
+    defense_score: int = int((defense_analysis or {}).get("overall_defense_score") or 0)
+    defense_privacy: str = str((defense_analysis or {}).get("privacy_scan_status") or "")
+    defense_ownership: int = int((defense_analysis or {}).get("ownership_signal_score") or 0)
+    defense_depth: int = int((defense_analysis or {}).get("technical_depth_score") or 0)
+    defense_consistency: int = int((defense_analysis or {}).get("consistency_with_evidence_score") or 0)
+    has_defense = defense_analysis is not None and defense_score > 0
+
+    if has_defense:
+        # +10  project defense transcript analyzed
+        score += 10
+        contributors.append({"label": "Project defense transcript analyzed", "points": 10, "type": "positive"})
+        explanation.append("Project defense transcript was submitted and analyzed.")
+
+        # +10  explanation is consistent with evidence
+        if defense_consistency >= 50:
+            score += 10
+            contributors.append({"label": "Transcript supports existing evidence", "points": 10, "type": "positive"})
+            explanation.append("Defense transcript is consistent with existing evidence.")
+        elif defense_consistency > 0:
+            contributors.append({"label": "Transcript partially aligns with evidence", "points": 5, "type": "info"})
+
+        # +5  ownership signal present
+        if defense_ownership >= 40:
+            score += 5
+            contributors.append({"label": "Ownership signal present in defense", "points": 5, "type": "positive"})
+            explanation.append("Student demonstrated personal ownership in the defense.")
+
+        # +5  technical depth present
+        if defense_depth >= 40:
+            score += 5
+            contributors.append({"label": "Technical depth shown in defense", "points": 5, "type": "positive"})
+            explanation.append("Defense shows meaningful technical depth.")
+
+        # Deductions for defense quality issues
+        defense_risk_flags: list[str] = list((defense_analysis or {}).get("risk_flags") or [])
+        transcript_text = str((defense_analysis or {}).get("transcript_text") or "")
+        word_count = len(transcript_text.split()) if transcript_text.strip() else 0
+
+        if word_count > 0 and word_count < 50:
+            score = max(0, score - 5)
+            contributors.append({"label": "Defense transcript too short", "points": -5, "type": "negative"})
+            risk_flags.append("Project defense transcript is too short to be meaningful")
+            explanation.append("Defense transcript was very brief, which reduced confidence.")
+
+        if defense_privacy == "flagged":
+            score = max(0, score - 10)
+            contributors.append({"label": "Defense transcript privacy flagged", "points": -10, "type": "negative"})
+            risk_flags.append("Project defense transcript contains potential sensitive data")
+            explanation.append("Defense transcript privacy scan flagged sensitive data.")
+
+        _contradiction_flag = any(
+            "contradict" in f.lower() for f in defense_risk_flags
+        )
+        if _contradiction_flag:
+            score = max(0, score - 10)
+            contributors.append({"label": "Defense transcript contradicts evidence", "points": -10, "type": "negative"})
+            risk_flags.append("Project defense transcript may contradict claimed evidence")
+
+        if defense_score < 30 and word_count >= 50:
+            contributors.append({
+                "label": "Defense transcript lacks clarity or ownership signals",
+                "points": -5,
+                "type": "negative",
+            })
+            score = max(0, score - 5)
+            explanation.append("Defense transcript scored low on clarity and ownership signals.")
+
+    elif session_uploaded:
+        contributors.append({
+            "label": "Project defense transcript not yet submitted",
+            "points": 10,
+            "type": "info",
+        })
 
     # ── Deductions ─────────────────────────────────────────────────────────
 
@@ -656,6 +736,26 @@ def compute_readiness_report(
     # Skill-specific next actions from improvement tips
     for tip_entry in skill_improvement_tips:
         next_actions.append(f"{tip_entry['skill']}: {tip_entry['tip']}")
+
+    # ── Project defense next actions ───────────────────────────────────────
+    if session_uploaded and not has_defense:
+        next_actions.append(
+            "Submit a Project Defense transcript explaining what you built, "
+            "the tools you used, and how the evidence proves your claimed skills. "
+            "This can significantly increase your readiness score."
+        )
+
+    if has_defense and defense_privacy == "flagged":
+        next_actions.append(
+            "Re-submit the project defense transcript without sensitive data "
+            "(API keys, tokens, credentials, or personal information)."
+        )
+
+    if has_defense and defense_consistency < 30 and defense_score < 40:
+        next_actions.append(
+            "Revise the project defense transcript to more clearly explain how "
+            "the evidence connects to your claimed skills."
+        )
 
     if has_wf and (workflow_analysis or {}).get("human_review_needed"):
         next_actions.append(

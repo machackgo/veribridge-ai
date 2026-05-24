@@ -20,6 +20,7 @@ from app.services.extension_proof_workflow_analysis_service import (
     ExtensionProofWorkflowAnalysisService,
 )
 from app.services.live_website_check_service import LiveWebsiteCheckService
+from app.services.project_defense_analysis_service import ProjectDefenseAnalysisService
 from app.services.verification_readiness_service import compute_readiness_report
 from app.services.workflow_privacy_scan_service import WorkflowPrivacyScanService
 
@@ -93,6 +94,14 @@ def get_verification_readiness(
     except Exception:
         logger.warning("Readiness: privacy scan fetch failed for %s", session_id)
 
+    defense_analysis: dict[str, Any] | None = None
+    try:
+        defense_analysis = ProjectDefenseAnalysisService(db).get_analysis(
+            user_id, session_id
+        )
+    except Exception:
+        logger.warning("Readiness: defense analysis fetch failed for %s", session_id)
+
     # ── 3. Extract session metadata ────────────────────────────────────────
     website_url: str = str(session_row.get("website_url") or "")
     claimed_skills: list[str] = list(session_row.get("claimed_skills") or [])
@@ -108,6 +117,7 @@ def get_verification_readiness(
         live_check=live_check,
         github_analysis=github_analysis,
         privacy_scan=privacy_scan,
+        defense_analysis=defense_analysis,
     )
 
     return VerificationReadinessReport(

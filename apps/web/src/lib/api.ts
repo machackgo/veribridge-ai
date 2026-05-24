@@ -1327,3 +1327,91 @@ export async function getVerificationReadiness(
   if (!res.ok) throw new Error(`Get readiness report failed (HTTP ${res.status}).`)
   return res.json()
 }
+
+// ── Project Defense Transcript Analysis ──────────────────────────────────────
+
+export type ProjectDefensePrivacyScanStatus = "clean" | "redacted" | "flagged"
+
+export type ProjectDefenseAnalysisResponse = {
+  id: string | null
+  user_id: string
+  proof_session_id: string
+  video_url: string | null
+  transcript_text: string
+  transcript_summary: string
+  skills_mentioned: string[]
+  skills_explained_well: string[]
+  skills_missing_from_explanation: string[]
+  consistency_with_evidence_score: number   // 0–100
+  explanation_clarity_score: number         // 0–100
+  ownership_signal_score: number            // 0–100
+  technical_depth_score: number             // 0–100
+  overall_defense_score: number             // 0–100
+  risk_flags: string[]
+  recruiter_summary: string
+  recommended_improvements: string[]
+  privacy_scan_status: ProjectDefensePrivacyScanStatus
+  created_at: string | null
+  updated_at: string | null
+}
+
+export type ProjectDefenseAnalyzeRequest = {
+  video_url?: string | null
+  transcript_text: string
+  claimed_skills: string[]
+  proof_objective?: string
+  workflow_summary?: string
+  github_summary?: string
+  live_check_summary?: string
+}
+
+/**
+ * Submit and analyse a project defense transcript for a proof session.
+ *
+ * Transcript is scanned for sensitive data before storage.  If flagged the
+ * response will have privacy_scan_status = 'flagged' and the result is hidden
+ * from recruiter view until reviewed.
+ */
+export async function analyzeProjectDefense(
+  sessionId: string,
+  request: ProjectDefenseAnalyzeRequest
+): Promise<ProjectDefenseAnalysisResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/analyze/project-defense`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        video_url: request.video_url ?? null,
+        transcript_text: request.transcript_text,
+        claimed_skills: request.claimed_skills,
+        proof_objective: request.proof_objective ?? "",
+        workflow_summary: request.workflow_summary ?? "",
+        github_summary: request.github_summary ?? "",
+        live_check_summary: request.live_check_summary ?? "",
+      }),
+    }
+  )
+  if (res.status === 404) throw new Error("Extension proof session not found.")
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Project defense analysis failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json()
+}
+
+/**
+ * Get the stored project defense analysis for a proof session.
+ * Returns null if no analysis has been submitted yet.
+ */
+export async function getProjectDefenseAnalysis(
+  sessionId: string
+): Promise<ProjectDefenseAnalysisResponse | null> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/analysis/project-defense`
+  )
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Get project defense analysis failed (HTTP ${res.status}).`)
+  return res.json()
+}
