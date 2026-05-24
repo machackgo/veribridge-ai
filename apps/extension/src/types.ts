@@ -33,4 +33,7 @@ export interface ExtensionState {
   status: RecordingStatus
   statusMessage: string
   lastUploadError: string | null
+  // Session ID for which the upload-success bar was dismissed by the user.
+  // When this equals sessionId, the floating bar stays hidden until a new recording.
+  dismissedForSessionId: string
 }

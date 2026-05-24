@@ -25,6 +25,8 @@ interface StateSnapshot {
   stoppedAt: string | null
   status: string
   lastUploadError: string | null
+  sessionId: string
+  dismissedForSessionId: string
 }
 
 // ── Module-level state ────────────────────────────────────────────────────────
@@ -358,7 +360,14 @@ function wireBarButtons(): void {
     barMinimized = false
     renderBar(null)
   })
-  barShadow.getElementById("vb-dismiss")?.addEventListener("click", hideFloatingBar)
+  barShadow.getElementById("vb-dismiss")?.addEventListener("click", () => {
+    console.log("Dismiss clicked")
+    void safeSendMessage({ type: "DISMISS_UPLOAD_SUCCESS" }).then(() => {
+      console.log("Dismiss message sent")
+      hideFloatingBar()
+      console.log("Floating bar hidden for session")
+    })
+  })
 }
 
 async function onBarStop(): Promise<void> {
@@ -391,12 +400,28 @@ async function onBarStopAndSend(): Promise<void> {
 function fetchAndRender(): void {
   void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
     if (!s) return
+
+    // If the user already dismissed the success bar for this session, keep it
+    // hidden and stop polling — do not re-render or restart the auto-dismiss timer.
+    if (
+      s.status === "uploaded" &&
+      s.sessionId &&
+      s.dismissedForSessionId === s.sessionId
+    ) {
+      hideFloatingBar()
+      return
+    }
+
     renderBar(s)
+
     // Auto-dismiss bar 5 seconds after a successful upload.
     if (s.status === "uploaded" && !autoDismissTimer) {
       autoDismissTimer = setTimeout(() => {
-        hideFloatingBar()
-        autoDismissTimer = null
+        console.log("Auto-dismissing success bar")
+        void safeSendMessage({ type: "DISMISS_UPLOAD_SUCCESS" }).then(() => {
+          hideFloatingBar()
+          autoDismissTimer = null
+        })
       }, 5000)
     }
   })

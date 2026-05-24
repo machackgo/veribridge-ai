@@ -13,6 +13,7 @@ interface InternalState {
   status: RecordingStatus
   statusMessage: string
   lastUploadError: string | null
+  dismissedForSessionId: string
 }
 
 const state: InternalState = {
@@ -26,6 +27,7 @@ const state: InternalState = {
   status: "idle",
   statusMessage: "Ready",
   lastUploadError: null,
+  dismissedForSessionId: "",
 }
 
 async function broadcastToAllTabs(message: unknown): Promise<void> {
@@ -49,6 +51,7 @@ function publicState(): ExtensionState {
     status: state.status,
     statusMessage: state.statusMessage,
     lastUploadError: state.lastUploadError,
+    dismissedForSessionId: state.dismissedForSessionId,
   }
 }
 
@@ -75,6 +78,7 @@ chrome.runtime.onMessage.addListener(
         state.status = "recording"
         state.statusMessage = "Recording…"
         state.lastUploadError = null
+        state.dismissedForSessionId = ""  // new session clears any prior dismiss
         void broadcastToAllTabs({ type: "START_CAPTURING" })
         sendResponse({ ok: true })
         break
@@ -122,6 +126,14 @@ chrome.runtime.onMessage.addListener(
         sendResponse({ ok: true })
         break
       }
+
+      case "DISMISS_UPLOAD_SUCCESS":
+        // Store which session's success bar was dismissed so the content script
+        // never re-shows it, even if a poll returns "uploaded" for the same session.
+        console.log(`Background stored dismissed session: ${state.sessionId}`)
+        state.dismissedForSessionId = state.sessionId
+        sendResponse({ ok: true })
+        break
 
       case "WORKFLOW_EVENT":
         if (state.isRecording) {
