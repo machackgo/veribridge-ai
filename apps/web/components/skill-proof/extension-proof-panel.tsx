@@ -6,11 +6,15 @@ import {
   createExtensionProofSession,
   createSkillEvidence,
   getExtensionProofSession,
+  getLiveWebsiteCheck,
+  runLiveWebsiteCheck,
   startExtensionProofSession,
   analyzeWorkflowEvidence,
   getWorkflowAnalysis,
   type ExtensionProofSessionResponse,
   type ExtensionProofSessionStatus,
+  type LiveWebsiteCheckConfidence,
+  type LiveWebsiteCheckResponse,
   type WorkflowAnalysisResponse,
   type WorkflowConfidence,
 } from "@/lib/api"
@@ -58,6 +62,14 @@ function isLocal(t: UrlType): boolean {
 const POLLING_STATUSES: ExtensionProofSessionStatus[] = [
   "recording",
   "uploaded_pending_analysis",
+]
+
+const LIVE_CHECK_STAGES: Array<{ key: string; label: string }> = [
+  { key: "validating_url",      label: "Validating URL" },
+  { key: "checking_access",     label: "Checking public accessibility" },
+  { key: "following_redirects", label: "Following redirects" },
+  { key: "reading_metadata",    label: "Reading page metadata" },
+  { key: "saving_result",       label: "Saving result" },
 ]
 
 const ANALYSIS_STAGES: Array<{ key: string; label: string; comingSoon?: boolean }> = [
@@ -261,9 +273,23 @@ function workflowAnalysisStatus(
   return "pending"
 }
 
+function liveCheckStatus(
+  urlType: UrlType,
+  liveCheck: LiveWebsiteCheckResponse | null,
+  liveChecking: boolean,
+): EvidenceItemStatus {
+  if (isLocal(urlType)) return "unavailable"
+  if (liveChecking) return "uploading"
+  if (!liveCheck) return "pending"
+  if (liveCheck.is_reachable) return "complete"
+  return "failed"
+}
+
 function buildEvidenceItems(
   urlType: UrlType,
   analysis: WorkflowAnalysisResponse | null,
+  liveCheck: LiveWebsiteCheckResponse | null,
+  liveChecking: boolean,
 ): Array<{
   key: string
   label: string
@@ -289,7 +315,7 @@ function buildEvidenceItems(
     {
       key: "live_check",
       label: "Live Website Check",
-      getStatus: () => (local ? "unavailable" : "pending"),
+      getStatus: () => liveCheckStatus(urlType, liveCheck, liveChecking),
     },
     {
       key: "final",
@@ -302,6 +328,7 @@ function buildEvidenceItems(
 function evidenceLabelOverride(key: string, s: EvidenceItemStatus): string {
   if (key === "workflow_analysis" && s === "complete") return "AI Reviewed"
   if (key === "workflow_analysis" && s === "uploading") return "In Progress"
+  if (key === "live_check" && s === "uploading") return "Checking…"
   return evidenceLabel(s)
 }
 
@@ -309,12 +336,16 @@ function EvidenceChecklist({
   status,
   urlType,
   analysis,
+  liveCheck,
+  liveChecking,
 }: {
   status: ExtensionProofSessionStatus
   urlType: UrlType
   analysis: WorkflowAnalysisResponse | null
+  liveCheck: LiveWebsiteCheckResponse | null
+  liveChecking: boolean
 }) {
-  const items = buildEvidenceItems(urlType, analysis)
+  const items = buildEvidenceItems(urlType, analysis, liveCheck, liveChecking)
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden" }}>
       <div style={{ background: "var(--bg-2)", borderBottom: "1px solid var(--line)", padding: "9px 14px" }}>
@@ -509,6 +540,198 @@ function WorkflowAnalysisInProgress({
             </div>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+// ── Live Website Check components ────────────────────────────────────────────
+
+function LiveWebsiteCheckInProgress({
+  simProgress,
+  simStageIdx,
+}: {
+  simProgress: number
+  simStageIdx: number
+}) {
+  return (
+    <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 12 }}>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>Live Website Check in Progress</div>
+        <p style={{ margin: "4px 0 0", fontSize: 12, color: "#1e3a8a", lineHeight: 1.65 }}>
+          Checking whether your deployed website is publicly accessible. This usually takes 5–20 seconds.
+        </p>
+      </div>
+
+      {/* Progress bar */}
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+          <span style={{ fontSize: 11, color: "#3b82f6" }}>Check in progress</span>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "#1e40af" }}>{simProgress}%</span>
+        </div>
+        <div style={{ height: 6, background: "#dbeafe", borderRadius: 999 }}>
+          <div
+            style={{
+              height: 6, borderRadius: 999, background: "#2563eb",
+              width: `${simProgress}%`, transition: "width 0.4s ease",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Stage checklist */}
+      <div style={{ display: "grid", gap: 6 }}>
+        {LIVE_CHECK_STAGES.map((stage, i) => {
+          const isDone = i < simStageIdx
+          const isCurrent = i === simStageIdx
+          return (
+            <div key={stage.key} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: isDone ? "#065f46" : isCurrent ? "#1e40af" : "#94a3b8", width: 14, flexShrink: 0, textAlign: "center" }}>
+                {isDone ? "✓" : isCurrent ? "…" : "○"}
+              </span>
+              <span style={{ fontSize: 12, color: isDone ? "#064e3b" : isCurrent ? "#1e3a8a" : "#94a3b8" }}>
+                {stage.label}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+const LIVE_CHECK_CONFIDENCE: Record<
+  LiveWebsiteCheckConfidence,
+  { bg: string; color: string; border: string; label: string }
+> = {
+  high:   { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: "HIGH" },
+  medium: { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "MEDIUM" },
+  low:    { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "LOW" },
+  failed: { bg: "#fef2f2", color: "#991b1b", border: "#fecaca", label: "FAILED" },
+}
+
+function LiveWebsiteCheckCard({
+  check,
+  onRetry,
+}: {
+  check: LiveWebsiteCheckResponse
+  onRetry: () => void
+}) {
+  const conf = LIVE_CHECK_CONFIDENCE[check.confidence] ?? LIVE_CHECK_CONFIDENCE.failed
+  const success = check.is_reachable
+
+  return (
+    <div style={{ border: `1px solid ${success ? "#bbf7d0" : "#fecaca"}`, borderRadius: 14, overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{
+        background: success ? "#f0fdf4" : "#fef2f2",
+        borderBottom: `1px solid ${success ? "#d1fae5" : "#fecaca"}`,
+        padding: "12px 16px",
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap",
+      }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: success ? "#065f46" : "#991b1b" }}>
+            Live Website Check — {success ? "Complete" : "Failed"}
+          </div>
+          <div style={{ fontSize: 11, color: success ? "#16a34a" : "#dc2626", marginTop: 2 }}>
+            {success ? "Site is publicly reachable" : "Could not confirm public accessibility"}
+          </div>
+        </div>
+        <span style={{
+          fontSize: 10, fontWeight: 700, letterSpacing: "0.08em",
+          padding: "3px 9px", borderRadius: 999,
+          background: conf.bg, color: conf.color, border: `1px solid ${conf.border}`,
+        }}>
+          {conf.label} CONFIDENCE
+        </span>
+      </div>
+
+      <div style={{ padding: "14px 16px", display: "grid", gap: 12 }}>
+        {/* Recruiter summary */}
+        <div style={{
+          background: success ? "#f0fdf4" : "#fef2f2",
+          border: `1px solid ${success ? "#bbf7d0" : "#fecaca"}`,
+          borderRadius: 10, padding: "10px 12px",
+        }}>
+          <p style={{ margin: 0, fontSize: 12, color: success ? "#064e3b" : "#991b1b", lineHeight: 1.7, fontStyle: "italic" }}>
+            {check.recruiter_summary}
+          </p>
+        </div>
+
+        {/* Details grid */}
+        <div style={{ display: "grid", gap: 5 }}>
+          {[
+            ["Submitted URL", check.website_url],
+            check.final_url ? ["Final URL", check.final_url] : null,
+            check.status_code !== null ? ["HTTP Status", String(check.status_code)] : null,
+            check.response_time_ms !== null ? ["Response Time", `${check.response_time_ms}ms`] : null,
+            check.page_title ? ["Page Title", check.page_title] : null,
+            check.content_type ? ["Content Type", check.content_type.split(";")[0]] : null,
+          ].filter((item): item is [string, string] => item !== null).map(([label, value]) => (
+            <div key={label} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+              <span style={{ fontSize: 11, color: "var(--muted)", minWidth: 110, flexShrink: 0 }}>{label}</span>
+              <span style={{ fontSize: 12, color: "var(--ink)", wordBreak: "break-all" }}>{value}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Risk flags */}
+        {check.risk_flags.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#9a3412", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+              Flags
+            </div>
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 3 }}>
+              {check.risk_flags.map((f, i) => (
+                <li key={i} style={{ fontSize: 11, color: "#854d0e", display: "flex", gap: 6 }}>
+                  <span style={{ flexShrink: 0 }}>⚠</span><span>{f}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Failure: retry recommendation */}
+        {!success && (
+          <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "8px 12px" }}>
+            <p style={{ margin: 0, fontSize: 11, color: "#9a3412", lineHeight: 1.6 }}>
+              Check whether the deployed app is running, public, and not behind authentication. Then retry.
+            </p>
+          </div>
+        )}
+
+        {/* Stage checklist */}
+        <div style={{ display: "grid", gap: 5 }}>
+          {check.stages.map((stage) => {
+            const isComplete = stage.status === "complete"
+            const isFailed = stage.status === "failed"
+            return (
+              <div key={stage.key} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: isComplete ? "#065f46" : isFailed ? "#991b1b" : "#94a3b8", width: 14, flexShrink: 0, textAlign: "center" }}>
+                  {isComplete ? "✓" : isFailed ? "✗" : "○"}
+                </span>
+                <span style={{ fontSize: 11, color: isComplete ? "#064e3b" : isFailed ? "#991b1b" : "#94a3b8" }}>
+                  {stage.label}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Footer actions */}
+        <div style={{ display: "flex", gap: 8, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+          <button
+            type="button"
+            onClick={onRetry}
+            style={{
+              fontSize: 11, fontWeight: 600, padding: "6px 14px", borderRadius: 8,
+              border: "1px solid var(--line-2)", background: "transparent",
+              color: "var(--ink-2)", cursor: "pointer",
+            }}
+          >
+            Re-run Check
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -730,6 +953,14 @@ export function ExtensionProofPanel({
   const [simStageIdx, setSimStageIdx]   = useState(-1)
   const analyzeTimeoutRef               = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Live website check state
+  const [liveCheck, setLiveCheck]           = useState<LiveWebsiteCheckResponse | null>(null)
+  const [liveChecking, setLiveChecking]     = useState(false)
+  const [liveCheckError, setLiveCheckError] = useState<string | null>(null)
+  const [liveCheckProgress, setLiveCheckProgress] = useState(0)
+  const [liveCheckStageIdx, setLiveCheckStageIdx]  = useState(0)
+  const liveCheckTimeoutRef                 = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // Derived from form.websiteUrl — available in both form and session_active steps.
   const urlType = classifyUrl(form.websiteUrl)
   const local = isLocal(urlType)
@@ -767,6 +998,41 @@ export function ExtensionProofPanel({
       if (r) setWorkflowAnalysis(r)
     }).catch(() => undefined)
   }, [session?.id, session?.status, workflowAnalysis])
+
+  // ── Auto-fetch live website check ─────────────────────────────────────────
+  // When session reaches completed and url is live, load any persisted check.
+  useEffect(() => {
+    if (!session) return
+    if (session.status !== "completed") return
+    if (liveCheck) return
+    if (isLocal(urlType)) return
+    void getLiveWebsiteCheck(session.id).then((r) => {
+      if (r) setLiveCheck(r)
+    }).catch(() => undefined)
+  }, [session?.id, session?.status, liveCheck, urlType])
+
+  // ── Simulated progress for live check ────────────────────────────────────
+  useEffect(() => {
+    if (!liveChecking) {
+      setLiveCheckProgress(0)
+      setLiveCheckStageIdx(0)
+      return
+    }
+    const schedule = [
+      { delay: 200,  stageIdx: 0, progress: 15 },
+      { delay: 700,  stageIdx: 1, progress: 35 },
+      { delay: 1400, stageIdx: 2, progress: 55 },
+      { delay: 2200, stageIdx: 3, progress: 75 },
+      { delay: 3500, stageIdx: 4, progress: 90 },
+    ]
+    const timers = schedule.map(({ delay, stageIdx, progress }) =>
+      setTimeout(() => {
+        setLiveCheckStageIdx(stageIdx)
+        setLiveCheckProgress(progress)
+      }, delay)
+    )
+    return () => timers.forEach(clearTimeout)
+  }, [liveChecking])
 
   // ── Simulated progress during analysis ────────────────────────────────────
   useEffect(() => {
@@ -832,6 +1098,39 @@ export function ExtensionProofPanel({
       setAnalyzeError(err instanceof Error ? err.message : "Analysis failed. Please try again.")
     } finally {
       if (!cancelled) setAnalyzing(false)
+    }
+  }
+
+  // ── Run live website check ────────────────────────────────────────────────
+
+  async function handleLiveCheck() {
+    if (!session) return
+    setLiveChecking(true)
+    setLiveCheckError(null)
+    setLiveCheck(null)
+
+    let cancelled = false
+    const timeoutId = setTimeout(() => {
+      cancelled = true
+      setLiveChecking(false)
+      setLiveCheckError("Live website check timed out after 30 seconds. Please retry.")
+      if (liveCheckTimeoutRef.current === timeoutId) liveCheckTimeoutRef.current = null
+    }, 30_000)
+    liveCheckTimeoutRef.current = timeoutId
+
+    try {
+      const result = await runLiveWebsiteCheck(session.id, form.websiteUrl.trim())
+      if (cancelled) return
+      clearTimeout(timeoutId)
+      liveCheckTimeoutRef.current = null
+      setLiveCheck(result)
+    } catch (err) {
+      if (cancelled) return
+      clearTimeout(timeoutId)
+      liveCheckTimeoutRef.current = null
+      setLiveCheckError(err instanceof Error ? err.message : "Live website check failed. Please try again.")
+    } finally {
+      if (!cancelled) setLiveChecking(false)
     }
   }
 
@@ -1111,7 +1410,13 @@ export function ExtensionProofPanel({
         <SessionStepper status={session.status} />
 
         {/* Evidence checklist */}
-        <EvidenceChecklist status={session.status} urlType={urlType} analysis={workflowAnalysis} />
+        <EvidenceChecklist
+          status={session.status}
+          urlType={urlType}
+          analysis={workflowAnalysis}
+          liveCheck={liveCheck}
+          liveChecking={liveChecking}
+        />
 
         {error && (
           <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
@@ -1207,6 +1512,75 @@ export function ExtensionProofPanel({
 
         {/* Workflow analysis result card */}
         {workflowAnalysis && <WorkflowAnalysisCard analysis={workflowAnalysis} />}
+
+        {/* ── Live Website Check ─────────────────────────────────────────── */}
+
+        {/* Not available note for local projects */}
+        {isLocal(urlType) && isCompleted && (
+          <div style={{ border: "1px solid #e2e8f0", borderRadius: 12, background: "#f8fafc", padding: "12px 14px", display: "grid", gap: 4 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>Live Website Check: Not Available</div>
+            <p style={{ margin: 0, fontSize: 11, color: "#64748b", lineHeight: 1.6 }}>
+              Localhost projects cannot be accessed by recruiters or VeriBridge after the recording session.
+              Add GitHub / setup instructions or deploy the app for stronger verification.
+            </p>
+          </div>
+        )}
+
+        {/* Run button for live deployed URLs — shown once workflow analysis is done and check not yet run */}
+        {!isLocal(urlType) && isCompleted && !liveCheck && !liveChecking && (
+          <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>Run Live Website Check</div>
+              <p style={{ margin: "4px 0 0", fontSize: 12, color: "#1e3a8a", lineHeight: 1.65 }}>
+                VeriBridge will send a live HTTP request to your deployed website to confirm it is publicly
+                accessible, capture the HTTP status, response time, and page title.
+              </p>
+            </div>
+            <div>
+              <button
+                type="button"
+                onClick={() => void handleLiveCheck()}
+                style={{
+                  border: "1px solid transparent", background: "#1d4ed8", color: "#fff",
+                  borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: "pointer",
+                }}
+              >
+                Run Live Website Check
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Live check error */}
+        {liveCheckError && !liveCheck && (
+          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 10, padding: "10px 14px", display: "grid", gap: 8 }}>
+            <div style={{ color: "#991b1b", fontSize: 12 }}>{liveCheckError}</div>
+            {!liveChecking && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => void handleLiveCheck()}
+                  style={{
+                    border: "1px solid #dc2626", background: "transparent", color: "#991b1b",
+                    borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer",
+                  }}
+                >
+                  Retry Live Website Check
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Live check in-progress */}
+        {liveChecking && (
+          <LiveWebsiteCheckInProgress simProgress={liveCheckProgress} simStageIdx={liveCheckStageIdx} />
+        )}
+
+        {/* Live check result */}
+        {liveCheck && (
+          <LiveWebsiteCheckCard check={liveCheck} onRetry={() => void handleLiveCheck()} />
+        )}
 
         {/* Expired */}
         {isExpired && (

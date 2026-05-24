@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     github_recruiter_proof_reports,
     github_semantic_verification_results,
     health,
+    live_website_check,
     recruiter_candidates,
     skill_evidence,
     skill_evidence_profile,
@@ -98,6 +99,11 @@ api_router.include_router(
     extension_proof_workflow_analysis.router,
     prefix="/student/extension-proof/sessions",
     tags=["extension-proof-workflow-analysis"],
+)
+api_router.include_router(
+    live_website_check.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["live-website-check"],
 )
 api_router.include_router(
     website_proof_sessions.router,

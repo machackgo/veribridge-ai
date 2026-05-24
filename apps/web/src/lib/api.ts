@@ -1091,6 +1091,69 @@ export async function getWorkflowAnalysis(
   return res.json()
 }
 
+// ── Live Website Check ────────────────────────────────────────────────────────
+
+export type LiveWebsiteCheckConfidence = "high" | "medium" | "low" | "failed"
+
+export type LiveCheckStageStatus = "pending" | "in_progress" | "complete" | "failed"
+
+export type LiveWebsiteCheckStage = {
+  key: string
+  label: string
+  status: LiveCheckStageStatus
+}
+
+export type LiveWebsiteCheckResponse = {
+  id: string
+  proof_session_id: string
+  website_url: string
+  final_url: string | null
+  status_code: number | null
+  response_time_ms: number | null
+  content_type: string | null
+  page_title: string | null
+  is_reachable: boolean
+  confidence: LiveWebsiteCheckConfidence
+  risk_flags: string[]
+  recruiter_summary: string
+  error_message: string | null
+  checked_at: string
+  progress: number
+  current_stage: string
+  stages: LiveWebsiteCheckStage[]
+}
+
+export async function runLiveWebsiteCheck(
+  sessionId: string,
+  websiteUrl: string
+): Promise<LiveWebsiteCheckResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/check/live-website`,
+    {
+      method: "POST",
+      body: JSON.stringify({ website_url: websiteUrl }),
+    }
+  )
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Live website check failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json()
+}
+
+export async function getLiveWebsiteCheck(
+  sessionId: string
+): Promise<LiveWebsiteCheckResponse | null> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/check/live-website`
+  )
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Get live website check failed (HTTP ${res.status}).`)
+  return res.json()
+}
+
 // ── Skill Evidence Profiles ───────────────────────────────────────────────────
 
 export type EvidenceLevel =
