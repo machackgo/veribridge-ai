@@ -64,6 +64,50 @@ class Settings(BaseSettings):
     # Required scopes: public_repo (read access to public repositories).
     github_token: SecretStr | None = Field(default=None, alias="GITHUB_TOKEN")
 
+    # ── Project Defense media storage ─────────────────────────────
+    # Name of the Supabase Storage bucket for uploaded defense media files.
+    # Leave empty to disable storage (students must paste transcripts manually).
+    # Example: project-defense-media
+    supabase_defense_media_bucket: str = Field(
+        default="",
+        alias="SUPABASE_DEFENSE_MEDIA_BUCKET",
+    )
+
+    # ── Transcription ─────────────────────────────────────────────
+    # Which transcription provider to use for project defense audio/video.
+    # Values: none | openai | local_whisper   (default: none)
+    # none          — transcription disabled; students paste transcript manually
+    # openai        — OpenAI Whisper API (requires OPENAI_API_KEY)
+    # local_whisper — faster-whisper running locally (requires pip install faster-whisper)
+    transcription_provider: str = Field(
+        default="none",
+        alias="TRANSCRIPTION_PROVIDER",
+    )
+
+    # OpenAI Whisper (used when transcription_provider=openai)
+    openai_api_key: SecretStr = Field(
+        default=SecretStr(""),
+        alias="OPENAI_API_KEY",
+    )
+    openai_transcription_model: str = Field(
+        default="whisper-1",
+        alias="OPENAI_TRANSCRIPTION_MODEL",
+    )
+
+    # local_whisper model config (used when transcription_provider=local_whisper)
+    local_whisper_model_size: str = Field(
+        default="base",
+        alias="LOCAL_WHISPER_MODEL_SIZE",
+    )
+    local_whisper_device: str = Field(
+        default="cpu",
+        alias="LOCAL_WHISPER_DEVICE",
+    )
+    local_whisper_compute_type: str = Field(
+        default="int8",
+        alias="LOCAL_WHISPER_COMPUTE_TYPE",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

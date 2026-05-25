@@ -1476,15 +1476,28 @@ export async function uploadProjectDefenseMedia(
     xhr.addEventListener("load", () => {
       if (xhr.status === 201) {
         try {
-          resolve(JSON.parse(xhr.responseText) as ProjectDefenseMediaUploadResponse)
+          const data = JSON.parse(xhr.responseText) as ProjectDefenseMediaUploadResponse
+          // Debug: log the upload response shape to help diagnose storage config issues.
+          // Safe — media_storage_path is a path string, not a secret.
+          console.debug("[VeriBridge] upload-media response:", {
+            status: xhr.status,
+            media_filename: data.media_filename,
+            media_storage_path: data.media_storage_path,
+            storage_configured: data.storage_configured,
+            message: data.message,
+          })
+          resolve(data)
         } catch {
           reject(new Error("Invalid response from server."))
         }
       } else {
         let msg = `Media upload failed (HTTP ${xhr.status}).`
         try {
-          msg = (JSON.parse(xhr.responseText) as { detail?: { message?: string } }).detail?.message ?? msg
+          const errData = JSON.parse(xhr.responseText) as { detail?: { message?: string } | string }
+          if (typeof errData.detail === "string") msg = errData.detail
+          else msg = errData.detail?.message ?? msg
         } catch { /* */ }
+        console.debug("[VeriBridge] upload-media error:", { status: xhr.status, body: xhr.responseText })
         reject(new Error(msg))
       }
     })

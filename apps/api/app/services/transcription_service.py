@@ -47,20 +47,32 @@ import os
 import re
 from dataclasses import dataclass
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
-# ── Env-var config ────────────────────────────────────────────────────────────
+# ── Config — read from pydantic-settings (which loads .env) ──────────────────
+#
+# IMPORTANT: do NOT use os.environ.get() for these values.
+# pydantic-settings reads .env into the Settings object but does NOT inject
+# those values into os.environ.  os.environ.get("TRANSCRIPTION_PROVIDER") would
+# always return "" unless the variable was set in the actual shell environment.
+#
+# All callers (tests) that need to override these values should patch the
+# module-level variable directly:
+#   with patch.object(svc, "_PROVIDER", "openai"):
+#       ...
 
-_PROVIDER = os.environ.get("TRANSCRIPTION_PROVIDER", "none").strip().lower()
+_PROVIDER = settings.transcription_provider.strip().lower()
 
 # OpenAI
-_OPENAI_KEY   = os.environ.get("OPENAI_API_KEY", "").strip()
-_OPENAI_MODEL = os.environ.get("OPENAI_TRANSCRIPTION_MODEL", "whisper-1").strip()
+_OPENAI_KEY   = settings.openai_api_key.get_secret_value().strip()
+_OPENAI_MODEL = settings.openai_transcription_model.strip()
 
 # local_whisper
-_LOCAL_WHISPER_MODEL_SIZE   = os.environ.get("LOCAL_WHISPER_MODEL_SIZE", "base").strip()
-_LOCAL_WHISPER_DEVICE       = os.environ.get("LOCAL_WHISPER_DEVICE", "cpu").strip()
-_LOCAL_WHISPER_COMPUTE_TYPE = os.environ.get("LOCAL_WHISPER_COMPUTE_TYPE", "int8").strip()
+_LOCAL_WHISPER_MODEL_SIZE   = settings.local_whisper_model_size.strip()
+_LOCAL_WHISPER_DEVICE       = settings.local_whisper_device.strip()
+_LOCAL_WHISPER_COMPUTE_TYPE = settings.local_whisper_compute_type.strip()
 
 _OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 

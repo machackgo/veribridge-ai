@@ -9,13 +9,13 @@ PATCH /{session_id}/defense/transcript          — update transcript + reviewed
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from app.api.deps import get_current_user_id, get_db
+from app.core.config import settings
 from app.schemas.project_defense_analysis import (
     ALLOWED_MEDIA_EXTENSIONS,
     MAX_MEDIA_SIZE_BYTES,
@@ -37,8 +37,24 @@ from app.services.project_defense_analysis_service import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Env-controlled storage bucket name.  Set this to enable Supabase Storage.
-_MEDIA_BUCKET = os.environ.get("SUPABASE_DEFENSE_MEDIA_BUCKET", "")
+# Storage bucket name — read from pydantic-settings (which loads .env).
+# Do NOT use os.environ.get() here: pydantic-settings does not write back to
+# os.environ, so os.environ.get() always returns "" for values only in .env.
+_MEDIA_BUCKET = settings.supabase_defense_media_bucket
+
+# Safe startup diagnostic — confirms the env var reached the Python process.
+# Logs bucket name (not a secret) and presence of credentials (not their values).
+logger.info(
+    "Project Defense storage: bucket=%r  supabase_url_present=%s  service_key_present=%s",
+    _MEDIA_BUCKET or "(not configured)",
+    bool(settings.supabase_url),
+    bool(settings.supabase_service_role_key.get_secret_value()),
+)
+logger.info(
+    "Transcription provider: %r  openai_key_present=%s",
+    settings.transcription_provider or "(none)",
+    bool(settings.openai_api_key.get_secret_value()),
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -254,6 +270,13 @@ async def upload_project_defense_media(
     media_url: str | None = None
     bucket_configured = bool(_MEDIA_BUCKET)
 
+    logger.info(
+        "upload-media: session=%s filename=%r size=%d bucket=%r is_real_db=%s",
+        session_id, filename, size_bytes,
+        _MEDIA_BUCKET or "(not configured)",
+        not isinstance(db, dict),
+    )
+
     if bucket_configured and not isinstance(db, dict):
         # Include a server-side timestamp to avoid path collisions on re-upload
         ts = int(time.time())
@@ -281,6 +304,10 @@ async def upload_project_defense_media(
                     ),
                 },
             )
+
+        logger.info(
+            "upload-media: storage upload succeeded path=%r", storage_path
+        )
 
         # Retrieve the public URL — non-fatal if it fails (we have storage_path)
         try:

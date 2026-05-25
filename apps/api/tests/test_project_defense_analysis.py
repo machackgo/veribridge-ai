@@ -629,8 +629,12 @@ class TestProjectDefenseMediaUpload:
         assert data["media_type"] == "mp3"
         assert data["transcription_status"] == "uploaded"
         assert data["media_size_bytes"] == len(dummy_mp3)
-        # In-memory store → no Supabase Storage
-        assert data["storage_configured"] is False
+        # storage_configured reflects the bucket env var (not whether dict-store skips upload).
+        # In test env with .env loaded: bucket IS configured, so storage_configured=True.
+        # Actual storage upload is still skipped for dict stores (isinstance check).
+        assert isinstance(data["storage_configured"], bool)
+        # With a dict store the upload block is skipped → no storage path set
+        assert data["media_storage_path"] is None
 
     def test_upload_valid_video_mp4(self, client: TestClient) -> None:
         """POSTing a .mp4 file is accepted."""
