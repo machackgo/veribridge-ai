@@ -716,6 +716,49 @@ class ProjectDefenseAnalysisService:
             logger.warning("Project defense transcript update failed: %s", exc)
             return None
 
+    def save_transcription_result(
+        self,
+        user_id: str,
+        proof_session_id: str,
+        *,
+        transcript_text: str,
+        privacy_scan_status: str = "clean",
+    ) -> dict[str, Any]:
+        """
+        Save an auto-generated transcript from the transcription provider.
+
+        Sets transcription_status = 'transcript_ready' and transcript_reviewed =
+        False so the student can review the text before running analysis.
+        """
+        now = _now()
+        patch: dict[str, Any] = {
+            "transcript_text": transcript_text,
+            "transcript_reviewed": False,
+            "transcription_status": "transcript_ready",
+            "privacy_scan_status": privacy_scan_status,
+            "updated_at": now,
+        }
+
+        if isinstance(self._client, dict):
+            existing = self._client.get(_TABLE, {}).get(proof_session_id, {})
+            row = {**existing, **patch}
+            self._client.setdefault(_TABLE, {})[proof_session_id] = row
+            return row
+
+        try:
+            res = (
+                self._client.table(_TABLE)
+                .update(patch)
+                .eq("user_id", user_id)
+                .eq("proof_session_id", proof_session_id)
+                .execute()
+            )
+            rows = getattr(res, "data", []) or []
+            return rows[0] if rows else {**patch, "proof_session_id": proof_session_id}
+        except Exception as exc:
+            logger.warning("Project defense transcription save failed: %s", exc)
+            return {**patch, "proof_session_id": proof_session_id}
+
     def get_analysis(
         self,
         user_id: str,

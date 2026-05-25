@@ -21,6 +21,7 @@ from app.schemas.project_defense_analysis import (
     ProjectDefenseAnalyzeRequest,
     ProjectDefenseAnalysisResponse,
     ProjectDefenseMediaUploadResponse,
+    ProjectDefenseTranscribeResponse,
     ProjectDefenseUpdateTranscriptRequest,
 )
 from app.services.extension_proof_service import (
@@ -343,3 +344,164 @@ def update_defense_transcript(
         )
 
     return _row_to_response(row, user_id, session_id)
+
+
+# ── POST /defense/transcribe ───────────────────────────────────────────────────
+
+@router.post(
+    "/{session_id}/defense/transcribe",
+    response_model=ProjectDefenseTranscribeResponse,
+    summary="Transcribe the registered defense media file to text",
+)
+async def transcribe_defense_media(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> ProjectDefenseTranscribeResponse:
+    """
+    Transcribe the audio/video file registered for this proof session.
+
+    Flow
+    ----
+    1. Verify the session belongs to this user.
+    2. Load stored media_storage_path / media_url from DB.
+    3. Download file bytes from Supabase Storage (or media_url as fallback).
+    4. Call the configured transcription provider (none | openai).
+    5. Run privacy scan on the generated transcript text.
+    6. Save transcript_text; set transcription_status = 'transcript_ready'.
+    7. Return transcript_text for the student to review/edit before analysis.
+
+    Graceful fallback
+    -----------------
+    If TRANSCRIPTION_PROVIDER=none or OPENAI_API_KEY is missing, returns
+    HTTP 200 with ``configured=False`` and an instructional message — the
+    frontend shows the manual-paste fallback.  No 5xx in this case.
+
+    Final Verification is NEVER set to 'complete' from this endpoint.
+    """
+    from app.services.transcription_service import (
+        TranscriptionUnavailableError,
+        transcribe_audio,
+    )
+    from app.services.workflow_privacy_scan_service import scan_proof_data
+
+    _verify_session(user_id, session_id, db)
+
+    service = ProjectDefenseAnalysisService(db)
+    row = service.get_analysis(user_id, session_id)
+
+    # A media row exists if media_filename was set by register_media.
+    # storage_path/url may be absent in storage-less deployments and tests.
+    if row is None or not row.get("media_filename"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "media_not_found",
+                "message": (
+                    "No media file is registered for this session. "
+                    "Upload or record a video/audio file first."
+                ),
+                "session_id": session_id,
+            },
+        )
+
+    # ── Fetch file bytes ───────────────────────────────────────────────────────
+    filename: str = row.get("media_filename") or "defense.webm"
+    content_type: str | None = None
+    file_bytes: bytes | None = None
+
+    storage_path: str | None = row.get("media_storage_path")
+    media_url: str | None = row.get("media_url")
+
+    # Try Supabase Storage first
+    if storage_path and _MEDIA_BUCKET and not isinstance(db, dict):
+        try:
+            file_bytes = db.storage.from_(_MEDIA_BUCKET).download(storage_path)
+        except Exception as exc:
+            logger.warning(
+                "Storage download failed for %s (%s): %s", session_id, storage_path, exc
+            )
+
+    # Fallback: fetch from media_url
+    if file_bytes is None and media_url:
+        try:
+            import httpx
+            with httpx.Client(timeout=60.0) as http:
+                resp = http.get(media_url)
+                resp.raise_for_status()
+                file_bytes = resp.content
+                content_type = resp.headers.get("content-type")
+        except Exception as exc:
+            logger.warning(
+                "URL download failed for %s (%s): %s", session_id, media_url, exc
+            )
+
+    # In-memory store (tests): use empty bytes so transcription service is reached
+    if file_bytes is None and isinstance(db, dict):
+        file_bytes = b""
+
+    if file_bytes is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "media_download_failed",
+                "message": (
+                    "Could not retrieve the media file for transcription. "
+                    "Check that the file was uploaded successfully, then retry."
+                ),
+            },
+        )
+
+    # ── Transcribe ─────────────────────────────────────────────────────────────
+    try:
+        tx_result = transcribe_audio(file_bytes, filename, content_type)
+    except TranscriptionUnavailableError:
+        # Graceful 200: not configured — frontend shows manual paste fallback.
+        return ProjectDefenseTranscribeResponse(
+            proof_session_id=session_id,
+            transcript_text="",
+            transcription_status=str(row.get("transcription_status") or "uploaded"),
+            transcript_reviewed=False,
+            provider_used="none",
+            configured=False,
+            message=(
+                "Automatic transcription is not configured yet. "
+                "Paste or edit the transcript manually."
+            ),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "transcription_failed",
+                "message": str(exc),
+            },
+        )
+
+    # ── Privacy scan ───────────────────────────────────────────────────────────
+    privacy_result = scan_proof_data({"transcript": tx_result.transcript_text})
+
+    # ── Persist ────────────────────────────────────────────────────────────────
+    service.save_transcription_result(
+        user_id=user_id,
+        proof_session_id=session_id,
+        transcript_text=tx_result.transcript_text,
+        privacy_scan_status=privacy_result.status,
+    )
+
+    privacy_note = (
+        " Privacy flag detected — please review and remove any sensitive data "
+        "before submitting for analysis."
+        if privacy_result.contains_sensitive_data
+        else ""
+    )
+
+    return ProjectDefenseTranscribeResponse(
+        proof_session_id=session_id,
+        transcript_text=tx_result.transcript_text,
+        transcription_status="transcript_ready",
+        transcript_reviewed=False,
+        provider_used=tx_result.provider_used,
+        configured=True,
+        message=f"Transcript generated. Review and edit before analysis.{privacy_note}",
+    )

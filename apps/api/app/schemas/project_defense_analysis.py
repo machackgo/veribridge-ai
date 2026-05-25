@@ -167,3 +167,24 @@ class ProjectDefenseUpdateTranscriptRequest(BaseModel):
         default=False,
         description="True once the student has confirmed the transcript is accurate.",
     )
+
+
+# ── Transcription response ────────────────────────────────────────────────────
+
+class ProjectDefenseTranscribeResponse(BaseModel):
+    """
+    Response after attempting to transcribe a registered defense media file.
+
+    When ``configured=False`` the transcript was not generated — the student
+    should paste or edit the transcript manually.  This is NOT an error; it is
+    a graceful fallback for deployments that have not set up a transcription
+    provider.
+    """
+
+    proof_session_id: str
+    transcript_text: str = ""
+    transcription_status: str = "uploaded"   # transcript_ready when successful
+    transcript_reviewed: bool = False
+    provider_used: str = "none"
+    configured: bool = False
+    message: str = ""

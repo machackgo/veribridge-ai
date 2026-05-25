@@ -17,6 +17,8 @@ import {
   analyzeProjectDefense,
   getProjectDefenseAnalysis,
   uploadProjectDefenseMedia,
+  transcribeDefenseMedia,
+  type ProjectDefenseTranscribeResponse,
   type ExtensionProofSessionResponse,
   type ExtensionProofSessionStatus,
   type LiveWebsiteCheckConfidence,
@@ -2644,15 +2646,44 @@ function ProjectDefenseSection({
   const recordedBlobRef                           = useRef<Blob | null>(null)
   const timerRef                                  = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // ── Transcription state ────────────────────────────────────────────────────
+  const [transcribing, setTranscribing]       = useState(false)
+  const [transcribeMsg, setTranscribeMsg]     = useState<string | null>(null)
+  const [transcribeError, setTranscribeError] = useState<string | null>(null)
+
   // ── Derived (safe to compute even when hidden — values not rendered) ───────
   const transcriptWords = defenseTranscript.trim().split(/\s+/).filter(Boolean).length
   const canAnalyze      = transcriptWords >= 30 && !defenseAnalyzing
   const txStatus        = defenseAnalysis?.transcription_status ?? "not_started"
   const statusCfg       = TRANSCRIPTION_STATUS_CONFIG[txStatus] ?? TRANSCRIPTION_STATUS_CONFIG.not_started
+  // "Generate Transcript" button shows whenever any media is registered
+  const hasMedia = !!(uploadResult || recUploadResult || defenseAnalysis?.media_filename)
 
   // ── Guard — render nothing until proof is uploaded ────────────────────────
   const uploadedOrLater: ExtensionProofSessionStatus[] = ["uploaded_pending_analysis", "analyzing", "completed"]
   if (!uploadedOrLater.includes(session.status)) return null
+
+  // ── Transcription ──────────────────────────────────────────────────────────
+  async function handleTranscribe() {
+    setTranscribing(true)
+    setTranscribeMsg(null)
+    setTranscribeError(null)
+    try {
+      const result: ProjectDefenseTranscribeResponse = await transcribeDefenseMedia(session.id)
+      if (!result.configured) {
+        // Provider not set up — show manual fallback message, keep textarea editable
+        setTranscribeMsg(result.message)
+      } else {
+        // Success — populate the textarea so the student can review/edit
+        onTranscriptChange(result.transcript_text)
+        setTranscribeMsg(result.message)
+      }
+    } catch (err) {
+      setTranscribeError(err instanceof Error ? err.message : "Transcription failed. Please try again.")
+    } finally {
+      setTranscribing(false)
+    }
+  }
 
   // ── File select ────────────────────────────────────────────────────────────
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -3052,6 +3083,61 @@ function ProjectDefenseSection({
               <span style={{ fontSize: 11, color: "#9ca3af" }}> · .{defenseAnalysis.media_type}</span>
             )}
           </span>
+        </div>
+      )}
+
+      {/* ── Generate Transcript ───────────────────────────────────────────── */}
+      {hasMedia && txStatus !== "analysis_complete" && (
+        <div style={{
+          border: "1px solid #e0e7ff", borderRadius: 12, background: "#f5f3ff",
+          padding: "12px 16px", display: "grid", gap: 10,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => void handleTranscribe()}
+              disabled={transcribing || defenseAnalyzing}
+              style={{
+                padding: "9px 18px", borderRadius: 9,
+                background: transcribing || defenseAnalyzing ? "#f3f4f6" : "#4f46e5",
+                color: transcribing || defenseAnalyzing ? "#9ca3af" : "#fff",
+                border: "1px solid transparent",
+                fontSize: 13, fontWeight: 700,
+                cursor: transcribing || defenseAnalyzing ? "not-allowed" : "pointer",
+              }}
+            >
+              {transcribing ? "Transcribing…" : "✦ Generate Transcript"}
+            </button>
+            <span style={{ fontSize: 11, color: "#6d28d9", lineHeight: 1.5 }}>
+              Auto-generate transcript from your uploaded or recorded media.
+            </span>
+          </div>
+
+          {/* Success / not-configured message */}
+          {transcribeMsg && !transcribeError && (
+            <div style={{
+              background: transcribeMsg.toLowerCase().includes("not configured") ? "#fffbeb" : "#f0fdf4",
+              border: `1px solid ${transcribeMsg.toLowerCase().includes("not configured") ? "#fef08a" : "#bbf7d0"}`,
+              borderRadius: 8, padding: "8px 12px", fontSize: 12,
+              color: transcribeMsg.toLowerCase().includes("not configured") ? "#854d0e" : "#065f46",
+              lineHeight: 1.55,
+            }}>
+              {transcribeMsg.toLowerCase().includes("not configured")
+                ? <>⚠ {transcribeMsg}</>
+                : <>✓ {transcribeMsg}</>
+              }
+            </div>
+          )}
+
+          {/* Error */}
+          {transcribeError && (
+            <div role="alert" style={{
+              background: "#fef2f2", border: "1px solid #fecaca",
+              borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#991b1b",
+            }}>
+              {transcribeError}
+            </div>
+          )}
         </div>
       )}
 

@@ -1527,3 +1527,47 @@ export async function updateDefenseTranscript(
   }
   return res.json()
 }
+
+// ── Project Defense Transcription ─────────────────────────────────────────────
+
+/**
+ * Response from POST /defense/transcribe.
+ *
+ * When configured=false the backend has no transcription provider set up.
+ * The frontend shows the manual-paste fallback instead of throwing an error.
+ */
+export interface ProjectDefenseTranscribeResponse {
+  proof_session_id: string
+  transcript_text: string
+  transcription_status: string
+  transcript_reviewed: boolean
+  provider_used: string
+  configured: boolean
+  message: string
+}
+
+/**
+ * Ask the backend to transcribe the registered defense media file.
+ *
+ * Always resolves (never throws) when the provider is not configured —
+ * check response.configured to know whether transcript_text was populated.
+ * Only throws on HTTP errors unrelated to provider availability (4xx / 5xx).
+ */
+export async function transcribeDefenseMedia(
+  sessionId: string,
+): Promise<ProjectDefenseTranscribeResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/defense/transcribe`,
+    { method: "POST" },
+  )
+  // 404 = no media registered yet
+  if (res.status === 404) throw new Error("No media file registered. Upload or record first.")
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Transcription failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  // 200 with configured=false is a valid, non-error response
+  return res.json() as Promise<ProjectDefenseTranscribeResponse>
+}
