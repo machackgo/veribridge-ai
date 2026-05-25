@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    ai_domain_review,
     debug,
     evidence_access_links,
     extension_proof,
@@ -128,6 +129,11 @@ api_router.include_router(
     verification_review.router,
     prefix="/student/extension-proof/sessions",
     tags=["verification-review"],
+)
+api_router.include_router(
+    ai_domain_review.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["ai-domain-review"],
 )
 api_router.include_router(
     verification_review.admin_router,

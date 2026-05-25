@@ -73,6 +73,35 @@ class Settings(BaseSettings):
         alias="SUPABASE_DEFENSE_MEDIA_BUCKET",
     )
 
+    # ── AI Domain Reviewer ────────────────────────────────────────
+    # Anthropic API key for AI Domain Reviewer agents (Astra, Atlas, Nova, etc.)
+    #
+    # When ANTHROPIC_API_KEY is absent (or empty), the domain reviewer service
+    # falls back to deterministic rubric-based scoring automatically.
+    # No exceptions are raised — the response includes a clear note:
+    #   "LLM reviewer not configured; using rubric-based deterministic review."
+    #
+    # This means local development and all tests work without any Anthropic config.
+    anthropic_api_key: SecretStr = Field(
+        default=SecretStr(""),
+        alias="ANTHROPIC_API_KEY",
+    )
+
+    # Model used for AI domain reviewer agents.
+    #
+    # Leave empty (default) to use the deterministic fallback.
+    # In production, set AI_REVIEWER_MODEL to a real Anthropic model ID
+    # (e.g. "claude-sonnet-4-6" or "claude-opus-4-7").
+    # Do NOT hardcode a model name here — configure it per environment via .env.
+    #
+    # The service validates that this is non-empty AND that ANTHROPIC_API_KEY is
+    # set before attempting any LLM call.  If either is missing, the deterministic
+    # fallback is used and the review result notes the reason.
+    ai_reviewer_model: str = Field(
+        default="",
+        alias="AI_REVIEWER_MODEL",
+    )
+
     # ── Transcription ─────────────────────────────────────────────
     # Which transcription provider to use for project defense audio/video.
     # Values: none | openai | local_whisper   (default: none)
@@ -192,6 +221,19 @@ class Settings(BaseSettings):
     def auth_configured(self) -> bool:
         """True when JWT verification is possible (secret is present)."""
         return bool(self.supabase_jwt_secret.get_secret_value())
+
+    @property
+    def anthropic_configured(self) -> bool:
+        """True only when BOTH ANTHROPIC_API_KEY and AI_REVIEWER_MODEL are set.
+
+        When False the AI Domain Reviewer falls back to deterministic rubric-based
+        scoring without making any network calls.  Local development and all tests
+        work without any Anthropic configuration.
+        """
+        return bool(
+            self.anthropic_api_key.get_secret_value()
+            and self.ai_reviewer_model.strip()
+        )
 
 
 @lru_cache
