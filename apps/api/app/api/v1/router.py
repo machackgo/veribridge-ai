@@ -16,12 +16,13 @@ from app.api.v1.endpoints import (
     skill_evidence,
     skill_evidence_profile,
     student,
+    verification_readiness,
+    verification_review,
     website_analyzer,
     website_browser_verification_runs,
     website_proof_sessions,
     website_semantic_verification_results,
     website_verification_runs,
-    verification_readiness,
     workflow_privacy_scan,
 )
 
@@ -122,6 +123,16 @@ api_router.include_router(
     verification_readiness.router,
     prefix="/student/extension-proof/sessions",
     tags=["verification-readiness"],
+)
+api_router.include_router(
+    verification_review.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["verification-review"],
+)
+api_router.include_router(
+    verification_review.admin_router,
+    prefix="/admin/verification-reviews",
+    tags=["verification-review-admin"],
 )
 api_router.include_router(
     website_proof_sessions.router,

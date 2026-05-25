@@ -33,6 +33,7 @@ import {
   type TranscriptionStatus,
   type ReadinessLevel,
 } from "@/lib/api"
+import { VerificationReviewSection } from "./verification-review-section"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -4279,6 +4280,18 @@ export function ExtensionProofPanel({
         {readinessReport && (
           <VerificationReadinessReportCard report={readinessReport} />
         )}
+
+        {/* ── Verification Review ────────────────────────────────────────── */}
+        {/* Shown after the readiness report is available.
+            Track A: AI Review MVP — 5-minute review window.
+            Track B: Human/Faculty/Expert review placeholders (coming soon).
+            IMPORTANT: human_verified is NEVER set by AI review. */}
+        <VerificationReviewSection
+          sessionId={session.id}
+          readinessScore={readinessReport?.readiness_score ?? 0}
+          readinessLevel={readinessReport?.readiness_level ?? "insufficient"}
+          readinessReady={readinessReport !== null}
+        />
 
         {/* Expired */}
         {isExpired && (

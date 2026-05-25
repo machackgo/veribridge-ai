@@ -1584,3 +1584,189 @@ export async function transcribeDefenseMedia(
   // 200 with configured=false is a valid, non-error response
   return res.json() as Promise<ProjectDefenseTranscribeResponse>
 }
+
+// ── Verification Review ───────────────────────────────────────────────────────
+
+/**
+ * AI review status values (Track A).
+ * "human_verified" is intentionally absent — AI review can never produce it.
+ */
+export type AiReviewStatus =
+  | "not_submitted"
+  | "submitted_for_ai_review"
+  | "ai_review_in_progress"
+  | "ai_approved_for_sharing"
+  | "needs_more_evidence"
+  | "manual_review_recommended"
+  | "privacy_flagged"
+
+/** Human / faculty / expert review status values (Track B). */
+export type HumanReviewStatus =
+  | "human_review_not_requested"
+  | "human_review_requested"
+  | "faculty_review_pending"
+  | "company_review_pending"
+  | "domain_expert_review_pending"
+  | "faculty_reviewed"
+  | "company_reviewed"
+  | "domain_expert_reviewed"
+  | "human_verified"
+  | "human_review_rejected"
+
+export type ReviewerRole =
+  | "veribridge_admin"
+  | "faculty_reviewer"
+  | "company_reviewer"
+  | "domain_expert"
+  | "recruiter_reviewer"
+
+export type AssignmentStatus =
+  | "pending"
+  | "accepted"
+  | "declined"
+  | "completed"
+  | "withdrawn"
+
+export interface HumanReviewAssignment {
+  id: string
+  review_request_id: string
+  reviewer_name: string
+  reviewer_role: ReviewerRole
+  reviewer_field: string
+  status: AssignmentStatus
+  assigned_at: string
+  completed_at: string | null
+  reviewer_decision: "approved" | "rejected" | "needs_revision" | "escalate" | null
+  verified_skills: string[]
+  requested_improvements: string[]
+}
+
+export interface VerificationReviewResponse {
+  id: string
+  proof_session_id: string
+  user_id: string
+
+  // Track A — AI review
+  ai_review_status: AiReviewStatus
+  ai_review_started_at: string | null
+  ai_review_completed_at: string | null
+  ai_decision_summary: string
+
+  // Track B — Human review
+  human_review_status: HumanReviewStatus
+  human_review_requested_at: string | null
+
+  // Readiness snapshot
+  readiness_score: number
+  readiness_level: "strong" | "moderate" | "weak" | "insufficient"
+
+  // Lifecycle
+  submitted_at: string | null
+  created_at: string
+  updated_at: string
+
+  // Human assignments (empty in MVP)
+  assignments: HumanReviewAssignment[]
+}
+
+export interface AdminReviewListItem {
+  id: string
+  proof_session_id: string
+  user_id: string
+  ai_review_status: AiReviewStatus
+  human_review_status: HumanReviewStatus
+  readiness_score: number
+  readiness_level: "strong" | "moderate" | "weak" | "insufficient"
+  submitted_at: string | null
+  ai_review_completed_at: string | null
+  ai_decision_summary: string
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Submit a proof session for VeriBridge AI review.
+ *
+ * Reads the current readiness score + level from the already-computed report
+ * and sends them as query params.  The backend reads the privacy scan result
+ * and applies decision rules.
+ *
+ * Wording: "ai_approved_for_sharing" ≠ "Human Verified".
+ * human_verified is NEVER returned by this call.
+ */
+export async function submitForAiReview(
+  sessionId: string,
+  readinessScore: number,
+  readinessLevel: string,
+): Promise<VerificationReviewResponse> {
+  const params = new URLSearchParams({
+    readiness_score: String(readinessScore),
+    readiness_level: readinessLevel,
+  })
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/submit-ai-review?${params}`,
+    { method: "POST" },
+  )
+  if (res.status === 409) {
+    const data = (await res.json()) as { detail?: { message?: string; code?: string } }
+    const msg = data.detail?.message ?? "Review already submitted."
+    throw new Error(msg)
+  }
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `AI review submission failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json() as Promise<VerificationReviewResponse>
+}
+
+/**
+ * Get the current AI + human review status for a proof session.
+ * Returns null if the student has not yet submitted for review (404).
+ */
+export async function getReviewStatus(
+  sessionId: string,
+): Promise<VerificationReviewResponse | null> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/review-status`,
+  )
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Failed to fetch review status (HTTP ${res.status}).`)
+  return res.json() as Promise<VerificationReviewResponse>
+}
+
+/**
+ * Admin: list all verification review requests.
+ */
+export async function adminListReviews(
+  limit = 100,
+  offset = 0,
+): Promise<AdminReviewListItem[]> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  const res = await fetchAPI(`/api/v1/admin/verification-reviews?${params}`)
+  if (!res.ok) throw new Error(`Failed to fetch review list (HTTP ${res.status}).`)
+  return res.json() as Promise<AdminReviewListItem[]>
+}
+
+/**
+ * Admin: manually override the AI review decision.
+ * Does NOT set human_verified — that requires a human reviewer action.
+ */
+export async function adminSetDecision(
+  reviewId: string,
+  aiReviewStatus: AiReviewStatus,
+  aiDecisionSummary: string,
+): Promise<VerificationReviewResponse> {
+  const res = await fetchAPI(`/api/v1/admin/verification-reviews/${encodeURIComponent(reviewId)}/decision`, {
+    method: "POST",
+    body: JSON.stringify({ ai_review_status: aiReviewStatus, ai_decision_summary: aiDecisionSummary }),
+  })
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Admin decision failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json() as Promise<VerificationReviewResponse>
+}
