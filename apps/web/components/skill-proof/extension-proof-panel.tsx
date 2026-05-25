@@ -2618,8 +2618,7 @@ function ProjectDefenseSection({
   onTranscriptChange: (v: string) => void
   onAnalyze: () => void
 }) {
-  const uploadedOrLater: ExtensionProofSessionStatus[] = ["uploaded_pending_analysis", "analyzing", "completed"]
-  if (!uploadedOrLater.includes(session.status)) return null
+  // ── ALL hooks must come before any conditional return (Rules of Hooks) ────
 
   // ── Tab ────────────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<DefenseInputTab>("upload")
@@ -2645,11 +2644,15 @@ function ProjectDefenseSection({
   const recordedBlobRef                           = useRef<Blob | null>(null)
   const timerRef                                  = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // ── Derived ────────────────────────────────────────────────────────────────
+  // ── Derived (safe to compute even when hidden — values not rendered) ───────
   const transcriptWords = defenseTranscript.trim().split(/\s+/).filter(Boolean).length
   const canAnalyze      = transcriptWords >= 30 && !defenseAnalyzing
   const txStatus        = defenseAnalysis?.transcription_status ?? "not_started"
   const statusCfg       = TRANSCRIPTION_STATUS_CONFIG[txStatus] ?? TRANSCRIPTION_STATUS_CONFIG.not_started
+
+  // ── Guard — render nothing until proof is uploaded ────────────────────────
+  const uploadedOrLater: ExtensionProofSessionStatus[] = ["uploaded_pending_analysis", "analyzing", "completed"]
+  if (!uploadedOrLater.includes(session.status)) return null
 
   // ── File select ────────────────────────────────────────────────────────────
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
