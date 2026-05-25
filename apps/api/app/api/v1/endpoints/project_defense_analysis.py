@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -246,25 +247,49 @@ async def upload_project_defense_media(
             },
         )
 
-    # ── Optional Supabase Storage upload ──────────────────────────────────────
+    # ── Supabase Storage upload ────────────────────────────────────────────────
+    # When a bucket is configured, the file MUST be stored — failure is not
+    # gracefully swallowed, because a missing file breaks transcription later.
     storage_path: str | None = None
     media_url: str | None = None
-    storage_configured = bool(_MEDIA_BUCKET)
+    bucket_configured = bool(_MEDIA_BUCKET)
 
-    if storage_configured and not isinstance(db, dict):
+    if bucket_configured and not isinstance(db, dict):
+        # Include a server-side timestamp to avoid path collisions on re-upload
+        ts = int(time.time())
+        storage_path = f"{user_id}/{session_id}/{ts}_{filename}"
+
         try:
-            storage_path = f"{user_id}/{session_id}/{filename}"
             db.storage.from_(_MEDIA_BUCKET).upload(
-                storage_path, content,
+                storage_path,
+                content,
                 file_options={"content-type": file.content_type or "application/octet-stream"},
             )
+        except Exception as exc:
+            logger.error(
+                "Supabase Storage upload failed for session %s (bucket=%s path=%s): %s",
+                session_id, _MEDIA_BUCKET, storage_path, exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "code": "storage_upload_failed",
+                    "message": (
+                        "Could not store the media file. "
+                        "Check Supabase Storage configuration and bucket permissions, "
+                        "then try again."
+                    ),
+                },
+            )
+
+        # Retrieve the public URL — non-fatal if it fails (we have storage_path)
+        try:
             url_result = db.storage.from_(_MEDIA_BUCKET).get_public_url(storage_path)
             media_url = url_result if isinstance(url_result, str) else None
         except Exception as exc:
-            logger.warning("Supabase Storage upload failed (non-critical): %s", exc)
-            storage_path = None
-            media_url = None
-            storage_configured = False
+            logger.warning(
+                "Could not retrieve public URL for %s: %s", storage_path, exc
+            )
 
     # ── Register metadata in DB ────────────────────────────────────────────────
     service = ProjectDefenseAnalysisService(db)
@@ -278,12 +303,17 @@ async def upload_project_defense_media(
         media_storage_path=storage_path,
     )
 
-    msg = (
-        "Media uploaded and stored. Automatic transcription is not available yet — "
-        "paste or edit your transcript below, then click Analyze Project Defense."
-        if not storage_configured
-        else "Media uploaded and stored."
-    )
+    # Only report "uploaded and stored" when a file is actually in storage.
+    # When no bucket is configured, be honest: the file is registered but
+    # auto-transcription requires a configured storage bucket.
+    if storage_path:
+        msg = "Media uploaded and stored."
+    else:
+        msg = (
+            "Media registered. No storage bucket is configured, so automatic "
+            "transcription is unavailable — paste or edit your transcript below, "
+            "then click Analyze Project Defense."
+        )
 
     return ProjectDefenseMediaUploadResponse(
         proof_session_id=session_id,
@@ -293,7 +323,7 @@ async def upload_project_defense_media(
         media_url=media_url,
         media_storage_path=storage_path,
         transcription_status="uploaded",
-        storage_configured=storage_configured,
+        storage_configured=bucket_configured,
         message=msg,
     )
 

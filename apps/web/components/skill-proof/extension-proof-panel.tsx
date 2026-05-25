@@ -2656,8 +2656,16 @@ function ProjectDefenseSection({
   const canAnalyze      = transcriptWords >= 30 && !defenseAnalyzing
   const txStatus        = defenseAnalysis?.transcription_status ?? "not_started"
   const statusCfg       = TRANSCRIPTION_STATUS_CONFIG[txStatus] ?? TRANSCRIPTION_STATUS_CONFIG.not_started
-  // "Generate Transcript" button shows whenever any media is registered
+  // hasMedia: any media filename is registered (controls media badge, status notice)
   const hasMedia = !!(uploadResult || recUploadResult || defenseAnalysis?.media_filename)
+  // hasStoredFile: a file is actually persisted in storage and retrievable for transcription.
+  // Generate Transcript is only enabled when this is true; without a storage path the
+  // transcription endpoint would return 422 "Could not retrieve the media file".
+  const hasStoredFile = !!(
+    uploadResult?.media_storage_path ||
+    recUploadResult?.media_storage_path ||
+    defenseAnalysis?.media_storage_path
+  )
 
   // ── Guard — render nothing until proof is uploaded ────────────────────────
   const uploadedOrLater: ExtensionProofSessionStatus[] = ["uploaded_pending_analysis", "analyzing", "completed"]
@@ -2907,12 +2915,18 @@ function ProjectDefenseSection({
                 </div>
               )}
 
-              {/* Upload success */}
+              {/* Upload success / no-storage advisory */}
               {uploadResult && (
-                <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#065f46" }}>
-                  ✓ <strong>{uploadResult.media_filename}</strong> uploaded.{" "}
-                  {uploadResult.message}
-                </div>
+                uploadResult.media_storage_path ? (
+                  <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#065f46" }}>
+                    ✓ <strong>{uploadResult.media_filename}</strong> uploaded and stored.
+                  </div>
+                ) : (
+                  <div style={{ background: "#fffbeb", border: "1px solid #fef08a", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#854d0e" }}>
+                    ⚠ <strong>{uploadResult.media_filename}</strong> registered, but no storage bucket is configured —
+                    {" "}automatic transcription is unavailable. Paste your transcript manually below.
+                  </div>
+                )
               )}
 
               {/* Privacy note */}
@@ -3017,9 +3031,16 @@ function ProjectDefenseSection({
                     </div>
                   )}
                   {recUploadResult && (
-                    <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#065f46" }}>
-                      ✓ Recording saved. {recUploadResult.message}
-                    </div>
+                    recUploadResult.media_storage_path ? (
+                      <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#065f46" }}>
+                        ✓ Recording saved. Media uploaded and stored.
+                      </div>
+                    ) : (
+                      <div style={{ background: "#fffbeb", border: "1px solid #fef08a", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#854d0e" }}>
+                        ⚠ Recording saved locally, but no storage bucket is configured —
+                        {" "}automatic transcription is unavailable. Paste your transcript manually below.
+                      </div>
+                    )
                   )}
                 </div>
               )}
@@ -3087,7 +3108,7 @@ function ProjectDefenseSection({
       )}
 
       {/* ── Generate Transcript ───────────────────────────────────────────── */}
-      {hasMedia && txStatus !== "analysis_complete" && (
+      {hasStoredFile && txStatus !== "analysis_complete" && (
         <div style={{
           border: "1px solid #e0e7ff", borderRadius: 12, background: "#f5f3ff",
           padding: "12px 16px", display: "grid", gap: 10,

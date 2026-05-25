@@ -18,7 +18,7 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1060,3 +1060,445 @@ class TestRegisterMediaFix:
         assert tx_r.status_code == 200, tx_r.text
         assert tx_r.json()["configured"] is True
         assert "full-stack" in tx_r.json()["transcript_text"]
+
+
+# ── Storage upload tests ───────────────────────────────────────────────────────
+
+# A minimal non-dict client that supports both session lookup (via .table()) and
+# storage (.storage).  We use it to exercise the real storage upload code path
+# without a live Supabase connection.
+
+class _FakeTableQuery:
+    """Very thin fluent query builder backed by an in-memory dict."""
+    def __init__(self, store: dict, name: str):
+        self._store = store
+        self._name = name
+        self._filters: dict = {}
+        self._upsert_data: dict | None = None
+        self._conflict: str | None = None
+
+    def select(self, *_):
+        return self
+
+    def eq(self, field: str, value):
+        self._filters[field] = value
+        return self
+
+    def maybe_single(self):
+        return self
+
+    def upsert(self, data: dict, **kwargs):
+        self._upsert_data = data
+        self._conflict = kwargs.get("on_conflict", "")
+        return self
+
+    def execute(self):
+        tbl = self._store.setdefault(self._name, {})
+        if self._upsert_data is not None:
+            key = self._upsert_data.get(self._conflict) if self._conflict else None
+            if key:
+                row = {**tbl.get(key, {}), **self._upsert_data}
+                tbl[key] = row
+                return type("R", (), {"data": [row]})()
+            return type("R", (), {"data": []})()
+        # select
+        for row in tbl.values():
+            if all(row.get(k) == v for k, v in self._filters.items()):
+                return type("R", (), {"data": row})()
+        return type("R", (), {"data": None})()
+
+
+class _FakeSupabaseWithStorage:
+    """
+    Non-dict Supabase-like client for storage tests.
+    - NOT a dict → the endpoint's storage upload block runs.
+    - .table() delegates to the in-memory store.
+    - .storage is a configurable MagicMock.
+    """
+    def __init__(self, store: dict, bucket: MagicMock):
+        self._store = store
+        self.storage = MagicMock()
+        self.storage.from_.return_value = bucket
+
+    def table(self, name: str) -> _FakeTableQuery:
+        return _FakeTableQuery(self._store, name)
+
+
+def _make_bucket(
+    upload_side_effect=None,
+    public_url: str = "https://supabase.example.co/storage/path",
+    download_bytes: bytes = b"fake-audio-bytes",
+) -> MagicMock:
+    """Build a mock Supabase Storage bucket with sensible defaults."""
+    b = MagicMock()
+    if upload_side_effect is not None:
+        b.upload.side_effect = upload_side_effect
+    else:
+        b.upload.return_value = None  # success
+    b.get_public_url.return_value = public_url
+    b.download.return_value = download_bytes
+    return b
+
+
+@pytest.fixture()
+def storage_mem_store() -> dict:
+    return {}
+
+
+@pytest.fixture()
+def storage_bucket() -> MagicMock:
+    return _make_bucket()
+
+
+@pytest.fixture()
+def fake_supabase(storage_mem_store: dict, storage_bucket: MagicMock) -> _FakeSupabaseWithStorage:
+    return _FakeSupabaseWithStorage(storage_mem_store, storage_bucket)
+
+
+@pytest.fixture()
+def storage_client(
+    storage_mem_store: dict,
+    fake_supabase: _FakeSupabaseWithStorage,
+) -> TestClient:
+    """
+    Test client using the fake Supabase client (not a dict) so storage upload
+    code runs.  Bucket is pre-configured to succeed.
+    """
+    from app.api.v1.endpoints import project_defense_analysis as ep
+
+    app.dependency_overrides[get_current_user_id] = lambda: DEMO_USER_ID
+    app.dependency_overrides[get_db] = lambda: fake_supabase
+    with patch.object(ep, "_MEDIA_BUCKET", "project-defense-media"):
+        yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def _make_storage_session(
+    storage_mem_store: dict,
+    session_id: str = "storage-sess-1",
+) -> str:
+    """Pre-populate an extension-proof session row in the in-memory store."""
+    from app.services.extension_proof_service import _TABLE as SESSION_TABLE
+    storage_mem_store.setdefault(SESSION_TABLE, {})[session_id] = {
+        "id": session_id,
+        "user_id": DEMO_USER_ID,
+        "skill_evidence_id": EVIDENCE_ID,
+        "status": "uploaded_pending_analysis",
+        "final_verification_status": "pending",
+    }
+    return session_id
+
+
+class TestStorageUpload:
+    """
+    Tests for the Supabase Storage upload path in upload_project_defense_media.
+
+    These tests use _FakeSupabaseWithStorage (not the plain dict mem_store)
+    so that 'not isinstance(db, dict)' is True and the real storage code runs.
+    """
+
+    def test_upload_calls_storage_with_correct_bytes(
+        self,
+        storage_client: TestClient,
+        storage_mem_store: dict,
+        storage_bucket: MagicMock,
+    ):
+        """
+        upload-media must call storage.from_(bucket).upload(path, file_bytes, ...)
+        with the exact bytes that were sent.
+        """
+        session_id = _make_storage_session(storage_mem_store)
+        file_bytes = b"fake-audio-content-bytes-1234"
+
+        r = storage_client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("talk.mp3", file_bytes, "audio/mpeg")},
+        )
+
+        assert r.status_code in (200, 201), r.text
+        storage_bucket.upload.assert_called_once()
+        call_args = storage_bucket.upload.call_args
+        # Second positional arg is the file bytes
+        actual_bytes = call_args[0][1] if call_args[0] else call_args[1].get("content")
+        assert actual_bytes == file_bytes, "Storage upload must use the received file bytes"
+
+    def test_upload_returns_media_storage_path(
+        self,
+        storage_client: TestClient,
+        storage_mem_store: dict,
+    ):
+        """
+        Response must contain a non-null media_storage_path when storage succeeds.
+        Without it the transcription endpoint has nothing to download.
+        """
+        session_id = _make_storage_session(storage_mem_store)
+
+        r = storage_client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("voice.webm", b"webm-audio", "audio/webm")},
+        )
+
+        assert r.status_code in (200, 201), r.text
+        data = r.json()
+        assert data["media_storage_path"] is not None, (
+            "media_storage_path must be set in the response when storage succeeds"
+        )
+        assert "voice.webm" in data["media_storage_path"]
+
+    def test_storage_path_contains_timestamp(
+        self,
+        storage_client: TestClient,
+        storage_mem_store: dict,
+        storage_bucket: MagicMock,
+    ):
+        """
+        The storage path must include a server-side timestamp so that re-uploading
+        the same filename produces a unique path and doesn't overwrite the previous file.
+        """
+        import time as t
+        before = int(t.time())
+
+        session_id = _make_storage_session(storage_mem_store)
+        r = storage_client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("defense.mp3", b"audio", "audio/mpeg")},
+        )
+
+        after = int(t.time())
+        assert r.status_code in (200, 201), r.text
+
+        path: str = r.json()["media_storage_path"]
+        # Path format: {user_id}/{session_id}/{timestamp}_{filename}
+        # Extract the timestamp part
+        parts = path.split("/")
+        assert len(parts) >= 3, f"Unexpected path format: {path}"
+        ts_and_name = parts[-1]  # e.g. "1748123456_defense.mp3"
+        ts_str = ts_and_name.split("_")[0]
+        assert ts_str.isdigit(), f"Expected timestamp prefix in path segment '{ts_and_name}'"
+        ts_val = int(ts_str)
+        assert before <= ts_val <= after + 2, (
+            f"Timestamp {ts_val} should be between {before} and {after}"
+        )
+
+    def test_storage_path_saved_to_db(
+        self,
+        storage_client: TestClient,
+        storage_mem_store: dict,
+    ):
+        """
+        The media_storage_path returned by upload-media must be persisted in the DB
+        so the transcription endpoint can retrieve the file later.
+        """
+        from app.services.project_defense_analysis_service import (
+            ProjectDefenseAnalysisService,
+            _TABLE as DEFENSE_TABLE,
+        )
+        session_id = _make_storage_session(storage_mem_store)
+
+        r = storage_client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("recording.webm", b"webm-bytes", "audio/webm")},
+        )
+
+        assert r.status_code in (200, 201), r.text
+        response_path = r.json()["media_storage_path"]
+        assert response_path is not None
+
+        # The same path must be in the DB row (so transcription can find it)
+        db_row = storage_mem_store.get(DEFENSE_TABLE, {}).get(session_id)
+        assert db_row is not None, "No DB row created after upload"
+        assert db_row.get("media_storage_path") == response_path, (
+            "media_storage_path in DB must match what was returned in the response"
+        )
+
+    def test_failed_storage_upload_returns_502_not_201(
+        self,
+        storage_mem_store: dict,
+        storage_bucket: MagicMock,
+    ):
+        """
+        When Supabase Storage upload raises an exception, the endpoint must return
+        HTTP 502 — NOT 201 with a fake-success message.
+        This is the root cause of the 'Supabase Storage bucket is EMPTY' bug.
+        """
+        from app.api.v1.endpoints import project_defense_analysis as ep
+
+        # Make storage upload fail
+        storage_bucket.upload.side_effect = Exception("bucket does not exist or access denied")
+        fake_db = _FakeSupabaseWithStorage(storage_mem_store, storage_bucket)
+        session_id = _make_storage_session(storage_mem_store)
+
+        app.dependency_overrides[get_current_user_id] = lambda: DEMO_USER_ID
+        app.dependency_overrides[get_db] = lambda: fake_db
+        try:
+            with patch.object(ep, "_MEDIA_BUCKET", "project-defense-media"):
+                tc = TestClient(app)
+                r = tc.post(
+                    f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+                    files={"file": ("audio.mp3", b"bytes", "audio/mpeg")},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert r.status_code == 502, (
+            f"Expected 502 when storage fails, got {r.status_code}: {r.text}"
+        )
+        detail = r.json()["detail"]
+        assert detail["code"] == "storage_upload_failed"
+
+    def test_failed_storage_upload_does_not_store_metadata(
+        self,
+        storage_mem_store: dict,
+        storage_bucket: MagicMock,
+    ):
+        """
+        After a storage failure (502), no media row should be written to the DB.
+        A misleading DB row would make the transcription endpoint attempt to
+        download from a path that never existed.
+        """
+        from app.api.v1.endpoints import project_defense_analysis as ep
+        from app.services.project_defense_analysis_service import _TABLE as DEFENSE_TABLE
+
+        storage_bucket.upload.side_effect = Exception("storage error")
+        fake_db = _FakeSupabaseWithStorage(storage_mem_store, storage_bucket)
+        session_id = _make_storage_session(storage_mem_store)
+
+        app.dependency_overrides[get_current_user_id] = lambda: DEMO_USER_ID
+        app.dependency_overrides[get_db] = lambda: fake_db
+        try:
+            with patch.object(ep, "_MEDIA_BUCKET", "project-defense-media"):
+                tc = TestClient(app)
+                tc.post(
+                    f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+                    files={"file": ("audio.mp3", b"bytes", "audio/mpeg")},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        db_row = storage_mem_store.get(DEFENSE_TABLE, {}).get(session_id)
+        assert db_row is None, (
+            "No DB row should be created when storage upload fails — a row with "
+            "null storage_path would make transcription endpoint attempt to "
+            "download from a non-existent path."
+        )
+
+    def test_no_bucket_configured_returns_201_with_honest_message(
+        self,
+        storage_mem_store: dict,
+        storage_bucket: MagicMock,
+    ):
+        """
+        When no storage bucket is configured (env var empty), upload returns
+        201 but is honest: message says no storage configured, not 'uploaded and stored'.
+        """
+        from app.api.v1.endpoints import project_defense_analysis as ep
+
+        fake_db = _FakeSupabaseWithStorage(storage_mem_store, storage_bucket)
+        session_id = _make_storage_session(storage_mem_store)
+
+        app.dependency_overrides[get_current_user_id] = lambda: DEMO_USER_ID
+        app.dependency_overrides[get_db] = lambda: fake_db
+        try:
+            with patch.object(ep, "_MEDIA_BUCKET", ""):  # no bucket
+                tc = TestClient(app)
+                r = tc.post(
+                    f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+                    files={"file": ("audio.mp3", b"bytes", "audio/mpeg")},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert r.status_code in (200, 201), r.text
+        data = r.json()
+        assert data["media_storage_path"] is None
+        # Message must NOT claim the file was stored
+        assert "uploaded and stored" not in data["message"].lower(), (
+            "Message must not say 'uploaded and stored' when no storage is configured"
+        )
+        assert "storage" in data["message"].lower() or "paste" in data["message"].lower()
+        # Storage upload was never called
+        storage_bucket.upload.assert_not_called()
+
+    def test_storage_success_message_says_uploaded_and_stored(
+        self,
+        storage_client: TestClient,
+        storage_mem_store: dict,
+    ):
+        """
+        When storage upload succeeds, message must say 'uploaded and stored'
+        (or equivalent) so the student knows the file is safely persisted.
+        """
+        session_id = _make_storage_session(storage_mem_store)
+        r = storage_client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("demo.mp3", b"audio", "audio/mpeg")},
+        )
+        assert r.status_code in (200, 201), r.text
+        assert "uploaded and stored" in r.json()["message"].lower()
+
+    def test_transcribe_downloads_file_from_storage_path(
+        self,
+        storage_client: TestClient,
+        storage_mem_store: dict,
+        storage_bucket: MagicMock,
+    ):
+        """
+        After a successful upload, the transcription endpoint must download the
+        file using media_storage_path from the DB row.
+        """
+        from app.api.v1.endpoints import project_defense_analysis as ep
+
+        session_id = _make_storage_session(storage_mem_store)
+
+        # Upload the file
+        r = storage_client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("defense.mp3", b"real-audio-bytes", "audio/mpeg")},
+        )
+        assert r.status_code in (200, 201), r.text
+        stored_path = r.json()["media_storage_path"]
+        assert stored_path is not None
+
+        # Now transcribe — endpoint must call storage.download(stored_path)
+        mock_result = TranscriptionResult(
+            transcript_text="I built a data pipeline.", provider_used="openai"
+        )
+        with patch.object(ep, "_MEDIA_BUCKET", "project-defense-media"), \
+             patch("app.services.transcription_service.transcribe_audio", return_value=mock_result):
+            tx_r = storage_client.post(
+                f"/api/v1/student/extension-proof/sessions/{session_id}/defense/transcribe"
+            )
+
+        assert tx_r.status_code == 200, tx_r.text
+        storage_bucket.download.assert_called()
+        actual_path = storage_bucket.download.call_args[0][0]
+        assert actual_path == stored_path, (
+            f"Transcription should download from storage path {stored_path!r}, "
+            f"got {actual_path!r}"
+        )
+
+    def test_manual_transcript_still_works_without_storage(
+        self, client: TestClient, mem_store: dict
+    ):
+        """
+        Manual transcript analysis via POST /analyze/project-defense works even
+        with no media registered and no storage bucket configured.
+        This is the 'paste transcript' fallback path.
+        """
+        session_id = _make_session(client)
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/analyze/project-defense",
+            json={
+                "transcript_text": (
+                    "I built a TypeScript CLI tool that parses log files and generates reports. "
+                    "I used Node.js streams to handle large files without memory issues. "
+                    "I wrote unit tests with Jest and documented the API with JSDoc."
+                ),
+                "claimed_skills": ["TypeScript", "Node.js", "Jest"],
+                "proof_objective": "Demonstrate TypeScript CLI development",
+            },
+        )
+        assert r.status_code in (200, 201), r.text
+        data = r.json()
+        assert data["overall_defense_score"] > 0
+        assert data["transcription_status"] == "analysis_complete"
