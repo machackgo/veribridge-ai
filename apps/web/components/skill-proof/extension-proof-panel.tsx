@@ -16,6 +16,7 @@ import {
   getWorkflowPrivacyScan,
   analyzeProjectDefense,
   getProjectDefenseAnalysis,
+  uploadProjectDefenseMedia,
   type ExtensionProofSessionResponse,
   type ExtensionProofSessionStatus,
   type LiveWebsiteCheckConfidence,
@@ -26,6 +27,8 @@ import {
   type WorkflowPrivacyScanResponse,
   type WorkflowPrivacyScanStatus,
   type ProjectDefenseAnalysisResponse,
+  type ProjectDefenseMediaUploadResponse,
+  type TranscriptionStatus,
   type ReadinessLevel,
 } from "@/lib/api"
 
@@ -2568,81 +2571,501 @@ function ProjectDefenseResultCard({ analysis }: { analysis: ProjectDefenseAnalys
   )
 }
 
+type DefenseInputTab = "upload" | "record" | "paste"
+
+const ALLOWED_DEFENSE_MEDIA_EXTS = ["mp4", "mov", "webm", "mp3", "wav", "m4a"] as const
+const ALLOWED_DEFENSE_MEDIA_ACCEPT = ALLOWED_DEFENSE_MEDIA_EXTS.map(e => `.${e}`).join(",")
+const MAX_DEFENSE_MEDIA_MB = 200
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1_048_576) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1_048_576).toFixed(1)} MB`
+}
+
+function fmtSeconds(s: number): string {
+  const m = Math.floor(s / 60)
+  const sec = s % 60
+  return `${m}:${String(sec).padStart(2, "0")}`
+}
+
+const TRANSCRIPTION_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; border: string }> = {
+  not_started:           { label: "No media registered",                                      color: "#6b7280", bg: "#f9fafb", border: "#e5e7eb" },
+  uploaded:              { label: "Media uploaded — paste or edit your transcript below",      color: "#854d0e", bg: "#fffbeb", border: "#fef08a" },
+  transcription_pending: { label: "Transcription in progress — paste or edit your transcript", color: "#1d4ed8", bg: "#dbeafe", border: "#bfdbfe" },
+  transcript_ready:      { label: "Transcript ready — review it and click Analyze",            color: "#065f46", bg: "#dcfce7", border: "#bbf7d0" },
+  analysis_complete:     { label: "Analysis complete",                                         color: "#065f46", bg: "#f0fdf4", border: "#d1fae5" },
+}
+
 function ProjectDefenseSection({
   session,
   defenseAnalysis,
-  defenseVideoUrl,
   defenseTranscript,
   defenseAnalyzing,
   defenseAnalyzeError,
   defenseSimProgress,
   defenseSimStageIdx,
-  onVideoUrlChange,
   onTranscriptChange,
   onAnalyze,
 }: {
   session: ExtensionProofSessionResponse
   defenseAnalysis: ProjectDefenseAnalysisResponse | null
-  defenseVideoUrl: string
   defenseTranscript: string
   defenseAnalyzing: boolean
   defenseAnalyzeError: string | null
   defenseSimProgress: number
   defenseSimStageIdx: number
-  onVideoUrlChange: (v: string) => void
   onTranscriptChange: (v: string) => void
   onAnalyze: () => void
 }) {
   const uploadedOrLater: ExtensionProofSessionStatus[] = ["uploaded_pending_analysis", "analyzing", "completed"]
   if (!uploadedOrLater.includes(session.status)) return null
 
+  // ── Tab ────────────────────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<DefenseInputTab>("upload")
+
+  // ── File upload state ──────────────────────────────────────────────────────
+  const [mediaFile, setMediaFile]           = useState<File | null>(null)
+  const [uploading, setUploading]           = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadError, setUploadError]       = useState<string | null>(null)
+  const [uploadResult, setUploadResult]     = useState<ProjectDefenseMediaUploadResponse | null>(null)
+  const fileInputRef                        = useRef<HTMLInputElement>(null)
+
+  // ── Recording state ────────────────────────────────────────────────────────
+  const [recState, setRecState]                   = useState<"idle" | "recording" | "recorded">("idle")
+  const [recordingSeconds, setRecordingSeconds]   = useState(0)
+  const [recordedObjectUrl, setRecordedObjectUrl] = useState<string | null>(null)
+  const [recError, setRecError]                   = useState<string | null>(null)
+  const [recUploading, setRecUploading]           = useState(false)
+  const [recUploadProgress, setRecUploadProgress] = useState(0)
+  const [recUploadResult, setRecUploadResult]     = useState<ProjectDefenseMediaUploadResponse | null>(null)
+  const mediaRecorderRef                          = useRef<MediaRecorder | null>(null)
+  const chunksRef                                 = useRef<Blob[]>([])
+  const recordedBlobRef                           = useRef<Blob | null>(null)
+  const timerRef                                  = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // ── Derived ────────────────────────────────────────────────────────────────
   const transcriptWords = defenseTranscript.trim().split(/\s+/).filter(Boolean).length
-  const canAnalyze = transcriptWords >= 30 && !defenseAnalyzing
+  const canAnalyze      = transcriptWords >= 30 && !defenseAnalyzing
+  const txStatus        = defenseAnalysis?.transcription_status ?? "not_started"
+  const statusCfg       = TRANSCRIPTION_STATUS_CONFIG[txStatus] ?? TRANSCRIPTION_STATUS_CONFIG.not_started
+
+  // ── File select ────────────────────────────────────────────────────────────
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    if (!f) return
+    setUploadError(null)
+    setUploadResult(null)
+    const ext = f.name.split(".").pop()?.toLowerCase() ?? ""
+    if (!(ALLOWED_DEFENSE_MEDIA_EXTS as readonly string[]).includes(ext)) {
+      setUploadError(`File type .${ext} is not supported. Allowed: ${ALLOWED_DEFENSE_MEDIA_EXTS.join(", ")}.`)
+      setMediaFile(null)
+      return
+    }
+    if (f.size > MAX_DEFENSE_MEDIA_MB * 1024 * 1024) {
+      setUploadError(`File is ${fmtBytes(f.size)} — maximum is ${MAX_DEFENSE_MEDIA_MB} MB.`)
+      setMediaFile(null)
+      return
+    }
+    setMediaFile(f)
+  }
+
+  // ── File upload ────────────────────────────────────────────────────────────
+  async function handleUpload() {
+    if (!mediaFile) return
+    setUploading(true)
+    setUploadProgress(0)
+    setUploadError(null)
+    try {
+      const result = await uploadProjectDefenseMedia(session.id, mediaFile, pct => setUploadProgress(pct))
+      setUploadResult(result)
+      setUploadProgress(100)
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed. Please try again.")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  // ── Recording ──────────────────────────────────────────────────────────────
+  async function startRecording() {
+    setRecError(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mr = new MediaRecorder(stream)
+      mediaRecorderRef.current = mr
+      chunksRef.current = []
+      mr.ondataavailable = (e: BlobEvent) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+      mr.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" })
+        recordedBlobRef.current = blob
+        setRecordedObjectUrl(prev => {
+          if (prev) URL.revokeObjectURL(prev)
+          return URL.createObjectURL(blob)
+        })
+        setRecState("recorded")
+        stream.getTracks().forEach(t => t.stop())
+      }
+      mr.start()
+      setRecState("recording")
+      setRecordingSeconds(0)
+      timerRef.current = setInterval(() => setRecordingSeconds(s => s + 1), 1000)
+    } catch {
+      setRecError("Could not access microphone. Check browser permissions and try again.")
+    }
+  }
+
+  function stopRecording() {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
+    mediaRecorderRef.current?.stop()
+  }
+
+  function clearRecording() {
+    setRecordedObjectUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
+    setRecState("idle")
+    setRecordingSeconds(0)
+    setRecUploadResult(null)
+    recordedBlobRef.current = null
+  }
+
+  async function handleUploadRecording() {
+    const blob = recordedBlobRef.current
+    if (!blob) return
+    setRecUploading(true)
+    setRecUploadProgress(0)
+    setRecError(null)
+    const file = new File([blob], `defense-recording-${Date.now()}.webm`, { type: "audio/webm" })
+    try {
+      const result = await uploadProjectDefenseMedia(session.id, file, pct => setRecUploadProgress(pct))
+      setRecUploadResult(result)
+      setRecUploadProgress(100)
+    } catch (err) {
+      setRecError(err instanceof Error ? err.message : "Recording upload failed.")
+    } finally {
+      setRecUploading(false)
+    }
+  }
+
+  // ── Tab button style ───────────────────────────────────────────────────────
+  const tabBtn = (active: boolean): CSSProperties => ({
+    flex: 1,
+    padding: "8px 12px",
+    fontSize: 12,
+    fontWeight: active ? 700 : 500,
+    color: active ? "#065f46" : "#6b7280",
+    background: active ? "#f0fdf4" : "transparent",
+    border: "none",
+    borderBottom: active ? "2px solid #16a34a" : "2px solid transparent",
+    cursor: "pointer",
+    transition: "all 0.15s",
+  })
 
   return (
-    <div style={{ display: "grid", gap: 14 }}>
-      {/* Section header */}
+    <div style={{ display: "grid", gap: 16 }}>
+      {/* ── Section header ─────────────────────────────────────────────────── */}
       <div>
         <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>
-          Project Defense Transcript
+          Project Defense Video / Transcript
         </h3>
         <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6 }}>
-          Explain what you built, how it works, and what skills this evidence proves.
+          Record or upload an explanation, review the transcript, then analyze how well it
+          supports your claimed skills.
         </p>
       </div>
 
-      {/* Input form card */}
+      {/* ── Input mode card ────────────────────────────────────────────────── */}
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
+        {/* Tab bar */}
+        <div style={{ display: "flex", borderBottom: "1px solid #e5e7eb", background: "#f9fafb" }}>
+          {(["upload", "record", "paste"] as DefenseInputTab[]).map(tab => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setActiveTab(tab)}
+              style={tabBtn(activeTab === tab)}
+            >
+              {tab === "upload" ? "⬆ Upload File" : tab === "record" ? "⏺ Record" : "✏ Paste"}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ padding: "14px 16px", display: "grid", gap: 12 }}>
+          {/* ── Upload tab ──────────────────────────────────────────────────── */}
+          {activeTab === "upload" && (
+            <div style={{ display: "grid", gap: 10 }}>
+              <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6 }}>
+                Upload a video or audio recording of your project explanation.
+                Automatic transcription is not connected yet — paste or edit your transcript in the
+                field below after uploading.
+              </p>
+
+              {/* File picker */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={ALLOWED_DEFENSE_MEDIA_ACCEPT}
+                  onChange={handleFileSelect}
+                  style={{ display: "none" }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  style={{
+                    padding: "8px 16px", borderRadius: 8, border: "1px solid #d1d5db",
+                    background: uploading ? "#f3f4f6" : "#fff", color: "#374151",
+                    fontSize: 13, fontWeight: 600, cursor: uploading ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {mediaFile ? "Change File" : "Choose File"}
+                </button>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                  MP4, MOV, WebM, MP3, WAV, M4A · max {MAX_DEFENSE_MEDIA_MB} MB
+                </span>
+              </div>
+
+              {/* Selected file info */}
+              {mediaFile && (
+                <div style={{
+                  background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 8,
+                  padding: "8px 12px", display: "flex", gap: 8, alignItems: "center",
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#111827", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {mediaFile.name}
+                  </span>
+                  <span style={{ fontSize: 11, color: "#6b7280", flexShrink: 0 }}>{fmtBytes(mediaFile.size)}</span>
+                </div>
+              )}
+
+              {/* Validation / upload error */}
+              {uploadError && (
+                <div role="alert" style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#991b1b" }}>
+                  {uploadError}
+                </div>
+              )}
+
+              {/* Upload button + progress */}
+              {mediaFile && !uploadResult && (
+                <div style={{ display: "grid", gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => void handleUpload()}
+                    disabled={uploading}
+                    style={{
+                      padding: "9px 18px", borderRadius: 9,
+                      background: uploading ? "#f3f4f6" : "#1d4ed8",
+                      color: uploading ? "#9ca3af" : "#fff",
+                      border: "1px solid transparent",
+                      fontSize: 13, fontWeight: 700,
+                      cursor: uploading ? "not-allowed" : "pointer",
+                      width: "fit-content",
+                    }}
+                  >
+                    {uploading ? `Uploading… ${uploadProgress}%` : "Upload File"}
+                  </button>
+                  {uploading && (
+                    <div style={{ height: 5, background: "#e0e7ff", borderRadius: 999 }}>
+                      <div style={{ height: 5, borderRadius: 999, background: "#2563eb", width: `${uploadProgress}%`, transition: "width 0.3s ease" }} />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Upload success */}
+              {uploadResult && (
+                <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#065f46" }}>
+                  ✓ <strong>{uploadResult.media_filename}</strong> uploaded.{" "}
+                  {uploadResult.message}
+                </div>
+              )}
+
+              {/* Privacy note */}
+              <div style={{ background: "#fafafa", border: "1px solid #f3f4f6", borderRadius: 8, padding: "8px 12px" }}>
+                <p style={{ margin: 0, fontSize: 11, color: "#6b7280", lineHeight: 1.55 }}>
+                  🔒 <strong>Media is private by default.</strong> It is never shared with recruiters
+                  without your explicit consent. Sensitive data detected in your transcript will be
+                  flagged before storage.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* ── Record tab ──────────────────────────────────────────────────── */}
+          {activeTab === "record" && (
+            <div style={{ display: "grid", gap: 10 }}>
+              <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6 }}>
+                Record a brief audio explanation in your browser using your microphone — no video
+                is captured. Paste or type your transcript in the field below after recording.
+              </p>
+
+              {/* Controls */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                {recState === "idle" && (
+                  <button
+                    type="button"
+                    onClick={() => void startRecording()}
+                    style={{
+                      padding: "9px 18px", borderRadius: 9,
+                      background: "#dc2626", color: "#fff",
+                      border: "1px solid transparent",
+                      fontSize: 13, fontWeight: 700, cursor: "pointer",
+                    }}
+                  >
+                    ⏺ Start Recording
+                  </button>
+                )}
+                {recState === "recording" && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={stopRecording}
+                      style={{
+                        padding: "9px 18px", borderRadius: 9,
+                        background: "#111827", color: "#fff",
+                        border: "1px solid transparent",
+                        fontSize: 13, fontWeight: 700, cursor: "pointer",
+                      }}
+                    >
+                      ⏹ Stop
+                    </button>
+                    <span style={{
+                      fontSize: 13, fontWeight: 700, color: "#dc2626",
+                      padding: "4px 10px", background: "#fef2f2",
+                      border: "1px solid #fecaca", borderRadius: 999,
+                    }}>
+                      ● {fmtSeconds(recordingSeconds)}
+                    </span>
+                  </>
+                )}
+              </div>
+
+              {/* Playback + upload recording */}
+              {recState === "recorded" && recordedObjectUrl && (
+                <div style={{ display: "grid", gap: 8 }}>
+                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                  <audio controls src={recordedObjectUrl} style={{ width: "100%", height: 36 }} />
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <button
+                      type="button"
+                      onClick={() => void handleUploadRecording()}
+                      disabled={recUploading || !!recUploadResult}
+                      style={{
+                        padding: "8px 16px", borderRadius: 8,
+                        background: recUploading || recUploadResult ? "#f3f4f6" : "#1d4ed8",
+                        color: recUploading || recUploadResult ? "#9ca3af" : "#fff",
+                        border: "1px solid transparent",
+                        fontSize: 12, fontWeight: 700,
+                        cursor: recUploading || recUploadResult ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      {recUploading ? `Uploading… ${recUploadProgress}%` : recUploadResult ? "Uploaded ✓" : "Save Recording"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearRecording}
+                      disabled={recUploading}
+                      style={{
+                        padding: "8px 12px", borderRadius: 8,
+                        background: "#fff", color: "#6b7280",
+                        border: "1px solid #d1d5db",
+                        fontSize: 12, fontWeight: 500,
+                        cursor: recUploading ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      Re-record
+                    </button>
+                  </div>
+                  {recUploading && (
+                    <div style={{ height: 5, background: "#e0e7ff", borderRadius: 999 }}>
+                      <div style={{ height: 5, borderRadius: 999, background: "#2563eb", width: `${recUploadProgress}%`, transition: "width 0.3s ease" }} />
+                    </div>
+                  )}
+                  {recUploadResult && (
+                    <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#065f46" }}>
+                      ✓ Recording saved. {recUploadResult.message}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Recording error */}
+              {recError && (
+                <div role="alert" style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#991b1b" }}>
+                  {recError}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Paste tab ───────────────────────────────────────────────────── */}
+          {activeTab === "paste" && (
+            <div style={{ display: "grid", gap: 6 }}>
+              <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6 }}>
+                If you have an existing transcript or written explanation, paste it directly in the
+                field below and click <strong>Analyze Project Defense</strong>.
+              </p>
+              <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: 12, color: "var(--ink-2)", lineHeight: 1.7 }}>
+                <li>Explain the problem you solved and why it mattered.</li>
+                <li>Describe what you built — your role and technical choices.</li>
+                <li>Mention the tools, libraries, and frameworks you used.</li>
+                <li>Talk about limitations and what you would improve next.</li>
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Transcription status notice ───────────────────────────────────── */}
+      {defenseAnalysis?.transcription_status && txStatus !== "not_started" && txStatus !== "analysis_complete" && (
+        <div style={{
+          background: statusCfg.bg, border: `1px solid ${statusCfg.border}`,
+          borderRadius: 10, padding: "8px 12px",
+          fontSize: 12, color: statusCfg.color, lineHeight: 1.55,
+        }}>
+          <strong>Status:</strong> {statusCfg.label}
+          {txStatus === "uploaded" && (
+            <span>
+              {" "}— Automatic transcription is not connected yet. Paste or edit your transcript below.
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* ── Registered media badge ────────────────────────────────────────── */}
+      {defenseAnalysis?.media_filename && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{
+            fontSize: 11, fontWeight: 700, letterSpacing: "0.05em",
+            padding: "2px 10px", borderRadius: 999,
+            background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe",
+          }}>
+            MEDIA
+          </span>
+          <span style={{ fontSize: 12, color: "#374151" }}>
+            {defenseAnalysis.media_filename}
+            {defenseAnalysis.media_type && (
+              <span style={{ fontSize: 11, color: "#9ca3af" }}> · .{defenseAnalysis.media_type}</span>
+            )}
+          </span>
+        </div>
+      )}
+
+      {/* ── Transcript review card ────────────────────────────────────────── */}
       <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
         <div style={{ background: "#f9fafb", borderBottom: "1px solid #e5e7eb", padding: "12px 16px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>
-            {defenseAnalysis ? "Update Your Defense Transcript" : "Submit Your Defense Transcript"}
+            {defenseAnalysis ? "Update Transcript & Re-analyze" : "Review / Paste Transcript"}
           </div>
           <p style={{ margin: "3px 0 0", fontSize: 11, color: "#6b7280", lineHeight: 1.55 }}>
-            Describe the problem you solved, what you built, your role, the tools you used, key
-            technical decisions, limitations, and what you would improve next. Recruiters may see
-            this summary alongside your recording and GitHub evidence.
+            Describe the problem you solved, what you built, your role, tools used, key technical
+            decisions, limitations, and future improvements. Recruiters may see this summary
+            alongside your evidence.
           </p>
         </div>
 
         <div style={{ padding: "14px 16px", display: "grid", gap: 12 }}>
-          {/* Optional video URL */}
-          <div style={{ display: "grid", gap: 4 }}>
-            <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
-              Video URL{" "}
-              <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span>
-            </label>
-            <input
-              value={defenseVideoUrl}
-              onChange={(e) => onVideoUrlChange(e.target.value)}
-              placeholder="https://loom.com/share/... or YouTube/Drive/Vimeo link"
-              disabled={defenseAnalyzing}
-              style={inp}
-            />
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>
-              Attach a Loom, YouTube, or Drive video of your project walkthrough (optional — transcript is what gets analysed).
-            </span>
-          </div>
-
           {/* Transcript textarea */}
           <div style={{ display: "grid", gap: 4 }}>
             <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
@@ -2650,9 +3073,9 @@ function ProjectDefenseSection({
             </label>
             <textarea
               value={defenseTranscript}
-              onChange={(e) => onTranscriptChange(e.target.value)}
+              onChange={e => onTranscriptChange(e.target.value)}
               disabled={defenseAnalyzing}
-              placeholder="Paste your project explanation transcript here. Explain the problem, what you built, your role, tools used, main workflow, technical decisions, limitations, and future improvements."
+              placeholder="Paste or type your project explanation here. Explain the problem, what you built, your role, tools used, main workflow, technical decisions, limitations, and future improvements."
               style={{ ...inp, minHeight: 150, resize: "vertical", fontFamily: "inherit", lineHeight: 1.55 }}
             />
             <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -2695,7 +3118,7 @@ function ProjectDefenseSection({
             )}
           </div>
 
-          {/* Error */}
+          {/* Analyze error */}
           {defenseAnalyzeError && !defenseAnalyzing && (
             <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#991b1b" }}>
               {defenseAnalyzeError}
@@ -2704,7 +3127,7 @@ function ProjectDefenseSection({
         </div>
       </div>
 
-      {/* In-progress stages */}
+      {/* ── In-progress stages ────────────────────────────────────────────── */}
       {defenseAnalyzing && (
         <div style={{ border: "1px solid #d1fae5", borderRadius: 12, background: "#f0fdf4", padding: "14px 16px", display: "grid", gap: 12 }}>
           <div>
@@ -2741,7 +3164,7 @@ function ProjectDefenseSection({
         </div>
       )}
 
-      {/* Result card */}
+      {/* ── Result card ───────────────────────────────────────────────────── */}
       {defenseAnalysis && !defenseAnalyzing && (
         <ProjectDefenseResultCard analysis={defenseAnalysis} />
       )}
@@ -2795,7 +3218,6 @@ export function ExtensionProofPanel({
 
   // Project defense transcript state
   const [defenseAnalysis, setDefenseAnalysis] = useState<ProjectDefenseAnalysisResponse | null>(null)
-  const [defenseVideoUrl, setDefenseVideoUrl] = useState("")
   const [defenseTranscript, setDefenseTranscript] = useState("")
   const [defenseAnalyzing, setDefenseAnalyzing] = useState(false)
   const [defenseAnalyzeError, setDefenseAnalyzeError] = useState<string | null>(null)
@@ -2927,7 +3349,6 @@ export function ExtensionProofPanel({
     void getProjectDefenseAnalysis(session.id).then((r) => {
       if (r) {
         setDefenseAnalysis(r)
-        if (r.video_url) setDefenseVideoUrl(r.video_url)
         setDefenseTranscript(r.transcript_text)
       }
     }).catch(() => undefined)
@@ -3163,7 +3584,7 @@ export function ExtensionProofPanel({
 
     try {
       const result = await analyzeProjectDefense(session.id, {
-        video_url: defenseVideoUrl.trim() || null,
+        video_url: defenseAnalysis?.video_url ?? null,
         transcript_text: defenseTranscript.trim(),
         claimed_skills: parseSkills(),
         proof_objective: form.proofObjective.trim(),
@@ -3732,13 +4153,11 @@ export function ExtensionProofPanel({
         <ProjectDefenseSection
           session={session}
           defenseAnalysis={defenseAnalysis}
-          defenseVideoUrl={defenseVideoUrl}
           defenseTranscript={defenseTranscript}
           defenseAnalyzing={defenseAnalyzing}
           defenseAnalyzeError={defenseAnalyzeError}
           defenseSimProgress={defenseSimProgress}
           defenseSimStageIdx={defenseSimStageIdx}
-          onVideoUrlChange={setDefenseVideoUrl}
           onTranscriptChange={setDefenseTranscript}
           onAnalyze={() => void handleDefenseAnalysis()}
         />

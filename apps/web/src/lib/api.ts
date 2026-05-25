@@ -1332,11 +1332,26 @@ export async function getVerificationReadiness(
 
 export type ProjectDefensePrivacyScanStatus = "clean" | "redacted" | "flagged"
 
+export type TranscriptionStatus =
+  | "not_started"
+  | "uploaded"
+  | "transcription_pending"
+  | "transcript_ready"
+  | "analysis_complete"
+
 export type ProjectDefenseAnalysisResponse = {
   id: string | null
   user_id: string
   proof_session_id: string
+  // ── Media metadata ──────────────────────────────────────────────────────────
   video_url: string | null
+  media_url: string | null
+  media_type: string | null
+  media_filename: string | null
+  media_storage_path: string | null
+  transcription_status: TranscriptionStatus
+  transcript_reviewed: boolean
+  // ── Transcript + NLP outputs ────────────────────────────────────────────────
   transcript_text: string
   transcript_summary: string
   skills_mentioned: string[]
@@ -1353,6 +1368,23 @@ export type ProjectDefenseAnalysisResponse = {
   privacy_scan_status: ProjectDefensePrivacyScanStatus
   created_at: string | null
   updated_at: string | null
+}
+
+export type ProjectDefenseMediaUploadResponse = {
+  proof_session_id: string
+  media_filename: string
+  media_type: string
+  media_size_bytes: number
+  media_url: string | null
+  media_storage_path: string | null
+  transcription_status: TranscriptionStatus
+  storage_configured: boolean
+  message: string
+}
+
+export type ProjectDefenseUpdateTranscriptRequest = {
+  transcript_text: string
+  transcript_reviewed: boolean
 }
 
 export type ProjectDefenseAnalyzeRequest = {
@@ -1413,5 +1445,85 @@ export async function getProjectDefenseAnalysis(
   )
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`Get project defense analysis failed (HTTP ${res.status}).`)
+  return res.json()
+}
+
+/**
+ * Upload a defense media file (mp4/mov/webm/mp3/wav/m4a, max 200 MB).
+ * Uses XHR so upload progress events can be reported.
+ * Media is stored privately; automatic transcription is not connected in the MVP.
+ */
+export async function uploadProjectDefenseMedia(
+  sessionId: string,
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<ProjectDefenseMediaUploadResponse> {
+  const supabase = createSupabaseBrowserClient()
+  const { data: { session } } = await supabase.auth.getSession()
+
+  return new Promise((resolve, reject) => {
+    const formData = new FormData()
+    formData.append("file", file)
+
+    const xhr = new XMLHttpRequest()
+
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100))
+      }
+    })
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status === 201) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as ProjectDefenseMediaUploadResponse)
+        } catch {
+          reject(new Error("Invalid response from server."))
+        }
+      } else {
+        let msg = `Media upload failed (HTTP ${xhr.status}).`
+        try {
+          msg = (JSON.parse(xhr.responseText) as { detail?: { message?: string } }).detail?.message ?? msg
+        } catch { /* */ }
+        reject(new Error(msg))
+      }
+    })
+
+    xhr.addEventListener("error", () => reject(new Error("Media upload failed — network error.")))
+    xhr.addEventListener("abort", () => reject(new Error("Media upload was cancelled.")))
+
+    xhr.open(
+      "POST",
+      `${API_BASE}/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/defense/upload-media`,
+    )
+    if (session?.access_token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${session.access_token}`)
+    }
+    xhr.send(formData)
+  })
+}
+
+/**
+ * Save an edited transcript (and reviewed flag) before running analysis.
+ * Sets transcription_status to 'transcript_ready' when transcript_reviewed=true.
+ */
+export async function updateDefenseTranscript(
+  sessionId: string,
+  request: ProjectDefenseUpdateTranscriptRequest,
+): Promise<ProjectDefenseAnalysisResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/defense/transcript`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(request),
+    },
+  )
+  if (res.status === 404) throw new Error("No defense record found. Upload a media file first.")
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Transcript update failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
   return res.json()
 }

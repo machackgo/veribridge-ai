@@ -563,6 +563,12 @@ class ProjectDefenseAnalysisService:
         video_url: str | None,
         transcript_text: str,
         result: DefenseAnalysisResult,
+        *,
+        media_type: str | None = None,
+        media_filename: str | None = None,
+        media_storage_path: str | None = None,
+        media_url: str | None = None,
+        transcript_reviewed: bool = False,
     ) -> dict[str, Any]:
         """Insert or update an analysis row (upsert on proof_session_id)."""
         now = _now()
@@ -570,6 +576,12 @@ class ProjectDefenseAnalysisService:
             "user_id": user_id,
             "proof_session_id": proof_session_id,
             "video_url": video_url or None,
+            "media_url": media_url or None,
+            "media_type": media_type or None,
+            "media_filename": media_filename or None,
+            "media_storage_path": media_storage_path or None,
+            "transcription_status": "analysis_complete",
+            "transcript_reviewed": transcript_reviewed,
             "transcript_text": transcript_text,
             "transcript_summary": result.transcript_summary,
             "skills_mentioned": result.skills_mentioned,
@@ -587,6 +599,11 @@ class ProjectDefenseAnalysisService:
         }
 
         if isinstance(self._client, dict):
+            # Preserve existing media fields if already set
+            existing = self._client.get(_TABLE, {}).get(proof_session_id, {})
+            for field in ("media_url", "media_type", "media_filename", "media_storage_path"):
+                if data[field] is None and existing.get(field):
+                    data[field] = existing[field]
             row = {"id": str(uuid4()), "created_at": now, "updated_at": now, **data}
             self._client.setdefault(_TABLE, {})[proof_session_id] = row
             return row
@@ -603,6 +620,101 @@ class ProjectDefenseAnalysisService:
         except Exception as exc:
             logger.warning("Project defense DB store failed (non-critical): %s", exc)
         return {**data, "created_at": now, "updated_at": now}
+
+    def register_media(
+        self,
+        user_id: str,
+        proof_session_id: str,
+        *,
+        media_filename: str,
+        media_type: str,
+        media_size_bytes: int,
+        media_url: str | None = None,
+        media_storage_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a stub row for a media upload before analysis runs.
+
+        If a full analysis row already exists, only the media fields are updated.
+        """
+        now = _now()
+        stub: dict[str, Any] = {
+            "user_id": user_id,
+            "proof_session_id": proof_session_id,
+            "media_filename": media_filename,
+            "media_type": media_type,
+            "media_size_bytes": media_size_bytes,
+            "media_url": media_url or None,
+            "media_storage_path": media_storage_path or None,
+            "transcription_status": "uploaded",
+        }
+
+        if isinstance(self._client, dict):
+            existing = self._client.get(_TABLE, {}).get(proof_session_id, {})
+            row = {
+                "id": existing.get("id") or str(uuid4()),
+                "created_at": existing.get("created_at") or now,
+                "updated_at": now,
+                **existing,
+                **stub,
+            }
+            self._client.setdefault(_TABLE, {})[proof_session_id] = row
+            return row
+
+        try:
+            res = (
+                self._client.table(_TABLE)
+                .upsert({**stub, "updated_at": now}, on_conflict="proof_session_id")
+                .execute()
+            )
+            rows = getattr(res, "data", []) or []
+            if rows:
+                return rows[0]
+        except Exception as exc:
+            logger.warning("Project defense media register failed (non-critical): %s", exc)
+        return {**stub, "created_at": now, "updated_at": now}
+
+    def update_transcript(
+        self,
+        user_id: str,
+        proof_session_id: str,
+        *,
+        transcript_text: str,
+        transcript_reviewed: bool = False,
+    ) -> dict[str, Any] | None:
+        """Update the transcript text and reviewed flag on an existing row.
+
+        Sets transcription_status = 'transcript_ready' once reviewed.
+        Returns None if no row exists for this session.
+        """
+        now = _now()
+        new_status = "transcript_ready" if transcript_reviewed else "uploaded"
+        patch: dict[str, Any] = {
+            "transcript_text": transcript_text,
+            "transcript_reviewed": transcript_reviewed,
+            "transcription_status": new_status,
+            "updated_at": now,
+        }
+
+        if isinstance(self._client, dict):
+            existing = self._client.get(_TABLE, {}).get(proof_session_id)
+            if existing is None:
+                return None
+            existing.update(patch)
+            return existing
+
+        try:
+            res = (
+                self._client.table(_TABLE)
+                .update(patch)
+                .eq("user_id", user_id)
+                .eq("proof_session_id", proof_session_id)
+                .execute()
+            )
+            rows = getattr(res, "data", []) or []
+            return rows[0] if rows else None
+        except Exception as exc:
+            logger.warning("Project defense transcript update failed: %s", exc)
+            return None
 
     def get_analysis(
         self,

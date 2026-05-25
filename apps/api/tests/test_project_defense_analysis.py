@@ -607,3 +607,232 @@ class TestReadinessWithDefenseAnalysis:
                 assert word not in text.lower(), (
                     f"Hardcoded project name '{word}' found in output: {text!r}"
                 )
+
+
+# ── Media upload / transcript review tests ────────────────────────────────────
+
+class TestProjectDefenseMediaUpload:
+    """Tests for the media upload and transcript update endpoints."""
+
+    def test_upload_valid_audio_mp3(self, client: TestClient, mem_store: dict) -> None:
+        """POSTing a .mp3 file registers media metadata and returns 201."""
+        session_id = _make_session(client)
+        dummy_mp3 = b"ID3" + b"\x00" * 100   # minimal placeholder bytes
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("explanation.mp3", dummy_mp3, "audio/mpeg")},
+        )
+        assert r.status_code == 201, r.text
+        data = r.json()
+        assert data["proof_session_id"] == session_id
+        assert data["media_filename"] == "explanation.mp3"
+        assert data["media_type"] == "mp3"
+        assert data["transcription_status"] == "uploaded"
+        assert data["media_size_bytes"] == len(dummy_mp3)
+        # In-memory store → no Supabase Storage
+        assert data["storage_configured"] is False
+
+    def test_upload_valid_video_mp4(self, client: TestClient) -> None:
+        """POSTing a .mp4 file is accepted."""
+        session_id = _make_session(client)
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("walkthrough.mp4", b"\x00" * 50, "video/mp4")},
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["media_type"] == "mp4"
+
+    def test_upload_valid_webm(self, client: TestClient) -> None:
+        """POSTing a .webm file is accepted."""
+        session_id = _make_session(client)
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("recording.webm", b"\x00" * 50, "video/webm")},
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["media_type"] == "webm"
+
+    def test_upload_invalid_extension_rejected(self, client: TestClient) -> None:
+        """Uploading a .pdf is rejected with 422."""
+        session_id = _make_session(client)
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("notes.pdf", b"%PDF-1.4", "application/pdf")},
+        )
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["code"] == "invalid_media_type"
+
+    def test_upload_unknown_session_returns_404(self, client: TestClient) -> None:
+        """Uploading to a non-existent session returns 404."""
+        r = client.post(
+            "/api/v1/student/extension-proof/sessions/nonexistent-session-id/defense/upload-media",
+            files={"file": ("test.mp3", b"\x00" * 10, "audio/mpeg")},
+        )
+        assert r.status_code == 404, r.text
+
+    def test_get_analysis_returns_media_metadata_after_upload(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        """After upload, GET /analysis/project-defense returns the media fields."""
+        session_id = _make_session(client)
+        # Upload media
+        client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("talk.wav", b"\x00" * 20, "audio/wav")},
+        )
+        # Fetch the stored record
+        r = client.get(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/analysis/project-defense"
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["media_filename"] == "talk.wav"
+        assert data["media_type"] == "wav"
+        assert data["transcription_status"] == "uploaded"
+
+
+class TestProjectDefenseUpdateTranscript:
+    """Tests for the PATCH /defense/transcript endpoint."""
+
+    def test_update_transcript_after_upload(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        """After uploading media, student can PATCH the transcript."""
+        session_id = _make_session(client)
+        # Register media first
+        client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("audio.mp3", b"\x00" * 10, "audio/mpeg")},
+        )
+        # Update transcript
+        r = client.patch(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/transcript",
+            json={
+                "transcript_text": "I built this using React and FastAPI. " * 8,
+                "transcript_reviewed": True,
+            },
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "React" in data["transcript_text"]
+        assert data["transcript_reviewed"] is True
+        assert data["transcription_status"] == "transcript_ready"
+
+    def test_update_transcript_sets_status_pending_when_not_reviewed(
+        self, client: TestClient
+    ) -> None:
+        """transcript_reviewed=False keeps transcription_status as 'uploaded'."""
+        session_id = _make_session(client)
+        client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("audio.mp3", b"\x00" * 10, "audio/mpeg")},
+        )
+        r = client.patch(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/transcript",
+            json={"transcript_text": "Draft text", "transcript_reviewed": False},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["transcript_reviewed"] is False
+        assert r.json()["transcription_status"] == "uploaded"
+
+    def test_update_transcript_no_row_returns_404(self, client: TestClient) -> None:
+        """PATCH without a prior upload/register returns 404."""
+        session_id = _make_session(client)
+        r = client.patch(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/transcript",
+            json={"transcript_text": "Some text", "transcript_reviewed": True},
+        )
+        assert r.status_code == 404, r.text
+
+    def test_manual_transcript_still_works_after_new_endpoints_added(
+        self, client: TestClient
+    ) -> None:
+        """Existing POST /analyze/project-defense still functions without media."""
+        session_id = _make_session(client)
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/analyze/project-defense",
+            json={
+                "transcript_text": (
+                    "I built this application using FastAPI and PostgreSQL. "
+                    "I designed the REST API endpoints and configured the database schema. "
+                    "I implemented authentication using JWT tokens. "
+                    "I was responsible for deploying to Cloud Run. "
+                    "In future I would add caching to improve response latency. "
+                ) * 3,
+                "claimed_skills": ["FastAPI", "PostgreSQL"],
+                "proof_objective": "Show the live API handling authenticated requests.",
+            },
+        )
+        assert r.status_code == 201, r.text
+        data = r.json()
+        assert data["overall_defense_score"] > 0
+        # transcript_reviewed should be True (analyzed = reviewed)
+        assert data["transcript_reviewed"] is True
+        assert data["transcription_status"] == "analysis_complete"
+        # Final verification must never be "complete"
+        assert data["overall_defense_score"] <= 100
+
+    def test_empty_transcript_cannot_be_analyzed_via_analyze_endpoint(
+        self, client: TestClient
+    ) -> None:
+        """An empty transcript string returns score=0 and no risk."""
+        session_id = _make_session(client)
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/analyze/project-defense",
+            json={"transcript_text": "", "claimed_skills": ["React"]},
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["overall_defense_score"] == 0
+
+    def test_media_upload_does_not_break_readiness_report(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        """
+        Uploading media without running analysis must not break the readiness
+        report — the defense contribution should be absent (not error).
+        """
+        from app.services.verification_readiness_service import compute_readiness_report
+
+        # Media uploaded but no analysis row has NLP scores
+        session_id = _make_session(client)
+        client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("demo.mp4", b"\x00" * 10, "video/mp4")},
+        )
+
+        # Fetch the row — has media fields but zero NLP scores
+        r = client.get(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/analysis/project-defense"
+        )
+        assert r.status_code == 200, r.text
+        row = r.json()
+
+        # Build a minimal readiness report using the media-only row as defense_analysis
+        report = compute_readiness_report(
+            proof_session_id=session_id,
+            session_status="completed",
+            url_type="live_deployed_url",
+            claimed_skills=["FastAPI"],
+            workflow_analysis=None,
+            live_check=None,
+            github_analysis=None,
+            privacy_scan=None,
+            defense_analysis=row,
+        )
+        # Should not error, and final verification should never be "complete"
+        assert report.final_verification_status != "complete"
+        assert report.readiness_score >= 0
+
+    def test_no_hardcoded_project_names_in_media_response(
+        self, client: TestClient
+    ) -> None:
+        """Media upload response must not contain hardcoded project names."""
+        session_id = _make_session(client)
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("defense.mp3", b"\x00" * 10, "audio/mpeg")},
+        )
+        assert r.status_code == 201, r.text
+        body_str = r.text.lower()
+        for forbidden in ["boston", "react demo", "veribridge_project"]:
+            assert forbidden not in body_str, f"Hardcoded name '{forbidden}' in response"

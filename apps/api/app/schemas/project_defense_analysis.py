@@ -1,11 +1,39 @@
-"""Schemas for Project Defense Transcript Analysis."""
+"""Schemas for Project Defense Transcript Analysis (including media upload)."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+# ── Constants ──────────────────────────────────────────────────────────────────
+
+ALLOWED_MEDIA_EXTENSIONS: frozenset[str] = frozenset(
+    {"mp4", "mov", "webm", "mp3", "wav", "m4a"}
+)
+ALLOWED_MEDIA_MIME_TYPES: frozenset[str] = frozenset({
+    "video/mp4",
+    "video/quicktime",         # .mov
+    "video/webm",
+    "audio/mpeg",              # .mp3
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mp4",               # .m4a
+    "audio/x-m4a",
+    "audio/webm",
+})
+MAX_MEDIA_SIZE_BYTES: int = 200 * 1024 * 1024  # 200 MB
+
+TranscriptionStatus = Literal[
+    "not_started",
+    "uploaded",
+    "transcription_pending",
+    "transcript_ready",
+    "analysis_complete",
+]
+
+
+# ── Main request schema ────────────────────────────────────────────────────────
 
 class ProjectDefenseAnalyzeRequest(BaseModel):
     """Request body for analysing a project defense transcript."""
@@ -32,7 +60,7 @@ class ProjectDefenseAnalyzeRequest(BaseModel):
         default="",
         description="What the student intends to demonstrate.",
     )
-    # ── Optional context from other evidence sources ───────────────────────────
+    # ── Optional context from other evidence sources ─────────────────────────
     workflow_summary: str = Field(
         default="",
         description="Brief summary text from an existing workflow analysis (if any).",
@@ -47,9 +75,11 @@ class ProjectDefenseAnalyzeRequest(BaseModel):
     )
 
 
+# ── Main analysis response schema ──────────────────────────────────────────────
+
 class ProjectDefenseAnalysisResponse(BaseModel):
     """
-    Stored result of a project defense transcript analysis.
+    Stored result of a project defense analysis.
 
     IMPORTANT: This feature does not set final_verification_status to
     "complete".  That requires a separate VeriBridge reviewer step.
@@ -59,7 +89,16 @@ class ProjectDefenseAnalysisResponse(BaseModel):
     user_id: str
     proof_session_id: str
 
+    # ── Media metadata ─────────────────────────────────────────────────────────
     video_url: str | None = None
+    media_url: str | None = None
+    media_type: str | None = None          # file extension: mp4 | mov | webm | mp3 | wav | m4a
+    media_filename: str | None = None
+    media_storage_path: str | None = None
+    transcription_status: str = "not_started"
+    transcript_reviewed: bool = False
+
+    # ── Transcript ─────────────────────────────────────────────────────────────
     transcript_text: str = ""
 
     # ── AI-computed outputs ────────────────────────────────────────────────────
@@ -97,3 +136,34 @@ class ProjectDefenseAnalysisResponse(BaseModel):
 
     created_at: str | None = None
     updated_at: str | None = None
+
+
+# ── Media upload response ──────────────────────────────────────────────────────
+
+class ProjectDefenseMediaUploadResponse(BaseModel):
+    """Response after registering an uploaded defense media file."""
+
+    proof_session_id: str
+    media_filename: str
+    media_type: str
+    media_size_bytes: int
+    media_url: str | None = None
+    media_storage_path: str | None = None
+    transcription_status: str = "uploaded"
+    storage_configured: bool = False
+    message: str = ""
+
+
+# ── Update transcript request ──────────────────────────────────────────────────
+
+class ProjectDefenseUpdateTranscriptRequest(BaseModel):
+    """PATCH request to update the transcript text and reviewed flag."""
+
+    transcript_text: str = Field(
+        default="",
+        description="Reviewed and optionally edited transcript text.",
+    )
+    transcript_reviewed: bool = Field(
+        default=False,
+        description="True once the student has confirmed the transcript is accurate.",
+    )
