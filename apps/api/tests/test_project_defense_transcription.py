@@ -513,29 +513,31 @@ class TestLocalWhisperProviderUnit:
         """
         When faster-whisper is not installed, transcribe_audio raises
         TranscriptionUnavailableError with an instructional message.
+
+        Using patch.dict(sys.modules, {"faster_whisper": None}) forces the
+        import inside the service to raise ImportError regardless of whether
+        the package is actually installed in the current environment.
         """
         import app.services.transcription_service as svc
 
-        # Ensure faster_whisper is absent from sys.modules
-        sys.modules.pop("faster_whisper", None)
-
-        with patch.object(svc, "_PROVIDER", "local_whisper"):
-            with pytest.raises(svc.TranscriptionUnavailableError, match="faster-whisper"):
-                svc.transcribe_audio(b"audio-bytes", "talk.mp3")
+        with patch.dict(sys.modules, {"faster_whisper": None}):
+            with patch.object(svc, "_PROVIDER", "local_whisper"):
+                with pytest.raises(svc.TranscriptionUnavailableError, match="faster-whisper"):
+                    svc.transcribe_audio(b"audio-bytes", "talk.mp3")
 
     def test_local_whisper_missing_dependency_does_not_crash(self):
         """The missing-dep case must raise, not crash with an AttributeError or ImportError."""
         import app.services.transcription_service as svc
-        sys.modules.pop("faster_whisper", None)
 
-        with patch.object(svc, "_PROVIDER", "local_whisper"):
-            exc = None
-            try:
-                svc.transcribe_audio(b"audio-bytes", "talk.wav")
-            except svc.TranscriptionUnavailableError as e:
-                exc = e
-            except Exception as e:
-                pytest.fail(f"Expected TranscriptionUnavailableError, got {type(e).__name__}: {e}")
+        with patch.dict(sys.modules, {"faster_whisper": None}):
+            with patch.object(svc, "_PROVIDER", "local_whisper"):
+                exc = None
+                try:
+                    svc.transcribe_audio(b"audio-bytes", "talk.wav")
+                except svc.TranscriptionUnavailableError as e:
+                    exc = e
+                except Exception as e:
+                    pytest.fail(f"Expected TranscriptionUnavailableError, got {type(e).__name__}: {e}")
         assert exc is not None
 
     def test_local_whisper_mocked_success_audio_file(self):
@@ -717,9 +719,7 @@ class TestLocalWhisperEndpointIntegration:
         session_id = _make_session(client)
         _upload_media(client, session_id, "talk.mp3")
 
-        sys.modules.pop("faster_whisper", None)
-
-        with patch(
+        with patch.dict(sys.modules, {"faster_whisper": None}), patch(
             "app.services.transcription_service.transcribe_audio",
             side_effect=TranscriptionUnavailableError("Local Whisper transcription is not installed."),
         ):
@@ -852,3 +852,211 @@ class TestLocalWhisperEndpointIntegration:
         body = r.text.lower()
         for forbidden in ["boston", "react-demo", "localhost:3000", "todo-app"]:
             assert forbidden not in body, f"Hardcoded string '{forbidden}' in response"
+
+
+# ── Regression tests: register_media media_size_bytes fix ─────────────────────
+
+class TestRegisterMediaFix:
+    """
+    Regression tests for the 'media_size_bytes causes silent DB failure' bug.
+
+    Root cause: register_media was including media_size_bytes in the Supabase
+    upsert dict, but that column does not exist in project_defense_analysis_results.
+    The DB exception was caught silently, returning a stub dict, so upload returned
+    HTTP 201, but nothing was saved.  The transcription endpoint then queried the
+    real DB, found no row, and returned 404 'No media file registered'.
+
+    Fix: media_size_bytes is excluded from the DB upsert dict.  DB failures are
+    no longer silently swallowed — they propagate so callers see the failure.
+    """
+
+    def test_register_media_db_upsert_excludes_media_size_bytes(self):
+        """
+        media_size_bytes must NOT appear in the Supabase upsert payload.
+        This column does not exist in project_defense_analysis_results and
+        would cause the upsert to fail with a column-not-found error.
+        """
+        mock_client = MagicMock()
+        mock_row = {
+            "proof_session_id": "sess-rm-fix",
+            "media_filename": "talk.mp3",
+            "media_type": "mp3",
+        }
+        (
+            mock_client.table.return_value
+            .upsert.return_value
+            .execute.return_value
+        ).data = [mock_row]
+
+        svc = ProjectDefenseAnalysisService(mock_client)
+        svc.register_media(
+            user_id=DEMO_USER_ID,
+            proof_session_id="sess-rm-fix",
+            media_filename="talk.mp3",
+            media_type="mp3",
+            media_size_bytes=99999,
+        )
+
+        upsert_call = mock_client.table.return_value.upsert.call_args
+        assert upsert_call is not None, "upsert was never called"
+        upsert_dict: dict = upsert_call[0][0]
+        assert "media_size_bytes" not in upsert_dict, (
+            "media_size_bytes must NOT be included in the Supabase upsert — "
+            "this column does not exist in project_defense_analysis_results."
+        )
+
+    def test_register_media_db_upsert_includes_required_fields(self):
+        """
+        The DB upsert must include all required media fields (filename, type,
+        transcription_status, user_id, proof_session_id) even without media_size_bytes.
+        """
+        mock_client = MagicMock()
+        (
+            mock_client.table.return_value
+            .upsert.return_value
+            .execute.return_value
+        ).data = [{"proof_session_id": "sess-rm-fields", "media_filename": "audio.webm"}]
+
+        svc = ProjectDefenseAnalysisService(mock_client)
+        svc.register_media(
+            user_id=DEMO_USER_ID,
+            proof_session_id="sess-rm-fields",
+            media_filename="audio.webm",
+            media_type="webm",
+            media_size_bytes=500,
+            media_url="https://example.com/audio.webm",
+            media_storage_path="user123/session456/audio.webm",
+        )
+
+        upsert_dict: dict = mock_client.table.return_value.upsert.call_args[0][0]
+        for required in (
+            "user_id", "proof_session_id", "media_filename", "media_type",
+            "transcription_status", "media_url", "media_storage_path",
+        ):
+            assert required in upsert_dict, f"Required field '{required}' missing from upsert"
+        assert upsert_dict["transcription_status"] == "uploaded"
+        assert upsert_dict["media_filename"] == "audio.webm"
+
+    def test_register_media_db_failure_raises_not_silently_swallows(self):
+        """
+        A DB exception in register_media must propagate — not be silently caught and
+        replaced with stub data.  If we silently swallow, upload returns 201 but no
+        row is in DB, and transcription later returns 404.
+        """
+        mock_client = MagicMock()
+        (
+            mock_client.table.return_value
+            .upsert.return_value
+            .execute
+        ).side_effect = Exception("column 'media_size_bytes' does not exist")
+
+        svc = ProjectDefenseAnalysisService(mock_client)
+        with pytest.raises(Exception, match="does not exist"):
+            svc.register_media(
+                user_id=DEMO_USER_ID,
+                proof_session_id="sess-rm-raise",
+                media_filename="audio.mp3",
+                media_type="mp3",
+                media_size_bytes=100,
+            )
+
+    def test_register_media_empty_upsert_response_raises_runtime_error(self):
+        """
+        If the Supabase upsert succeeds but returns no rows (empty data list),
+        RuntimeError is raised with a descriptive message — not a silent return
+        of stub data that hides the DB problem.
+        """
+        mock_client = MagicMock()
+        (
+            mock_client.table.return_value
+            .upsert.return_value
+            .execute.return_value
+        ).data = []  # upsert succeeded but returned nothing
+
+        svc = ProjectDefenseAnalysisService(mock_client)
+        with pytest.raises(RuntimeError, match="upsert returned no rows"):
+            svc.register_media(
+                user_id=DEMO_USER_ID,
+                proof_session_id="sess-rm-empty",
+                media_filename="audio.mp3",
+                media_type="mp3",
+                media_size_bytes=100,
+            )
+
+    def test_register_media_returns_response_with_media_size_bytes(self):
+        """
+        Even though media_size_bytes is excluded from the DB upsert,
+        the returned dict from register_media still contains it (for the caller).
+        """
+        store: dict = {}
+        svc = ProjectDefenseAnalysisService(store)
+        row = svc.register_media(
+            user_id=DEMO_USER_ID,
+            proof_session_id="sess-rm-resp",
+            media_filename="voice.mp3",
+            media_type="mp3",
+            media_size_bytes=42000,
+        )
+        # media_size_bytes is in the returned row (for API response), even though
+        # it's not in the DB upsert
+        assert row["media_size_bytes"] == 42000
+        assert row["media_filename"] == "voice.mp3"
+
+    def test_transcribe_does_not_return_404_after_upload(
+        self, client: TestClient, mem_store: dict
+    ):
+        """
+        Core regression: after uploading media, the transcription endpoint must
+        NOT return 404 'No media file registered'.
+        This test would have FAILED before the media_size_bytes fix.
+        """
+        session_id = _make_session(client)
+        # Simulate what the record tab does: upload a webm blob
+        upload_r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("recording.webm", b"fake-webm-audio-bytes", "audio/webm")},
+        )
+        assert upload_r.status_code in (200, 201), f"Upload failed: {upload_r.text}"
+        assert "media_filename" in upload_r.json()
+
+        # Now transcribe — must NOT be 404
+        with patch(
+            "app.services.transcription_service.transcribe_audio",
+            side_effect=TranscriptionUnavailableError("not configured"),
+        ):
+            tx_r = client.post(
+                f"/api/v1/student/extension-proof/sessions/{session_id}/defense/transcribe"
+            )
+
+        assert tx_r.status_code != 404, (
+            "Transcription returned 404 'No media file registered' even though "
+            "media was uploaded. This is the register_media bug — check that "
+            "media_size_bytes is excluded from the Supabase upsert."
+        )
+        assert tx_r.status_code == 200, tx_r.text
+        assert tx_r.json()["configured"] is False  # graceful fallback, not error
+
+    def test_transcribe_does_not_return_404_after_mp3_upload(
+        self, client: TestClient, mem_store: dict
+    ):
+        """mp3 file upload (Upload tab) also registers correctly and doesn't 404 on transcribe."""
+        session_id = _make_session(client)
+        upload_r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/defense/upload-media",
+            files={"file": ("presentation.mp3", b"fake-mp3-bytes", "audio/mpeg")},
+        )
+        assert upload_r.status_code in (200, 201), f"Upload failed: {upload_r.text}"
+
+        with patch(
+            "app.services.transcription_service.transcribe_audio",
+            return_value=TranscriptionResult(
+                transcript_text="I built a full-stack app.", provider_used="openai"
+            ),
+        ):
+            tx_r = client.post(
+                f"/api/v1/student/extension-proof/sessions/{session_id}/defense/transcribe"
+            )
+
+        assert tx_r.status_code == 200, tx_r.text
+        assert tx_r.json()["configured"] is True
+        assert "full-stack" in tx_r.json()["transcript_text"]

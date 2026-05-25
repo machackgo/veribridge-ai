@@ -637,16 +637,20 @@ class ProjectDefenseAnalysisService:
         If a full analysis row already exists, only the media fields are updated.
         """
         now = _now()
-        stub: dict[str, Any] = {
+
+        # db_fields contains only columns that exist in project_defense_analysis_results.
+        # media_size_bytes is NOT a table column — keep it in the response dict only.
+        db_fields: dict[str, Any] = {
             "user_id": user_id,
             "proof_session_id": proof_session_id,
             "media_filename": media_filename,
             "media_type": media_type,
-            "media_size_bytes": media_size_bytes,
             "media_url": media_url or None,
             "media_storage_path": media_storage_path or None,
             "transcription_status": "uploaded",
         }
+        # Full stub (includes media_size_bytes) returned to callers for in-memory store
+        stub: dict[str, Any] = {**db_fields, "media_size_bytes": media_size_bytes}
 
         if isinstance(self._client, dict):
             existing = self._client.get(_TABLE, {}).get(proof_session_id, {})
@@ -660,18 +664,20 @@ class ProjectDefenseAnalysisService:
             self._client.setdefault(_TABLE, {})[proof_session_id] = row
             return row
 
-        try:
-            res = (
-                self._client.table(_TABLE)
-                .upsert({**stub, "updated_at": now}, on_conflict="proof_session_id")
-                .execute()
-            )
-            rows = getattr(res, "data", []) or []
-            if rows:
-                return rows[0]
-        except Exception as exc:
-            logger.warning("Project defense media register failed (non-critical): %s", exc)
-        return {**stub, "created_at": now, "updated_at": now}
+        res = (
+            self._client.table(_TABLE)
+            .upsert({**db_fields, "updated_at": now}, on_conflict="proof_session_id")
+            .execute()
+        )
+        rows = getattr(res, "data", []) or []
+        if rows:
+            return rows[0]
+        # Supabase upsert returned no rows but didn't raise — surface as an error
+        raise RuntimeError(
+            f"register_media upsert returned no rows for session {proof_session_id!r}. "
+            "Check that the proof_session_id UNIQUE constraint exists on "
+            "project_defense_analysis_results."
+        )
 
     def update_transcript(
         self,
