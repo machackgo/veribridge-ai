@@ -13,6 +13,7 @@ from app.api.v1.endpoints import (
     health,
     live_website_check,
     project_defense_analysis,
+    public_work_passport,
     recruiter_candidates,
     skill_evidence,
     skill_evidence_profile,
@@ -134,6 +135,21 @@ api_router.include_router(
     ai_domain_review.router,
     prefix="/student/extension-proof/sessions",
     tags=["ai-domain-review"],
+)
+api_router.include_router(
+    public_work_passport.student_router,
+    prefix="/student/extension-proof/sessions",
+    tags=["public-work-passport"],
+)
+api_router.include_router(
+    public_work_passport.access_router,
+    prefix="/student",
+    tags=["public-work-passport-access"],
+)
+api_router.include_router(
+    public_work_passport.public_router,
+    prefix="/public",
+    tags=["public-work-passport"],
 )
 api_router.include_router(
     verification_review.admin_router,
