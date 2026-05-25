@@ -8,3 +8,11 @@ httpx==0.28.1
 playwright==1.49.1
 sentence-transformers==3.3.1
 scikit-learn==1.6.0
+
+# ── Optional: local Whisper provider ──────────────────────────────────────────
+# Required only when TRANSCRIPTION_PROVIDER=local_whisper.
+# Adds ~500 MB of model weights on first run (model downloaded to ~/.cache).
+# System dependency: ffmpeg is needed for video files (mp4/mov) only.
+#   Install: pip install faster-whisper
+#            brew install ffmpeg   # or: apt install ffmpeg
+# faster-whisper

@@ -5,37 +5,69 @@ Converts audio/video bytes to a plain-text transcript.
 
 Providers
 ---------
-none   (default)  — transcription not configured; raises TranscriptionUnavailableError
-openai            — OpenAI Whisper API via httpx (no openai SDK required)
+none          (default)   — transcription not configured; graceful fallback
+openai                    — OpenAI Whisper API via httpx (no SDK required)
+local_whisper             — faster-whisper running on the local machine (CPU/GPU)
 
 Env vars
 --------
-TRANSCRIPTION_PROVIDER      = none | openai   (default: none)
+TRANSCRIPTION_PROVIDER      = none | openai | local_whisper   (default: none)
+
+# OpenAI provider
 OPENAI_API_KEY              =                  (required for openai provider)
 OPENAI_TRANSCRIPTION_MODEL  = whisper-1        (default: whisper-1)
+
+# local_whisper provider (all optional — defaults are CPU-friendly)
+LOCAL_WHISPER_MODEL_SIZE    = base             (tiny|base|small|medium|large-v3)
+LOCAL_WHISPER_DEVICE        = cpu              (cpu|cuda)
+LOCAL_WHISPER_COMPUTE_TYPE  = int8             (int8|float16|float32)
+
+Optional system dependencies
+-----------------------------
+faster-whisper  — required for local_whisper; install with:
+                  pip install faster-whisper
+ffmpeg          — required only for video files (mp4/mov) with local_whisper;
+                  audio formats (mp3/wav/webm/m4a) do not need it.
+                  Install: brew install ffmpeg  /  apt install ffmpeg
 
 Design principles
 -----------------
 - Project-agnostic: no hardcoded project names, fields, or domains.
-- Never crashes if provider is unconfigured; raises a typed exception instead.
-- No mandatory dependency on the openai Python package; httpx is used directly.
+- Never crashes on missing config or missing optional dep — typed exceptions only.
+- All I/O optional: if faster-whisper or ffmpeg is absent, a clear message guides
+  the student to paste their transcript manually instead.
+- clean_transcript_for_project_defense() does mechanical normalisation only;
+  it never invents or hallucinates missing content.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# ── Env-var config ────────────────────────────────────────────────────────────
+
 _PROVIDER = os.environ.get("TRANSCRIPTION_PROVIDER", "none").strip().lower()
-_OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+
+# OpenAI
+_OPENAI_KEY   = os.environ.get("OPENAI_API_KEY", "").strip()
 _OPENAI_MODEL = os.environ.get("OPENAI_TRANSCRIPTION_MODEL", "whisper-1").strip()
+
+# local_whisper
+_LOCAL_WHISPER_MODEL_SIZE   = os.environ.get("LOCAL_WHISPER_MODEL_SIZE", "base").strip()
+_LOCAL_WHISPER_DEVICE       = os.environ.get("LOCAL_WHISPER_DEVICE", "cpu").strip()
+_LOCAL_WHISPER_COMPUTE_TYPE = os.environ.get("LOCAL_WHISPER_COMPUTE_TYPE", "int8").strip()
 
 _OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 
-# Supported file extension → MIME type mapping (matches ALLOWED_MEDIA_EXTENSIONS)
+# File extensions whose transcription requires ffmpeg audio extraction
+_VIDEO_EXTS: frozenset[str] = frozenset({"mp4", "mov"})
+
+# MIME-type map (matches ALLOWED_MEDIA_EXTENSIONS in schemas)
 _MIME_MAP: dict[str, str] = {
     "mp4":  "video/mp4",
     "mov":  "video/quicktime",
@@ -50,13 +82,17 @@ _MIME_MAP: dict[str, str] = {
 
 class TranscriptionUnavailableError(Exception):
     """
-    Raised when transcription cannot run because the provider is not configured
-    or the API key is missing.  The caller should show a graceful fallback, not
-    crash.
+    Raised when transcription cannot run because:
+    - The provider is set to 'none'
+    - An API key or optional dependency is missing
+    - A required system tool (ffmpeg) is absent
+
+    The caller should display a graceful fallback message and keep the
+    transcript textarea editable — never crash.
     """
 
 
-# ── Result ─────────────────────────────────────────────────────────────────────
+# ── Result ────────────────────────────────────────────────────────────────────
 
 @dataclass
 class TranscriptionResult:
@@ -79,9 +115,8 @@ def transcribe_audio(
     Parameters
     ----------
     file_bytes:   Raw file content.
-    filename:     Original filename — used for MIME-type inference and the
-                  multipart Content-Disposition header.
-    content_type: Optional MIME type override.
+    filename:     Original filename — used for MIME inference and temp-file naming.
+    content_type: Optional MIME type override (used by openai provider).
 
     Returns
     -------
@@ -90,25 +125,60 @@ def transcribe_audio(
     Raises
     ------
     TranscriptionUnavailableError
-        Provider is 'none', unknown, or API key is missing.
+        Provider is 'none', unknown, dependency is missing, or key absent.
     RuntimeError
-        Provider is configured but the request failed (network, rate-limit, etc.).
+        Provider is configured but the request/transcription itself failed.
     """
     provider = _PROVIDER
 
     if not provider or provider == "none":
         raise TranscriptionUnavailableError(
             "Automatic transcription is not configured. "
-            "Set TRANSCRIPTION_PROVIDER=openai and OPENAI_API_KEY to enable it."
+            "Set TRANSCRIPTION_PROVIDER=openai or TRANSCRIPTION_PROVIDER=local_whisper "
+            "to enable it."
         )
 
     if provider == "openai":
         return _transcribe_openai(file_bytes, filename, content_type)
 
+    if provider == "local_whisper":
+        return _transcribe_local_whisper(file_bytes, filename)
+
     raise TranscriptionUnavailableError(
         f"Unknown transcription provider '{provider}'. "
-        "Supported values: none, openai."
+        "Supported values: none, openai, local_whisper."
     )
+
+
+# ── Transcript cleanup ────────────────────────────────────────────────────────
+
+def clean_transcript_for_project_defense(
+    raw: str,
+    claimed_skills: list[str] | None = None,  # reserved for future smart cleanup
+) -> str:
+    """
+    Light mechanical cleanup of a raw auto-transcript for project defense use.
+
+    Rules (strict — never invent content):
+    - Strip leading/trailing whitespace.
+    - Collapse runs of spaces/tabs to a single space.
+    - Collapse 3+ consecutive newlines to two (paragraph break preserved).
+    - Normalize long ellipsis runs (3+ dots) to the … character.
+    - Ensure a space between sentence-ending punctuation and the next capital
+      letter (common ASR omission).
+
+    claimed_skills is accepted for API stability and future use (e.g. fixing
+    common ASR mis-spellings of known tool names) but is intentionally unused
+    in the MVP so no technical terms are invented or modified.
+    """
+    if not raw:
+        return ""
+    text = raw.strip()
+    text = re.sub(r"[ \t]+", " ", text)          # collapse horizontal whitespace
+    text = re.sub(r"\n{3,}", "\n\n", text)        # max two consecutive newlines
+    text = re.sub(r"\.{3,}", "…", text)           # long ellipsis → unicode …
+    text = re.sub(r"([.!?])([A-Z])", r"\1 \2", text)  # missing space after sentence
+    return text
 
 
 # ── OpenAI provider ───────────────────────────────────────────────────────────
@@ -165,7 +235,7 @@ def _transcribe_openai(
         )
 
     data = resp.json()
-    text = (data.get("text") or "").strip()
+    text = clean_transcript_for_project_defense((data.get("text") or "").strip())
     if not text:
         raise RuntimeError(
             "Transcription returned an empty result. "
@@ -173,6 +243,106 @@ def _transcribe_openai(
         )
 
     return TranscriptionResult(transcript_text=text, provider_used="openai")
+
+
+# ── local_whisper provider ────────────────────────────────────────────────────
+
+def _transcribe_local_whisper(
+    file_bytes: bytes,
+    filename: str,
+) -> TranscriptionResult:
+    """
+    Transcribe using faster-whisper running locally on CPU or GPU.
+
+    Requires:
+      pip install faster-whisper
+
+    For video files (mp4/mov), requires ffmpeg to extract the audio track first:
+      brew install ffmpeg   /   apt install ffmpeg
+
+    Audio files (mp3/wav/webm/m4a) are passed directly to Whisper — no ffmpeg needed.
+    """
+    # ── Check optional dependency ─────────────────────────────────────────────
+    try:
+        from faster_whisper import WhisperModel  # optional dep
+    except ImportError:
+        raise TranscriptionUnavailableError(
+            "Local Whisper transcription is not installed. "
+            "Install faster-whisper (pip install faster-whisper) "
+            "or use manual transcript."
+        )
+
+    import subprocess
+    import tempfile
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "wav"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = os.path.join(tmpdir, filename)
+        with open(input_path, "wb") as fh:
+            fh.write(file_bytes)
+
+        # ── Video → audio extraction via ffmpeg ───────────────────────────────
+        if ext in _VIDEO_EXTS:
+            audio_path = os.path.join(tmpdir, "audio_extracted.wav")
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y",
+                        "-i", input_path,
+                        "-vn",                  # no video stream
+                        "-ar", "16000",         # 16 kHz sample rate (Whisper native)
+                        "-ac", "1",             # mono
+                        "-f", "wav",
+                        audio_path,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=120,
+                )
+            except FileNotFoundError:
+                raise TranscriptionUnavailableError(
+                    "Video transcription requires ffmpeg. "
+                    "Upload audio (mp3/wav/webm/m4a) instead, or install ffmpeg."
+                )
+            except subprocess.CalledProcessError as exc:
+                stderr = (exc.stderr or b"").decode(errors="replace")[:300]
+                raise RuntimeError(
+                    f"ffmpeg audio extraction failed: {stderr}. "
+                    "Try uploading the file as mp3 or wav."
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(
+                    "ffmpeg audio extraction timed out. "
+                    "Try a shorter recording or upload audio directly."
+                )
+        else:
+            audio_path = input_path
+
+        # ── Whisper transcription ─────────────────────────────────────────────
+        try:
+            model = WhisperModel(
+                _LOCAL_WHISPER_MODEL_SIZE,
+                device=_LOCAL_WHISPER_DEVICE,
+                compute_type=_LOCAL_WHISPER_COMPUTE_TYPE,
+            )
+            segments, _info = model.transcribe(audio_path, beam_size=5)
+            raw_text = " ".join(seg.text for seg in segments).strip()
+        except Exception as exc:
+            logger.error("local_whisper transcription error: %s", exc)
+            raise RuntimeError(
+                f"Local Whisper transcription failed: {exc}. "
+                "Try again or paste your transcript manually."
+            )
+
+    cleaned = clean_transcript_for_project_defense(raw_text)
+    if not cleaned:
+        raise RuntimeError(
+            "Local Whisper returned an empty transcript. "
+            "Ensure the recording contains clear speech, or paste your transcript manually."
+        )
+
+    return TranscriptionResult(transcript_text=cleaned, provider_used="local_whisper")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
