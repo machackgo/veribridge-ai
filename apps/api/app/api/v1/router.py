@@ -26,6 +26,7 @@ from app.api.v1.endpoints import (
     website_proof_sessions,
     website_semantic_verification_results,
     website_verification_runs,
+    work_passport_analytics,
     workflow_privacy_scan,
 )
 
@@ -41,6 +42,11 @@ api_router.include_router(
     notifications.router,
     prefix="/student/notifications",
     tags=["student-notifications"],
+)
+api_router.include_router(
+    work_passport_analytics.router,
+    prefix="/student/work-passport",
+    tags=["work-passport-analytics"],
 )
 api_router.include_router(
     skill_evidence.router,
