@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.api.deps import get_current_user_id, get_db
 from app.schemas.public_work_passport import (
@@ -21,6 +21,12 @@ from app.schemas.public_work_passport import (
     PublicWorkPassportStudentResponse,
     RecruiterRequesterProfileResponse,
 )
+from app.schemas.recruiter_shortlist import (
+    RecruiterReviewedSectionCreate,
+    RecruiterSavedPassportCreate,
+    RecruiterSavedPassportResponse,
+    RecruiterSavedPassportUpdate,
+)
 from app.schemas.skill_evidence_timeline import SkillEvidenceTimelineResponse
 from app.schemas.work_passport_status import PublicWorkPassportStatusResponse
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
@@ -31,6 +37,10 @@ from app.services.public_work_passport_service import (
     PublicWorkPassportNotFoundError,
     PublicWorkPassportService,
     RecruiterRequesterProfileNotFoundError,
+)
+from app.services.recruiter_shortlist_service import (
+    RecruiterSavedPassportNotFoundError,
+    RecruiterShortlistService,
 )
 from app.services.skill_evidence_timeline_service import SkillEvidenceTimelineService
 from app.services.work_passport_status_service import WorkPassportStatusService
@@ -189,6 +199,23 @@ def request_access(
         raise _passport_not_found(str(exc)) from exc
 
 
+@public_router.post(
+    "/passports/{public_slug}/save",
+    response_model=RecruiterSavedPassportResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Save or shortlist a public Work Passport for a requester",
+)
+def save_public_passport(
+    public_slug: str,
+    body: RecruiterSavedPassportCreate,
+    db: Any = Depends(get_db),
+) -> RecruiterSavedPassportResponse:
+    try:
+        return RecruiterShortlistService(db).save_passport(public_slug, body)
+    except PublicWorkPassportNotFoundError as exc:
+        raise _passport_not_found(str(exc)) from exc
+
+
 @public_router.get(
     "/passports/{public_slug}/status",
     response_model=PublicWorkPassportStatusResponse,
@@ -217,6 +244,71 @@ def get_public_skill_evidence_timeline(
         return SkillEvidenceTimelineService(db).get_public_skill_evidence_timeline(public_slug)
     except PublicWorkPassportNotFoundError as exc:
         raise _passport_not_found(str(exc)) from exc
+
+
+@public_router.get(
+    "/recruiter/saved-passports",
+    response_model=list[RecruiterSavedPassportResponse],
+    summary="List saved Work Passports for a requester email",
+)
+def list_recruiter_saved_passports(
+    requester_email: str = Query(..., min_length=3),
+    db: Any = Depends(get_db),
+) -> list[RecruiterSavedPassportResponse]:
+    return RecruiterShortlistService(db).list_saved_passports(requester_email)
+
+
+@public_router.patch(
+    "/recruiter/saved-passports/{saved_id}",
+    response_model=RecruiterSavedPassportResponse,
+    summary="Update requester-private saved Work Passport metadata",
+)
+def update_recruiter_saved_passport(
+    saved_id: str,
+    body: RecruiterSavedPassportUpdate,
+    db: Any = Depends(get_db),
+) -> RecruiterSavedPassportResponse:
+    try:
+        return RecruiterShortlistService(db).update_saved_passport(saved_id, body)
+    except RecruiterSavedPassportNotFoundError as exc:
+        raise _saved_passport_not_found(str(exc)) from exc
+
+
+@public_router.post(
+    "/recruiter/saved-passports/{saved_id}/reviewed-sections",
+    response_model=RecruiterSavedPassportResponse,
+    summary="Record a reviewed evidence section for a saved Work Passport",
+)
+def record_saved_passport_reviewed_section(
+    saved_id: str,
+    body: RecruiterReviewedSectionCreate,
+    db: Any = Depends(get_db),
+) -> RecruiterSavedPassportResponse:
+    try:
+        return RecruiterShortlistService(db).record_passport_reviewed_section(
+            saved_id,
+            str(body.requester_email),
+            body.section,
+        )
+    except RecruiterSavedPassportNotFoundError as exc:
+        raise _saved_passport_not_found(str(exc)) from exc
+
+
+@public_router.delete(
+    "/recruiter/saved-passports/{saved_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a requester-private saved Work Passport",
+)
+def delete_recruiter_saved_passport(
+    saved_id: str,
+    requester_email: str = Query(..., min_length=3),
+    db: Any = Depends(get_db),
+) -> Response:
+    try:
+        RecruiterShortlistService(db).delete_saved_passport(saved_id, requester_email)
+    except RecruiterSavedPassportNotFoundError as exc:
+        raise _saved_passport_not_found(str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @public_router.get(
@@ -349,5 +441,16 @@ def _grant_not_found(grant_id: str) -> HTTPException:
             "code": "evidence_access_grant_not_found",
             "message": "Evidence access grant not found for the current user.",
             "grant_id": grant_id,
+        },
+    )
+
+
+def _saved_passport_not_found(saved_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": "recruiter_saved_passport_not_found",
+            "message": "Saved Work Passport was not found for the requester.",
+            "saved_id": saved_id,
         },
     )
