@@ -42,6 +42,7 @@ from app.services.recruiter_shortlist_service import (
     RecruiterSavedPassportNotFoundError,
     RecruiterShortlistService,
 )
+from app.services.work_passport_export_service import WorkPassportExportService
 from app.services.skill_evidence_timeline_service import SkillEvidenceTimelineService
 from app.services.work_passport_status_service import WorkPassportStatusService
 
@@ -102,6 +103,43 @@ def list_access_requests(
         return PublicWorkPassportService(db).list_access_requests(user_id, session_id)
     except ExtensionProofSessionNotFoundError as exc:
         raise _session_not_found(session_id) from exc
+
+
+@student_router.post(
+    "/{session_id}/export",
+    response_model=dict[str, Any],
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a student Work Passport export",
+)
+def create_student_export(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return WorkPassportExportService(db).build_student_export_payload(user_id, session_id)
+    except ExtensionProofSessionNotFoundError as exc:
+        raise _session_not_found(session_id) from exc
+
+
+@student_router.get(
+    "/{session_id}/export/latest",
+    response_model=dict[str, Any],
+    summary="Get the latest student Work Passport export",
+)
+def get_latest_student_export(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        WorkPassportExportService(db)._session_for_user(user_id, session_id)
+        record = WorkPassportExportService(db).get_latest_export_record(user_id, session_id)
+    except ExtensionProofSessionNotFoundError as exc:
+        raise _session_not_found(session_id) from exc
+    if not record:
+        raise _export_not_found(session_id)
+    return record.get("export_payload") or {}
 
 
 @access_router.post(
@@ -247,6 +285,21 @@ def get_public_skill_evidence_timeline(
 
 
 @public_router.get(
+    "/passports/{public_slug}/export",
+    response_model=dict[str, Any],
+    summary="Get a public-safe Work Passport export payload",
+)
+def get_public_passport_export(
+    public_slug: str,
+    db: Any = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return WorkPassportExportService(db).build_public_export_payload(public_slug)
+    except PublicWorkPassportNotFoundError as exc:
+        raise _passport_not_found(str(exc)) from exc
+
+
+@public_router.get(
     "/recruiter/saved-passports",
     response_model=list[RecruiterSavedPassportResponse],
     summary="List saved Work Passports for a requester email",
@@ -353,6 +406,27 @@ def get_protected_skill_evidence_timeline(
         ) from exc
 
 
+@public_router.get(
+    "/access/{access_token}/export",
+    response_model=dict[str, Any],
+    summary="Get a protected recruiter Work Passport export payload",
+)
+def get_protected_passport_export(
+    access_token: str,
+    db: Any = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return WorkPassportExportService(db).build_protected_export_payload(access_token)
+    except EvidenceAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "evidence_access_denied",
+                "message": str(exc),
+            },
+        ) from exc
+
+
 @admin_router.get(
     "/recruiter-requesters",
     response_model=list[RecruiterRequesterProfileResponse],
@@ -441,6 +515,17 @@ def _grant_not_found(grant_id: str) -> HTTPException:
             "code": "evidence_access_grant_not_found",
             "message": "Evidence access grant not found for the current user.",
             "grant_id": grant_id,
+        },
+    )
+
+
+def _export_not_found(session_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": "work_passport_export_not_found",
+            "message": "Work Passport export was not found for the current user.",
+            "session_id": session_id,
         },
     )
 
