@@ -14,6 +14,7 @@ from app.api.v1.endpoints import (
     live_website_check,
     notifications,
     project_defense_analysis,
+    proof_versioning,
     public_work_passport,
     recruiter_candidates,
     skill_evidence,
@@ -107,6 +108,11 @@ api_router.include_router(
     extension_proof.router,
     prefix="/student/extension-proof/sessions",
     tags=["extension-proof-sessions"],
+)
+api_router.include_router(
+    proof_versioning.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["proof-evidence-versioning"],
 )
 api_router.include_router(
     extension_proof_github_analysis.router,
