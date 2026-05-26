@@ -9,6 +9,24 @@ from pydantic import BaseModel, Field, field_validator
 
 
 AccessRequestStatus = Literal["pending", "approved", "denied", "revoked"]
+RequesterType = Literal[
+    "recruiter",
+    "hiring_manager",
+    "faculty",
+    "mentor",
+    "company_reviewer",
+    "domain_expert",
+    "other",
+]
+RequesterVerificationStatus = Literal[
+    "unverified",
+    "email_pending",
+    "email_verified",
+    "domain_verified",
+    "trusted",
+    "suspicious",
+    "blocked",
+]
 
 
 class PublicWorkPassportCreateRequest(BaseModel):
@@ -92,6 +110,7 @@ class EvidenceAccessRequestResponse(BaseModel):
     user_id: str
     proof_session_id: str
     passport_id: str
+    requester_profile_id: str | None = None
     requester_name: str
     requester_email: str
     requester_organization: str | None = None
@@ -133,3 +152,29 @@ class ProtectedEvidenceResponse(BaseModel):
     expires_at: datetime | str | None = None
     evidence: dict[str, Any]
     disclosure_note: str
+
+
+class RecruiterRequesterProfileResponse(BaseModel):
+    requester_profile_id: str
+    email: str
+    full_name: str | None = None
+    organization_name: str | None = None
+    organization_domain: str | None = None
+    requester_role: str | None = None
+    requester_type: RequesterType
+    verification_status: RequesterVerificationStatus
+    email_verified: bool
+    domain_verified: bool
+    total_access_requests: int
+    approved_access_requests: int
+    denied_access_requests: int
+    risk_score: int
+    risk_flags: list[str] = Field(default_factory=list)
+    last_seen_at: datetime | str
+
+
+class AdminRequesterVerificationUpdate(BaseModel):
+    verification_status: RequesterVerificationStatus
+    notes: str | None = Field(default=None, max_length=4000)
+    domain_verified: bool | None = None
+    email_verified: bool | None = None

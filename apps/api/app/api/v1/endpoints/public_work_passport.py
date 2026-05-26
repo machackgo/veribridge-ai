@@ -5,19 +5,21 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.api.deps import get_current_user_id, get_db
 from app.schemas.public_work_passport import (
     AccessRequestCreate,
     AccessRequestDecision,
     AccessRequestPublicResponse,
+    AdminRequesterVerificationUpdate,
     EvidenceAccessGrantResponse,
     EvidenceAccessRequestResponse,
     ProtectedEvidenceResponse,
     PublicPassportSafeResponse,
     PublicWorkPassportCreateRequest,
     PublicWorkPassportStudentResponse,
+    RecruiterRequesterProfileResponse,
 )
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
 from app.services.public_work_passport_service import (
@@ -26,6 +28,7 @@ from app.services.public_work_passport_service import (
     EvidenceAccessRequestNotFoundError,
     PublicWorkPassportNotFoundError,
     PublicWorkPassportService,
+    RecruiterRequesterProfileNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,7 @@ logger = logging.getLogger(__name__)
 student_router = APIRouter()
 access_router = APIRouter()
 public_router = APIRouter()
+admin_router = APIRouter()
 
 
 @student_router.post(
@@ -136,6 +140,18 @@ def revoke_access_grant(
         raise _grant_not_found(str(exc)) from exc
 
 
+@access_router.get(
+    "/access-requesters",
+    response_model=list[RecruiterRequesterProfileResponse],
+    summary="List requester profiles linked to the student's evidence access requests",
+)
+def list_access_requesters(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> list[RecruiterRequesterProfileResponse]:
+    return PublicWorkPassportService(db).list_access_requesters(user_id)
+
+
 @public_router.get(
     "/passports/{public_slug}",
     response_model=PublicPassportSafeResponse,
@@ -186,6 +202,42 @@ def get_protected_evidence(
             detail={
                 "code": "evidence_access_denied",
                 "message": str(exc),
+            },
+        ) from exc
+
+
+@admin_router.get(
+    "/recruiter-requesters",
+    response_model=list[RecruiterRequesterProfileResponse],
+    summary="Admin: list recruiter/requester identity profiles",
+)
+def admin_list_recruiter_requesters(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Any = Depends(get_db),
+) -> list[RecruiterRequesterProfileResponse]:
+    return PublicWorkPassportService(db).admin_list_requester_profiles(limit=limit, offset=offset)
+
+
+@admin_router.post(
+    "/recruiter-requesters/{profile_id}/verification-status",
+    response_model=RecruiterRequesterProfileResponse,
+    summary="Admin: update requester verification status",
+)
+def admin_update_recruiter_requester_status(
+    profile_id: str,
+    body: AdminRequesterVerificationUpdate,
+    db: Any = Depends(get_db),
+) -> RecruiterRequesterProfileResponse:
+    try:
+        return PublicWorkPassportService(db).admin_update_requester_verification(profile_id, body)
+    except RecruiterRequesterProfileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "recruiter_requester_profile_not_found",
+                "message": "Recruiter requester profile was not found.",
+                "requester_profile_id": str(exc),
             },
         ) from exc
 

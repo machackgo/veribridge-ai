@@ -13,12 +13,14 @@ from app.schemas.public_work_passport import (
     AccessRequestCreate,
     AccessRequestDecision,
     AccessRequestPublicResponse,
+    AdminRequesterVerificationUpdate,
     EvidenceAccessGrantResponse,
     EvidenceAccessRequestResponse,
     ProtectedEvidenceResponse,
     PublicPassportSafeResponse,
     PublicWorkPassportCreateRequest,
     PublicWorkPassportStudentResponse,
+    RecruiterRequesterProfileResponse,
 )
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
 from app.services.verification_readiness_service import compute_readiness_report
@@ -29,6 +31,7 @@ _GRANTS = "evidence_access_grants"
 _AUDIT_EVENTS = "evidence_access_audit_events"
 _NOTIFICATION_EVENTS = "notification_events"
 _PASSPORT_VIEW_EVENTS = "public_passport_view_events"
+_REQUESTER_PROFILES = "recruiter_requester_profiles"
 _USERS = "users"
 _SESSIONS = "extension_proof_sessions"
 _SKILL_EVIDENCE = "skill_evidence"
@@ -74,6 +77,24 @@ _ALLOWED_SECTIONS = {
     "project_defense_summary",
     "project_defense_transcript",
 }
+_ALLOWED_REQUESTER_TYPES = {
+    "recruiter",
+    "hiring_manager",
+    "faculty",
+    "mentor",
+    "company_reviewer",
+    "domain_expert",
+    "other",
+}
+_FREE_EMAIL_DOMAINS = {
+    "gmail.com",
+    "yahoo.com",
+    "outlook.com",
+    "hotmail.com",
+    "icloud.com",
+    "proton.me",
+}
+_REPEATED_REQUEST_THRESHOLD = 3
 
 
 class PublicWorkPassportNotFoundError(LookupError):
@@ -90,6 +111,10 @@ class EvidenceAccessGrantNotFoundError(LookupError):
 
 class EvidenceAccessDeniedError(PermissionError):
     """Access token is missing, expired, revoked, or otherwise invalid."""
+
+
+class RecruiterRequesterProfileNotFoundError(LookupError):
+    """Requester profile was not found."""
 
 
 class PublicWorkPassportService:
@@ -180,13 +205,16 @@ class PublicWorkPassportService:
             raise PublicWorkPassportNotFoundError(public_slug)
         requested_sections = _sections_or_default(payload.requested_sections, _DEFAULT_REQUEST_SECTIONS)
         now = _now()
+        requester_profile = self._upsert_requester_profile(payload, now)
+        requester_identity = _requester_identity_summary(requester_profile)
         row = {
             "id": str(uuid4()),
             "user_id": str(passport["user_id"]),
             "proof_session_id": str(passport["proof_session_id"]),
             "passport_id": str(passport["id"]),
+            "requester_profile_id": str(requester_profile["id"]),
             "requester_name": payload.requester_name,
-            "requester_email": payload.requester_email,
+            "requester_email": str(requester_profile["email"]),
             "requester_organization": payload.requester_organization,
             "requester_role": payload.requester_role,
             "request_reason": payload.request_reason,
@@ -206,9 +234,10 @@ class PublicWorkPassportService:
             access_request_id=str(saved["id"]),
             event_type="access_requested",
             actor_type="recruiter",
-            actor_email=payload.requester_email,
+            actor_email=str(requester_profile["email"]),
             event_summary="Recruiter requested access to protected evidence.",
             metadata={
+                **requester_identity,
                 "requester_organization": payload.requester_organization,
                 "requester_role": payload.requester_role,
                 "requested_sections": requested_sections,
@@ -223,7 +252,8 @@ class PublicWorkPassportService:
             metadata={
                 "passport_id": str(passport["id"]),
                 "access_request_id": str(saved["id"]),
-                "requester_email": payload.requester_email,
+                "requester_email": str(requester_profile["email"]),
+                "requester_identity": requester_identity,
                 "requested_sections": requested_sections,
             },
         )
@@ -274,6 +304,8 @@ class PublicWorkPassportService:
             "updated_at": now,
         }
         saved = self._save(_GRANTS, grant)
+        self._increment_requester_decision_count(request.get("requester_profile_id"), "approved_access_requests")
+        requester_identity = self._requester_identity_for_request(request)
         self._write_audit_event(
             user_id=user_id,
             proof_session_id=str(request["proof_session_id"]),
@@ -283,7 +315,11 @@ class PublicWorkPassportService:
             actor_type="student",
             actor_user_id=user_id,
             event_summary="Student approved protected evidence access request.",
-            metadata={"granted_sections": sections, "expires_at": body.expires_at.isoformat() if body.expires_at else None},
+            metadata={
+                **requester_identity,
+                "granted_sections": sections,
+                "expires_at": body.expires_at.isoformat() if body.expires_at else None,
+            },
         )
         self._write_audit_event(
             user_id=user_id,
@@ -295,7 +331,11 @@ class PublicWorkPassportService:
             actor_type="student",
             actor_user_id=user_id,
             event_summary="Protected evidence access grant created.",
-            metadata={"granted_sections": sections, "expires_at": body.expires_at.isoformat() if body.expires_at else None},
+            metadata={
+                **requester_identity,
+                "granted_sections": sections,
+                "expires_at": body.expires_at.isoformat() if body.expires_at else None,
+            },
         )
         self._write_notification_event(
             user_id=user_id,
@@ -307,6 +347,7 @@ class PublicWorkPassportService:
                 "passport_id": str(request["passport_id"]),
                 "access_request_id": str(request["id"]),
                 "access_grant_id": str(saved["id"]),
+                "requester_identity": requester_identity,
                 "granted_sections": sections,
                 "expires_at": body.expires_at.isoformat() if body.expires_at else None,
             },
@@ -332,6 +373,8 @@ class PublicWorkPassportService:
             }
         )
         saved = self._save(_REQUESTS, request)
+        self._increment_requester_decision_count(request.get("requester_profile_id"), "denied_access_requests")
+        requester_identity = self._requester_identity_for_request(request)
         self._write_audit_event(
             user_id=user_id,
             proof_session_id=str(request["proof_session_id"]),
@@ -341,7 +384,7 @@ class PublicWorkPassportService:
             actor_type="student",
             actor_user_id=user_id,
             event_summary="Student denied protected evidence access request.",
-            metadata={"decision_notes_provided": bool(body.decision_notes)},
+            metadata={**requester_identity, "decision_notes_provided": bool(body.decision_notes)},
         )
         self._write_notification_event(
             user_id=user_id,
@@ -349,7 +392,11 @@ class PublicWorkPassportService:
             recipient_email=str(request["requester_email"]),
             subject="Protected evidence access denied",
             body="Your request to view protected evidence was denied.",
-            metadata={"passport_id": str(request["passport_id"]), "access_request_id": str(request["id"])},
+            metadata={
+                "passport_id": str(request["passport_id"]),
+                "access_request_id": str(request["id"]),
+                "requester_identity": requester_identity,
+            },
         )
         return _request_response(saved)
 
@@ -419,6 +466,111 @@ class PublicWorkPassportService:
             evidence=_protected_evidence(evidence, sections),
             disclosure_note=_PROTECTED_DISCLOSURE,
         )
+
+    def list_access_requesters(self, user_id: str) -> list[RecruiterRequesterProfileResponse]:
+        requests = self._rows_for_user(_REQUESTS, user_id)
+        profile_ids = _dedupe([
+            str(row.get("requester_profile_id"))
+            for row in requests
+            if row.get("requester_profile_id")
+        ])
+        profiles = [self._by_id(_REQUESTER_PROFILES, profile_id) for profile_id in profile_ids]
+        rows = [profile for profile in profiles if profile]
+        rows.sort(key=lambda row: str(row.get("last_seen_at") or ""), reverse=True)
+        return [_requester_profile_response(row) for row in rows]
+
+    def admin_list_requester_profiles(self, limit: int = 100, offset: int = 0) -> list[RecruiterRequesterProfileResponse]:
+        if isinstance(self._client, dict):
+            rows = list(self._client.get(_REQUESTER_PROFILES, {}).values())
+            rows.sort(key=lambda row: str(row.get("last_seen_at") or ""), reverse=True)
+            return [_requester_profile_response(row) for row in rows[offset:offset + limit]]
+        result = (
+            self._client.table(_REQUESTER_PROFILES)
+            .select("*")
+            .order("last_seen_at", desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+        return [_requester_profile_response(row) for row in (getattr(result, "data", []) or [])]
+
+    def admin_update_requester_verification(
+        self,
+        profile_id: str,
+        payload: AdminRequesterVerificationUpdate,
+    ) -> RecruiterRequesterProfileResponse:
+        profile = self._by_id(_REQUESTER_PROFILES, profile_id)
+        if not profile:
+            raise RecruiterRequesterProfileNotFoundError(profile_id)
+        profile.update(
+            {
+                "verification_status": payload.verification_status,
+                "notes": payload.notes,
+                "updated_at": _now(),
+            }
+        )
+        if payload.domain_verified is not None:
+            profile["domain_verified"] = payload.domain_verified
+        if payload.email_verified is not None:
+            profile["email_verified"] = payload.email_verified
+        profile.update(_risk_profile_fields(profile))
+        saved = self._save(_REQUESTER_PROFILES, profile)
+        return _requester_profile_response(saved)
+
+    def _upsert_requester_profile(self, payload: AccessRequestCreate, now: datetime) -> dict[str, Any]:
+        email = _normalize_email(payload.requester_email)
+        domain = _email_domain(email)
+        existing = self._requester_profile_by_email(email)
+        total_requests = int((existing or {}).get("total_access_requests") or 0) + 1
+        status = str((existing or {}).get("verification_status") or "unverified")
+        row = {
+            "id": str((existing or {}).get("id") or uuid4()),
+            "email": email,
+            "full_name": payload.requester_name,
+            "organization_name": payload.requester_organization,
+            "organization_domain": domain,
+            "requester_role": payload.requester_role,
+            "requester_type": _requester_type(payload.requester_role),
+            "email_verified": bool((existing or {}).get("email_verified", False)),
+            "domain_verified": bool((existing or {}).get("domain_verified", False)),
+            "verification_status": status,
+            "first_seen_at": (existing or {}).get("first_seen_at") or now,
+            "last_seen_at": now,
+            "total_access_requests": total_requests,
+            "approved_access_requests": int((existing or {}).get("approved_access_requests") or 0),
+            "denied_access_requests": int((existing or {}).get("denied_access_requests") or 0),
+            "risk_score": 0,
+            "risk_flags": [],
+            "notes": (existing or {}).get("notes"),
+            "created_at": (existing or {}).get("created_at") or now,
+            "updated_at": now,
+        }
+        row.update(_risk_profile_fields(row, request_reason=payload.request_reason or ""))
+        return self._save(_REQUESTER_PROFILES, row)
+
+    def _requester_profile_by_email(self, email: str) -> dict[str, Any] | None:
+        return self._first_where(_REQUESTER_PROFILES, "email", _normalize_email(email))
+
+    def _increment_requester_decision_count(self, profile_id: Any, field: str) -> None:
+        if not profile_id:
+            return
+        profile = self._by_id(_REQUESTER_PROFILES, str(profile_id))
+        if not profile:
+            return
+        profile[field] = int(profile.get(field) or 0) + 1
+        profile["updated_at"] = _now()
+        profile.update(_risk_profile_fields(profile))
+        self._save(_REQUESTER_PROFILES, profile)
+
+    def _requester_identity_for_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        profile_id = request.get("requester_profile_id")
+        profile = self._by_id(_REQUESTER_PROFILES, str(profile_id)) if profile_id else None
+        return _requester_identity_summary(profile) if profile else {
+            "requester_profile_id": None,
+            "requester_type": "recruiter",
+            "organization_domain": _email_domain(str(request.get("requester_email") or "")),
+            "verification_status": "unverified",
+            "risk_flags": [],
+        }
 
     def _write_audit_event(
         self,
@@ -628,6 +780,15 @@ class PublicWorkPassportService:
             .eq("proof_session_id", session_id)
             .execute()
         )
+        return getattr(result, "data", []) or []
+
+    def _rows_for_user(self, table: str, user_id: str) -> list[dict[str, Any]]:
+        if isinstance(self._client, dict):
+            return [
+                row for row in self._client.get(table, {}).values()
+                if str(row.get("user_id")) == user_id
+            ]
+        result = self._client.table(table).select("*").eq("user_id", user_id).execute()
         return getattr(result, "data", []) or []
 
     def _skill_evidence(self, user_id: str, evidence_id: str) -> dict[str, Any] | None:
@@ -853,6 +1014,7 @@ def _request_response(row: dict[str, Any]) -> EvidenceAccessRequestResponse:
         user_id=str(row["user_id"]),
         proof_session_id=str(row["proof_session_id"]),
         passport_id=str(row["passport_id"]),
+        requester_profile_id=str(row["requester_profile_id"]) if row.get("requester_profile_id") else None,
         requester_name=str(row["requester_name"]),
         requester_email=str(row["requester_email"]),
         requester_organization=row.get("requester_organization"),
@@ -882,6 +1044,116 @@ def _grant_response(row: dict[str, Any]) -> EvidenceAccessGrantResponse:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _requester_profile_response(row: dict[str, Any]) -> RecruiterRequesterProfileResponse:
+    return RecruiterRequesterProfileResponse(
+        requester_profile_id=str(row["id"]),
+        email=str(row["email"]),
+        full_name=row.get("full_name"),
+        organization_name=row.get("organization_name"),
+        organization_domain=row.get("organization_domain"),
+        requester_role=row.get("requester_role"),
+        requester_type=row.get("requester_type") or "recruiter",
+        verification_status=row.get("verification_status") or "unverified",
+        email_verified=bool(row.get("email_verified", False)),
+        domain_verified=bool(row.get("domain_verified", False)),
+        total_access_requests=int(row.get("total_access_requests") or 0),
+        approved_access_requests=int(row.get("approved_access_requests") or 0),
+        denied_access_requests=int(row.get("denied_access_requests") or 0),
+        risk_score=int(row.get("risk_score") or 0),
+        risk_flags=list(row.get("risk_flags") or []),
+        last_seen_at=row["last_seen_at"],
+    )
+
+
+def _requester_identity_summary(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {
+            "requester_profile_id": None,
+            "requester_type": "recruiter",
+            "organization_domain": None,
+            "verification_status": "unverified",
+            "risk_flags": [],
+        }
+    return {
+        "requester_profile_id": str(row["id"]),
+        "requester_type": row.get("requester_type") or "recruiter",
+        "organization_domain": row.get("organization_domain"),
+        "organization_domain_matches_name": _organization_matches_domain(
+            row.get("organization_name"),
+            row.get("organization_domain"),
+        ),
+        "verification_status": row.get("verification_status") or "unverified",
+        "risk_flags": list(row.get("risk_flags") or []),
+    }
+
+
+def _risk_profile_fields(row: dict[str, Any], request_reason: str | None = None) -> dict[str, Any]:
+    flags = set(str(flag) for flag in row.get("risk_flags") or [])
+    domain = str(row.get("organization_domain") or "").lower()
+    if domain in _FREE_EMAIL_DOMAINS:
+        flags.add("free_email_domain")
+    else:
+        flags.discard("free_email_domain")
+    if not row.get("organization_name"):
+        flags.add("missing_organization")
+    else:
+        flags.discard("missing_organization")
+    if request_reason is not None and not request_reason:
+        flags.add("missing_reason")
+    if int(row.get("total_access_requests") or 0) > _REPEATED_REQUEST_THRESHOLD:
+        flags.add("repeated_requests")
+    else:
+        flags.discard("repeated_requests")
+    if row.get("verification_status") == "blocked":
+        flags.add("blocked_domain_future_placeholder")
+    else:
+        flags.discard("blocked_domain_future_placeholder")
+
+    score = 0
+    if "free_email_domain" in flags:
+        score += 10
+    if "missing_organization" in flags:
+        score += 10
+    if "missing_reason" in flags:
+        score += 10
+    if "repeated_requests" in flags:
+        score += 10
+    if row.get("verification_status") == "blocked":
+        score += 100
+    return {"risk_flags": sorted(flags), "risk_score": score}
+
+
+def _normalize_email(value: str) -> str:
+    return value.strip().lower()
+
+
+def _email_domain(email: str) -> str | None:
+    cleaned = _normalize_email(email)
+    if "@" not in cleaned:
+        return None
+    domain = cleaned.rsplit("@", 1)[-1].strip(".")
+    return domain or None
+
+
+def _requester_type(role: str | None) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", (role or "").strip().lower()).strip("_")
+    return normalized if normalized in _ALLOWED_REQUESTER_TYPES else "recruiter"
+
+
+def _organization_matches_domain(organization_name: Any, domain: Any) -> bool:
+    if not organization_name or not domain:
+        return False
+    if str(domain).lower() in _FREE_EMAIL_DOMAINS:
+        return False
+    org_tokens = {
+        token
+        for token in re.split(r"[^a-z0-9]+", str(organization_name).lower())
+        if len(token) >= 3
+    }
+    domain_root = str(domain).lower().split(".", 1)[0]
+    return bool(domain_root and domain_root in org_tokens)
 
 
 def _claimed_skills(*rows: dict[str, Any] | None) -> list[str]:

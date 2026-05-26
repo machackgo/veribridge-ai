@@ -152,6 +152,11 @@ api_router.include_router(
     tags=["public-work-passport"],
 )
 api_router.include_router(
+    public_work_passport.admin_router,
+    prefix="/admin",
+    tags=["recruiter-requester-admin"],
+)
+api_router.include_router(
     verification_review.admin_router,
     prefix="/admin/verification-reviews",
     tags=["verification-review-admin"],
