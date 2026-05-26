@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.deps import get_current_user_id, get_db
 from app.schemas.public_work_passport import (
@@ -143,10 +143,11 @@ def revoke_access_grant(
 )
 def get_public_passport(
     public_slug: str,
+    request: Request,
     db: Any = Depends(get_db),
 ) -> PublicPassportSafeResponse:
     try:
-        return PublicWorkPassportService(db).get_public_passport(public_slug)
+        return PublicWorkPassportService(db).get_public_passport(public_slug, _viewer_context(request))
     except PublicWorkPassportNotFoundError as exc:
         raise _passport_not_found(str(exc)) from exc
 
@@ -187,6 +188,18 @@ def get_protected_evidence(
                 "message": str(exc),
             },
         ) from exc
+
+
+def _viewer_context(request: Request) -> dict[str, Any]:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    ip_address = forwarded_for.split(",", 1)[0].strip() if forwarded_for else None
+    if not ip_address and request.client:
+        ip_address = request.client.host
+    return {
+        "viewer_type": "anonymous",
+        "ip_address": ip_address,
+        "user_agent": request.headers.get("user-agent"),
+    }
 
 
 def _session_not_found(session_id: str) -> HTTPException:

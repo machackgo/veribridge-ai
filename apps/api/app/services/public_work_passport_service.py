@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import secrets
+from hashlib import sha256
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -25,6 +26,10 @@ from app.services.verification_readiness_service import compute_readiness_report
 _PASSPORTS = "public_work_passports"
 _REQUESTS = "evidence_access_requests"
 _GRANTS = "evidence_access_grants"
+_AUDIT_EVENTS = "evidence_access_audit_events"
+_NOTIFICATION_EVENTS = "notification_events"
+_PASSPORT_VIEW_EVENTS = "public_passport_view_events"
+_USERS = "users"
 _SESSIONS = "extension_proof_sessions"
 _SKILL_EVIDENCE = "skill_evidence"
 _PROFILES = "student_profiles"
@@ -116,6 +121,17 @@ class PublicWorkPassportService:
             "updated_at": now,
         }
         saved = self._upsert_passport(row)
+        if existing is None:
+            self._write_audit_event(
+                user_id=user_id,
+                proof_session_id=session_id,
+                passport_id=str(saved["id"]),
+                event_type="passport_created",
+                actor_type="student",
+                actor_user_id=user_id,
+                event_summary="Public Work Passport created.",
+                metadata={"public_slug": saved.get("public_slug"), "is_public": saved.get("is_public", True)},
+            )
         return _passport_student_response(saved)
 
     def get_student_passport(self, user_id: str, session_id: str) -> PublicWorkPassportStudentResponse:
@@ -125,13 +141,34 @@ class PublicWorkPassportService:
             raise PublicWorkPassportNotFoundError(session_id)
         return _passport_student_response(row)
 
-    def get_public_passport(self, public_slug: str) -> PublicPassportSafeResponse:
+    def get_public_passport(
+        self,
+        public_slug: str,
+        viewer_context: dict[str, Any] | None = None,
+    ) -> PublicPassportSafeResponse:
         passport = self._passport_by_slug(public_slug)
         if not passport or not passport.get("is_public", True):
             raise PublicWorkPassportNotFoundError(public_slug)
         session = self._get_session(str(passport["user_id"]), str(passport["proof_session_id"]))
         evidence = self._gather_evidence(str(passport["user_id"]), str(passport["proof_session_id"]), session)
-        return _public_response(passport, evidence)
+        response = _public_response(passport, evidence)
+        context = viewer_context or {}
+        self._insert(
+            _PASSPORT_VIEW_EVENTS,
+            {
+                "id": str(uuid4()),
+                "passport_id": str(passport["id"]),
+                "public_slug": str(passport["public_slug"]),
+                "viewer_type": str(context.get("viewer_type") or "anonymous"),
+                "viewer_email": context.get("viewer_email"),
+                "viewer_organization": context.get("viewer_organization"),
+                "ip_hash": _hash_optional(context.get("ip_address")),
+                "user_agent_hash": _hash_optional(context.get("user_agent")),
+                "viewed_sections": list(response.visible_sections or []),
+                "created_at": _now(),
+            },
+        )
+        return response
 
     def create_access_request(
         self,
@@ -162,6 +199,34 @@ class PublicWorkPassportService:
             "updated_at": now,
         }
         saved = self._insert(_REQUESTS, row)
+        self._write_audit_event(
+            user_id=str(passport["user_id"]),
+            proof_session_id=str(passport["proof_session_id"]),
+            passport_id=str(passport["id"]),
+            access_request_id=str(saved["id"]),
+            event_type="access_requested",
+            actor_type="recruiter",
+            actor_email=payload.requester_email,
+            event_summary="Recruiter requested access to protected evidence.",
+            metadata={
+                "requester_organization": payload.requester_organization,
+                "requester_role": payload.requester_role,
+                "requested_sections": requested_sections,
+            },
+        )
+        self._write_notification_event(
+            user_id=str(passport["user_id"]),
+            event_type="access_requested",
+            recipient_email=self._user_email(str(passport["user_id"])),
+            subject="Protected evidence access requested",
+            body=f"{payload.requester_name} requested access to protected evidence for {passport.get('public_title') or 'a public Work Passport'}.",
+            metadata={
+                "passport_id": str(passport["id"]),
+                "access_request_id": str(saved["id"]),
+                "requester_email": payload.requester_email,
+                "requested_sections": requested_sections,
+            },
+        )
         return AccessRequestPublicResponse(
             id=str(saved["id"]),
             status="pending",
@@ -209,6 +274,43 @@ class PublicWorkPassportService:
             "updated_at": now,
         }
         saved = self._save(_GRANTS, grant)
+        self._write_audit_event(
+            user_id=user_id,
+            proof_session_id=str(request["proof_session_id"]),
+            passport_id=str(request["passport_id"]),
+            access_request_id=str(request["id"]),
+            event_type="access_approved",
+            actor_type="student",
+            actor_user_id=user_id,
+            event_summary="Student approved protected evidence access request.",
+            metadata={"granted_sections": sections, "expires_at": body.expires_at.isoformat() if body.expires_at else None},
+        )
+        self._write_audit_event(
+            user_id=user_id,
+            proof_session_id=str(request["proof_session_id"]),
+            passport_id=str(request["passport_id"]),
+            access_request_id=str(request["id"]),
+            access_grant_id=str(saved["id"]),
+            event_type="access_granted",
+            actor_type="student",
+            actor_user_id=user_id,
+            event_summary="Protected evidence access grant created.",
+            metadata={"granted_sections": sections, "expires_at": body.expires_at.isoformat() if body.expires_at else None},
+        )
+        self._write_notification_event(
+            user_id=user_id,
+            event_type="access_approved",
+            recipient_email=str(request["requester_email"]),
+            subject="Protected evidence access approved",
+            body="Your request to view protected evidence was approved.",
+            metadata={
+                "passport_id": str(request["passport_id"]),
+                "access_request_id": str(request["id"]),
+                "access_grant_id": str(saved["id"]),
+                "granted_sections": sections,
+                "expires_at": body.expires_at.isoformat() if body.expires_at else None,
+            },
+        )
         return _grant_response(saved)
 
     def deny_request(
@@ -230,12 +332,57 @@ class PublicWorkPassportService:
             }
         )
         saved = self._save(_REQUESTS, request)
+        self._write_audit_event(
+            user_id=user_id,
+            proof_session_id=str(request["proof_session_id"]),
+            passport_id=str(request["passport_id"]),
+            access_request_id=str(request["id"]),
+            event_type="access_denied",
+            actor_type="student",
+            actor_user_id=user_id,
+            event_summary="Student denied protected evidence access request.",
+            metadata={"decision_notes_provided": bool(body.decision_notes)},
+        )
+        self._write_notification_event(
+            user_id=user_id,
+            event_type="access_denied",
+            recipient_email=str(request["requester_email"]),
+            subject="Protected evidence access denied",
+            body="Your request to view protected evidence was denied.",
+            metadata={"passport_id": str(request["passport_id"]), "access_request_id": str(request["id"])},
+        )
         return _request_response(saved)
 
     def revoke_grant(self, user_id: str, grant_id: str) -> EvidenceAccessGrantResponse:
         grant = self._grant_for_user(user_id, grant_id)
         grant.update({"revoked_at": _now(), "updated_at": _now()})
         saved = self._save(_GRANTS, grant)
+        request = self._by_id(_REQUESTS, str(grant["access_request_id"]))
+        passport_id = str(request["passport_id"]) if request else None
+        self._write_audit_event(
+            user_id=user_id,
+            proof_session_id=str(grant["proof_session_id"]),
+            passport_id=passport_id,
+            access_request_id=str(grant["access_request_id"]),
+            access_grant_id=str(grant["id"]),
+            event_type="access_revoked",
+            actor_type="student",
+            actor_user_id=user_id,
+            event_summary="Student revoked protected evidence access grant.",
+            metadata={"granted_sections": list(grant.get("granted_sections") or [])},
+        )
+        self._write_notification_event(
+            user_id=user_id,
+            event_type="access_revoked",
+            recipient_email=str(grant["requester_email"]),
+            subject="Protected evidence access revoked",
+            body="A protected evidence access grant was revoked.",
+            metadata={
+                "passport_id": passport_id,
+                "access_request_id": str(grant["access_request_id"]),
+                "access_grant_id": str(grant["id"]),
+            },
+        )
         return _grant_response(saved)
 
     def get_protected_evidence(self, access_token: str) -> ProtectedEvidenceResponse:
@@ -244,12 +391,26 @@ class PublicWorkPassportService:
             raise EvidenceAccessDeniedError("Access token is invalid or revoked.")
         expires_at = _parse_dt(grant.get("expires_at"))
         if expires_at and expires_at <= _now():
+            self._write_access_expired_event(grant)
             raise EvidenceAccessDeniedError("Access token is expired.")
         user_id = str(grant["user_id"])
         session_id = str(grant["proof_session_id"])
         session = self._get_session(user_id, session_id)
         evidence = self._gather_evidence(user_id, session_id, session)
         sections = [s for s in list(grant.get("granted_sections") or []) if s in _ALLOWED_SECTIONS]
+        request = self._by_id(_REQUESTS, str(grant["access_request_id"]))
+        self._write_audit_event(
+            user_id=user_id,
+            proof_session_id=session_id,
+            passport_id=str(request["passport_id"]) if request else None,
+            access_request_id=str(grant["access_request_id"]),
+            access_grant_id=str(grant["id"]),
+            event_type="protected_evidence_viewed",
+            actor_type="recruiter",
+            actor_email=str(grant["requester_email"]),
+            event_summary="Protected evidence viewed with an approved access grant.",
+            metadata={"viewed_sections": sections},
+        )
         return ProtectedEvidenceResponse(
             proof_session_id=session_id,
             requester_email=str(grant["requester_email"]),
@@ -257,6 +418,83 @@ class PublicWorkPassportService:
             expires_at=grant.get("expires_at"),
             evidence=_protected_evidence(evidence, sections),
             disclosure_note=_PROTECTED_DISCLOSURE,
+        )
+
+    def _write_audit_event(
+        self,
+        *,
+        user_id: str,
+        proof_session_id: str,
+        passport_id: str | None,
+        event_type: str,
+        actor_type: str,
+        access_request_id: str | None = None,
+        access_grant_id: str | None = None,
+        actor_email: str | None = None,
+        actor_user_id: str | None = None,
+        event_summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._insert(
+            _AUDIT_EVENTS,
+            {
+                "id": str(uuid4()),
+                "user_id": user_id,
+                "proof_session_id": proof_session_id,
+                "passport_id": passport_id,
+                "access_request_id": access_request_id,
+                "access_grant_id": access_grant_id,
+                "event_type": event_type,
+                "actor_type": actor_type,
+                "actor_email": actor_email,
+                "actor_user_id": actor_user_id,
+                "event_summary": event_summary,
+                "metadata": metadata or {},
+                "created_at": _now(),
+            },
+        )
+
+    def _write_notification_event(
+        self,
+        *,
+        user_id: str,
+        event_type: str,
+        recipient_email: str,
+        subject: str,
+        body: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._insert(
+            _NOTIFICATION_EVENTS,
+            {
+                "id": str(uuid4()),
+                "user_id": user_id,
+                "event_type": event_type,
+                "channel": "email",
+                "recipient_email": recipient_email,
+                "subject": subject,
+                "body": body,
+                "status": "pending",
+                "metadata": metadata or {},
+                "created_at": _now(),
+                "sent_at": None,
+                "failure_reason": None,
+            },
+        )
+
+    def _write_access_expired_event(self, grant: dict[str, Any]) -> None:
+        request = self._by_id(_REQUESTS, str(grant["access_request_id"]))
+        self._write_audit_event(
+            user_id=str(grant["user_id"]),
+            proof_session_id=str(grant["proof_session_id"]),
+            passport_id=str(request["passport_id"]) if request else None,
+            access_request_id=str(grant["access_request_id"]),
+            access_grant_id=str(grant["id"]),
+            event_type="access_expired",
+            actor_type="system",
+            actor_email=str(grant["requester_email"]),
+            event_summary="Protected evidence access grant expired.",
+            metadata={"expires_at": grant.get("expires_at")},
         )
 
     def _gather_evidence(self, user_id: str, session_id: str, session: dict[str, Any]) -> dict[str, Any]:
@@ -423,6 +661,17 @@ class PublicWorkPassportService:
         )
         return getattr(result, "data", None) if result is not None else None
 
+    def _user_email(self, user_id: str) -> str:
+        if isinstance(self._client, dict):
+            row = self._client.get(_USERS, {}).get(user_id)
+            if row and row.get("email"):
+                return str(row["email"])
+            profile = self._profile(user_id) or {}
+            return str(profile.get("email") or "")
+        result = self._client.table(_USERS).select("email").eq("id", user_id).maybe_single().execute()
+        data = getattr(result, "data", None) if result is not None else None
+        return str((data or {}).get("email") or "")
+
     def _upsert_passport(self, row: dict[str, Any]) -> dict[str, Any]:
         if isinstance(self._client, dict):
             return self._save(_PASSPORTS, row)
@@ -552,8 +801,33 @@ def _protected_evidence(evidence: dict[str, Any], sections: list[str]) -> dict[s
 
 
 def _safe_dict(row: dict[str, Any]) -> dict[str, Any]:
-    blocked = {"media_storage_path", "media_url", "video_url", "transcript_text", "proof_data"}
-    return {k: v for k, v in row.items() if k not in blocked}
+    return {
+        k: _safe_value(v)
+        for k, v in row.items()
+        if not _blocked_private_key(k)
+    }
+
+
+def _safe_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _safe_value(v) for k, v in value.items() if not _blocked_private_key(k)}
+    if isinstance(value, list):
+        return [_safe_value(v) for v in value]
+    return value
+
+
+def _blocked_private_key(key: str) -> bool:
+    normalized = key.lower()
+    blocked_exact = {
+        "media_storage_path",
+        "media_url",
+        "video_url",
+        "transcript_text",
+        "proof_data",
+        "access_token",
+    }
+    blocked_fragments = ("private", "internal", "debug", "raw_risk", "raw_metadata")
+    return normalized in blocked_exact or any(fragment in normalized for fragment in blocked_fragments)
 
 
 def _passport_student_response(row: dict[str, Any]) -> PublicWorkPassportStudentResponse:
@@ -735,3 +1009,9 @@ def _parse_dt(value: Any) -> datetime | None:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _hash_optional(value: Any) -> str | None:
+    if not value:
+        return None
+    return sha256(str(value).encode("utf-8")).hexdigest()

@@ -30,6 +30,12 @@ def client(mem_store: dict) -> TestClient:
 
 
 def _make_session(client: TestClient, mem_store: dict) -> str:
+    mem_store.setdefault("users", {})[USER_ID] = {
+        "id": USER_ID,
+        "email": "student@example.edu",
+        "role": "student",
+        "status": "active",
+    }
     mem_store.setdefault("student_profiles", {})["profile"] = {
         "id": "profile",
         "user_id": USER_ID,
@@ -161,23 +167,55 @@ def _request_access(client: TestClient, slug: str, sections: list[str] | None = 
     return response.json()
 
 
+def _events(mem_store: dict, event_type: str) -> list[dict]:
+    return [
+        event
+        for event in mem_store.get("evidence_access_audit_events", {}).values()
+        if event["event_type"] == event_type
+    ]
+
+
+def _notifications(mem_store: dict, event_type: str) -> list[dict]:
+    return [
+        event
+        for event in mem_store.get("notification_events", {}).values()
+        if event["event_type"] == event_type
+    ]
+
+
 def test_student_can_create_passport(client: TestClient, mem_store: dict) -> None:
     session_id = _make_session(client, mem_store)
     body = _create_passport(client, session_id)
     assert body["proof_session_id"] == session_id
     assert body["public_slug"]
     assert body["is_public"] is True
+    events = _events(mem_store, "passport_created")
+    assert len(events) == 1
+    assert events[0]["user_id"] == USER_ID
+    assert events[0]["proof_session_id"] == session_id
+    assert events[0]["passport_id"] == body["id"]
 
 
 def test_public_passport_can_be_fetched_by_slug(client: TestClient, mem_store: dict) -> None:
     session_id = _make_session(client, mem_store)
     passport = _create_passport(client, session_id)
-    response = client.get(f"/api/v1/public/passports/{passport['public_slug']}")
+    response = client.get(
+        f"/api/v1/public/passports/{passport['public_slug']}",
+        headers={"user-agent": "pytest browser", "x-forwarded-for": "203.0.113.10"},
+    )
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["public_slug"] == passport["public_slug"]
     assert body["ai_domain_reviewer_name"] == "Astra"
     assert body["readiness_score"] >= 80
+    view_events = list(mem_store.get("public_passport_view_events", {}).values())
+    assert len(view_events) == 1
+    assert view_events[0]["passport_id"] == passport["id"]
+    assert view_events[0]["public_slug"] == passport["public_slug"]
+    assert view_events[0]["ip_hash"]
+    assert view_events[0]["user_agent_hash"]
+    assert "203.0.113.10" not in str(view_events[0])
+    assert "pytest browser" not in str(view_events[0])
 
 
 def test_public_passport_does_not_expose_private_media_or_transcript(client: TestClient, mem_store: dict) -> None:
@@ -186,8 +224,11 @@ def test_public_passport_does_not_expose_private_media_or_transcript(client: Tes
     body = client.get(f"/api/v1/public/passports/{passport['public_slug']}").json()
     serialized = str(body)
     assert "media_storage_path" not in serialized
+    assert "media_url" not in serialized
     assert "private/defense/audio.webm" not in serialized
     assert "full private transcript" not in serialized
+    assert "access_token" not in serialized
+    assert "private_internal_note" not in serialized
 
 
 def test_recruiter_can_request_access(client: TestClient, mem_store: dict) -> None:
@@ -198,6 +239,15 @@ def test_recruiter_can_request_access(client: TestClient, mem_store: dict) -> No
     listing = client.get(f"/api/v1/student/extension-proof/sessions/{session_id}/access-requests")
     assert listing.status_code == 200
     assert listing.json()[0]["requester_email"] == "recruiter@example.com"
+    events = _events(mem_store, "access_requested")
+    assert len(events) == 1
+    assert events[0]["access_request_id"] == body["id"]
+    assert events[0]["actor_type"] == "recruiter"
+    assert events[0]["actor_email"] == "recruiter@example.com"
+    notifications = _notifications(mem_store, "access_requested")
+    assert len(notifications) == 1
+    assert notifications[0]["recipient_email"] == "student@example.edu"
+    assert notifications[0]["status"] == "pending"
 
 
 def test_student_can_approve_request_and_grant_token_is_created(client: TestClient, mem_store: dict) -> None:
@@ -209,6 +259,13 @@ def test_student_can_approve_request_and_grant_token_is_created(client: TestClie
     grant = response.json()
     assert grant["access_token"].startswith("vbpa_")
     assert grant["granted_sections"] == ["github_analysis"]
+    assert len(_events(mem_store, "access_approved")) == 1
+    granted_events = _events(mem_store, "access_granted")
+    assert len(granted_events) == 1
+    assert granted_events[0]["access_grant_id"] == grant["id"]
+    notifications = _notifications(mem_store, "access_approved")
+    assert len(notifications) == 1
+    assert notifications[0]["recipient_email"] == "recruiter@example.com"
 
 
 def test_denied_request_does_not_create_grant(client: TestClient, mem_store: dict) -> None:
@@ -219,6 +276,12 @@ def test_denied_request_does_not_create_grant(client: TestClient, mem_store: dic
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "denied"
     assert mem_store.get("evidence_access_grants", {}) == {}
+    events = _events(mem_store, "access_denied")
+    assert len(events) == 1
+    assert events[0]["access_request_id"] == request["id"]
+    notifications = _notifications(mem_store, "access_denied")
+    assert len(notifications) == 1
+    assert notifications[0]["recipient_email"] == "recruiter@example.com"
 
 
 def test_revoked_grant_blocks_access(client: TestClient, mem_store: dict) -> None:
@@ -228,6 +291,12 @@ def test_revoked_grant_blocks_access(client: TestClient, mem_store: dict) -> Non
     grant = client.post(f"/api/v1/student/access-requests/{request['id']}/approve").json()
     revoke = client.post(f"/api/v1/student/access-grants/{grant['id']}/revoke")
     assert revoke.status_code == 200, revoke.text
+    events = _events(mem_store, "access_revoked")
+    assert len(events) == 1
+    assert events[0]["access_grant_id"] == grant["id"]
+    notifications = _notifications(mem_store, "access_revoked")
+    assert len(notifications) == 1
+    assert notifications[0]["recipient_email"] == "recruiter@example.com"
     protected = client.get(f"/api/v1/public/access/{grant['access_token']}/evidence")
     assert protected.status_code == 403
 
@@ -243,6 +312,7 @@ def test_expired_grant_blocks_access(client: TestClient, mem_store: dict) -> Non
     ).json()
     protected = client.get(f"/api/v1/public/access/{grant['access_token']}/evidence")
     assert protected.status_code == 403
+    assert len(_events(mem_store, "access_expired")) == 1
 
 
 def test_access_token_returns_only_granted_sections(client: TestClient, mem_store: dict) -> None:
@@ -257,6 +327,31 @@ def test_access_token_returns_only_granted_sections(client: TestClient, mem_stor
     serialized = str(body)
     assert "transcript_text" not in serialized
     assert "media_storage_path" not in serialized
+    assert "access_token" not in serialized
+    assert "private_internal_note" not in serialized
+    viewed_events = _events(mem_store, "protected_evidence_viewed")
+    assert len(viewed_events) == 1
+    assert viewed_events[0]["access_grant_id"] == grant["id"]
+    assert viewed_events[0]["metadata"]["viewed_sections"] == ["github_analysis"]
+
+
+def test_access_token_can_return_granted_transcript_without_media_or_unrelated_sections(
+    client: TestClient,
+    mem_store: dict,
+) -> None:
+    session_id = _make_session(client, mem_store)
+    passport = _create_passport(client, session_id)
+    request = _request_access(client, passport["public_slug"], ["project_defense_transcript"])
+    grant = client.post(f"/api/v1/student/access-requests/{request['id']}/approve").json()
+    protected = client.get(f"/api/v1/public/access/{grant['access_token']}/evidence")
+    assert protected.status_code == 200, protected.text
+    body = protected.json()
+    assert list(body["evidence"].keys()) == ["project_defense_transcript"]
+    assert body["granted_sections"] == ["project_defense_transcript"]
+    serialized = str(body)
+    assert "full private transcript" in serialized
+    assert "media_storage_path" not in serialized
+    assert "github_analysis" not in body["evidence"]
 
 
 def test_no_project_specific_hardcoding() -> None:
