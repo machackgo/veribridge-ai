@@ -17,6 +17,7 @@ from app.api.v1.endpoints import (
     notifications,
     project_defense_analysis,
     proof_versioning,
+    recruiter_candidate_comparisons,
     public_work_passport,
     recruiter_candidates,
     skill_evidence,
@@ -182,6 +183,11 @@ api_router.include_router(
     public_work_passport.public_router,
     prefix="/public",
     tags=["public-work-passport"],
+)
+api_router.include_router(
+    recruiter_candidate_comparisons.router,
+    prefix="/public/recruiter",
+    tags=["recruiter-candidate-comparisons"],
 )
 api_router.include_router(
     public_work_passport.admin_router,
