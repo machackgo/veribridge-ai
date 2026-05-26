@@ -103,11 +103,15 @@ def require_admin_user_id(
         data = getattr(result, "data", None) if result is not None else None
         role = (data or {}).get("role")
     if role not in {"admin", "university_admin"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "code": "admin_required",
-                "message": "Admin access is required.",
-            },
-        )
+        from app.services.permission_service import PermissionService
+
+        permission_service = PermissionService(db)
+        if not permission_service.has_role(user_id, ["admin", "support", "reviewer"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "admin_required",
+                    "message": "Admin access is required.",
+                },
+            )
     return user_id

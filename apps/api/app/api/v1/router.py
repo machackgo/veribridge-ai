@@ -15,8 +15,10 @@ from app.api.v1.endpoints import (
     health,
     live_website_check,
     notifications,
+    permissions,
     project_defense_analysis,
     proof_versioning,
+    admin_user_roles,
     recruiter_candidate_comparisons,
     public_work_passport,
     recruiter_candidates,
@@ -48,6 +50,11 @@ api_router.include_router(
     notifications.router,
     prefix="/student/notifications",
     tags=["student-notifications"],
+)
+api_router.include_router(
+    permissions.router,
+    prefix="/me",
+    tags=["current-user-permissions"],
 )
 api_router.include_router(
     work_passport_analytics.router,
@@ -203,6 +210,11 @@ api_router.include_router(
     admin_notifications.router,
     prefix="/admin/notifications",
     tags=["admin-notifications"],
+)
+api_router.include_router(
+    admin_user_roles.router,
+    prefix="/admin/users",
+    tags=["admin-user-roles"],
 )
 api_router.include_router(
     verification_review.admin_router,
