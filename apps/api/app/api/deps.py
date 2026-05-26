@@ -83,3 +83,31 @@ def get_current_user_id(
         },
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def require_admin_user_id(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> str:
+    """
+    Require an authenticated VeriBridge admin user for internal admin routes.
+
+    TODO: replace this role check with the final admin auth/claims model once
+    production admin identity management is finalized.
+    """
+    role = None
+    if isinstance(db, dict):
+        role = (db.get("users", {}).get(user_id) or {}).get("role")
+    else:
+        result = db.table("users").select("role").eq("id", user_id).maybe_single().execute()
+        data = getattr(result, "data", None) if result is not None else None
+        role = (data or {}).get("role")
+    if role not in {"admin", "university_admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "admin_required",
+                "message": "Admin access is required.",
+            },
+        )
+    return user_id
