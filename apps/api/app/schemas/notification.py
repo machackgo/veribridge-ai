@@ -35,6 +35,14 @@ class NotificationResponse(BaseModel):
     read_at: datetime | str | None = None
     archived_at: datetime | str | None = None
     dismissed_at: datetime | str | None = None
+    delivery_attempts: int | None = None
+    last_attempted_at: datetime | str | None = None
+    provider: str | None = None
+    provider_message_id: str | None = None
+    delivery_status: str | None = None
+    delivery_error: str | None = None
+    scheduled_for: datetime | str | None = None
+    delivered_at: datetime | str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime | str
 

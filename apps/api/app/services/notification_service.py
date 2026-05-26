@@ -61,6 +61,7 @@ class NotificationService:
         body: str | None = None,
         status: str = "pending",
         metadata: dict[str, Any] | None = None,
+        scheduled_for: datetime | str | None = None,
     ) -> NotificationResponse:
         now = _now()
         normalized_event_type = event_type if event_type in _SUPPORTED_EVENT_TYPES else event_type
@@ -83,6 +84,14 @@ class NotificationService:
             "read_at": None,
             "archived_at": None,
             "dismissed_at": None,
+            "delivery_attempts": 0,
+            "last_attempted_at": None,
+            "provider": None,
+            "provider_message_id": None,
+            "delivery_status": status,
+            "delivery_error": None,
+            "scheduled_for": scheduled_for,
+            "delivered_at": None,
             "created_at": now,
             "sent_at": None,
             "failure_reason": None,
@@ -218,6 +227,14 @@ def _notification_response(row: dict[str, Any]) -> NotificationResponse:
         read_at=row.get("read_at"),
         archived_at=row.get("archived_at"),
         dismissed_at=row.get("dismissed_at"),
+        delivery_attempts=row.get("delivery_attempts"),
+        last_attempted_at=row.get("last_attempted_at"),
+        provider=row.get("provider"),
+        provider_message_id=row.get("provider_message_id"),
+        delivery_status=row.get("delivery_status"),
+        delivery_error=row.get("delivery_error"),
+        scheduled_for=row.get("scheduled_for"),
+        delivered_at=row.get("delivered_at"),
         metadata=row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
         created_at=row["created_at"],
     )

@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.v1.endpoints import (
     ai_domain_review,
     admin_quality_review,
+    admin_notifications,
     debug,
     evidence_access_links,
     extension_proof,
@@ -191,6 +192,11 @@ api_router.include_router(
     admin_quality_review.router,
     prefix="/admin/quality-review",
     tags=["admin-quality-review"],
+)
+api_router.include_router(
+    admin_notifications.router,
+    prefix="/admin/notifications",
+    tags=["admin-notifications"],
 )
 api_router.include_router(
     verification_review.admin_router,
