@@ -12,6 +12,7 @@ from app.api.v1.endpoints import (
     github_semantic_verification_results,
     health,
     live_website_check,
+    notifications,
     project_defense_analysis,
     public_work_passport,
     recruiter_candidates,
@@ -35,6 +36,11 @@ api_router.include_router(
     student.router,
     prefix="/student",
     tags=["student"],
+)
+api_router.include_router(
+    notifications.router,
+    prefix="/student/notifications",
+    tags=["student-notifications"],
 )
 api_router.include_router(
     skill_evidence.router,

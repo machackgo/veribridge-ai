@@ -23,13 +23,13 @@ from app.schemas.public_work_passport import (
     RecruiterRequesterProfileResponse,
 )
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
+from app.services.notification_service import NotificationService
 from app.services.verification_readiness_service import compute_readiness_report
 
 _PASSPORTS = "public_work_passports"
 _REQUESTS = "evidence_access_requests"
 _GRANTS = "evidence_access_grants"
 _AUDIT_EVENTS = "evidence_access_audit_events"
-_NOTIFICATION_EVENTS = "notification_events"
 _PASSPORT_VIEW_EVENTS = "public_passport_view_events"
 _REQUESTER_PROFILES = "recruiter_requester_profiles"
 _USERS = "users"
@@ -245,14 +245,20 @@ class PublicWorkPassportService:
         )
         self._write_notification_event(
             user_id=str(passport["user_id"]),
-            event_type="access_requested",
+            event_type="access_request_received",
             recipient_email=self._user_email(str(passport["user_id"])),
-            subject="Protected evidence access requested",
-            body=f"{payload.requester_name} requested access to protected evidence for {passport.get('public_title') or 'a public Work Passport'}.",
+            title="New evidence access request",
+            message=_access_request_message(payload.requester_name, payload.requester_organization),
+            category="access_request",
+            priority="high",
+            action_label="Review request",
             metadata={
                 "passport_id": str(passport["id"]),
+                "request_id": str(saved["id"]),
                 "access_request_id": str(saved["id"]),
+                "requester_profile_id": str(requester_profile["id"]),
                 "requester_email": str(requester_profile["email"]),
+                "organization": payload.requester_organization,
                 "requester_identity": requester_identity,
                 "requested_sections": requested_sections,
             },
@@ -340,13 +346,18 @@ class PublicWorkPassportService:
         self._write_notification_event(
             user_id=user_id,
             event_type="access_approved",
-            recipient_email=str(request["requester_email"]),
-            subject="Protected evidence access approved",
-            body="Your request to view protected evidence was approved.",
+            recipient_email=self._user_email(user_id),
+            title="Evidence access approved",
+            message=f"Access was approved for {request['requester_email']}.",
+            category="access_decision",
+            priority="normal",
             metadata={
                 "passport_id": str(request["passport_id"]),
+                "request_id": str(request["id"]),
                 "access_request_id": str(request["id"]),
                 "access_grant_id": str(saved["id"]),
+                "requester_profile_id": request.get("requester_profile_id"),
+                "requester_email": str(request["requester_email"]),
                 "requester_identity": requester_identity,
                 "granted_sections": sections,
                 "expires_at": body.expires_at.isoformat() if body.expires_at else None,
@@ -389,12 +400,17 @@ class PublicWorkPassportService:
         self._write_notification_event(
             user_id=user_id,
             event_type="access_denied",
-            recipient_email=str(request["requester_email"]),
-            subject="Protected evidence access denied",
-            body="Your request to view protected evidence was denied.",
+            recipient_email=self._user_email(user_id),
+            title="Evidence access denied",
+            message=f"Access was denied for {request['requester_email']}.",
+            category="access_decision",
+            priority="normal",
             metadata={
                 "passport_id": str(request["passport_id"]),
+                "request_id": str(request["id"]),
                 "access_request_id": str(request["id"]),
+                "requester_profile_id": request.get("requester_profile_id"),
+                "requester_email": str(request["requester_email"]),
                 "requester_identity": requester_identity,
             },
         )
@@ -421,13 +437,18 @@ class PublicWorkPassportService:
         self._write_notification_event(
             user_id=user_id,
             event_type="access_revoked",
-            recipient_email=str(grant["requester_email"]),
-            subject="Protected evidence access revoked",
-            body="A protected evidence access grant was revoked.",
+            recipient_email=self._user_email(user_id),
+            title="Evidence access revoked",
+            message=f"Access was revoked for {grant['requester_email']}.",
+            category="access_decision",
+            priority="normal",
             metadata={
                 "passport_id": passport_id,
+                "request_id": str(grant["access_request_id"]),
                 "access_request_id": str(grant["access_request_id"]),
                 "access_grant_id": str(grant["id"]),
+                "requester_profile_id": request.get("requester_profile_id") if request else None,
+                "requester_email": str(grant["requester_email"]),
             },
         )
         return _grant_response(saved)
@@ -612,26 +633,27 @@ class PublicWorkPassportService:
         user_id: str,
         event_type: str,
         recipient_email: str,
-        subject: str,
-        body: str,
+        title: str,
+        message: str,
+        category: str = "general",
+        priority: str = "normal",
+        action_label: str | None = None,
+        action_url: str | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return self._insert(
-            _NOTIFICATION_EVENTS,
-            {
-                "id": str(uuid4()),
-                "user_id": user_id,
-                "event_type": event_type,
-                "channel": "email",
-                "recipient_email": recipient_email,
-                "subject": subject,
-                "body": body,
-                "status": "pending",
-                "metadata": metadata or {},
-                "created_at": _now(),
-                "sent_at": None,
-                "failure_reason": None,
-            },
+    ) -> Any:
+        return NotificationService(self._client).create_notification_event(
+            user_id=user_id,
+            event_type=event_type,
+            recipient_email=recipient_email,
+            title=title,
+            message=message,
+            subject=title,
+            body=message,
+            category=category,
+            priority=priority,
+            action_label=action_label,
+            action_url=action_url,
+            metadata=metadata or {},
         )
 
     def _write_access_expired_event(self, grant: dict[str, Any]) -> None:
@@ -1140,6 +1162,11 @@ def _email_domain(email: str) -> str | None:
 def _requester_type(role: str | None) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", (role or "").strip().lower()).strip("_")
     return normalized if normalized in _ALLOWED_REQUESTER_TYPES else "recruiter"
+
+
+def _access_request_message(requester_name: str, organization_name: str | None) -> str:
+    organization = organization_name or "an organization not listed"
+    return f"{requester_name} from {organization} requested access to your Work Passport evidence."
 
 
 def _organization_matches_domain(organization_name: Any, domain: Any) -> bool:

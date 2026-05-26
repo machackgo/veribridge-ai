@@ -254,10 +254,14 @@ def test_recruiter_can_request_access(client: TestClient, mem_store: dict) -> No
     assert events[0]["access_request_id"] == body["id"]
     assert events[0]["actor_type"] == "recruiter"
     assert events[0]["actor_email"] == "recruiter@example.com"
-    notifications = _notifications(mem_store, "access_requested")
+    notifications = _notifications(mem_store, "access_request_received")
     assert len(notifications) == 1
     assert notifications[0]["recipient_email"] == "student@example.edu"
     assert notifications[0]["status"] == "pending"
+    assert notifications[0]["title"] == "New evidence access request"
+    assert notifications[0]["category"] == "access_request"
+    assert notifications[0]["priority"] == "high"
+    assert "Recruiter Person from Example Co requested access" in notifications[0]["message"]
     profile = next(iter(mem_store["recruiter_requester_profiles"].values()))
     assert listing.json()[0]["requester_profile_id"] == profile["id"]
     assert profile["email"] == "recruiter@example.com"
@@ -265,6 +269,9 @@ def test_recruiter_can_request_access(client: TestClient, mem_store: dict) -> No
     assert profile["total_access_requests"] == 1
     assert events[0]["metadata"]["requester_profile_id"] == profile["id"]
     assert events[0]["metadata"]["organization_domain"] == "example.com"
+    assert notifications[0]["metadata"]["requester_profile_id"] == profile["id"]
+    assert notifications[0]["metadata"]["requester_email"] == "recruiter@example.com"
+    assert notifications[0]["metadata"]["organization"] == "Example Co"
     assert "requester_identity" in notifications[0]["metadata"]
     assert notifications[0]["metadata"]["requester_identity"]["requester_profile_id"] == profile["id"]
 
@@ -323,7 +330,10 @@ def test_student_can_approve_request_and_grant_token_is_created(client: TestClie
     assert granted_events[0]["access_grant_id"] == grant["id"]
     notifications = _notifications(mem_store, "access_approved")
     assert len(notifications) == 1
-    assert notifications[0]["recipient_email"] == "recruiter@example.com"
+    assert notifications[0]["recipient_email"] == "student@example.edu"
+    assert notifications[0]["title"] == "Evidence access approved"
+    assert notifications[0]["category"] == "access_decision"
+    assert notifications[0]["priority"] == "normal"
     profile = next(iter(mem_store["recruiter_requester_profiles"].values()))
     assert profile["approved_access_requests"] == 1
 
@@ -341,7 +351,9 @@ def test_denied_request_does_not_create_grant(client: TestClient, mem_store: dic
     assert events[0]["access_request_id"] == request["id"]
     notifications = _notifications(mem_store, "access_denied")
     assert len(notifications) == 1
-    assert notifications[0]["recipient_email"] == "recruiter@example.com"
+    assert notifications[0]["recipient_email"] == "student@example.edu"
+    assert notifications[0]["title"] == "Evidence access denied"
+    assert notifications[0]["category"] == "access_decision"
     profile = next(iter(mem_store["recruiter_requester_profiles"].values()))
     assert profile["denied_access_requests"] == 1
 
@@ -358,7 +370,9 @@ def test_revoked_grant_blocks_access(client: TestClient, mem_store: dict) -> Non
     assert events[0]["access_grant_id"] == grant["id"]
     notifications = _notifications(mem_store, "access_revoked")
     assert len(notifications) == 1
-    assert notifications[0]["recipient_email"] == "recruiter@example.com"
+    assert notifications[0]["recipient_email"] == "student@example.edu"
+    assert notifications[0]["title"] == "Evidence access revoked"
+    assert notifications[0]["category"] == "access_decision"
     protected = client.get(f"/api/v1/public/access/{grant['access_token']}/evidence")
     assert protected.status_code == 403
 
