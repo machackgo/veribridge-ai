@@ -16,10 +16,13 @@ from app.schemas.admin_quality_review import (
     AdminQualityReviewScanRequest,
     AdminQualityReviewScanResponse,
 )
+from app.schemas.work_passport_status import WorkPassportStatusResponse
 from app.services.admin_quality_review_service import (
     AdminQualityReviewCaseNotFoundError,
     AdminQualityReviewService,
 )
+from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
+from app.services.work_passport_status_service import WorkPassportStatusService
 
 router = APIRouter()
 
@@ -141,6 +144,32 @@ def scan_quality_review_signals(
     )
 
 
+@router.get(
+    "/sessions/{session_id}/status",
+    response_model=WorkPassportStatusResponse,
+    summary="Admin: get internal Work Passport status for a proof session",
+)
+def get_admin_session_status(
+    session_id: str,
+    user_id: str | None = None,
+    admin_user_id: str = Depends(require_admin_user_id),
+    db: Any = Depends(get_db),
+) -> WorkPassportStatusResponse:
+    _ = admin_user_id
+    target_user_id = user_id or _session_owner(db, session_id)
+    try:
+        return WorkPassportStatusService(db).get_work_passport_status(target_user_id, session_id)
+    except ExtensionProofSessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "extension_proof_session_not_found",
+                "message": "Extension proof session was not found.",
+                "session_id": session_id,
+            },
+        ) from exc
+
+
 def _case_not_found(case_id: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -150,3 +179,16 @@ def _case_not_found(case_id: str) -> HTTPException:
             "case_id": case_id,
         },
     )
+
+
+def _session_owner(db: Any, session_id: str) -> str:
+    if isinstance(db, dict):
+        row = db.get("extension_proof_sessions", {}).get(session_id)
+        if row and row.get("user_id"):
+            return str(row["user_id"])
+        raise ExtensionProofSessionNotFoundError(session_id)
+    result = db.table("extension_proof_sessions").select("user_id").eq("id", session_id).maybe_single().execute()
+    data = getattr(result, "data", None) if result is not None else None
+    if data and data.get("user_id"):
+        return str(data["user_id"])
+    raise ExtensionProofSessionNotFoundError(session_id)

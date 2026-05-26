@@ -28,6 +28,7 @@ from app.api.v1.endpoints import (
     website_proof_sessions,
     website_semantic_verification_results,
     website_verification_runs,
+    work_passport_status,
     work_passport_analytics,
     workflow_privacy_scan,
 )
@@ -154,6 +155,11 @@ api_router.include_router(
     ai_domain_review.router,
     prefix="/student/extension-proof/sessions",
     tags=["ai-domain-review"],
+)
+api_router.include_router(
+    work_passport_status.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["work-passport-status"],
 )
 api_router.include_router(
     public_work_passport.student_router,

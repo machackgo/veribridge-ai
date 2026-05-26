@@ -21,6 +21,7 @@ from app.schemas.public_work_passport import (
     PublicWorkPassportStudentResponse,
     RecruiterRequesterProfileResponse,
 )
+from app.schemas.work_passport_status import PublicWorkPassportStatusResponse
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
 from app.services.public_work_passport_service import (
     EvidenceAccessDeniedError,
@@ -30,6 +31,7 @@ from app.services.public_work_passport_service import (
     PublicWorkPassportService,
     RecruiterRequesterProfileNotFoundError,
 )
+from app.services.work_passport_status_service import WorkPassportStatusService
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +184,21 @@ def request_access(
     try:
         return PublicWorkPassportService(db).create_access_request(public_slug, body)
     except PublicWorkPassportNotFoundError as exc:
+        raise _passport_not_found(str(exc)) from exc
+
+
+@public_router.get(
+    "/passports/{public_slug}/status",
+    response_model=PublicWorkPassportStatusResponse,
+    summary="Get a safe public Work Passport status summary",
+)
+def get_public_passport_status(
+    public_slug: str,
+    db: Any = Depends(get_db),
+) -> PublicWorkPassportStatusResponse:
+    try:
+        return WorkPassportStatusService(db).get_public_passport_status(public_slug)
+    except ExtensionProofSessionNotFoundError as exc:
         raise _passport_not_found(str(exc)) from exc
 
 
