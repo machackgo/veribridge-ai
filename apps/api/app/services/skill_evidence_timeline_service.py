@@ -18,6 +18,7 @@ _SESSIONS = "extension_proof_sessions"
 _SKILL_EVIDENCE = "skill_evidence"
 _WORKFLOW = "workflow_analysis_results"
 _GITHUB = "extension_proof_github_analysis"
+_GITHUB_PROOFS = "github_proof_submissions"
 _LIVE = "live_website_check_results"
 _PRIVACY = "workflow_privacy_scan_results"
 _DEFENSE = "project_defense_analysis_results"
@@ -84,6 +85,11 @@ class SkillEvidenceTimelineService:
         skill_row = self._skill_evidence(user_id, str(session.get("skill_evidence_id") or ""))
         workflow = self._row_by_session(_WORKFLOW, user_id, proof_session_id)
         github = self._row_by_session(_GITHUB, user_id, proof_session_id)
+        github_proofs = [
+            row for row in self._rows_by_session(_GITHUB_PROOFS, user_id, proof_session_id)
+            if row.get("status") != "archived"
+        ]
+        github_for_readiness = _github_analysis_for_readiness(github_proofs, github)
         live = self._row_by_session(_LIVE, user_id, proof_session_id)
         privacy = self._row_by_session(_PRIVACY, user_id, proof_session_id)
         defense = self._row_by_session(_DEFENSE, user_id, proof_session_id)
@@ -93,19 +99,20 @@ class SkillEvidenceTimelineService:
             proof_session_id=proof_session_id,
             session_status=str(session.get("status") or ""),
             website_url=str(session.get("website_url") or (skill_row or {}).get("evidence_url") or ""),
-            claimed_skills=_claimed_skills(session, skill_row, workflow, github, defense, ai_domain),
+            claimed_skills=_claimed_skills(session, skill_row, workflow, github, github_proofs, defense, ai_domain),
             workflow_analysis=workflow,
             live_check=live,
-            github_analysis=github,
+            github_analysis=github_for_readiness,
             privacy_scan=privacy,
             defense_analysis=defense,
         )
-        skills = _claimed_skills(session, skill_row, workflow, github, defense, ai_domain)
+        skills = _claimed_skills(session, skill_row, workflow, github, github_proofs, defense, ai_domain)
         records = [
             self._skill_record(
                 skill,
                 workflow=workflow,
                 github=github,
+                github_proofs=github_proofs,
                 live=live,
                 privacy=privacy,
                 defense=defense,
@@ -125,6 +132,7 @@ class SkillEvidenceTimelineService:
         *,
         workflow: dict[str, Any] | None,
         github: dict[str, Any] | None,
+        github_proofs: list[dict[str, Any]] | None,
         live: dict[str, Any] | None,
         privacy: dict[str, Any] | None,
         defense: dict[str, Any] | None,
@@ -135,7 +143,7 @@ class SkillEvidenceTimelineService:
     ) -> SkillEvidenceRecord:
         items: list[SkillEvidenceItem] = []
         items.extend(_workflow_items(skill_name, workflow))
-        items.extend(_github_items(skill_name, github))
+        items.extend(_github_items(skill_name, github, github_proofs))
         items.extend(_live_items(skill_name, live, skill_row))
         items.extend(_defense_items(skill_name, defense))
         items.extend(_ai_domain_items(skill_name, ai_domain))
@@ -232,14 +240,141 @@ def _workflow_items(skill: str, row: dict[str, Any] | None) -> list[SkillEvidenc
     return []
 
 
-def _github_items(skill: str, row: dict[str, Any] | None) -> list[SkillEvidenceItem]:
-    if not row:
-        return []
-    if _contains_skill(row.get("matched_claimed_skills") or row.get("verified_skills") or row.get("supported_skills"), skill):
-        return [_item("github", "GitHub analysis", f"Repository analysis found source evidence for {skill}.", "strong", 85, row, public_safe=True, protected=False, evidence_url=_public_url(row))]
-    if _contains_skill(row.get("weakly_matched_claimed_skills") or row.get("partially_verified_skills"), skill):
-        return [_item("github", "GitHub analysis", f"Repository analysis found partial evidence for {skill}.", "partial", 55, row, public_safe=True, protected=False, evidence_url=_public_url(row), limitations=["Source evidence is partial."])]
-    return []
+def _github_items(skill: str, row: dict[str, Any] | None, github_proofs: list[dict[str, Any]] | None) -> list[SkillEvidenceItem]:
+    items: list[SkillEvidenceItem] = []
+    seen: set[str] = set()
+
+    for candidate in [*list(github_proofs or []), row]:
+        if not candidate:
+            continue
+        repo_url = _public_url(candidate) or str(candidate.get("repo_url") or "")
+        repo_key = repo_url or str(candidate.get("id") or "")
+        if repo_key in seen:
+            continue
+        seen.add(repo_key)
+
+        if candidate.get("submitted_skill_claims") or candidate.get("detected_skills"):
+            if _contains_skill(candidate.get("submitted_skill_claims") or candidate.get("detected_skills"), skill):
+                items.append(
+                    _item(
+                        "github",
+                        "GitHub proof",
+                        _github_summary(candidate, skill),
+                        _github_strength(candidate),
+                        _github_confidence(candidate),
+                        candidate,
+                        public_safe=True,
+                        protected=False,
+                        evidence_url=repo_url or None,
+                        limitations=_github_limitations(candidate),
+                    )
+                )
+                continue
+
+        if _contains_skill(candidate.get("matched_claimed_skills") or candidate.get("verified_skills") or candidate.get("supported_skills"), skill):
+            items.append(
+                _item(
+                    "github",
+                    "GitHub analysis",
+                    f"Repository analysis found source evidence for {skill}.",
+                    "strong",
+                    85,
+                    candidate,
+                    public_safe=True,
+                    protected=False,
+                    evidence_url=repo_url or None,
+                )
+            )
+            continue
+        if _contains_skill(candidate.get("weakly_matched_claimed_skills") or candidate.get("partially_verified_skills"), skill):
+            items.append(
+                _item(
+                    "github",
+                    "GitHub analysis",
+                    f"Repository analysis found partial evidence for {skill}.",
+                    "partial",
+                    55,
+                    candidate,
+                    public_safe=True,
+                    protected=False,
+                    evidence_url=repo_url or None,
+                    limitations=["Source evidence is partial."],
+                )
+            )
+    return items
+
+
+def _github_summary(row: dict[str, Any], skill: str) -> str:
+    repo_url = _public_url(row) or str(row.get("repo_url") or "GitHub repository")
+    summary = row.get("public_safe_summary") or row.get("analysis_summary") or "Standalone GitHub proof was analyzed."
+    if _contains_skill(row.get("submitted_skill_claims") or row.get("detected_skills"), skill):
+        return f"{repo_url}: {summary}"
+    return f"{repo_url}: {summary}"
+
+
+def _github_strength(row: dict[str, Any]) -> str:
+    strength = str(row.get("evidence_strength") or "").lower()
+    if strength in {"strong", "partial", "weak"}:
+        return strength
+    score = int(row.get("confidence_score") or 0)
+    if score >= 80:
+        return "strong"
+    if score >= 55:
+        return "partial"
+    if score >= 30:
+        return "weak"
+    return "weak"
+
+
+def _github_confidence(row: dict[str, Any]) -> int:
+    score = int(row.get("confidence_score") or 0)
+    if score > 0:
+        return score
+    return 20 if row.get("status") == "submitted" else 40
+
+
+def _github_limitations(row: dict[str, Any]) -> list[str]:
+    limitations: list[str] = []
+    for item in row.get("risk_flags") or []:
+        text = str(item).strip()
+        if text:
+            limitations.append(text.replace("_", " "))
+    if row.get("missing_evidence"):
+        limitations.extend(str(item) for item in row.get("missing_evidence") or [])
+    return list(dict.fromkeys([text for text in limitations if text]))[:3]
+
+
+def _github_analysis_for_readiness(
+    github_proofs: list[dict[str, Any]] | None,
+    github: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    for row in [*(github_proofs or []), github]:
+        if not row or row.get("status") not in {"analyzed", "needs_more_evidence"}:
+            continue
+        detected_skills = list(dict.fromkeys([
+            *[str(value).strip() for value in (row.get("detected_skills") or []) if str(value).strip()],
+            *[str(value).strip() for value in (row.get("submitted_skill_claims") or []) if str(value).strip()],
+        ]))
+        if not detected_skills:
+            detected_skills = list(dict.fromkeys([
+                *[str(value).strip() for value in (row.get("matched_claimed_skills") or []) if str(value).strip()],
+                *[str(value).strip() for value in (row.get("weakly_matched_claimed_skills") or []) if str(value).strip()],
+            ]))
+        strength = str(row.get("evidence_strength") or "").lower()
+        if strength in {"strong", "partial"} or row.get("status") == "analyzed":
+            matched = detected_skills
+            weakly = []
+        else:
+            matched = []
+            weakly = detected_skills
+        return {
+            "status": "success",
+            "matched_claimed_skills": matched,
+            "weakly_matched_claimed_skills": weakly,
+            "detected_features": list((row.get("repo_metadata") or {}).get("detected_features") or []),
+            "recruiter_summary": row.get("analysis_summary") or row.get("public_safe_summary") or "",
+        }
+    return github
 
 
 def _live_items(skill: str, row: dict[str, Any] | None, skill_row: dict[str, Any] | None) -> list[SkillEvidenceItem]:
@@ -417,6 +552,9 @@ def _claimed_skills(*rows: dict[str, Any] | None) -> list[str]:
     for row in rows:
         if not row:
             continue
+        if isinstance(row, list):
+            values.extend(_claimed_skills(*row))
+            continue
         if row.get("skill_name"):
             values.append(str(row["skill_name"]))
         for key in (
@@ -430,6 +568,8 @@ def _claimed_skills(*rows: dict[str, Any] | None) -> list[str]:
             "weakly_matched_claimed_skills",
             "skills_mentioned",
             "skills_explained_well",
+            "submitted_skill_claims",
+            "detected_skills",
         ):
             raw = row.get(key)
             if isinstance(raw, list):

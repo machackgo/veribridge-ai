@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     extension_proof_github_analysis,
     extension_proof_workflow_analysis,
     github_portfolio,
+    github_proofs,
     github_recruiter_proof_reports,
     github_semantic_verification_results,
     health,
@@ -110,6 +111,11 @@ api_router.include_router(
     github_portfolio.router,
     prefix="/student/github-portfolio",
     tags=["github-portfolio"],
+)
+api_router.include_router(
+    github_proofs.router,
+    prefix="/student/github-proofs",
+    tags=["github-proofs"],
 )
 api_router.include_router(
     recruiter_candidates.router,

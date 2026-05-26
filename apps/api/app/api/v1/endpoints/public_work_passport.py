@@ -21,6 +21,7 @@ from app.schemas.public_work_passport import (
     PublicWorkPassportStudentResponse,
     RecruiterRequesterProfileResponse,
 )
+from app.schemas.github_proof_submission import GitHubProofPublicResponse
 from app.schemas.recruiter_shortlist import (
     RecruiterReviewedSectionCreate,
     RecruiterSavedPassportCreate,
@@ -42,6 +43,7 @@ from app.services.recruiter_shortlist_service import (
     RecruiterSavedPassportNotFoundError,
     RecruiterShortlistService,
 )
+from app.services.github_proof_service import GitHubProofService
 from app.services.work_passport_export_service import WorkPassportExportService
 from app.services.skill_evidence_timeline_service import SkillEvidenceTimelineService
 from app.services.work_passport_status_service import WorkPassportStatusService
@@ -300,6 +302,21 @@ def get_public_passport_export(
 
 
 @public_router.get(
+    "/passports/{public_slug}/github-proofs",
+    response_model=list[GitHubProofPublicResponse],
+    summary="Get public-safe GitHub proof summaries for a public Work Passport",
+)
+def get_public_github_proofs(
+    public_slug: str,
+    db: Any = Depends(get_db),
+) -> list[GitHubProofPublicResponse]:
+    try:
+        return GitHubProofService(db).get_public_github_proofs(public_slug)
+    except PublicWorkPassportNotFoundError as exc:
+        raise _passport_not_found(str(exc)) from exc
+
+
+@public_router.get(
     "/recruiter/saved-passports",
     response_model=list[RecruiterSavedPassportResponse],
     summary="List saved Work Passports for a requester email",
@@ -417,6 +434,27 @@ def get_protected_passport_export(
 ) -> dict[str, Any]:
     try:
         return WorkPassportExportService(db).build_protected_export_payload(access_token)
+    except EvidenceAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "evidence_access_denied",
+                "message": str(exc),
+            },
+        ) from exc
+
+
+@public_router.get(
+    "/access/{access_token}/github-proofs",
+    response_model=list[GitHubProofPublicResponse],
+    summary="Get GitHub proof summaries for an approved access grant",
+)
+def get_protected_github_proofs(
+    access_token: str,
+    db: Any = Depends(get_db),
+) -> list[GitHubProofPublicResponse]:
+    try:
+        return GitHubProofService(db).get_protected_github_proofs(access_token)
     except EvidenceAccessDeniedError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

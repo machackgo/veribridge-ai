@@ -20,6 +20,7 @@ _WORKFLOW = "workflow_analysis_results"
 _PRIVACY = "workflow_privacy_scan_results"
 _LIVE = "live_website_check_results"
 _GITHUB = "extension_proof_github_analysis"
+_GITHUB_PROOFS = "github_proof_submissions"
 _DEFENSE = "project_defense_analysis_results"
 _AI_DOMAIN = "ai_domain_review_results"
 _REVIEWS = "verification_review_requests"
@@ -46,6 +47,8 @@ class WorkPassportStatusService:
         privacy = self._row_by_session(_PRIVACY, user_id, proof_session_id)
         live = self._row_by_session(_LIVE, user_id, proof_session_id)
         github = self._row_by_session(_GITHUB, user_id, proof_session_id)
+        github_proof = self._latest_github_proof(user_id, proof_session_id)
+        github_for_readiness = _github_analysis_for_readiness(github_proof) or github
         defense = self._row_by_session(_DEFENSE, user_id, proof_session_id)
         ai_domain = self._row_by_session(_AI_DOMAIN, user_id, proof_session_id)
         ai_review = self._row_by_session(_REVIEWS, user_id, proof_session_id)
@@ -59,10 +62,10 @@ class WorkPassportStatusService:
             proof_session_id=proof_session_id,
             session_status=str(session.get("status") or ""),
             website_url=_website_url(session, skill),
-            claimed_skills=_claimed_skills(session, skill, workflow, github, ai_domain),
+            claimed_skills=_claimed_skills(session, skill, workflow, github, github_proof, ai_domain),
             workflow_analysis=workflow,
             live_check=live,
-            github_analysis=github,
+            github_analysis=github_for_readiness,
             privacy_scan=privacy,
             defense_analysis=defense,
         )
@@ -82,14 +85,15 @@ class WorkPassportStatusService:
         warnings = self._warnings(
             live=live,
             github=github,
+            github_proof=github_proof,
             defense=defense,
             ai_domain=ai_domain,
             active_version=active_version,
             requests=requests,
         )
         skill_evidence_summary = _skill_evidence_summary(self._client, user_id, proof_session_id)
-        completed_steps = _completed_steps(workflow, privacy, live, github, defense, ai_domain, passport, active_version, notifications)
-        missing_steps = _missing_steps(workflow, privacy, defense, ai_domain, passport, active_version, pending_requests, open_admin_cases)
+        completed_steps = _completed_steps(workflow, privacy, live, github, github_proof, defense, ai_domain, passport, active_version, notifications)
+        missing_steps = _missing_steps(workflow, privacy, defense, ai_domain, passport, active_version, pending_requests, open_admin_cases, github, github_proof)
         overall_status = _overall_status(
             session=session,
             readiness_score=readiness.readiness_score,
@@ -190,6 +194,7 @@ class WorkPassportStatusService:
         *,
         live: dict[str, Any] | None,
         github: dict[str, Any] | None,
+        github_proof: dict[str, Any] | None,
         defense: dict[str, Any] | None,
         ai_domain: dict[str, Any] | None,
         active_version: dict[str, Any] | None,
@@ -198,7 +203,10 @@ class WorkPassportStatusService:
         warnings: list[WorkPassportIssue] = []
         if live and live.get("is_reachable") is False:
             warnings.append(_issue("live_site_not_available", "Live site unavailable", "The live project check could not reach the site.", "live_website_check", "normal", "Confirm the public project URL is reachable."))
-        if github and (github.get("weakly_matched_claimed_skills") or github.get("status") not in {None, "success"}):
+        if (
+            (github and (github.get("weakly_matched_claimed_skills") or github.get("status") not in {None, "success"}))
+            or (github_proof and github_proof.get("status") not in {None, "analyzed"})
+        ):
             warnings.append(_issue("github_partial_evidence", "GitHub evidence partial", "Repository evidence only partially supports claimed skills.", "github_analysis", "low", "Add clearer source files or documentation."))
         if defense and _first_int(defense, ["overall_defense_score"]) is not None and _first_int(defense, ["overall_defense_score"]) < 60:
             warnings.append(_issue("transcript_clarity_low", "Project defense clarity low", "The project defense score is below a strong threshold.", "project_defense", "normal", "Improve the explanation of ownership and decisions."))
@@ -262,6 +270,12 @@ class WorkPassportStatusService:
                 return row
         return None
 
+    def _latest_github_proof(self, user_id: str, proof_session_id: str) -> dict[str, Any] | None:
+        rows = self._rows_by_session(_GITHUB_PROOFS, user_id, proof_session_id)
+        rows = [row for row in rows if row.get("status") != "archived"]
+        rows.sort(key=lambda row: str(row.get("created_at") or row.get("updated_at") or ""), reverse=True)
+        return rows[0] if rows else None
+
     def _passport_by_slug(self, public_slug: str) -> dict[str, Any] | None:
         if isinstance(self._client, dict):
             for row in self._client.get(_PASSPORTS, {}).values():
@@ -321,7 +335,7 @@ def _overall_status(
     return "draft"
 
 
-def _completed_steps(workflow: Any, privacy: Any, live: Any, github: Any, defense: Any, ai_domain: Any, passport: Any, active_version: Any, notifications: list[dict[str, Any]]) -> list[str]:
+def _completed_steps(workflow: Any, privacy: Any, live: Any, github: Any, github_proof: Any, defense: Any, ai_domain: Any, passport: Any, active_version: Any, notifications: list[dict[str, Any]]) -> list[str]:
     steps = []
     if workflow:
         steps.append("workflow_recorded")
@@ -331,6 +345,10 @@ def _completed_steps(workflow: Any, privacy: Any, live: Any, github: Any, defens
         steps.append("live_site_checked")
     if github:
         steps.append("github_analyzed")
+    if github_proof:
+        steps.append("github_proof_added")
+        if str(github_proof.get("status") or "") in {"analyzed", "needs_more_evidence"}:
+            steps.append("github_proof_analyzed")
     if defense:
         steps.append("project_defense_completed")
     if defense and (defense.get("transcript_text") or defense.get("transcript_summary")):
@@ -346,7 +364,7 @@ def _completed_steps(workflow: Any, privacy: Any, live: Any, github: Any, defens
     return steps
 
 
-def _missing_steps(workflow: Any, privacy: Any, defense: Any, ai_domain: Any, passport: Any, active_version: Any, pending_requests: list[Any], open_admin_cases: list[Any]) -> list[str]:
+def _missing_steps(workflow: Any, privacy: Any, defense: Any, ai_domain: Any, passport: Any, active_version: Any, pending_requests: list[Any], open_admin_cases: list[Any], github: Any, github_proof: Any) -> list[str]:
     steps = []
     if not ai_domain:
         steps.append("run_ai_domain_review")
@@ -354,6 +372,8 @@ def _missing_steps(workflow: Any, privacy: Any, defense: Any, ai_domain: Any, pa
         steps.append("create_public_passport")
     if not defense:
         steps.append("submit_project_defense")
+    if not github and not github_proof:
+        steps.append("add_github_proof")
     if privacy and _privacy_status(privacy) in {"flagged", "unsafe"}:
         steps.append("resolve_privacy_issue")
     if pending_requests:
@@ -473,6 +493,29 @@ def _website_url(session: dict[str, Any], skill: dict[str, Any] | None) -> str:
     return str(session.get("website_url") or (skill or {}).get("evidence_url") or "")
 
 
+def _github_analysis_for_readiness(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row or row.get("status") not in {"analyzed", "needs_more_evidence"}:
+        return None
+    detected_skills = list(dict.fromkeys([
+        *[str(value) for value in row.get("detected_skills") or [] if str(value).strip()],
+        *[str(value) for value in row.get("submitted_skill_claims") or [] if str(value).strip()],
+    ]))
+    strength = str(row.get("evidence_strength") or "").lower()
+    if strength in {"strong", "partial"} or row.get("status") == "analyzed":
+        matched = detected_skills
+        weakly = []
+    else:
+        matched = []
+        weakly = detected_skills
+    return {
+        "status": "success",
+        "matched_claimed_skills": matched,
+        "weakly_matched_claimed_skills": weakly,
+        "detected_features": list((row.get("repo_metadata") or {}).get("detected_features") or []),
+        "recruiter_summary": row.get("analysis_summary") or row.get("public_safe_summary") or "",
+    }
+
+
 def _claimed_skills(*rows: dict[str, Any] | None) -> list[str]:
     values: list[str] = []
     for row in rows:
@@ -480,7 +523,7 @@ def _claimed_skills(*rows: dict[str, Any] | None) -> list[str]:
             continue
         if row.get("skill_name"):
             values.append(str(row["skill_name"]))
-        for key in ("claimed_skills", "supported_skills", "matched_claimed_skills", "verified_skills", "partially_verified_skills"):
+        for key in ("claimed_skills", "supported_skills", "matched_claimed_skills", "verified_skills", "partially_verified_skills", "submitted_skill_claims", "detected_skills"):
             raw = row.get(key)
             if isinstance(raw, list):
                 values.extend(str(value) for value in raw if str(value).strip())
