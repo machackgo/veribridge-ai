@@ -19,6 +19,7 @@ from app.api.v1.endpoints import (
     public_work_passport,
     recruiter_candidates,
     skill_evidence,
+    skill_evidence_timeline,
     skill_evidence_profile,
     student,
     verification_readiness,
@@ -160,6 +161,11 @@ api_router.include_router(
     work_passport_status.router,
     prefix="/student/extension-proof/sessions",
     tags=["work-passport-status"],
+)
+api_router.include_router(
+    skill_evidence_timeline.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["skill-evidence-timeline"],
 )
 api_router.include_router(
     public_work_passport.student_router,

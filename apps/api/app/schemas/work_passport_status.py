@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.skill_evidence_timeline import SkillEvidenceSummary
+
 
 OverallWorkPassportStatus = Literal[
     "draft",
@@ -58,6 +60,7 @@ class WorkPassportStatusResponse(BaseModel):
     pending_access_request_count: int
     active_access_grant_count: int
     unread_notification_count: int
+    skill_evidence_summary: SkillEvidenceSummary | None = None
     blocking_issues: list[WorkPassportIssue] = Field(default_factory=list)
     warnings: list[WorkPassportIssue] = Field(default_factory=list)
     completed_steps: list[str] = Field(default_factory=list)

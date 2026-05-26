@@ -21,6 +21,7 @@ from app.schemas.public_work_passport import (
     PublicWorkPassportStudentResponse,
     RecruiterRequesterProfileResponse,
 )
+from app.schemas.skill_evidence_timeline import SkillEvidenceTimelineResponse
 from app.schemas.work_passport_status import PublicWorkPassportStatusResponse
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
 from app.services.public_work_passport_service import (
@@ -31,6 +32,7 @@ from app.services.public_work_passport_service import (
     PublicWorkPassportService,
     RecruiterRequesterProfileNotFoundError,
 )
+from app.services.skill_evidence_timeline_service import SkillEvidenceTimelineService
 from app.services.work_passport_status_service import WorkPassportStatusService
 
 logger = logging.getLogger(__name__)
@@ -203,6 +205,21 @@ def get_public_passport_status(
 
 
 @public_router.get(
+    "/passports/{public_slug}/skill-evidence-timeline",
+    response_model=SkillEvidenceTimelineResponse,
+    summary="Get a public-safe skill evidence timeline for a Work Passport",
+)
+def get_public_skill_evidence_timeline(
+    public_slug: str,
+    db: Any = Depends(get_db),
+) -> SkillEvidenceTimelineResponse:
+    try:
+        return SkillEvidenceTimelineService(db).get_public_skill_evidence_timeline(public_slug)
+    except PublicWorkPassportNotFoundError as exc:
+        raise _passport_not_found(str(exc)) from exc
+
+
+@public_router.get(
     "/access/{access_token}/evidence",
     response_model=ProtectedEvidenceResponse,
     summary="Get protected evidence for an approved access grant",
@@ -213,6 +230,27 @@ def get_protected_evidence(
 ) -> ProtectedEvidenceResponse:
     try:
         return PublicWorkPassportService(db).get_protected_evidence(access_token)
+    except EvidenceAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "evidence_access_denied",
+                "message": str(exc),
+            },
+        ) from exc
+
+
+@public_router.get(
+    "/access/{access_token}/skill-evidence-timeline",
+    response_model=SkillEvidenceTimelineResponse,
+    summary="Get a grant-scoped protected skill evidence timeline",
+)
+def get_protected_skill_evidence_timeline(
+    access_token: str,
+    db: Any = Depends(get_db),
+) -> SkillEvidenceTimelineResponse:
+    try:
+        return SkillEvidenceTimelineService(db).get_protected_skill_evidence_timeline(access_token)
     except EvidenceAccessDeniedError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

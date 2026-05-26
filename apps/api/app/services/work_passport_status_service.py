@@ -11,6 +11,7 @@ from app.schemas.work_passport_status import (
     WorkPassportStatusResponse,
 )
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
+from app.services.skill_evidence_timeline_service import SkillEvidenceTimelineService
 from app.services.verification_readiness_service import compute_readiness_report
 
 _SESSIONS = "extension_proof_sessions"
@@ -86,6 +87,7 @@ class WorkPassportStatusService:
             active_version=active_version,
             requests=requests,
         )
+        skill_evidence_summary = _skill_evidence_summary(self._client, user_id, proof_session_id)
         completed_steps = _completed_steps(workflow, privacy, live, github, defense, ai_domain, passport, active_version, notifications)
         missing_steps = _missing_steps(workflow, privacy, defense, ai_domain, passport, active_version, pending_requests, open_admin_cases)
         overall_status = _overall_status(
@@ -123,6 +125,7 @@ class WorkPassportStatusService:
             pending_access_request_count=len(pending_requests),
             active_access_grant_count=len(active_grants),
             unread_notification_count=len([row for row in notifications if row.get("read_at") is None and row.get("archived_at") is None]),
+            skill_evidence_summary=skill_evidence_summary,
             blocking_issues=blocking_issues,
             warnings=warnings,
             completed_steps=completed_steps,
@@ -412,6 +415,18 @@ def _student_next_steps(blocking: list[WorkPassportIssue], warnings: list[WorkPa
     if not steps:
         steps.extend(issue.recommended_fix for issue in warnings[:2] if issue.recommended_fix)
     return [step for step in steps if step]
+
+
+def _skill_evidence_summary(client: Any, user_id: str, proof_session_id: str) -> dict[str, int] | None:
+    try:
+        timeline = SkillEvidenceTimelineService(client).get_skill_evidence_timeline(user_id, proof_session_id)
+    except Exception:
+        return None
+    return {
+        "strong_skill_count": len([skill for skill in timeline.skills if skill.support_level == "strong"]),
+        "partial_skill_count": len([skill for skill in timeline.skills if skill.support_level == "partial"]),
+        "missing_skill_count": len([skill for skill in timeline.skills if skill.support_level in {"weak", "missing"}]),
+    }
 
 
 def _recruiter_safe_summary(readiness_level: str, ai_domain: dict[str, Any] | None, passport: dict[str, Any] | None, status: str) -> str:
