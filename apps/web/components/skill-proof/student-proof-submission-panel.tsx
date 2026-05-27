@@ -842,7 +842,7 @@ export function StudentProofSubmissionPanel({
                         : proofMode === "ai_agent" && agentSourceType === "deployed_website" ? "Website / Deployed App Proof"
                         : proofMode === "ai_agent" && !agentSourceType ? "AI Proof Builder"
                         : proofMode === "ai_agent" ? "Save Evidence Link"
-                        : proofMode === "extension_proof" ? "Record App Workflow"
+                        : proofMode === "extension_proof" ? "Website Proof"
                         : manualStep === "source_select" ? "Add Supporting Context"
                         : selectedSourceType === "github_repository" ? "GitHub Code Proof"
                         : selectedSourceType === "deployed_website" ? "Live Website Proof"
@@ -916,23 +916,23 @@ export function StudentProofSubmissionPanel({
                           </div>
                         </div>
 
-                        {/* Website / App Proof */}
+                        {/* Website Proof */}
                         <div style={{ border: "1px solid var(--line)", borderRadius: 14, padding: "16px 18px", background: "#fff", display: "flex", alignItems: "flex-start", gap: 14 }}>
                           <span style={{ fontSize: 22, flexShrink: 0, marginTop: 2 }}>🌐</span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-                              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)" }}>Website / App Proof</span>
+                              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)" }}>Website Proof</span>
                               <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 999, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0" }}>Active</span>
                             </div>
                             <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>
-                              Submit a website, deployed app, portfolio, dashboard, or private app workflow. VeriBridge can analyze the URL and optionally guide you to record a workflow with the extension.
+                              Record and verify a real website or app workflow. VeriBridge captures your walkthrough, analyzes the workflow evidence, connects it to skills, and updates your Work Passport.
                             </p>
                             <button
                               type="button"
-                              onClick={() => { setProofMode("ai_agent"); setAgentSourceType("deployed_website"); setSubmissionError(null); }}
+                              onClick={() => { setProofMode("extension_proof"); setSubmissionError(null); }}
                               style={{ border: "1px solid var(--ink)", background: "var(--ink)", color: "#fff", borderRadius: 9, padding: "7px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
                             >
-                              Add Website Proof
+                              Start Website Proof
                             </button>
                           </div>
                         </div>

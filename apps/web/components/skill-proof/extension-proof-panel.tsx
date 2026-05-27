@@ -3794,10 +3794,12 @@ export function ExtensionProofPanel({
       <div style={{ display: "grid", gap: 18 }}>
         {/* Info banner */}
         <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px" }}>
-          <p style={{ margin: 0, fontSize: 12, color: "#1e40af", lineHeight: 1.6 }}>
-            Use the VeriBridge Chrome Extension to record a live walkthrough of your project
-            website in your own browser. Works for deployed sites, private dashboards, and
-            local development servers on <code style={{ fontSize: 11 }}>localhost</code>.
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af", marginBottom: 5 }}>Website Proof</div>
+          <p style={{ margin: 0, fontSize: 12, color: "#1e40af", lineHeight: 1.65 }}>
+            Record a walkthrough of your website, app, dashboard, or portfolio. VeriBridge uses the
+            workflow recording, AI analysis, and optional project defense to connect evidence to your
+            skills and update your Work Passport. Works for deployed sites, private dashboards, and
+            local development servers.
           </p>
         </div>
 
@@ -3872,7 +3874,7 @@ export function ExtensionProofPanel({
           {/* Skill name */}
           <div style={{ display: "grid", gap: 4 }}>
             <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
-              Skill this demonstrates <span style={{ color: "#dc2626" }}>*</span>
+              Skills this demonstrates <span style={{ color: "#dc2626" }}>*</span>
             </label>
             <input
               value={form.skillName}
@@ -3881,12 +3883,13 @@ export function ExtensionProofPanel({
               style={inp}
               disabled={creating}
             />
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>Comma-separated skills you will demonstrate in this walkthrough.</span>
           </div>
 
           {/* Proof objective */}
           <div style={{ display: "grid", gap: 4 }}>
             <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
-              Proof objective <span style={{ color: "#dc2626" }}>*</span>
+              Proof objective — what workflow will be shown <span style={{ color: "#dc2626" }}>*</span>
             </label>
             <textarea
               value={form.proofObjective}
@@ -3896,7 +3899,7 @@ export function ExtensionProofPanel({
               disabled={creating}
             />
             <span style={{ fontSize: 11, color: "var(--muted)" }}>
-              What feature or workflow will you demonstrate? (5 words minimum)
+              What feature or workflow will you demonstrate in the recording? (5 words minimum)
             </span>
           </div>
         </div>
@@ -3909,7 +3912,7 @@ export function ExtensionProofPanel({
             disabled={creating}
             style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: creating ? "not-allowed" : "pointer" }}
           >
-            ← Back
+            ← Back to AI Proof Builder
           </button>
           <button
             type="button"
@@ -3928,7 +3931,7 @@ export function ExtensionProofPanel({
               ? "Creating session…"
               : local
               ? "Create Local Workflow Proof Session"
-              : "Create Extension Proof Session"}
+              : "Create Website Proof Session"}
           </button>
         </div>
       </div>
