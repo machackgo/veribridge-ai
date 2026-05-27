@@ -1146,6 +1146,7 @@ export function WebsiteAIAnalyzerPanel({
   onFunctionalTestPlanChange,
   onSaveComplete,
   onBack,
+  onSwitchToExtensionProof,
 }: {
   url: string
   onUrlChange: (v: string) => void
@@ -1157,6 +1158,8 @@ export function WebsiteAIAnalyzerPanel({
   onFunctionalTestPlanChange: (plan: FunctionalTestPlanState) => void
   onSaveComplete?: () => void
   onBack: () => void
+  /** Called when the user selects "Record workflow with extension" and wants to switch to the extension proof panel. */
+  onSwitchToExtensionProof?: () => void
 }) {
   const [showTestPlan, setShowTestPlan] = useState(false)
   const [panelStep, setPanelStep] = useState<PanelStep>("form")
@@ -1782,12 +1785,13 @@ export function WebsiteAIAnalyzerPanel({
         <div style={{ display: "grid", gap: 14 }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)", marginBottom: 4 }}>
-              🌐 Website / Portfolio AI Analysis
+              🌐 Website / App Proof
             </div>
             <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>
-              Enter a live URL. VeriBridge fetches the page, checks /docs and /openapi.json, runs safe functional
-              tests on inference endpoints, and groups all evidence into high-level skill cards.
-              Optionally connect a GitHub repo to prove backend, ML, and deployment skills behind the site.
+              Add a website, deployed app, dashboard, portfolio, or app workflow. VeriBridge checks public signals and
+              can also create a workflow recording session when you need to demonstrate app behavior. Choose your
+              access type below — public sites get AI analysis; login-required apps and local demos can be
+              captured with a controlled session or the VeriBridge extension.
             </div>
           </div>
 
@@ -1814,9 +1818,13 @@ export function WebsiteAIAnalyzerPanel({
               }}
             />
             {url.trim() && !isPublicHttpUrl(url) ? (
-              <span style={{ fontSize: 11, color: "#991b1b" }}>Enter a valid public URL starting with https:// or http://</span>
+              <span style={{ fontSize: 11, color: "#991b1b" }}>Enter a valid URL starting with https:// or http://</span>
             ) : (
-              <span style={{ fontSize: 11, color: "var(--muted)" }}>Only public URLs. Private or localhost URLs are not supported.</span>
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                {functionalTestPlan.authMode === "partial_only" || functionalTestPlan.authMode === "test_account"
+                  ? "Enter your app URL. Localhost and private URLs are supported for extension and session-based proof."
+                  : "Public URLs (https://…). For private apps or localhost, choose a different access type above."}
+              </span>
             )}
           </div>
 
@@ -1853,15 +1861,15 @@ export function WebsiteAIAnalyzerPanel({
             </span>
           </div>
 
-          {/* Authentication Mode */}
+          {/* Authentication / Access Type */}
           <div style={{ display: "grid", gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>Authentication Mode</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>Authentication / access type</span>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
               {([
-                { id: "public",               label: "🔓 Public / No login",        desc: "No login required" },
-                { id: "manual_login_handoff", label: "🔐 Manual Login Handoff",     desc: "Controlled browser session" },
-                { id: "partial_only",         label: "📸 Partial Proof Only",        desc: "Capture login page only" },
-                { id: "test_account",         label: "🧪 Test Account",              desc: "Demo credentials (placeholder)" },
+                { id: "public",               label: "🔓 Public website / no login", desc: "AI analyzes the URL directly" },
+                { id: "manual_login_handoff", label: "🔐 Login-required app",        desc: "Controlled browser session" },
+                { id: "partial_only",         label: "🏠 Localhost or private demo", desc: "Capture proof without logging in" },
+                { id: "test_account",         label: "📹 Record workflow with extension", desc: "Use the VeriBridge extension" },
               ] as const).map((m) => {
                 const active = functionalTestPlan.authMode === m.id
                 return (
@@ -1884,9 +1892,16 @@ export function WebsiteAIAnalyzerPanel({
                 )
               })}
             </div>
+            {functionalTestPlan.authMode === "public" && (
+              <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#166534", lineHeight: 1.5 }}>
+                <strong>Public-safe analysis:</strong> VeriBridge fetches the public URL, checks /docs and /openapi.json,
+                runs safe functional tests on inference endpoints, and groups all evidence into skill cards.
+                You can also optionally add a GitHub repo for deeper backend and ML proof.
+              </div>
+            )}
             {functionalTestPlan.authMode === "manual_login_handoff" && (
               <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#0369a1", lineHeight: 1.5 }}>
-                <strong>Manual Login Handoff:</strong> VeriBridge opens a controlled browser session.
+                <strong>Login-required app:</strong> VeriBridge opens a controlled browser session.
                 Log in manually in the browser window, then click Continue Verification.
                 Passwords are never saved or transmitted.
                 <div style={{ marginTop: 4, fontSize: 10, color: "#0c4a6e", fontStyle: "italic" }}>
@@ -1896,18 +1911,44 @@ export function WebsiteAIAnalyzerPanel({
             )}
             {functionalTestPlan.authMode === "partial_only" && (
               <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#9a3412", lineHeight: 1.5 }}>
-                VeriBridge will open the site, detect the login page, capture a screenshot, and save it as partial proof without attempting login.
+                <strong>Localhost or private demo:</strong> VeriBridge will open the site in a browser,
+                detect the login page or local server, capture a screenshot, and save it as proof.
+                No login credentials are used or stored.
               </div>
             )}
             {functionalTestPlan.authMode === "test_account" && (
-              <div style={{ background: "#fef9c3", border: "1px solid #fef08a", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#854d0e", lineHeight: 1.5 }}>
-                Test account credentials support coming soon. Use a demo/test account only. Credentials are never stored.
+              <div style={{ background: "#faf5ff", border: "1px solid #ddd6fe", borderRadius: 8, padding: "8px 12px", display: "grid", gap: 8 }}>
+                <div style={{ fontSize: 11, color: "#5b21b6", lineHeight: 1.5 }}>
+                  <strong>Record workflow with extension:</strong> Use the VeriBridge browser extension to record
+                  a walkthrough of your app. Works for private dashboards, apps that require login, and localhost demos.
+                  Your session is student-controlled — only a public-safe summary is shared with recruiters.
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {[["🔒", "Privacy protected"], ["🎛", "Student controls access"], ["✓", "Public-safe summaries only"]].map(([icon, label]) => (
+                    <span key={String(label)} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 999, background: "#f0fdf4", color: "#065f46", border: "1px solid #bbf7d0" }}>
+                      {icon} {label}
+                    </span>
+                  ))}
+                </div>
+                {onSwitchToExtensionProof && (
+                  <button
+                    type="button"
+                    onClick={onSwitchToExtensionProof}
+                    style={{
+                      border: "none", background: "#5b21b6", color: "#fff",
+                      borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13,
+                      cursor: "pointer", alignSelf: "flex-start",
+                    }}
+                  >
+                    Start Extension Recording →
+                  </button>
+                )}
               </div>
             )}
           </div>
 
-          {/* Optional: Functional Test Plan */}
-          <div style={{ border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
+          {/* Optional: Functional Test Plan — hidden for extension recording mode */}
+          {functionalTestPlan.authMode !== "test_account" && <div style={{ border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
             <button
               type="button"
               onClick={() => setShowTestPlan((v) => !v)}
@@ -2191,13 +2232,16 @@ export function WebsiteAIAnalyzerPanel({
                 </div>
               </div>
             )}
-          </div>
+          </div>}
 
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
             <button type="button" onClick={onBack} style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
-              ← Back
+              ← Back to AI Proof Builder
             </button>
-            {functionalTestPlan.authMode === "manual_login_handoff" || functionalTestPlan.authMode === "partial_only" ? (
+            {functionalTestPlan.authMode === "test_account" ? (
+              /* Extension recording — CTA is shown inline in the auth mode info card above */
+              null
+            ) : functionalTestPlan.authMode === "manual_login_handoff" || functionalTestPlan.authMode === "partial_only" ? (
               <button
                 type="button"
                 disabled={!url.trim() || !isPublicHttpUrl(url) || sessionWorking}
