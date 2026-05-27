@@ -375,37 +375,47 @@ export type RecruiterCandidateResult = {
   disclaimer: string
 }
 
-export type WorkPassportAnalyticsResponse = {
-  proof_session_id?: string | null
-  user_id?: string | null
-  total_views: number
-  unique_viewer_count: number
-  total_access_requests: number
-  pending_request_count: number
-  approved_request_count: number
-  denied_request_count: number
-  active_grant_count: number
-  total_saves: number
-  protected_evidence_views: number
-  top_requested_sections: string[]
-  top_requester_organizations: string[]
-  top_requester_domains: string[]
-  first_view_at?: string | null
-  last_view_at?: string | null
-  generated_at: string
+// Analytics sub-types (mirror backend schemas exactly)
+export type RequestedSectionSummary = {
+  section: string
+  count: number
 }
 
-export type WorkPassportAnalyticsActivityResponse = {
-  activities: WorkPassportActivity[]
-  generated_at: string
+export type RequesterOrganizationSummary = {
+  organization_name: string | null
+  organization_domain: string | null
+  request_count: number
+  unique_requester_emails: number
 }
 
-export type WorkPassportActivity = {
+export type WorkPassportActivityItem = {
   event_type: string
-  description: string
-  requester_email?: string | null
-  requester_organization?: string | null
-  occurred_at: string
+  event_summary: string | null
+  actor_type: string | null
+  actor_email: string | null
+  requester_organization: string | null
+  proof_session_id: string | null
+  passport_id: string | null
+  created_at: string
+}
+
+export type WorkPassportAnalyticsResponse = {
+  total_passports: number
+  total_public_views: number
+  total_access_requests: number
+  pending_access_requests: number
+  approved_access_requests: number
+  denied_access_requests: number
+  revoked_access_grants: number
+  active_access_grants: number
+  protected_evidence_views: number
+  unique_requester_emails: number
+  unique_requester_organizations: number
+  top_requested_sections: RequestedSectionSummary[]
+  recent_activity: WorkPassportActivityItem[]
+  requester_organizations: RequesterOrganizationSummary[]
+  unread_notifications: number
+  generated_at: string
 }
 
 export type ProofVersionResponse = {
@@ -669,8 +679,13 @@ export function getWorkPassportAnalytics(): Promise<WorkPassportAnalyticsRespons
   return apiJson(`${API}/student/work-passport/analytics`)
 }
 
-export function getWorkPassportAnalyticsActivity(): Promise<WorkPassportAnalyticsActivityResponse> {
-  return apiJson(`${API}/student/work-passport/analytics/activity`)
+export function getWorkPassportAnalyticsActivity(
+  params?: { proof_session_id?: string; limit?: number },
+): Promise<WorkPassportActivityItem[]> {
+  const qs = new URLSearchParams()
+  if (params?.proof_session_id) qs.set("proof_session_id", params.proof_session_id)
+  if (params?.limit != null) qs.set("limit", String(params.limit))
+  return apiJson(`${API}/student/work-passport/analytics/activity${qs.size ? `?${qs}` : ""}`)
 }
 
 // ─── Proof Versioning ──────────────────────────────────────────────────────
