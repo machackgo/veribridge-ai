@@ -1,9 +1,11 @@
 """Project Defense Transcript Analysis endpoints.
 
-POST /{session_id}/analyze/project-defense      — run the transcript analysis
-GET  /{session_id}/analysis/project-defense     — fetch the stored result
-POST /{session_id}/defense/upload-media         — register uploaded media file
-PATCH /{session_id}/defense/transcript          — update transcript + reviewed flag
+POST /{session_id}/analyze/project-defense           — run the transcript analysis
+GET  /{session_id}/analysis/project-defense          — fetch the stored result
+POST /{session_id}/defense/upload-media              — register uploaded media file
+PATCH /{session_id}/defense/transcript               — update transcript + reviewed flag
+POST /{session_id}/defense/transcribe                — transcribe registered media
+POST /{session_id}/defense/refine-transcript         — (re-)run NLP refinement
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ from app.schemas.project_defense_analysis import (
     ProjectDefenseAnalyzeRequest,
     ProjectDefenseAnalysisResponse,
     ProjectDefenseMediaUploadResponse,
+    ProjectDefenseRefineTranscriptRequest,
+    ProjectDefenseRefineTranscriptResponse,
     ProjectDefenseTranscribeResponse,
     ProjectDefenseUpdateTranscriptRequest,
 )
@@ -93,6 +97,14 @@ def _row_to_response(
         transcription_status=str(row.get("transcription_status") or "not_started"),
         transcript_reviewed=bool(row.get("transcript_reviewed", False)),
         transcript_text=transcript_text if transcript_text is not None else str(row.get("transcript_text") or ""),
+        # Refinement fields
+        raw_transcript=row.get("raw_transcript"),
+        refined_transcript=row.get("refined_transcript"),
+        transcript_correction_summary=row.get("transcript_correction_summary") or [],
+        transcript_glossary_matches=row.get("transcript_glossary_matches") or [],
+        transcript_refinement_status=str(row.get("transcript_refinement_status") or "not_started"),
+        transcript_needs_review=bool(row.get("transcript_needs_review", False)),
+        # Analysis outputs
         transcript_summary=str(row.get("transcript_summary") or ""),
         skills_mentioned=row.get("skills_mentioned") or [],
         skills_explained_well=row.get("skills_explained_well") or [],
@@ -538,12 +550,79 @@ async def transcribe_defense_media(
     # ── Privacy scan ───────────────────────────────────────────────────────────
     privacy_result = scan_proof_data({"transcript": tx_result.transcript_text})
 
+    # ── Auto-refinement ────────────────────────────────────────────────────────
+    # Run NLP refinement immediately after transcription so the student sees
+    # corrected text by default.  This is best-effort — refinement failure never
+    # blocks the transcription response.
+    from app.services.transcript_refinement_service import (
+        RefinementResult,
+        build_correction_display_summary,
+        refine_project_defense_transcript,
+    )
+
+    refinement: RefinementResult | None = None
+    refinement_status = "not_started"
+
+    try:
+        # Gather context from the session row
+        claimed_skills_raw = row.get("claimed_skills") or []
+        claimed_skills: list[str] = (
+            claimed_skills_raw if isinstance(claimed_skills_raw, list) else []
+        )
+        # Attempt to load extended session context (skills, website, github)
+        # These may come from the parent skill_evidence row — best effort
+        student_profile: dict | None = None
+        website_url: str | None = None
+        github_url: str | None = None
+        project_context: str | None = row.get("proof_objective") or None
+
+        try:
+            from app.services.extension_proof_service import ExtensionProofSessionService
+            session_row = ExtensionProofSessionService(db)._get_row(user_id, session_id)
+            # Try to load claimed_skills and project context from session
+            session_skills = session_row.get("claimed_skills") or []
+            if isinstance(session_skills, list) and session_skills:
+                claimed_skills = session_skills
+            if not project_context:
+                project_context = session_row.get("proof_objective") or None
+            website_url = session_row.get("website_url") or None
+            github_url = session_row.get("github_url") or None
+        except Exception:
+            pass  # non-critical
+
+        refinement = refine_project_defense_transcript(
+            raw_transcript=tx_result.transcript_text,
+            student_profile=student_profile,
+            project_context=project_context,
+            claimed_skills=claimed_skills,
+            website_url=website_url,
+            github_url=github_url,
+        )
+        refinement_status = "complete"
+    except Exception as exc:
+        logger.warning("Auto-refinement failed for session %s: %s", session_id, exc)
+        refinement_status = "failed"
+
+    # The working transcript shown to the student is the refined version when
+    # available; the raw transcript is always preserved separately.
+    working_transcript = (
+        refinement.refined_transcript
+        if refinement and refinement.refined_transcript
+        else tx_result.transcript_text
+    )
+
     # ── Persist ────────────────────────────────────────────────────────────────
     service.save_transcription_result(
         user_id=user_id,
         proof_session_id=session_id,
-        transcript_text=tx_result.transcript_text,
+        transcript_text=working_transcript,
         privacy_scan_status=privacy_result.status,
+        raw_transcript=tx_result.transcript_text,
+        refined_transcript=refinement.refined_transcript if refinement else None,
+        transcript_correction_summary=refinement.correction_summary if refinement else [],
+        transcript_glossary_matches=refinement.glossary_matches if refinement else [],
+        transcript_refinement_status=refinement_status,
+        transcript_needs_review=refinement.needs_review if refinement else False,
     )
 
     privacy_note = (
@@ -553,12 +632,157 @@ async def transcribe_defense_media(
         else ""
     )
 
+    display_summary = (
+        build_correction_display_summary(refinement.correction_summary)
+        if refinement and refinement.correction_summary
+        else ""
+    )
+
+    needs_review_note = (
+        " Please review this transcript before analysis — many corrections were made."
+        if refinement and refinement.needs_review
+        else ""
+    )
+
     return ProjectDefenseTranscribeResponse(
         proof_session_id=session_id,
-        transcript_text=tx_result.transcript_text,
+        transcript_text=working_transcript,
         transcription_status="transcript_ready",
         transcript_reviewed=False,
         provider_used=tx_result.provider_used,
         configured=True,
-        message=f"Transcript generated. Review and edit before analysis.{privacy_note}",
+        message=(
+            f"Transcript generated. Review and edit before analysis."
+            f"{needs_review_note}{privacy_note}"
+        ),
+        # Refinement fields
+        raw_transcript=tx_result.transcript_text,
+        refined_transcript=refinement.refined_transcript if refinement else None,
+        transcript_correction_summary=refinement.correction_summary if refinement else [],
+        transcript_glossary_matches=refinement.glossary_matches if refinement else [],
+        transcript_refinement_status=refinement_status,
+        transcript_needs_review=refinement.needs_review if refinement else False,
+        refinement_display_summary=display_summary,
+    )
+
+
+# ── POST /defense/refine-transcript ───────────────────────────────────────────
+
+@router.post(
+    "/{session_id}/defense/refine-transcript",
+    response_model=ProjectDefenseRefineTranscriptResponse,
+    summary="(Re-)run NLP transcript refinement on the stored raw transcript",
+)
+def refine_defense_transcript(
+    session_id: str,
+    body: ProjectDefenseRefineTranscriptRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> ProjectDefenseRefineTranscriptResponse:
+    """
+    Re-run transcript refinement using the stored raw_transcript and optionally
+    overridden context (claimed_skills, project_context, website_url, github_url).
+
+    Use this to re-refine after the student updates their profile or skills list,
+    or after the first transcription if auto-refinement failed.
+
+    Returns 404 if no raw transcript exists for this session yet.
+    """
+    from app.services.transcript_refinement_service import (
+        build_correction_display_summary,
+        refine_project_defense_transcript,
+    )
+
+    _verify_session(user_id, session_id, db)
+
+    service = ProjectDefenseAnalysisService(db)
+    row = service.get_analysis(user_id, session_id)
+
+    if row is None or not row.get("raw_transcript"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "raw_transcript_not_found",
+                "message": (
+                    "No raw transcript found for this session. "
+                    "Upload and transcribe a media file first."
+                ),
+                "session_id": session_id,
+            },
+        )
+
+    raw_tx = row["raw_transcript"]
+
+    # Collect context: body overrides > session row defaults
+    claimed_skills = body.claimed_skills or []
+    project_context = body.project_context or None
+    website_url = body.website_url or None
+    github_url = body.github_url or None
+
+    # Try to pull context from the session if not overridden
+    if not claimed_skills or not project_context:
+        try:
+            from app.services.extension_proof_service import ExtensionProofSessionService
+            session_row = ExtensionProofSessionService(db)._get_row(user_id, session_id)
+            if not claimed_skills:
+                session_skills = session_row.get("claimed_skills") or []
+                claimed_skills = session_skills if isinstance(session_skills, list) else []
+            if not project_context:
+                project_context = session_row.get("proof_objective") or None
+            if not website_url:
+                website_url = session_row.get("website_url") or None
+            if not github_url:
+                github_url = session_row.get("github_url") or None
+        except Exception:
+            pass
+
+    try:
+        refinement = refine_project_defense_transcript(
+            raw_transcript=raw_tx,
+            student_profile=None,
+            project_context=project_context,
+            claimed_skills=claimed_skills,
+            website_url=website_url,
+            github_url=github_url,
+        )
+    except Exception as exc:
+        logger.error("Refinement endpoint error for session %s: %s", session_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "refinement_failed",
+                "message": "Transcript refinement failed. Please try again.",
+            },
+        )
+
+    # Persist the new refinement result
+    service.save_refinement_result(
+        user_id=user_id,
+        proof_session_id=session_id,
+        raw_transcript=raw_tx,
+        refined_transcript=refinement.refined_transcript,
+        correction_summary=refinement.correction_summary,
+        glossary_matches=refinement.glossary_matches,
+        refinement_status="complete",
+        needs_review=refinement.needs_review,
+    )
+
+    display_summary = build_correction_display_summary(refinement.correction_summary)
+    review_note = (
+        "Please review the transcript — several corrections were applied."
+        if refinement.needs_review
+        else "Transcript refined successfully."
+    )
+
+    return ProjectDefenseRefineTranscriptResponse(
+        proof_session_id=session_id,
+        raw_transcript=raw_tx,
+        refined_transcript=refinement.refined_transcript,
+        transcript_correction_summary=refinement.correction_summary,
+        transcript_glossary_matches=refinement.glossary_matches,
+        transcript_refinement_status="complete",
+        transcript_needs_review=refinement.needs_review,
+        confidence=refinement.confidence,
+        refinement_display_summary=display_summary,
+        message=review_note,
     )

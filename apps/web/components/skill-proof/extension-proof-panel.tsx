@@ -18,7 +18,10 @@ import {
   getProjectDefenseAnalysis,
   uploadProjectDefenseMedia,
   transcribeDefenseMedia,
+  refineDefenseTranscript,
   type ProjectDefenseTranscribeResponse,
+  type ProjectDefenseRefineTranscriptResponse,
+  type TranscriptCorrectionEntry,
   type ExtensionProofSessionResponse,
   type ExtensionProofSessionStatus,
   type LiveWebsiteCheckConfidence,
@@ -2652,6 +2655,17 @@ function ProjectDefenseSection({
   const [transcribeMsg, setTranscribeMsg]     = useState<string | null>(null)
   const [transcribeError, setTranscribeError] = useState<string | null>(null)
 
+  // ── Refinement state ───────────────────────────────────────────────────────
+  const [rawTranscript, setRawTranscript]             = useState<string | null>(null)
+  const [refinedTranscript, setRefinedTranscript]     = useState<string | null>(null)
+  const [showingRaw, setShowingRaw]                   = useState(false)
+  const [corrections, setCorrections]                 = useState<TranscriptCorrectionEntry[]>([])
+  const [glossaryMatches, setGlossaryMatches]         = useState<string[]>([])
+  const [refinementDisplaySummary, setRefinementDisplaySummary] = useState<string>("")
+  const [transcriptNeedsReview, setTranscriptNeedsReview]       = useState(false)
+  const [reRefining, setReRefining]                   = useState(false)
+  const [reRefineError, setReRefineError]             = useState<string | null>(null)
+
   // ── Derived (safe to compute even when hidden — values not rendered) ───────
   const transcriptWords = defenseTranscript.trim().split(/\s+/).filter(Boolean).length
   const canAnalyze      = transcriptWords >= 30 && !defenseAnalyzing
@@ -2684,14 +2698,69 @@ function ProjectDefenseSection({
         setTranscribeMsg(result.message)
       } else {
         // Success — populate the textarea so the student can review/edit
-        onTranscriptChange(result.transcript_text)
+        // If refined_transcript is available, show it by default (raw preserved)
+        const workingText = result.transcript_text
+        onTranscriptChange(workingText)
         setTranscribeMsg(result.message)
+
+        // Stash refinement output
+        if (result.raw_transcript) {
+          setRawTranscript(result.raw_transcript)
+        }
+        if (result.refined_transcript) {
+          setRefinedTranscript(result.refined_transcript)
+        }
+        if (result.transcript_correction_summary?.length) {
+          setCorrections(result.transcript_correction_summary)
+        }
+        if (result.transcript_glossary_matches?.length) {
+          setGlossaryMatches(result.transcript_glossary_matches)
+        }
+        if (result.refinement_display_summary) {
+          setRefinementDisplaySummary(result.refinement_display_summary)
+        }
+        if (result.transcript_needs_review) {
+          setTranscriptNeedsReview(true)
+        }
+        // Always show refined by default
+        setShowingRaw(false)
       }
     } catch (err) {
       setTranscribeError(err instanceof Error ? err.message : "Transcription failed. Please try again.")
     } finally {
       setTranscribing(false)
     }
+  }
+
+  // ── Re-run refinement ──────────────────────────────────────────────────────
+  async function handleReRefine() {
+    setReRefining(true)
+    setReRefineError(null)
+    try {
+      const result: ProjectDefenseRefineTranscriptResponse = await refineDefenseTranscript(session.id)
+      setRawTranscript(result.raw_transcript)
+      setRefinedTranscript(result.refined_transcript)
+      setCorrections(result.transcript_correction_summary)
+      setGlossaryMatches(result.transcript_glossary_matches)
+      setRefinementDisplaySummary(result.refinement_display_summary)
+      setTranscriptNeedsReview(result.transcript_needs_review)
+      // Switch to refined view and update editable textarea
+      setShowingRaw(false)
+      onTranscriptChange(result.refined_transcript)
+    } catch (err) {
+      setReRefineError(err instanceof Error ? err.message : "Refinement failed. Please try again.")
+    } finally {
+      setReRefining(false)
+    }
+  }
+
+  // ── Toggle raw / refined ───────────────────────────────────────────────────
+  function handleToggleRaw() {
+    if (!rawTranscript || !refinedTranscript) return
+    const nextShowRaw = !showingRaw
+    setShowingRaw(nextShowRaw)
+    // Keep textarea editable — switch content but don't break the form
+    onTranscriptChange(nextShowRaw ? rawTranscript : refinedTranscript)
   }
 
   // ── File select ────────────────────────────────────────────────────────────
@@ -3177,10 +3246,145 @@ function ProjectDefenseSection({
         </div>
 
         <div style={{ padding: "14px 16px", display: "grid", gap: 12 }}>
+
+          {/* ── VeriBridge AI Refinement banner ──────────────────────────── */}
+          {refinedTranscript && rawTranscript && (
+            <div style={{
+              background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10,
+              padding: "10px 14px", display: "grid", gap: 8,
+            }}>
+              {/* Header row */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <span style={{
+                    fontSize: 10, fontWeight: 800, letterSpacing: "0.07em",
+                    padding: "2px 8px", borderRadius: 999,
+                    background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0",
+                  }}>
+                    ✦ VERIBRIDGE AI
+                  </span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#166534" }}>
+                    Transcript refined with VeriBridge AI
+                  </span>
+                </div>
+                {/* Raw / Refined toggle */}
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button
+                    type="button"
+                    onClick={handleToggleRaw}
+                    style={{
+                      fontSize: 11, fontWeight: 600,
+                      padding: "4px 10px", borderRadius: 7,
+                      background: showingRaw ? "#f3f4f6" : "#dcfce7",
+                      color: showingRaw ? "#374151" : "#166534",
+                      border: `1px solid ${showingRaw ? "#d1d5db" : "#86efac"}`,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {showingRaw ? "Use refined transcript" : "View raw transcript"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Correction summary */}
+              {refinementDisplaySummary && (
+                <p style={{ margin: 0, fontSize: 12, color: "#065f46", lineHeight: 1.55 }}>
+                  {refinementDisplaySummary}
+                </p>
+              )}
+
+              {/* Correction detail (collapsed) */}
+              {corrections.length > 0 && (
+                <details style={{ fontSize: 11, color: "#166534" }}>
+                  <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+                    {corrections.length} correction{corrections.length !== 1 ? "s" : ""} made — click to review
+                  </summary>
+                  <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {corrections.slice(0, 12).map((c, i) => (
+                      <span key={i} style={{
+                        fontSize: 11, padding: "2px 8px", borderRadius: 999,
+                        background: "#fff", border: "1px solid #bbf7d0", color: "#374151",
+                      }}>
+                        <span style={{ color: "#dc2626" }}>{c.original}</span>
+                        {" → "}
+                        <span style={{ color: "#166534", fontWeight: 600 }}>{c.corrected}</span>
+                      </span>
+                    ))}
+                    {corrections.length > 12 && (
+                      <span style={{ fontSize: 11, color: "#6b7280" }}>+{corrections.length - 12} more</span>
+                    )}
+                  </div>
+                </details>
+              )}
+
+              {/* Needs review warning */}
+              {transcriptNeedsReview && (
+                <div style={{
+                  background: "#fffbeb", border: "1px solid #fef08a",
+                  borderRadius: 8, padding: "6px 10px",
+                  fontSize: 11, color: "#854d0e", lineHeight: 1.55,
+                }}>
+                  ⚠ <strong>Please review this transcript before analysis.</strong>{" "}
+                  Several corrections were applied — verify they are accurate.
+                </div>
+              )}
+
+              {/* Currently viewing raw notice */}
+              {showingRaw && (
+                <div style={{
+                  background: "#fffbeb", border: "1px solid #fef08a",
+                  borderRadius: 8, padding: "6px 10px",
+                  fontSize: 11, color: "#854d0e",
+                }}>
+                  👁 Viewing raw transcript. The editable field shows the original ASR output.
+                  Click <strong>Use refined transcript</strong> to switch back.
+                </div>
+              )}
+
+              {/* Re-refine button (useful if skills/context updated) */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => void handleReRefine()}
+                  disabled={reRefining || defenseAnalyzing}
+                  style={{
+                    fontSize: 11, fontWeight: 600,
+                    padding: "4px 12px", borderRadius: 7,
+                    background: reRefining ? "#f3f4f6" : "#fff",
+                    color: reRefining ? "#9ca3af" : "#059669",
+                    border: "1px solid #a7f3d0",
+                    cursor: reRefining || defenseAnalyzing ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {reRefining ? "Re-refining…" : "↻ Re-refine"}
+                </button>
+                <span style={{ fontSize: 11, color: "#6b7280" }}>Re-run refinement if you updated your skills or project context.</span>
+              </div>
+
+              {reRefineError && (
+                <div role="alert" style={{ fontSize: 11, color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6, padding: "4px 8px" }}>
+                  {reRefineError}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Transcript textarea */}
           <div style={{ display: "grid", gap: 4 }}>
             <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
               Transcript <span style={{ color: "#dc2626" }}>*</span>
+              {refinedTranscript && rawTranscript && (
+                <span style={{
+                  marginLeft: 8, fontSize: 10, fontWeight: 700,
+                  padding: "1px 7px", borderRadius: 999,
+                  background: showingRaw ? "#f3f4f6" : "#dcfce7",
+                  color: showingRaw ? "#6b7280" : "#166534",
+                  border: `1px solid ${showingRaw ? "#d1d5db" : "#86efac"}`,
+                  letterSpacing: "0.05em",
+                }}>
+                  {showingRaw ? "RAW" : "REFINED"}
+                </span>
+              )}
             </label>
             <textarea
               value={defenseTranscript}

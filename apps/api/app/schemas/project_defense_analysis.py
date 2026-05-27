@@ -6,6 +6,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+TranscriptRefinementStatus = Literal[
+    "not_started",
+    "in_progress",
+    "complete",
+    "failed",
+]
+
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 ALLOWED_MEDIA_EXTENSIONS: frozenset[str] = frozenset(
@@ -101,6 +108,32 @@ class ProjectDefenseAnalysisResponse(BaseModel):
     # ── Transcript ─────────────────────────────────────────────────────────────
     transcript_text: str = ""
 
+    # ── Refinement fields ──────────────────────────────────────────────────────
+    raw_transcript: str | None = Field(
+        default=None,
+        description="Verbatim ASR output — never overwritten after first save.",
+    )
+    refined_transcript: str | None = Field(
+        default=None,
+        description="AI-corrected version of the raw transcript.",
+    )
+    transcript_correction_summary: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of individual corrections made during refinement.",
+    )
+    transcript_glossary_matches: list[str] = Field(
+        default_factory=list,
+        description="Terms matched from the project-specific or base glossary.",
+    )
+    transcript_refinement_status: str = Field(
+        default="not_started",
+        description="Lifecycle status of the refinement pipeline.",
+    )
+    transcript_needs_review: bool = Field(
+        default=False,
+        description="True when confidence is low or many corrections were made.",
+    )
+
     # ── AI-computed outputs ────────────────────────────────────────────────────
     transcript_summary: str = ""
     skills_mentioned: list[str] = Field(default_factory=list)
@@ -187,4 +220,40 @@ class ProjectDefenseTranscribeResponse(BaseModel):
     transcript_reviewed: bool = False
     provider_used: str = "none"
     configured: bool = False
+    message: str = ""
+
+    # ── Refinement output (included when refinement ran automatically) ─────────
+    raw_transcript: str | None = None
+    refined_transcript: str | None = None
+    transcript_correction_summary: list[dict[str, Any]] = Field(default_factory=list)
+    transcript_glossary_matches: list[str] = Field(default_factory=list)
+    transcript_refinement_status: str = "not_started"
+    transcript_needs_review: bool = False
+    refinement_display_summary: str = ""   # e.g. "Corrected: FastAPI, Google Maps API"
+
+
+# ── Refine transcript request / response ──────────────────────────────────────
+
+class ProjectDefenseRefineTranscriptRequest(BaseModel):
+    """Request body for POST /defense/refine-transcript."""
+
+    # Optional context overrides; if omitted the service reads from the session
+    claimed_skills: list[str] = Field(default_factory=list)
+    project_context: str = ""
+    website_url: str | None = None
+    github_url: str | None = None
+
+
+class ProjectDefenseRefineTranscriptResponse(BaseModel):
+    """Response from POST /defense/refine-transcript."""
+
+    proof_session_id: str
+    raw_transcript: str = ""
+    refined_transcript: str = ""
+    transcript_correction_summary: list[dict[str, Any]] = Field(default_factory=list)
+    transcript_glossary_matches: list[str] = Field(default_factory=list)
+    transcript_refinement_status: str = "complete"
+    transcript_needs_review: bool = False
+    confidence: float = 1.0
+    refinement_display_summary: str = ""
     message: str = ""

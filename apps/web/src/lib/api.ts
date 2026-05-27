@@ -1339,6 +1339,18 @@ export type TranscriptionStatus =
   | "transcript_ready"
   | "analysis_complete"
 
+export type TranscriptCorrectionEntry = {
+  original: string
+  corrected: string
+  reason: string
+}
+
+export type TranscriptRefinementStatus =
+  | "not_started"
+  | "in_progress"
+  | "complete"
+  | "failed"
+
 export type ProjectDefenseAnalysisResponse = {
   id: string | null
   user_id: string
@@ -1351,8 +1363,15 @@ export type ProjectDefenseAnalysisResponse = {
   media_storage_path: string | null
   transcription_status: TranscriptionStatus
   transcript_reviewed: boolean
-  // ── Transcript + NLP outputs ────────────────────────────────────────────────
+  // ── Transcript + refinement fields ─────────────────────────────────────────
   transcript_text: string
+  raw_transcript: string | null
+  refined_transcript: string | null
+  transcript_correction_summary: TranscriptCorrectionEntry[]
+  transcript_glossary_matches: string[]
+  transcript_refinement_status: TranscriptRefinementStatus
+  transcript_needs_review: boolean
+  // ── NLP outputs ─────────────────────────────────────────────────────────────
   transcript_summary: string
   skills_mentioned: string[]
   skills_explained_well: string[]
@@ -1557,6 +1576,34 @@ export interface ProjectDefenseTranscribeResponse {
   provider_used: string
   configured: boolean
   message: string
+  // Refinement fields (present when auto-refinement ran after transcription)
+  raw_transcript?: string | null
+  refined_transcript?: string | null
+  transcript_correction_summary?: TranscriptCorrectionEntry[]
+  transcript_glossary_matches?: string[]
+  transcript_refinement_status?: TranscriptRefinementStatus
+  transcript_needs_review?: boolean
+  refinement_display_summary?: string
+}
+
+export interface ProjectDefenseRefineTranscriptRequest {
+  claimed_skills?: string[]
+  project_context?: string
+  website_url?: string | null
+  github_url?: string | null
+}
+
+export interface ProjectDefenseRefineTranscriptResponse {
+  proof_session_id: string
+  raw_transcript: string
+  refined_transcript: string
+  transcript_correction_summary: TranscriptCorrectionEntry[]
+  transcript_glossary_matches: string[]
+  transcript_refinement_status: TranscriptRefinementStatus
+  transcript_needs_review: boolean
+  confidence: number
+  refinement_display_summary: string
+  message: string
 }
 
 /**
@@ -1583,6 +1630,38 @@ export async function transcribeDefenseMedia(
   }
   // 200 with configured=false is a valid, non-error response
   return res.json() as Promise<ProjectDefenseTranscribeResponse>
+}
+
+/**
+ * (Re-)run NLP transcript refinement on the stored raw transcript.
+ * Use when transcription already ran but auto-refinement failed, or when
+ * the student updates their context (skills, project description).
+ * Returns 404 if no raw transcript exists for this session yet.
+ */
+export async function refineDefenseTranscript(
+  sessionId: string,
+  request: ProjectDefenseRefineTranscriptRequest = {},
+): Promise<ProjectDefenseRefineTranscriptResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/defense/refine-transcript`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        claimed_skills: request.claimed_skills ?? [],
+        project_context: request.project_context ?? "",
+        website_url: request.website_url ?? null,
+        github_url: request.github_url ?? null,
+      }),
+    },
+  )
+  if (res.status === 404) throw new Error("No raw transcript found. Transcribe first.")
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Transcript refinement failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json() as Promise<ProjectDefenseRefineTranscriptResponse>
 }
 
 // ── Verification Review ───────────────────────────────────────────────────────

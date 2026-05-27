@@ -729,12 +729,23 @@ class ProjectDefenseAnalysisService:
         *,
         transcript_text: str,
         privacy_scan_status: str = "clean",
+        # Refinement fields — optional; populated when auto-refinement ran
+        raw_transcript: str | None = None,
+        refined_transcript: str | None = None,
+        transcript_correction_summary: list[dict[str, Any]] | None = None,
+        transcript_glossary_matches: list[str] | None = None,
+        transcript_refinement_status: str = "not_started",
+        transcript_needs_review: bool = False,
     ) -> dict[str, Any]:
         """
         Save an auto-generated transcript from the transcription provider.
 
         Sets transcription_status = 'transcript_ready' and transcript_reviewed =
         False so the student can review the text before running analysis.
+
+        When refinement has been run, also persists raw_transcript + refined_transcript
+        and related metadata.  The raw_transcript is written once and never
+        overwritten on subsequent calls (caller must not pass it again to update it).
         """
         now = _now()
         patch: dict[str, Any] = {
@@ -743,10 +754,24 @@ class ProjectDefenseAnalysisService:
             "transcription_status": "transcript_ready",
             "privacy_scan_status": privacy_scan_status,
             "updated_at": now,
+            "transcript_refinement_status": transcript_refinement_status,
+            "transcript_needs_review": transcript_needs_review,
         }
+
+        if raw_transcript is not None:
+            patch["raw_transcript"] = raw_transcript
+        if refined_transcript is not None:
+            patch["refined_transcript"] = refined_transcript
+        if transcript_correction_summary is not None:
+            patch["transcript_correction_summary"] = transcript_correction_summary
+        if transcript_glossary_matches is not None:
+            patch["transcript_glossary_matches"] = transcript_glossary_matches
 
         if isinstance(self._client, dict):
             existing = self._client.get(_TABLE, {}).get(proof_session_id, {})
+            # Preserve raw_transcript if already set (never overwrite)
+            if existing.get("raw_transcript") and "raw_transcript" not in patch:
+                patch.pop("raw_transcript", None)
             row = {**existing, **patch}
             self._client.setdefault(_TABLE, {})[proof_session_id] = row
             return row
@@ -763,6 +788,70 @@ class ProjectDefenseAnalysisService:
             return rows[0] if rows else {**patch, "proof_session_id": proof_session_id}
         except Exception as exc:
             logger.warning("Project defense transcription save failed: %s", exc)
+            return {**patch, "proof_session_id": proof_session_id}
+
+    def save_refinement_result(
+        self,
+        user_id: str,
+        proof_session_id: str,
+        *,
+        raw_transcript: str,
+        refined_transcript: str,
+        correction_summary: list[dict[str, Any]],
+        glossary_matches: list[str],
+        refinement_status: str,
+        needs_review: bool,
+    ) -> dict[str, Any]:
+        """
+        Persist refinement fields for an existing defense row.
+        Does NOT overwrite raw_transcript if it's already set in the DB.
+        """
+        now = _now()
+        patch: dict[str, Any] = {
+            "refined_transcript": refined_transcript,
+            "transcript_correction_summary": correction_summary,
+            "transcript_glossary_matches": glossary_matches,
+            "transcript_refinement_status": refinement_status,
+            "transcript_needs_review": needs_review,
+            "updated_at": now,
+        }
+
+        if isinstance(self._client, dict):
+            existing = self._client.get(_TABLE, {}).get(proof_session_id, {})
+            # Only write raw_transcript once
+            if not existing.get("raw_transcript"):
+                patch["raw_transcript"] = raw_transcript
+            row = {**existing, **patch}
+            self._client.setdefault(_TABLE, {})[proof_session_id] = row
+            return row
+
+        # For real DB: use a conditional update that only sets raw_transcript
+        # when it's currently NULL (never overwrite)
+        # We handle this by first checking the existing row.
+        try:
+            # Set raw_transcript only if not yet set (first time)
+            patch_with_raw = {**patch, "raw_transcript": raw_transcript}
+            res = (
+                self._client.table(_TABLE)
+                .update(patch_with_raw)
+                .eq("user_id", user_id)
+                .eq("proof_session_id", proof_session_id)
+                .is_("raw_transcript", "null")
+                .execute()
+            )
+            # If the above matched nothing (raw already set), update without raw
+            if not (getattr(res, "data", []) or []):
+                res = (
+                    self._client.table(_TABLE)
+                    .update(patch)
+                    .eq("user_id", user_id)
+                    .eq("proof_session_id", proof_session_id)
+                    .execute()
+                )
+            rows = getattr(res, "data", []) or []
+            return rows[0] if rows else {**patch, "proof_session_id": proof_session_id}
+        except Exception as exc:
+            logger.warning("Project defense refinement save failed: %s", exc)
             return {**patch, "proof_session_id": proof_session_id}
 
     def get_analysis(
