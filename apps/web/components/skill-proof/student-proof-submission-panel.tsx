@@ -491,6 +491,7 @@ export function StudentProofSubmissionPanel({
   }
 
   function resetAgentForm() {
+    setProofMode("select")
     setAgentSourceType(null)
     setAgentUrl("")
     setAgentSkillFocus("")
@@ -736,7 +737,7 @@ export function StudentProofSubmissionPanel({
     >
       <div style={{ display: "grid", gap: 12 }}>
         <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
-          Add proof manually or let the AI agent scan your evidence sources — GitHub, LinkedIn, YouTube, documents, certificates, and more.
+          Connect your evidence sources. VeriBridge AI analyzes them, maps to skills, and keeps your Work Passport current.
         </p>
         <div>
           <button
@@ -754,7 +755,7 @@ export function StudentProofSubmissionPanel({
             }}
             onClick={() => setOpen(true)}
           >
-            Add proof evidence
+            ✦ Add Proof with AI
           </button>
         </div>
       </div>
@@ -833,13 +834,16 @@ export function StudentProofSubmissionPanel({
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--muted)" }}>
-                      Add proof evidence
+                      AI Proof Builder
                     </div>
                     <h2 id="proof-submit-title" style={{ margin: "4px 0 0", fontSize: 24, color: "var(--ink)" }}>
-                      {proofMode === "select" ? "How do you want to add proof?"
-                        : proofMode === "ai_agent" ? "AI Agent — Multi-Source Proof"
-                        : proofMode === "extension_proof" ? "Private Website Proof with VeriBridge Extension"
-                        : manualStep === "source_select" ? "Select evidence source"
+                      {proofMode === "select" ? "Add Proof with VeriBridge AI"
+                        : proofMode === "ai_agent" && agentSourceType === "github_repository" ? "GitHub Repository Proof"
+                        : proofMode === "ai_agent" && agentSourceType === "deployed_website" ? "Website / Deployed App Proof"
+                        : proofMode === "ai_agent" && !agentSourceType ? "AI Proof Builder"
+                        : proofMode === "ai_agent" ? "Save Evidence Link"
+                        : proofMode === "extension_proof" ? "Live Workflow Recording"
+                        : manualStep === "source_select" ? "Add Supporting Context"
                         : selectedSourceType === "github_repository" ? "GitHub Code Proof"
                         : selectedSourceType === "deployed_website" ? "Live Website Proof"
                         : "Add Proof Evidence"}
@@ -855,59 +859,156 @@ export function StudentProofSubmissionPanel({
                   </button>
                 </div>
 
-                {/* ── Mode: select ── */}
+                {/* ── Mode: select / AI Proof Builder ── */}
                 {proofMode === "select" && (
-                  <div style={{ display: "grid", gap: 16 }}>
-                    <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
-                      Choose how you want to add evidence. Only add proof you own or have permission to share.
+                  <div style={{ display: "grid", gap: 22 }}>
+
+                    {/* Subtitle */}
+                    <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.65 }}>
+                      Connect your work evidence. VeriBridge AI analyzes it, maps it to skills, and updates your Work Passport.
                     </p>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                      {([
-                        ["manual", "✍ Add Manually", "Pick an evidence type and fill in the details yourself — GitHub, LinkedIn, YouTube, PDF, certificate, or free text."],
-                        ["ai_agent", "✦ Use AI Agent", "Paste resource links. GitHub scanning is active now. Other AI extraction (LinkedIn, YouTube, docs) coming in upcoming phases."],
-                      ] as const).map(([mode, title, desc]) => (
-                        <button
-                          key={`mode-${mode}`}
-                          type="button"
-                          onClick={() => { setProofMode(mode); setSubmissionError(null); }}
+
+                    {/* Trust badges */}
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {[
+                        ["🔒", "Privacy protected"],
+                        ["🎛", "Student controls access"],
+                        ["✓", "Public-safe summaries only"],
+                      ].map(([icon, label]) => (
+                        <span
+                          key={String(label)}
                           style={{
-                            border: "1px solid var(--line)",
-                            borderRadius: 14,
-                            padding: "20px 18px",
-                            background: "#fff",
-                            cursor: "pointer",
-                            textAlign: "left",
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 8,
-                            transition: "border-color 0.1s",
+                            display: "inline-flex", alignItems: "center", gap: 5,
+                            fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 999,
+                            background: "#f0fdf4", color: "#065f46", border: "1px solid #bbf7d0",
                           }}
                         >
-                          <span style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>{title}</span>
-                          <span style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>{desc}</span>
-                        </button>
+                          {icon} {label}
+                        </span>
                       ))}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => { setProofMode("extension_proof"); setSubmissionError(null); }}
-                      style={{
-                        border: "1px solid var(--line)",
-                        borderRadius: 14,
-                        padding: "20px 18px",
-                        background: "#fff",
-                        cursor: "pointer",
-                        textAlign: "left",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 8,
-                        transition: "border-color 0.1s",
-                        width: "100%",
-                      }}
-                    >
-                      <span style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>🔒 Private Website Proof with VeriBridge Extension</span>
-                      <span style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>Use the VeriBridge Chrome Extension to record a live walkthrough of your private project website in your own browser. Works for private dashboards and websites that use Google login.</span>
-                    </button>
+
+                    {/* ── Active now ── */}
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 10 }}>
+                        Active now
+                      </div>
+                      <div style={{ display: "grid", gap: 10 }}>
+
+                        {/* GitHub Repository */}
+                        <div style={{ border: "1px solid var(--line)", borderRadius: 14, padding: "16px 18px", background: "#fff", display: "flex", alignItems: "flex-start", gap: 14 }}>
+                          <span style={{ fontSize: 22, flexShrink: 0, marginTop: 2 }}>⌨</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)" }}>GitHub Repository</span>
+                              <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 999, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0" }}>Active</span>
+                            </div>
+                            <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>
+                              Analyze code, README, dependencies, tests, and deployment signals.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => { setProofMode("ai_agent"); setAgentSourceType("github_repository"); setSubmissionError(null); }}
+                              style={{ border: "1px solid var(--ink)", background: "var(--ink)", color: "#fff", borderRadius: 9, padding: "7px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
+                            >
+                              Add GitHub Proof
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Website / Deployed App */}
+                        <div style={{ border: "1px solid var(--line)", borderRadius: 14, padding: "16px 18px", background: "#fff", display: "flex", alignItems: "flex-start", gap: 14 }}>
+                          <span style={{ fontSize: 22, flexShrink: 0, marginTop: 2 }}>🌐</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)" }}>Website / Deployed App</span>
+                              <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 999, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0" }}>Active</span>
+                            </div>
+                            <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>
+                              Submit a live app, portfolio, or deployed project URL. VeriBridge checks availability and evidence signals.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => { setProofMode("ai_agent"); setAgentSourceType("deployed_website"); setSubmissionError(null); }}
+                              style={{ border: "1px solid var(--ink)", background: "var(--ink)", color: "#fff", borderRadius: 9, padding: "7px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
+                            >
+                              Add Website Proof
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Live Workflow Recording */}
+                        <div style={{ border: "1px solid var(--line)", borderRadius: 14, padding: "16px 18px", background: "#fff", display: "flex", alignItems: "flex-start", gap: 14 }}>
+                          <span style={{ fontSize: 22, flexShrink: 0, marginTop: 2 }}>🔒</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)" }}>Live Workflow Recording</span>
+                              <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 999, color: "#166534", background: "#dcfce7", border: "1px solid #bbf7d0" }}>Active</span>
+                            </div>
+                            <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>
+                              Use the VeriBridge extension to record a walkthrough of your app or workflow. Works for private dashboards and apps that require login.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => { setProofMode("extension_proof"); setSubmissionError(null); }}
+                              style={{ border: "1px solid var(--ink)", background: "var(--ink)", color: "#fff", borderRadius: 9, padding: "7px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
+                            >
+                              Start Workflow Proof
+                            </button>
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+
+                    {/* ── Coming soon ── */}
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 10 }}>
+                        Coming soon
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        {([
+                          ["💼", "LinkedIn Proof", "AI reads your public posts and profile to map proof to skills.", "linkedin_post"],
+                          ["▶", "YouTube / Demo Video", "AI analyzes transcripts and timestamps for skill demonstrations.", "youtube_demo"],
+                          ["📄", "Google Drive / Docs", "AI reads shared docs, slides, and reports for skill evidence.", "google_drive_document"],
+                          ["🏅", "Certificate / Report", "AI verifies certificates and extracts skills from papers.", "certificate"],
+                        ] as const).map(([icon, title, desc, sourceType]) => (
+                          <div
+                            key={`soon-${sourceType}`}
+                            style={{ border: "1px solid var(--line)", borderRadius: 12, padding: "14px 14px", background: "#fafafa", display: "flex", flexDirection: "column", gap: 8 }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 18 }}>{icon}</span>
+                              <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink)" }}>{title}</span>
+                              <span style={{ marginLeft: "auto", fontSize: 9, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 999, color: "#854d0e", background: "#fef9c3", border: "1px solid #fef08a", flexShrink: 0 }}>Soon</span>
+                            </div>
+                            <p style={{ margin: 0, fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>{desc}</p>
+                            <button
+                              type="button"
+                              onClick={() => { setProofMode("ai_agent"); setAgentSourceType(sourceType); setSubmissionError(null); }}
+                              style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 8, padding: "5px 12px", fontWeight: 600, fontSize: 11, cursor: "pointer", alignSelf: "flex-start" }}
+                            >
+                              Save link now
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* ── Optional: add supporting context ── */}
+                    <div style={{ borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+                      <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>
+                        <strong style={{ color: "var(--ink-2)" }}>Add context for AI</strong> — no URL needed. Add skills, your role, what you built, and what recruiters should understand.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => { setProofMode("manual"); setManualStep("source_select"); setSubmissionError(null); }}
+                        style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 9, padding: "7px 12px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
+                      >
+                        Add manual note / context →
+                      </button>
+                    </div>
+
                   </div>
                 )}
 
@@ -921,7 +1022,7 @@ export function StudentProofSubmissionPanel({
                         onClick={() => { setProofMode("select"); setSubmissionError(null); }}
                         style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "8px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
                       >
-                        ← Back
+                        ← Back to AI Proof Builder
                       </button>
                     </div>
                   </div>
@@ -1020,7 +1121,7 @@ export function StudentProofSubmissionPanel({
                       onClick={() => { setProofMode("select"); setSubmissionError(null); }}
                       style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "8px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer", alignSelf: "flex-start" }}
                     >
-                      ← Back
+                      ← Back to AI Proof Builder
                     </button>
                   </div>
                 )}
@@ -1139,7 +1240,7 @@ export function StudentProofSubmissionPanel({
                         onClick={resetAgentForm}
                         style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
                       >
-                        ← Back to sources
+                        ← Back to AI Proof Builder
                       </button>
                       <button
                         type="button"
