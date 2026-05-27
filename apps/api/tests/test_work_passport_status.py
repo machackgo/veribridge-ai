@@ -303,3 +303,55 @@ def test_no_project_specific_hardcoding() -> None:
     assert "boston" not in source
     assert "react demo" not in source
     assert "repo name" not in source
+
+
+def test_status_does_not_crash_when_no_ai_domain_review_exists(client: TestClient, mem_store: dict) -> None:
+    """Regression: work-passport-status must return 200 even when ai_domain_review_results is empty.
+
+    Before the fix, the service queried verification_review_requests (nonexistent table),
+    which caused a 500 from PostgREST. After the fix it uses ai_domain_review_results only
+    and gracefully returns None fields when no review row exists.
+    """
+    session_id = _seed_session(mem_store, status="completed")
+    _seed_clean_evidence(mem_store, session_id)
+    # Explicitly omit any ai_domain_review_results row
+
+    payload = _get_status(client, session_id)
+
+    assert payload["overall_status"] in {"evidence_collected", "ai_reviewed", "needs_more_evidence"}
+    assert payload["ai_domain_review_status"] is None
+    assert payload["ai_review_status"] is None
+    assert "no_domain_review_yet" in {w["code"] for w in payload["warnings"]}
+    assert "run_ai_domain_review" in payload["missing_steps"]
+
+
+def test_ai_domain_review_status_comes_from_ai_domain_review_results_table(client: TestClient, mem_store: dict) -> None:
+    """ai_domain_review_status and ai_domain_reviewer_name are read from ai_domain_review_results.
+
+    Verifies the service does not query verification_review_requests to populate these fields.
+    """
+    session_id = _seed_session(mem_store, status="completed")
+    _seed_clean_evidence(mem_store, session_id)
+    _seed_ai_domain(mem_store, session_id)
+    # Deliberately do NOT seed verification_review_requests — it shouldn't be needed
+
+    payload = _get_status(client, session_id)
+
+    assert payload["ai_domain_review_status"] == "ai_domain_reviewed"
+    assert payload["ai_domain_reviewer_name"] == "Generalist AI Reviewer"
+    assert payload["ai_domain_review_score"] == 91
+    assert payload["overall_status"] == "ai_domain_reviewed"
+
+
+def test_service_does_not_reference_nonexistent_table() -> None:
+    """verification_review_requests must not appear in WorkPassportStatusService source.
+
+    That table was never created in the live database (migrations 020-032 applied,
+    migration 019 was superseded). Any reference would cause a 500 via PostgREST.
+    """
+    source = inspect.getsource(WorkPassportStatusService)
+
+    assert "verification_review_requests" not in source, (
+        "WorkPassportStatusService still references verification_review_requests — "
+        "this table does not exist in the live database and will cause a 500."
+    )

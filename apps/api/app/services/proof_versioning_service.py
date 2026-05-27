@@ -20,7 +20,6 @@ _LIVE = "live_website_check_results"
 _GITHUB = "extension_proof_github_analysis"
 _DEFENSE = "project_defense_analysis_results"
 _AI_DOMAIN = "ai_domain_review_results"
-_REVIEWS = "verification_review_requests"
 _PASSPORTS = "public_work_passports"
 _USERS = "users"
 
@@ -183,7 +182,6 @@ class ProofVersioningService:
         github = self._row_by_session(_GITHUB, user_id, proof_session_id)
         defense = self._row_by_session(_DEFENSE, user_id, proof_session_id)
         ai_domain = self._row_by_session(_AI_DOMAIN, user_id, proof_session_id)
-        review = self._row_by_session(_REVIEWS, user_id, proof_session_id)
         skill = self._skill_evidence(user_id, str(session.get("skill_evidence_id") or ""))
         readiness = compute_readiness_report(
             proof_session_id=proof_session_id,
@@ -225,14 +223,9 @@ class ProofVersioningService:
                 "transcript_reviewed",
             }),
             "ai_domain_review": _safe_row(ai_domain or {}),
-            "verification_review": _safe_row(review or {}, include_keys={
-                "id",
-                "ai_review_status",
-                "readiness_score",
-                "readiness_level",
-                "privacy_status",
-                "human_review_status",
-            }),
+            # verification_review_requests table was never applied in production.
+            # ai_domain_review_results is the canonical AI review source.
+            "verification_review": {},
         })
 
     def _create_version(
@@ -277,16 +270,11 @@ class ProofVersioningService:
         return self._insert(row)
 
     def _status_for_current_state(self, user_id: str, proof_session_id: str) -> str:
-        review = self._row_by_session(_REVIEWS, user_id, proof_session_id)
+        # verification_review_requests table does not exist in production.
+        # Derive status purely from ai_domain_review_results.
         ai_domain = self._row_by_session(_AI_DOMAIN, user_id, proof_session_id)
-        readiness_score = int((review or {}).get("readiness_score") or 0)
-        ai_status = str((review or {}).get("ai_review_status") or "")
-        if ai_status == "ai_approved_for_sharing":
-            return "approved_for_sharing"
         if ai_domain:
             return "ai_domain_reviewed"
-        if readiness_score and readiness_score < 80:
-            return "needs_more_evidence"
         return "submitted"
 
     def _create_version_notification(self, user_id: str, proof_session_id: str, version: dict[str, Any]) -> None:

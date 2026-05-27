@@ -37,7 +37,6 @@ _SESSIONS = "extension_proof_sessions"
 _SKILL_EVIDENCE = "skill_evidence"
 _PROFILES = "student_profiles"
 _AI_DOMAIN = "ai_domain_review_results"
-_VERIFICATION_REVIEWS = "verification_review_requests"
 _WORKFLOW = "workflow_analysis_results"
 _GITHUB = "extension_proof_github_analysis"
 _LIVE = "live_website_check_results"
@@ -679,7 +678,6 @@ class PublicWorkPassportService:
         privacy = self._row_by_session(_PRIVACY, user_id, session_id)
         defense = self._row_by_session(_DEFENSE, user_id, session_id)
         ai_domain = self._row_by_session(_AI_DOMAIN, user_id, session_id)
-        ai_review = self._row_by_session(_VERIFICATION_REVIEWS, user_id, session_id)
         profile = self._profile(user_id)
         claimed = _claimed_skills(session, skill, workflow, github, ai_domain)
         readiness = compute_readiness_report(
@@ -702,7 +700,6 @@ class PublicWorkPassportService:
             "privacy_scan": privacy,
             "project_defense_analysis": defense,
             "ai_domain_review": ai_domain,
-            "ai_review": ai_review,
             "student_profile": profile,
             "claimed_skills": claimed,
             "readiness_report": readiness,
@@ -909,7 +906,6 @@ class PublicWorkPassportService:
 def _public_response(passport: dict[str, Any], evidence: dict[str, Any]) -> PublicPassportSafeResponse:
     readiness = evidence["readiness_report"]
     ai_domain = evidence.get("ai_domain_review") or {}
-    ai_review = evidence.get("ai_review") or {}
     profile = evidence.get("student_profile") or {}
     return PublicPassportSafeResponse(
         id=str(passport["id"]),
@@ -920,7 +916,8 @@ def _public_response(passport: dict[str, Any], evidence: dict[str, Any]) -> Publ
         public_title=passport.get("public_title"),
         public_summary=passport.get("public_summary"),
         visible_sections=list(passport.get("visible_sections") or []),
-        ai_reviewed_status=ai_review.get("ai_review_status"),
+        # ai_reviewed_status comes from ai_domain_review_results (verification_review_requests does not exist)
+        ai_reviewed_status=ai_domain.get("ai_domain_review_status"),
         ai_domain_review_summary=ai_domain.get("recruiter_summary"),
         ai_domain_reviewer_name=ai_domain.get("reviewer_name"),
         ai_domain_review_status=ai_domain.get("ai_domain_review_status"),

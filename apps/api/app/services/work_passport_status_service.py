@@ -23,7 +23,6 @@ _GITHUB = "extension_proof_github_analysis"
 _GITHUB_PROOFS = "github_proof_submissions"
 _DEFENSE = "project_defense_analysis_results"
 _AI_DOMAIN = "ai_domain_review_results"
-_REVIEWS = "verification_review_requests"
 _VERSIONS = "proof_evidence_versions"
 _PASSPORTS = "public_work_passports"
 _REQUESTS = "evidence_access_requests"
@@ -51,7 +50,6 @@ class WorkPassportStatusService:
         github_for_readiness = _github_analysis_for_readiness(github_proof) or github
         defense = self._row_by_session(_DEFENSE, user_id, proof_session_id)
         ai_domain = self._row_by_session(_AI_DOMAIN, user_id, proof_session_id)
-        ai_review = self._row_by_session(_REVIEWS, user_id, proof_session_id)
         active_version = self._active_version(user_id, proof_session_id)
         passport = self._row_by_session(_PASSPORTS, user_id, proof_session_id)
         requests = self._rows_by_session(_REQUESTS, user_id, proof_session_id)
@@ -113,7 +111,7 @@ class WorkPassportStatusService:
             status_description=description,
             readiness_score=readiness.readiness_score,
             readiness_level=readiness.readiness_level,
-            ai_review_status=ai_review.get("ai_review_status") if ai_review else None,
+            ai_review_status=ai_domain.get("ai_domain_review_status") if ai_domain else None,
             ai_domain_review_status=ai_domain.get("ai_domain_review_status") if ai_domain else None,
             ai_domain_reviewer_name=ai_domain.get("reviewer_name") if ai_domain else None,
             ai_domain_review_score=_first_int(ai_domain or {}, ["domain_review_score", "overall_score"]),
