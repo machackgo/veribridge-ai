@@ -32,9 +32,9 @@ IMPORTANT:
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.schemas.verification_review import (
     AdminDecisionRequest,
@@ -91,8 +91,37 @@ _LIMITATIONS = (
 # ── Pure helpers ──────────────────────────────────────────────────────────────
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
+def _now() -> str:
+    """Return the current UTC time as an ISO 8601 string (Supabase/httpx-compatible).
+
+    supabase-py uses httpx which calls json.dumps() on request bodies without a
+    custom encoder.  Raw datetime objects are not JSON-serializable by default, so
+    every timestamp stored in the DB must be an ISO string, not a datetime instance.
+    """
+    return datetime.now(UTC).isoformat()
+
+
+def make_json_safe(value: Any) -> Any:
+    """Recursively convert non-JSON-serializable values to safe primitives.
+
+    Handles:
+      - datetime / date  →  .isoformat() string
+      - UUID             →  str()
+      - dict             →  recursively sanitised dict
+      - list / tuple     →  recursively sanitised list
+      - everything else  →  returned as-is (assumed primitive)
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: make_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [make_json_safe(item) for item in value]
+    return value
 
 
 def _level_from_score(score: int) -> str:
@@ -385,7 +414,7 @@ class VerificationReviewService:
             else:
                 result = (
                     self._client.table(_TABLE)
-                    .update(updates)
+                    .update(make_json_safe(updates))
                     .eq("id", existing["id"])
                     .execute()
                 )
@@ -428,7 +457,7 @@ class VerificationReviewService:
                 row = {"id": row_id, **data}
                 self._client.setdefault(_TABLE, {})[row_id] = row
             else:
-                result = self._client.table(_TABLE).insert(data).execute()
+                result = self._client.table(_TABLE).insert(make_json_safe(data)).execute()
                 rows = getattr(result, "data", []) or []
                 if not rows:
                     raise RuntimeError("Review insert returned no data.")
@@ -531,11 +560,11 @@ class VerificationReviewService:
             result = (
                 self._client.table(_TABLE)
                 .update(
-                    {
+                    make_json_safe({
                         "ai_domain_review_status": domain_status,
                         "recruiter_summary": body.ai_decision_summary,
                         "updated_at": now,
-                    }
+                    })
                 )
                 .eq("id", review_id)
                 .execute()
@@ -584,7 +613,7 @@ class VerificationReviewService:
             self._client.setdefault(_ASSIGNMENTS_TABLE, {})[row_id] = row
             return row
 
-        result = self._client.table(_ASSIGNMENTS_TABLE).insert(data).execute()
+        result = self._client.table(_ASSIGNMENTS_TABLE).insert(make_json_safe(data)).execute()
         rows = getattr(result, "data", []) or []
         if not rows:
             raise RuntimeError("Assignment insert returned no data.")

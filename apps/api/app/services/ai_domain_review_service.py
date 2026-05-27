@@ -10,9 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.core.config import settings
 from app.schemas.ai_domain_review import AiDomainReviewResultResponse
@@ -311,7 +311,7 @@ class AiDomainReviewService:
 
         result = (
             self._client.table(_TABLE)
-            .upsert(data, on_conflict="proof_session_id")
+            .upsert(make_json_safe(data), on_conflict="proof_session_id")
             .execute()
         )
         rows = getattr(result, "data", []) or []
@@ -595,5 +595,30 @@ def _to_response(row: dict[str, Any]) -> AiDomainReviewResultResponse:
     return AiDomainReviewResultResponse(**row)
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
+def _now() -> str:
+    """Return current UTC time as an ISO 8601 string (httpx/Supabase-compatible).
+
+    httpx does not have a datetime JSON encoder, so raw datetime objects in
+    insert/update payloads raise TypeError.  All timestamps stored in the DB
+    must be ISO strings.
+    """
+    return datetime.now(UTC).isoformat()
+
+
+def make_json_safe(value: Any) -> Any:
+    """Recursively convert non-JSON-serializable values to safe primitives.
+
+    Handles: datetime / date → isoformat string, UUID → str,
+    dict → sanitised dict, list/tuple → sanitised list.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: make_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [make_json_safe(item) for item in value]
+    return value

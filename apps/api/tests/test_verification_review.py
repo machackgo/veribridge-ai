@@ -659,3 +659,103 @@ class TestProjectAgnosticism:
             assert term not in summary, (
                 f"Hardcoded term '{term}' found in needs_more_evidence summary"
             )
+
+
+# ── JSON serialisation safety ─────────────────────────────────────────────────
+
+
+class TestJsonSerialization:
+    """Regression tests for the datetime/UUID JSON serialisation bug.
+
+    Before the fix, _now() returned a raw datetime object.  httpx (used by
+    supabase-py) calls json.dumps() without a custom encoder, so any datetime
+    in the insert/update payload raised:
+        TypeError: Object of type datetime is not JSON serializable
+    These tests verify the fix works end-to-end.
+    """
+
+    def test_submit_ai_review_does_not_raise_500(self, client: TestClient) -> None:
+        """Core regression: submit must succeed, not crash with a datetime error."""
+        sid = _make_session(client)
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{sid}/submit-ai-review",
+            params={"readiness_score": 65, "readiness_level": "moderate"},
+        )
+        assert r.status_code == 200, (
+            f"submit-ai-review returned {r.status_code}: {r.text}"
+        )
+
+    def test_insert_payload_is_json_serializable(self) -> None:
+        """make_json_safe must convert datetime / UUID objects to primitives."""
+        import json as _json
+        from app.services.verification_review_service import make_json_safe
+        from datetime import datetime, UTC
+        from uuid import uuid4
+
+        raw = {
+            "id": uuid4(),
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+            "nested": {
+                "ts": datetime.now(UTC),
+                "inner_list": [datetime.now(UTC), uuid4()],
+            },
+        }
+        safe = make_json_safe(raw)
+        # Must not raise
+        serialised = _json.dumps(safe)
+        assert '"id"' in serialised
+        assert '"created_at"' in serialised
+        assert "T" in serialised  # ISO format contains 'T'
+
+    def test_now_returns_string(self) -> None:
+        """_now() must return an ISO string, not a datetime object."""
+        from app.services.verification_review_service import _now
+        result = _now()
+        assert isinstance(result, str), f"_now() returned {type(result)}, expected str"
+        assert "T" in result  # basic ISO format sanity check
+
+    def test_make_json_safe_handles_nested_datetime_in_list(self) -> None:
+        from app.services.verification_review_service import make_json_safe
+        from datetime import datetime, UTC
+
+        ts = datetime.now(UTC)
+        safe = make_json_safe([ts, {"key": ts}])
+        assert isinstance(safe[0], str)
+        assert isinstance(safe[1]["key"], str)
+
+    def test_make_json_safe_leaves_primitives_unchanged(self) -> None:
+        from app.services.verification_review_service import make_json_safe
+
+        assert make_json_safe(42) == 42
+        assert make_json_safe("hello") == "hello"
+        assert make_json_safe(True) is True
+        assert make_json_safe(None) is None
+
+    def test_submit_response_contains_iso_timestamps(self, client: TestClient) -> None:
+        """Timestamps in the response must be parseable datetime strings."""
+        from datetime import datetime
+
+        sid = _make_session(client)
+        body = _submit_review(client, sid, 85, "strong")
+        for field in ("created_at", "updated_at"):
+            raw = body.get(field)
+            assert raw is not None, f"{field} missing from response"
+            # Pydantic serialises datetimes as ISO strings in JSON responses
+            assert isinstance(raw, str), f"{field} is not a string in JSON: {type(raw)}"
+
+    def test_resubmission_after_needs_more_evidence_does_not_raise_500(
+        self, client: TestClient
+    ) -> None:
+        """Update path (not just insert) must also be datetime-safe."""
+        sid = _make_session(client)
+        _submit_review(client, sid, 30, "insufficient")  # → needs_more_evidence
+        # Second submission triggers the UPDATE code path
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{sid}/submit-ai-review",
+            params={"readiness_score": 85, "readiness_level": "strong"},
+        )
+        assert r.status_code == 200, (
+            f"Re-submission update path returned {r.status_code}: {r.text}"
+        )
+        assert r.json()["ai_review_status"] == "ai_approved_for_sharing"
