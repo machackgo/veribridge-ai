@@ -1,31 +1,32 @@
-"""Verification Review Service — AI review workflow + human reviewer architecture.
+"""Verification Review Service — AI review workflow.
 
-Track A (MVP):
-  Student submits proof session for AI review.  The service:
-    1. Creates a review request row (prevents duplicates).
-    2. Reads the current readiness score + privacy scan.
-    3. Applies the decision rules and sets ai_review_status.
+Routes submit-ai-review and review-status to ai_domain_review_results
+(the correct backend table).  The old verification_review_requests table
+does not exist in production; every reference to it has been removed.
 
-Decision rules:
-  - readiness_score >= 80 AND privacy is clean/redacted
-      → ai_approved_for_sharing
-  - readiness_score >= 60 AND privacy is clean/redacted
-      → manual_review_recommended
-  - privacy flagged
-      → privacy_flagged
-  - otherwise
-      → needs_more_evidence
+Decision rules (applied on the passed readiness_score):
+  - readiness_score >= 80 AND privacy is clean/redacted → ai_approved_for_sharing
+  - readiness_score >= 60 AND privacy is clean/redacted → manual_review_recommended
+  - privacy flagged → privacy_flagged
+  - otherwise → needs_more_evidence
+
+Storage mapping (old-style field → ai_domain_review_results column):
+  ai_review_status          → ai_domain_review_status  (mapped values below)
+  readiness_score           → domain_review_score
+  ai_decision_summary       → recruiter_summary
+  human_review_status       → not stored (always derived as human_review_not_requested)
+  readiness_level           → computed from domain_review_score on read
+
+Status value mapping:
+  ai_approved_for_sharing   ↔ ai_domain_reviewed
+  manual_review_recommended ↔ human_review_recommended
+  privacy_flagged           ↔ privacy_blocked
+  needs_more_evidence       ↔ needs_more_evidence (unchanged)
 
 IMPORTANT:
   - human_verified is NEVER set by AI review.
   - ai_approved_for_sharing does NOT mean "Human Verified".
-  - The human review track (Track B) is stored in the same row but
-    requires an actual human reviewer action to progress.
-
-Track B (architecture-ready, MVP: table exists, no reviewers yet):
-  human_review_assignments is created by admin endpoints.
-  Students can request human review (sets human_review_requested).
-  Actual review completion is done by a future reviewer program.
+  - The human review track requires an actual human reviewer action.
 """
 
 from __future__ import annotations
@@ -45,27 +46,88 @@ from app.schemas.verification_review import (
 
 logger = logging.getLogger(__name__)
 
-_TABLE = "verification_review_requests"
+# ── Table names ────────────────────────────────────────────────────────────────
+# ai_domain_review_results is the canonical AI review table.
+# verification_review_requests does not exist in production and must not be used.
+_TABLE = "ai_domain_review_results"
 _ASSIGNMENTS_TABLE = "human_review_assignments"
+_PRIVACY_TABLE = "workflow_privacy_scan_results"
 
-# ── In-memory key helpers ────────────────────────────────────────────────────
+# ── Status value mappings ─────────────────────────────────────────────────────
+
+# Map old-style AiReviewStatus values → ai_domain_review_status values stored in DB
+_AI_STATUS_TO_DOMAIN: dict[str, str] = {
+    "ai_approved_for_sharing": "ai_domain_reviewed",
+    "manual_review_recommended": "human_review_recommended",
+    "privacy_flagged": "privacy_blocked",
+    "needs_more_evidence": "needs_more_evidence",
+    # pass-through for DB-native values (defensive)
+    "ai_domain_reviewed": "ai_domain_reviewed",
+    "human_review_recommended": "human_review_recommended",
+    "privacy_blocked": "privacy_blocked",
+}
+
+# Map DB ai_domain_review_status values → old-style AiReviewStatus for the response
+_DOMAIN_TO_AI_STATUS: dict[str, str] = {
+    "ai_domain_reviewed": "ai_approved_for_sharing",
+    "human_review_recommended": "manual_review_recommended",
+    "privacy_blocked": "privacy_flagged",
+    "needs_more_evidence": "needs_more_evidence",
+}
+
+# DB statuses that block re-submission of the same session
+_BLOCK_RESUBMIT_DOMAIN_STATUSES: frozenset[str] = frozenset({"ai_domain_reviewed"})
+
+_DISCLOSURE = (
+    "This proof has been reviewed by VeriBridge AI using a threshold-based rubric. "
+    "Human/faculty/company review has not been completed unless explicitly shown."
+)
+_LIMITATIONS = (
+    "This is an AI-based review. Results reflect available evidence at time of submission. "
+    "Human or faculty review is not yet completed."
+)
+
+
+# ── Pure helpers ──────────────────────────────────────────────────────────────
 
 
 def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _level_from_score(score: int) -> str:
+    """Compute a ReadinessLevel string from a numeric score."""
+    if score >= 80:
+        return "strong"
+    if score >= 60:
+        return "moderate"
+    if score >= 40:
+        return "weak"
+    return "insufficient"
+
+
+def _confidence_from_score(score: int) -> str:
+    """Compute a ConfidenceLevel string from a numeric score."""
+    if score >= 75:
+        return "medium"
+    return "low"
+
+
 def _make_review_response(
     row: dict[str, Any],
     assignments: list[dict[str, Any]] | None = None,
 ) -> VerificationReviewResponse:
-    """Convert a DB row dict to the public response schema."""
-    assignment_responses = []
+    """Convert an ai_domain_review_results DB row to VerificationReviewResponse."""
+    domain_status = str(row.get("ai_domain_review_status") or "needs_more_evidence")
+    ai_status = _DOMAIN_TO_AI_STATUS.get(domain_status, "needs_more_evidence")
+    score = int(row.get("domain_review_score") or 0)
+
+    assignment_responses: list[HumanReviewAssignmentResponse] = []
     for a in (assignments or []):
         assignment_responses.append(
             HumanReviewAssignmentResponse(
                 id=str(a["id"]),
-                review_request_id=str(a["review_request_id"]),
+                review_request_id=str(a.get("review_request_id") or row["id"]),
                 reviewer_name=str(a.get("reviewer_name") or ""),
                 reviewer_role=a.get("reviewer_role", "faculty_reviewer"),
                 reviewer_field=str(a.get("reviewer_field") or ""),
@@ -77,19 +139,20 @@ def _make_review_response(
                 requested_improvements=list(a.get("requested_improvements") or []),
             )
         )
+
     return VerificationReviewResponse(
         id=str(row["id"]),
         proof_session_id=str(row["proof_session_id"]),
         user_id=str(row["user_id"]),
-        ai_review_status=row.get("ai_review_status", "not_submitted"),
-        ai_review_started_at=row.get("ai_review_started_at"),
-        ai_review_completed_at=row.get("ai_review_completed_at"),
-        ai_decision_summary=str(row.get("ai_decision_summary") or ""),
-        human_review_status=row.get("human_review_status", "human_review_not_requested"),
-        human_review_requested_at=row.get("human_review_requested_at"),
-        readiness_score=int(row.get("readiness_score") or 0),
-        readiness_level=row.get("readiness_level", "insufficient"),
-        submitted_at=row.get("submitted_at"),
+        ai_review_status=ai_status,  # type: ignore[arg-type]
+        ai_review_started_at=row.get("created_at"),
+        ai_review_completed_at=row.get("updated_at"),
+        ai_decision_summary=str(row.get("recruiter_summary") or ""),
+        human_review_status="human_review_not_requested",
+        human_review_requested_at=None,
+        readiness_score=score,
+        readiness_level=_level_from_score(score),  # type: ignore[arg-type]
+        submitted_at=row.get("created_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         assignments=assignment_responses,
@@ -174,15 +237,19 @@ class VerificationReviewNotFoundError(LookupError):
 
 
 class VerificationReviewService:
-    """Handles verification review requests for proof sessions."""
+    """Handles verification review requests, writing to ai_domain_review_results.
+
+    NOTE: This service previously used verification_review_requests which does
+    not exist in production.  It now uses ai_domain_review_results exclusively.
+    """
 
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Private helpers ───────────────────────────────────────────────────────
 
     def _get_row(self, user_id: str, session_id: str) -> dict[str, Any]:
-        """Fetch the review request row; raise VerificationReviewNotFoundError if absent."""
+        """Fetch the review row from ai_domain_review_results; raise if absent."""
         if isinstance(self._client, dict):
             for row in self._client.get(_TABLE, {}).values():
                 if (
@@ -199,6 +266,7 @@ class VerificationReviewService:
             .select("*")
             .eq("proof_session_id", session_id)
             .eq("user_id", user_id)
+            .limit(1)
             .execute()
         )
         rows = getattr(result, "data", []) or []
@@ -209,24 +277,30 @@ class VerificationReviewService:
         return rows[0]
 
     def _get_assignments(self, review_request_id: str) -> list[dict[str, Any]]:
+        """Fetch human reviewer assignments.  Non-fatal if table absent."""
         if isinstance(self._client, dict):
             return [
                 a
                 for a in self._client.get(_ASSIGNMENTS_TABLE, {}).values()
                 if str(a.get("review_request_id")) == review_request_id
             ]
-
-        result = (
-            self._client.table(_ASSIGNMENTS_TABLE)
-            .select("*")
-            .eq("review_request_id", review_request_id)
-            .execute()
-        )
-        return getattr(result, "data", []) or []
+        try:
+            result = (
+                self._client.table(_ASSIGNMENTS_TABLE)
+                .select("*")
+                .eq("review_request_id", review_request_id)
+                .execute()
+            )
+            return getattr(result, "data", []) or []
+        except Exception:
+            logger.warning(
+                "VerificationReviewService: could not fetch assignments for %s",
+                review_request_id,
+            )
+            return []
 
     def _read_privacy_status(self, user_id: str, session_id: str) -> str | None:
-        """Read the privacy scan status from existing data.  Non-fatal if absent."""
-        _PRIVACY_TABLE = "workflow_privacy_scan_results"
+        """Read the privacy scan status from workflow_privacy_scan_results.  Non-fatal."""
         try:
             if isinstance(self._client, dict):
                 for row in self._client.get(_PRIVACY_TABLE, {}).values():
@@ -265,19 +339,20 @@ class VerificationReviewService:
         readiness_score: int,
         readiness_level: str,
     ) -> VerificationReviewResponse:
-        """Create (or re-use) a review request and run the AI decision.
+        """Create or update a review row in ai_domain_review_results.
 
-        Idempotent: if a request already exists and is not_submitted or
-        needs_more_evidence (re-submission allowed), it updates in place.
-        Raises VerificationReviewDuplicateError if already approved/in-flight.
+        Idempotent: if a row already exists and is not approved/in-flight,
+        it is updated in place (re-submission is allowed).
+        Raises VerificationReviewDuplicateError if already ai_domain_reviewed.
         """
         now = _now()
         privacy_status = self._read_privacy_status(user_id, session_id)
         ai_status, ai_summary = _apply_ai_decision(
             readiness_score, readiness_level, privacy_status
         )
+        domain_status = _AI_STATUS_TO_DOMAIN.get(ai_status, "needs_more_evidence")
 
-        # Check for existing request
+        # Check for an existing row
         existing: dict[str, Any] | None = None
         try:
             existing = self._get_row(user_id, session_id)
@@ -285,26 +360,23 @@ class VerificationReviewService:
             pass
 
         if existing is not None:
-            current_status = existing.get("ai_review_status", "not_submitted")
-            # Block re-submission if already approved or in-flight
-            if current_status in (
-                "submitted_for_ai_review",
-                "ai_review_in_progress",
-                "ai_approved_for_sharing",
-            ):
+            current_domain_status = str(
+                existing.get("ai_domain_review_status") or "needs_more_evidence"
+            )
+            if current_domain_status in _BLOCK_RESUBMIT_DOMAIN_STATUSES:
+                current_old = _DOMAIN_TO_AI_STATUS.get(
+                    current_domain_status, current_domain_status
+                )
                 raise VerificationReviewDuplicateError(
-                    f"Review already {current_status} — cannot resubmit."
+                    f"Review already {current_old} — cannot resubmit."
                 )
 
-            # Re-submission allowed (was needs_more_evidence / manual_review_recommended / privacy_flagged)
+            # Re-submission allowed: update the existing row
             updates = {
-                "ai_review_status": ai_status,
-                "ai_review_started_at": now,
-                "ai_review_completed_at": now,
-                "ai_decision_summary": ai_summary,
-                "readiness_score": readiness_score,
-                "readiness_level": readiness_level,
-                "submitted_at": existing.get("submitted_at") or now,
+                "ai_domain_review_status": domain_status,
+                "domain_review_score": readiness_score,
+                "recruiter_summary": ai_summary,
+                "human_review_recommended": ai_status == "manual_review_recommended",
                 "updated_at": now,
             }
             if isinstance(self._client, dict):
@@ -320,18 +392,34 @@ class VerificationReviewService:
                 rows = getattr(result, "data", []) or []
                 row = rows[0] if rows else {**existing, **updates}
         else:
-            # Create new review request
+            # Insert a new review row with all required columns
             data: dict[str, Any] = {
                 "user_id": user_id,
                 "proof_session_id": session_id,
-                "ai_review_status": ai_status,
-                "ai_review_started_at": now,
-                "ai_review_completed_at": now,
-                "ai_decision_summary": ai_summary,
-                "human_review_status": "human_review_not_requested",
-                "readiness_score": readiness_score,
-                "readiness_level": readiness_level,
-                "submitted_at": now,
+                "reviewer_name": "VeriBridge AI",
+                "reviewer_role": "ai_reviewer",
+                "domain": "general",
+                "ai_domain_review_status": domain_status,
+                "domain_review_score": readiness_score,
+                "confidence_level": _confidence_from_score(readiness_score),
+                "verified_skills": [],
+                "partially_verified_skills": [],
+                "skills_needing_more_evidence": [],
+                "domain_specific_strengths": [],
+                "domain_specific_concerns": [],
+                "criterion_scores": [],
+                "evidence_sources_reviewed": [],
+                "human_review_recommended": ai_status == "manual_review_recommended",
+                "human_review_reason": None,
+                "recruiter_summary": ai_summary,
+                "student_next_steps": [],
+                "review_limitations": _LIMITATIONS,
+                "disclosure_note": _DISCLOSURE,
+                "llm_used": False,
+                "fallback_reason": None,
+                "human_ai_agreement_score": None,
+                "calibration_status": None,
+                "reviewed_against_human_baseline": None,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -343,7 +431,7 @@ class VerificationReviewService:
                 result = self._client.table(_TABLE).insert(data).execute()
                 rows = getattr(result, "data", []) or []
                 if not rows:
-                    raise RuntimeError("Review request insert returned no data.")
+                    raise RuntimeError("Review insert returned no data.")
                 row = rows[0]
 
         assignments = self._get_assignments(str(row["id"]))
@@ -356,7 +444,7 @@ class VerificationReviewService:
     ) -> VerificationReviewResponse:
         """Return the current review status for the session.
 
-        Raises VerificationReviewNotFoundError if no request exists yet.
+        Raises VerificationReviewNotFoundError if no review row exists yet.
         """
         row = self._get_row(user_id, session_id)
         assignments = self._get_assignments(str(row["id"]))
@@ -369,7 +457,7 @@ class VerificationReviewService:
         limit: int = 100,
         offset: int = 0,
     ) -> list[AdminReviewListItem]:
-        """Return all review requests (admin only, no user_id filter)."""
+        """Return all review requests from ai_domain_review_results (admin only)."""
         if isinstance(self._client, dict):
             rows = list(self._client.get(_TABLE, {}).values())
             rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
@@ -384,23 +472,28 @@ class VerificationReviewService:
             )
             rows = getattr(result, "data", []) or []
 
-        return [
-            AdminReviewListItem(
-                id=str(r["id"]),
-                proof_session_id=str(r["proof_session_id"]),
-                user_id=str(r["user_id"]),
-                ai_review_status=r.get("ai_review_status", "not_submitted"),
-                human_review_status=r.get("human_review_status", "human_review_not_requested"),
-                readiness_score=int(r.get("readiness_score") or 0),
-                readiness_level=r.get("readiness_level", "insufficient"),
-                submitted_at=r.get("submitted_at"),
-                ai_review_completed_at=r.get("ai_review_completed_at"),
-                ai_decision_summary=str(r.get("ai_decision_summary") or ""),
-                created_at=r["created_at"],
-                updated_at=r["updated_at"],
+        items: list[AdminReviewListItem] = []
+        for r in rows:
+            domain_status = str(r.get("ai_domain_review_status") or "needs_more_evidence")
+            ai_status = _DOMAIN_TO_AI_STATUS.get(domain_status, "needs_more_evidence")
+            score = int(r.get("domain_review_score") or 0)
+            items.append(
+                AdminReviewListItem(
+                    id=str(r["id"]),
+                    proof_session_id=str(r["proof_session_id"]),
+                    user_id=str(r["user_id"]),
+                    ai_review_status=ai_status,  # type: ignore[arg-type]
+                    human_review_status="human_review_not_requested",
+                    readiness_score=score,
+                    readiness_level=_level_from_score(score),  # type: ignore[arg-type]
+                    submitted_at=r.get("created_at"),
+                    ai_review_completed_at=r.get("updated_at"),
+                    ai_decision_summary=str(r.get("recruiter_summary") or ""),
+                    created_at=r["created_at"],
+                    updated_at=r["updated_at"],
+                )
             )
-            for r in rows
-        ]
+        return items
 
     # ── Admin: manual decision override ──────────────────────────────────────
 
@@ -411,33 +504,36 @@ class VerificationReviewService:
     ) -> VerificationReviewResponse:
         """Admin manually overrides the AI review status.
 
+        Maps the incoming AiReviewStatus value to the DB ai_domain_review_status.
         IMPORTANT: This does NOT set human_review_status = human_verified.
-        That requires a human reviewer action in human_review_assignments.
         """
         now = _now()
+        domain_status = _AI_STATUS_TO_DOMAIN.get(
+            body.ai_review_status, "needs_more_evidence"
+        )
 
         if isinstance(self._client, dict):
-            row: dict[str, Any] | None = self._client.get(_TABLE, {}).get(review_id)
+            store = self._client.get(_TABLE, {})
+            row = store.get(review_id)
             if row is None:
                 raise VerificationReviewNotFoundError(
                     f"Review request {review_id} not found."
                 )
             row.update(
                 {
-                    "ai_review_status": body.ai_review_status,
-                    "ai_decision_summary": body.ai_decision_summary,
-                    "ai_review_completed_at": now,
+                    "ai_domain_review_status": domain_status,
+                    "recruiter_summary": body.ai_decision_summary,
                     "updated_at": now,
                 }
             )
+            row = self._client[_TABLE][review_id]
         else:
             result = (
                 self._client.table(_TABLE)
                 .update(
                     {
-                        "ai_review_status": body.ai_review_status,
-                        "ai_decision_summary": body.ai_decision_summary,
-                        "ai_review_completed_at": now,
+                        "ai_domain_review_status": domain_status,
+                        "recruiter_summary": body.ai_decision_summary,
                         "updated_at": now,
                     }
                 )
@@ -450,9 +546,6 @@ class VerificationReviewService:
                     f"Review request {review_id} not found."
                 )
             row = rows[0]
-
-        if isinstance(self._client, dict):
-            row = self._client[_TABLE][review_id]
 
         assignments = self._get_assignments(review_id)
         return _make_review_response(row, assignments)
@@ -467,10 +560,10 @@ class VerificationReviewService:
         reviewer_role: str,
         reviewer_field: str = "",
     ) -> dict[str, Any]:
-        """Create a human_review_assignments row (MVP: always invited, not yet active).
+        """Create a human_review_assignments row.
 
-        This method exists to support the future reviewer program architecture.
-        In MVP, this will create the row but no real email is sent.
+        MVP: creates the row; no actual email is sent yet.
+        Future: will trigger reviewer notification and onboarding flow.
         """
         now = _now()
         data: dict[str, Any] = {

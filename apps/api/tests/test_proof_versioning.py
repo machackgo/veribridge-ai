@@ -119,16 +119,8 @@ def _seed_session(mem_store: dict, user_id: str = USER_ID) -> str:
         "verified_skills": ["Data Analysis"],
         "recruiter_summary": "Domain review supports the evidence.",
     }
-    mem_store.setdefault("verification_review_requests", {})[f"review-{session_id}"] = {
-        "id": f"review-{session_id}",
-        "user_id": user_id,
-        "proof_session_id": session_id,
-        "ai_review_status": "ai_approved_for_sharing",
-        "human_review_status": "not_requested",
-        "readiness_score": 88,
-        "readiness_level": "strong",
-        "privacy_status": "clean",
-    }
+    # verification_review_requests does not exist in production;
+    # ai_domain_review_results is the canonical source (seeded above).
     mem_store.setdefault("public_work_passports", {})[f"passport-{session_id}"] = {
         "id": f"passport-{session_id}",
         "user_id": user_id,

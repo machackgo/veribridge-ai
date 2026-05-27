@@ -88,14 +88,8 @@ def _seed_evidence(mem_store: dict, session_id: str, user_id: str = USER_ID) -> 
         "created_at": "2026-01-01T00:00:00+00:00",
         "updated_at": "2026-01-01T00:00:00+00:00",
     }
-    mem_store.setdefault("verification_review_requests", {})[f"review-{session_id}"] = {
-        "id": f"review-{session_id}",
-        "user_id": user_id,
-        "proof_session_id": session_id,
-        "ai_review_status": "ai_approved_for_sharing",
-        "readiness_score": 90,
-        "readiness_level": "strong",
-    }
+    # verification_review_requests does not exist in production;
+    # ai_domain_review_results is the canonical source (seeded above).
     mem_store.setdefault("workflow_analysis_results", {})[f"workflow-{session_id}"] = {
         "id": f"workflow-{session_id}",
         "user_id": user_id,
