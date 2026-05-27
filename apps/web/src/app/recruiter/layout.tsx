@@ -3,6 +3,7 @@ import { DashboardShell } from "../../../components/dashboard/DashboardShell";
 
 const nav = [
   { label: "Search", href: "/recruiter", icon: "▣", count: "240" },
+  { label: "Work Passports", href: "/recruiter/passport", icon: "🪪" },
   { label: "Saved Lists", href: "/recruiter/candidates", icon: "★", count: "8" },
   { label: "Pipeline", href: "/recruiter/search", icon: "⚐", count: "42" },
   { label: "Messages", href: "/recruiter/invites", icon: "✉", count: "12" },

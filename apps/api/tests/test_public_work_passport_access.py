@@ -473,6 +473,8 @@ def test_admin_can_update_requester_verification_status(client: TestClient, mem_
     passport = _create_passport(client, session_id)
     _request_access(client, passport["public_slug"])
     profile = next(iter(mem_store["recruiter_requester_profiles"].values()))
+    # Grant admin role so the admin endpoint auth check passes.
+    mem_store.setdefault("users", {})[USER_ID]["role"] = "admin"
     response = client.post(
         f"/api/v1/admin/recruiter-requesters/{profile['id']}/verification-status",
         json={"verification_status": "trusted", "domain_verified": True, "email_verified": True, "notes": "Reviewed."},

@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, require_admin_user_id
 from app.schemas.public_work_passport import (
     AccessRequestCreate,
     AccessRequestDecision,
@@ -135,8 +135,9 @@ def get_latest_student_export(
     db: Any = Depends(get_db),
 ) -> dict[str, Any]:
     try:
-        WorkPassportExportService(db)._session_for_user(user_id, session_id)
-        record = WorkPassportExportService(db).get_latest_export_record(user_id, session_id)
+        svc = WorkPassportExportService(db)
+        svc._session_for_user(user_id, session_id)
+        record = svc.get_latest_export_record(user_id, session_id)
     except ExtensionProofSessionNotFoundError as exc:
         raise _session_not_found(session_id) from exc
     if not record:
@@ -473,8 +474,10 @@ def get_protected_github_proofs(
 def admin_list_recruiter_requesters(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    admin_user_id: str = Depends(require_admin_user_id),
     db: Any = Depends(get_db),
 ) -> list[RecruiterRequesterProfileResponse]:
+    _ = admin_user_id
     return PublicWorkPassportService(db).admin_list_requester_profiles(limit=limit, offset=offset)
 
 
@@ -486,8 +489,10 @@ def admin_list_recruiter_requesters(
 def admin_update_recruiter_requester_status(
     profile_id: str,
     body: AdminRequesterVerificationUpdate,
+    admin_user_id: str = Depends(require_admin_user_id),
     db: Any = Depends(get_db),
 ) -> RecruiterRequesterProfileResponse:
+    _ = admin_user_id
     try:
         return PublicWorkPassportService(db).admin_update_requester_verification(profile_id, body)
     except RecruiterRequesterProfileNotFoundError as exc:
