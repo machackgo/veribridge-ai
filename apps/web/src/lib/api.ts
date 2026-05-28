@@ -1036,13 +1036,20 @@ export type WorkflowAnalysisStage = {
   key: string
   label: string
   status: WorkflowAnalysisStageStatus
+  note?: string | null  // optional warning/context for this stage
 }
 
-// ── Observed Demonstration types (v3) ────────────────────────────────────────
+// ── Observed Demonstration types (v3/v4) ─────────────────────────────────────
 
 export type VisualAnalysisStatus = "available" | "partial" | "not_available"
 
+/** DOM text capture status from the browser extension (distinct from OCR/frame analysis). */
+export type VisibleEvidenceStatus = "available" | "partial" | "not_captured"
+
 export type ResultValueSource = "ocr" | "dom" | "event" | "model_output_text"
+
+/** Evidence provenance per demonstration step (v4). */
+export type EvidenceSource = "dom_snapshot" | "event_metadata" | "inferred_from_click"
 
 export type DetectedResultValue = {
   label: string
@@ -1069,11 +1076,15 @@ export type DemonstrationStep = {
   skill_evidence: DemonstrationSkillEvidence[]
   confidence: "high" | "medium" | "low"
   needs_review: boolean
+  /** v4: where this step's evidence came from */
+  evidence_source?: EvidenceSource
 }
 
 export type ObservedDemonstration = {
   target_app: string
   visual_analysis_status: VisualAnalysisStatus
+  /** v4: DOM text capture status from the browser extension */
+  visible_evidence_status?: VisibleEvidenceStatus
   steps: DemonstrationStep[]
   summary: string
   limitations: string[]
@@ -1101,9 +1112,11 @@ export type WorkflowAnalysisResponse = {
   target_site_pages_count?: number
   supporting_evidence_count?: number
   noise_filtered_count?: number
-  // v3 precise visual evidence
+  // v3/v4 precise visual evidence
   observed_demonstration?: ObservedDemonstration | null
   visual_analysis_status?: VisualAnalysisStatus
+  /** v4: DOM text capture status from the browser extension */
+  visible_evidence_status?: VisibleEvidenceStatus
   // progress tracking
   progress: number
   current_stage: string
@@ -1157,6 +1170,136 @@ export async function getWorkflowAnalysis(
   )
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`Get workflow analysis failed (HTTP ${res.status}).`)
+  return res.json()
+}
+
+// ── Visible Evidence Capture (v4) ─────────────────────────────────────────────
+
+/** One DOM-snapshot event captured by the browser extension. */
+export type VisibleEvidenceEventInput = {
+  event_type:
+    | "page_load"
+    | "click"
+    | "input_change"
+    | "file_upload"
+    | "form_submit"
+    | "dom_snapshot"
+    | "result_detected"
+    | "recording_end"
+  timestamp_ms?: number | null
+  event_id?: string | null
+  url?: string
+  page_title?: string
+  /** Sanitized visible text blocks. Must not include passwords, tokens, or local paths. */
+  visible_text_blocks?: string[]
+  /** Text blocks near result/output keywords. */
+  result_like_blocks?: string[]
+  /** Sanitized form inputs (exclude password fields). */
+  input_snapshot?: Record<string, unknown>
+  /** Clicked element metadata. */
+  action_snapshot?: Record<string, unknown>
+  file_upload_meta?: {
+    file_category: string
+    file_extension: string
+    file_name_masked?: string | null
+  } | null
+}
+
+export type VisibleEvidenceBatchRequest = {
+  events: VisibleEvidenceEventInput[]
+}
+
+export type VisibleEvidenceIngestResponse = {
+  session_id: string
+  events_received: number
+  events_stored: number
+  privacy_flags_raised: number
+  status: "accepted"
+}
+
+export type VisibleEvidenceExtractedResultValue = {
+  label: string
+  value: string
+  unit: string
+  raw_text: string
+  source: string
+}
+
+export type VisibleEvidenceExtractedObservations = {
+  observed_inputs: string[]
+  observed_actions: string[]
+  observed_outputs: string[]
+  detected_result_values: VisibleEvidenceExtractedResultValue[]
+  demonstrated_features: string[]
+  skill_support_reasoning: string[]
+  visible_evidence_status: VisibleEvidenceStatus
+  event_count: number
+  result_event_count: number
+  file_upload_count: number
+  form_submit_count: number
+}
+
+export type VisibleEvidenceSummaryEvent = {
+  event_type: string
+  timestamp_ms: number | null
+  page_title: string
+  result_block_count: number
+  visible_block_count: number
+  has_file_upload: boolean
+  privacy_flags: string[]
+}
+
+export type VisibleEvidenceSummaryResponse = {
+  proof_session_id: string
+  event_count: number
+  result_event_count: number
+  file_upload_count: number
+  visible_evidence_status: VisibleEvidenceStatus
+  events_summary: VisibleEvidenceSummaryEvent[]
+  extracted_observations: VisibleEvidenceExtractedObservations
+  privacy_note: string
+}
+
+/**
+ * Submit a batch of visible evidence events captured by the browser extension.
+ * Call this at end of recording before calling analyzeWorkflowEvidence.
+ *
+ * The extension should sanitize events client-side before calling this:
+ * - Remove passwords, API keys, local file paths, Supabase/internal URLs.
+ * - Only include text from the target website (not other tabs).
+ */
+export async function submitVisibleEvidence(
+  sessionId: string,
+  request: VisibleEvidenceBatchRequest
+): Promise<VisibleEvidenceIngestResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/workflow/visible-evidence`,
+    {
+      method: "POST",
+      body: JSON.stringify(request),
+    }
+  )
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Visible evidence submission failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json()
+}
+
+/**
+ * Get visible evidence summary for debugging.
+ * Student/admin only — NOT recruiter-facing.
+ */
+export async function getVisibleEvidenceSummary(
+  sessionId: string
+): Promise<VisibleEvidenceSummaryResponse | null> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/workflow/visible-evidence/summary`
+  )
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Get visible evidence summary failed (HTTP ${res.status}).`)
   return res.json()
 }
 

@@ -28,10 +28,22 @@ Precise Visual Workflow Evidence (v3):
     detected_result_values is empty when visual analysis is unavailable.
   — TODO: plug in frame-sampling + vision/OCR service here when available.
 
+DOM Visible Evidence Integration (v4):
+  — when workflow_visible_evidence_events exist for the session, the
+    analysis is enriched with DOM-extracted observations.
+  — detected_result_values is populated from sanitized DOM text when
+    result values were captured (e.g. "dog: 0.89").
+  — visible_evidence_status is set to "partial" or "available" when
+    visible evidence was captured; "not_captured" for old recordings.
+  — Each DemonstrationStep shows evidence_source: "dom_snapshot" /
+    "event_metadata" / "inferred_from_click".
+  — Old recordings without visible evidence continue to work unchanged.
+
 Guardrails:
   — never claims skills are "verified" or "guaranteed"
   — uses "evidence supports", "AI Reviewed", "workflow analysis"
   — human_review_needed is set conservatively
+  — exact output values only reported when captured in visible evidence
 """
 
 from __future__ import annotations
@@ -48,7 +60,7 @@ logger = logging.getLogger(__name__)
 _TABLE = "workflow_analysis_results"
 _SESSION_TABLE = "extension_proof_sessions"
 
-ANALYZER_VERSION = "workflow-analysis-v3"
+ANALYZER_VERSION = "workflow-analysis-v4"
 
 # Status values from which workflow analysis is allowed.
 _VALID_ANALYZE_FROM = frozenset({"uploaded_pending_analysis", "analyzing"})
@@ -400,6 +412,26 @@ class ExtensionProofWorkflowAnalysisService:
         )
         logger.info("WORKFLOW_ANALYSIS_GENERATING_SUMMARY session=%s", session_id)
 
+        # ── Load visible evidence observations (v4) ────────────────────────
+        visible_observations = None
+        try:
+            from app.services.workflow_visible_evidence_service import (
+                WorkflowVisibleEvidenceService,
+            )
+            ve_svc = WorkflowVisibleEvidenceService(self._client)
+            obs = ve_svc.get_extracted_observations(user_id, session_id)
+            if obs.visible_evidence_status != "not_captured":
+                visible_observations = obs
+                logger.info(
+                    "WORKFLOW_ANALYSIS_VISIBLE_EVIDENCE_LOADED session=%s status=%s events=%d",
+                    session_id, obs.visible_evidence_status, obs.event_count,
+                )
+        except Exception:
+            logger.warning(
+                "WORKFLOW_ANALYSIS_VISIBLE_EVIDENCE_LOAD_FAILED session=%s — continuing without",
+                session_id, exc_info=True,
+            )
+
         result = _analyze_workflow(
             proof_data=proof_data,
             claimed_skills=claimed_skills,
@@ -407,6 +439,7 @@ class ExtensionProofWorkflowAnalysisService:
             original_url=original_url,
             url_type=url_type,
             github_url=github_url,
+            visible_observations=visible_observations,
         )
 
         logger.info("WORKFLOW_ANALYSIS_DB_INSERT_START session=%s", session_id)
@@ -563,24 +596,46 @@ class ExtensionProofWorkflowAnalysisService:
 
 # ── Stage helpers ─────────────────────────────────────────────────────────────
 
-def _build_completed_stages(db_saved: bool = True) -> list[dict[str, Any]]:
+def _build_completed_stages(
+    db_saved: bool = True,
+    visible_evidence_status: str = "not_captured",
+) -> list[dict[str, Any]]:
     """Return analysis stages with final status after a completed analysis run.
 
-    Stage list matches the 9-stage precise workflow evidence system (v3).
+    Stage list matches the 10-stage visible evidence system (v4).
     video_frame_analysis is 'coming_soon' until frame extraction is implemented.
+
+    Stage 5 (capturing_visible_evidence) reflects DOM/text capture status:
+      - complete:  visible evidence was available and used
+      - complete (with warning label) if status is "partial"
+      - complete (with not_captured label) if old recording
     """
+    # Determine stage 5 label and warning
+    if visible_evidence_status == "available":
+        ve_label = "Capturing visible page evidence"
+        ve_status = "complete"
+    elif visible_evidence_status == "partial":
+        ve_label = "Capturing visible page evidence (partial)"
+        ve_status = "complete"
+    else:
+        ve_label = "Capturing visible page evidence (not captured for this recording)"
+        ve_status = "complete"
+
     return [
-        {"key": "preparing_recording",  "label": "Preparing recording",                    "status": "complete"},
-        {"key": "filtering_tabs",       "label": "Filtering background tabs",               "status": "complete"},
-        {"key": "identifying_target",   "label": "Identifying target website",              "status": "complete"},
-        {"key": "extracting_events",    "label": "Extracting relevant workflow events",     "status": "complete"},
-        {"key": "reading_outputs",      "label": "Reading visible text and outputs",        "status": "complete"},
-        {"key": "detecting_iao_flow",   "label": "Detecting input → action → output flow", "status": "complete"},
-        {"key": "mapping_skills",       "label": "Mapping demonstration to skills",         "status": "complete"},
-        {"key": "generating_summary",   "label": "Generating recruiter-safe summary",       "status": "complete"},
-        {"key": "finalizing",           "label": "Finalizing Work Passport evidence",        "status": "complete" if db_saved else "failed"},
+        {"key": "preparing_recording",       "label": "Preparing recording",                    "status": "complete"},
+        {"key": "filtering_tabs",            "label": "Filtering background tabs",               "status": "complete"},
+        {"key": "identifying_target",        "label": "Identifying target website",              "status": "complete"},
+        {"key": "extracting_events",         "label": "Extracting relevant workflow events",     "status": "complete"},
+        {"key": "capturing_visible_evidence","label": ve_label,                                  "status": ve_status,
+         "note": None if visible_evidence_status == "available" else
+                 "Use a new recording after this update to capture visible evidence." if visible_evidence_status == "not_captured" else None},
+        {"key": "detecting_iao_flow",        "label": "Detecting input → action → output flow", "status": "complete"},
+        {"key": "extracting_result_values",  "label": "Extracting result values from visible text", "status": "complete"},
+        {"key": "mapping_skills",            "label": "Mapping demonstration to skills",         "status": "complete"},
+        {"key": "generating_summary",        "label": "Generating recruiter-safe summary",       "status": "complete"},
+        {"key": "finalizing",                "label": "Finalizing Work Passport evidence",        "status": "complete" if db_saved else "failed"},
         # ── Not yet available ──────────────────────────────────────────────────
-        {"key": "video_frame_analysis", "label": "Video frame analysis",                    "status": "coming_soon"},
+        {"key": "video_frame_analysis",      "label": "Video frame analysis",                    "status": "coming_soon"},
     ]
 
 
@@ -821,35 +876,63 @@ def _build_demonstration_steps(
     iao_patterns: list[dict[str, Any]],
     app_type: str,
     target_app: str,
+    visible_observations: "Any | None" = None,
 ) -> list[dict[str, Any]]:
     """Build structured DemonstrationStep-like dicts from the event timeline.
 
-    visual_analysis_status is always "not_available" here since frame/OCR
-    extraction is not yet implemented. detected_result_values will be empty.
+    When visible_observations is provided (DOM snapshots captured by extension),
+    detected_result_values and visible_text_evidence are enriched from that data.
+    evidence_source shows "dom_snapshot" vs "event_metadata" vs "inferred_from_click".
 
-    TODO: when frame-sampling + vision/OCR service is available, replace this
-    placeholder with actual visual evidence extraction.
+    Without visible_observations (old recordings), detected_result_values is empty.
     """
     steps: list[dict[str, Any]] = []
     step_num = 1
+
+    # Resolve visible observations helpers
+    _vis_inputs: list[str] = []
+    _vis_actions: list[str] = []
+    _vis_outputs: list[str] = []
+    _vis_result_values: list[dict[str, Any]] = []
+    _vis_features: list[str] = []
+    _has_visible_evidence = False
+
+    if visible_observations is not None:
+        _vis_inputs  = list(getattr(visible_observations, "observed_inputs",  []) or [])
+        _vis_actions = list(getattr(visible_observations, "observed_actions", []) or [])
+        _vis_outputs = list(getattr(visible_observations, "observed_outputs", []) or [])
+        _vis_features = list(getattr(visible_observations, "demonstrated_features", []) or [])
+        raw_rv = getattr(visible_observations, "detected_result_values", []) or []
+        # Convert ExtractedResultValue objects to dicts for the step schema
+        for rv in raw_rv:
+            _vis_result_values.append({
+                "label": getattr(rv, "label", ""),
+                "value": getattr(rv, "value", ""),
+                "confidence": None,
+                "source": getattr(rv, "source", "dom"),
+            })
+        _has_visible_evidence = bool(_vis_inputs or _vis_actions or _vis_outputs or _vis_result_values)
 
     # Step 1: App opened
     first_page = next(
         (e for e in target_events if e.get("type") == "page_visit"), None
     )
     title_hint = (first_page.get("page_title") or "") if first_page else ""
+    visible_features = _vis_features[:2] if _vis_features else ([title_hint] if title_hint else [])
+
     steps.append({
         "step_number": step_num,
         "timestamp_ms": None,
         "user_action": f"Opened target application: {target_app or 'target app'}",
         "observed_input": None,
         "observed_output": None,
-        "visible_text_evidence": [title_hint] if title_hint else [],
+        "visible_text_evidence": visible_features,
         "detected_result_values": [],
         "demonstrated_feature": "Application launch",
         "skill_evidence": [],
         "confidence": "high",
         "needs_review": False,
+        "evidence_source": "event_metadata",
     })
     step_num += 1
 
@@ -887,31 +970,49 @@ def _build_demonstration_steps(
                 action_desc = f"Provided input via {eid or input_text or 'form field'}"
                 observed_in = eid or input_text or "form input"
 
+            # Enrich with visible input observations
+            vis_input_text: list[str] = []
+            if _vis_inputs:
+                vis_input_text = _vis_inputs[:3]
+                observed_in = _vis_inputs[0] if _vis_inputs else observed_in
+            elif input_text:
+                vis_input_text = [input_text]
+
+            input_confidence = "high" if _has_visible_evidence else "medium"
+            input_source = "dom_snapshot" if _vis_inputs else "event_metadata"
+
             steps.append({
                 "step_number": step_num,
                 "timestamp_ms": None,
                 "user_action": action_desc,
                 "observed_input": observed_in,
                 "observed_output": None,
-                "visible_text_evidence": [input_text] if input_text else [],
+                "visible_text_evidence": vis_input_text,
                 "detected_result_values": [],
                 "demonstrated_feature": _APP_TYPE_FEATURE_LABELS.get(app_type, "Web interaction"),
                 "skill_evidence": [],
-                "confidence": "medium",
-                "needs_review": True,  # exact input not readable from timeline
+                "confidence": input_confidence,
+                "needs_review": not _has_visible_evidence,
+                "evidence_source": input_source,
             })
             step_num += 1
 
         # Step: action triggered
         if action_ev:
             action_text = action_ev.get("element_text") or "button"
+            vis_action_text: list[str] = [action_text]
+            if _vis_actions:
+                vis_action_text = _vis_actions[:3]
+
+            action_source = "dom_snapshot" if _vis_actions else "event_metadata"
+
             steps.append({
                 "step_number": step_num,
                 "timestamp_ms": None,
                 "user_action": f'Triggered action: clicked "{action_text}"',
                 "observed_input": None,
                 "observed_output": None,
-                "visible_text_evidence": [action_text],
+                "visible_text_evidence": vis_action_text,
                 "detected_result_values": [],
                 "demonstrated_feature": _APP_TYPE_FEATURE_LABELS.get(app_type, "Web interaction"),
                 "skill_evidence": [
@@ -924,35 +1025,66 @@ def _build_demonstration_steps(
                 ],
                 "confidence": "high",
                 "needs_review": False,
+                "evidence_source": action_source,
             })
             step_num += 1
 
         # Step: output observed
-        if output_ev:
-            out_title = output_ev.get("page_title") or ""
-            out_url = output_ev.get("page_url") or ""
+        if output_ev or _vis_outputs or _vis_result_values:
+            out_title = (output_ev.get("page_title") or "") if output_ev else ""
+            out_url = (output_ev.get("page_url") or "") if output_ev else ""
 
             if ptype == "image_to_prediction":
                 output_desc = "Prediction or detection results were displayed"
-                observed_out = (
-                    f"Results page: {out_title}" if out_title else
-                    "Prediction output displayed (exact labels/scores not readable from timeline)"
-                )
+                if _vis_result_values:
+                    val_preview = ", ".join(
+                        f"{rv['label']}: {rv['value']}"
+                        for rv in _vis_result_values[:3]
+                    )
+                    observed_out = f"Output values captured: {val_preview}"
+                elif _vis_outputs:
+                    observed_out = _vis_outputs[0]
+                elif out_title:
+                    observed_out = f"Results page: {out_title}"
+                else:
+                    observed_out = "Prediction output displayed (exact labels/scores not readable from timeline)"
             elif ptype == "prompt_to_response":
                 output_desc = "AI response or answer was displayed"
-                observed_out = f"Response shown on: {out_title or out_url}"
+                observed_out = _vis_outputs[0] if _vis_outputs else f"Response shown on: {out_title or out_url}"
             elif ptype == "location_to_route_or_risk":
                 output_desc = "Route, map, or risk output was displayed"
-                observed_out = f"Output page: {out_title or out_url}"
+                if _vis_result_values:
+                    val_preview = ", ".join(
+                        f"{rv['label']}: {rv['value']}"
+                        for rv in _vis_result_values[:3]
+                    )
+                    observed_out = f"Risk/route values captured: {val_preview}"
+                else:
+                    observed_out = _vis_outputs[0] if _vis_outputs else f"Output page: {out_title or out_url}"
             elif ptype == "document_to_extraction":
                 output_desc = "Extracted content, summary, or entities displayed"
-                observed_out = f"Extraction output page: {out_title or out_url}"
+                observed_out = _vis_outputs[0] if _vis_outputs else f"Extraction output page: {out_title or out_url}"
             elif ptype == "filter_to_visualization":
                 output_desc = "Dashboard or visualization updated"
-                observed_out = f"Dashboard page: {out_title or out_url}"
+                observed_out = _vis_outputs[0] if _vis_outputs else f"Dashboard page: {out_title or out_url}"
             else:
                 output_desc = "Output or result page observed"
-                observed_out = f"{out_title or out_url}"
+                observed_out = _vis_outputs[0] if _vis_outputs else f"{out_title or out_url}"
+
+            output_evidence_text: list[str] = []
+            if _vis_outputs:
+                output_evidence_text = _vis_outputs[:3]
+            elif out_title:
+                output_evidence_text = [out_title]
+
+            # High confidence if we have real result values from DOM
+            output_confidence = "high" if _vis_result_values else ("medium" if _vis_outputs else "medium")
+            output_source = (
+                "dom_snapshot" if _vis_result_values else
+                "dom_snapshot" if _vis_outputs else
+                "event_metadata"
+            )
+            output_needs_review = not bool(_vis_result_values or _vis_outputs)
 
             steps.append({
                 "step_number": step_num,
@@ -960,10 +1092,9 @@ def _build_demonstration_steps(
                 "user_action": output_desc,
                 "observed_input": None,
                 "observed_output": observed_out,
-                "visible_text_evidence": [out_title] if out_title else [],
-                "detected_result_values": [],
-                # NOTE: detected_result_values is empty — OCR/frame analysis not available.
-                # TODO: populate with OCR results once frame extraction is implemented.
+                "visible_text_evidence": output_evidence_text,
+                # Populated with real DOM-extracted values if visible evidence captured
+                "detected_result_values": _vis_result_values,
                 "demonstrated_feature": _APP_TYPE_FEATURE_LABELS.get(app_type, "Web interaction"),
                 "skill_evidence": [
                     {
@@ -973,8 +1104,9 @@ def _build_demonstration_steps(
                     }
                     for skill, level, reasoning in pattern_skill_map
                 ],
-                "confidence": "medium",
-                "needs_review": True,  # exact output not readable without frame analysis
+                "confidence": output_confidence,
+                "needs_review": output_needs_review,
+                "evidence_source": output_source,
             })
             step_num += 1
 
@@ -986,50 +1118,82 @@ def _build_observed_demonstration(
     app_type: str,
     target_app: str,
     iao_patterns: list[dict[str, Any]],
+    visible_observations: "Any | None" = None,
 ) -> dict[str, Any]:
     """Build the observed_demonstration structure.
 
-    Always sets visual_analysis_status = "not_available" until frame/OCR
-    analysis is implemented.
+    visual_analysis_status = "not_available" until OCR/frame is implemented.
+    visible_evidence_status reflects DOM text capture from the extension.
 
-    Limitations are surfaced honestly so recruiters and students understand
-    what was and was not possible to read from the timeline.
+    When visible_observations is provided:
+    - detected_result_values may be populated with exact output values
+    - visible_text_evidence is enriched with DOM-captured text
+    - evidence_source per step is "dom_snapshot" or "event_metadata"
+
+    Limitations are surfaced honestly.
     """
-    steps = _build_demonstration_steps(target_events, iao_patterns, app_type, target_app)
+    steps = _build_demonstration_steps(
+        target_events, iao_patterns, app_type, target_app,
+        visible_observations=visible_observations,
+    )
+
+    _vis_ev_status = "not_captured"
+    if visible_observations is not None:
+        _vis_ev_status = getattr(visible_observations, "visible_evidence_status", "not_captured")
+
+    # Get result values to decide summary tone
+    _has_result_values = any(
+        s.get("detected_result_values") for s in steps
+    )
+    _has_dom_evidence = _vis_ev_status in ("available", "partial")
 
     # Build honest summary
     ptype = iao_patterns[0]["pattern_type"] if iao_patterns else None
+
+    def _output_note() -> str:
+        if _has_result_values:
+            return "Exact output values were extracted from the visible page content."
+        elif _has_dom_evidence:
+            return (
+                "Visible page text was captured but exact output values were not clearly "
+                "identified in the DOM snapshots."
+            )
+        else:
+            return (
+                "Exact output values were not readable from the browser event timeline — "
+                "visible evidence was not captured for this recording. "
+                "Video frame analysis would be required to extract precise values."
+            )
+
     if ptype == "image_to_prediction":
         summary = (
             "The recording shows an image or file input workflow leading to a prediction "
             "or detection result. The app received an input, ran inference, and displayed "
-            "output. The exact prediction labels and confidence scores were not readable "
-            "from the browser event timeline — video frame analysis would be required to "
-            "extract them precisely."
+            f"output. {_output_note()}"
         )
     elif ptype == "prompt_to_response":
         summary = (
             "The recording shows a conversational prompt-response workflow. A text input "
-            "was provided and an AI or search response was returned. The exact prompt text "
-            "and response content were not readable from the event timeline alone."
+            "was provided and an AI or search response was returned. "
+            f"{_output_note()}"
         )
     elif ptype == "location_to_route_or_risk":
         summary = (
             "The recording shows a location input to route or risk output workflow. "
             "A location, address, or route was entered and a result (map, route, or risk "
-            "score) was displayed. Exact values are not readable from the browser timeline."
+            f"score) was displayed. {_output_note()}"
         )
     elif ptype == "filter_to_visualization":
         summary = (
             "The recording shows a dashboard or data visualization workflow. Filters or "
             "parameters were adjusted and charts, tables, or metrics were updated. "
-            "Specific metric values are not readable from the browser event timeline."
+            f"{_output_note()}"
         )
     elif ptype == "document_to_extraction":
         summary = (
             "The recording shows a document upload to extraction workflow. A file was "
             "uploaded and the app extracted or summarized content from it. "
-            "Exact extracted values are not readable from the browser timeline."
+            f"{_output_note()}"
         )
     else:
         click_count = sum(1 for e in target_events if e.get("type") == "click")
@@ -1037,24 +1201,38 @@ def _build_observed_demonstration(
         summary = (
             f"The recording shows {click_count} click interaction(s) and "
             f"{input_count} input interaction(s) with {target_app or 'the target application'}. "
-            "The exact inputs and outputs are not readable from the browser event timeline alone."
+            f"{_output_note()}"
         )
 
-    limitations = [
-        "Video frame analysis is not yet available — exact output values (labels, scores, "
-        "text) could not be extracted from the recording",
-        "detected_result_values is empty; specific prediction labels and confidence scores "
-        "require frame sampling and OCR/vision analysis",
-    ]
+    limitations: list[str] = []
+
+    # Only mention frame analysis limitation if no DOM evidence either
+    if not _has_dom_evidence:
+        limitations.append(
+            "Visible DOM evidence was not captured for this recording. "
+            "Use a new recording after this update to enable visible evidence capture."
+        )
+    elif not _has_result_values:
+        limitations.append(
+            "Visible page text was captured but result values (labels, scores, numbers) "
+            "were not clearly identified in the captured DOM snapshots."
+        )
+
+    limitations.append(
+        "Video frame analysis (OCR) is not yet available — "
+        "precise output values from screenshots require future frame extraction."
+    )
+
     if not iao_patterns:
         limitations.append(
             "No clear input → action → output flow was detected from the event timeline; "
-            "the recording may show browsing without a clear demonstration"
+            "the recording may show browsing without a clear demonstration."
         )
 
     return {
         "target_app": target_app,
         "visual_analysis_status": "not_available",
+        "visible_evidence_status": _vis_ev_status,
         "steps": steps,
         "summary": summary,
         "limitations": limitations,
@@ -1101,6 +1279,7 @@ def _analyze_workflow(
     original_url: str,
     url_type: str,
     github_url: str | None,
+    visible_observations: "Any | None" = None,
 ) -> dict[str, Any]:
     events: list[dict[str, Any]] = proof_data.get("workflow_events") or []
     started_at_str: str | None = proof_data.get("started_at")
@@ -1196,16 +1375,24 @@ def _analyze_workflow(
     # ── Confidence ────────────────────────────────────────────────────────────
     confidence = _determine_confidence(score, url_type, len(events), duration_secs)
 
-    # ── App type + IAO pattern detection (v3) ────────────────────────────────
+    # ── App type + IAO pattern detection (v3/v4) ─────────────────────────────
     app_type = _detect_app_type(
         original_url, target_visited_titles, target_events, proof_objective
     )
     iao_patterns = _extract_iao_patterns(target_events, app_type)
 
-    # ── Observed demonstration (v3) ───────────────────────────────────────────
+    # ── Visible evidence observations (v4) ───────────────────────────────────
+    # When the browser extension sent DOM snapshots, integrate them here.
+    # For old recordings, visible_observations is None → status stays "not_captured".
+    visible_evidence_status: str = "not_captured"
+    if visible_observations is not None:
+        visible_evidence_status = getattr(visible_observations, "visible_evidence_status", "not_captured")
+
+    # ── Observed demonstration (v3/v4) ────────────────────────────────────────
     target_app_label = target_netloc or _extract_domain(original_url)
     observed_demonstration = _build_observed_demonstration(
-        target_events, app_type, target_app_label, iao_patterns
+        target_events, app_type, target_app_label, iao_patterns,
+        visible_observations=visible_observations,
     )
 
     # ── Demonstrated actions (TARGET site events only) ────────────────────────
@@ -1272,9 +1459,12 @@ def _analyze_workflow(
         "target_site_pages_count":    len(target_visited_urls),
         "supporting_evidence_count":  len(supporting_visited_urls),
         "noise_filtered_count":       len(noise_urls),
-        # ── Precise visual workflow evidence (v3) ─────────────────────────────
+        # ── Precise visual workflow evidence (v3/v4) ──────────────────────────
         "observed_demonstration":     observed_demonstration,
+        # visual_analysis_status refers to OCR/frame analysis (future)
         "visual_analysis_status":     "not_available",
+        # visible_evidence_status reflects DOM text capture from extension
+        "visible_evidence_status":    visible_evidence_status,
     }
 
 

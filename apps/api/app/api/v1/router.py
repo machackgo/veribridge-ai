@@ -28,6 +28,7 @@ from app.api.v1.endpoints import (
     skill_evidence_profile,
     student,
     verification_readiness,
+    workflow_visible_evidence,
     verification_review,
     website_analyzer,
     website_browser_verification_runs,
@@ -141,6 +142,11 @@ api_router.include_router(
     extension_proof_workflow_analysis.router,
     prefix="/student/extension-proof/sessions",
     tags=["extension-proof-workflow-analysis"],
+)
+api_router.include_router(
+    workflow_visible_evidence.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["workflow-visible-evidence"],
 )
 api_router.include_router(
     live_website_check.router,

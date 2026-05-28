@@ -18,9 +18,20 @@ AnalysisStageStatus = Literal["pending", "in_progress", "complete", "failed", "c
 
 VisualAnalysisStatus = Literal["available", "partial", "not_available"]
 
+# Distinct from visual_analysis_status (OCR/frame).
+# Reflects DOM-text snapshot capture by the browser extension.
+VisibleEvidenceStatus = Literal[
+    "available",      # full DOM evidence captured; result values extracted
+    "partial",        # some DOM events captured, partial result extraction
+    "not_captured",   # old recording — extension did not send visible evidence
+]
+
 SupportLevel = Literal["strong", "partial", "weak", "missing"]
 
 ResultValueSource = Literal["ocr", "dom", "event", "model_output_text"]
+
+# Evidence source for a demonstration step
+EvidenceSource = Literal["dom_snapshot", "event_metadata", "inferred_from_click"]
 
 
 class WorkflowAnalyzeRequest(BaseModel):
@@ -50,6 +61,7 @@ class AnalysisStage(BaseModel):
     key: str
     label: str
     status: AnalysisStageStatus
+    note: str | None = None   # optional warning / context for this stage
 
 
 # ── Observed Demonstration schema ──────────────────────────────────────────────
@@ -86,6 +98,15 @@ class DemonstrationStep(BaseModel):
     skill_evidence: list[DemonstrationSkillEvidence] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"]
     needs_review: bool
+    # v4: evidence provenance per step
+    evidence_source: EvidenceSource = Field(
+        default="event_metadata",
+        description=(
+            "dom_snapshot = enriched with captured DOM text; "
+            "event_metadata = inferred from browser events only; "
+            "inferred_from_click = only a click event, low confidence"
+        ),
+    )
 
 
 class ObservedDemonstration(BaseModel):
@@ -96,11 +117,18 @@ class ObservedDemonstration(BaseModel):
     - "partial"       : some DOM/text evidence was extracted but not full frame analysis
     - "not_available" : no frame/OCR available; inferred from event timeline only
 
-    When visual_analysis_status is "not_available", detected_result_values in steps
-    will be empty and the summary will say outputs were not readable from the timeline.
+    visible_evidence_status reflects DOM-text capture by the browser extension:
+    - "available"     : full DOM snapshots captured; result values may be extracted
+    - "partial"       : some events captured but incomplete coverage
+    - "not_captured"  : old recording — extension did not send DOM snapshots
+
+    When visual_analysis_status is "not_available" AND visible_evidence_status is
+    "not_captured", detected_result_values will be empty and the summary will say
+    outputs were not readable from the timeline.
     """
     target_app: str
     visual_analysis_status: VisualAnalysisStatus
+    visible_evidence_status: VisibleEvidenceStatus = "not_captured"
     steps: list[DemonstrationStep] = Field(default_factory=list)
     summary: str
     limitations: list[str] = Field(default_factory=list)
@@ -149,17 +177,27 @@ class WorkflowAnalysisResponse(BaseModel):
         description="Number of noise events filtered out (unrelated tabs, VeriBridge dashboard, Supabase)",
     )
 
-    # ── Precise visual workflow evidence (v3) ──────────────────────────────────
+    # ── Precise visual workflow evidence (v3/v4) ───────────────────────────────
     observed_demonstration: ObservedDemonstration | None = Field(
         default=None,
         description=(
             "Structured input→action→output evidence extracted from the workflow. "
-            "visual_analysis_status='not_available' when frame/OCR is not yet implemented."
+            "visual_analysis_status='not_available' when frame/OCR is not yet implemented. "
+            "visible_evidence_status reflects DOM text capture from the extension."
         ),
     )
     visual_analysis_status: VisualAnalysisStatus = Field(
         default="not_available",
         description="Whether frame/OCR evidence was used in this analysis",
+    )
+    visible_evidence_status: VisibleEvidenceStatus = Field(
+        default="not_captured",
+        description=(
+            "Whether DOM-visible text evidence was captured by the browser extension. "
+            "'available' = full capture with result values; "
+            "'partial' = partial capture; "
+            "'not_captured' = old recording (extension update needed)"
+        ),
     )
 
     # ── Progress tracking ──────────────────────────────────────────────────────

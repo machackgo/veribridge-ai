@@ -2,7 +2,13 @@
 
 import { useState } from "react"
 import type { CSSProperties } from "react"
-import type { SkillEvidenceProfile, WorkflowAnalysisResponse } from "@/lib/api"
+import type {
+  SkillEvidenceProfile,
+  WorkflowAnalysisResponse,
+  ObservedDemonstration,
+  DemonstrationStep,
+  VisibleEvidenceStatus,
+} from "@/lib/api"
 import { getWorkflowAnalysis } from "@/lib/api"
 
 // ── Style helpers ─────────────────────────────────────────────────────────────
@@ -74,9 +80,222 @@ function SourceChecklist({ profile }: { profile: SkillEvidenceProfile }) {
   )
 }
 
+// ── Visible evidence status badge ────────────────────────────────────────────
+
+function VisibleEvidenceBadge({ status }: { status: VisibleEvidenceStatus | undefined }) {
+  if (!status || status === "not_captured") {
+    return (
+      <span
+        title="Visible DOM evidence was not captured for this recording. Re-record after the extension update to enable this."
+        style={{
+          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+          background: "#f1f5f9", color: "#64748b", border: "1px dashed #cbd5e1",
+        }}
+      >
+        DOM evidence: not captured
+      </span>
+    )
+  }
+  if (status === "partial") {
+    return (
+      <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+        background: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a" }}>
+        DOM evidence: partial
+      </span>
+    )
+  }
+  return (
+    <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+      background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+      DOM evidence: captured ✓
+    </span>
+  )
+}
+
+// ── Evidence source label ─────────────────────────────────────────────────────
+
+function EvidenceSourceLabel({ source }: { source: string | undefined }) {
+  if (!source || source === "event_metadata") {
+    return (
+      <span style={{ fontSize: 9, color: "#94a3b8", fontStyle: "italic" }}>
+        Browser event metadata
+      </span>
+    )
+  }
+  if (source === "dom_snapshot") {
+    return (
+      <span style={{ fontSize: 9, color: "#1d4ed8", background: "#eff6ff",
+        border: "1px solid #bfdbfe", borderRadius: 3, padding: "1px 5px", fontWeight: 600 }}>
+        DOM text captured
+      </span>
+    )
+  }
+  if (source === "inferred_from_click") {
+    return (
+      <span style={{ fontSize: 9, color: "#92400e", fontStyle: "italic" }}>
+        Inferred from click only (low confidence)
+      </span>
+    )
+  }
+  return null
+}
+
+// ── Observed Demonstration Timeline ──────────────────────────────────────────
+
+function ObservedDemonstrationTimeline({ demo }: { demo: ObservedDemonstration }) {
+  const visStatus = demo.visible_evidence_status ?? "not_captured"
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#475569" }}>
+          Observed Demonstration Timeline
+        </div>
+        <VisibleEvidenceBadge status={visStatus} />
+        <span style={{ fontSize: 9, color: "#94a3b8", fontStyle: "italic" }}>
+          🔒 Privacy sanitized
+        </span>
+        {visStatus === "not_captured" && (
+          <span style={{ fontSize: 9, color: "#94a3b8", fontStyle: "italic" }}>
+            · Frame/OCR unavailable
+          </span>
+        )}
+      </div>
+
+      {/* Summary */}
+      <div style={{ fontSize: 11, color: "#334155", lineHeight: 1.6, padding: "8px 10px",
+        background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8 }}>
+        {demo.summary}
+      </div>
+
+      {/* Not captured notice */}
+      {visStatus === "not_captured" && (
+        <div style={{ fontSize: 11, color: "#92400e", background: "#fef9c3",
+          border: "1px solid #fef08a", borderRadius: 6, padding: "6px 10px" }}>
+          Exact output values were not captured. VeriBridge only observed browser events for this recording.
+          Use a new recording after the extension update to capture visible page evidence.
+        </div>
+      )}
+
+      {/* Step cards */}
+      {demo.steps.map((step) => (
+        <StepCard key={step.step_number} step={step} />
+      ))}
+
+      {/* Limitations */}
+      {demo.limitations.length > 0 && (
+        <div style={{ fontSize: 10, color: "#64748b", padding: "6px 10px",
+          background: "#f8fafc", border: "1px dashed #e2e8f0", borderRadius: 6 }}>
+          <strong>Limitations:</strong>
+          <ul style={{ margin: "4px 0 0 0", paddingLeft: 16 }}>
+            {demo.limitations.map((l, i) => (
+              <li key={i} style={{ lineHeight: 1.5 }}>{l}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function StepCard({ step }: { step: DemonstrationStep }) {
+  const hasResultValues = step.detected_result_values.length > 0
+  const hasVisibleText = step.visible_text_evidence.length > 0
+  const hasDomEvidence = step.evidence_source === "dom_snapshot"
+
+  const stepBg = hasResultValues
+    ? "#f0fdf4"
+    : hasDomEvidence
+    ? "#eff6ff"
+    : "#f8fafc"
+  const stepBorder = hasResultValues
+    ? "1px solid #bbf7d0"
+    : hasDomEvidence
+    ? "1px solid #bfdbfe"
+    : "1px solid #e2e8f0"
+
+  return (
+    <div style={{ padding: "10px 12px", background: stepBg, border: stepBorder,
+      borderRadius: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+      {/* Step header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: "#475569",
+          background: "#e2e8f0", borderRadius: 4, padding: "1px 6px" }}>
+          Step {step.step_number}
+        </span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "#0f172a", flex: 1 }}>
+          {step.user_action}
+        </span>
+        <span style={{ ...confidenceStyle(step.confidence), ...badge, fontSize: 8 }}>
+          {step.confidence}
+        </span>
+        <EvidenceSourceLabel source={step.evidence_source} />
+      </div>
+
+      {/* Input */}
+      {step.observed_input && (
+        <div style={{ fontSize: 11, color: "#334155" }}>
+          <strong style={{ color: "#1d4ed8" }}>Input:</strong> {step.observed_input}
+        </div>
+      )}
+
+      {/* Output */}
+      {step.observed_output && (
+        <div style={{ fontSize: 11, color: "#334155" }}>
+          <strong style={{ color: "#166534" }}>Output:</strong> {step.observed_output}
+        </div>
+      )}
+
+      {/* Detected result values */}
+      {hasResultValues && (
+        <div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#166534",
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>
+            Captured output values
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {step.detected_result_values.map((rv, i) => (
+              <span key={i} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 6,
+                background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0",
+                fontFamily: "monospace" }}>
+                {rv.label}: {rv.value}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Visible text evidence (condensed) */}
+      {hasVisibleText && !hasResultValues && (
+        <div style={{ fontSize: 10, color: "#475569", fontStyle: "italic" }}>
+          Evidence: {step.visible_text_evidence.slice(0, 2).join(" · ")}
+        </div>
+      )}
+
+      {/* Feature demonstrated */}
+      {step.demonstrated_feature && (
+        <div style={{ fontSize: 9, color: "#64748b" }}>
+          Feature: {step.demonstrated_feature}
+        </div>
+      )}
+
+      {/* Review flag */}
+      {step.needs_review && (
+        <div style={{ fontSize: 9, color: "#92400e", fontStyle: "italic" }}>
+          ⚠ Needs review — exact value not confirmed from event metadata alone
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Inline analysis view ──────────────────────────────────────────────────────
 
 function InlineAnalysisView({ analysis }: { analysis: WorkflowAnalysisResponse }) {
+  const [showTimeline, setShowTimeline] = useState(false)
+  const visStatus = analysis.visible_evidence_status ?? analysis.observed_demonstration?.visible_evidence_status
+
   return (
     <div
       style={{
@@ -90,8 +309,11 @@ function InlineAnalysisView({ analysis }: { analysis: WorkflowAnalysisResponse }
         gap: 10,
       }}
     >
-      <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748b" }}>
-        Workflow Evidence Analysis — AI Reviewed
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748b" }}>
+          Workflow Evidence Analysis — AI Reviewed
+        </div>
+        <VisibleEvidenceBadge status={visStatus} />
       </div>
 
       {analysis.recruiter_summary && (
@@ -136,6 +358,28 @@ function InlineAnalysisView({ analysis }: { analysis: WorkflowAnalysisResponse }
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Observed Demonstration Timeline toggle */}
+      {analysis.observed_demonstration && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowTimeline((v) => !v)}
+            style={{
+              fontSize: 10, fontWeight: 600, padding: "4px 10px", borderRadius: 6,
+              border: "1px solid #bfdbfe", background: showTimeline ? "#eff6ff" : "#f8fafc",
+              color: "#1d4ed8", cursor: "pointer",
+            }}
+          >
+            {showTimeline ? "Hide Timeline ▲" : "Show Observed Demonstration Timeline ▼"}
+          </button>
+          {showTimeline && (
+            <div style={{ marginTop: 8 }}>
+              <ObservedDemonstrationTimeline demo={analysis.observed_demonstration} />
+            </div>
+          )}
         </div>
       )}
 

@@ -16,6 +16,7 @@ from app.schemas.extension_proof_workflow_analysis import (
     ObservedDemonstration,
     WorkflowAnalyzeRequest,
     WorkflowAnalysisResponse,
+    VisibleEvidenceStatus,
 )
 from app.services.extension_proof_workflow_analysis_service import (
     ExtensionProofWorkflowAnalysisService,
@@ -23,6 +24,7 @@ from app.services.extension_proof_workflow_analysis_service import (
     SessionNotFoundError,
     _build_completed_stages,
 )
+from typing import Any
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -125,6 +127,12 @@ def _parse_observed_demonstration(raw: Any) -> ObservedDemonstration | None:
                 DemonstrationSkillEvidence(**se) for se in (s.get("skill_evidence") or [])
                 if isinstance(se, dict)
             ]
+            raw_evidence_source = s.get("evidence_source", "event_metadata")
+            # Validate evidence_source value
+            valid_sources = ("dom_snapshot", "event_metadata", "inferred_from_click")
+            if raw_evidence_source not in valid_sources:
+                raw_evidence_source = "event_metadata"
+
             steps.append(DemonstrationStep(
                 step_number=int(s.get("step_number", 0)),
                 timestamp_ms=s.get("timestamp_ms"),
@@ -137,10 +145,18 @@ def _parse_observed_demonstration(raw: Any) -> ObservedDemonstration | None:
                 skill_evidence=skill_ev,
                 confidence=s.get("confidence", "medium"),
                 needs_review=bool(s.get("needs_review", False)),
+                evidence_source=raw_evidence_source,
             ))
+
+        raw_vis_ev_status = raw.get("visible_evidence_status", "not_captured")
+        valid_ve_statuses: tuple[VisibleEvidenceStatus, ...] = ("available", "partial", "not_captured")
+        if raw_vis_ev_status not in valid_ve_statuses:
+            raw_vis_ev_status = "not_captured"
+
         return ObservedDemonstration(
             target_app=str(raw.get("target_app", "")),
             visual_analysis_status=raw.get("visual_analysis_status", "not_available"),
+            visible_evidence_status=raw_vis_ev_status,
             steps=steps,
             summary=str(raw.get("summary", "")),
             limitations=list(raw.get("limitations") or []),
@@ -152,7 +168,16 @@ def _parse_observed_demonstration(raw: Any) -> ObservedDemonstration | None:
 
 def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
     db_saved = bool(row.get("_db_saved", True))
-    stages = [AnalysisStage(**s) for s in _build_completed_stages(db_saved=db_saved)]
+    raw_ve_status = row.get("visible_evidence_status", "not_captured")
+    valid_ve: tuple[Any, ...] = ("available", "partial", "not_captured")
+    if raw_ve_status not in valid_ve:
+        raw_ve_status = "not_captured"
+
+    stages_raw = _build_completed_stages(
+        db_saved=db_saved,
+        visible_evidence_status=raw_ve_status,
+    )
+    stages = [AnalysisStage(**s) for s in stages_raw]
     observed_demonstration = _parse_observed_demonstration(row.get("observed_demonstration"))
     return WorkflowAnalysisResponse(
         id=str(row.get("id", "")),
@@ -177,6 +202,7 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
         noise_filtered_count=int(row.get("noise_filtered_count", 0)),
         observed_demonstration=observed_demonstration,
         visual_analysis_status=row.get("visual_analysis_status", "not_available"),
+        visible_evidence_status=raw_ve_status,
         progress=100,
         current_stage="AI reviewed",
         stages=stages,
