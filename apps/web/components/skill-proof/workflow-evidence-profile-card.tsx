@@ -112,6 +112,164 @@ function VisibleEvidenceBadge({ status }: { status: VisibleEvidenceStatus | unde
   )
 }
 
+// ── Visual frame analysis badge ───────────────────────────────────────────────
+
+type VisualFrameStatus = "not_configured" | "not_captured" | "analyzed" | "skipped" | "failed" | "pending"
+
+function VisualFrameBadge({ status, provider, frameCount }: {
+  status: VisualFrameStatus | undefined
+  provider?: string
+  frameCount?: number
+}) {
+  if (!status || status === "not_captured" || status === "not_configured") {
+    const isNone = !status || status === "not_captured"
+    return (
+      <span
+        title={
+          isNone
+            ? "No visual frames captured. Set ENABLE_WORKFLOW_FRAME_CAPTURE=true to enable."
+            : "Visual analysis provider not configured. Set VISUAL_ANALYSIS_PROVIDER to enable."
+        }
+        style={{
+          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+          background: "#f1f5f9", color: "#64748b", border: "1px dashed #cbd5e1",
+        }}
+      >
+        Visual frames: not configured
+      </span>
+    )
+  }
+  if (status === "analyzed") {
+    const label = frameCount ? `Visual frames: ${frameCount} analyzed ✓` : "Visual frames: analyzed ✓"
+    return (
+      <span
+        title={`Provider: ${provider ?? "unknown"}. Visual frame analysis uses local/open-source models — no external API required.`}
+        style={{
+          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+          background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0",
+        }}
+      >
+        {label}
+      </span>
+    )
+  }
+  if (status === "pending") {
+    return (
+      <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+        background: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a" }}>
+        Visual frames: analyzing…
+      </span>
+    )
+  }
+  return (
+    <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+      background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
+      Visual frames: {status}
+    </span>
+  )
+}
+
+// ── OCR status badge ──────────────────────────────────────────────────────────
+
+function OCRBadge({ status, provider }: { status: string | undefined; provider?: string }) {
+  if (!status || status === "not_configured" || status === "not_available") {
+    return (
+      <span
+        title="Local OCR not configured. Set VISUAL_ANALYSIS_PROVIDER=local_ocr and install PaddleOCR or EasyOCR."
+        style={{
+          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+          background: "#f1f5f9", color: "#64748b", border: "1px dashed #cbd5e1",
+        }}
+      >
+        Local OCR: not configured
+      </span>
+    )
+  }
+  if (status === "analyzed") {
+    return (
+      <span
+        title={`OCR provider: ${provider ?? "local"}. No external API required.`}
+        style={{
+          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+          background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe",
+        }}
+      >
+        Local OCR: active ✓
+      </span>
+    )
+  }
+  return null
+}
+
+// ── Evidence layer legend (full panel) ───────────────────────────────────────
+
+function EvidenceLayerLegend({ analysis }: { analysis: WorkflowAnalysisResponse }) {
+  const hasEvents = (analysis.demonstrated_actions?.length ?? 0) > 0
+  const domStatus = analysis.dom_evidence_status ?? analysis.visible_evidence_status ?? "not_captured"
+  const visualStatus = (analysis as Record<string, unknown>).visual_analysis_status as VisualFrameStatus | undefined
+  const ocrStatus = (analysis as Record<string, unknown>).ocr_status as string | undefined
+  const visualProvider = (analysis as Record<string, unknown>).visual_analysis_provider as string | undefined
+  const visualFrameCount = (analysis as Record<string, unknown>).visual_frame_count as number | undefined
+
+  return (
+    <div
+      style={{
+        background: "#f8fafc",
+        border: "1px solid #e2e8f0",
+        borderRadius: 8,
+        padding: "10px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+      }}
+    >
+      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em", textTransform: "uppercase", color: "#475569", marginBottom: 2 }}>
+        Evidence Layers
+      </div>
+
+      {/* Row: Browser events */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Browser events</span>
+        {hasEvents ? (
+          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+            background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+            captured ✓
+          </span>
+        ) : (
+          <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+            background: "#f1f5f9", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>
+            not detected
+          </span>
+        )}
+      </div>
+
+      {/* Row: DOM evidence */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>DOM evidence</span>
+        <VisibleEvidenceBadge status={domStatus as "not_captured" | "partial" | "available"} />
+      </div>
+
+      {/* Row: Visual frames */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Visual frames</span>
+        <VisualFrameBadge status={visualStatus} provider={visualProvider} frameCount={visualFrameCount} />
+      </div>
+
+      {/* Row: Local OCR */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Local OCR</span>
+        <OCRBadge status={ocrStatus} provider={visualProvider} />
+      </div>
+
+      {/* Privacy note */}
+      <div style={{ marginTop: 4, fontSize: 9, color: "#94a3b8", fontStyle: "italic", lineHeight: 1.4 }}>
+        Visual frame analysis uses local/open-source providers when configured.
+        No external vision API is required for the local pipeline.
+      </div>
+    </div>
+  )
+}
+
 // ── Evidence source label ─────────────────────────────────────────────────────
 
 function EvidenceSourceLabel({ source }: { source: string | undefined }) {
@@ -360,6 +518,9 @@ function InlineAnalysisView({ analysis }: { analysis: WorkflowAnalysisResponse }
           </div>
         </div>
       )}
+
+      {/* Evidence layer badges */}
+      <EvidenceLayerLegend analysis={analysis} />
 
       {/* Observed Demonstration Timeline toggle */}
       {analysis.observed_demonstration && (

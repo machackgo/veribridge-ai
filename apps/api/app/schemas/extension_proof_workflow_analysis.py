@@ -16,7 +16,19 @@ WorkflowConfidence = Literal["high", "medium", "low", "insufficient"]
 
 AnalysisStageStatus = Literal["pending", "in_progress", "complete", "failed", "coming_soon"]
 
-VisualAnalysisStatus = Literal["available", "partial", "not_available"]
+VisualAnalysisStatus = Literal[
+    # v5 provider-agnostic visual frame analysis statuses
+    "analyzed",         # frames captured and analyzed by configured provider
+    "pending",          # frames stored, analysis queued
+    "skipped",          # frames stored but analysis skipped (no bytes)
+    "failed",           # provider encountered an error
+    "not_configured",   # no VISUAL_ANALYSIS_PROVIDER set (safe default)
+    # Legacy values kept for backward compatibility with stored rows / old analysis results
+    "available",        # old: frame/OCR evidence available (pre-v5)
+    "partial",          # old: partial frame evidence
+    "not_available",    # old: no frame/OCR (pre-v5 label, replaced by not_configured)
+    "not_captured",     # edge case: maps to not_configured when returned from frame store
+]
 
 # Distinct from visual_analysis_status (OCR/frame).
 # Reflects DOM-text snapshot capture by the browser extension.
@@ -112,17 +124,21 @@ class DemonstrationStep(BaseModel):
 class ObservedDemonstration(BaseModel):
     """Structured precise evidence about what was actually demonstrated.
 
-    visual_analysis_status reflects whether frame/OCR evidence was used:
-    - "available"     : video frames were sampled and OCR was applied
-    - "partial"       : some DOM/text evidence was extracted but not full frame analysis
-    - "not_available" : no frame/OCR available; inferred from event timeline only
+    visual_analysis_status reflects whether frame/OCR evidence was used (v5 values):
+    - "analyzed"        : provider ran and frames were analyzed
+    - "not_configured"  : VISUAL_ANALYSIS_PROVIDER not set (safe default)
+    - "pending"         : frames stored, analysis queued
+    - "skipped"         : frames stored but analysis skipped
+    - "failed"          : provider error
+    Legacy (pre-v5, kept for backward compatibility):
+    - "available", "partial", "not_available"
 
     visible_evidence_status reflects DOM-text capture by the browser extension:
     - "available"     : full DOM snapshots captured; result values may be extracted
     - "partial"       : some events captured but incomplete coverage
     - "not_captured"  : old recording — extension did not send DOM snapshots
 
-    When visual_analysis_status is "not_available" AND visible_evidence_status is
+    When visual_analysis_status is "not_configured" AND visible_evidence_status is
     "not_captured", detected_result_values will be empty and the summary will say
     outputs were not readable from the timeline.
     """
@@ -177,18 +193,23 @@ class WorkflowAnalysisResponse(BaseModel):
         description="Number of noise events filtered out (unrelated tabs, VeriBridge dashboard, Supabase)",
     )
 
-    # ── Precise visual workflow evidence (v3/v4) ───────────────────────────────
+    # ── Precise visual workflow evidence (v3/v4/v5) ───────────────────────────
     observed_demonstration: ObservedDemonstration | None = Field(
         default=None,
         description=(
             "Structured input→action→output evidence extracted from the workflow. "
-            "visual_analysis_status='not_available' when frame/OCR is not yet implemented. "
+            "visual_analysis_status='not_configured' when no provider is set. "
+            "Set VISUAL_ANALYSIS_PROVIDER=local_ocr|local_vision|openai to enable. "
             "visible_evidence_status reflects DOM text capture from the extension."
         ),
     )
     visual_analysis_status: VisualAnalysisStatus = Field(
-        default="not_available",
-        description="Whether frame/OCR evidence was used in this analysis",
+        default="not_configured",
+        description=(
+            "Visual frame analysis status: "
+            "not_configured (default, safe) | analyzed | pending | skipped | failed. "
+            "Set VISUAL_ANALYSIS_PROVIDER to enable."
+        ),
     )
     visible_evidence_status: VisibleEvidenceStatus = Field(
         default="not_captured",

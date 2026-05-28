@@ -23,10 +23,11 @@ Precise Visual Workflow Evidence (v3):
   — detects app type: ml_app, chatbot, route_map, dashboard, document,
     portfolio, generic.
   — extracts IAO patterns from event sequence (upload → predict → result).
-  — visual_analysis_status = "not_available" until frame/OCR is implemented.
+  — visual_analysis_status = "not_configured" when no visual provider is set;
+    becomes "analyzed" when local OCR / local vision / OpenAI Vision runs.
   — does NOT fake confidence scores or prediction labels from OCR;
-    detected_result_values is empty when visual analysis is unavailable.
-  — TODO: plug in frame-sampling + vision/OCR service here when available.
+    detected_result_values is empty when visual analysis is not configured.
+  — Visual frame analysis plugged in via WorkflowVisualAnalysisService (v5).
 
 DOM Visible Evidence Integration (v4):
   — when workflow_visible_evidence_events exist for the session, the
@@ -432,6 +433,34 @@ class ExtensionProofWorkflowAnalysisService:
                 session_id, exc_info=True,
             )
 
+        # ── Load visual frame evidence (v5) ────────────────────────────────
+        # Provider-agnostic visual analysis (local OCR / local vision / OpenAI / future).
+        # If no provider is configured, visual_frame_observations is None — safe fallback.
+        visual_frame_observations: dict | None = None
+        try:
+            from app.services.workflow_visual_analysis_service import (
+                WorkflowVisualAnalysisService,
+            )
+            va_svc = WorkflowVisualAnalysisService(self._client)
+            vf_obs = va_svc.get_visual_observations(user_id, session_id)
+            # Only use if frames were actually captured and analyzed
+            if vf_obs.get("visual_frame_analysis_status") not in ("not_captured", "not_configured"):
+                visual_frame_observations = vf_obs
+                logger.info(
+                    "WORKFLOW_ANALYSIS_VISUAL_FRAMES_LOADED session=%s status=%s frames=%d",
+                    session_id,
+                    vf_obs.get("visual_frame_analysis_status"),
+                    vf_obs.get("visual_frame_count", 0),
+                )
+            else:
+                # Capture the status even when no frames available (for status fields)
+                visual_frame_observations = vf_obs
+        except Exception:
+            logger.warning(
+                "WORKFLOW_ANALYSIS_VISUAL_FRAMES_LOAD_FAILED session=%s — continuing without",
+                session_id, exc_info=True,
+            )
+
         result = _analyze_workflow(
             proof_data=proof_data,
             claimed_skills=claimed_skills,
@@ -440,6 +469,7 @@ class ExtensionProofWorkflowAnalysisService:
             url_type=url_type,
             github_url=github_url,
             visible_observations=visible_observations,
+            visual_frame_observations=visual_frame_observations,
         )
 
         logger.info("WORKFLOW_ANALYSIS_DB_INSERT_START session=%s", session_id)
@@ -1122,7 +1152,8 @@ def _build_observed_demonstration(
 ) -> dict[str, Any]:
     """Build the observed_demonstration structure.
 
-    visual_analysis_status = "not_available" (OCR/frame analysis not yet implemented).
+    visual_analysis_status = "not_configured" when no visual provider is set.
+    Becomes "analyzed" when local OCR / vision provider runs.
     dom_evidence_status reflects DOM text capture from the browser extension — this IS
     available and should be shown positively when the extension captured page text.
 
@@ -1248,10 +1279,12 @@ def _build_observed_demonstration(
     if _has_graphical and _graphical_note:
         limitations.append(_graphical_note)
 
-    # Frame/OCR limitation — always present, but secondary to DOM status
+    # Frame/OCR limitation — only shown when no visual provider is configured
+    # When local OCR or vision model is active, this limitation is removed.
     limitations.append(
-        "Frame/OCR analysis is not yet available — "
-        "precise output values from screenshots or graphical elements require future frame extraction."
+        "Visual frame analysis is not configured — "
+        "to enable local OCR or vision model analysis of screenshots, "
+        "set VISUAL_ANALYSIS_PROVIDER and ENABLE_WORKFLOW_FRAME_CAPTURE=true."
     )
 
     if not iao_patterns:
@@ -1263,11 +1296,11 @@ def _build_observed_demonstration(
     return {
         "target_app": target_app,
         # OCR/frame analysis — not yet implemented
-        "visual_analysis_status": "not_available",
+        "visual_analysis_status": "not_configured",
         # DOM text capture status — the one that's actually meaningful now
         "visible_evidence_status": _vis_ev_status,
         "dom_evidence_status": _dom_ev_status,
-        "ocr_status": "not_available",
+        "ocr_status": "not_configured",
         # Graphical rendering info
         "has_graphical_rendering": _has_graphical,
         # Result snippets for UI surface
@@ -1319,6 +1352,7 @@ def _analyze_workflow(
     url_type: str,
     github_url: str | None,
     visible_observations: "Any | None" = None,
+    visual_frame_observations: "dict | None" = None,
 ) -> dict[str, Any]:
     events: list[dict[str, Any]] = proof_data.get("workflow_events") or []
     started_at_str: str | None = proof_data.get("started_at")
@@ -1438,6 +1472,33 @@ def _analyze_workflow(
         top_result_snippets     = list(getattr(visible_observations, "top_result_snippets", []) or [])
         page_context_summary    = getattr(visible_observations, "page_context_summary", None)
 
+    # ── Visual frame evidence (v5) ────────────────────────────────────────────
+    # Evidence priority: DOM values > OCR values > vision summaries > events
+    _vf_status: str = "not_configured"
+    _ocr_status: str = "not_configured"
+    _visual_frame_count: int = 0
+    _visual_provider: str = "none"
+    _visual_result_values: list[dict] = []
+    _visual_summary: str = ""
+
+    if visual_frame_observations is not None:
+        raw_vf = visual_frame_observations.get("visual_frame_analysis_status", "not_configured")
+        # "not_captured" means no frames were submitted — treat same as not_configured
+        _vf_status = raw_vf if raw_vf != "not_captured" else "not_configured"
+        _visual_provider = visual_frame_observations.get("provider_used", "none")
+        _visual_frame_count = visual_frame_observations.get("visual_frame_count", 0)
+        _visual_result_values = visual_frame_observations.get("extracted_result_values", [])
+        _visual_summary  = visual_frame_observations.get("visual_summary", "")
+
+        # Derive OCR status from provider name
+        prov = _visual_provider.lower()
+        if _vf_status == "analyzed" and "ocr" in prov:
+            _ocr_status = "analyzed"
+        elif _vf_status == "analyzed":
+            _ocr_status = "not_configured"   # vision model used, not OCR
+        else:
+            _ocr_status = _vf_status   # propagate not_configured / failed
+
     # ── Observed demonstration (v3/v4) ────────────────────────────────────────
     target_app_label = target_netloc or _extract_domain(original_url)
     observed_demonstration = _build_observed_demonstration(
@@ -1509,11 +1570,17 @@ def _analyze_workflow(
         "target_site_pages_count":    len(target_visited_urls),
         "supporting_evidence_count":  len(supporting_visited_urls),
         "noise_filtered_count":       len(noise_urls),
-        # ── Precise visual workflow evidence (v3/v4) ──────────────────────────
+        # ── Precise visual workflow evidence (v3/v4/v5) ───────────────────────
         "observed_demonstration":     observed_demonstration,
-        # visual_analysis_status / ocr_status: OCR/frame analysis (future, not_available)
-        "visual_analysis_status":     "not_available",
-        "ocr_status":                 "not_available",
+        # Visual frame analysis (v5): provider-agnostic, local-first
+        # Status values: not_configured | pending | analyzed | skipped | failed
+        "visual_analysis_status":     _vf_status,
+        "visual_analysis_provider":   _visual_provider,
+        "visual_frame_count":         _visual_frame_count,
+        "visual_result_values":       _visual_result_values,
+        "visual_summary":             _visual_summary,
+        # OCR status (sub-component of visual analysis when local_ocr provider used)
+        "ocr_status":                 _ocr_status,
         # dom_evidence_status / visible_evidence_status: DOM text capture from extension
         "dom_evidence_status":        dom_evidence_status,
         "visible_evidence_status":    visible_evidence_status,

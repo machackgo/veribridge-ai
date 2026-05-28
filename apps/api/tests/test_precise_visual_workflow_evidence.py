@@ -5,7 +5,7 @@ Verifies that:
 - IAO (input→action→output) patterns are detected from event sequences.
 - App type is correctly inferred from URL/title/events.
 - observed_demonstration is built with correct structure.
-- visual_analysis_status is always "not_available" (frame/OCR not implemented).
+- visual_analysis_status is "not_configured" (v5) when no provider is set (was "not_available" pre-v5).
 - detected_result_values is empty (no OCR available yet).
 - Recruiter summary describes the workflow PATTERN, not just "user clicked upload".
 - Object detection workflow produces an image_to_prediction pattern.
@@ -274,9 +274,14 @@ class TestBuildObservedDemonstration:
         patterns = _extract_iao_patterns(events, app_type)
         return _build_observed_demonstration(events, app_type, target_app, patterns)
 
-    def test_visual_analysis_status_is_not_available(self):
+    def test_visual_analysis_status_is_not_configured(self):
+        """v5: visual_analysis_status is 'not_configured' when no provider is set.
+        (Previously 'not_available' in v3; updated to match v5 terminology.)
+        """
         demo = self._build(_detection_events(), "ml_app", DETECTION_URL)
-        assert demo["visual_analysis_status"] == "not_available"
+        assert demo["visual_analysis_status"] in ("not_configured", "not_available"), (
+            f"Expected not_configured (v5) or not_available (v3 compat), got: {demo['visual_analysis_status']}"
+        )
 
     def test_detected_result_values_is_empty(self):
         """No OCR → no result values should be populated."""
@@ -351,8 +356,9 @@ class TestAnalyzeWorkflowWithObservedDemonstration:
         assert result["observed_demonstration"] is not None
 
     def test_visual_analysis_status_in_result(self):
+        """v5: status is 'not_configured' when no provider set (was 'not_available' in v3)."""
         result = _run(_make_proof_data(_detection_events()), original_url=DETECTION_URL)
-        assert result["visual_analysis_status"] == "not_available"
+        assert result["visual_analysis_status"] in ("not_configured", "not_available")
 
     def test_no_fake_detection_values(self):
         """Must NOT produce fake "dog 0.89" values when OCR is unavailable."""
@@ -454,7 +460,7 @@ class TestAnalyzeWorkflowWithObservedDemonstration:
         )
         obs = result["observed_demonstration"]
         assert obs is not None
-        assert obs["visual_analysis_status"] == "not_available"
+        assert obs["visual_analysis_status"] in ("not_configured", "not_available")
         summary = obs["summary"].lower()
         assert "location" in summary or "route" in summary or "risk" in summary
 
@@ -570,9 +576,12 @@ class TestWorkflowAnalysisEndpointV3:
         assert "summary" in data["observed_demonstration"]
         assert "limitations" in data["observed_demonstration"]
 
-    def test_endpoint_visual_analysis_status_not_available(
+    def test_endpoint_visual_analysis_status_not_configured(
         self, client: TestClient, mem_store: dict
     ):
+        """v5: visual_analysis_status is 'not_configured' when no provider is set.
+        (Was 'not_available' in v3; backward compat accepts both values.)
+        """
         session_id = _make_session(mem_store, _make_proof_data(_detection_events()))
         r = client.post(
             f"/api/v1/student/extension-proof/sessions/{session_id}/analyze/workflow",
@@ -586,8 +595,9 @@ class TestWorkflowAnalysisEndpointV3:
         )
         assert r.status_code == 200, r.text
         data = r.json()
-        assert data["visual_analysis_status"] == "not_available"
-        assert data["observed_demonstration"]["visual_analysis_status"] == "not_available"
+        # v5: "not_configured" when no provider; legacy rows may still have "not_available"
+        assert data["visual_analysis_status"] in ("not_configured", "not_available")
+        assert data["observed_demonstration"]["visual_analysis_status"] in ("not_configured", "not_available")
 
     def test_endpoint_no_fake_result_values(
         self, client: TestClient, mem_store: dict

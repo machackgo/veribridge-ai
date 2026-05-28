@@ -113,6 +113,51 @@ class Settings(BaseSettings):
         alias="TRANSCRIPTION_PROVIDER",
     )
 
+    # ── Visual Frame Analysis ─────────────────────────────────────
+    # Provider-agnostic visual analysis of captured workflow frames.
+    # VISUAL_ANALYSIS_PROVIDER:
+    #   none                 — disabled; returns visual_frame_analysis_status="not_configured"
+    #   local_ocr            — lightweight OCR (PaddleOCR, EasyOCR, or Tesseract)
+    #   local_vision         — local/open-source vision model (LLaVA, Qwen2.5-VL, etc.)
+    #   openai               — OpenAI Vision API (requires OPENAI_API_KEY)
+    #   veribridge_future    — reserved for future VeriBridge fine-tuned model
+    # Default: none (safe — DOM evidence still works; no crash if not configured)
+    visual_analysis_provider: str = Field(
+        default="none",
+        alias="VISUAL_ANALYSIS_PROVIDER",
+    )
+
+    # Whether the extension should capture visual frames during recording.
+    # When false, no frames are sent; visual_frame_analysis_status = "not_configured".
+    enable_workflow_frame_capture: bool = Field(
+        default=False,
+        alias="ENABLE_WORKFLOW_FRAME_CAPTURE",
+    )
+
+    # Maximum number of frames to accept per proof session.
+    max_workflow_frames: int = Field(
+        default=15,
+        alias="MAX_WORKFLOW_FRAMES",
+    )
+
+    # LOCAL_OCR_PROVIDER: paddleocr | easyocr | tesseract
+    # Only used when VISUAL_ANALYSIS_PROVIDER=local_ocr.
+    # If the selected package is not installed, the service returns not_configured
+    # gracefully without crashing.
+    # Install: pip install paddleocr   OR   pip install easyocr   OR   pip install pytesseract
+    local_ocr_provider: str = Field(
+        default="paddleocr",
+        alias="LOCAL_OCR_PROVIDER",
+    )
+
+    # LOCAL_VISION_PROVIDER: llava | qwen_vl | minicpm_v | blip
+    # Only used when VISUAL_ANALYSIS_PROVIDER=local_vision.
+    # Install: pip install transformers torch pillow   (+ model-specific packages)
+    local_vision_provider: str = Field(
+        default="llava",
+        alias="LOCAL_VISION_PROVIDER",
+    )
+
     # OpenAI Whisper (used when transcription_provider=openai)
     openai_api_key: SecretStr = Field(
         default=SecretStr(""),

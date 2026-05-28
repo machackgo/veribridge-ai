@@ -19,3 +19,33 @@ scikit-learn==1.6.0
 #   Install: pip install faster-whisper
 #            brew install ffmpeg   # or: apt install ffmpeg
 # faster-whisper
+
+# ── Optional: Visual Frame Analysis providers ──────────────────────────────────
+# Required only when VISUAL_ANALYSIS_PROVIDER is set to local_ocr or local_vision.
+# All providers fall back gracefully to not_configured if packages are missing.
+#
+# LOCAL OCR (VISUAL_ANALYSIS_PROVIDER=local_ocr)
+# Choose one:
+#   PaddleOCR (recommended — fast, accurate, lightweight CPU inference):
+#     pip install paddleocr paddlepaddle
+#     Set: LOCAL_OCR_PROVIDER=paddleocr
+#
+#   EasyOCR (good accuracy, supports 80+ languages):
+#     pip install easyocr
+#     Set: LOCAL_OCR_PROVIDER=easyocr
+#
+#   Tesseract (system package + Python wrapper):
+#     brew install tesseract   # or: apt install tesseract-ocr
+#     pip install pytesseract pillow
+#     Set: LOCAL_OCR_PROVIDER=tesseract
+#
+# LOCAL VISION MODEL (VISUAL_ANALYSIS_PROVIDER=local_vision)
+# Requires transformers + torch + pillow:
+#   pip install transformers torch pillow accelerate
+#   Set: LOCAL_VISION_PROVIDER=llava|qwen_vl|minicpm_v|blip
+#   Models (~1–7 GB) download automatically on first use to ~/.cache/huggingface.
+#   GPU recommended but CPU inference is supported.
+#
+# Pillow is needed for image dimension detection regardless of OCR/vision provider.
+# It is listed as optional because it is not needed for DOM-only workflows.
+# pillow
