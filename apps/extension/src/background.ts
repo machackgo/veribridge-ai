@@ -1,6 +1,6 @@
 // Background service worker — manages recording state and uploads proof to the backend.
 
-import type { WorkflowEvent, ExtensionState, RecordingStatus } from "./types"
+import type { WorkflowEvent, ExtensionState, RecordingStatus, VisibleEvidenceEvent } from "./types"
 
 // ── URL privacy redaction ─────────────────────────────────────────────────────
 // Mirrors the same set used in content.ts. Defined here independently because
@@ -52,6 +52,8 @@ interface InternalState {
   authToken: string
   isRecording: boolean
   events: WorkflowEvent[]
+  /** Visible evidence DOM snapshots accumulated during the recording. */
+  visibleEvidenceEvents: VisibleEvidenceEvent[]
   startedAt: string | null
   stoppedAt: string | null
   status: RecordingStatus
@@ -70,6 +72,7 @@ const state: InternalState = {
   authToken: "",
   isRecording: false,
   events: [],
+  visibleEvidenceEvents: [],
   startedAt: null,
   stoppedAt: null,
   status: "idle",
@@ -126,6 +129,7 @@ chrome.runtime.onMessage.addListener(
         state.authToken = authToken
         state.isRecording = true
         state.events = []
+        state.visibleEvidenceEvents = []
         state.startedAt = new Date().toISOString()
         state.stoppedAt = null
         state.status = "recording"
@@ -208,6 +212,12 @@ chrome.runtime.onMessage.addListener(
           state.events.push(msg.payload as WorkflowEvent)
         }
         break
+
+      case "VISIBLE_EVIDENCE_EVENT":
+        if (state.isRecording) {
+          state.visibleEvidenceEvents.push(msg.payload as VisibleEvidenceEvent)
+        }
+        break
     }
   }
 )
@@ -255,6 +265,38 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   chrome.tabs.sendMessage(tabId, { type: "START_CAPTURING" }).catch(() => undefined)
 })
 
+/**
+ * Fire-and-forget upload of accumulated visible evidence events.
+ * Never throws; never retries more than once.  A failure here must not block
+ * or affect the main proof upload.
+ */
+async function sendVisibleEvidence(): Promise<void> {
+  if (!state.sessionId || state.visibleEvidenceEvents.length === 0) return
+  const events = [...state.visibleEvidenceEvents]          // snapshot — don't hold the reference
+  const url = `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/workflow/visible-evidence`
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (state.authToken) headers["Authorization"] = `Bearer ${state.authToken}`
+  const body = JSON.stringify({ events })
+
+  const attemptFetch = (): Promise<Response> =>
+    fetch(url, { method: "POST", headers, body })
+
+  try {
+    let resp = await attemptFetch()
+    if (!resp.ok && resp.status >= 500) {
+      // One retry after a brief pause for transient 5xx errors.
+      await new Promise<void>((r) => setTimeout(r, 800))
+      resp = await attemptFetch()
+    }
+    if (!resp.ok) {
+      console.warn(`VeriBridge: visible evidence upload returned HTTP ${resp.status}`)
+    }
+  } catch (err) {
+    // Network failure — log and swallow so the main upload is not affected.
+    console.warn("VeriBridge: visible evidence upload failed:", err)
+  }
+}
+
 async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error?: string }> {
   if (!state.sessionId) {
     const err = "No session ID. Enter a session ID in the extension popup."
@@ -264,6 +306,10 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
   state.status = "uploading"
   state.statusMessage = "Uploading proof…"
   state.lastUploadError = null
+
+  // Fire-and-forget: send visible evidence events to the backend.
+  // This must not block or affect the main proof upload.
+  void sendVisibleEvidence()
 
   const trackedUrls = [
     ...new Set(

@@ -1,6 +1,8 @@
 // Content script — injected into every page; only captures events while recording is active.
 // Never collects cookies, localStorage, sessionStorage, or password values.
 
+import type { VisibleEvidenceEvent, FileUploadMeta } from "./types"
+
 // ── Sensitive field detection ──────────────────────────────────────────────────
 
 /**
@@ -59,6 +61,154 @@ function redactSensitiveQueryParams(url: string): string {
   }
 }
 
+// ── Visible Evidence — constants & helpers ────────────────────────────────────
+
+/**
+ * Keywords that flag a text block as a likely AI/ML result or output.
+ * This list intentionally covers many demo domains (object detection, dashboards,
+ * chatbots, routing apps, finance, document analysis, etc.).
+ */
+const RESULT_KWDS = [
+  "prediction", "result", "output", "score", "confidence", "probability",
+  "risk", "detected", "label", "class", "summary", "answer", "response",
+  "route", "recommendation", "chart", "table", "generated", "analysis",
+]
+// Build once — avoids re-compiling the regex on every DOM snapshot.
+const RESULT_KWD_RE = new RegExp(`\\b(${RESULT_KWDS.join("|")})\\b`, "i")
+
+/**
+ * Privacy scrubbing patterns applied client-side to every text block
+ * before the event is emitted to the background service worker.
+ * The backend applies the same patterns again as defense-in-depth.
+ */
+const SCRUB_PATTERNS: Array<[RegExp, string]> = [
+  // JWT-shaped strings first (avoids overlapping with hex pattern below)
+  [/ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*/g, "[JWT]"],
+  // password / token / key = value pairs in any format
+  [/\b(password|passwd|api[_-]?key|secret|token|bearer|auth)\s*[:=]\s*\S+/gi, "$1=[REDACTED]"],
+  // Windows and Unix local file paths
+  [/([A-Za-z]:\\[^\s,;"'<>]+|\/(?:home|Users|root|tmp|var|etc)\/[^\s,;"'<>]+)/g, "[LOCAL_PATH]"],
+  // Supabase project URLs
+  [/https?:\/\/[a-z0-9]+\.supabase\.(?:co|com|io)[^\s]*/gi, "[SUPABASE_URL]"],
+  // VeriBridge internal pages on localhost
+  [/https?:\/\/localhost(?::\d+)?\/(?:dashboard|admin|passport)[^\s]*/gi, "[INTERNAL_URL]"],
+  // Credit card numbers (13–16 digits, optional space/dash separators)
+  [/\b(?:\d[ -]?){13,16}\b/g, "[CARD]"],
+  // Social Security Numbers
+  [/\b\d{3}[-\s]\d{2}[-\s]\d{4}\b/g, "[SSN]"],
+  // Long hex strings 32+ chars (hashes, tokens, API keys)
+  [/\b[0-9a-f]{32,}\b/gi, "[HEX]"],
+]
+
+/** Apply all SCRUB_PATTERNS to a single text block. */
+function scrubBlock(text: string): string {
+  let s = text
+  for (const [re, repl] of SCRUB_PATTERNS) s = s.replace(re, repl)
+  return s.trim()
+}
+
+/**
+ * Returns true when the current page is an internal VeriBridge page.
+ * We skip evidence capture there to avoid leaking session metadata or auth tokens.
+ */
+function isVeriBridgeInternal(): boolean {
+  const { hostname, pathname } = location
+  if (hostname === "localhost") {
+    return (
+      pathname.startsWith("/dashboard") ||
+      pathname.startsWith("/passport") ||
+      pathname.startsWith("/admin")
+    )
+  }
+  return hostname.endsWith("veribridge.ai")
+}
+
+/** Collect a safe snapshot of current non-sensitive form input values. */
+function getInputSnapshot(): Record<string, string> {
+  const out: Record<string, string> = {}
+  try {
+    document.querySelectorAll<HTMLInputElement>("input, select, textarea").forEach((el) => {
+      if (isSensitive(el)) return
+      const key = (el.name || el.id || el.getAttribute("aria-label") || "").slice(0, 50)
+      if (!key || key.startsWith("vb-")) return
+      const val =
+        el.type === "checkbox" || el.type === "radio"
+          ? String((el as HTMLInputElement).checked)
+          : (el.value ?? "").trim().slice(0, 200)
+      if (val) out[key] = val
+    })
+  } catch { /* best-effort */ }
+  return out
+}
+
+const MAX_VE_BLOCKS = 120
+const MIN_VE_LEN = 3
+const MAX_VE_LEN = 300
+
+/**
+ * Walk the live DOM via TreeWalker and return up to MAX_VE_BLOCKS sanitized
+ * visible text blocks.  Skips the recorder bar, hidden nodes, and non-content tags.
+ */
+function getVisibleBlocks(): string[] {
+  const blocks: string[] = []
+  try {
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          const p = node.parentElement
+          if (!p) return NodeFilter.FILTER_REJECT
+          // Skip recorder bar shadow host and everything inside it
+          if (p.closest("#veribridge-recorder-host") !== null) return NodeFilter.FILTER_REJECT
+          const tag = p.tagName.toUpperCase()
+          if (["SCRIPT", "STYLE", "NOSCRIPT", "META", "HEAD", "TITLE"].includes(tag)) {
+            return NodeFilter.FILTER_REJECT
+          }
+          if ((p as HTMLElement).hidden) return NodeFilter.FILTER_REJECT
+          return NodeFilter.FILTER_ACCEPT
+        },
+      }
+    )
+    let node: Node | null
+    while ((node = walker.nextNode()) !== null && blocks.length < MAX_VE_BLOCKS) {
+      const text = (node.textContent ?? "").trim()
+      if (text.length >= MIN_VE_LEN && text.length <= MAX_VE_LEN) {
+        const scrubbed = scrubBlock(text)
+        if (scrubbed.length >= MIN_VE_LEN) blocks.push(scrubbed)
+      }
+    }
+  } catch { /* DOM may be partially constructed */ }
+  return blocks
+}
+
+/** Filter visible blocks to those containing at least one result keyword. */
+function getResultBlocks(blocks: string[]): string[] {
+  return blocks.filter((b) => RESULT_KWD_RE.test(b)).slice(0, 30)
+}
+
+/** FNV-1a non-reversible hash — used to mask filenames before sending to the backend. */
+function hashName(name: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < name.length; i++) {
+    h ^= name.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return h.toString(16).padStart(8, "0")
+}
+
+/** Categorise a file by its extension for the file_upload_meta payload. */
+function fileExtCategory(ext: string): FileUploadMeta["file_category"] {
+  const e = ext.toLowerCase()
+  if (["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "tiff", "ico"].includes(e)) return "image"
+  if (["mp4", "webm", "mov", "avi", "mkv", "flv"].includes(e)) return "video"
+  if (["mp3", "wav", "ogg", "aac", "flac", "m4a"].includes(e)) return "audio"
+  if (["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "txt", "json", "xml", "md"].includes(e)) {
+    return "document"
+  }
+  return "other"
+}
+
 interface WorkflowEvent {
   type: "page_visit" | "click" | "input_change" | "tab_opened" | "navigation"
   timestamp: string
@@ -98,6 +248,16 @@ let autoDismissTimer: ReturnType<typeof setTimeout> | null = null
 let barPoll: ReturnType<typeof setInterval> | null = null
 let barMinimized = false
 let lastState: StateSnapshot | null = null
+
+// ── Visible Evidence — module state ──────────────────────────────────────────
+/** Epoch-ms at which the current recording started; offset basis for timestamp_ms. */
+let recordingStartMs = 0
+/** Debounce timer for post-action DOM snapshots (click / input_change). */
+let postActionSnapTimer: ReturnType<typeof setTimeout> | null = null
+/** Debounce timer for MutationObserver-triggered snapshots. */
+let mutDebounceTimer: ReturnType<typeof setTimeout> | null = null
+/** Active MutationObserver — null when not recording. */
+let mutObs: MutationObserver | null = null
 
 // ── Local dismiss storage ─────────────────────────────────────────────────────
 // Persists dismissed state in sessionStorage so it survives polling restarts and
@@ -192,54 +352,184 @@ function handleContextInvalidated(): void {
   hideFloatingBar()
 }
 
+// ── Visible Evidence — emit & capture ────────────────────────────────────────
+
+/** Forward a VisibleEvidenceEvent to the background service worker. */
+function emitVisibleEvidence(event: VisibleEvidenceEvent): void {
+  void safeSendMessage({ type: "VISIBLE_EVIDENCE_EVENT", payload: event })
+}
+
+/**
+ * Take a DOM snapshot and emit a VisibleEvidenceEvent.
+ * Silently skips when not recording or on a VeriBridge-internal page.
+ */
+function captureSnapshot(
+  eventType: VisibleEvidenceEvent["event_type"],
+  actionMeta?: Record<string, string>,
+  fileUploadMeta?: FileUploadMeta | null,
+): void {
+  if (!capturing || isVeriBridgeInternal()) return
+  const visibleBlocks = getVisibleBlocks()
+  const resultBlocks = getResultBlocks(visibleBlocks)
+  emitVisibleEvidence({
+    event_type: eventType,
+    timestamp_ms: Date.now() - recordingStartMs,
+    url: safePageUrl(),
+    page_title: document.title,
+    target_domain: location.hostname,
+    visible_text_blocks: visibleBlocks,
+    result_like_blocks: resultBlocks,
+    input_snapshot: getInputSnapshot(),
+    action_snapshot: actionMeta ?? {},
+    file_upload_meta: fileUploadMeta ?? null,
+  })
+}
+
+/**
+ * Debounced post-action snapshot: waits 1.5 s after the triggering event so
+ * the page has time to render any result or status change.
+ * A subsequent call within the window resets the timer.
+ */
+function schedulePostActionSnapshot(
+  eventType: VisibleEvidenceEvent["event_type"],
+  actionMeta?: Record<string, string>,
+): void {
+  if (postActionSnapTimer) clearTimeout(postActionSnapTimer)
+  postActionSnapTimer = setTimeout(() => {
+    postActionSnapTimer = null
+    captureSnapshot(eventType, actionMeta)
+  }, 1500)
+}
+
 // ── Event capture ─────────────────────────────────────────────────────────────
 
 function emit(event: WorkflowEvent): void {
   void safeSendMessage({ type: "WORKFLOW_EVENT", payload: event })
 }
 
+function handleFormSubmit(e: Event): void {
+  const form = e.target as HTMLFormElement
+  const actionMeta: Record<string, string> = {}
+  if (form.action) actionMeta["form_action"] = form.action.slice(0, 200)
+  if (form.method) actionMeta["form_method"] = form.method
+  captureSnapshot("form_submit", actionMeta)
+}
+
 function handleClick(e: Event): void {
   const target = e.target as Element
   // Shadow DOM re-targets clicks inside the bar host to the host element at capture phase.
   if (!target || target === barHost) return
+  const meta = safeMeta(target)
   emit({
     type: "click",
     timestamp: nowIso(),
     page_url: safePageUrl(),
     page_title: document.title,
-    ...safeMeta(target),
+    ...meta,
   })
+  // Schedule a DOM snapshot 1.5 s after the click to capture any resulting page update.
+  const actionMeta: Record<string, string> = {}
+  if (meta.element_tag) actionMeta["tag"] = meta.element_tag
+  if (meta.element_text) actionMeta["text"] = meta.element_text.slice(0, 100)
+  if (meta.element_id) actionMeta["id"] = meta.element_id
+  schedulePostActionSnapshot("click", actionMeta)
 }
 
 function handleChange(e: Event): void {
   const target = e.target as HTMLInputElement
   if (!target) return
+  const meta = safeMeta(target)
   emit({
     type: "input_change",
     timestamp: nowIso(),
     page_url: safePageUrl(),
     page_title: document.title,
-    ...safeMeta(target),
+    ...meta,
     // Sensitive inputs: store a redaction marker instead of any value.
     // The marker [REDACTED_SENSITIVE_FIELD] lets the backend privacy scan
     // count how many fields the extension already masked.
     value: isSensitive(target) ? "[REDACTED_SENSITIVE_FIELD]" : undefined,
   })
+
+  if (target.type === "file" && target.files && target.files.length > 0) {
+    // File input: capture safe metadata only — never the local path or raw filename.
+    const file = target.files[0]
+    const nameParts = file.name.split(".")
+    const ext = nameParts.length > 1 ? nameParts[nameParts.length - 1] : ""
+    const uploadMeta: FileUploadMeta = {
+      file_category: fileExtCategory(ext),
+      file_extension: ext.toLowerCase(),
+      file_name_masked: hashName(file.name),
+    }
+    const actionMeta: Record<string, string> = {}
+    if (meta.element_tag) actionMeta["tag"] = meta.element_tag
+    if (meta.element_name) actionMeta["name"] = meta.element_name ?? ""
+    captureSnapshot("file_upload", actionMeta, uploadMeta)
+  } else {
+    // Regular input change — snapshot after the debounce window in case the page reacts.
+    const inputMeta: Record<string, string> = {}
+    if (meta.element_tag) inputMeta["tag"] = meta.element_tag
+    if (meta.element_name) inputMeta["name"] = meta.element_name ?? ""
+    if (meta.element_type) inputMeta["input_type"] = meta.element_type
+    if (!isSensitive(target) && target.value?.trim()) {
+      inputMeta["value_preview"] = target.value.trim().slice(0, 50)
+    }
+    schedulePostActionSnapshot("input_change", inputMeta)
+  }
 }
 
 function startCapture(): void {
   if (capturing) return
   capturing = true
+  recordingStartMs = Date.now()
+
   emit({ type: "page_visit", timestamp: nowIso(), page_url: safePageUrl(), page_title: document.title })
   document.addEventListener("click", handleClick, { capture: true, passive: true })
   document.addEventListener("change", handleChange, { capture: true, passive: true })
+  document.addEventListener("submit", handleFormSubmit, { capture: true, passive: true })
+
+  // Capture the page's current visible state on load.
+  captureSnapshot("page_load")
+
+  // Watch for DOM mutations (debounced 1.5 s) — emits result_detected if result
+  // keywords appear in the updated content, otherwise dom_snapshot.
+  mutObs = new MutationObserver(() => {
+    if (mutDebounceTimer) clearTimeout(mutDebounceTimer)
+    mutDebounceTimer = setTimeout(() => {
+      mutDebounceTimer = null
+      if (!capturing || isVeriBridgeInternal()) return
+      const visibleBlocks = getVisibleBlocks()
+      const resultBlocks = getResultBlocks(visibleBlocks)
+      emitVisibleEvidence({
+        event_type: resultBlocks.length > 0 ? "result_detected" : "dom_snapshot",
+        timestamp_ms: Date.now() - recordingStartMs,
+        url: safePageUrl(),
+        page_title: document.title,
+        target_domain: location.hostname,
+        visible_text_blocks: visibleBlocks,
+        result_like_blocks: resultBlocks,
+        input_snapshot: getInputSnapshot(),
+        action_snapshot: {},
+        file_upload_meta: null,
+      })
+    }, 1500)
+  })
+  mutObs.observe(document.body, { childList: true, subtree: true, characterData: true })
 }
 
 function stopCapture(): void {
   if (!capturing) return
+  // Snapshot the final page state BEFORE flipping the flag (captureSnapshot checks it).
+  captureSnapshot("recording_end")
   capturing = false
+
   document.removeEventListener("click", handleClick, true)
   document.removeEventListener("change", handleChange, true)
+  document.removeEventListener("submit", handleFormSubmit, true)
+
+  if (postActionSnapTimer) { clearTimeout(postActionSnapTimer); postActionSnapTimer = null }
+  if (mutDebounceTimer) { clearTimeout(mutDebounceTimer); mutDebounceTimer = null }
+  if (mutObs) { mutObs.disconnect(); mutObs = null }
 }
 
 chrome.runtime.onMessage.addListener((msg: { type: string }) => {
