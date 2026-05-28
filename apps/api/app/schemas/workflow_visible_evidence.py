@@ -115,6 +115,15 @@ class VisibleEvidenceEventInput(BaseModel):
         default=None,
         description="File metadata for file_upload events. Never include local paths.",
     )
+    # Graphical rendering detection — captured by the extension
+    canvas_count: int | None = Field(
+        default=None,
+        description="Number of <canvas> elements on the page at capture time.",
+    )
+    svg_count: int | None = Field(
+        default=None,
+        description="Number of <svg> elements on the page at capture time.",
+    )
 
 
 class VisibleEvidenceBatchRequest(BaseModel):
@@ -144,6 +153,17 @@ class ExtractedObservations(BaseModel):
 
     Fed into workflow-analysis-v4 to populate detected_result_values and
     enrich the Observed Demonstration timeline.
+
+    Status fields:
+      visible_evidence_status  — DOM text capture (available/partial/not_captured)
+      dom_evidence_status      — explicit alias for visible_evidence_status (clearer naming)
+      visual_frame_analysis_status — OCR/frame analysis; always "not_available" until implemented
+      ocr_status               — same as visual_frame_analysis_status
+
+    Graphical rendering:
+      has_graphical_rendering  — True when canvas or SVG elements were detected
+      graphical_rendering_note — Human-readable note when outputs may be in charts/canvas/SVG
+      top_result_snippets      — Top visible result-like text snippets for UI display
     """
     observed_inputs: list[str] = Field(default_factory=list)
     observed_actions: list[str] = Field(default_factory=list)
@@ -151,7 +171,20 @@ class ExtractedObservations(BaseModel):
     detected_result_values: list[ExtractedResultValue] = Field(default_factory=list)
     demonstrated_features: list[str] = Field(default_factory=list)
     skill_support_reasoning: list[str] = Field(default_factory=list)
+    # DOM capture status — what the browser extension collected
     visible_evidence_status: VisibleEvidenceStatus = "not_captured"
+    dom_evidence_status: VisibleEvidenceStatus = "not_captured"
+    # OCR/frame analysis — always not_available until implemented
+    visual_frame_analysis_status: str = "not_available"
+    ocr_status: str = "not_available"
+    # Graphical rendering detection
+    has_graphical_rendering: bool = False
+    graphical_rendering_note: str | None = None
+    # Top result snippets (for UI surface — limited, safe to display)
+    top_result_snippets: list[str] = Field(default_factory=list)
+    # Page context summary (DOM-derived description of the visited site)
+    page_context_summary: str | None = None
+    # Counts
     event_count: int = 0
     result_event_count: int = 0
     file_upload_count: int = 0
@@ -184,6 +217,13 @@ class VisibleEvidenceSummaryResponse(BaseModel):
     result_event_count: int
     file_upload_count: int
     visible_evidence_status: VisibleEvidenceStatus
+    dom_evidence_status: VisibleEvidenceStatus = "not_captured"
+    visual_frame_analysis_status: str = "not_available"
+    ocr_status: str = "not_available"
+    has_graphical_rendering: bool = False
+    graphical_rendering_note: str | None = None
+    top_result_snippets: list[str] = Field(default_factory=list)
+    page_context_summary: str | None = None
     events_summary: list[VisibleEvidenceSummaryEvent]
     extracted_observations: ExtractedObservations
     privacy_note: str = (

@@ -269,6 +269,12 @@ def sanitize_event(event: VisibleEvidenceEventInput) -> tuple[dict[str, Any], li
     except Exception:
         pass
 
+    # Canvas / SVG counts — stored safely in action_snapshot metadata
+    if event.canvas_count is not None:
+        action_snap["canvas_count"] = int(event.canvas_count)
+    if event.svg_count is not None:
+        action_snap["svg_count"] = int(event.svg_count)
+
     return {
         "event_type": event.event_type,
         "event_id": event.event_id,
@@ -361,13 +367,86 @@ _ACTION_KEYWORDS: tuple[str, ...] = (
 )
 
 
+def _summarize_visible_blocks_for_context(
+    all_visible_blocks: list[str],
+    page_titles: list[str],
+    target_domain: str,
+) -> str | None:
+    """Derive a human-readable context summary from captured DOM text blocks.
+
+    Used when result values weren't extracted numerically but DOM text was
+    captured — lets the analysis describe what kind of site/page was visited.
+    """
+    if not all_visible_blocks:
+        return None
+
+    # Pick up to 8 unique, meaningful blocks (>= 5 chars, not a URL, not a number)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for b in all_visible_blocks:
+        b = b.strip()
+        if len(b) < 5 or b.lower() in seen:
+            continue
+        if b.startswith("http") or b.replace(".", "").replace(",", "").isdigit():
+            continue
+        seen.add(b.lower())
+        unique.append(b)
+        if len(unique) >= 10:
+            break
+
+    if not unique:
+        return None
+
+    title_hint = f"'{page_titles[0]}' " if page_titles else ""
+    domain_hint = f"({target_domain}) " if target_domain else ""
+    snippet = "; ".join(unique[:5])
+    return (
+        f"DOM text was captured from {title_hint}{domain_hint}page. "
+        f"Visible text included: {snippet}."
+    )
+
+
+def _detect_graphical_rendering(rows: list[dict[str, Any]]) -> tuple[bool, str | None]:
+    """Detect whether the page appears to render outputs graphically (canvas/SVG).
+
+    Returns (has_graphical_rendering, note_for_user).
+    """
+    max_canvas = 0
+    max_svg = 0
+    for row in rows:
+        snap = row.get("action_snapshot") or {}
+        canvas = int(snap.get("canvas_count") or 0)
+        svg = int(snap.get("svg_count") or 0)
+        max_canvas = max(max_canvas, canvas)
+        max_svg = max(max_svg, svg)
+
+    has_graphical = (max_canvas + max_svg) > 0
+    if not has_graphical:
+        return False, None
+
+    parts: list[str] = []
+    if max_canvas > 0:
+        parts.append(f"{max_canvas} canvas element{'s' if max_canvas > 1 else ''}")
+    if max_svg > 0:
+        parts.append(f"{max_svg} SVG element{'s' if max_svg > 1 else ''}")
+    note = (
+        f"This page uses graphical visualization elements ({', '.join(parts)}). "
+        "Exact chart, bar, or plot values may not be readable from DOM text. "
+        "OCR/frame analysis would be required to extract precise visual output values."
+    )
+    return True, note
+
+
 def _derive_observations_from_rows(rows: list[dict[str, Any]]) -> ExtractedObservations:
     """Build structured observations from stored evidence event rows."""
     observed_inputs: list[str] = []
     observed_actions: list[str] = []
     observed_outputs: list[str] = []
     all_result_blocks: list[str] = []
+    all_visible_blocks: list[str] = []
     demonstrated_features: list[str] = []
+    all_page_titles: list[str] = []
+    all_target_domains: list[str] = []
     file_upload_count = 0
     form_submit_count = 0
     result_event_count = 0
@@ -379,6 +458,15 @@ def _derive_observations_from_rows(rows: list[dict[str, Any]]) -> ExtractedObser
         result_blocks = row.get("result_like_blocks") or []
         visible_blocks = row.get("visible_text_blocks") or []
         page_title = row.get("page_title") or ""
+        target_domain = row.get("target_domain") or ""
+
+        if page_title and page_title not in all_page_titles:
+            all_page_titles.append(page_title)
+        if target_domain and target_domain not in all_target_domains:
+            all_target_domains.append(target_domain)
+
+        # Accumulate visible blocks for context summary
+        all_visible_blocks.extend(visible_blocks)
 
         # ── File upload ────────────────────────────────────────────────────
         if etype == "file_upload":
@@ -393,7 +481,6 @@ def _derive_observations_from_rows(rows: list[dict[str, Any]]) -> ExtractedObser
         # ── Click / action ─────────────────────────────────────────────────
         elif etype == "click":
             element_text = str(action_snap.get("element_text") or action_snap.get("text") or "").strip()
-            element_type = str(action_snap.get("element_type") or "button")
             if element_text:
                 element_lower = element_text.lower()
                 if any(kw in element_lower for kw in _ACTION_KEYWORDS):
@@ -422,7 +509,6 @@ def _derive_observations_from_rows(rows: list[dict[str, Any]]) -> ExtractedObser
             if result_blocks:
                 result_event_count += 1
                 all_result_blocks.extend(result_blocks)
-                # Summarize what appeared
                 preview = result_blocks[0][:80] if result_blocks else ""
                 if preview:
                     suffix = "..." if len(result_blocks[0]) > 80 else ""
@@ -432,11 +518,18 @@ def _derive_observations_from_rows(rows: list[dict[str, Any]]) -> ExtractedObser
         elif etype == "page_load":
             if page_title:
                 demonstrated_features.append(f"Page loaded: {page_title}")
+            # Surface notable navigation labels from DOM text on page load
+            nav_labels = [
+                b for b in visible_blocks
+                if 3 < len(b) <= 60 and not b.startswith("http") and not b.replace(".", "").isdigit()
+            ][:4]
+            for label in nav_labels:
+                if label not in demonstrated_features:
+                    demonstrated_features.append(label)
 
         # ── Recording end ──────────────────────────────────────────────────
         elif etype == "recording_end":
             if visible_blocks:
-                # Grab any result-like blocks from final snapshot
                 relevant = [b for b in visible_blocks if _is_result_relevant(b)]
                 all_result_blocks.extend(relevant[:5])
 
@@ -460,13 +553,26 @@ def _derive_observations_from_rows(rows: list[dict[str, Any]]) -> ExtractedObser
     if observed_actions:
         skill_support_reasoning.append(f"Actions triggered: {', '.join(observed_actions[:3])}")
 
+    # Detect graphical rendering (canvas/SVG)
+    has_graphical_rendering, graphical_note = _detect_graphical_rendering(rows)
+
+    # Derive page context summary from DOM text when result values weren't found
+    primary_domain = all_target_domains[0] if all_target_domains else ""
+    page_context_summary = _summarize_visible_blocks_for_context(
+        all_visible_blocks, all_page_titles, primary_domain
+    )
+
+    # Top result snippets — safe to surface in UI (up to 5)
+    top_result_snippets = list(dict.fromkeys(all_result_blocks))[:5]
+
     # Determine status
     has_results = bool(all_result_blocks or detected_result_values)
     has_interactions = bool(observed_inputs or observed_actions)
+    has_any_blocks = bool(all_visible_blocks)
 
     if has_results and has_interactions:
         status: VisibleEvidenceStatus = "available"
-    elif has_results or has_interactions:
+    elif has_results or has_interactions or has_any_blocks:
         status = "partial"
     else:
         status = "not_captured" if not rows else "partial"
@@ -479,6 +585,13 @@ def _derive_observations_from_rows(rows: list[dict[str, Any]]) -> ExtractedObser
         demonstrated_features=list(dict.fromkeys(demonstrated_features))[:8],
         skill_support_reasoning=skill_support_reasoning,
         visible_evidence_status=status,
+        dom_evidence_status=status,            # explicit alias
+        visual_frame_analysis_status="not_available",
+        ocr_status="not_available",
+        has_graphical_rendering=has_graphical_rendering,
+        graphical_rendering_note=graphical_note,
+        top_result_snippets=top_result_snippets,
+        page_context_summary=page_context_summary,
         event_count=len(rows),
         result_event_count=result_event_count,
         file_upload_count=file_upload_count,
@@ -582,6 +695,13 @@ class WorkflowVisibleEvidenceService:
             result_event_count=observations.result_event_count,
             file_upload_count=observations.file_upload_count,
             visible_evidence_status=observations.visible_evidence_status,
+            dom_evidence_status=observations.dom_evidence_status,
+            visual_frame_analysis_status=observations.visual_frame_analysis_status,
+            ocr_status=observations.ocr_status,
+            has_graphical_rendering=observations.has_graphical_rendering,
+            graphical_rendering_note=observations.graphical_rendering_note,
+            top_result_snippets=observations.top_result_snippets,
+            page_context_summary=observations.page_context_summary,
             events_summary=events_summary,
             extracted_observations=observations,
         )

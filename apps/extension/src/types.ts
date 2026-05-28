@@ -48,6 +48,10 @@ export interface VisibleEvidenceEvent {
   input_snapshot: Record<string, string>
   action_snapshot: Record<string, string>
   file_upload_meta?: FileUploadMeta | null
+  /** Number of <canvas> elements on the page at capture time. */
+  canvas_count?: number
+  /** Number of <svg> elements on the page at capture time. */
+  svg_count?: number
 }
 
 export interface VisibleEvidenceBatchPayload {

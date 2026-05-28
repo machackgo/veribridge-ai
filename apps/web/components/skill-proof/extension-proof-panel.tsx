@@ -850,20 +850,74 @@ function BulletList({ items, color = "var(--ink-2)" }: { items: string[]; color?
 
 // ── Observed Demonstration Timeline ──────────────────────────────────────────
 
-function VisualAnalysisStatusBadge({ status }: { status: string }) {
+/**
+ * DOM evidence badge — shows whether the browser extension captured visible page text.
+ * This is distinct from OCR/frame analysis (which is a separate future feature).
+ */
+function DomEvidenceBadge({ status }: { status: string | undefined }) {
+  const s = status ?? "not_captured"
   const cfg = {
-    available:     { bg: "#f0fdf4", color: "#166534", border: "#bbf7d0", label: "Frame analysis available" },
-    partial:       { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "Partial analysis" },
-    not_available: { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0", label: "Visual analysis not available" },
-  }[status] ?? { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0", label: "Visual analysis not available" }
+    available:    { bg: "#f0fdf4", color: "#166534", border: "#bbf7d0", icon: "✓", label: "DOM evidence captured" },
+    partial:      { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", icon: "~", label: "DOM evidence partial" },
+    not_captured: { bg: "#fef2f2", color: "#991b1b", border: "#fecaca", icon: "○", label: "DOM not captured" },
+  }[s] ?? { bg: "#fef2f2", color: "#991b1b", border: "#fecaca", icon: "○", label: "DOM not captured" }
 
   return (
     <span style={{
-      display: "inline-flex", alignItems: "center", gap: 5,
-      fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 999,
+      display: "inline-flex", alignItems: "center", gap: 4,
+      fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
       background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`,
     }}>
-      {status === "available" ? "✓" : status === "partial" ? "~" : "○"} {cfg.label}
+      {cfg.icon} {cfg.label}
+    </span>
+  )
+}
+
+/**
+ * Frame/OCR analysis badge — always "not available" until implemented.
+ * Shown separately so DOM capture success isn't hidden behind OCR unavailability.
+ */
+function FrameAnalysisBadge() {
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      fontSize: 10, fontWeight: 500, padding: "3px 8px", borderRadius: 999,
+      background: "#f8fafc", color: "#94a3b8", border: "1px solid #e2e8f0",
+    }}>
+      ○ Frame/OCR not available
+    </span>
+  )
+}
+
+/** Graphical rendering badge — shown when canvas/SVG detected on page. */
+function GraphicalRenderingBadge() {
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      fontSize: 10, fontWeight: 500, padding: "3px 8px", borderRadius: 999,
+      background: "#fff7ed", color: "#9a3412", border: "1px solid #fed7aa",
+    }}>
+      ◈ Graphical visualization detected
+    </span>
+  )
+}
+
+/** Evidence source chip shown inside step cards */
+function EvidenceSourceChip({ source }: { source: string | undefined }) {
+  if (!source) return null
+  const cfg: Record<string, { bg: string; color: string; border: string; label: string }> = {
+    dom_snapshot:       { bg: "#f0fdf4", color: "#166534", border: "#bbf7d0", label: "DOM snapshot" },
+    event_metadata:     { bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe", label: "Event metadata" },
+    inferred_from_click:{ bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "Inferred from click" },
+  }
+  const c = cfg[source] ?? { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0", label: source }
+  return (
+    <span style={{
+      fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4,
+      background: c.bg, color: c.color, border: `1px solid ${c.border}`,
+      textTransform: "uppercase", letterSpacing: "0.04em",
+    }}>
+      {c.label}
     </span>
   )
 }
@@ -921,6 +975,7 @@ function DemonstrationStepCard({
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <EvidenceSourceChip source={step.evidence_source} />
           {step.needs_review && (
             <span style={{ fontSize: 10, color: "#854d0e" }}>⚠ Needs review</span>
           )}
@@ -1045,8 +1100,19 @@ function ObservedDemonstrationTimeline({
             {demo.steps.length} step{demo.steps.length !== 1 ? "s" : ""} detected · {demo.target_app}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <VisualAnalysisStatusBadge status={demo.visual_analysis_status} />
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <DomEvidenceBadge status={demo.dom_evidence_status ?? demo.visible_evidence_status ?? "not_captured"} />
+          {(demo.top_result_snippets?.length ?? 0) > 0 && (
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
+              background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0",
+            }}>
+              ✦ {demo.top_result_snippets!.length} result-like block{demo.top_result_snippets!.length !== 1 ? "s" : ""} captured
+            </span>
+          )}
+          <FrameAnalysisBadge />
+          {demo.has_graphical_rendering && <GraphicalRenderingBadge />}
           <span style={{ fontSize: 11, color: "#94a3b8" }}>{collapsed ? "▼" : "▲"}</span>
         </div>
       </button>
@@ -1057,6 +1123,26 @@ function ObservedDemonstrationTimeline({
           <p style={{ margin: 0, fontSize: 12, color: "#334155", lineHeight: 1.7, fontStyle: "italic" }}>
             {demo.summary}
           </p>
+
+          {/* Result-like text snippets captured from DOM */}
+          {(demo.top_result_snippets?.length ?? 0) > 0 && (
+            <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 11px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#166534", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+                Result-like Text Captured from DOM
+              </div>
+              <div style={{ display: "grid", gap: 3 }}>
+                {demo.top_result_snippets!.map((snippet, i) => (
+                  <div key={i} style={{
+                    fontSize: 11, color: "#14532d", padding: "4px 8px", borderRadius: 5,
+                    background: "#dcfce7", border: "1px solid #bbf7d0",
+                    fontFamily: "monospace", wordBreak: "break-word",
+                  }}>
+                    {snippet.length > 120 ? `${snippet.slice(0, 117)}…` : snippet}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Steps */}
           {demo.steps.length > 0 && (

@@ -1122,15 +1122,16 @@ def _build_observed_demonstration(
 ) -> dict[str, Any]:
     """Build the observed_demonstration structure.
 
-    visual_analysis_status = "not_available" until OCR/frame is implemented.
-    visible_evidence_status reflects DOM text capture from the extension.
+    visual_analysis_status = "not_available" (OCR/frame analysis not yet implemented).
+    dom_evidence_status reflects DOM text capture from the browser extension — this IS
+    available and should be shown positively when the extension captured page text.
 
     When visible_observations is provided:
     - detected_result_values may be populated with exact output values
     - visible_text_evidence is enriched with DOM-captured text
     - evidence_source per step is "dom_snapshot" or "event_metadata"
 
-    Limitations are surfaced honestly.
+    Limitations are surfaced honestly, distinguishing DOM capture from OCR analysis.
     """
     steps = _build_demonstration_steps(
         target_events, iao_patterns, app_type, target_app,
@@ -1138,14 +1139,23 @@ def _build_observed_demonstration(
     )
 
     _vis_ev_status = "not_captured"
+    _dom_ev_status = "not_captured"
+    _has_graphical = False
+    _graphical_note: str | None = None
+    _top_snippets: list[str] = []
+    _page_context: str | None = None
+
     if visible_observations is not None:
-        _vis_ev_status = getattr(visible_observations, "visible_evidence_status", "not_captured")
+        _vis_ev_status  = getattr(visible_observations, "visible_evidence_status", "not_captured")
+        _dom_ev_status  = getattr(visible_observations, "dom_evidence_status", _vis_ev_status)
+        _has_graphical  = getattr(visible_observations, "has_graphical_rendering", False)
+        _graphical_note = getattr(visible_observations, "graphical_rendering_note", None)
+        _top_snippets   = list(getattr(visible_observations, "top_result_snippets", []) or [])
+        _page_context   = getattr(visible_observations, "page_context_summary", None)
 
     # Get result values to decide summary tone
-    _has_result_values = any(
-        s.get("detected_result_values") for s in steps
-    )
-    _has_dom_evidence = _vis_ev_status in ("available", "partial")
+    _has_result_values = any(s.get("detected_result_values") for s in steps)
+    _has_dom_evidence  = _dom_ev_status in ("available", "partial")
 
     # Build honest summary
     ptype = iao_patterns[0]["pattern_type"] if iao_patterns else None
@@ -1153,16 +1163,21 @@ def _build_observed_demonstration(
     def _output_note() -> str:
         if _has_result_values:
             return "Exact output values were extracted from the visible page content."
+        elif _has_dom_evidence and _has_graphical:
+            return (
+                "Visible page text was captured. This page uses graphical elements "
+                "(charts, canvas, or SVG) — exact visual output values were not readable "
+                "from DOM text alone; OCR/frame analysis would be needed for precise values."
+            )
         elif _has_dom_evidence:
             return (
                 "Visible page text was captured but exact output values were not clearly "
-                "identified in the DOM snapshots."
+                "identified as numeric labels in the DOM snapshots."
             )
         else:
             return (
-                "Exact output values were not readable from the browser event timeline — "
-                "visible evidence was not captured for this recording. "
-                "Video frame analysis would be required to extract precise values."
+                "Exact output values were not readable — visible DOM evidence was not "
+                "captured for this recording. Use a new recording to enable DOM capture."
             )
 
     if ptype == "image_to_prediction":
@@ -1198,41 +1213,65 @@ def _build_observed_demonstration(
     else:
         click_count = sum(1 for e in target_events if e.get("type") == "click")
         input_count = sum(1 for e in target_events if e.get("type") == "input_change")
-        summary = (
-            f"The recording shows {click_count} click interaction(s) and "
-            f"{input_count} input interaction(s) with {target_app or 'the target application'}. "
-            f"{_output_note()}"
-        )
+        if _has_dom_evidence and _page_context:
+            summary = (
+                f"The recording captures navigation and interaction with {target_app or 'the target application'}. "
+                f"{_page_context} "
+                f"{_output_note()}"
+            )
+        else:
+            summary = (
+                f"The recording shows {click_count} click interaction(s) and "
+                f"{input_count} input interaction(s) with {target_app or 'the target application'}. "
+                f"{_output_note()}"
+            )
 
     limitations: list[str] = []
 
-    # Only mention frame analysis limitation if no DOM evidence either
+    # DOM evidence limitations
     if not _has_dom_evidence:
         limitations.append(
             "Visible DOM evidence was not captured for this recording. "
             "Use a new recording after this update to enable visible evidence capture."
         )
     elif not _has_result_values:
-        limitations.append(
-            "Visible page text was captured but result values (labels, scores, numbers) "
-            "were not clearly identified in the captured DOM snapshots."
-        )
+        if _has_graphical:
+            # Don't add a duplicate — graphical note handles this
+            pass
+        else:
+            limitations.append(
+                "Visible page text was captured but result values (labels, scores, numbers) "
+                "were not clearly identified in the captured DOM snapshots."
+            )
 
+    # Graphical rendering limitation — most important when outputs are charts/canvas
+    if _has_graphical and _graphical_note:
+        limitations.append(_graphical_note)
+
+    # Frame/OCR limitation — always present, but secondary to DOM status
     limitations.append(
-        "Video frame analysis (OCR) is not yet available — "
-        "precise output values from screenshots require future frame extraction."
+        "Frame/OCR analysis is not yet available — "
+        "precise output values from screenshots or graphical elements require future frame extraction."
     )
 
     if not iao_patterns:
         limitations.append(
             "No clear input → action → output flow was detected from the event timeline; "
-            "the recording may show browsing without a clear demonstration."
+            "the recording may show browsing or navigation without a clear interactive demonstration."
         )
 
     return {
         "target_app": target_app,
+        # OCR/frame analysis — not yet implemented
         "visual_analysis_status": "not_available",
+        # DOM text capture status — the one that's actually meaningful now
         "visible_evidence_status": _vis_ev_status,
+        "dom_evidence_status": _dom_ev_status,
+        "ocr_status": "not_available",
+        # Graphical rendering info
+        "has_graphical_rendering": _has_graphical,
+        # Result snippets for UI surface
+        "top_result_snippets": _top_snippets,
         "steps": steps,
         "summary": summary,
         "limitations": limitations,
@@ -1385,8 +1424,19 @@ def _analyze_workflow(
     # When the browser extension sent DOM snapshots, integrate them here.
     # For old recordings, visible_observations is None → status stays "not_captured".
     visible_evidence_status: str = "not_captured"
+    dom_evidence_status: str = "not_captured"
+    has_graphical_rendering: bool = False
+    graphical_rendering_note: str | None = None
+    top_result_snippets: list[str] = []
+    page_context_summary: str | None = None
+
     if visible_observations is not None:
         visible_evidence_status = getattr(visible_observations, "visible_evidence_status", "not_captured")
+        dom_evidence_status     = getattr(visible_observations, "dom_evidence_status", visible_evidence_status)
+        has_graphical_rendering = getattr(visible_observations, "has_graphical_rendering", False)
+        graphical_rendering_note = getattr(visible_observations, "graphical_rendering_note", None)
+        top_result_snippets     = list(getattr(visible_observations, "top_result_snippets", []) or [])
+        page_context_summary    = getattr(visible_observations, "page_context_summary", None)
 
     # ── Observed demonstration (v3/v4) ────────────────────────────────────────
     target_app_label = target_netloc or _extract_domain(original_url)
@@ -1461,10 +1511,17 @@ def _analyze_workflow(
         "noise_filtered_count":       len(noise_urls),
         # ── Precise visual workflow evidence (v3/v4) ──────────────────────────
         "observed_demonstration":     observed_demonstration,
-        # visual_analysis_status refers to OCR/frame analysis (future)
+        # visual_analysis_status / ocr_status: OCR/frame analysis (future, not_available)
         "visual_analysis_status":     "not_available",
-        # visible_evidence_status reflects DOM text capture from extension
+        "ocr_status":                 "not_available",
+        # dom_evidence_status / visible_evidence_status: DOM text capture from extension
+        "dom_evidence_status":        dom_evidence_status,
         "visible_evidence_status":    visible_evidence_status,
+        # Graphical rendering (canvas/SVG detected)
+        "has_graphical_rendering":    has_graphical_rendering,
+        "graphical_rendering_note":   graphical_rendering_note,
+        "top_result_snippets":        top_result_snippets,
+        "page_context_summary":       page_context_summary,
     }
 
 

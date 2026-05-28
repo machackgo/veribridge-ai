@@ -196,6 +196,21 @@ function getResultBlocks(blocks: string[]): string[] {
   return blocks.filter((b) => RESULT_KWD_RE.test(b)).slice(0, 30)
 }
 
+/**
+ * Count graphical rendering elements on the current page.
+ * Canvas and SVG elements are used for charts, plots, and data visualizations
+ * whose output values may not be readable from DOM text alone.
+ */
+function getGraphicalElementCounts(): { canvas_count: number; svg_count: number } {
+  try {
+    const canvas_count = document.querySelectorAll("canvas").length
+    const svg_count = document.querySelectorAll("svg").length
+    return { canvas_count, svg_count }
+  } catch {
+    return { canvas_count: 0, svg_count: 0 }
+  }
+}
+
 /** FNV-1a non-reversible hash — used to mask filenames before sending to the backend. */
 function hashName(name: string): string {
   let h = 0x811c9dc5
@@ -383,9 +398,11 @@ function captureSnapshot(
   if (!capturing || isVeriBridgeInternal()) return
   const visibleBlocks = getVisibleBlocks()
   const resultBlocks = getResultBlocks(visibleBlocks)
+  const { canvas_count, svg_count } = getGraphicalElementCounts()
   dbgVE("snapshot created", eventType,
     "| visible_text_blocks:", visibleBlocks.length,
-    "| result_like_blocks:", resultBlocks.length)
+    "| result_like_blocks:", resultBlocks.length,
+    "| canvas:", canvas_count, "| svg:", svg_count)
   emitVisibleEvidence({
     event_type: eventType,
     timestamp_ms: Date.now() - recordingStartMs,
@@ -395,8 +412,10 @@ function captureSnapshot(
     visible_text_blocks: visibleBlocks,
     result_like_blocks: resultBlocks,
     input_snapshot: getInputSnapshot(),
-    action_snapshot: actionMeta ?? {},
+    action_snapshot: { ...(actionMeta ?? {}), canvas_count: String(canvas_count), svg_count: String(svg_count) },
     file_upload_meta: fileUploadMeta ?? null,
+    canvas_count,
+    svg_count,
   })
 }
 

@@ -1082,9 +1082,18 @@ export type DemonstrationStep = {
 
 export type ObservedDemonstration = {
   target_app: string
+  // OCR/frame analysis — always "not_available" until implemented
   visual_analysis_status: VisualAnalysisStatus
-  /** v4: DOM text capture status from the browser extension */
+  // DOM text capture status — "available" | "partial" | "not_captured"
+  dom_evidence_status?: VisibleEvidenceStatus
+  /** v4: DOM text capture status from the browser extension (alias for dom_evidence_status) */
   visible_evidence_status?: VisibleEvidenceStatus
+  // OCR status — always "not_available" until implemented
+  ocr_status?: string
+  // Graphical rendering (canvas/SVG detected)
+  has_graphical_rendering?: boolean
+  // Top result-like text snippets captured from DOM
+  top_result_snippets?: string[]
   steps: DemonstrationStep[]
   summary: string
   limitations: string[]
@@ -1114,9 +1123,19 @@ export type WorkflowAnalysisResponse = {
   noise_filtered_count?: number
   // v3/v4 precise visual evidence
   observed_demonstration?: ObservedDemonstration | null
+  // OCR/frame analysis — always "not_available" until implemented
   visual_analysis_status?: VisualAnalysisStatus
-  /** v4: DOM text capture status from the browser extension */
+  // DOM text capture status from the browser extension
+  dom_evidence_status?: VisibleEvidenceStatus
+  /** v4: alias for dom_evidence_status (backward compat) */
   visible_evidence_status?: VisibleEvidenceStatus
+  // OCR status
+  ocr_status?: string
+  // Graphical rendering (canvas/SVG)
+  has_graphical_rendering?: boolean
+  graphical_rendering_note?: string | null
+  top_result_snippets?: string[]
+  page_context_summary?: string | null
   // progress tracking
   progress: number
   current_stage: string
