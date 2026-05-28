@@ -2665,10 +2665,16 @@ function ProjectDefenseSection({
   const [transcriptNeedsReview, setTranscriptNeedsReview]       = useState(false)
   const [reRefining, setReRefining]                   = useState(false)
   const [reRefineError, setReRefineError]             = useState<string | null>(null)
+  // ── Transcript-stale flag ──────────────────────────────────────────────────
+  // Set to true when a new file is selected / recording started and the
+  // existing transcript may no longer match the new media.  Cleared after a
+  // successful upload (which also wipes the transcript).
+  const [transcriptStale, setTranscriptStale]         = useState(false)
 
   // ── Derived (safe to compute even when hidden — values not rendered) ───────
   const transcriptWords = defenseTranscript.trim().split(/\s+/).filter(Boolean).length
-  const canAnalyze      = transcriptWords >= 30 && !defenseAnalyzing
+  // Block analysis when transcript is stale (new file selected but not yet uploaded)
+  const canAnalyze      = transcriptWords >= 30 && !defenseAnalyzing && !transcriptStale
   const txStatus        = defenseAnalysis?.transcription_status ?? "not_started"
   const statusCfg       = TRANSCRIPTION_STATUS_CONFIG[txStatus] ?? TRANSCRIPTION_STATUS_CONFIG.not_started
   // hasMedia: any media filename is registered (controls media badge, status notice)
@@ -2769,6 +2775,10 @@ function ProjectDefenseSection({
     if (!f) return
     setUploadError(null)
     setUploadResult(null)
+    // Warn the user that the existing transcript may no longer match this new file
+    if (defenseTranscript.trim() || rawTranscript || refinedTranscript) {
+      setTranscriptStale(true)
+    }
     const ext = f.name.split(".").pop()?.toLowerCase() ?? ""
     if (!(ALLOWED_DEFENSE_MEDIA_EXTS as readonly string[]).includes(ext)) {
       setUploadError(`File type .${ext} is not supported. Allowed: ${ALLOWED_DEFENSE_MEDIA_EXTS.join(", ")}.`)
@@ -2793,6 +2803,19 @@ function ProjectDefenseSection({
       const result = await uploadProjectDefenseMedia(session.id, mediaFile, pct => setUploadProgress(pct))
       setUploadResult(result)
       setUploadProgress(100)
+      // New media uploaded — clear the old transcript so the user must generate
+      // or paste a fresh one that matches this file before analysis.
+      onTranscriptChange("")
+      setRawTranscript(null)
+      setRefinedTranscript(null)
+      setCorrections([])
+      setGlossaryMatches([])
+      setRefinementDisplaySummary("")
+      setTranscriptNeedsReview(false)
+      setShowingRaw(false)
+      setTranscriptStale(false)
+      setTranscribeMsg(null)
+      setTranscribeError(null)
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed. Please try again.")
     } finally {
@@ -2803,6 +2826,11 @@ function ProjectDefenseSection({
   // ── Recording ──────────────────────────────────────────────────────────────
   async function startRecording() {
     setRecError(null)
+    // If there's an existing transcript, mark it stale — the new recording will
+    // replace the media and the old text may no longer match.
+    if (defenseTranscript.trim() || rawTranscript || refinedTranscript) {
+      setTranscriptStale(true)
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const mr = new MediaRecorder(stream)
@@ -2852,6 +2880,19 @@ function ProjectDefenseSection({
       const result = await uploadProjectDefenseMedia(session.id, file, pct => setRecUploadProgress(pct))
       setRecUploadResult(result)
       setRecUploadProgress(100)
+      // New recording uploaded — clear old transcript so user must generate or
+      // paste a fresh one for this recording before analysis.
+      onTranscriptChange("")
+      setRawTranscript(null)
+      setRefinedTranscript(null)
+      setCorrections([])
+      setGlossaryMatches([])
+      setRefinementDisplaySummary("")
+      setTranscriptNeedsReview(false)
+      setShowingRaw(false)
+      setTranscriptStale(false)
+      setTranscribeMsg(null)
+      setTranscribeError(null)
     } catch (err) {
       setRecError(err instanceof Error ? err.message : "Recording upload failed.")
     } finally {
@@ -3142,6 +3183,23 @@ function ProjectDefenseSection({
         </div>
       </div>
 
+      {/* ── Stale transcript warning (file selected / recording started, not yet uploaded) ── */}
+      {transcriptStale && (
+        <div role="alert" style={{
+          background: "#fffbeb", border: "1px solid #f59e0b",
+          borderRadius: 10, padding: "10px 14px",
+          fontSize: 12, color: "#92400e", lineHeight: 1.6,
+          display: "flex", gap: 10, alignItems: "flex-start",
+        }}>
+          <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
+          <span>
+            <strong>New media selected.</strong>{" "}
+            The previous transcript was generated from a different file and may no longer match.
+            Upload the new file to reset the transcript — then generate a fresh transcript or paste one before analysis.
+          </span>
+        </div>
+      )}
+
       {/* ── Transcription status notice ───────────────────────────────────── */}
       {defenseAnalysis?.transcription_status && txStatus !== "not_started" && txStatus !== "analysis_complete" && (
         <div style={{
@@ -3159,20 +3217,20 @@ function ProjectDefenseSection({
       )}
 
       {/* ── Registered media badge ────────────────────────────────────────── */}
-      {defenseAnalysis?.media_filename && (
+      {/* Prefer the newest upload result; fall back to persisted analysis filename */}
+      {(uploadResult?.media_filename || recUploadResult?.media_filename || defenseAnalysis?.media_filename) && (
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{
             fontSize: 11, fontWeight: 700, letterSpacing: "0.05em",
             padding: "2px 10px", borderRadius: 999,
-            background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe",
+            background: (uploadResult || recUploadResult) ? "#dcfce7" : "#eff6ff",
+            color: (uploadResult || recUploadResult) ? "#166534" : "#1d4ed8",
+            border: `1px solid ${(uploadResult || recUploadResult) ? "#bbf7d0" : "#bfdbfe"}`,
           }}>
-            MEDIA
+            {(uploadResult || recUploadResult) ? "NEW MEDIA" : "MEDIA"}
           </span>
           <span style={{ fontSize: 12, color: "#374151" }}>
-            {defenseAnalysis.media_filename}
-            {defenseAnalysis.media_type && (
-              <span style={{ fontSize: 11, color: "#9ca3af" }}> · .{defenseAnalysis.media_type}</span>
-            )}
+            {uploadResult?.media_filename ?? recUploadResult?.media_filename ?? defenseAnalysis?.media_filename}
           </span>
         </div>
       )}
@@ -3236,7 +3294,11 @@ function ProjectDefenseSection({
       <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
         <div style={{ background: "#f9fafb", borderBottom: "1px solid #e5e7eb", padding: "12px 16px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>
-            {defenseAnalysis ? "Update Transcript & Re-analyze" : "Review / Paste Transcript"}
+            {(uploadResult || recUploadResult) && !defenseTranscript.trim()
+              ? "Generate or Paste Transcript"
+              : defenseAnalysis
+              ? "Update Transcript & Re-analyze"
+              : "Review / Paste Transcript"}
           </div>
           <p style={{ margin: "3px 0 0", fontSize: 11, color: "#6b7280", lineHeight: 1.55 }}>
             Describe the problem you solved, what you built, your role, tools used, key technical
@@ -3246,6 +3308,18 @@ function ProjectDefenseSection({
         </div>
 
         <div style={{ padding: "14px 16px", display: "grid", gap: 12 }}>
+
+          {/* ── New-media notice — transcript was reset after upload ──────── */}
+          {(uploadResult || recUploadResult) && !defenseTranscript.trim() && (
+            <div role="alert" style={{
+              background: "#fffbeb", border: "1px solid #fef08a",
+              borderRadius: 8, padding: "10px 14px",
+              fontSize: 12, color: "#854d0e", lineHeight: 1.6,
+            }}>
+              ⚠ <strong>New media uploaded.</strong>{" "}
+              Generate a new transcript from the recording or paste your transcript here before analysis.
+            </div>
+          )}
 
           {/* ── VeriBridge AI Refinement banner ──────────────────────────── */}
           {refinedTranscript && rawTranscript && (
@@ -3390,7 +3464,11 @@ function ProjectDefenseSection({
               value={defenseTranscript}
               onChange={e => onTranscriptChange(e.target.value)}
               disabled={defenseAnalyzing}
-              placeholder="Paste or type your project explanation here. Explain the problem, what you built, your role, tools used, main workflow, technical decisions, limitations, and future improvements."
+              placeholder={
+                (uploadResult || recUploadResult) && !defenseTranscript.trim()
+                  ? "Generate a transcript from the new recording above, or paste your transcript here. Explain the problem, what you built, your role, tools used, main workflow, technical decisions, limitations, and future improvements."
+                  : "Paste or type your project explanation here. Explain the problem, what you built, your role, tools used, main workflow, technical decisions, limitations, and future improvements."
+              }
               style={{ ...inp, minHeight: 150, resize: "vertical", fontFamily: "inherit", lineHeight: 1.55 }}
             />
             <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -3412,7 +3490,13 @@ function ProjectDefenseSection({
               type="button"
               onClick={onAnalyze}
               disabled={!canAnalyze}
-              title={transcriptWords < 30 ? "Write at least 30 words before analyzing." : undefined}
+              title={
+                transcriptStale
+                  ? "Upload the new media file first to reset the transcript."
+                  : transcriptWords < 30
+                  ? "Write at least 30 words before analyzing."
+                  : undefined
+              }
               style={{
                 border: "1px solid transparent",
                 background: !canAnalyze ? "var(--bg-2)" : "#065f46",
@@ -3424,11 +3508,16 @@ function ProjectDefenseSection({
             >
               {defenseAnalyzing
                 ? "Analyzing…"
+                : transcriptStale || ((uploadResult || recUploadResult) && !defenseTranscript.trim())
+                ? "Generate Transcript First"
                 : defenseAnalysis
                 ? "Re-analyze Defense"
                 : "Analyze Project Defense"}
             </button>
-            {transcriptWords > 0 && transcriptWords < 30 && (
+            {transcriptStale && (
+              <span style={{ fontSize: 11, color: "#92400e" }}>Upload the new file to reset the transcript before analysis</span>
+            )}
+            {!transcriptStale && transcriptWords > 0 && transcriptWords < 30 && (
               <span style={{ fontSize: 11, color: "#dc2626" }}>Need at least 30 words to analyze</span>
             )}
           </div>
