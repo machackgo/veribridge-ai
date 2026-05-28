@@ -2,6 +2,13 @@
 
 import type { WorkflowEvent, ExtensionState, RecordingStatus, VisibleEvidenceEvent } from "./types"
 
+// ── Debug flag ────────────────────────────────────────────────────────────────
+const DEBUG_VISIBLE_EVIDENCE = true
+
+function dbgVE(...args: unknown[]): void {
+  if (DEBUG_VISIBLE_EVIDENCE) console.log("[VisibleEvidence]", ...args)
+}
+
 // ── URL privacy redaction ─────────────────────────────────────────────────────
 // Mirrors the same set used in content.ts. Defined here independently because
 // the background service worker and content scripts run in separate V8 contexts.
@@ -216,6 +223,12 @@ chrome.runtime.onMessage.addListener(
       case "VISIBLE_EVIDENCE_EVENT":
         if (state.isRecording) {
           state.visibleEvidenceEvents.push(msg.payload as VisibleEvidenceEvent)
+          dbgVE("background received event batch",
+            "| event_type:", (msg.payload as VisibleEvidenceEvent).event_type,
+            "| session_id:", state.sessionId,
+            "| total accumulated:", state.visibleEvidenceEvents.length)
+        } else {
+          dbgVE("VISIBLE_EVIDENCE_EVENT received but isRecording=false — event dropped")
         }
         break
     }
@@ -271,12 +284,21 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
  * or affect the main proof upload.
  */
 async function sendVisibleEvidence(): Promise<void> {
-  if (!state.sessionId || state.visibleEvidenceEvents.length === 0) return
+  if (!state.sessionId || state.visibleEvidenceEvents.length === 0) {
+    dbgVE("sendVisibleEvidence: skipping — sessionId:", state.sessionId || "(none)",
+      "events:", state.visibleEvidenceEvents.length)
+    return
+  }
   const events = [...state.visibleEvidenceEvents]          // snapshot — don't hold the reference
   const url = `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/workflow/visible-evidence`
   const headers: Record<string, string> = { "Content-Type": "application/json" }
   if (state.authToken) headers["Authorization"] = `Bearer ${state.authToken}`
   const body = JSON.stringify({ events })
+
+  dbgVE("sendVisibleEvidence: POSTing", events.length, "events")
+  dbgVE("sendVisibleEvidence: session_id:", state.sessionId)
+  dbgVE("sendVisibleEvidence: backend URL:", url)
+  dbgVE("sendVisibleEvidence: auth token present:", !!state.authToken)
 
   const attemptFetch = (): Promise<Response> =>
     fetch(url, { method: "POST", headers, body })
@@ -289,10 +311,18 @@ async function sendVisibleEvidence(): Promise<void> {
       resp = await attemptFetch()
     }
     if (!resp.ok) {
+      let errorBody = ""
+      try { errorBody = await resp.text() } catch { /* ignore */ }
+      dbgVE("sendVisibleEvidence: POST error — HTTP", resp.status, "|", errorBody.slice(0, 200))
       console.warn(`VeriBridge: visible evidence upload returned HTTP ${resp.status}`)
+    } else {
+      let responseBody = ""
+      try { responseBody = await resp.text() } catch { /* ignore */ }
+      dbgVE("sendVisibleEvidence: POST success — HTTP", resp.status, "|", responseBody.slice(0, 200))
     }
   } catch (err) {
     // Network failure — log and swallow so the main upload is not affected.
+    dbgVE("sendVisibleEvidence: network error:", err)
     console.warn("VeriBridge: visible evidence upload failed:", err)
   }
 }

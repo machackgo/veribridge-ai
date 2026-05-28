@@ -52,13 +52,21 @@ def submit_visible_evidence(
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> dict[str, Any]:
+    logger.info(
+        "[VisibleEvidence] endpoint hit | session_id=%s | user_id=%s | events_count=%d",
+        session_id, user_id, len(body.events),
+    )
     svc = WorkflowVisibleEvidenceService(db)
     try:
         result = svc.ingest(user_id=user_id, session_id=session_id, request=body)
+        logger.info(
+            "[VisibleEvidence] insert success | session_id=%s | events_stored=%d/%d",
+            session_id, result.get("events_stored", 0), len(body.events),
+        )
         return result
     except Exception as exc:
         logger.exception(
-            "POST visible-evidence: unexpected error for session %s", session_id
+            "[VisibleEvidence] insert failure | session_id=%s", session_id
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

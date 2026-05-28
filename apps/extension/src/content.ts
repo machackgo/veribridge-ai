@@ -3,6 +3,15 @@
 
 import type { VisibleEvidenceEvent, FileUploadMeta } from "./types"
 
+// ── Debug flag — set to false to silence visible evidence logs in production ──
+const DEBUG_VISIBLE_EVIDENCE = true
+
+function dbgVE(...args: unknown[]): void {
+  if (DEBUG_VISIBLE_EVIDENCE) console.log("[VisibleEvidence]", ...args)
+}
+
+dbgVE("content script loaded on", location.href)
+
 // ── Sensitive field detection ──────────────────────────────────────────────────
 
 /**
@@ -356,6 +365,9 @@ function handleContextInvalidated(): void {
 
 /** Forward a VisibleEvidenceEvent to the background service worker. */
 function emitVisibleEvidence(event: VisibleEvidenceEvent): void {
+  dbgVE("message sent to background", event.event_type,
+    "| visible_text_blocks:", event.visible_text_blocks.length,
+    "| result_like_blocks:", event.result_like_blocks.length)
   void safeSendMessage({ type: "VISIBLE_EVIDENCE_EVENT", payload: event })
 }
 
@@ -371,6 +383,9 @@ function captureSnapshot(
   if (!capturing || isVeriBridgeInternal()) return
   const visibleBlocks = getVisibleBlocks()
   const resultBlocks = getResultBlocks(visibleBlocks)
+  dbgVE("snapshot created", eventType,
+    "| visible_text_blocks:", visibleBlocks.length,
+    "| result_like_blocks:", resultBlocks.length)
   emitVisibleEvidence({
     event_type: eventType,
     timestamp_ms: Date.now() - recordingStartMs,
@@ -483,6 +498,9 @@ function startCapture(): void {
   capturing = true
   recordingStartMs = Date.now()
 
+  dbgVE("recording active", true, "| session_id (from URL):", new URLSearchParams(location.search).get("veribridge_session_id") ?? "(not in URL)")
+  dbgVE("starting capture on", location.href)
+
   emit({ type: "page_visit", timestamp: nowIso(), page_url: safePageUrl(), page_title: document.title })
   document.addEventListener("click", handleClick, { capture: true, passive: true })
   document.addEventListener("change", handleChange, { capture: true, passive: true })
@@ -563,11 +581,32 @@ detectSessionFromUrl()
 
 // On init, check if recording is already active (handles page navigation during a session).
 void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
+  dbgVE("recording active", s?.isRecording ?? false, "| session_id:", s?.sessionId ?? "(none)")
   if (s?.isRecording) {
     startCapture()
     showFloatingBar()
   }
 })
+
+// ── Manual test hook ──────────────────────────────────────────────────────────
+// Call window.__VERIBRIDGE_CAPTURE_VISIBLE_EVIDENCE_TEST__() from DevTools to
+// force one DOM snapshot from the current page and send it to the background.
+// This lets you verify the pipeline (content → background → backend) without
+// going through a full recording session.
+;(window as unknown as Record<string, unknown>).__VERIBRIDGE_CAPTURE_VISIBLE_EVIDENCE_TEST__ =
+  function (): void {
+    dbgVE("manual test hook triggered on", location.href)
+    if (!capturing) {
+      // Temporarily enable capturing so captureSnapshot proceeds
+      capturing = true
+      recordingStartMs = Date.now()
+      captureSnapshot("dom_snapshot", { source: "manual_test" })
+      capturing = false
+    } else {
+      captureSnapshot("dom_snapshot", { source: "manual_test" })
+    }
+    dbgVE("manual test hook: snapshot sent to background (check console + Network tab)")
+  }
 
 // ── Floating recorder bar ──────────────────────────────────────────────────────
 
