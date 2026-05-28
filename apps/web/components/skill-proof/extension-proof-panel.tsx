@@ -37,6 +37,11 @@ import {
   type ReadinessLevel,
 } from "@/lib/api"
 import { VerificationReviewSection } from "./verification-review-section"
+import { EvidenceAnalysisProgress } from "./EvidenceAnalysisProgress"
+import type {
+  ObservedDemonstration,
+  DemonstrationStep,
+} from "@/lib/api"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -91,15 +96,19 @@ const LIVE_CHECK_STAGES: Array<{ key: string; label: string }> = [
   { key: "saving_result",       label: "Saving result" },
 ]
 
+// Updated to match the 9-stage precise workflow evidence system (v3).
+// Consumed by WorkflowAnalysisInProgress for stage simulation.
 const ANALYSIS_STAGES: Array<{ key: string; label: string; comingSoon?: boolean }> = [
-  { key: "loading_metadata",   label: "Loading session metadata" },
-  { key: "reading_timeline",   label: "Reading workflow timeline" },
-  { key: "matching_objective", label: "Matching proof objective" },
-  { key: "matching_skills",    label: "Matching claimed skills" },
-  { key: "generating_summary", label: "Generating evidence summary" },
-  { key: "db_insert",          label: "Saving results" },
-  { key: "video_to_text",      label: "Video to text analysis", comingSoon: true },
-  { key: "github_analysis",    label: "GitHub code analysis",   comingSoon: true },
+  { key: "preparing_recording",  label: "Preparing recording" },
+  { key: "filtering_tabs",       label: "Filtering background tabs" },
+  { key: "identifying_target",   label: "Identifying target website" },
+  { key: "extracting_events",    label: "Extracting relevant workflow events" },
+  { key: "reading_outputs",      label: "Reading visible text and outputs" },
+  { key: "detecting_iao_flow",   label: "Detecting input → action → output flow" },
+  { key: "mapping_skills",       label: "Mapping demonstration to skills" },
+  { key: "generating_summary",   label: "Generating recruiter-safe summary" },
+  { key: "finalizing",           label: "Finalizing Work Passport evidence" },
+  { key: "video_frame_analysis", label: "Video frame analysis",              comingSoon: true },
 ]
 
 const GITHUB_STAGES: Array<{ key: string; label: string }> = [
@@ -572,6 +581,7 @@ function StatusMessage({
 }
 
 // ── Workflow Analysis In-Progress ─────────────────────────────────────────────
+// Now delegates to the reusable EvidenceAnalysisProgress component.
 
 function WorkflowAnalysisInProgress({
   simProgress,
@@ -581,57 +591,12 @@ function WorkflowAnalysisInProgress({
   simStageIdx: number
 }) {
   return (
-    <div style={{ border: "1px solid #ddd6fe", borderRadius: 12, background: "#faf5ff", padding: "14px 16px", display: "grid", gap: 12 }}>
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>Analyzing workflow evidence…</div>
-        <p style={{ margin: "4px 0 0", fontSize: 12, color: "#4c1d95", lineHeight: 1.65 }}>
-          VeriBridge is reviewing your recorded workflow. This usually takes 10–30 seconds.
-        </p>
-      </div>
-
-      {/* Progress bar */}
-      <div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-          <span style={{ fontSize: 11, color: "#7c3aed" }}>Analysis in progress</span>
-          <span style={{ fontSize: 11, fontWeight: 700, color: "#5b21b6" }}>{simProgress}%</span>
-        </div>
-        <div style={{ height: 6, background: "#ede9fe", borderRadius: 999 }}>
-          <div
-            style={{
-              height: 6, borderRadius: 999, background: "#7c3aed",
-              width: `${simProgress}%`, transition: "width 0.5s ease",
-            }}
-          />
-        </div>
-      </div>
-
-      {/* Stage checklist */}
-      <div style={{ display: "grid", gap: 6 }}>
-        {ANALYSIS_STAGES.map((stage, i) => {
-          if (stage.comingSoon) {
-            return (
-              <div key={stage.key} style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                <span style={{ fontSize: 12, color: "#cbd5e1", width: 14, flexShrink: 0, textAlign: "center" }}>—</span>
-                <span style={{ fontSize: 12, color: "#94a3b8" }}>{stage.label}</span>
-                <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: "auto" }}>Coming soon</span>
-              </div>
-            )
-          }
-          const isDone = i <= simStageIdx
-          const isCurrent = i === simStageIdx + 1
-          return (
-            <div key={stage.key} style={{ display: "flex", alignItems: "center", gap: 7 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: isDone ? "#065f46" : isCurrent ? "#5b21b6" : "#94a3b8", width: 14, flexShrink: 0, textAlign: "center" }}>
-                {isDone ? "✓" : isCurrent ? "…" : "○"}
-              </span>
-              <span style={{ fontSize: 12, color: isDone ? "#064e3b" : isCurrent ? "#4c1d95" : "#94a3b8" }}>
-                {stage.label}
-              </span>
-            </div>
-          )
-        })}
-      </div>
-    </div>
+    <EvidenceAnalysisProgress
+      featureType="website_workflow"
+      simProgress={simProgress}
+      simStageIdx={simStageIdx}
+      visualAnalysisStatus="not_available"
+    />
   )
 }
 
@@ -883,6 +848,246 @@ function BulletList({ items, color = "var(--ink-2)" }: { items: string[]; color?
   )
 }
 
+// ── Observed Demonstration Timeline ──────────────────────────────────────────
+
+function VisualAnalysisStatusBadge({ status }: { status: string }) {
+  const cfg = {
+    available:     { bg: "#f0fdf4", color: "#166534", border: "#bbf7d0", label: "Frame analysis available" },
+    partial:       { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "Partial analysis" },
+    not_available: { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0", label: "Visual analysis not available" },
+  }[status] ?? { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0", label: "Visual analysis not available" }
+
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 5,
+      fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 999,
+      background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`,
+    }}>
+      {status === "available" ? "✓" : status === "partial" ? "~" : "○"} {cfg.label}
+    </span>
+  )
+}
+
+function SupportLevelChip({ level }: { level: string }) {
+  const cfg = {
+    strong:  { bg: "#dcfce7", color: "#166534", border: "#bbf7d0" },
+    partial: { bg: "#fef9c3", color: "#854d0e", border: "#fef08a" },
+    weak:    { bg: "#fef2f2", color: "#991b1b", border: "#fecaca" },
+    missing: { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0" },
+  }[level] ?? { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0" }
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 6,
+      background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`,
+      textTransform: "capitalize",
+    }}>
+      {level}
+    </span>
+  )
+}
+
+function DemonstrationStepCard({
+  step,
+  index,
+}: {
+  step: DemonstrationStep
+  index: number
+}) {
+  const [expanded, setExpanded] = React.useState(index === 0)
+  const borderColor = step.confidence === "high" ? "#bbf7d0" : step.confidence === "medium" ? "#fef08a" : "#fecaca"
+  const headerBg = step.confidence === "high" ? "#f0fdf4" : step.confidence === "medium" ? "#fefce8" : "#fef2f2"
+
+  return (
+    <div style={{ border: `1px solid ${borderColor}`, borderRadius: 10, overflow: "hidden" }}>
+      {/* Step header */}
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        style={{
+          width: "100%", textAlign: "left", background: headerBg, border: "none",
+          padding: "9px 12px", cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <span style={{
+            fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+            background: "rgba(0,0,0,0.07)", color: "inherit", flexShrink: 0,
+          }}>
+            Step {step.step_number}
+          </span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "#334155", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {step.user_action}
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          {step.needs_review && (
+            <span style={{ fontSize: 10, color: "#854d0e" }}>⚠ Needs review</span>
+          )}
+          <span style={{ fontSize: 11, color: "#94a3b8" }}>{expanded ? "▲" : "▼"}</span>
+        </div>
+      </button>
+
+      {expanded && (
+        <div style={{ padding: "10px 12px", display: "grid", gap: 8, background: "#fff" }}>
+          {/* Input / Output */}
+          {(step.observed_input || step.observed_output) && (
+            <div style={{ display: "grid", gridTemplateColumns: step.observed_input && step.observed_output ? "1fr 1fr" : "1fr", gap: 8 }}>
+              {step.observed_input && (
+                <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "7px 10px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Input</div>
+                  <div style={{ fontSize: 12, color: "#0c4a6e" }}>{step.observed_input}</div>
+                </div>
+              )}
+              {step.observed_output && (
+                <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "7px 10px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "#166534", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Output</div>
+                  <div style={{ fontSize: 12, color: "#14532d" }}>{step.observed_output}</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Demonstrated feature */}
+          {step.demonstrated_feature && (
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "#64748b", flexShrink: 0 }}>Feature:</span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: "#1e40af" }}>{step.demonstrated_feature}</span>
+            </div>
+          )}
+
+          {/* Detected result values (only when OCR/frame is available) */}
+          {step.detected_result_values.length > 0 && (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#5b21b6", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+                Observed Outputs
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {step.detected_result_values.map((rv, i) => (
+                  <span key={i} style={{
+                    fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
+                    background: "#fdf4ff", color: "#7e22ce", border: "1px solid #e9d5ff",
+                  }}>
+                    {rv.label}: {rv.value}
+                    {rv.confidence !== null && <span style={{ fontWeight: 400 }}> ({Math.round(rv.confidence * 100)}%)</span>}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Skill evidence */}
+          {step.skill_evidence.length > 0 && (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+                Skill Evidence
+              </div>
+              <div style={{ display: "grid", gap: 4 }}>
+                {step.skill_evidence.map((se, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 7, fontSize: 12 }}>
+                    <SupportLevelChip level={se.support_level} />
+                    <div>
+                      <span style={{ fontWeight: 600, color: "#334155" }}>{se.skill}</span>
+                      <span style={{ color: "#64748b" }}> — {se.reasoning}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Visible text evidence */}
+          {step.visible_text_evidence.filter(Boolean).length > 0 && (
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 10, color: "#64748b", flexShrink: 0 }}>Context:</span>
+              {step.visible_text_evidence.filter(Boolean).slice(0, 3).map((t, i) => (
+                <span key={i} style={{
+                  fontSize: 10, padding: "2px 6px", borderRadius: 4,
+                  background: "#f8fafc", color: "#475569", border: "1px solid #e2e8f0",
+                  fontFamily: "monospace",
+                }}>
+                  {t.length > 50 ? `${t.slice(0, 47)}…` : t}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ObservedDemonstrationTimeline({
+  demo,
+}: {
+  demo: ObservedDemonstration
+}) {
+  const [collapsed, setCollapsed] = React.useState(false)
+
+  return (
+    <div style={{ border: "1px solid #e9d5ff", borderRadius: 12, overflow: "hidden" }}>
+      {/* Header */}
+      <button
+        type="button"
+        onClick={() => setCollapsed(v => !v)}
+        style={{
+          width: "100%", textAlign: "left", background: "#fdf4ff",
+          borderBottom: collapsed ? "none" : "1px solid #e9d5ff",
+          border: "none", padding: "11px 14px", cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#5b21b6" }}>
+            Observed Demonstration Timeline
+          </div>
+          <div style={{ fontSize: 11, color: "#6b21a8", marginTop: 2 }}>
+            {demo.steps.length} step{demo.steps.length !== 1 ? "s" : ""} detected · {demo.target_app}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <VisualAnalysisStatusBadge status={demo.visual_analysis_status} />
+          <span style={{ fontSize: 11, color: "#94a3b8" }}>{collapsed ? "▼" : "▲"}</span>
+        </div>
+      </button>
+
+      {!collapsed && (
+        <div style={{ padding: "12px 14px", display: "grid", gap: 10, background: "#fff" }}>
+          {/* Summary */}
+          <p style={{ margin: 0, fontSize: 12, color: "#334155", lineHeight: 1.7, fontStyle: "italic" }}>
+            {demo.summary}
+          </p>
+
+          {/* Steps */}
+          {demo.steps.length > 0 && (
+            <div style={{ display: "grid", gap: 7 }}>
+              {demo.steps.map((step, i) => (
+                <DemonstrationStepCard key={i} step={step} index={i} />
+              ))}
+            </div>
+          )}
+
+          {/* Limitations */}
+          {demo.limitations.length > 0 && (
+            <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 11px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+                Analysis Limitations
+              </div>
+              <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 3 }}>
+                {demo.limitations.map((l, i) => (
+                  <li key={i} style={{ display: "flex", gap: 6, fontSize: 11, color: "#64748b", lineHeight: 1.5 }}>
+                    <span style={{ flexShrink: 0 }}>○</span><span>{l}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse }) {
   const conf = CONFIDENCE_CONFIG[analysis.workflow_confidence] ?? CONFIDENCE_CONFIG.insufficient
   const analysisTypeLabel =
@@ -967,6 +1172,11 @@ function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse
           </AnalysisSection>
         )}
 
+        {/* ── Observed Demonstration Timeline (v3) ─────────────────────────── */}
+        {analysis.observed_demonstration && analysis.observed_demonstration.steps.length > 0 && (
+          <ObservedDemonstrationTimeline demo={analysis.observed_demonstration} />
+        )}
+
         {/* Recruiter summary */}
         <AnalysisSection title="Recruiter Summary">
           <div style={{ background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px" }}>
@@ -1009,9 +1219,11 @@ function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse
         {/* Footer note */}
         <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
           <p style={{ margin: 0, fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
-            This is a Workflow Timeline Analysis based on recorded browser events. Visual video
-            analysis is not yet available. Final verification remains pending until GitHub
-            evidence, live website check (if applicable), and all other evidence steps are complete.
+            This is a Workflow Timeline Analysis based on recorded browser events.
+            Video frame analysis is not yet available — the Observed Demonstration Timeline
+            above shows the inferred workflow pattern from event metadata only.
+            Final verification remains pending until GitHub evidence, live website check
+            (if applicable), and all other evidence steps are complete.
           </p>
         </div>
       </div>

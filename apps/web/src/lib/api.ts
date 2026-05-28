@@ -1038,6 +1038,47 @@ export type WorkflowAnalysisStage = {
   status: WorkflowAnalysisStageStatus
 }
 
+// ── Observed Demonstration types (v3) ────────────────────────────────────────
+
+export type VisualAnalysisStatus = "available" | "partial" | "not_available"
+
+export type ResultValueSource = "ocr" | "dom" | "event" | "model_output_text"
+
+export type DetectedResultValue = {
+  label: string
+  value: string
+  confidence: number | null
+  source: ResultValueSource
+}
+
+export type DemonstrationSkillEvidence = {
+  skill: string
+  support_level: "strong" | "partial" | "weak" | "missing"
+  reasoning: string
+}
+
+export type DemonstrationStep = {
+  step_number: number
+  timestamp_ms: number | null
+  user_action: string
+  observed_input: string | null
+  observed_output: string | null
+  visible_text_evidence: string[]
+  detected_result_values: DetectedResultValue[]
+  demonstrated_feature: string
+  skill_evidence: DemonstrationSkillEvidence[]
+  confidence: "high" | "medium" | "low"
+  needs_review: boolean
+}
+
+export type ObservedDemonstration = {
+  target_app: string
+  visual_analysis_status: VisualAnalysisStatus
+  steps: DemonstrationStep[]
+  summary: string
+  limitations: string[]
+}
+
 export type WorkflowAnalysisResponse = {
   id: string
   proof_session_id: string
@@ -1055,9 +1096,20 @@ export type WorkflowAnalysisResponse = {
   recruiter_summary: string
   student_improvement_suggestions: string[]
   human_review_needed: boolean
+  // v2 metadata
+  target_website?: string
+  target_site_pages_count?: number
+  supporting_evidence_count?: number
+  noise_filtered_count?: number
+  // v3 precise visual evidence
+  observed_demonstration?: ObservedDemonstration | null
+  visual_analysis_status?: VisualAnalysisStatus
+  // progress tracking
   progress: number
   current_stage: string
   stages: WorkflowAnalysisStage[]
+  analysis_stage?: string
+  progress_percent?: number
   created_at: string
   updated_at: string | null
 }

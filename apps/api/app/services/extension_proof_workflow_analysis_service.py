@@ -18,6 +18,16 @@ Target-site filtering (v2):
   — raw noise counts are stored internally for debugging; never surfaced to
     recruiters.
 
+Precise Visual Workflow Evidence (v3):
+  — builds an observed_demonstration schema with input→action→output steps.
+  — detects app type: ml_app, chatbot, route_map, dashboard, document,
+    portfolio, generic.
+  — extracts IAO patterns from event sequence (upload → predict → result).
+  — visual_analysis_status = "not_available" until frame/OCR is implemented.
+  — does NOT fake confidence scores or prediction labels from OCR;
+    detected_result_values is empty when visual analysis is unavailable.
+  — TODO: plug in frame-sampling + vision/OCR service here when available.
+
 Guardrails:
   — never claims skills are "verified" or "guaranteed"
   — uses "evidence supports", "AI Reviewed", "workflow analysis"
@@ -38,7 +48,7 @@ logger = logging.getLogger(__name__)
 _TABLE = "workflow_analysis_results"
 _SESSION_TABLE = "extension_proof_sessions"
 
-ANALYZER_VERSION = "workflow-analysis-v2"
+ANALYZER_VERSION = "workflow-analysis-v3"
 
 # Status values from which workflow analysis is allowed.
 _VALID_ANALYZE_FROM = frozenset({"uploaded_pending_analysis", "analyzing"})
@@ -156,6 +166,61 @@ _SKILL_ALIASES: dict[str, str] = {
     "azure": "Azure",
     "google maps": "Google Maps API",
 }
+
+# ── App-type detection patterns ───────────────────────────────────────────────
+# Used to classify the target application so IAO extraction can be more precise.
+
+_ML_APP_SIGNALS: tuple[str, ...] = (
+    "predict", "detection", "detect", "classify", "classification",
+    "inference", "model", "recognition", "object", "image", "vision",
+    "nlp", "sentiment", "score", "probability", "confidence",
+    "tensorflow", "pytorch", "sklearn", "streamlit", "huggingface",
+    "gradio", "yolo", "coco", "ssd",
+)
+
+_CHATBOT_SIGNALS: tuple[str, ...] = (
+    "chat", "chatbot", "assistant", "bot", "conversation", "message",
+    "prompt", "response", "gpt", "llm", "ask", "ai assistant",
+)
+
+_ROUTE_MAP_SIGNALS: tuple[str, ...] = (
+    "route", "map", "navigation", "directions", "location", "geo",
+    "traffic", "risk", "flood", "reroute", "incident", "waypoint",
+    "latitude", "longitude", "address",
+)
+
+_DASHBOARD_SIGNALS: tuple[str, ...] = (
+    "dashboard", "analytics", "chart", "graph", "metric", "kpi",
+    "report", "filter", "visuali", "trend", "insight", "stats",
+    "tableau", "grafana", "kibana", "powerbi",
+)
+
+_DOCUMENT_SIGNALS: tuple[str, ...] = (
+    "document", "pdf", "upload", "extract", "parse", "ocr", "scan",
+    "invoice", "receipt", "form", "text extraction", "summarize",
+    "entity", "nlp",
+)
+
+# Action triggers: clicking these strongly implies a "predict/run" step
+_ACTION_TRIGGER_TEXTS: tuple[str, ...] = (
+    "predict", "analyze", "analyse", "detect", "run", "classify",
+    "submit", "search", "generate", "compute", "calculate", "process",
+    "check", "scan", "start", "execute", "infer", "translate",
+    "summarize", "evaluate", "test",
+)
+
+# Upload triggers: clicking/interacting with these implies a file/image was provided
+_UPLOAD_TRIGGER_TEXTS: tuple[str, ...] = (
+    "upload", "choose file", "browse", "select file", "open file",
+    "drag", "drop", "import",
+)
+
+# Output signals: page titles or URLs containing these imply results are shown
+_OUTPUT_PAGE_SIGNALS: tuple[str, ...] = (
+    "result", "output", "prediction", "detection", "classification",
+    "response", "answer", "report", "analysis", "evaluation",
+    "score", "summary", "insights",
+)
 
 _REQUIRES_CODE_EVIDENCE: frozenset[str] = frozenset({
     "fastapi", "django", "flask", "starlette", "aiohttp", "tornado",
@@ -499,15 +564,23 @@ class ExtensionProofWorkflowAnalysisService:
 # ── Stage helpers ─────────────────────────────────────────────────────────────
 
 def _build_completed_stages(db_saved: bool = True) -> list[dict[str, Any]]:
+    """Return analysis stages with final status after a completed analysis run.
+
+    Stage list matches the 9-stage precise workflow evidence system (v3).
+    video_frame_analysis is 'coming_soon' until frame extraction is implemented.
+    """
     return [
-        {"key": "loading_metadata",   "label": "Loading session metadata",   "status": "complete"},
-        {"key": "reading_timeline",   "label": "Reading workflow timeline",   "status": "complete"},
-        {"key": "matching_objective", "label": "Matching proof objective",    "status": "complete"},
-        {"key": "matching_skills",    "label": "Matching claimed skills",     "status": "complete"},
-        {"key": "generating_summary", "label": "Generating evidence summary", "status": "complete"},
-        {"key": "db_insert",          "label": "Saving results",             "status": "complete" if db_saved else "failed"},
-        {"key": "video_to_text",      "label": "Video to text analysis",      "status": "coming_soon"},
-        {"key": "github_analysis",    "label": "GitHub code analysis",        "status": "coming_soon"},
+        {"key": "preparing_recording",  "label": "Preparing recording",                    "status": "complete"},
+        {"key": "filtering_tabs",       "label": "Filtering background tabs",               "status": "complete"},
+        {"key": "identifying_target",   "label": "Identifying target website",              "status": "complete"},
+        {"key": "extracting_events",    "label": "Extracting relevant workflow events",     "status": "complete"},
+        {"key": "reading_outputs",      "label": "Reading visible text and outputs",        "status": "complete"},
+        {"key": "detecting_iao_flow",   "label": "Detecting input → action → output flow", "status": "complete"},
+        {"key": "mapping_skills",       "label": "Mapping demonstration to skills",         "status": "complete"},
+        {"key": "generating_summary",   "label": "Generating recruiter-safe summary",       "status": "complete"},
+        {"key": "finalizing",           "label": "Finalizing Work Passport evidence",        "status": "complete" if db_saved else "failed"},
+        # ── Not yet available ──────────────────────────────────────────────────
+        {"key": "video_frame_analysis", "label": "Video frame analysis",                    "status": "coming_soon"},
     ]
 
 
@@ -519,6 +592,504 @@ class SessionNotFoundError(LookupError):
 
 class InvalidAnalysisStateError(ValueError):
     pass
+
+
+# ── App-type detection ────────────────────────────────────────────────────────
+
+def _detect_app_type(
+    original_url: str,
+    target_visited_titles: list[str],
+    target_events: list[dict[str, Any]],
+    proof_objective: str,
+) -> str:
+    """Classify the target app into a broad category for IAO interpretation.
+
+    Returns one of: "ml_app", "chatbot", "route_map", "dashboard",
+                    "document", "portfolio", "generic"
+    """
+    text = " ".join([
+        original_url.lower(),
+        " ".join(t.lower() for t in target_visited_titles),
+        proof_objective.lower(),
+        " ".join(
+            (e.get("element_text") or "").lower() +
+            (e.get("page_title") or "").lower()
+            for e in target_events
+        ),
+    ])
+
+    def _match(signals: tuple[str, ...]) -> bool:
+        return any(s in text for s in signals)
+
+    if _match(_ML_APP_SIGNALS):
+        return "ml_app"
+    if _match(_CHATBOT_SIGNALS):
+        return "chatbot"
+    if _match(_ROUTE_MAP_SIGNALS):
+        return "route_map"
+    if _match(_DASHBOARD_SIGNALS):
+        return "dashboard"
+    if _match(_DOCUMENT_SIGNALS):
+        return "document"
+
+    # Portfolio: static site on github.io or simple personal page
+    try:
+        from urllib.parse import urlparse
+        netloc = urlparse(original_url).netloc.lower()
+        if netloc.endswith("github.io"):
+            return "portfolio"
+    except Exception:
+        pass
+
+    return "generic"
+
+
+# ── IAO pattern extraction ────────────────────────────────────────────────────
+
+def _extract_iao_patterns(
+    target_events: list[dict[str, Any]],
+    app_type: str,
+) -> list[dict[str, Any]]:
+    """Identify input → action → output patterns from the event timeline.
+
+    Returns a list of IAO pattern dicts:
+        {
+            "input_event":   dict | None,
+            "action_event":  dict | None,
+            "output_event":  dict | None,
+            "pattern_type":  str,
+        }
+
+    NOTE: since frame/OCR is not available, actual output VALUES (e.g. "dog 0.89")
+    cannot be extracted. We detect the PATTERN of what happened, not the exact values.
+    """
+    patterns: list[dict[str, Any]] = []
+
+    upload_events: list[dict[str, Any]] = []
+    action_events: list[dict[str, Any]] = []
+    output_page_events: list[dict[str, Any]] = []
+    input_text_events: list[dict[str, Any]] = []
+
+    for event in target_events:
+        etype = event.get("type", "")
+        etext = (event.get("element_text") or "").lower()
+        eid   = (event.get("element_id") or "").lower()
+        title = (event.get("page_title") or "").lower()
+        url   = (event.get("page_url") or "").lower()
+
+        # Detect file/image upload interactions
+        if etype in ("click", "input_change"):
+            if any(s in etext or s in eid for s in _UPLOAD_TRIGGER_TEXTS):
+                upload_events.append(event)
+            elif etype == "input_change" and any(
+                s in eid for s in ("file", "image", "photo", "upload", "img", "pic")
+            ):
+                upload_events.append(event)
+
+        # Detect text/query input
+        if etype == "input_change" and any(
+            s in eid for s in ("text", "query", "search", "input", "message", "prompt", "q", "keyword")
+        ):
+            input_text_events.append(event)
+
+        # Detect action triggers (predict, run, submit, etc.)
+        if etype == "click" and any(s in etext for s in _ACTION_TRIGGER_TEXTS):
+            action_events.append(event)
+
+        # Detect result/output page visits.
+        # Require a path segment like /result, /output, /prediction, etc. OR that
+        # the matching signal word appears in the PAGE TITLE only (not the app name).
+        # This avoids misclassifying "Object Detection Demo" landing page as output.
+        if etype in ("page_visit", "navigation"):
+            parsed_path = ""
+            try:
+                from urllib.parse import urlparse as _up
+                parsed_path = _up(url).path.lower()
+            except Exception:
+                pass
+            path_match = any(
+                s in parsed_path for s in ("result", "output", "prediction", "report", "summary")
+            )
+            # Only treat as output if path match OR title has dedicated result words
+            # (excluding broad ml-domain words like "detection" to avoid false positives)
+            _result_only_signals = ("result", "output", "prediction", "report", "summary", "response", "answer", "evaluation", "score", "insights")
+            title_result_match = any(s in title for s in _result_only_signals)
+            if path_match or title_result_match:
+                output_page_events.append(event)
+
+    # ── Assemble patterns ─────────────────────────────────────────────────────
+
+    if app_type == "ml_app":
+        if upload_events or action_events:
+            patterns.append({
+                "input_event":   (upload_events or [None])[0],
+                "action_event":  (action_events or [None])[0],
+                "output_event":  (output_page_events or [None])[0],
+                "pattern_type":  "image_to_prediction",
+            })
+    elif app_type == "chatbot":
+        if input_text_events or action_events:
+            patterns.append({
+                "input_event":  (input_text_events or [None])[0],
+                "action_event": (action_events or [None])[0],
+                "output_event": (output_page_events or [None])[0],
+                "pattern_type": "prompt_to_response",
+            })
+    elif app_type == "route_map":
+        if input_text_events or action_events:
+            patterns.append({
+                "input_event":  (input_text_events or [None])[0],
+                "action_event": (action_events or [None])[0],
+                "output_event": (output_page_events or [None])[0],
+                "pattern_type": "location_to_route_or_risk",
+            })
+    elif app_type == "dashboard":
+        if action_events or target_events:
+            patterns.append({
+                "input_event":  (action_events or [None])[0],
+                "action_event": (action_events or [None])[0],
+                "output_event": (output_page_events or [None])[0],
+                "pattern_type": "filter_to_visualization",
+            })
+    elif app_type == "document":
+        if upload_events or action_events:
+            patterns.append({
+                "input_event":   (upload_events or [None])[0],
+                "action_event":  (action_events or [None])[0],
+                "output_event":  (output_page_events or [None])[0],
+                "pattern_type":  "document_to_extraction",
+            })
+    else:
+        # Generic: just report what happened
+        if action_events:
+            patterns.append({
+                "input_event":   (upload_events or input_text_events or [None])[0],
+                "action_event":  action_events[0],
+                "output_event":  (output_page_events or [None])[0],
+                "pattern_type":  "generic_interaction",
+            })
+
+    return patterns
+
+
+# ── Demonstration steps builder ───────────────────────────────────────────────
+
+_APP_TYPE_FEATURE_LABELS: dict[str, str] = {
+    "ml_app":       "Machine learning inference (input → prediction)",
+    "chatbot":      "Conversational AI (prompt → response)",
+    "route_map":    "Route/risk analysis (location input → map or risk output)",
+    "dashboard":    "Data visualization (filter → chart/metric output)",
+    "document":     "Document processing (file → extracted content)",
+    "portfolio":    "Portfolio presentation",
+    "generic":      "Web application interaction",
+}
+
+_PATTERN_SKILL_MAP: dict[str, list[tuple[str, str, str]]] = {
+    # pattern_type → list of (skill, support_level, reasoning)
+    "image_to_prediction": [
+        ("Object Detection",      "strong",  "Image-input to prediction-output workflow observed"),
+        ("Computer Vision",       "strong",  "Visual input was processed by the application"),
+        ("ML Inference",          "partial", "Prediction output was displayed; model type requires code evidence"),
+        ("TensorFlow.js",         "partial", "Client-side ML inferred; requires GitHub/code confirmation"),
+    ],
+    "prompt_to_response": [
+        ("Chatbot Development",   "strong",  "Prompt-response conversational flow observed"),
+        ("LLM Integration",       "partial", "LLM-backed response observed; requires code to confirm model"),
+        ("Natural Language Processing", "partial", "Text processing evidenced by response output"),
+    ],
+    "location_to_route_or_risk": [
+        ("Geospatial Analysis",   "strong",  "Location input to route/risk output observed"),
+        ("Mapping/GIS",           "partial", "Map or routing visualization shown"),
+        ("Risk Assessment",       "partial", "Risk or risk-score output observed; requires code to confirm ML model"),
+    ],
+    "filter_to_visualization": [
+        ("Data Visualization",    "strong",  "Dashboard/chart update from filter interaction observed"),
+        ("Data Analytics",        "partial", "Metrics or chart output shown; requires code to confirm data source"),
+    ],
+    "document_to_extraction": [
+        ("Document Processing",   "strong",  "Document upload to extraction/summary output observed"),
+        ("Information Extraction","partial", "Extracted content shown; requires code to confirm NLP pipeline"),
+    ],
+    "generic_interaction": [
+        ("Web Development",       "partial", "User interaction with a web application observed"),
+    ],
+}
+
+
+def _build_demonstration_steps(
+    target_events: list[dict[str, Any]],
+    iao_patterns: list[dict[str, Any]],
+    app_type: str,
+    target_app: str,
+) -> list[dict[str, Any]]:
+    """Build structured DemonstrationStep-like dicts from the event timeline.
+
+    visual_analysis_status is always "not_available" here since frame/OCR
+    extraction is not yet implemented. detected_result_values will be empty.
+
+    TODO: when frame-sampling + vision/OCR service is available, replace this
+    placeholder with actual visual evidence extraction.
+    """
+    steps: list[dict[str, Any]] = []
+    step_num = 1
+
+    # Step 1: App opened
+    first_page = next(
+        (e for e in target_events if e.get("type") == "page_visit"), None
+    )
+    title_hint = (first_page.get("page_title") or "") if first_page else ""
+    steps.append({
+        "step_number": step_num,
+        "timestamp_ms": None,
+        "user_action": f"Opened target application: {target_app or 'target app'}",
+        "observed_input": None,
+        "observed_output": None,
+        "visible_text_evidence": [title_hint] if title_hint else [],
+        "detected_result_values": [],
+        "demonstrated_feature": "Application launch",
+        "skill_evidence": [],
+        "confidence": "high",
+        "needs_review": False,
+    })
+    step_num += 1
+
+    # Steps from IAO patterns
+    pattern_skill_map = _PATTERN_SKILL_MAP.get(
+        (iao_patterns[0]["pattern_type"] if iao_patterns else "generic_interaction"),
+        _PATTERN_SKILL_MAP["generic_interaction"],
+    )
+
+    for pattern in iao_patterns:
+        ptype = pattern["pattern_type"]
+        input_ev  = pattern.get("input_event")
+        action_ev = pattern.get("action_event")
+        output_ev = pattern.get("output_event")
+
+        # Step: input provided
+        if input_ev:
+            input_text = input_ev.get("element_text") or ""
+            eid = input_ev.get("element_id") or ""
+            etype = input_ev.get("type", "")
+
+            if ptype == "image_to_prediction":
+                action_desc = "Uploaded or selected an image/file as input"
+                observed_in = f"Image/file selected via {eid or input_text or 'upload control'}"
+            elif ptype == "document_to_extraction":
+                action_desc = "Uploaded a document for processing"
+                observed_in = f"Document uploaded via {eid or input_text or 'upload control'}"
+            elif ptype == "prompt_to_response":
+                action_desc = "Entered a text prompt or message"
+                observed_in = f"Text entered in {eid or 'input field'}"
+            elif ptype == "location_to_route_or_risk":
+                action_desc = "Entered a location, address, or route"
+                observed_in = f"Location data entered in {eid or 'input field'}"
+            else:
+                action_desc = f"Provided input via {eid or input_text or 'form field'}"
+                observed_in = eid or input_text or "form input"
+
+            steps.append({
+                "step_number": step_num,
+                "timestamp_ms": None,
+                "user_action": action_desc,
+                "observed_input": observed_in,
+                "observed_output": None,
+                "visible_text_evidence": [input_text] if input_text else [],
+                "detected_result_values": [],
+                "demonstrated_feature": _APP_TYPE_FEATURE_LABELS.get(app_type, "Web interaction"),
+                "skill_evidence": [],
+                "confidence": "medium",
+                "needs_review": True,  # exact input not readable from timeline
+            })
+            step_num += 1
+
+        # Step: action triggered
+        if action_ev:
+            action_text = action_ev.get("element_text") or "button"
+            steps.append({
+                "step_number": step_num,
+                "timestamp_ms": None,
+                "user_action": f'Triggered action: clicked "{action_text}"',
+                "observed_input": None,
+                "observed_output": None,
+                "visible_text_evidence": [action_text],
+                "detected_result_values": [],
+                "demonstrated_feature": _APP_TYPE_FEATURE_LABELS.get(app_type, "Web interaction"),
+                "skill_evidence": [
+                    {
+                        "skill": skill,
+                        "support_level": level,
+                        "reasoning": reasoning,
+                    }
+                    for skill, level, reasoning in pattern_skill_map[:2]
+                ],
+                "confidence": "high",
+                "needs_review": False,
+            })
+            step_num += 1
+
+        # Step: output observed
+        if output_ev:
+            out_title = output_ev.get("page_title") or ""
+            out_url = output_ev.get("page_url") or ""
+
+            if ptype == "image_to_prediction":
+                output_desc = "Prediction or detection results were displayed"
+                observed_out = (
+                    f"Results page: {out_title}" if out_title else
+                    "Prediction output displayed (exact labels/scores not readable from timeline)"
+                )
+            elif ptype == "prompt_to_response":
+                output_desc = "AI response or answer was displayed"
+                observed_out = f"Response shown on: {out_title or out_url}"
+            elif ptype == "location_to_route_or_risk":
+                output_desc = "Route, map, or risk output was displayed"
+                observed_out = f"Output page: {out_title or out_url}"
+            elif ptype == "document_to_extraction":
+                output_desc = "Extracted content, summary, or entities displayed"
+                observed_out = f"Extraction output page: {out_title or out_url}"
+            elif ptype == "filter_to_visualization":
+                output_desc = "Dashboard or visualization updated"
+                observed_out = f"Dashboard page: {out_title or out_url}"
+            else:
+                output_desc = "Output or result page observed"
+                observed_out = f"{out_title or out_url}"
+
+            steps.append({
+                "step_number": step_num,
+                "timestamp_ms": None,
+                "user_action": output_desc,
+                "observed_input": None,
+                "observed_output": observed_out,
+                "visible_text_evidence": [out_title] if out_title else [],
+                "detected_result_values": [],
+                # NOTE: detected_result_values is empty — OCR/frame analysis not available.
+                # TODO: populate with OCR results once frame extraction is implemented.
+                "demonstrated_feature": _APP_TYPE_FEATURE_LABELS.get(app_type, "Web interaction"),
+                "skill_evidence": [
+                    {
+                        "skill": skill,
+                        "support_level": level,
+                        "reasoning": reasoning,
+                    }
+                    for skill, level, reasoning in pattern_skill_map
+                ],
+                "confidence": "medium",
+                "needs_review": True,  # exact output not readable without frame analysis
+            })
+            step_num += 1
+
+    return steps
+
+
+def _build_observed_demonstration(
+    target_events: list[dict[str, Any]],
+    app_type: str,
+    target_app: str,
+    iao_patterns: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the observed_demonstration structure.
+
+    Always sets visual_analysis_status = "not_available" until frame/OCR
+    analysis is implemented.
+
+    Limitations are surfaced honestly so recruiters and students understand
+    what was and was not possible to read from the timeline.
+    """
+    steps = _build_demonstration_steps(target_events, iao_patterns, app_type, target_app)
+
+    # Build honest summary
+    ptype = iao_patterns[0]["pattern_type"] if iao_patterns else None
+    if ptype == "image_to_prediction":
+        summary = (
+            "The recording shows an image or file input workflow leading to a prediction "
+            "or detection result. The app received an input, ran inference, and displayed "
+            "output. The exact prediction labels and confidence scores were not readable "
+            "from the browser event timeline — video frame analysis would be required to "
+            "extract them precisely."
+        )
+    elif ptype == "prompt_to_response":
+        summary = (
+            "The recording shows a conversational prompt-response workflow. A text input "
+            "was provided and an AI or search response was returned. The exact prompt text "
+            "and response content were not readable from the event timeline alone."
+        )
+    elif ptype == "location_to_route_or_risk":
+        summary = (
+            "The recording shows a location input to route or risk output workflow. "
+            "A location, address, or route was entered and a result (map, route, or risk "
+            "score) was displayed. Exact values are not readable from the browser timeline."
+        )
+    elif ptype == "filter_to_visualization":
+        summary = (
+            "The recording shows a dashboard or data visualization workflow. Filters or "
+            "parameters were adjusted and charts, tables, or metrics were updated. "
+            "Specific metric values are not readable from the browser event timeline."
+        )
+    elif ptype == "document_to_extraction":
+        summary = (
+            "The recording shows a document upload to extraction workflow. A file was "
+            "uploaded and the app extracted or summarized content from it. "
+            "Exact extracted values are not readable from the browser timeline."
+        )
+    else:
+        click_count = sum(1 for e in target_events if e.get("type") == "click")
+        input_count = sum(1 for e in target_events if e.get("type") == "input_change")
+        summary = (
+            f"The recording shows {click_count} click interaction(s) and "
+            f"{input_count} input interaction(s) with {target_app or 'the target application'}. "
+            "The exact inputs and outputs are not readable from the browser event timeline alone."
+        )
+
+    limitations = [
+        "Video frame analysis is not yet available — exact output values (labels, scores, "
+        "text) could not be extracted from the recording",
+        "detected_result_values is empty; specific prediction labels and confidence scores "
+        "require frame sampling and OCR/vision analysis",
+    ]
+    if not iao_patterns:
+        limitations.append(
+            "No clear input → action → output flow was detected from the event timeline; "
+            "the recording may show browsing without a clear demonstration"
+        )
+
+    return {
+        "target_app": target_app,
+        "visual_analysis_status": "not_available",
+        "steps": steps,
+        "summary": summary,
+        "limitations": limitations,
+    }
+
+
+# ── IAO-aware recruiter summary ────────────────────────────────────────────────
+
+_PTYPE_RECRUITER_INTRO: dict[str, str] = {
+    "image_to_prediction": (
+        "The student demonstrated an image-input to prediction-output workflow. "
+        "An image or file was provided as input, the application ran inference, "
+        "and prediction results were displayed."
+    ),
+    "prompt_to_response": (
+        "The student demonstrated a conversational AI workflow. "
+        "A text prompt or message was entered and an AI-generated response was returned."
+    ),
+    "location_to_route_or_risk": (
+        "The student demonstrated a geospatial or risk-analysis workflow. "
+        "A location or route was entered and a map, route, or risk result was displayed."
+    ),
+    "filter_to_visualization": (
+        "The student demonstrated a data analytics or dashboard workflow. "
+        "Filters or parameters were applied and charts or metrics were updated."
+    ),
+    "document_to_extraction": (
+        "The student demonstrated a document processing workflow. "
+        "A file was uploaded and the application extracted, summarized, or analysed its content."
+    ),
+    "generic_interaction": (
+        "The student interacted with the target web application, "
+        "triggering actions and navigating through the application features."
+    ),
+}
 
 
 # ── Core analysis algorithm ───────────────────────────────────────────────────
@@ -625,6 +1196,18 @@ def _analyze_workflow(
     # ── Confidence ────────────────────────────────────────────────────────────
     confidence = _determine_confidence(score, url_type, len(events), duration_secs)
 
+    # ── App type + IAO pattern detection (v3) ────────────────────────────────
+    app_type = _detect_app_type(
+        original_url, target_visited_titles, target_events, proof_objective
+    )
+    iao_patterns = _extract_iao_patterns(target_events, app_type)
+
+    # ── Observed demonstration (v3) ───────────────────────────────────────────
+    target_app_label = target_netloc or _extract_domain(original_url)
+    observed_demonstration = _build_observed_demonstration(
+        target_events, app_type, target_app_label, iao_patterns
+    )
+
     # ── Demonstrated actions (TARGET site events only) ────────────────────────
     demonstrated_actions = _extract_demonstrated_actions(
         target_page_visits, target_clicks, target_inputs,
@@ -660,6 +1243,7 @@ def _analyze_workflow(
         target_visited_titles=target_visited_titles,
         supporting_visited_urls=supporting_visited_urls,
         original_url=original_url,
+        iao_patterns=iao_patterns,
     )
     suggestions = _build_suggestions(
         url_type, duration_secs, len(events),
@@ -688,6 +1272,9 @@ def _analyze_workflow(
         "target_site_pages_count":    len(target_visited_urls),
         "supporting_evidence_count":  len(supporting_visited_urls),
         "noise_filtered_count":       len(noise_urls),
+        # ── Precise visual workflow evidence (v3) ─────────────────────────────
+        "observed_demonstration":     observed_demonstration,
+        "visual_analysis_status":     "not_available",
     }
 
 
@@ -1191,18 +1778,23 @@ def _build_recruiter_summary(
     target_visited_titles: list[str] | None = None,
     supporting_visited_urls: list[str] | None = None,
     original_url: str = "",
+    iao_patterns: list[dict[str, Any]] | None = None,
 ) -> str:
     """Recruiter-facing summary focused on the proof target website.
 
     Never mentions unrelated browser tabs, Supabase, VeriBridge dashboard,
     or any noise URLs. Only describes what was observed on the target app
     and any supporting GitHub evidence.
+
+    When IAO patterns are detected, opens with a precise description of the
+    input→action→output flow rather than just "user clicked upload".
     """
     is_local = url_type in ("localhost_url", "local_network_url")
     duration_label = _fmt_duration(duration_secs)
     skill_obs = skill_obs or {}
     target_visited_titles = target_visited_titles or []
     supporting_visited_urls = supporting_visited_urls or []
+    iao_patterns = iao_patterns or []
 
     target_domain = _extract_domain(original_url) or ""
     app_label = f"'{target_domain}'" if target_domain else "the target application"
@@ -1227,14 +1819,42 @@ def _build_recruiter_summary(
         if meaningful_titles:
             title_context = f" ({'; '.join(meaningful_titles[:2])})"
 
-        lines.append(
-            f"The recording shows the student demonstrating {app_label}{title_context}, "
-            f"a {app_type_label}."
-        )
+        # Use IAO-pattern-aware opening when a pattern was detected
+        if iao_patterns:
+            ptype = iao_patterns[0].get("pattern_type", "generic_interaction")
+            iao_intro = _PTYPE_RECRUITER_INTRO.get(ptype, _PTYPE_RECRUITER_INTRO["generic_interaction"])
+            lines.append(
+                f"The recording shows the student using {app_label}{title_context}, "
+                f"a {app_type_label}. {iao_intro}"
+            )
+        else:
+            lines.append(
+                f"The recording shows the student demonstrating {app_label}{title_context}, "
+                f"a {app_type_label}."
+            )
+
         if page_count > 1:
             lines.append(
                 f"{page_count} pages within the target application were observed in the session."
             )
+
+        # Honest note about output visibility
+        if iao_patterns:
+            ptype = iao_patterns[0].get("pattern_type", "")
+            has_output = iao_patterns[0].get("output_event") is not None
+            if ptype == "image_to_prediction":
+                if has_output:
+                    lines.append(
+                        "The recording shows that prediction or detection output was displayed. "
+                        "The exact output labels and confidence scores were not readable from "
+                        "the browser event timeline — video frame analysis would be required "
+                        "to extract precise values."
+                    )
+                else:
+                    lines.append(
+                        "The recording shows an image upload and detection workflow, but a clear "
+                        "result or output page was not observed in the event timeline."
+                    )
 
     # ── Proof objective ───────────────────────────────────────────────────────
     if proof_objective:

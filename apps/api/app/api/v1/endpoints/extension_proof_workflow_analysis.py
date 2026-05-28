@@ -10,6 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import get_current_user_id, get_db
 from app.schemas.extension_proof_workflow_analysis import (
     AnalysisStage,
+    DetectedResultValue,
+    DemonstrationSkillEvidence,
+    DemonstrationStep,
+    ObservedDemonstration,
     WorkflowAnalyzeRequest,
     WorkflowAnalysisResponse,
 )
@@ -99,9 +103,57 @@ def get_workflow_analysis(
     return _to_response(row)
 
 
+def _parse_observed_demonstration(raw: Any) -> ObservedDemonstration | None:
+    """Safely parse the observed_demonstration dict from the service result."""
+    if raw is None:
+        return None
+    if isinstance(raw, ObservedDemonstration):
+        return raw
+    if not isinstance(raw, dict):
+        return None
+    try:
+        steps_raw = raw.get("steps") or []
+        steps: list[DemonstrationStep] = []
+        for s in steps_raw:
+            if not isinstance(s, dict):
+                continue
+            result_vals = [
+                DetectedResultValue(**rv) for rv in (s.get("detected_result_values") or [])
+                if isinstance(rv, dict)
+            ]
+            skill_ev = [
+                DemonstrationSkillEvidence(**se) for se in (s.get("skill_evidence") or [])
+                if isinstance(se, dict)
+            ]
+            steps.append(DemonstrationStep(
+                step_number=int(s.get("step_number", 0)),
+                timestamp_ms=s.get("timestamp_ms"),
+                user_action=str(s.get("user_action", "")),
+                observed_input=s.get("observed_input"),
+                observed_output=s.get("observed_output"),
+                visible_text_evidence=list(s.get("visible_text_evidence") or []),
+                detected_result_values=result_vals,
+                demonstrated_feature=str(s.get("demonstrated_feature", "")),
+                skill_evidence=skill_ev,
+                confidence=s.get("confidence", "medium"),
+                needs_review=bool(s.get("needs_review", False)),
+            ))
+        return ObservedDemonstration(
+            target_app=str(raw.get("target_app", "")),
+            visual_analysis_status=raw.get("visual_analysis_status", "not_available"),
+            steps=steps,
+            summary=str(raw.get("summary", "")),
+            limitations=list(raw.get("limitations") or []),
+        )
+    except Exception:
+        logger.warning("_parse_observed_demonstration: failed to parse", exc_info=True)
+        return None
+
+
 def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
     db_saved = bool(row.get("_db_saved", True))
     stages = [AnalysisStage(**s) for s in _build_completed_stages(db_saved=db_saved)]
+    observed_demonstration = _parse_observed_demonstration(row.get("observed_demonstration"))
     return WorkflowAnalysisResponse(
         id=str(row.get("id", "")),
         proof_session_id=str(row.get("proof_session_id", "")),
@@ -123,9 +175,13 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
         target_site_pages_count=int(row.get("target_site_pages_count", 0)),
         supporting_evidence_count=int(row.get("supporting_evidence_count", 0)),
         noise_filtered_count=int(row.get("noise_filtered_count", 0)),
+        observed_demonstration=observed_demonstration,
+        visual_analysis_status=row.get("visual_analysis_status", "not_available"),
         progress=100,
         current_stage="AI reviewed",
         stages=stages,
+        analysis_stage="complete",
+        progress_percent=100,
         created_at=str(row.get("created_at", "")),
         updated_at=row.get("updated_at"),
     )
