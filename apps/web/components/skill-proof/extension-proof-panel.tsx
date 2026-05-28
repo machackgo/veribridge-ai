@@ -2754,7 +2754,7 @@ function ProjectDefenseSection({
       setShowingRaw(false)
       onTranscriptChange(result.refined_transcript)
     } catch (err) {
-      setReRefineError(err instanceof Error ? err.message : "Refinement failed. Please try again.")
+      setReRefineError(err instanceof Error ? err.message : "Correction failed. Please try again.")
     } finally {
       setReRefining(false)
     }
@@ -3338,7 +3338,7 @@ function ProjectDefenseSection({
                     ✦ VERIBRIDGE AI
                   </span>
                   <span style={{ fontSize: 12, fontWeight: 700, color: "#166534" }}>
-                    Transcript refined with VeriBridge AI
+                    Transcript corrected with VeriBridge AI
                   </span>
                 </div>
                 {/* Raw / Refined toggle */}
@@ -3355,7 +3355,7 @@ function ProjectDefenseSection({
                       cursor: "pointer",
                     }}
                   >
-                    {showingRaw ? "Use refined transcript" : "View raw transcript"}
+                    {showingRaw ? "Use corrected transcript" : "View raw transcript"}
                   </button>
                 </div>
               </div>
@@ -3411,11 +3411,11 @@ function ProjectDefenseSection({
                   fontSize: 11, color: "#854d0e",
                 }}>
                   👁 Viewing raw transcript. The editable field shows the original ASR output.
-                  Click <strong>Use refined transcript</strong> to switch back.
+                  Click <strong>Use corrected transcript</strong> to switch back.
                 </div>
               )}
 
-              {/* Re-refine button (useful if skills/context updated) */}
+              {/* Re-correct button (useful if skills/context updated) */}
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <button
                   type="button"
@@ -3430,9 +3430,9 @@ function ProjectDefenseSection({
                     cursor: reRefining || defenseAnalyzing ? "not-allowed" : "pointer",
                   }}
                 >
-                  {reRefining ? "Re-refining…" : "↻ Re-refine"}
+                  {reRefining ? "Re-correcting…" : "↻ Re-correct"}
                 </button>
-                <span style={{ fontSize: 11, color: "#6b7280" }}>Re-run refinement if you updated your skills or project context.</span>
+                <span style={{ fontSize: 11, color: "#6b7280" }}>Re-run correction if you updated your skills or project context.</span>
               </div>
 
               {reRefineError && (

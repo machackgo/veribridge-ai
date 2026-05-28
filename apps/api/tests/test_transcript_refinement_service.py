@@ -786,3 +786,272 @@ class TestExtractRepoName:
         from app.services.transcript_refinement_service import _extract_repo_name
         result = _extract_repo_name("not-a-url")
         assert result == ""
+
+
+# ── Correction-only behavior tests ───────────────────────────────────────────
+
+class TestCorrectionOnlyBehavior:
+    """
+    Verify that the service behaves as a term/spelling corrector only —
+    NOT as a transcript rewriter, polisher, or essay editor.
+    """
+
+    def _correct(self, raw: str, **kwargs):
+        """Helper: always uses rules-based path (no LLM)."""
+        with patch("app.services.transcript_refinement_service.settings") as mock_settings:
+            mock_settings.anthropic_configured = False
+            return refine_project_defense_transcript(raw, **kwargs)
+
+    # ── Specific term corrections ─────────────────────────────────────────────
+
+    def test_muhammoh_corrects_to_full_name_with_profile(self):
+        """'muhammoh' corrects to student's full name when profile provides context."""
+        raw = "Hi, my name is muhammoh and this is my project defense."
+        profile = {"full_name": "Mohammed Mubashir Uddin Faraz"}
+        result = self._correct(raw, student_profile=profile)
+        # "muhammoh" contains "moh" → matches single-word first-name pattern
+        assert "Mohammed" in result.refined_transcript, (
+            "'muhammoh' must be corrected to 'Mohammed' when profile is provided"
+        )
+        assert result.raw_transcript == raw, "raw_transcript must be preserved unchanged"
+
+    def test_muhammoh_not_corrected_without_profile(self):
+        """'muhammoh' must NOT be corrected when no student profile is provided."""
+        raw = "Hi, my name is muhammoh and this is my project defense."
+        result = self._correct(raw)  # no student_profile
+        # Without a profile there is no name pattern — "muhammoh" should stay
+        assert "muhammoh" in result.refined_transcript, (
+            "Without profile context, 'muhammoh' must remain unchanged"
+        )
+
+    def test_first_api_corrects_to_fastapi(self):
+        """'first API' → 'FastAPI' (base glossary term correction)."""
+        raw = "I built the REST endpoints using first API."
+        result = self._correct(raw)
+        assert "FastAPI" in result.refined_transcript
+        assert result.raw_transcript == raw
+
+    def test_golmaps_api_corrects_to_google_maps_api(self):
+        """'golmaps API' → 'Google Maps API' (base glossary term correction)."""
+        raw = "I integrated the Golmaps API for route visualization."
+        result = self._correct(raw, claimed_skills=["Google Maps API"])
+        assert "Google Maps API" in result.refined_transcript
+        assert result.raw_transcript == raw
+
+    def test_stimulates_corrects_to_streamlit(self):
+        """'stimulates' → 'Streamlit' (ASR mis-hear of 'Streamlit')."""
+        raw = "I created the dashboard interface using stimulates."
+        result = self._correct(raw)
+        assert "Streamlit" in result.refined_transcript
+        assert result.raw_transcript == raw
+
+    def test_very_brief_corrects_to_veribridge(self):
+        """'very brief' → 'VeriBridge' (ASR mis-hear of the platform name)."""
+        raw = "This portfolio was verified through very brief platform."
+        result = self._correct(raw)
+        assert "VeriBridge" in result.refined_transcript
+        assert result.raw_transcript == raw
+
+    def test_veri_bridge_corrects_to_veribridge(self):
+        """'veri bridge' → 'VeriBridge'."""
+        raw = "My work was verified on veri bridge."
+        result = self._correct(raw)
+        assert "VeriBridge" in result.refined_transcript
+
+    # ── Sentence structure preservation ──────────────────────────────────────
+
+    def test_sentence_order_preserved(self):
+        """Correction must NOT reorder sentences or alter structure."""
+        raw = (
+            "I built the frontend first. "
+            "Then I created the back end API. "
+            "Finally I deployed it."
+        )
+        result = self._correct(raw, claimed_skills=["React", "FastAPI"])
+        refined = result.refined_transcript
+        pos_first   = refined.lower().find("first")
+        pos_then    = refined.lower().find("then")
+        pos_finally = refined.lower().find("finally")
+        assert pos_first != -1 and pos_then != -1 and pos_finally != -1, (
+            "Key structural words must remain in the corrected transcript"
+        )
+        assert pos_first < pos_then < pos_finally, (
+            "Sentence order must be preserved exactly as in the original"
+        )
+        assert result.raw_transcript == raw
+
+    def test_spoken_filler_words_preserved(self):
+        """Informal spoken language (um, uh, yeah, so) must NOT be removed."""
+        raw = "so um I built this thing with React and um the back end is First API and yeah it works"
+        result = self._correct(raw, claimed_skills=["React", "FastAPI"])
+        refined = result.refined_transcript
+        assert "um" in refined,   "Filler word 'um' must be preserved"
+        assert "yeah" in refined, "Informal acknowledgment 'yeah' must be preserved"
+        # Only technical term corrections should have been made
+        assert "FastAPI" in refined or "first API" in raw.lower()
+
+    def test_paragraph_not_rewritten_into_polished_script(self):
+        """Correction must NOT turn informal speech into a polished script."""
+        raw = (
+            "so basically I made this app and it does like route optimization "
+            "and I used First API for the back end stuff and yeah it kinda works"
+        )
+        result = self._correct(raw, claimed_skills=["FastAPI"])
+        refined = result.refined_transcript
+        # Informal markers must survive — only "First API" and "back end" get corrected
+        assert "basically" in refined, "'basically' is informal speech — must be preserved"
+        assert "kinda" in refined,     "'kinda' is informal speech — must be preserved"
+        assert "stuff" in refined,     "'stuff' is informal speech — must be preserved"
+        # Technical corrections should still apply
+        assert "FastAPI" in refined
+
+    # ── No similar-meaning replacements ──────────────────────────────────────
+
+    def test_similar_meaning_phrases_not_replaced(self):
+        """Phrases must NOT be replaced with synonyms or 'similar meaning' alternatives."""
+        raw = "The application works well and processes data efficiently."
+        result = self._correct(raw, claimed_skills=["Python", "FastAPI"])
+        refined = result.refined_transcript
+        assert "works well" in refined, (
+            "'works well' must not be replaced with a similar phrase"
+        )
+        assert "processes data" in refined, (
+            "'processes data' must not be rephrased or paraphrased"
+        )
+
+    def test_no_new_sentences_added(self):
+        """Correction must NOT introduce new sentences not in the raw transcript."""
+        raw = "I built a simple REST API. It handles CRUD operations."
+        result = self._correct(raw, claimed_skills=["FastAPI"])
+        raw_sentence_count = raw.count(".") + raw.count("!") + raw.count("?")
+        refined_sentence_count = (
+            result.refined_transcript.count(".")
+            + result.refined_transcript.count("!")
+            + result.refined_transcript.count("?")
+        )
+        # Allow at most +1 for punctuation-space fixes
+        assert refined_sentence_count <= raw_sentence_count + 1, (
+            "Correction must not add new sentences"
+        )
+
+    # ── raw_transcript always preserved ──────────────────────────────────────
+
+    def test_raw_transcript_always_preserved(self):
+        """raw_transcript must always equal the original ASR input, unchanged."""
+        raw = "I used stimulates for the dashboard and Golmaps API for maps."
+        result = self._correct(raw, claimed_skills=["Streamlit", "Google Maps API"])
+        assert result.raw_transcript == raw
+
+    # ── corrected (refined) transcript returned ───────────────────────────────
+
+    def test_corrected_transcript_returned(self):
+        """refined_transcript must be returned and contain corrected terms."""
+        raw = "I used First API and stimulates for the project."
+        result = self._correct(raw)
+        assert result.refined_transcript is not None
+        assert isinstance(result.refined_transcript, str)
+        assert len(result.refined_transcript) > 0
+        assert "FastAPI" in result.refined_transcript
+        assert "Streamlit" in result.refined_transcript
+
+    # ── Correction summary fields ─────────────────────────────────────────────
+
+    def test_correction_summary_has_new_fields(self):
+        """Each correction entry must include correction_type, confidence, applied."""
+        raw = "I built the back end with First API."
+        result = self._correct(raw)
+        assert len(result.correction_summary) > 0
+        for entry in result.correction_summary:
+            assert "correction_type" in entry, "correction_type field must be present"
+            assert "confidence" in entry,      "confidence field must be present"
+            assert "applied" in entry,         "applied field must be present"
+            assert isinstance(entry["confidence"], float)
+            assert isinstance(entry["applied"], bool)
+            assert entry["correction_type"] in (
+                "name", "technical_term", "product_name", "project_name", "spelling"
+            )
+
+    def test_applied_corrections_are_true_for_high_confidence(self):
+        """Rules-based corrections should always have applied=True (high confidence)."""
+        raw = "I used First API and Golmaps API in my project."
+        result = self._correct(raw)
+        for entry in result.correction_summary:
+            assert entry["applied"] is True, (
+                "Rules-based corrections are high-confidence and must be applied=True"
+            )
+
+    # ── Low-confidence LLM corrections (suggestions only) ────────────────────
+
+    def test_low_confidence_llm_corrections_are_suggestions_only(self):
+        """
+        LLM mode: corrections with confidence < 0.85 must NOT be applied to the
+        corrected transcript, but must appear in correction_summary with applied=False.
+        transcript_needs_review must be True when unapplied suggestions exist.
+        """
+        import json
+        from unittest.mock import MagicMock, patch
+
+        # LLM returns one high-confidence correction (applied) and one low-confidence (not applied)
+        mock_llm_response = {
+            "corrected_transcript": "I built a FastAPI backend.",
+            "corrections": [
+                {
+                    "original": "First API",
+                    "corrected": "FastAPI",
+                    "correction_type": "technical_term",
+                    "confidence": 0.97,
+                    "applied": True,
+                    "reason": "ASR mis-hearing of FastAPI",
+                },
+                {
+                    "original": "made things",
+                    "corrected": "developed features",
+                    "correction_type": "spelling",
+                    "confidence": 0.25,
+                    "applied": False,
+                    "reason": "Low confidence — similar meaning only",
+                },
+            ],
+            "confidence": 0.72,
+            "transcript_needs_review": True,
+        }
+
+        mock_message = MagicMock()
+        mock_message.content = [MagicMock(text=json.dumps(mock_llm_response))]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_message
+
+        # anthropic is imported lazily inside the function, so patch via sys.modules
+        import sys
+        mock_anthropic_module = MagicMock()
+        mock_anthropic_module.Anthropic.return_value = mock_client
+
+        with patch("app.services.transcript_refinement_service.settings") as mock_settings, \
+             patch.dict(sys.modules, {"anthropic": mock_anthropic_module}):
+            mock_settings.anthropic_configured = True
+            mock_settings.anthropic_api_key.get_secret_value.return_value = "test-key"
+            mock_settings.ai_reviewer_model = "claude-haiku-4-5-20251001"
+
+            result = refine_project_defense_transcript(
+                "I built a First API backend and made things.",
+                claimed_skills=["FastAPI"],
+            )
+
+        # High-confidence correction applied
+        assert "FastAPI" in result.refined_transcript, (
+            "High-confidence correction must be applied to the transcript"
+        )
+        # Low-confidence correction NOT applied to transcript
+        assert "developed features" not in result.refined_transcript, (
+            "Low-confidence correction must NOT alter the transcript"
+        )
+        # transcript_needs_review must be True
+        assert result.needs_review is True, (
+            "needs_review must be True when unapplied suggestions exist"
+        )
+        # Unapplied correction must appear in summary
+        unapplied = [c for c in result.correction_summary if not c.get("applied", True)]
+        assert len(unapplied) >= 1, (
+            "Low-confidence suggestions must appear in correction_summary with applied=False"
+        )
+        assert unapplied[0]["corrected"] == "developed features"

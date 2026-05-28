@@ -1633,8 +1633,9 @@ export async function transcribeDefenseMedia(
 }
 
 /**
- * (Re-)run NLP transcript refinement on the stored raw transcript.
- * Use when transcription already ran but auto-refinement failed, or when
+ * (Re-)run ASR transcript correction on the stored raw transcript.
+ * Corrects spelling and term recognition mistakes only — does not rewrite.
+ * Use when transcription already ran but auto-correction failed, or when
  * the student updates their context (skills, project description).
  * Returns 404 if no raw transcript exists for this session yet.
  */
@@ -1657,7 +1658,7 @@ export async function refineDefenseTranscript(
   if (res.status === 404) throw new Error("No raw transcript found. Transcribe first.")
   if (!res.ok) {
     const raw = await res.text()
-    let msg = `Transcript refinement failed (HTTP ${res.status}).`
+    let msg = `Transcript correction failed (HTTP ${res.status}).`
     try { msg = (JSON.parse(raw) as { detail?: { message?: string } }).detail?.message ?? msg } catch { /* */ }
     throw new Error(msg)
   }
