@@ -69,6 +69,25 @@ class WorkflowAnalysisResponse(BaseModel):
 
     human_review_needed: bool
 
+    # ── Target-site filtering metadata (v2) ────────────────────────────────────
+    # These fields are informational — not included in recruiter_summary text.
+    target_website: str = Field(
+        default="",
+        description="Domain/netloc of the proof target website that was analysed",
+    )
+    target_site_pages_count: int = Field(
+        default=0,
+        description="Number of pages visited on the target proof website",
+    )
+    supporting_evidence_count: int = Field(
+        default=0,
+        description="Number of supporting evidence pages visited (e.g. GitHub)",
+    )
+    noise_filtered_count: int = Field(
+        default=0,
+        description="Number of noise events filtered out (unrelated tabs, VeriBridge dashboard, Supabase)",
+    )
+
     # Progress tracking — computed at response time, not stored in DB.
     # After successful analysis all stages are "complete" and progress = 100.
     progress: int = Field(default=100, ge=0, le=100)

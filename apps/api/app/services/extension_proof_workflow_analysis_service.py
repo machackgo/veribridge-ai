@@ -10,6 +10,14 @@ Current analysis_type: 'timeline_only'
   — the output schema is designed so video/multimodal analysis can be
     dropped in later without changing the API surface.
 
+Target-site filtering (v2):
+  — only events on the proof target domain are analysed for skill evidence.
+  — VeriBridge internal dashboard pages, Supabase, and unrelated browser
+    tabs are classified as "noise" and excluded from recruiter-facing output.
+  — GitHub pages are classified as "supporting evidence" and noted separately.
+  — raw noise counts are stored internally for debugging; never surfaced to
+    recruiters.
+
 Guardrails:
   — never claims skills are "verified" or "guaranteed"
   — uses "evidence supports", "AI Reviewed", "workflow analysis"
@@ -30,7 +38,7 @@ logger = logging.getLogger(__name__)
 _TABLE = "workflow_analysis_results"
 _SESSION_TABLE = "extension_proof_sessions"
 
-ANALYZER_VERSION = "workflow-analysis-v1"
+ANALYZER_VERSION = "workflow-analysis-v2"
 
 # Status values from which workflow analysis is allowed.
 _VALID_ANALYZE_FROM = frozenset({"uploaded_pending_analysis", "analyzing"})
@@ -38,7 +46,6 @@ _VALID_ANALYZE_FROM = frozenset({"uploaded_pending_analysis", "analyzing"})
 
 # ── Tech detection maps ───────────────────────────────────────────────────────
 
-# Known deployment domains → likely tech signals (partial match on netloc)
 _DOMAIN_TECH: dict[str, list[str]] = {
     "vercel.app":        ["Next.js", "React", "Vercel"],
     "netlify.app":       ["React", "Netlify"],
@@ -56,7 +63,6 @@ _DOMAIN_TECH: dict[str, list[str]] = {
     "replit.com":        ["Replit"],
 }
 
-# localhost port → likely tech signals
 _PORT_TECH: dict[str, list[str]] = {
     "3000": ["React", "Node.js", "Next.js"],
     "3001": ["React", "Node.js"],
@@ -73,7 +79,6 @@ _PORT_TECH: dict[str, list[str]] = {
     "9000": ["Node.js"],
 }
 
-# Substrings in page titles → likely tech (lowercase match)
 _TITLE_TECH: dict[str, str] = {
     "fastapi":       "FastAPI",
     "swagger":       "FastAPI",
@@ -97,7 +102,6 @@ _TITLE_TECH: dict[str, str] = {
     "supabase":      "Supabase",
 }
 
-# Normalize claimed skills → canonical form for comparison
 _SKILL_ALIASES: dict[str, str] = {
     "react.js": "React",
     "reactjs": "React",
@@ -153,11 +157,6 @@ _SKILL_ALIASES: dict[str, str] = {
     "google maps": "Google Maps API",
 }
 
-# Skills that are implemented in back-end code and are NOT directly observable
-# in a browser recording.  When a student claims one of these skills, the
-# workflow analysis will classify it as "requires_code_evidence" rather than
-# "unsupported", and the recruiter summary will explain that GitHub / code
-# review evidence is needed to verify the skill.
 _REQUIRES_CODE_EVIDENCE: frozenset[str] = frozenset({
     "fastapi", "django", "flask", "starlette", "aiohttp", "tornado",
     "sqlalchemy", "alembic", "prisma", "drizzle",
@@ -167,11 +166,115 @@ _REQUIRES_CODE_EVIDENCE: frozenset[str] = frozenset({
     "celery", "redis", "mongodb", "postgresql", "postgres",
     "langchain", "llamaindex", "huggingface", "openai", "anthropic",
     "google cloud", "cloud run", "gcp", "aws", "azure",
-    "python",  # Python itself is a code skill; the UI may show Python results
+    "python",
     "sqlalchemy", "alembic",
     "fastai", "ray", "dask", "airflow", "prefect",
     "github actions", "ci/cd",
 })
+
+
+# ── URL filtering: noise patterns ─────────────────────────────────────────────
+
+# Exact netlocs that are always noise (no matter what path)
+_NOISE_NETLOCS: frozenset[str] = frozenset({
+    "app.supabase.io",
+    "studio.supabase.com",
+    "supabase.com",
+    "api.supabase.io",
+})
+
+# Netloc suffixes → always noise
+_NOISE_NETLOC_SUFFIXES: tuple[str, ...] = (
+    ".supabase.io",
+    ".supabase.co",
+)
+
+# Netloc + path prefix combos that are VeriBridge internal routes
+# (VeriBridge app runs on localhost:3000 in development)
+_VERIBRIDGE_LOCALHOST_NETLOCS: frozenset[str] = frozenset({
+    "localhost:3000",
+    "127.0.0.1:3000",
+})
+
+# Path prefixes that mark a URL as a VeriBridge internal dashboard page
+_VERIBRIDGE_INTERNAL_PATH_PREFIXES: tuple[str, ...] = (
+    "/dashboard/",
+    "/dashboard",
+)
+
+
+def _safe_netloc(url: str) -> str:
+    """Extract netloc (host:port) from a URL, lowercased. Returns '' on failure."""
+    if not url:
+        return ""
+    try:
+        return urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+
+
+def _is_veribridge_internal(url: str) -> bool:
+    """Return True if this URL is a VeriBridge internal dashboard page."""
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc.lower()
+        path = parsed.path.lower()
+        if netloc in _VERIBRIDGE_LOCALHOST_NETLOCS:
+            for prefix in _VERIBRIDGE_INTERNAL_PATH_PREFIXES:
+                if path.startswith(prefix) or path == prefix.rstrip("/"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _classify_url(
+    url: str,
+    target_netloc: str,
+    github_netloc: str | None,
+) -> str:
+    """Classify a URL into 'target', 'supporting', or 'noise'.
+
+    target:     URL is on the same domain/netloc as the proof target site.
+    supporting: URL is on GitHub and a github_url was provided.
+    noise:      Everything else — VeriBridge internal, Supabase, unrelated tabs.
+    """
+    if not url:
+        return "noise"
+    if _is_chrome_internal(url):
+        return "noise"
+
+    # VeriBridge internal dashboard routes → always noise
+    if _is_veribridge_internal(url):
+        return "noise"
+
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc.lower()
+
+        # Known noise netlocs
+        if netloc in _NOISE_NETLOCS:
+            return "noise"
+        for suffix in _NOISE_NETLOC_SUFFIXES:
+            if netloc.endswith(suffix):
+                return "noise"
+
+        # Target site match (exact netloc)
+        if target_netloc and netloc == target_netloc:
+            return "target"
+
+        # GitHub supporting evidence (only when github_url is configured)
+        if github_netloc:
+            if netloc in ("github.com", "raw.githubusercontent.com", "gist.github.com"):
+                return "supporting"
+            if netloc == github_netloc:
+                return "supporting"
+
+        # Everything else: unrelated tab → noise
+        return "noise"
+
+    except Exception:
+        return "noise"
 
 
 class ExtensionProofWorkflowAnalysisService:
@@ -205,7 +308,6 @@ class ExtensionProofWorkflowAnalysisService:
                 f"Allowed from: {sorted(_VALID_ANALYZE_FROM)}."
             )
 
-        # Advance session to 'analyzing' if not already there — best-effort.
         if current_status == "uploaded_pending_analysis":
             try:
                 self._update_session_status(user_id, session_id, "analyzing")
@@ -265,7 +367,6 @@ class ExtensionProofWorkflowAnalysisService:
                 **result,
             }
 
-        # Move session to completed regardless of whether DB write succeeded.
         try:
             self._update_session_status(user_id, session_id, "completed")
         except Exception:
@@ -313,8 +414,6 @@ class ExtensionProofWorkflowAnalysisService:
                 session_id, exc_info=True,
             )
             return None
-
-    # ── Internals ─────────────────────────────────────────────────────────────
 
     def _get_session(self, user_id: str, session_id: str) -> dict[str, Any]:
         if isinstance(self._client, dict):
@@ -377,7 +476,6 @@ class ExtensionProofWorkflowAnalysisService:
             store[row["id"]] = row
             return row
 
-        # Upsert: update if exists, insert if not
         existing = self.get_latest(user_id, session_id)
         if existing:
             res = (
@@ -401,7 +499,6 @@ class ExtensionProofWorkflowAnalysisService:
 # ── Stage helpers ─────────────────────────────────────────────────────────────
 
 def _build_completed_stages(db_saved: bool = True) -> list[dict[str, Any]]:
-    """Return the 8-stage list for a completed workflow analysis."""
     return [
         {"key": "loading_metadata",   "label": "Loading session metadata",   "status": "complete"},
         {"key": "reading_timeline",   "label": "Reading workflow timeline",   "status": "complete"},
@@ -438,48 +535,87 @@ def _analyze_workflow(
     started_at_str: str | None = proof_data.get("started_at")
     stopped_at_str: str | None = proof_data.get("stopped_at")
 
-    # Normalise: split any comma-separated skill strings ("FastAPI, React" → two entries).
+    # Normalise: split any comma-separated skill strings
     normalized_skills: list[str] = []
     for s in (claimed_skills or []):
         normalized_skills.extend(part.strip() for part in s.split(",") if part.strip())
     claimed_skills = normalized_skills
 
-    # ── Categorize events ─────────────────────────────────────────────────────
-    page_visits  = [e for e in events if e.get("type") == "page_visit"]
-    clicks       = [e for e in events if e.get("type") == "click"]
-    inputs       = [e for e in events if e.get("type") == "input_change"]
-    tab_opens    = [e for e in events if e.get("type") == "tab_opened"]
-    navigations  = [e for e in events if e.get("type") == "navigation"]
+    # ── URL classification: separate target / supporting / noise ──────────────
+    target_netloc = _safe_netloc(original_url)
+    github_netloc = _safe_netloc(github_url) if github_url else None
 
-    # ── Unique pages and domains ──────────────────────────────────────────────
-    visited_urls: list[str] = list(dict.fromkeys(
+    target_events: list[dict[str, Any]] = []
+    supporting_events: list[dict[str, Any]] = []
+    noise_events: list[dict[str, Any]] = []
+
+    for event in events:
+        url = event.get("page_url") or event.get("url") or ""
+        category = _classify_url(url, target_netloc, github_netloc)
+        if category == "target":
+            target_events.append(event)
+        elif category == "supporting":
+            supporting_events.append(event)
+        else:
+            noise_events.append(event)
+
+    # ── Categorize target-site events by type ─────────────────────────────────
+    target_page_visits = [e for e in target_events if e.get("type") == "page_visit"]
+    target_clicks      = [e for e in target_events if e.get("type") == "click"]
+    target_inputs      = [e for e in target_events if e.get("type") == "input_change"]
+    target_tab_opens   = [e for e in target_events if e.get("type") == "tab_opened"]
+    target_navigations = [e for e in target_events if e.get("type") == "navigation"]
+
+    # All-event counts (for activity / duration signal)
+    all_tab_opens = [e for e in events if e.get("type") == "tab_opened"]
+
+    # ── Unique target-site pages and titles ───────────────────────────────────
+    target_visited_urls: list[str] = list(dict.fromkeys(
         e.get("page_url", "")
-        for e in (page_visits + navigations)
+        for e in (target_page_visits + target_navigations)
         if e.get("page_url") and not _is_chrome_internal(e.get("page_url", ""))
     ))
-    visited_titles = list(dict.fromkeys(
-        t for e in (page_visits + navigations)
+    target_visited_titles: list[str] = list(dict.fromkeys(
+        t for e in (target_page_visits + target_navigations)
         if (t := (e.get("page_title") or "").strip())
+    ))
+
+    # ── Unique supporting evidence (GitHub) pages ─────────────────────────────
+    supporting_visited_urls: list[str] = list(dict.fromkeys(
+        e.get("page_url", "")
+        for e in supporting_events
+        if e.get("page_url") and not _is_chrome_internal(e.get("page_url", ""))
+    ))
+
+    # ── Noise URLs (internal/debug only — never surfaced to recruiter) ────────
+    noise_urls: list[str] = list(dict.fromkeys(
+        e.get("page_url", "")
+        for e in noise_events
+        if e.get("page_url") and not _is_chrome_internal(e.get("page_url", ""))
     ))
 
     # ── Recording duration ────────────────────────────────────────────────────
     duration_secs = _compute_duration(started_at_str, stopped_at_str)
 
-    # ── Infer tech from observable signals ───────────────────────────────────
-    inferred_tech = _infer_tech_stack(visited_urls, visited_titles, original_url)
+    # ── Infer tech stack from TARGET + SUPPORTING URLs only ───────────────────
+    inferred_tech = _infer_tech_stack(
+        target_visited_urls + supporting_visited_urls,
+        target_visited_titles,
+        original_url,
+    )
 
     # ── Skill matching ────────────────────────────────────────────────────────
     supported, weakly, unsupported, skill_obs = _match_skills(
         claimed_skills, inferred_tech, proof_objective, original_url, url_type
     )
 
-    # ── Evidence strength score ───────────────────────────────────────────────
+    # ── Evidence strength score (uses TARGET site counts, not noise) ──────────
     score = _compute_score(
-        total_events=len(events),
-        page_count=len(visited_urls),
-        click_count=len(clicks),
-        input_count=len(inputs),
-        tab_opens=len(tab_opens),
+        total_events=len(events),               # all events — activity signal
+        page_count=len(target_visited_urls),    # TARGET pages only
+        click_count=len(target_clicks),         # TARGET clicks only
+        input_count=len(target_inputs),         # TARGET inputs only
+        tab_opens=len(all_tab_opens),
         duration_secs=duration_secs,
         url_type=url_type,
         supported_count=len(supported),
@@ -489,64 +625,83 @@ def _analyze_workflow(
     # ── Confidence ────────────────────────────────────────────────────────────
     confidence = _determine_confidence(score, url_type, len(events), duration_secs)
 
-    # ── Demonstrated actions (human-readable bullets) ─────────────────────────
+    # ── Demonstrated actions (TARGET site events only) ────────────────────────
     demonstrated_actions = _extract_demonstrated_actions(
-        page_visits, clicks, inputs, tab_opens, navigations, visited_titles
+        target_page_visits, target_clicks, target_inputs,
+        target_tab_opens, target_navigations, target_visited_titles,
+        supporting_visited_urls=supporting_visited_urls,
+        noise_count=len(noise_urls),
     )
 
     # ── Missing evidence ──────────────────────────────────────────────────────
     missing_evidence = _determine_missing_evidence(
-        claimed_skills, supported, weakly, url_type, github_url, visited_urls, skill_obs
+        claimed_skills, supported, weakly, url_type, github_url,
+        target_visited_urls, skill_obs,
+        supporting_visited_urls=supporting_visited_urls,
     )
 
-    # ── Risk flags ────────────────────────────────────────────────────────────
+    # ── Risk flags (uses TARGET site data) ───────────────────────────────────
     risk_flags = _determine_risk_flags(
-        duration_secs, len(events), url_type, visited_urls, len(clicks), len(inputs)
+        duration_secs, len(events), url_type,
+        target_visited_urls,
+        len(target_clicks), len(target_inputs),
     )
 
     # ── Narrative text ────────────────────────────────────────────────────────
     workflow_summary = _build_workflow_summary(
-        visited_urls, visited_titles, duration_secs, len(events),
-        len(tab_opens), url_type, proof_objective
+        target_visited_urls, target_visited_titles, duration_secs, len(events),
+        len(all_tab_opens), url_type, proof_objective,
+        target_website=target_netloc,
+        noise_count=len(noise_urls),
     )
     recruiter_summary = _build_recruiter_summary(
-        proof_objective, visited_urls, supported, weakly, unsupported,
-        url_type, duration_secs, score, confidence, github_url, skill_obs
+        proof_objective, target_visited_urls, supported, weakly, unsupported,
+        url_type, duration_secs, score, confidence, github_url, skill_obs,
+        target_visited_titles=target_visited_titles,
+        supporting_visited_urls=supporting_visited_urls,
+        original_url=original_url,
     )
     suggestions = _build_suggestions(
-        url_type, duration_secs, len(events), len(clicks), len(inputs),
-        supported, weakly, unsupported, github_url, skill_obs
+        url_type, duration_secs, len(events),
+        len(target_clicks), len(target_inputs),
+        supported, weakly, unsupported, github_url, skill_obs,
     )
 
     human_review_needed = confidence in ("low", "insufficient") or score < 35
 
     return {
-        "analysis_type": "timeline_only",
-        "workflow_summary": workflow_summary,
-        "demonstrated_actions": demonstrated_actions,
-        "supported_skills": supported,
-        "weakly_supported_skills": weakly,
-        "unsupported_skills": unsupported,
-        "evidence_strength_score": score,
-        "workflow_confidence": confidence,
-        "missing_evidence": missing_evidence,
-        "risk_flags": risk_flags,
-        "recruiter_summary": recruiter_summary,
+        "analysis_type":              "timeline_only",
+        "workflow_summary":           workflow_summary,
+        "demonstrated_actions":       demonstrated_actions,
+        "supported_skills":           supported,
+        "weakly_supported_skills":    weakly,
+        "unsupported_skills":         unsupported,
+        "evidence_strength_score":    score,
+        "workflow_confidence":        confidence,
+        "missing_evidence":           missing_evidence,
+        "risk_flags":                 risk_flags,
+        "recruiter_summary":          recruiter_summary,
         "student_improvement_suggestions": suggestions,
-        "human_review_needed": human_review_needed,
+        "human_review_needed":        human_review_needed,
+        # ── Internal / debug fields (not surfaced in recruiter summary) ────────
+        "target_website":             target_netloc or _extract_domain(original_url),
+        "target_site_pages_count":    len(target_visited_urls),
+        "supporting_evidence_count":  len(supporting_visited_urls),
+        "noise_filtered_count":       len(noise_urls),
     }
 
 
 # ── Tech stack inference ──────────────────────────────────────────────────────
 
 def _infer_tech_stack(
-    visited_urls: list[str],
-    visited_titles: list[str],
+    relevant_urls: list[str],
+    relevant_titles: list[str],
     original_url: str,
 ) -> set[str]:
+    """Infer tech signals from target-site + supporting URLs only."""
     tech: set[str] = set()
 
-    for url in ([original_url] + visited_urls):
+    for url in ([original_url] + relevant_urls):
         if not url:
             continue
         try:
@@ -554,17 +709,14 @@ def _infer_tech_stack(
             netloc = parsed.netloc.lower()
             port = parsed.port
 
-            # Domain pattern matching
             for domain_suffix, skills in _DOMAIN_TECH.items():
                 if netloc.endswith(domain_suffix):
                     tech.update(skills)
 
-            # Port-based inference (localhost and 127.0.0.1 only)
             if port and netloc in ("localhost", "127.0.0.1"):
                 port_skills = _PORT_TECH.get(str(port), [])
                 tech.update(port_skills)
 
-            # Path hints
             path = parsed.path.lower()
             if "/docs" in path or "/redoc" in path or "/openapi" in path:
                 tech.add("FastAPI")
@@ -577,8 +729,7 @@ def _infer_tech_stack(
         except Exception:
             pass
 
-    # Title keyword matching
-    titles_lower = " ".join(visited_titles).lower()
+    titles_lower = " ".join(relevant_titles).lower()
     for keyword, canonical in _TITLE_TECH.items():
         if keyword in titles_lower:
             tech.add(canonical)
@@ -589,19 +740,14 @@ def _infer_tech_stack(
 # ── Skill observability helpers ───────────────────────────────────────────────
 
 def _is_code_evidence_skill(canonical: str) -> bool:
-    """Return True if this skill lives in back-end code, not in browser UI."""
     return canonical.lower() in _REQUIRES_CODE_EVIDENCE
 
 
-# ── Skill matching ────────────────────────────────────────────────────────────
-
 def _normalize_skill(skill: str) -> str:
-    """Return canonical skill name, or best-effort title-case."""
     lower = skill.strip().lower()
     canonical = _SKILL_ALIASES.get(lower)
     if canonical:
         return canonical
-    # Check partial alias matches
     for alias, canon in _SKILL_ALIASES.items():
         if alias in lower or lower in alias:
             return canon
@@ -615,15 +761,6 @@ def _match_skills(
     original_url: str,
     url_type: str,
 ) -> tuple[list[str], list[str], list[str], dict[str, str]]:
-    """Classify each claimed skill against observable browser evidence.
-
-    Returns (supported, weakly_supported, unsupported, skill_observability) where
-    skill_observability maps canonical skill name → one of:
-      "supported"             — directly observed in the workflow
-      "requires_code_evidence"— back-end/code skill; needs GitHub to verify
-      "from_objective"        — mentioned in proof objective but not detected
-      "unsupported"           — no evidence at all
-    """
     supported: list[str] = []
     weakly: list[str] = []
     unsupported: list[str] = []
@@ -640,32 +777,24 @@ def _match_skills(
         canonical = _normalize_skill(raw)
         canonical_lower = canonical.lower()
 
-        # Check direct match with inferred tech
         direct_match = (
             canonical_lower in inferred_lower
             or any(canonical_lower in t or t in canonical_lower for t in inferred_lower)
         )
-
-        # Check if proof_objective mentions this skill
         objective_mentions = (
             canonical_lower in objective_lower
             or raw.lower() in objective_lower
         )
-
         is_code_skill = _is_code_evidence_skill(canonical)
 
         if direct_match:
             if is_local:
-                # For localhost, even a direct match is only weakly supported —
-                # we can see the app is running but not verify the implementation.
                 weakly.append(canonical)
                 observability[canonical] = "from_objective" if objective_mentions else "requires_code_evidence"
             else:
                 supported.append(canonical)
                 observability[canonical] = "supported"
         elif is_code_skill:
-            # Back-end/code skill not visible in browser — classify as
-            # "requires_code_evidence" (weakly) rather than "unsupported".
             weakly.append(canonical)
             observability[canonical] = "requires_code_evidence"
         elif objective_mentions:
@@ -675,7 +804,6 @@ def _match_skills(
             unsupported.append(canonical)
             observability[canonical] = "unsupported"
 
-    # Deduplicate while preserving order
     def _dedup(lst: list[str]) -> list[str]:
         seen: set[str] = set()
         return [x for x in lst if not (x in seen or seen.add(x))]  # type: ignore[func-returns-value]
@@ -698,7 +826,7 @@ def _compute_score(
 ) -> int:
     score = 0
 
-    # Recording activity (max 20 pts)
+    # Recording activity (max 20 pts) — uses all events as activity signal
     if total_events >= 30:
         score += 20
     elif total_events >= 20:
@@ -710,7 +838,7 @@ def _compute_score(
     elif total_events > 0:
         score += 3
 
-    # Page/URL diversity (max 15 pts)
+    # Target-site page diversity (max 15 pts)
     if page_count >= 5:
         score += 15
     elif page_count >= 3:
@@ -732,7 +860,7 @@ def _compute_score(
     elif duration_secs >= 15:
         score += 4
 
-    # User interaction depth (max 20 pts)
+    # Target-site user interaction depth (max 20 pts)
     interactions = click_count + input_count
     if interactions >= 20:
         score += 20
@@ -758,7 +886,6 @@ def _compute_score(
     ratio = supported_count / claimed_count if claimed_count > 0 else 0
     score += int(ratio * 5)
 
-    # Timeline-only cap: max 80 — visual/video evidence needed for higher
     return min(80, max(0, score))
 
 
@@ -786,62 +913,92 @@ def _determine_confidence(
 # ── Demonstrated actions ──────────────────────────────────────────────────────
 
 def _extract_demonstrated_actions(
-    page_visits: list[dict],
-    clicks: list[dict],
-    inputs: list[dict],
-    tab_opens: list[dict],
-    navigations: list[dict],
-    visited_titles: list[str],
+    target_page_visits: list[dict],
+    target_clicks: list[dict],
+    target_inputs: list[dict],
+    target_tab_opens: list[dict],
+    target_navigations: list[dict],
+    target_visited_titles: list[str],
+    *,
+    supporting_visited_urls: list[str] | None = None,
+    noise_count: int = 0,
 ) -> list[str]:
+    """Build human-readable action bullets — TARGET site events only.
+
+    Noise events are excluded entirely.
+    Supporting GitHub evidence is noted separately.
+    """
     actions: list[str] = []
+    supporting_visited_urls = supporting_visited_urls or []
 
-    # Page visits summary
-    unique_pages = list(dict.fromkeys(
-        e.get("page_url", "") for e in page_visits if e.get("page_url")
+    # Target site page visits
+    target_urls = list(dict.fromkeys(
+        e.get("page_url", "") for e in target_page_visits if e.get("page_url")
     ))
-    if unique_pages:
-        if len(unique_pages) == 1:
-            actions.append(f"Visited 1 page: {_format_url(unique_pages[0])}")
-        else:
-            actions.append(f"Visited {len(unique_pages)} distinct pages")
-            for url in unique_pages[:5]:
-                actions.append(f"  • {_format_url(url)}")
-            if len(unique_pages) > 5:
-                actions.append(f"  • … and {len(unique_pages) - 5} more")
 
-    # Click interactions
-    if clicks:
-        significant = [c for c in clicks if c.get("element_text") or c.get("element_id")]
-        if significant:
-            sample = significant[:3]
-            label = ", ".join(
-                f'"{(c.get("element_text") or c.get("element_id") or "")[:40]}"'
-                for c in sample
-            )
-            actions.append(f"Clicked {len(clicks)} element(s) including: {label}")
-        else:
-            actions.append(f"Performed {len(clicks)} click interaction(s)")
+    if not target_urls and not target_navigations:
+        actions.append(
+            "No interactions with the target application were observed in the recording."
+        )
+    else:
+        if target_urls:
+            first_url = target_urls[0]
+            actions.append(f"Target application loaded: {_format_url(first_url)}")
+            if len(target_urls) > 1:
+                actions.append(
+                    f"{len(target_urls)} pages navigated within the target application"
+                )
+                for url in target_urls[1:4]:
+                    actions.append(f"  • {_format_url(url)}")
+                if len(target_urls) > 4:
+                    actions.append(f"  • … and {len(target_urls) - 4} more")
 
-    # Input interactions
-    if inputs:
-        actions.append(f"Interacted with {len(inputs)} form field(s) or input element(s)")
-
-    # Tab opens
-    for t in tab_opens:
-        url = t.get("page_url", "")
-        if url:
-            actions.append(f"Opened new tab: {_format_url(url)}")
-        else:
-            actions.append("Opened a new browser tab")
-
-    # Navigations
-    if navigations:
-        actions.append(f"Navigated between {len(navigations)} page(s) within tracked tabs")
-
-    # Page titles as context
-    meaningful_titles = [t for t in visited_titles if len(t) > 5 and "://" not in t]
+    # Meaningful page titles (context, not noise)
+    meaningful_titles = [
+        t for t in target_visited_titles if len(t) > 5 and "://" not in t
+    ]
     if meaningful_titles:
         actions.append(f"Page context: {'; '.join(meaningful_titles[:3])}")
+
+    # Interactions on target site
+    click_count = len(target_clicks)
+    input_count = len(target_inputs)
+    if click_count > 0 or input_count > 0:
+        interaction_parts: list[str] = []
+        if click_count:
+            significant = [
+                c for c in target_clicks if c.get("element_text") or c.get("element_id")
+            ]
+            if significant:
+                sample = significant[:3]
+                label = ", ".join(
+                    f'"{(c.get("element_text") or c.get("element_id") or "")[:40]}"'
+                    for c in sample
+                )
+                interaction_parts.append(f"{click_count} click(s) including {label}")
+            else:
+                interaction_parts.append(f"{click_count} click(s)")
+        if input_count:
+            interaction_parts.append(f"{input_count} form/input interaction(s)")
+        actions.append(f"User interactions: {', '.join(interaction_parts)}")
+    elif target_urls:
+        actions.append(
+            "No click or input interactions were recorded on the target application — "
+            "page load only was observed."
+        )
+
+    # Supporting GitHub evidence
+    if supporting_visited_urls:
+        actions.append(
+            f"Supporting evidence: {len(supporting_visited_urls)} GitHub page(s) also visited "
+            "during the session"
+        )
+
+    # Navigations within target
+    if target_navigations:
+        actions.append(
+            f"Navigated through {len(target_navigations)} page(s) within the target application"
+        )
 
     return actions if actions else ["No workflow events were captured"]
 
@@ -854,11 +1011,14 @@ def _determine_missing_evidence(
     weakly: list[str],
     url_type: str,
     github_url: str | None,
-    visited_urls: list[str],
+    target_visited_urls: list[str],
     skill_obs: dict[str, str] | None = None,
+    *,
+    supporting_visited_urls: list[str] | None = None,
 ) -> list[str]:
     missing: list[str] = []
     skill_obs = skill_obs or {}
+    supporting_visited_urls = supporting_visited_urls or []
 
     is_local = url_type in ("localhost_url", "local_network_url")
 
@@ -868,13 +1028,13 @@ def _determine_missing_evidence(
         )
     if not github_url:
         missing.append("GitHub repository URL for source code evidence")
-    elif not any("github.com" in u for u in visited_urls):
-        missing.append("GitHub repository was not visited during the recording session")
+    elif not supporting_visited_urls:
+        missing.append(
+            "GitHub repository was not visited during the recording session"
+        )
 
-    # Skills that require code evidence (back-end skills not visible in browser)
     code_evidence_skills = [
-        s for s in weakly
-        if skill_obs.get(s) == "requires_code_evidence"
+        s for s in weakly if skill_obs.get(s) == "requires_code_evidence"
     ]
     if code_evidence_skills:
         skills_str = ", ".join(code_evidence_skills[:3])
@@ -883,16 +1043,17 @@ def _determine_missing_evidence(
             "(these skills are implemented in code, not directly visible in a browser recording)"
         )
 
-    # Skills with genuinely no evidence (not code skills, not mentioned in objective)
     truly_unsupported = [
-        s for s in claimed_skills
-        if s not in supported and s not in weakly
+        s for s in claimed_skills if s not in supported and s not in weakly
     ]
     for skill in truly_unsupported[:3]:
         missing.append(f"Observable evidence for claimed skill: {skill}")
 
-    if not visited_urls:
-        missing.append("Any recorded page visits — no pages were captured in the workflow")
+    if not target_visited_urls:
+        missing.append(
+            "Any recorded interactions with the target application — "
+            "no target site pages were captured in the workflow"
+        )
 
     return missing
 
@@ -903,10 +1064,11 @@ def _determine_risk_flags(
     duration_secs: float,
     total_events: int,
     url_type: str,
-    visited_urls: list[str],
-    click_count: int,
-    input_count: int,
+    target_visited_urls: list[str],
+    target_click_count: int,
+    target_input_count: int,
 ) -> list[str]:
+    """Generate risk flags based on TARGET site evidence only."""
     flags: list[str] = []
 
     if total_events == 0:
@@ -925,13 +1087,17 @@ def _determine_risk_flags(
             "recruiters cannot independently open or verify the deployed application"
         )
 
-    if click_count == 0 and input_count == 0 and total_events > 0:
+    if not target_visited_urls and total_events > 0:
         flags.append(
-            "No click or form interactions recorded — workflow shows page visits but no app usage"
+            "No interactions with the target application were recorded — "
+            "the recording appears to show only unrelated browser tabs or development tools"
         )
-
-    if not visited_urls:
-        flags.append("No page URLs were recorded in the workflow")
+    elif target_visited_urls and target_click_count == 0 and target_input_count == 0:
+        flags.append(
+            "Target application page loaded but no user interactions (clicks, form inputs) "
+            "were recorded — workflow shows page load only; deeper app functionality "
+            "was not demonstrated"
+        )
 
     return flags
 
@@ -939,60 +1105,79 @@ def _determine_risk_flags(
 # ── Narrative builders ────────────────────────────────────────────────────────
 
 def _build_workflow_summary(
-    visited_urls: list[str],
-    visited_titles: list[str],
+    target_visited_urls: list[str],
+    target_visited_titles: list[str],
     duration_secs: float,
     total_events: int,
-    tab_opens: int,
+    tab_opens_total: int,
     url_type: str,
     proof_objective: str,
+    *,
+    target_website: str = "",
+    noise_count: int = 0,
 ) -> str:
+    """Target-site-focused workflow summary.
+
+    Only describes what was demonstrated on the proof target website.
+    Noise events (unrelated tabs, Supabase, VeriBridge dashboard) are not mentioned.
+    """
     duration_label = _fmt_duration(duration_secs)
-    page_count = len(visited_urls)
+    page_count = len(target_visited_urls)
     url_label = (
-        "a locally-running application" if url_type in ("localhost_url", "local_network_url")
+        "a locally-running application"
+        if url_type in ("localhost_url", "local_network_url")
         else "a live web application"
     )
 
-    parts: list[str] = []
     if total_events == 0:
         return "No workflow events were recorded. The recording may not have captured any activity."
 
-    parts.append(
-        f"The student recorded a {duration_label} workflow session on {url_label}"
-    )
-    if page_count > 0:
-        parts.append(f"visiting {page_count} distinct page(s)")
-    if total_events > 0:
-        interactions = total_events - page_count
-        if interactions > 0:
-            parts.append(f"with {interactions} user interaction(s) captured")
-    if tab_opens > 0:
-        parts.append(
-            f"{'including' if tab_opens == 1 else 'including'} "
-            f"{tab_opens} additional tab(s) opened during the session"
-        )
-    summary = ", ".join(parts) + "."
+    if not target_visited_urls:
+        base = f"The student recorded a {duration_label} workflow session."
+        if noise_count > 0:
+            base += (
+                f" {noise_count} event(s) from unrelated browser tabs or development tools "
+                "were captured but are excluded from this analysis as they fall outside "
+                "the target proof application."
+            )
+        return base
+
+    site_label = f"'{target_website}'" if target_website else url_label
+    parts: list[str] = [
+        f"The student recorded a {duration_label} workflow session "
+        f"demonstrating {site_label}."
+    ]
+
+    if page_count == 1:
+        parts.append("1 page within the target application was visited.")
+    elif page_count > 1:
+        parts.append(f"{page_count} pages within the target application were visited.")
+
+    meaningful_titles = [t for t in target_visited_titles if len(t) > 5 and "://" not in t]
+    if meaningful_titles:
+        parts.append(f"Application context: {'; '.join(meaningful_titles[:3])}.")
 
     if proof_objective:
-        summary += f" The stated proof objective was: \"{proof_objective.strip()[:200]}\""
-
-    meaningful_titles = [t for t in visited_titles if len(t) > 5 and "://" not in t]
-    if meaningful_titles:
-        summary += f" Pages visited include: {'; '.join(meaningful_titles[:3])}."
+        parts.append(f"The stated proof objective was: \"{proof_objective.strip()[:200]}\".")
 
     if url_type in ("localhost_url", "local_network_url"):
-        summary += (
-            " Because this is a local recording, the application is not publicly accessible —"
-            " this demonstrates the project running on the student's development machine."
+        parts.append(
+            "Because this is a local recording, the application is not publicly accessible — "
+            "this demonstrates the project running on the student's development machine."
         )
 
-    return summary
+    if noise_count > 0:
+        parts.append(
+            f"Note: {noise_count} background event(s) from unrelated browser tabs "
+            "were filtered out and are not included in this evidence analysis."
+        )
+
+    return " ".join(parts)
 
 
 def _build_recruiter_summary(
     proof_objective: str,
-    visited_urls: list[str],
+    target_visited_urls: list[str],
     supported: list[str],
     weakly: list[str],
     unsupported: list[str],
@@ -1002,64 +1187,114 @@ def _build_recruiter_summary(
     confidence: str,
     github_url: str | None,
     skill_obs: dict[str, str] | None = None,
+    *,
+    target_visited_titles: list[str] | None = None,
+    supporting_visited_urls: list[str] | None = None,
+    original_url: str = "",
 ) -> str:
+    """Recruiter-facing summary focused on the proof target website.
+
+    Never mentions unrelated browser tabs, Supabase, VeriBridge dashboard,
+    or any noise URLs. Only describes what was observed on the target app
+    and any supporting GitHub evidence.
+    """
     is_local = url_type in ("localhost_url", "local_network_url")
     duration_label = _fmt_duration(duration_secs)
-    page_label = f"{len(visited_urls)} page(s)" if visited_urls else "no recorded pages"
-    app_label = "a locally-running application" if is_local else "a live web application"
     skill_obs = skill_obs or {}
+    target_visited_titles = target_visited_titles or []
+    supporting_visited_urls = supporting_visited_urls or []
+
+    target_domain = _extract_domain(original_url) or ""
+    app_label = f"'{target_domain}'" if target_domain else "the target application"
+    app_type_label = (
+        "locally-running application" if is_local else "live web application"
+    )
 
     lines: list[str] = []
 
-    # Opening
-    lines.append(
-        f"This workflow evidence captures a {duration_label} browser recording on {app_label}, "
-        f"covering {page_label}."
-    )
-
-    # Proof objective
-    if proof_objective:
-        lines.append(f"The student intended to demonstrate: \"{proof_objective.strip()[:200]}\"")
-
-    # Skills — directly supported by browser workflow
-    if supported:
+    # ── Opening: what was demonstrated ───────────────────────────────────────
+    if not target_visited_urls:
         lines.append(
-            f"The workflow provides supporting evidence for: {', '.join(supported)}."
+            f"The {duration_label} recording was captured, but no interactions with "
+            f"{app_label} were observed in the workflow. The recording may show navigation "
+            f"to unrelated browser tabs; the target application workflow was not captured."
+        )
+    else:
+        page_count = len(target_visited_urls)
+        meaningful_titles = [t for t in target_visited_titles if len(t) > 5]
+
+        title_context = ""
+        if meaningful_titles:
+            title_context = f" ({'; '.join(meaningful_titles[:2])})"
+
+        lines.append(
+            f"The recording shows the student demonstrating {app_label}{title_context}, "
+            f"a {app_type_label}."
+        )
+        if page_count > 1:
+            lines.append(
+                f"{page_count} pages within the target application were observed in the session."
+            )
+
+    # ── Proof objective ───────────────────────────────────────────────────────
+    if proof_objective:
+        lines.append(
+            f"The student intended to demonstrate: \"{proof_objective.strip()[:200]}\"."
         )
 
-    # Skills — weakly supported; split into code-evidence vs. objective-mentioned
+    # ── Skills directly supported by target-site workflow ────────────────────
+    if supported:
+        lines.append(
+            f"The observed workflow supports evidence for: {', '.join(supported)}."
+        )
+
+    # ── Skills weakly supported: split code vs. objective-mentioned ───────────
     if weakly:
-        code_evidence = [s for s in weakly if skill_obs.get(s) == "requires_code_evidence"]
-        indirect = [s for s in weakly if skill_obs.get(s) != "requires_code_evidence"]
+        code_evidence_skills = [
+            s for s in weakly if skill_obs.get(s) == "requires_code_evidence"
+        ]
+        indirect_skills = [
+            s for s in weakly if skill_obs.get(s) not in ("requires_code_evidence",)
+        ]
 
-        for skill in code_evidence:
+        if code_evidence_skills:
+            skill_word = "skill" if len(code_evidence_skills) == 1 else "skills"
+            it_them = "it" if len(code_evidence_skills) == 1 else "them"
+            is_are = "is" if len(code_evidence_skills) == 1 else "are"
             lines.append(
-                f"{skill} was not directly observable in the browser workflow — "
-                f"this is a back-end/code skill. "
-                f"GitHub repository analysis is recommended to verify it."
+                f"{', '.join(code_evidence_skills)} {is_are} back-end or code-level "
+                f"{skill_word} not directly observable in a browser recording. "
+                f"GitHub repository analysis is recommended to verify {it_them}."
             )
-        if indirect:
+        if indirect_skills:
             lines.append(
-                f"The workflow provides partial or indirect evidence for: {', '.join(indirect)}. "
-                "These skills are consistent with the recorded workflow but cannot be fully "
-                "confirmed from browser timeline data alone."
+                f"Partial evidence is available for: {', '.join(indirect_skills)}. "
+                "These skills are consistent with the observed workflow but require "
+                "additional evidence for full confirmation."
             )
 
+    # ── No observable evidence ────────────────────────────────────────────────
     if unsupported:
         lines.append(
             f"No observable evidence was found for: {', '.join(unsupported)}. "
-            "Additional proof (GitHub repository, code review, or live demonstration) is recommended."
+            "Consider a more focused demonstration or add GitHub and live deployment evidence."
         )
 
-    # Local caveat
+    # ── Supporting GitHub evidence ────────────────────────────────────────────
+    if supporting_visited_urls and github_url:
+        lines.append(
+            "GitHub repository evidence was also visited during the recording, "
+            "providing additional context for code-level skills."
+        )
+
+    # ── Localhost caveat ──────────────────────────────────────────────────────
     if is_local:
         lines.append(
-            "This is a local (localhost) recording. The application cannot be independently "
-            "accessed or verified by recruiters. GitHub evidence or a live deployment link "
-            "would significantly strengthen this proof."
+            "This is a local (localhost) recording — the application is not publicly accessible. "
+            "A live deployment URL would significantly strengthen this proof."
         )
 
-    # Score/confidence
+    # ── Score / confidence footer ─────────────────────────────────────────────
     confidence_label = {
         "high": "High",
         "medium": "Medium",
@@ -1095,10 +1330,7 @@ def _build_suggestions(
             "can independently access and verify it"
         )
 
-    # Highlight code skills that need GitHub verification
-    code_evidence_skills = [
-        s for s in weakly if skill_obs.get(s) == "requires_code_evidence"
-    ]
+    code_evidence_skills = [s for s in weakly if skill_obs.get(s) == "requires_code_evidence"]
     if code_evidence_skills and not github_url:
         skills_str = ", ".join(code_evidence_skills[:3])
         suggestions.append(
