@@ -45,12 +45,12 @@ function redactSensitiveQueryParams(url: string): string {
   try {
     const parsed = new URL(url)
     let changed = false
-    for (const k of [...parsed.searchParams.keys()]) {
+    parsed.searchParams.forEach((_, k) => {
       if (SENSITIVE_QUERY_PARAMS.has(k.toLowerCase())) {
         parsed.searchParams.set(k, "[REDACTED]")
         changed = true
       }
-    }
+    })
     return changed ? parsed.toString() : url
   } catch {
     // Non-standard URL — use regex-based fallback (handles data: URLs, etc.)

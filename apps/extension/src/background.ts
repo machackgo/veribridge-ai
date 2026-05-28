@@ -31,12 +31,12 @@ function redactUrl(url: string): string {
   try {
     const parsed = new URL(url)
     let changed = false
-    for (const k of [...parsed.searchParams.keys()]) {
+    parsed.searchParams.forEach((_, k) => {
       if (_SENSITIVE_QUERY_PARAMS.has(k.toLowerCase())) {
         parsed.searchParams.set(k, "[REDACTED]")
         changed = true
       }
-    }
+    })
     return changed ? parsed.toString() : url
   } catch {
     return url.replace(
