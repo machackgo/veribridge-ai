@@ -1149,11 +1149,14 @@ def _build_observed_demonstration(
     target_app: str,
     iao_patterns: list[dict[str, Any]],
     visible_observations: "Any | None" = None,
+    visual_frame_observations: "dict | None" = None,
 ) -> dict[str, Any]:
     """Build the observed_demonstration structure.
 
-    visual_analysis_status = "not_configured" when no visual provider is set.
-    Becomes "analyzed" when local OCR / vision provider runs.
+    visual_analysis_status: dynamically derived from visual_frame_observations.
+      Values: not_configured | pending | analyzed | failed | skipped
+      "not_configured" when visual_frame_observations is None or provider not set.
+      "analyzed" when a local OCR/vision provider ran successfully.
     dom_evidence_status reflects DOM text capture from the browser extension — this IS
     available and should be shown positively when the extension captured page text.
 
@@ -1161,6 +1164,10 @@ def _build_observed_demonstration(
     - detected_result_values may be populated with exact output values
     - visible_text_evidence is enriched with DOM-captured text
     - evidence_source per step is "dom_snapshot" or "event_metadata"
+
+    When visual_frame_observations is provided:
+    - visual_analysis_status and ocr_status are derived from actual analysis results
+    - The "not configured" limitation is only added when provider truly not configured
 
     Limitations are surfaced honestly, distinguishing DOM capture from OCR analysis.
     """
@@ -1183,6 +1190,29 @@ def _build_observed_demonstration(
         _graphical_note = getattr(visible_observations, "graphical_rendering_note", None)
         _top_snippets   = list(getattr(visible_observations, "top_result_snippets", []) or [])
         _page_context   = getattr(visible_observations, "page_context_summary", None)
+
+    # ── Visual frame analysis status — derived, never hardcoded ──────────────────
+    # "not_configured" only when the provider genuinely was not set up or no
+    # visual_frame_observations dict was passed (e.g. old recording, new session
+    # that never submitted frames).
+    _vf_status = "not_configured"
+    _ocr_status = "not_configured"
+
+    if visual_frame_observations is not None:
+        raw_vf = visual_frame_observations.get(
+            "visual_frame_analysis_status", "not_configured"
+        )
+        # "not_captured" means no frames were ever submitted — display as not_configured
+        _vf_status = raw_vf if raw_vf != "not_captured" else "not_configured"
+        prov = (visual_frame_observations.get("provider_used") or "none").lower()
+        if _vf_status == "analyzed" and "ocr" in prov:
+            _ocr_status = "analyzed"
+        elif _vf_status == "analyzed":
+            # Vision model was used (not an OCR pipeline)
+            _ocr_status = "not_configured"
+        elif _vf_status in ("failed", "pending", "skipped"):
+            _ocr_status = _vf_status
+        # else: not_configured — ocr_status stays "not_configured"
 
     # Get result values to decide summary tone
     _has_result_values = any(s.get("detected_result_values") for s in steps)
@@ -1279,13 +1309,20 @@ def _build_observed_demonstration(
     if _has_graphical and _graphical_note:
         limitations.append(_graphical_note)
 
-    # Visual frame / OCR limitation — always append so UI can show the right badge.
-    # The UI reads this from observed_demonstration.limitations and visual_analysis_status.
-    limitations.append(
-        "OCR/vision provider not configured — visual frames are captured but not analyzed. "
-        "Set VISUAL_ANALYSIS_PROVIDER (local_ocr, local_vision, or openai) to enable "
-        "automatic OCR/vision analysis of the captured screenshots."
-    )
+    # Visual frame / OCR limitation — only added when genuinely not configured or failed.
+    # "analyzed" / "pending" / "skipped" → provider ran; no limitation needed here.
+    if _vf_status == "not_configured":
+        limitations.append(
+            "Visual frame analysis is not configured.  "
+            "Set VISUAL_ANALYSIS_PROVIDER=local_ocr or local_vision to enable "
+            "screenshot analysis (DOM evidence is always active regardless)."
+        )
+    elif _vf_status == "failed":
+        limitations.append(
+            "Visual frame analysis encountered an error; screenshots may not have been analyzed.  "
+            "DOM evidence continues to be used for workflow analysis."
+        )
+    # "analyzed" | "pending" | "skipped" → no visual-frame limitation needed
 
     if not iao_patterns:
         limitations.append(
@@ -1295,12 +1332,12 @@ def _build_observed_demonstration(
 
     return {
         "target_app": target_app,
-        # OCR/frame analysis — not yet implemented
-        "visual_analysis_status": "not_configured",
-        # DOM text capture status — the one that's actually meaningful now
+        # Visual analysis status — dynamically derived from visual_frame_observations
+        "visual_analysis_status": _vf_status,
+        # DOM text capture status — always meaningful regardless of visual provider
         "visible_evidence_status": _vis_ev_status,
         "dom_evidence_status": _dom_ev_status,
-        "ocr_status": "not_configured",
+        "ocr_status": _ocr_status,
         # Graphical rendering info
         "has_graphical_rendering": _has_graphical,
         # Result snippets for UI surface
@@ -1501,11 +1538,12 @@ def _analyze_workflow(
         else:
             _ocr_status = _vf_status   # propagate not_configured / failed
 
-    # ── Observed demonstration (v3/v4) ────────────────────────────────────────
+    # ── Observed demonstration (v3/v4/v5) ─────────────────────────────────────
     target_app_label = target_netloc or _extract_domain(original_url)
     observed_demonstration = _build_observed_demonstration(
         target_events, app_type, target_app_label, iao_patterns,
         visible_observations=visible_observations,
+        visual_frame_observations=visual_frame_observations,
     )
 
     # ── Demonstrated actions (TARGET site events only) ────────────────────────

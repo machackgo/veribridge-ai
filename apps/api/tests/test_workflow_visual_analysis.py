@@ -28,6 +28,21 @@ Coverage:
 21. analyze_visual_frame() with None bytes returns skipped (not crash).
 22. Workflow analysis integration: visual_analysis_status propagates from
     visual_frame_observations dict.
+
+LocalVisionProvider (fixed implementation — tests 23-27):
+23. is_configured() returns False when required packages (torch) are missing.
+24. analyze_frame() returns not_configured without raising when packages missing.
+25. analyze_frame() with stubbed _run_vision() returning text → analyzed + result values.
+26. analyze_frame() with stubbed _run_vision() returning "" → failed status.
+27. PII in vision model output is masked before being stored.
+
+visual_analysis_status fix (tests 28-30):
+28. _build_observed_demonstration() with analyzed visual_frame_observations
+    → visual_analysis_status = "analyzed", ocr_status = "analyzed" (OCR provider).
+29. _build_observed_demonstration() with no visual_frame_observations
+    → visual_analysis_status = "not_configured" (backward compat).
+30. _analyze_workflow() with analyzed frames → observed_demonstration reflects
+    "analyzed" status; vision provider (non-OCR) sets ocr_status = "not_configured".
 """
 
 from __future__ import annotations
@@ -52,6 +67,7 @@ from app.services.workflow_visual_analysis_service import (
     VISUAL_STATUS_NOT_CONFIGURED,
     VISUAL_STATUS_PENDING,
     VISUAL_STATUS_SKIPPED,
+    VISUAL_STATUS_FAILED,
 )
 
 # ---------------------------------------------------------------------------
@@ -574,3 +590,239 @@ def test_workflow_analysis_visual_status_from_visual_frame_observations():
     assert result["visual_result_values"][0]["label"] == "dog"
     # OCR status should be "analyzed" when provider contains "ocr"
     assert result["ocr_status"] == "analyzed"
+
+
+# ---------------------------------------------------------------------------
+# 23. LocalVisionProvider.is_configured() → False when torch is missing
+# ---------------------------------------------------------------------------
+
+def test_local_vision_provider_not_configured_when_torch_missing():
+    """is_configured() returns False gracefully when torch is not installed."""
+    p = LocalVisionProvider.__new__(LocalVisionProvider)
+    p._backend = "qwen_vl"
+    p._available = None
+    p._model = None
+    p._processor = None
+
+    # Block torch import — _try_init checks torch before anything else
+    with patch.dict("sys.modules", {"torch": None}):
+        p._available = None  # force re-check
+        result = p.is_configured()
+
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# 24. LocalVisionProvider.analyze_frame() → not_configured without raising
+# ---------------------------------------------------------------------------
+
+def test_local_vision_provider_analyze_frame_not_configured_does_not_raise():
+    """analyze_frame() returns not_configured and never raises when packages missing."""
+    p = LocalVisionProvider.__new__(LocalVisionProvider)
+    p._backend = "qwen_vl"
+    p._available = False  # simulate packages missing
+    p._model = None
+    p._processor = None
+
+    obs = p.analyze_frame(b"fake_bytes")
+
+    assert obs.status == VISUAL_STATUS_NOT_CONFIGURED
+    assert len(obs.limitations) > 0
+    assert "local_vision:qwen_vl" in obs.provider_used
+    # Limitation should mention how to install
+    assert "pip install" in obs.limitations[0].lower() or "install" in obs.limitations[0].lower()
+
+
+# ---------------------------------------------------------------------------
+# 25. LocalVisionProvider: stubbed _run_vision → analyzed + result values
+# ---------------------------------------------------------------------------
+
+def test_local_vision_provider_stubbed_run_vision_returns_analyzed():
+    """With packages available and a stubbed inference method, returns analyzed."""
+    p = LocalVisionProvider.__new__(LocalVisionProvider)
+    p._backend = "qwen_vl"
+    p._available = True   # simulate packages present
+    p._model = MagicMock()
+    p._processor = MagicMock()
+
+    with patch.object(p, "_run_vision", return_value="dog 0.89 confidence score"):
+        obs = p.analyze_frame(b"fake_bytes")
+
+    assert obs.status == VISUAL_STATUS_ANALYZED
+    assert obs.screen_summary   # should have some text
+    assert "local_vision:qwen_vl" in obs.provider_used
+    # Result values should be extracted from the description
+    labels = [r["label"].lower() for r in obs.extracted_result_values]
+    assert "dog" in labels
+
+
+# ---------------------------------------------------------------------------
+# 26. LocalVisionProvider: _run_vision returns "" → failed status
+# ---------------------------------------------------------------------------
+
+def test_local_vision_provider_empty_run_vision_returns_failed():
+    """When the vision model returns empty output, analyze_frame returns failed."""
+    p = LocalVisionProvider.__new__(LocalVisionProvider)
+    p._backend = "llava"
+    p._available = True
+    p._model = MagicMock()
+    p._processor = MagicMock()
+
+    with patch.object(p, "_run_vision", return_value=""):
+        obs = p.analyze_frame(b"fake_bytes")
+
+    assert obs.status == VISUAL_STATUS_FAILED
+    assert len(obs.limitations) > 0
+    assert "empty" in obs.limitations[0].lower() or "memory" in obs.limitations[0].lower()
+
+
+# ---------------------------------------------------------------------------
+# 27. PII in vision model output is masked before being stored
+# ---------------------------------------------------------------------------
+
+def test_local_vision_provider_masks_pii_in_vision_output():
+    """Vision model output containing an email is masked before storage."""
+    p = LocalVisionProvider.__new__(LocalVisionProvider)
+    p._backend = "qwen_vl"
+    p._available = True
+    p._model = MagicMock()
+    p._processor = MagicMock()
+
+    sensitive_output = "Prediction: 0.92. Contact: user@example.com. Score: 88%"
+    with patch.object(p, "_run_vision", return_value=sensitive_output):
+        obs = p.analyze_frame(b"fake_bytes")
+
+    assert obs.status == VISUAL_STATUS_ANALYZED
+    assert "user@example.com" not in obs.screen_summary
+    assert "user@example.com" not in "".join(obs.extracted_text)
+    # Privacy flags should record that an email was redacted
+    assert obs.privacy_flags
+
+
+# ---------------------------------------------------------------------------
+# 28. _build_observed_demonstration: analyzed frames → status = "analyzed"
+# ---------------------------------------------------------------------------
+
+def test_build_observed_demonstration_reflects_analyzed_status():
+    """visual_analysis_status = 'analyzed' when visual_frame_observations say so."""
+    from app.services.extension_proof_workflow_analysis_service import (
+        _build_observed_demonstration,
+    )
+
+    vf_obs = {
+        "visual_frame_analysis_status": "analyzed",
+        "visual_frame_count": 2,
+        "provider_used": "local_ocr:paddleocr",
+        "extracted_result_values": [
+            {"label": "dog", "value": "0.89", "source": "ocr"},
+        ],
+        "visual_summary": "Prediction shown: dog 0.89",
+    }
+
+    result = _build_observed_demonstration(
+        target_events=[
+            {"type": "page_visit", "page_url": "https://demo.app", "page_title": "Demo"},
+        ],
+        app_type="ml_app",
+        target_app="demo.app",
+        iao_patterns=[],
+        visible_observations=None,
+        visual_frame_observations=vf_obs,
+    )
+
+    assert result["visual_analysis_status"] == "analyzed"
+    assert result["ocr_status"] == "analyzed"   # provider name contains "ocr"
+    # The "not configured" limitation must NOT appear when analysis ran
+    vis_lims = [
+        l for l in result["limitations"]
+        if "not configured" in l.lower() and "visual" in l.lower()
+    ]
+    assert not vis_lims, f"Unexpected not-configured limitation: {vis_lims}"
+
+
+# ---------------------------------------------------------------------------
+# 29. _build_observed_demonstration: no frames → not_configured (backward compat)
+# ---------------------------------------------------------------------------
+
+def test_build_observed_demonstration_not_configured_when_no_frames():
+    """visual_analysis_status = 'not_configured' when no visual_frame_observations."""
+    from app.services.extension_proof_workflow_analysis_service import (
+        _build_observed_demonstration,
+    )
+
+    result = _build_observed_demonstration(
+        target_events=[
+            {"type": "page_visit", "page_url": "https://demo.app", "page_title": "Demo"},
+        ],
+        app_type="generic",
+        target_app="demo.app",
+        iao_patterns=[],
+        visible_observations=None,
+        visual_frame_observations=None,   # old recording — no frames passed
+    )
+
+    assert result["visual_analysis_status"] == "not_configured"
+    assert result["ocr_status"] == "not_configured"
+    # The "not configured" limitation SHOULD be present
+    assert any("not configured" in l.lower() for l in result["limitations"])
+
+
+# ---------------------------------------------------------------------------
+# 30. _analyze_workflow: observed_demonstration reflects analyzed status
+# ---------------------------------------------------------------------------
+
+def test_analyze_workflow_observed_demonstration_visual_status_propagates():
+    """observed_demonstration.visual_analysis_status = 'analyzed' for vision provider."""
+    from app.services.extension_proof_workflow_analysis_service import _analyze_workflow
+    import datetime
+
+    start = datetime.datetime(2024, 1, 1, 10, 0, 0,
+                               tzinfo=datetime.timezone.utc).isoformat()
+    stop  = datetime.datetime(2024, 1, 1, 10, 5, 0,
+                               tzinfo=datetime.timezone.utc).isoformat()
+
+    proof_data = {
+        "workflow_events": [
+            {"type": "page_visit",
+             "page_url": "https://ml.example.com",
+             "page_title": "ML App"},
+            {"type": "click",
+             "page_url": "https://ml.example.com",
+             "element_text": "Predict"},
+        ],
+        "started_at": start,
+        "stopped_at": stop,
+    }
+
+    # Vision model (qwen_vl) analyzed frames — provider_used does NOT contain "ocr"
+    visual_frame_observations = {
+        "visual_frame_analysis_status": "analyzed",
+        "visual_frame_count": 2,
+        "visual_frames_stored": 2,
+        "provider_used": "local_vision:qwen_vl",
+        "extracted_result_values": [
+            {"label": "cat", "value": "0.92", "source": "model_output_text"},
+        ],
+        "visual_summary": "Cat detected with 0.92 confidence",
+    }
+
+    result = _analyze_workflow(
+        proof_data=proof_data,
+        claimed_skills=["Machine Learning"],
+        proof_objective="Image classification",
+        original_url="https://ml.example.com",
+        url_type="live_deployed_url",
+        github_url=None,
+        visible_observations=None,
+        visual_frame_observations=visual_frame_observations,
+    )
+
+    od = result.get("observed_demonstration", {})
+    # observed_demonstration must now reflect "analyzed" (was always "not_configured" before)
+    assert od.get("visual_analysis_status") == "analyzed", (
+        f"Expected 'analyzed', got {od.get('visual_analysis_status')!r}"
+    )
+    # Vision model used (not OCR pipeline) → ocr_status stays "not_configured"
+    assert od.get("ocr_status") == "not_configured"
+    # Top-level result is unchanged
+    assert result["visual_analysis_status"] == "analyzed"

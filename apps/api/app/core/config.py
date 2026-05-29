@@ -153,11 +153,15 @@ class Settings(BaseSettings):
         alias="LOCAL_OCR_PROVIDER",
     )
 
-    # LOCAL_VISION_PROVIDER: llava | qwen_vl | minicpm_v | blip
+    # LOCAL_VISION_PROVIDER: qwen_vl | qwen3_vl | llava | minicpm_v | blip
     # Only used when VISUAL_ANALYSIS_PROVIDER=local_vision.
-    # Install: pip install transformers torch pillow   (+ model-specific packages)
+    # Primary targets (open-source, recommended):
+    #   qwen_vl   — Qwen2.5-VL-7B-Instruct  (requires transformers>=4.45)
+    #   qwen3_vl  — Qwen3-VL-7B-Instruct    (requires transformers>=4.45)
+    # Additional: llava | minicpm_v | blip
+    # Install: pip install "transformers>=4.45" torch pillow accelerate
     local_vision_provider: str = Field(
-        default="llava",
+        default="qwen_vl",
         alias="LOCAL_VISION_PROVIDER",
     )
 

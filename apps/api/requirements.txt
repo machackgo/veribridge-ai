@@ -40,11 +40,17 @@ scikit-learn==1.6.0
 #     Set: LOCAL_OCR_PROVIDER=tesseract
 #
 # LOCAL VISION MODEL (VISUAL_ANALYSIS_PROVIDER=local_vision)
-# Requires transformers + torch + pillow:
-#   pip install transformers torch pillow accelerate
-#   Set: LOCAL_VISION_PROVIDER=llava|qwen_vl|minicpm_v|blip
-#   Models (~1–7 GB) download automatically on first use to ~/.cache/huggingface.
-#   GPU recommended but CPU inference is supported.
+# Primary targets (open-source, recommended):
+#   Qwen2.5-VL: pip install "transformers>=4.45" torch pillow accelerate
+#               Set: LOCAL_VISION_PROVIDER=qwen_vl
+#   Qwen3-VL:   pip install "transformers>=4.45" torch pillow accelerate
+#               Set: LOCAL_VISION_PROVIDER=qwen3_vl
+# Additional backends:
+#   LLaVA / MiniCPM-V / BLIP-2:
+#               pip install transformers torch pillow accelerate
+#               Set: LOCAL_VISION_PROVIDER=llava|minicpm_v|blip
+#   Models (~2–14 GB) download on first use to ~/.cache/huggingface.
+#   GPU recommended; CPU inference supported (~10–60× slower).
 #
 # Pillow is needed for image dimension detection regardless of OCR/vision provider.
 # It is listed as optional because it is not needed for DOM-only workflows.

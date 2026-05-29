@@ -437,82 +437,140 @@ class LocalOCRProvider(VisualAnalysisProvider):
 # ── Provider: Local Vision ─────────────────────────────────────────────────────
 
 class LocalVisionProvider(VisualAnalysisProvider):
-    """Local/open-source vision model interface.
+    """Local/open-source vision model provider.
 
-    Supported models (via Hugging Face transformers):
-        llava       — LLaVA (Large Language and Vision Assistant)
-        qwen_vl     — Qwen2.5-VL
-        minicpm_v   — MiniCPM-V
-        blip        — BLIP / BLIP-2
+    Primary targets (recommended):
+        qwen_vl     — Qwen2.5-VL-7B-Instruct  (strong VQA, good CPU/GPU balance)
+        qwen3_vl    — Qwen3-VL-7B-Instruct     (latest Qwen3 vision series)
 
-    Setup:
-        pip install transformers torch pillow accelerate
+    Additional supported backends:
+        llava       — LLaVA-1.5-7B  (widely tested, good general VQA)
+        minicpm_v   — MiniCPM-V-2.6 (compact, resource-constrained hosts)
+        blip        — BLIP-2         (caption + VQA, lightweight)
 
-    Set LOCAL_VISION_PROVIDER=llava|qwen_vl|minicpm_v|blip in your .env.
+    Setup — all backends:
+        pip install "transformers>=4.45" torch pillow accelerate
+        Set VISUAL_ANALYSIS_PROVIDER=local_vision
+        Set LOCAL_VISION_PROVIDER=qwen_vl  (or qwen3_vl|llava|minicpm_v|blip)
 
-    When transformers is missing, is_configured() returns False gracefully.
+    Qwen2.5-VL / Qwen3-VL requirement:
+        transformers >= 4.45.0  (provides Qwen2_5_VLForConditionalGeneration)
 
-    Note: Models download weights automatically (~1–7 GB) on first use.
-    A GPU is recommended but CPU inference is supported (slower).
+    Design:
+      _try_init()   verifies package importability only — never loads weights.
+                    Safe and fast to call at server start / singleton creation.
+      _load_model() lazy weight load on first _run_vision() call.
+                    Handles MemoryError gracefully; returns FAILED on OOM.
+      _run_vision() per-backend dispatch to model-specific inference methods.
+
+    If required packages are missing, is_configured() returns False and
+    analyze_frame() returns not_configured — no exception is ever raised.
+
+    No GPU required.  CPU inference is ~10–60× slower but fully supported.
+    Model weights (~2–14 GB) download on first use to ~/.cache/huggingface.
     """
 
-    _PROMPT = (
+    _MODEL_IDS: dict[str, str] = {
+        "qwen_vl":   "Qwen/Qwen2.5-VL-7B-Instruct",
+        "qwen3_vl":  "Qwen/Qwen3-VL-7B-Instruct",
+        "llava":     "llava-hf/llava-1.5-7b-hf",
+        "minicpm_v": "openbmb/MiniCPM-V-2_6",
+        "blip":      "Salesforce/blip2-opt-2.7b",
+    }
+
+    _INSTALL_HINTS: dict[str, str] = {
+        "qwen_vl":   '"transformers>=4.45" torch pillow accelerate',
+        "qwen3_vl":  '"transformers>=4.45" torch pillow accelerate',
+        "llava":     "transformers torch pillow accelerate",
+        "minicpm_v": "transformers torch pillow accelerate",
+        "blip":      "transformers torch pillow accelerate",
+    }
+
+    # Shared VQA prompt — instructs the model without domain-specific hints
+    _VQA_PROMPT: str = (
         "Look at this screenshot of a web application. "
         "Describe: (1) what inputs are visible, (2) what outputs or results are shown, "
         "(3) any numbers, labels, percentages, or prediction values visible. "
-        "Be concise and factual. Do not invent values."
+        "Be concise and factual. Do not invent values not visible in the image."
     )
 
-    _MODEL_IDS: dict[str, str] = {
-        "llava":    "llava-hf/llava-1.5-7b-hf",
-        "qwen_vl":  "Qwen/Qwen2.5-VL-7B-Instruct",
-        "minicpm_v":"openbmb/MiniCPM-V-2_6",
-        "blip":     "Salesforce/blip2-opt-2.7b",
-    }
-
     def __init__(self) -> None:
-        self._backend = settings.local_vision_provider.lower()
-        self._pipeline: Any = None
+        self._backend: str = settings.local_vision_provider.lower()
         self._available: bool | None = None
+        # Model and processor are loaded lazily on first inference call
+        self._model: Any = None
+        self._processor: Any = None
+
+    # ── Init: package-importability check (fast, no weight loading) ──────────────
 
     def _try_init(self) -> bool:
+        """Verify that backend-specific packages can be imported.
+
+        Does NOT load model weights — just checks that the Python packages
+        are installed.  Safe to call at startup.  Returns True only when
+        the correct packages are present.
+        """
         if self._available is not None:
             return self._available
 
         model_id = self._MODEL_IDS.get(self._backend)
         if not model_id:
-            logger.warning("[LocalVision] Unknown LOCAL_VISION_PROVIDER=%r", self._backend)
+            logger.warning(
+                "[LocalVision] Unknown LOCAL_VISION_PROVIDER=%r.  "
+                "Valid values: %s",
+                self._backend, ", ".join(self._MODEL_IDS),
+            )
             self._available = False
             return False
 
         try:
-            from transformers import pipeline  # type: ignore[import]
+            import torch  # type: ignore[import]  # noqa: F401
             from PIL import Image  # type: ignore[import]  # noqa: F401
 
+            if self._backend in ("qwen_vl", "qwen3_vl"):
+                # Qwen2.5-VL / Qwen3-VL require transformers >= 4.45
+                from transformers import (  # type: ignore[import]  # noqa: F401
+                    Qwen2_5_VLForConditionalGeneration,
+                    AutoProcessor,
+                )
+            elif self._backend == "llava":
+                from transformers import (  # type: ignore[import]  # noqa: F401
+                    LlavaForConditionalGeneration,
+                    AutoProcessor,
+                )
+            elif self._backend == "minicpm_v":
+                from transformers import AutoModel, AutoTokenizer  # type: ignore[import]  # noqa: F401
+            elif self._backend == "blip":
+                from transformers import (  # type: ignore[import]  # noqa: F401
+                    Blip2ForConditionalGeneration,
+                    Blip2Processor,
+                )
+            else:
+                logger.warning("[LocalVision] No import path for backend %r", self._backend)
+                self._available = False
+                return False
+
             logger.info(
-                "[LocalVision] Initialising %s (%s). "
-                "Model weights will be downloaded on first use (~1–7 GB).",
+                "[LocalVision] Backend %r packages verified.  "
+                "Model weights (%s) download on first inference (~2–14 GB).  "
+                "GPU recommended; CPU supported.",
                 self._backend, model_id,
             )
-            # Use image-to-text pipeline as a lightweight wrapper
-            # Full VQA pipelines are model-specific; this is the interface stub.
-            # In a real deployment, replace with model-specific inference code.
-            self._pipeline = {
-                "pipeline_fn": pipeline,
-                "model_id": model_id,
-                "backend": self._backend,
-            }
             self._available = True
 
         except ImportError as exc:
             logger.info(
-                "[LocalVision] transformers/torch not installed. "
-                "Install with: pip install transformers torch pillow accelerate\n"
-                "Error: %s", exc,
+                "[LocalVision] Required packages missing for backend %r.  "
+                "Install: pip install %s\n  Error: %s",
+                self._backend,
+                self._INSTALL_HINTS.get(
+                    self._backend, "transformers torch pillow accelerate"
+                ),
+                exc,
             )
             self._available = False
         except Exception as exc:
-            logger.warning("[LocalVision] Init failed: %s", exc)
+            logger.warning("[LocalVision] Init check failed for %r: %s", self._backend, exc)
             self._available = False
 
         return bool(self._available)
@@ -520,31 +578,249 @@ class LocalVisionProvider(VisualAnalysisProvider):
     def is_configured(self) -> bool:
         return self._try_init()
 
-    def _run_vision(self, frame_bytes: bytes) -> str:
-        """Run inference.  Returns a description string."""
+    # ── Lazy model loading ────────────────────────────────────────────────────────
+
+    def _load_model(self) -> bool:
+        """Load model weights on first inference call.
+
+        Returns True if already loaded or loads successfully.
+        Handles MemoryError and other load failures — returns False and logs.
+        """
+        if self._model is not None:
+            return True
+
+        model_id = self._MODEL_IDS.get(self._backend, "")
+
         try:
-            from transformers import pipeline as hf_pipeline  # type: ignore[import]
-            from PIL import Image  # type: ignore[import]
+            import torch  # type: ignore[import]
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            # float16 on GPU (speed/VRAM), float32 on CPU (numerical stability)
+            dtype = torch.float16 if device == "cuda" else torch.float32
 
-            model_id = self._pipeline["model_id"]  # type: ignore[index]
-            img = Image.open(io.BytesIO(frame_bytes)).convert("RGB")
-
-            # Use image-to-text as the generic interface.
-            # Model-specific VQA (e.g. LLaVA chat format) would be implemented here
-            # per model_id with richer prompting.
-            pipe = hf_pipeline("image-to-text", model=model_id, max_new_tokens=200)
-            result = pipe(img, prompt=self._PROMPT)
-
-            if isinstance(result, list) and result:
-                text = result[0].get("generated_text", "")
+            if self._backend in ("qwen_vl", "qwen3_vl"):
+                self._load_qwen_vl(model_id, device)
+            elif self._backend == "llava":
+                self._load_llava(model_id, device, dtype)
+            elif self._backend == "minicpm_v":
+                self._load_minicpm_v(model_id, device, dtype)
+            elif self._backend == "blip":
+                self._load_blip(model_id, device, dtype)
             else:
-                text = str(result)
+                logger.warning("[LocalVision] No loader for backend %r", self._backend)
+                return False
 
-            return text.strip()
+            logger.info(
+                "[LocalVision] %r loaded (device=%s model=%s).",
+                self._backend, device, model_id,
+            )
+            return True
 
+        except MemoryError:
+            logger.warning(
+                "[LocalVision] Out of memory loading %r (%s).  "
+                "Try a smaller model or reduce MAX_WORKFLOW_FRAMES.",
+                self._backend, model_id,
+            )
+            self._model = None
+            self._processor = None
+            return False
         except Exception as exc:
-            logger.warning("[LocalVision] Inference error: %s", exc)
+            logger.warning(
+                "[LocalVision] Model load failed for %r: %s", self._backend, exc
+            )
+            self._model = None
+            self._processor = None
+            return False
+
+    def _load_qwen_vl(self, model_id: str, device: str) -> None:
+        from transformers import (  # type: ignore[import]
+            Qwen2_5_VLForConditionalGeneration,
+            AutoProcessor,
+        )
+        logger.info("[LocalVision] Loading Qwen VL model from %s …", model_id)
+        self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_id,
+            torch_dtype="auto",
+            device_map="auto" if device == "cuda" else "cpu",
+        )
+        self._processor = AutoProcessor.from_pretrained(model_id)
+
+    def _load_llava(self, model_id: str, device: str, dtype: Any) -> None:
+        from transformers import (  # type: ignore[import]
+            LlavaForConditionalGeneration,
+            AutoProcessor,
+        )
+        logger.info("[LocalVision] Loading LLaVA model from %s …", model_id)
+        self._model = LlavaForConditionalGeneration.from_pretrained(
+            model_id, torch_dtype=dtype
+        )
+        if device == "cuda":
+            self._model = self._model.to(device)
+        self._processor = AutoProcessor.from_pretrained(model_id)
+
+    def _load_minicpm_v(self, model_id: str, device: str, dtype: Any) -> None:
+        from transformers import AutoModel, AutoTokenizer  # type: ignore[import]
+        logger.info("[LocalVision] Loading MiniCPM-V model from %s …", model_id)
+        self._model = AutoModel.from_pretrained(
+            model_id,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+            device_map="auto" if device == "cuda" else "cpu",
+        )
+        self._model.eval()
+        self._processor = AutoTokenizer.from_pretrained(
+            model_id, trust_remote_code=True
+        )
+
+    def _load_blip(self, model_id: str, device: str, dtype: Any) -> None:
+        from transformers import (  # type: ignore[import]
+            Blip2ForConditionalGeneration,
+            Blip2Processor,
+        )
+        logger.info("[LocalVision] Loading BLIP-2 model from %s …", model_id)
+        self._model = Blip2ForConditionalGeneration.from_pretrained(
+            model_id, torch_dtype=dtype
+        )
+        if device == "cuda":
+            self._model = self._model.to(device)
+        self._processor = Blip2Processor.from_pretrained(model_id)
+
+    # ── Per-backend inference methods ─────────────────────────────────────────────
+
+    def _run_vision(self, frame_bytes: bytes) -> str:
+        """Run per-backend VQA inference.
+
+        Returns a non-empty description string on success, "" on any failure.
+        Never raises — all exceptions are caught and logged.
+        """
+        if not self._load_model():
             return ""
+
+        try:
+            from PIL import Image  # type: ignore[import]
+            img = Image.open(io.BytesIO(frame_bytes)).convert("RGB")
+        except Exception as exc:
+            logger.warning("[LocalVision] Could not decode image bytes: %s", exc)
+            return ""
+
+        try:
+            if self._backend in ("qwen_vl", "qwen3_vl"):
+                return self._infer_qwen_vl(img)
+            elif self._backend == "llava":
+                return self._infer_llava(img)
+            elif self._backend == "minicpm_v":
+                return self._infer_minicpm_v(img)
+            elif self._backend == "blip":
+                return self._infer_blip(img)
+            else:
+                return ""
+        except Exception as exc:
+            logger.warning(
+                "[LocalVision] Inference error for backend %r: %s", self._backend, exc
+            )
+            return ""
+
+    def _infer_qwen_vl(self, img: Any) -> str:
+        """Qwen2.5-VL / Qwen3-VL: chat-message format + AutoProcessor."""
+        import torch  # type: ignore[import]
+
+        # Qwen VL chat template: list of content items per turn
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": img},
+                    {"type": "text",  "text":  self._VQA_PROMPT},
+                ],
+            }
+        ]
+
+        # apply_chat_template adds <|im_start|>/<|im_end|> tokens
+        text = self._processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
+        # Encode text + image together
+        inputs = self._processor(
+            text=[text],
+            images=[img],
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self._model.device)
+
+        with torch.no_grad():
+            generated_ids = self._model.generate(
+                **inputs,
+                max_new_tokens=256,
+                do_sample=False,
+            )
+
+        # Trim the prompt tokens — keep only the newly generated tokens
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output = self._processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+        return output[0].strip() if output else ""
+
+    def _infer_llava(self, img: Any) -> str:
+        """LLaVA-1.5: USER/<image>/ASSISTANT prompt format."""
+        import torch  # type: ignore[import]
+
+        full_prompt = f"USER: <image>\n{self._VQA_PROMPT}\nASSISTANT:"
+        inputs = self._processor(text=full_prompt, images=img, return_tensors="pt")
+        inputs = {k: v.to(self._model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            output = self._model.generate(
+                **inputs,
+                max_new_tokens=256,
+                do_sample=False,
+            )
+
+        # Slice off input tokens → return only the generated response
+        input_len = inputs["input_ids"].shape[1]
+        text = self._processor.decode(
+            output[0][input_len:], skip_special_tokens=True
+        )
+        return text.strip()
+
+    def _infer_minicpm_v(self, img: Any) -> str:
+        """MiniCPM-V: model.chat() API with image in content list."""
+        msgs = [{"role": "user", "content": [img, self._VQA_PROMPT]}]
+        result = self._model.chat(
+            image=None,          # image embedded in msgs[0]["content"]
+            msgs=msgs,
+            tokenizer=self._processor,
+        )
+        return str(result).strip() if result else ""
+
+    def _infer_blip(self, img: Any) -> str:
+        """BLIP-2: Blip2ForConditionalGeneration VQA."""
+        import torch  # type: ignore[import]
+
+        inputs = self._processor(
+            images=img,
+            text=self._VQA_PROMPT,
+            return_tensors="pt",
+        )
+        inputs = {k: v.to(self._model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            output = self._model.generate(
+                **inputs,
+                max_new_tokens=256,
+                do_sample=False,
+            )
+        text = self._processor.decode(output[0], skip_special_tokens=True)
+        return text.strip()
+
+    # ── Public API ────────────────────────────────────────────────────────────────
 
     def analyze_frame(
         self,
@@ -552,11 +828,14 @@ class LocalVisionProvider(VisualAnalysisProvider):
         context: dict[str, Any] | None = None,
     ) -> VisualFrameObservation:
         if not self._try_init():
+            hint = self._INSTALL_HINTS.get(
+                self._backend, "transformers torch pillow accelerate"
+            )
             return VisualFrameObservation(
                 status=VISUAL_STATUS_NOT_CONFIGURED,
                 limitations=[
-                    f"Local vision provider '{self._backend}' is not installed. "
-                    "Install with: pip install transformers torch pillow accelerate",
+                    f"Local vision provider '{self._backend}' packages are not installed.  "
+                    f"Install: pip install {hint}",
                 ],
                 provider_used=f"local_vision:{self._backend}",
             )
@@ -578,7 +857,10 @@ class LocalVisionProvider(VisualAnalysisProvider):
         if not description:
             return VisualFrameObservation(
                 status=VISUAL_STATUS_FAILED,
-                limitations=["Vision model returned empty output."],
+                limitations=[
+                    "Vision model returned empty output.  "
+                    "Check that model weights are downloaded and device has sufficient memory."
+                ],
                 provider_used=f"local_vision:{self._backend}",
             )
 
