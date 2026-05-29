@@ -13,7 +13,8 @@ from app.services.website_evidence_discovery_service import (
     WebsiteEvidenceDiscoveryService,
     _classify_url,
     _dedup,
-    _is_private_host,
+    _hostname_is_safe,
+    _ip_is_unsafe,
     _LinkExtractorParser,
     _make_absolute,
     _validate_public_url,
@@ -63,17 +64,78 @@ def test_validate_public_url_missing_host():
     assert err == "missing_host"
 
 
-# ── _is_private_host ──────────────────────────────────────────────────────────
+# ── _ip_is_unsafe ─────────────────────────────────────────────────────────────
 
-def test_is_private_host_localhost():
-    assert _is_private_host("localhost") is True
+def test_ip_is_unsafe_loopback():
+    assert _ip_is_unsafe("127.0.0.1") is True
+    assert _ip_is_unsafe("::1") is True
 
-def test_is_private_host_local_subdomain():
-    assert _is_private_host("myapp.local") is True
+def test_ip_is_unsafe_private_ranges():
+    assert _ip_is_unsafe("10.0.0.1") is True
+    assert _ip_is_unsafe("192.168.1.1") is True
+    assert _ip_is_unsafe("172.16.0.1") is True
+    assert _ip_is_unsafe("172.31.255.255") is True
 
-def test_is_private_host_public():
-    assert _is_private_host("github.com") is False
-    assert _is_private_host("example.vercel.app") is False
+def test_ip_is_unsafe_link_local():
+    # Cloud metadata endpoint — NOT caught by RFC-1918 string matching
+    assert _ip_is_unsafe("169.254.169.254") is True
+    assert _ip_is_unsafe("fe80::1") is True
+
+def test_ip_is_unsafe_multicast():
+    assert _ip_is_unsafe("224.0.0.1") is True
+
+def test_ip_is_unsafe_unspecified():
+    assert _ip_is_unsafe("0.0.0.0") is True
+
+def test_ip_is_unsafe_public():
+    assert _ip_is_unsafe("8.8.8.8") is False
+    assert _ip_is_unsafe("1.1.1.1") is False
+    assert _ip_is_unsafe("2606:4700::6810:84e5") is False  # cloudflare IPv6
+
+
+# ── _hostname_is_safe ─────────────────────────────────────────────────────────
+
+def test_hostname_is_safe_rejects_localhost():
+    safe, err = _hostname_is_safe("localhost")
+    assert safe is False
+    assert err == "private_host"
+
+def test_hostname_is_safe_rejects_local_tld():
+    safe, err = _hostname_is_safe("myapp.local")
+    assert safe is False
+    assert err == "private_host"
+
+def test_hostname_is_safe_accepts_public(monkeypatch):
+    # Mock DNS resolution to return a known public IP
+    import socket
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda h, p, *a, **kw: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
+    safe, err = _hostname_is_safe("example.com")
+    assert safe is True
+    assert err is None
+
+def test_hostname_is_safe_rejects_dns_to_private(monkeypatch):
+    # Simulate a hostname that resolves to cloud metadata IP
+    import socket
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda h, p, *a, **kw: [(None, None, None, None, ("169.254.169.254", 0))],
+    )
+    safe, err = _hostname_is_safe("evil.attacker.com")
+    assert safe is False
+    assert err == "private_host"
+
+def test_hostname_is_safe_rejects_dns_failure(monkeypatch):
+    import socket
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda h, p, *a, **kw: (_ for _ in ()).throw(socket.gaierror("NXDOMAIN")),
+    )
+    safe, err = _hostname_is_safe("nonexistent.invalid")
+    assert safe is False
+    assert err == "dns_resolution_failed"
 
 
 # ── _classify_url — GitHub ─────────────────────────────────────────────────────
@@ -430,14 +492,20 @@ def test_service_rejects_private_ip():
 
 def test_service_handles_timeout(monkeypatch):
     """Service catches httpx.TimeoutException and returns graceful result."""
-    import httpx
+    import httpx, socket
+
+    # Allow DNS to pass; actual network call will raise timeout
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda h, p, *a, **kw: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
 
     class _FakeClient:
         def __enter__(self):
             return self
         def __exit__(self, *a):
             pass
-        def stream(self, *a, **kw):
+        def get(self, *a, **kw):
             raise httpx.TimeoutException("timed out")
 
     monkeypatch.setattr(
@@ -453,14 +521,19 @@ def test_service_handles_timeout(monkeypatch):
 
 def test_service_handles_network_error(monkeypatch):
     """Service catches httpx.HTTPError and returns graceful result."""
-    import httpx
+    import httpx, socket
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda h, p, *a, **kw: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
 
     class _FakeClient:
         def __enter__(self):
             return self
         def __exit__(self, *a):
             pass
-        def stream(self, *a, **kw):
+        def get(self, *a, **kw):
             raise httpx.NetworkError("connection refused")
 
     monkeypatch.setattr(
@@ -476,29 +549,26 @@ def test_service_handles_network_error(monkeypatch):
 
 def test_js_heavy_warning_when_no_links(monkeypatch):
     """Sites with no discoverable links trigger js_heavy_warning."""
-    import httpx
-    from io import BytesIO
+    import httpx, socket
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda h, p, *a, **kw: [(None, None, None, None, ("93.184.216.34", 0))],
+    )
 
     class _FakeResponse:
         status_code = 200
         url = "https://spa-app.com"
-        headers = {"content-type": "text/html"}
-        def iter_bytes(self):
-            yield b"<html><body><div id='root'></div></body></html>"
-
-    class _FakeStream:
-        def __enter__(self):
-            return _FakeResponse()
-        def __exit__(self, *a):
-            pass
+        headers = {"content-type": "text/html; charset=utf-8"}
+        content = b"<html><body><div id='root'></div></body></html>"
 
     class _FakeClient:
         def __enter__(self):
             return self
         def __exit__(self, *a):
             pass
-        def stream(self, *a, **kw):
-            return _FakeStream()
+        def get(self, *a, **kw):
+            return _FakeResponse()
 
     monkeypatch.setattr(
         "app.services.website_evidence_discovery_service.httpx.Client",
@@ -509,3 +579,43 @@ def test_js_heavy_warning_when_no_links(monkeypatch):
     assert result.js_heavy_warning is True
     assert result.limitation is not None
     assert "JavaScript" in result.limitation or "Recording" in result.limitation
+
+
+# ── Redirect SSRF guard ───────────────────────────────────────────────────────
+
+def test_service_blocks_redirect_to_private_ip(monkeypatch):
+    """A redirect to 169.254.169.254 (cloud metadata) must be blocked."""
+    import httpx, socket
+
+    # First DNS check (example.com) resolves to a public IP
+    _call_count = [0]
+    def _fake_getaddrinfo(h, p, *a, **kw):
+        _call_count[0] += 1
+        if h == "169.254.169.254":
+            return [(None, None, None, None, ("169.254.169.254", 0))]
+        return [(None, None, None, None, ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
+
+    class _RedirectResponse:
+        status_code = 302
+        url = "https://example.com"
+        headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+        content = b""
+
+    class _FakeClient:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            pass
+        def get(self, *a, **kw):
+            return _RedirectResponse()
+
+    monkeypatch.setattr(
+        "app.services.website_evidence_discovery_service.httpx.Client",
+        lambda **kw: _FakeClient(),
+    )
+    svc = WebsiteEvidenceDiscoveryService()
+    result = svc.discover("https://example.com")
+    assert result.error == "unsafe_redirect"
+    assert result.items == []

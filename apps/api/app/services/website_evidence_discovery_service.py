@@ -6,8 +6,13 @@ apps, API docs, and images/screenshots.
 
 Guardrails:
   - Only fetches public URLs (rejects localhost, private IP ranges).
+  - String-based hostname check AND DNS pre-resolution: all resolved
+    IP addresses are validated via ipaddress to cover private, loopback,
+    link-local (169.254.x.x), multicast, and reserved ranges.
+  - follow_redirects=False; each redirect Location is re-validated
+    (including fresh DNS resolution) before following — prevents open
+    redirectors from bouncing into internal networks.
   - Timeout + max bytes enforced to prevent resource exhaustion.
-  - Follows up to 5 redirects.
   - Does NOT store raw HTML.
   - Returns only public-safe metadata per discovered source.
   - Does NOT auto-submit discovered evidence; student chooses next action.
@@ -16,8 +21,10 @@ Guardrails:
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
+import socket
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any
@@ -31,7 +38,7 @@ _TIMEOUT_SECONDS = 10.0
 _MAX_HTML_BYTES = 500_000
 _MAX_REDIRECTS = 5
 _MAX_LINKS_PER_PAGE = 300  # cap to avoid huge pages
-_DISCOVERY_VERSION = "website-evidence-discovery-v1"
+_DISCOVERY_VERSION = "website-evidence-discovery-v2"
 
 # ── Evidence types ─────────────────────────────────────────────────────────────
 
@@ -46,28 +53,74 @@ EVIDENCE_TYPE_API_DOCS    = "api_docs"
 EVIDENCE_TYPE_IMAGE       = "image_or_screenshot"
 EVIDENCE_TYPE_UNKNOWN     = "unknown"
 
-# ── Private host guard ────────────────────────────────────────────────────────
+# ── SSRF-safe host guard ───────────────────────────────────────────────────────
 
-_PRIVATE_PREFIXES = (
-    "localhost", "127.", "10.", "192.168.", "172.16.", "172.17.",
-    "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.",
-    "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
-    "172.30.", "172.31.", "0.",
-)
+def _ip_is_unsafe(addr_str: str) -> bool:
+    """Return True if the IP address is in any non-public range.
+
+    Covers: loopback, private (RFC 1918 + RFC 4193), link-local
+    (169.254/16, fe80::/10), multicast, reserved, and unspecified.
+    Using ipaddress avoids the fragile string-prefix approach.
+    """
+    try:
+        addr = ipaddress.ip_address(addr_str)
+    except ValueError:
+        return True  # unparseable → reject
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local       # 169.254.x.x, fe80::/10
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified      # 0.0.0.0 / ::
+    )
 
 
-def _is_private_host(hostname: str) -> bool:
+def _hostname_is_safe(hostname: str) -> tuple[bool, str | None]:
+    """Check hostname via both string heuristics and DNS resolution.
+
+    Returns (is_safe, error_code).  Rejects:
+      - .local / .localhost TLDs (before DNS resolution)
+      - any hostname that resolves to an unsafe IP (see _ip_is_unsafe)
+      - hostnames that fail DNS resolution (unknown host = reject)
+
+    Note: this performs a blocking DNS lookup on the calling thread.
+    For a web API handler this is acceptable given the overall network
+    I/O budget of the endpoint.
+    """
     h = hostname.lower()
-    if h == "localhost" or h.endswith(".localhost") or h.endswith(".local"):
-        return True
-    for prefix in _PRIVATE_PREFIXES:
-        if h.startswith(prefix):
-            return True
-    return False
+
+    # Fast-path: catch obvious local names before incurring a DNS round-trip.
+    if h in {"localhost"} or h.endswith(".localhost") or h.endswith(".local"):
+        return False, "private_host"
+
+    # DNS pre-resolution: get all addresses and check each one.
+    # This defeats hostnames like spoofed.evil.com → 127.0.0.1
+    # AND catches 169.254.169.254 (cloud metadata) that string matching misses.
+    try:
+        results = socket.getaddrinfo(h, None)
+    except socket.gaierror:
+        # Could not resolve — refuse to proceed.
+        return False, "dns_resolution_failed"
+
+    for _family, _type, _proto, _canonname, sockaddr in results:
+        addr_str = sockaddr[0]
+        if _ip_is_unsafe(addr_str):
+            logger.warning(
+                "[EvidenceDiscovery] blocked private IP resolution: %s → %s",
+                hostname, addr_str,
+            )
+            return False, "private_host"
+
+    return True, None
 
 
 def _validate_public_url(url: str | None) -> tuple[str | None, str | None]:
-    """Return (normalized_url, error_string). error_string is None on success."""
+    """Return (normalized_url, error_string). error_string is None on success.
+
+    Validates scheme, host presence, and calls _hostname_is_safe which
+    performs both string heuristics and DNS pre-resolution.
+    """
     if not url or not url.strip():
         return None, "missing_url"
     value = url.strip()
@@ -77,8 +130,11 @@ def _validate_public_url(url: str | None) -> tuple[str | None, str | None]:
     host = (parsed.hostname or "").lower()
     if not host:
         return None, "missing_host"
-    if _is_private_host(host):
-        return None, "private_host"
+
+    safe, err = _hostname_is_safe(host)
+    if not safe:
+        return None, err
+
     return value, None
 
 
@@ -588,16 +644,17 @@ class WebsiteEvidenceDiscoveryService:
 
         assert norm_url is not None
         try:
+            # follow_redirects=False: we manually follow redirects so we can
+            # re-validate each Location header before connecting to it.
             with httpx.Client(
                 timeout=self._timeout,
-                follow_redirects=True,
-                max_redirects=_MAX_REDIRECTS,
+                follow_redirects=False,
                 headers={
                     "Accept": "text/html,application/xhtml+xml,*/*;q=0.9",
                     "User-Agent": "veribridge-ai-evidence-discovery/1",
                 },
             ) as client:
-                return self._fetch_and_classify(client, norm_url)
+                return self._fetch_with_redirect_guard(client, norm_url)
         except httpx.TimeoutException:
             return WebsiteEvidenceDiscoveryResult(
                 source_url=website_url,
@@ -617,45 +674,86 @@ class WebsiteEvidenceDiscoveryService:
                 limitation=f"Network error fetching website: {type(exc).__name__}",
             )
 
-    def _fetch_and_classify(
+    def _fetch_with_redirect_guard(
         self,
         client: httpx.Client,
         url: str,
     ) -> WebsiteEvidenceDiscoveryResult:
-        with client.stream("GET", url) as response:
-            final_url = str(response.url)
+        """Follow redirects manually, re-validating every Location URL.
+
+        Each hop's Location header is run through _validate_public_url
+        (which includes a fresh DNS resolution) before the next request
+        is sent.  This prevents open-redirect SSRF where a public host
+        issues a 302 to an internal network address.
+        """
+        current_url = url
+        for _hop in range(_MAX_REDIRECTS + 1):
+            response = client.get(current_url)
             status_code = response.status_code
 
-            if status_code >= 400:
-                return WebsiteEvidenceDiscoveryResult(
-                    source_url=url,
-                    final_url=final_url,
-                    status_code=status_code,
-                    page_title=None,
-                    error="http_error",
-                    limitation=f"Website returned HTTP {status_code}.",
-                )
+            if status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get("location", "").strip()
+                if not location:
+                    # Redirect with no Location — stop and process current response
+                    break
+                # Resolve relative Location against current URL
+                next_url = urljoin(current_url, location)
+                # Re-validate the redirect target (string + DNS)
+                validated, err = _validate_public_url(next_url)
+                if err or not validated:
+                    logger.warning(
+                        "[EvidenceDiscovery] blocked unsafe redirect: %s → %s (err=%s)",
+                        current_url[:80], next_url[:80], err,
+                    )
+                    return WebsiteEvidenceDiscoveryResult(
+                        source_url=url,
+                        final_url=current_url,
+                        status_code=status_code,
+                        page_title=None,
+                        error="unsafe_redirect",
+                        limitation="Redirect target failed safety validation.",
+                    )
+                current_url = validated
+                continue  # follow the validated redirect
 
-            content_type = response.headers.get("content-type", "").lower()
-            if "html" not in content_type and "xml" not in content_type:
-                return WebsiteEvidenceDiscoveryResult(
-                    source_url=url,
-                    final_url=final_url,
-                    status_code=status_code,
-                    page_title=None,
-                    error="non_html_response",
-                    limitation=f"Website returned non-HTML content ({content_type.split(';')[0].strip()}).",
-                )
+            # Non-redirect response — hand off to classifier
+            break
 
-            chunks: list[bytes] = []
-            total = 0
-            for chunk in response.iter_bytes():
-                total += len(chunk)
-                if total > _MAX_HTML_BYTES:
-                    break  # parse what we have
-                chunks.append(chunk)
+        return self._classify_response(response, url)
 
-        html = b"".join(chunks).decode("utf-8", errors="replace")
+    def _classify_response(
+        self,
+        response: httpx.Response,
+        source_url: str,
+    ) -> WebsiteEvidenceDiscoveryResult:
+        """Parse and classify an HTTP response that is the final hop."""
+        final_url = str(response.url)
+        status_code = response.status_code
+
+        if status_code >= 400:
+            return WebsiteEvidenceDiscoveryResult(
+                source_url=source_url,
+                final_url=final_url,
+                status_code=status_code,
+                page_title=None,
+                error="http_error",
+                limitation=f"Website returned HTTP {status_code}.",
+            )
+
+        content_type = response.headers.get("content-type", "").lower()
+        if "html" not in content_type and "xml" not in content_type:
+            return WebsiteEvidenceDiscoveryResult(
+                source_url=source_url,
+                final_url=final_url,
+                status_code=status_code,
+                page_title=None,
+                error="non_html_response",
+                limitation=f"Website returned non-HTML content ({content_type.split(';')[0].strip()}).",
+            )
+
+        # Read body with size cap (non-streaming since httpx already fetched it)
+        raw = response.content[:_MAX_HTML_BYTES]
+        html = raw.decode("utf-8", errors="replace")
 
         parser = _LinkExtractorParser(base_url=final_url)
         parser.feed(html)
@@ -690,11 +788,11 @@ class WebsiteEvidenceDiscoveryService:
 
         logger.info(
             "[EvidenceDiscovery] scan complete url=%r items=%d js_heavy=%s",
-            url[:80], len(items), js_heavy,
+            source_url[:80], len(items), js_heavy,
         )
 
         return WebsiteEvidenceDiscoveryResult(
-            source_url=url,
+            source_url=source_url,
             final_url=final_url,
             status_code=status_code,
             page_title=parser.page_title,
