@@ -128,9 +128,12 @@ class Settings(BaseSettings):
     )
 
     # Whether the extension should capture visual frames during recording.
-    # When false, no frames are sent; visual_frame_analysis_status = "not_configured".
+    # Defaults to True — the table (workflow_visual_frame_evidence) is always
+    # available.  Set ENABLE_WORKFLOW_FRAME_CAPTURE=false to disable capture
+    # entirely (frames will not be stored and visual_frame_analysis_status will
+    # remain "not_configured").
     enable_workflow_frame_capture: bool = Field(
-        default=False,
+        default=True,
         alias="ENABLE_WORKFLOW_FRAME_CAPTURE",
     )
 
