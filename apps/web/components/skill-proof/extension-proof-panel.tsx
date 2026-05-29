@@ -143,6 +143,8 @@ const inp: CSSProperties = {
   boxSizing: "border-box",
 }
 
+const SKILL_NAME_MAX = 160
+
 function wordCount(s: string): number {
   return s.trim().match(/\S+/g)?.length ?? 0
 }
@@ -4326,6 +4328,10 @@ export function ExtensionProofPanel({
       setError("Enter the skill this walkthrough demonstrates.")
       return
     }
+    if (form.skillName.length > SKILL_NAME_MAX) {
+      setError("Skills must be 160 characters or less. Use concise comma-separated skills.")
+      return
+    }
     if (wordCount(form.proofObjective) < 5) {
       setError("Describe what this walkthrough proves (at least 5 words).")
       return
@@ -4475,17 +4481,36 @@ export function ExtensionProofPanel({
 
           {/* Skill name */}
           <div style={{ display: "grid", gap: 4 }}>
-            <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
-              Skills this demonstrates <span style={{ color: "#dc2626" }}>*</span>
-            </label>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
+                Skills this demonstrates <span style={{ color: "#dc2626" }}>*</span>
+              </label>
+              <span style={{
+                fontSize: 11,
+                fontVariantNumeric: "tabular-nums",
+                color: form.skillName.length > SKILL_NAME_MAX ? "#dc2626" : "var(--muted)",
+                fontWeight: form.skillName.length > SKILL_NAME_MAX ? 700 : 400,
+              }}>
+                {form.skillName.length}/{SKILL_NAME_MAX}
+              </span>
+            </div>
             <input
               value={form.skillName}
               onChange={(e) => setForm((f) => ({ ...f, skillName: e.target.value }))}
               placeholder="e.g. FastAPI, React, Machine Learning"
-              style={inp}
+              style={{
+                ...inp,
+                borderColor: form.skillName.length > SKILL_NAME_MAX ? "#dc2626" : undefined,
+              }}
               disabled={creating}
             />
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>Comma-separated skills you will demonstrate in this walkthrough.</span>
+            {form.skillName.length > SKILL_NAME_MAX ? (
+              <span style={{ fontSize: 11, color: "#dc2626" }}>
+                Skills must be 160 characters or less. Use concise comma-separated skills.
+              </span>
+            ) : (
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>Comma-separated skills you will demonstrate in this walkthrough.</span>
+            )}
           </div>
 
           {/* Proof objective */}
@@ -4519,14 +4544,20 @@ export function ExtensionProofPanel({
           <button
             type="button"
             onClick={() => void handleCreate()}
-            disabled={creating || !privacyAcknowledged}
-            title={!privacyAcknowledged ? "Please acknowledge the privacy warning above first." : undefined}
+            disabled={creating || !privacyAcknowledged || form.skillName.length > SKILL_NAME_MAX}
+            title={
+              !privacyAcknowledged
+                ? "Please acknowledge the privacy warning above first."
+                : form.skillName.length > SKILL_NAME_MAX
+                ? "Skills must be 160 characters or less."
+                : undefined
+            }
             style={{
               border: "1px solid transparent",
-              background: creating || !privacyAcknowledged ? "var(--bg-2)" : "var(--ink)",
-              color: creating || !privacyAcknowledged ? "var(--muted)" : "#fff",
+              background: creating || !privacyAcknowledged || form.skillName.length > SKILL_NAME_MAX ? "var(--bg-2)" : "var(--ink)",
+              color: creating || !privacyAcknowledged || form.skillName.length > SKILL_NAME_MAX ? "var(--muted)" : "#fff",
               borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14,
-              cursor: creating || !privacyAcknowledged ? "not-allowed" : "pointer",
+              cursor: creating || !privacyAcknowledged || form.skillName.length > SKILL_NAME_MAX ? "not-allowed" : "pointer",
             }}
           >
             {creating
