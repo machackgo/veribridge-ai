@@ -28,6 +28,7 @@ from app.api.v1.endpoints import (
     skill_evidence_profile,
     student,
     verification_readiness,
+    website_evidence_discovery,
     workflow_visible_evidence,
     workflow_visual_frames,
     verification_review,
@@ -108,6 +109,11 @@ api_router.include_router(
     website_analyzer.router,
     prefix="/student/website-analysis",
     tags=["website-analysis"],
+)
+api_router.include_router(
+    website_evidence_discovery.router,
+    prefix="/student/website-analysis",
+    tags=["website-evidence-discovery"],
 )
 api_router.include_router(
     github_portfolio.router,

@@ -2049,6 +2049,64 @@ export async function adminListReviews(
   return res.json() as Promise<AdminReviewListItem[]>
 }
 
+// ── Website Evidence Discovery ─────────────────────────────────────────────
+
+export type DiscoveredEvidenceType =
+  | "github_repository"
+  | "video_demo"
+  | "pdf_report"
+  | "google_doc"
+  | "google_drive"
+  | "linkedin"
+  | "deployed_app"
+  | "api_docs"
+  | "image_or_screenshot"
+  | "unknown"
+
+export type DiscoveredEvidenceItem = {
+  evidence_type: DiscoveredEvidenceType
+  url: string
+  domain: string
+  title: string | null
+  confidence: number
+  reason: string
+  suggested_action: string
+  raw_text: string | null
+}
+
+export type WebsiteEvidenceDiscoveryResponse = {
+  source_url: string
+  final_url: string | null
+  status_code: number | null
+  page_title: string | null
+  items: DiscoveredEvidenceItem[]
+  total_discovered: number
+  js_heavy_warning: boolean
+  limitation: string | null
+  error: string | null
+  version: string
+}
+
+export async function discoverWebsiteEvidence(
+  websiteUrl: string,
+  proofSessionId?: string | null,
+): Promise<WebsiteEvidenceDiscoveryResponse> {
+  const res = await fetchAPI("/api/v1/student/website-analysis/discover", {
+    method: "POST",
+    body: JSON.stringify({
+      website_url: websiteUrl,
+      proof_session_id: proofSessionId ?? null,
+    }),
+  })
+  if (!res.ok) {
+    const raw = await res.text()
+    let msg = `Evidence discovery failed (HTTP ${res.status}).`
+    try { msg = (JSON.parse(raw) as { detail?: string }).detail ?? msg } catch { /* */ }
+    throw new Error(msg)
+  }
+  return res.json() as Promise<WebsiteEvidenceDiscoveryResponse>
+}
+
 /**
  * Admin: manually override the AI review decision.
  * Does NOT set human_verified — that requires a human reviewer action.

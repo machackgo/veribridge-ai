@@ -35,6 +35,10 @@ import {
   type ProjectDefenseMediaUploadResponse,
   type TranscriptionStatus,
   type ReadinessLevel,
+  discoverWebsiteEvidence,
+  type WebsiteEvidenceDiscoveryResponse,
+  type DiscoveredEvidenceItem,
+  type DiscoveredEvidenceType,
 } from "@/lib/api"
 import { VerificationReviewSection } from "./verification-review-section"
 import { EvidenceAnalysisProgress } from "./EvidenceAnalysisProgress"
@@ -3876,6 +3880,144 @@ function ProjectDefenseSection({
   )
 }
 
+// ── Evidence Discovery Results component ─────────────────────────────────────
+
+const _DISCOVERY_TYPE_ICONS: Record<DiscoveredEvidenceType, string> = {
+  github_repository: "⎇",
+  video_demo: "▶",
+  pdf_report: "📄",
+  google_doc: "📝",
+  google_drive: "🗂",
+  linkedin: "🔗",
+  deployed_app: "🚀",
+  api_docs: "📚",
+  image_or_screenshot: "🖼",
+  unknown: "❓",
+}
+
+const _DISCOVERY_TYPE_LABELS: Record<DiscoveredEvidenceType, string> = {
+  github_repository: "GitHub Repository",
+  video_demo: "Video Demo",
+  pdf_report: "PDF / Report",
+  google_doc: "Google Doc",
+  google_drive: "Google Drive",
+  linkedin: "LinkedIn",
+  deployed_app: "Deployed App",
+  api_docs: "API Docs",
+  image_or_screenshot: "Screenshot / Image",
+  unknown: "Unknown",
+}
+
+const _DISCOVERY_TYPE_COLORS: Record<DiscoveredEvidenceType, { bg: string; border: string; text: string }> = {
+  github_repository: { bg: "#f0fdf4", border: "#bbf7d0", text: "#166534" },
+  video_demo:        { bg: "#fef2f2", border: "#fecaca", text: "#991b1b" },
+  pdf_report:        { bg: "#fffbeb", border: "#fde68a", text: "#92400e" },
+  google_doc:        { bg: "#eff6ff", border: "#bfdbfe", text: "#1e40af" },
+  google_drive:      { bg: "#eff6ff", border: "#bfdbfe", text: "#1e40af" },
+  linkedin:          { bg: "#f0f9ff", border: "#bae6fd", text: "#075985" },
+  deployed_app:      { bg: "#faf5ff", border: "#e9d5ff", text: "#6b21a8" },
+  api_docs:          { bg: "#f0fdfa", border: "#99f6e4", text: "#134e4a" },
+  image_or_screenshot: { bg: "#fdf4ff", border: "#f0abfc", text: "#701a75" },
+  unknown:           { bg: "var(--bg-2)", border: "var(--line)", text: "var(--ink-2)" },
+}
+
+function EvidenceDiscoveryCard({ item }: { item: DiscoveredEvidenceItem }) {
+  const icon = _DISCOVERY_TYPE_ICONS[item.evidence_type] ?? "❓"
+  const label = _DISCOVERY_TYPE_LABELS[item.evidence_type] ?? item.evidence_type
+  const colors = _DISCOVERY_TYPE_COLORS[item.evidence_type] ?? _DISCOVERY_TYPE_COLORS.unknown
+  const confidencePct = Math.round(item.confidence * 100)
+
+  return (
+    <div style={{
+      border: `1px solid ${colors.border}`,
+      borderRadius: 10,
+      background: colors.bg,
+      padding: "10px 12px",
+      display: "grid",
+      gap: 6,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 14 }}>{icon}</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: colors.text }}>{label}</span>
+        <span style={{ fontSize: 10, color: "var(--muted)", marginLeft: "auto", fontVariantNumeric: "tabular-nums" }}>
+          {confidencePct}% confidence
+        </span>
+      </div>
+      {item.title && (
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink)", lineHeight: 1.4 }}>
+          {item.title.length > 80 ? item.title.slice(0, 78) + "…" : item.title}
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: "var(--ink-2)" }}>
+        <span style={{ fontWeight: 600 }}>{item.domain}</span>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>{item.reason}</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 2 }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+          background: colors.border, color: colors.text,
+        }}>
+          → {item.suggested_action}
+        </span>
+        <a
+          href={item.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontSize: 10, color: "var(--muted)", textDecoration: "underline" }}
+        >
+          Open ↗
+        </a>
+      </div>
+    </div>
+  )
+}
+
+function EvidenceDiscoveryResults({ discovery }: { discovery: WebsiteEvidenceDiscoveryResponse }) {
+  if (discovery.error && !["fetch_timeout", "fetch_error", "http_error", "non_html_response"].includes(discovery.error)) {
+    return (
+      <div style={{ fontSize: 11, color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 10px" }}>
+        Could not scan this URL: {discovery.limitation ?? discovery.error}
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      {/* Summary row */}
+      <div style={{ fontSize: 11, color: "var(--ink-2)" }}>
+        {discovery.page_title && (
+          <span style={{ fontWeight: 600 }}>"{discovery.page_title}" — </span>
+        )}
+        {discovery.total_discovered > 0
+          ? `${discovery.total_discovered} evidence source${discovery.total_discovered !== 1 ? "s" : ""} found`
+          : "No evidence sources detected in static HTML"}
+        {discovery.status_code ? (
+          <span style={{ color: "var(--muted)" }}> (HTTP {discovery.status_code})</span>
+        ) : null}
+      </div>
+
+      {/* JS-heavy limitation */}
+      {discovery.js_heavy_warning && discovery.limitation && (
+        <div style={{ fontSize: 11, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "6px 10px" }}>
+          ⚠ {discovery.limitation}
+        </div>
+      )}
+
+      {/* General limitation (non-JS-heavy) */}
+      {!discovery.js_heavy_warning && discovery.limitation && (
+        <div style={{ fontSize: 11, color: "var(--muted)", background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 10px" }}>
+          {discovery.limitation}
+        </div>
+      )}
+
+      {/* Evidence cards */}
+      {discovery.items.map((item, idx) => (
+        <EvidenceDiscoveryCard key={`${item.url}-${idx}`} item={item} />
+      ))}
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ExtensionProofPanel({
@@ -3927,6 +4069,11 @@ export function ExtensionProofPanel({
   const [defenseAnalyzeError, setDefenseAnalyzeError] = useState<string | null>(null)
   const [defenseSimProgress, setDefenseSimProgress] = useState(0)
   const [defenseSimStageIdx, setDefenseSimStageIdx] = useState(0)
+
+  // Website evidence discovery state
+  const [discovery, setDiscovery]           = useState<WebsiteEvidenceDiscoveryResponse | null>(null)
+  const [discovering, setDiscovering]       = useState(false)
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null)
 
   // Derived from form.websiteUrl — available in both form and session_active steps.
   const urlType = classifyUrl(form.websiteUrl)
@@ -4361,6 +4508,24 @@ export function ExtensionProofPanel({
     }
   }
 
+  // ── Discover evidence ─────────────────────────────────────────────────────
+
+  async function handleDiscover() {
+    const url = form.websiteUrl.trim()
+    if (!url || urlType === "invalid_url" || local) return
+    setDiscoveryError(null)
+    setDiscovery(null)
+    setDiscovering(true)
+    try {
+      const result = await discoverWebsiteEvidence(url)
+      setDiscovery(result)
+    } catch (err) {
+      setDiscoveryError(err instanceof Error ? err.message : "Evidence discovery failed. Please try again.")
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
   // ── Start session ─────────────────────────────────────────────────────────
 
   async function handleStart() {
@@ -4530,6 +4695,41 @@ export function ExtensionProofPanel({
             </span>
           </div>
         </div>
+
+        {/* Evidence Discovery */}
+        {!local && form.websiteUrl.trim() && urlType !== "invalid_url" && (
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
+                🔍 Discover evidence from this website
+              </span>
+              <button
+                type="button"
+                onClick={() => void handleDiscover()}
+                disabled={discovering || creating}
+                style={{
+                  border: "1px solid var(--line-2)",
+                  background: discovering || creating ? "var(--bg-2)" : "transparent",
+                  color: discovering || creating ? "var(--muted)" : "var(--ink-2)",
+                  borderRadius: 8, padding: "5px 12px", fontWeight: 600, fontSize: 12,
+                  cursor: discovering || creating ? "not-allowed" : "pointer",
+                }}
+              >
+                {discovering ? "Scanning…" : discovery ? "Scan again" : "Scan page"}
+              </button>
+            </div>
+
+            {discoveryError && (
+              <div style={{ fontSize: 11, color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 10px" }}>
+                {discoveryError}
+              </div>
+            )}
+
+            {discovery && !discoveryError && (
+              <EvidenceDiscoveryResults discovery={discovery} />
+            )}
+          </div>
+        )}
 
         {/* Footer */}
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
