@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from app.api.deps import get_current_user_id, get_db, require_admin_user_id
+from app.api.deps import get_current_user_id, get_db, require_admin_user_id, require_recruiter_session
 from app.schemas.public_work_passport import (
     AccessRequestCreate,
     AccessRequestDecision,
@@ -20,6 +20,8 @@ from app.schemas.public_work_passport import (
     PublicWorkPassportCreateRequest,
     PublicWorkPassportStudentResponse,
     RecruiterRequesterProfileResponse,
+    RecruiterSessionCreate,
+    RecruiterSessionResponse,
 )
 from app.schemas.github_proof_submission import GitHubProofPublicResponse
 from app.schemas.recruiter_shortlist import (
@@ -39,6 +41,7 @@ from app.services.public_work_passport_service import (
     PublicWorkPassportService,
     RecruiterRequesterProfileNotFoundError,
 )
+from app.services.recruiter_session_service import RecruiterSessionService
 from app.services.recruiter_shortlist_service import (
     RecruiterSavedPassportNotFoundError,
     RecruiterShortlistService,
@@ -317,15 +320,40 @@ def get_public_github_proofs(
         raise _passport_not_found(str(exc)) from exc
 
 
+@public_router.post(
+    "/recruiter/sessions",
+    response_model=RecruiterSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a recruiter session token for private recruiter operations",
+)
+def create_recruiter_session(
+    body: RecruiterSessionCreate,
+    db: Any = Depends(get_db),
+) -> RecruiterSessionResponse:
+    """Issue a server-side session token tied to *requester_email*.
+
+    The returned ``session_token`` must be stored by the caller and supplied as
+    the ``X-Recruiter-Token`` header on all private recruiter endpoints
+    (saved-passports list / update / delete, candidate-comparisons list / get / archive).
+
+    The token is cryptographically random (``vrec_<32-byte urlsafe>``) and
+    expires after 30 days.  It is never stored in plaintext — only its
+    SHA-256 hash is persisted in the database.
+    """
+    plaintext, email = RecruiterSessionService(db).create_session(str(body.requester_email))
+    return RecruiterSessionResponse(session_token=plaintext, requester_email=email)
+
+
 @public_router.get(
     "/recruiter/saved-passports",
     response_model=list[RecruiterSavedPassportResponse],
-    summary="List saved Work Passports for a requester email",
+    summary="List saved Work Passports for the authenticated recruiter session",
 )
 def list_recruiter_saved_passports(
-    requester_email: str = Query(..., min_length=3),
+    requester_email: str = Depends(require_recruiter_session),
     db: Any = Depends(get_db),
 ) -> list[RecruiterSavedPassportResponse]:
+    """Requires ``X-Recruiter-Token`` header from a valid recruiter session."""
     return RecruiterShortlistService(db).list_saved_passports(requester_email)
 
 
@@ -337,10 +365,12 @@ def list_recruiter_saved_passports(
 def update_recruiter_saved_passport(
     saved_id: str,
     body: RecruiterSavedPassportUpdate,
+    requester_email: str = Depends(require_recruiter_session),
     db: Any = Depends(get_db),
 ) -> RecruiterSavedPassportResponse:
+    """Requires ``X-Recruiter-Token`` header.  Only the owner session may update."""
     try:
-        return RecruiterShortlistService(db).update_saved_passport(saved_id, body)
+        return RecruiterShortlistService(db).update_saved_passport(saved_id, body, requester_email)
     except RecruiterSavedPassportNotFoundError as exc:
         raise _saved_passport_not_found(str(exc)) from exc
 
@@ -353,12 +383,14 @@ def update_recruiter_saved_passport(
 def record_saved_passport_reviewed_section(
     saved_id: str,
     body: RecruiterReviewedSectionCreate,
+    requester_email: str = Depends(require_recruiter_session),
     db: Any = Depends(get_db),
 ) -> RecruiterSavedPassportResponse:
+    """Requires ``X-Recruiter-Token`` header.  Email in body is ignored."""
     try:
         return RecruiterShortlistService(db).record_passport_reviewed_section(
             saved_id,
-            str(body.requester_email),
+            requester_email,  # from validated session, never from untrusted body
             body.section,
         )
     except RecruiterSavedPassportNotFoundError as exc:
@@ -372,9 +404,10 @@ def record_saved_passport_reviewed_section(
 )
 def delete_recruiter_saved_passport(
     saved_id: str,
-    requester_email: str = Query(..., min_length=3),
+    requester_email: str = Depends(require_recruiter_session),
     db: Any = Depends(get_db),
 ) -> Response:
+    """Requires ``X-Recruiter-Token`` header.  Only the owner session may delete."""
     try:
         RecruiterShortlistService(db).delete_saved_passport(saved_id, requester_email)
     except RecruiterSavedPassportNotFoundError as exc:

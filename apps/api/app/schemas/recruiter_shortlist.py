@@ -21,7 +21,9 @@ class RecruiterSavedPassportCreate(BaseModel):
 
 
 class RecruiterSavedPassportUpdate(BaseModel):
-    requester_email: str
+    # requester_email is retained for backward-compatibility but is IGNORED by the
+    # API layer.  The authoritative identity is the X-Recruiter-Token session.
+    requester_email: str | None = None
     status: SavedPassportStatus | None = None
     tags: list[str] | None = None
     private_notes: str | None = None
@@ -31,7 +33,9 @@ class RecruiterSavedPassportUpdate(BaseModel):
 
 
 class RecruiterReviewedSectionCreate(BaseModel):
-    requester_email: str
+    # requester_email is retained for backward-compatibility but is IGNORED by the
+    # API layer.  The authoritative identity is the X-Recruiter-Token session.
+    requester_email: str | None = None
     section: str
 
 

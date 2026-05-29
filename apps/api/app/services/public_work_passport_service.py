@@ -295,6 +295,14 @@ class PublicWorkPassportService:
         )
         self._save(_REQUESTS, request)
         existing = self._grant_by_request(str(request["id"]))
+        # Generate a new plaintext token only on first approval.
+        # Store only the SHA-256 hash — never store the plaintext in the DB.
+        if existing:
+            plaintext_token: str | None = None  # not re-emitted after first creation
+            token_hash = existing.get("access_token_hash") or _hash_token(str(existing.get("access_token") or ""))
+        else:
+            plaintext_token = _new_token()
+            token_hash = _hash_token(plaintext_token)
         grant = {
             "id": existing.get("id") if existing else str(uuid4()),
             "access_request_id": str(request["id"]),
@@ -302,7 +310,9 @@ class PublicWorkPassportService:
             "proof_session_id": str(request["proof_session_id"]),
             "requester_email": str(request["requester_email"]),
             "granted_sections": sections,
-            "access_token": existing.get("access_token") if existing else _new_token(),
+            # access_token is kept for legacy back-compat (NULL for new grants)
+            "access_token": existing.get("access_token") if existing else None,
+            "access_token_hash": token_hash,
             "expires_at": body.expires_at,
             "revoked_at": None,
             "created_at": existing.get("created_at") if existing else now,
@@ -362,7 +372,7 @@ class PublicWorkPassportService:
                 "expires_at": body.expires_at.isoformat() if body.expires_at else None,
             },
         )
-        return _grant_response(saved)
+        return _grant_response(saved, plaintext_token=plaintext_token)
 
     def deny_request(
         self,
@@ -780,6 +790,17 @@ class PublicWorkPassportService:
         return self._first_where(_GRANTS, "access_request_id", request_id)
 
     def _grant_by_token(self, token: str) -> dict[str, Any] | None:
+        """Look up a grant by token.
+
+        For new grants the hash is stored in ``access_token_hash``.
+        For legacy grants (pre-migration) the plaintext is in ``access_token``.
+        Both lookup paths are supported for backward compatibility.
+        """
+        token_hash = _hash_token(token)
+        row = self._first_where(_GRANTS, "access_token_hash", token_hash)
+        if row:
+            return row
+        # Legacy fallback: rows back-filled or created before migration 037
         return self._first_where(_GRANTS, "access_token", token)
 
     def _row_by_session(self, table: str, user_id: str, session_id: str) -> dict[str, Any] | None:
@@ -1049,7 +1070,14 @@ def _request_response(row: dict[str, Any]) -> EvidenceAccessRequestResponse:
     )
 
 
-def _grant_response(row: dict[str, Any]) -> EvidenceAccessGrantResponse:
+def _grant_response(row: dict[str, Any], *, plaintext_token: str | None = None) -> EvidenceAccessGrantResponse:
+    """Build a grant response.
+
+    *plaintext_token* is set only when a brand-new grant is created
+    (``approve_request`` first call).  On re-approvals or revocations the
+    plaintext is no longer available and ``access_token`` is returned as
+    ``None`` so the token is never re-exposed after initial issuance.
+    """
     return EvidenceAccessGrantResponse(
         id=str(row["id"]),
         access_request_id=str(row["access_request_id"]),
@@ -1057,7 +1085,7 @@ def _grant_response(row: dict[str, Any]) -> EvidenceAccessGrantResponse:
         proof_session_id=str(row["proof_session_id"]),
         requester_email=str(row["requester_email"]),
         granted_sections=list(row.get("granted_sections") or []),
-        access_token=str(row["access_token"]),
+        access_token=plaintext_token,  # None on re-reads/revoke — see schema docs
         expires_at=row.get("expires_at"),
         revoked_at=row.get("revoked_at"),
         created_at=row["created_at"],
@@ -1283,6 +1311,11 @@ def _private_url(url: str) -> bool:
 
 def _new_token() -> str:
     return f"vbpa_{secrets.token_urlsafe(32)}"
+
+
+def _hash_token(plaintext: str) -> str:
+    """Return the SHA-256 hex digest of a bearer token for safe DB storage."""
+    return sha256(plaintext.encode("utf-8")).hexdigest()
 
 
 def _dedupe(values: list[str]) -> list[str]:

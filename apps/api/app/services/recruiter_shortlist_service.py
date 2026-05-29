@@ -79,8 +79,10 @@ class RecruiterShortlistService:
         rows.sort(key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""), reverse=True)
         return [self._response(row) for row in rows]
 
-    def update_saved_passport(self, saved_id: str, payload: RecruiterSavedPassportUpdate) -> RecruiterSavedPassportResponse:
-        row = self._saved_for_email(saved_id, str(payload.requester_email))
+    def update_saved_passport(self, saved_id: str, payload: RecruiterSavedPassportUpdate, requester_email: str) -> RecruiterSavedPassportResponse:
+        """Update a saved passport.  *requester_email* must come from a validated
+        session — do NOT pass it from untrusted request bodies."""
+        row = self._saved_for_email(saved_id, requester_email)
         previous_status = row.get("status")
         previous_notes = row.get("private_notes")
         if payload.status is not None:

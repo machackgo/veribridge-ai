@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_recruiter_session
 from app.main import app
 from app.schemas.recruiter_candidate_comparison import RecruiterCandidateComparisonCreate
 from app.schemas.recruiter_shortlist import RecruiterSavedPassportCreate
@@ -32,6 +32,8 @@ def mem_store() -> dict:
 @pytest.fixture()
 def client(mem_store: dict) -> TestClient:
     app.dependency_overrides[get_db] = lambda: mem_store
+    # Default recruiter session resolves to REQUESTER_EMAIL
+    app.dependency_overrides[require_recruiter_session] = lambda: REQUESTER_EMAIL
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -266,7 +268,8 @@ def test_repeated_requester_email_is_normalized_lowercase(client: TestClient, me
 
     assert response.status_code == 201, response.text
     assert response.json()["requester_email"] == REQUESTER_EMAIL
-    listed = client.get(f"/api/v1/public/recruiter/candidate-comparisons?requester_email={REQUESTER_EMAIL.upper()}")
+    # List uses session dep (overridden to REQUESTER_EMAIL); no query param needed
+    listed = client.get("/api/v1/public/recruiter/candidate-comparisons")
     assert listed.status_code == 200, listed.text
     assert all(row["requester_email"] == REQUESTER_EMAIL for row in listed.json())
 
@@ -307,7 +310,8 @@ def test_recruiter_can_list_only_their_own_comparisons(client: TestClient, mem_s
         )
     )
     assert other.requester_email == OTHER_REQUESTER_EMAIL
-    listed = client.get(f"/api/v1/public/recruiter/candidate-comparisons?requester_email={REQUESTER_EMAIL}")
+    # Session dep returns REQUESTER_EMAIL — should only see own comparisons
+    listed = client.get("/api/v1/public/recruiter/candidate-comparisons")
     assert listed.status_code == 200, listed.text
     assert len(listed.json()) == 1
     assert listed.json()[0]["requester_email"] == REQUESTER_EMAIL
@@ -339,9 +343,13 @@ def test_recruiter_cannot_fetch_another_requesters_comparison(client: TestClient
         },
     ).json()
 
+    # Simulate attacker with a session for OTHER_REQUESTER_EMAIL trying to fetch
+    app.dependency_overrides[require_recruiter_session] = lambda: OTHER_REQUESTER_EMAIL
     response = client.get(
-        f"/api/v1/public/recruiter/candidate-comparisons/{comparison['id']}?requester_email={OTHER_REQUESTER_EMAIL}"
+        f"/api/v1/public/recruiter/candidate-comparisons/{comparison['id']}"
     )
+    # Restore default session
+    app.dependency_overrides[require_recruiter_session] = lambda: REQUESTER_EMAIL
 
     assert response.status_code == 404
 
@@ -372,8 +380,9 @@ def test_archive_comparison_works(client: TestClient, mem_store: dict) -> None:
         },
     ).json()
 
+    # Session dep returns REQUESTER_EMAIL (owner) — archive should succeed
     archived = client.post(
-        f"/api/v1/public/recruiter/candidate-comparisons/{comparison['id']}/archive?requester_email={REQUESTER_EMAIL}"
+        f"/api/v1/public/recruiter/candidate-comparisons/{comparison['id']}/archive"
     )
 
     assert archived.status_code == 200, archived.text

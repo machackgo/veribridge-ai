@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_recruiter_session
 from app.schemas.recruiter_candidate_comparison import (
     RecruiterCandidateComparisonCreate,
     RecruiterCandidateComparisonResponse,
@@ -29,6 +29,10 @@ def create_candidate_comparison(
     body: RecruiterCandidateComparisonCreate,
     db: Any = Depends(get_db),
 ) -> RecruiterCandidateComparisonResponse:
+    """Create is intentionally open (no session required) because the recruiter
+    provides their email in the body and this is a low-risk write.  The email
+    in the body is normalised and scoped server-side; private reads/mutations
+    require a session token."""
     try:
         return RecruiterCandidateComparisonService(db).create_candidate_comparison(body)
     except RecruiterCandidateComparisonNotFoundError as exc:
@@ -38,12 +42,13 @@ def create_candidate_comparison(
 @router.get(
     "/candidate-comparisons",
     response_model=list[RecruiterCandidateComparisonResponse],
-    summary="List recruiter candidate comparisons for a requester email",
+    summary="List recruiter candidate comparisons for the authenticated recruiter session",
 )
 def list_candidate_comparisons(
-    requester_email: str = Query(..., min_length=3),
+    requester_email: str = Depends(require_recruiter_session),
     db: Any = Depends(get_db),
 ) -> list[RecruiterCandidateComparisonResponse]:
+    """Requires ``X-Recruiter-Token`` header from a valid recruiter session."""
     return RecruiterCandidateComparisonService(db).list_candidate_comparisons(requester_email)
 
 
@@ -54,9 +59,10 @@ def list_candidate_comparisons(
 )
 def get_candidate_comparison(
     comparison_id: str,
-    requester_email: str = Query(..., min_length=3),
+    requester_email: str = Depends(require_recruiter_session),
     db: Any = Depends(get_db),
 ) -> RecruiterCandidateComparisonResponse:
+    """Requires ``X-Recruiter-Token`` header.  Only the owner session may fetch."""
     try:
         return RecruiterCandidateComparisonService(db).get_candidate_comparison(comparison_id, requester_email)
     except RecruiterCandidateComparisonNotFoundError as exc:
@@ -70,9 +76,10 @@ def get_candidate_comparison(
 )
 def archive_candidate_comparison(
     comparison_id: str,
-    requester_email: str = Query(..., min_length=3),
+    requester_email: str = Depends(require_recruiter_session),
     db: Any = Depends(get_db),
 ) -> RecruiterCandidateComparisonResponse:
+    """Requires ``X-Recruiter-Token`` header.  Only the owner session may archive."""
     try:
         return RecruiterCandidateComparisonService(db).archive_candidate_comparison(comparison_id, requester_email)
     except RecruiterCandidateComparisonNotFoundError as exc:
@@ -88,4 +95,3 @@ def _comparison_not_found(comparison_id: str) -> HTTPException:
             "comparison_id": comparison_id,
         },
     )
-

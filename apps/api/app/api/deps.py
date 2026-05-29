@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.auth import AuthTokenExpired, AuthTokenInvalid, extract_user_id
@@ -83,6 +83,48 @@ def get_current_user_id(
         },
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def require_recruiter_session(
+    x_recruiter_token: Optional[str] = Header(None, alias="X-Recruiter-Token"),
+    db: Any = Depends(get_db),
+) -> str:
+    """Validate a recruiter session token and return the ``requester_email``.
+
+    Recruiters obtain a session token via ``POST /public/recruiter/sessions``.
+    The token must be supplied as the ``X-Recruiter-Token`` request header on
+    every private recruiter endpoint (list / update / delete saved passports,
+    list / get / archive candidate comparisons).
+
+    Raises HTTP 401 if the token is absent, unknown, expired, or revoked.
+
+    Override in tests:
+        from app.api.deps import require_recruiter_session
+        app.dependency_overrides[require_recruiter_session] = lambda: "test@example.com"
+    """
+    if not x_recruiter_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "recruiter_session_required",
+                "message": (
+                    "A recruiter session token is required. "
+                    "Obtain one via POST /api/v1/public/recruiter/sessions."
+                ),
+            },
+        )
+    from app.services.recruiter_session_service import RecruiterSessionService
+
+    email = RecruiterSessionService(db).validate_token(x_recruiter_token)
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "recruiter_session_invalid",
+                "message": "Recruiter session token is invalid or expired.",
+            },
+        )
+    return email
 
 
 def require_admin_user_id(

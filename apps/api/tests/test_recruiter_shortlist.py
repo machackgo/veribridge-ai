@@ -10,12 +10,13 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, require_recruiter_session
 from app.main import app
 from app.services.recruiter_shortlist_service import RecruiterShortlistService
 
 
 USER_ID = "00000000-0000-0000-0000-000000000042"
+DEFAULT_SESSION_EMAIL = "recruiter@example.com"
 
 
 @pytest.fixture()
@@ -25,8 +26,11 @@ def mem_store() -> dict:
 
 @pytest.fixture()
 def client(mem_store: dict) -> TestClient:
+    """Test client with student auth and a default recruiter session for DEFAULT_SESSION_EMAIL."""
     app.dependency_overrides[get_current_user_id] = lambda: USER_ID
     app.dependency_overrides[get_db] = lambda: mem_store
+    # Override the recruiter session dep so tests don't need a real token.
+    app.dependency_overrides[require_recruiter_session] = lambda: DEFAULT_SESSION_EMAIL
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -119,12 +123,13 @@ def test_recruiter_can_shortlist_passport_and_audit_event_is_created(client: Tes
 
 def test_recruiter_can_add_tags_private_notes_and_reviewed_sections(client: TestClient, mem_store: dict) -> None:
     _seed_public_passport(mem_store)
-    saved = _save(client)
+    # Save passport as DEFAULT_SESSION_EMAIL (recruiter@example.com)
+    saved = _save(client, requester_email=DEFAULT_SESSION_EMAIL)
 
+    # PATCH uses the session dep (DEFAULT_SESSION_EMAIL), not the body email
     response = client.patch(
         f"/api/v1/public/recruiter/saved-passports/{saved['id']}",
         json={
-            "requester_email": "recruiter@example.com",
             "tags": ["priority", "backend"],
             "private_notes": "Follow up after technical screen.",
             "reviewed_sections": ["github_analysis", "project_defense_summary"],
@@ -148,7 +153,11 @@ def test_recruiter_can_list_only_their_saved_passports(client: TestClient, mem_s
     _seed_public_passport(mem_store, "two")
     _save(client, slug="two", requester_email="two@example.com")
 
-    response = client.get("/api/v1/public/recruiter/saved-passports", params={"requester_email": "one@example.com"})
+    # Simulate a session for "one@example.com" listing their passports
+    app.dependency_overrides[require_recruiter_session] = lambda: "one@example.com"
+    response = client.get("/api/v1/public/recruiter/saved-passports")
+    # Restore default session
+    app.dependency_overrides[require_recruiter_session] = lambda: DEFAULT_SESSION_EMAIL
 
     assert response.status_code == 200, response.text
     rows = response.json()
@@ -159,11 +168,13 @@ def test_recruiter_can_list_only_their_saved_passports(client: TestClient, mem_s
 
 def test_recruiter_cannot_update_another_requesters_saved_passport(client: TestClient, mem_store: dict) -> None:
     _seed_public_passport(mem_store)
+    # Saved under "owner@example.com"
     saved = _save(client, requester_email="owner@example.com")
 
+    # Session is DEFAULT_SESSION_EMAIL ("recruiter@example.com"), which does not own this record
     response = client.patch(
         f"/api/v1/public/recruiter/saved-passports/{saved['id']}",
-        json={"requester_email": "other@example.com", "status": "shortlisted"},
+        json={"status": "shortlisted"},
     )
 
     assert response.status_code == 404

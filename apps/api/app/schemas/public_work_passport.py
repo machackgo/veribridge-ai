@@ -138,7 +138,10 @@ class EvidenceAccessGrantResponse(BaseModel):
     proof_session_id: str
     requester_email: str
     granted_sections: list[str] = Field(default_factory=list)
-    access_token: str
+    # access_token is returned ONLY once when the grant is first created (approve_request).
+    # All subsequent responses (revoke, re-read) set this field to None so the
+    # plaintext token is never re-exposed after the initial issuance.
+    access_token: str | None = None
     expires_at: datetime | str | None = None
     revoked_at: datetime | str | None = None
     created_at: datetime | str
@@ -178,3 +181,29 @@ class AdminRequesterVerificationUpdate(BaseModel):
     notes: str | None = Field(default=None, max_length=4000)
     domain_verified: bool | None = None
     email_verified: bool | None = None
+
+
+class RecruiterSessionCreate(BaseModel):
+    """Request body for creating a recruiter session token."""
+
+    requester_email: str = Field(..., min_length=3, max_length=320)
+
+    @field_validator("requester_email")
+    @classmethod
+    def _validate_email(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if "@" not in cleaned or "." not in cleaned.rsplit("@", 1)[-1]:
+            raise ValueError("requester_email must be a valid email address")
+        return cleaned
+
+
+class RecruiterSessionResponse(BaseModel):
+    """Response containing the one-time session token for recruiter private operations.
+
+    Store this token securely (e.g. localStorage / cookie).  Pass it on every
+    private recruiter request as the ``X-Recruiter-Token`` header.
+    """
+
+    session_token: str
+    requester_email: str
+    expires_in_days: int = 30
