@@ -8,6 +8,10 @@ import {
   type RecruiterSavedPassportResponse,
 } from "@/lib/passport-api"
 import {
+  createRecruiterSession,
+  clearRecruiterSession,
+} from "@/lib/recruiter-session"
+import {
   Badge,
   Btn,
   Card,
@@ -42,22 +46,28 @@ function CandidateCard({
   const handleSave = async () => {
     setSaving(true)
     try {
+      // requester_email omitted — identity is established by X-Recruiter-Token session
       await updateRecruiterSavedPassport(saved.id, {
-        requester_email: saved.requester_email,
         status: status as "saved",
         private_notes: notes,
         fit_score: fitScore || null,
       })
       onUpdate(saved.id, { private_notes: notes, status: status as "saved", fit_score: fitScore || null })
       setEditing(false)
-    } catch {}
+    } catch (e: unknown) {
+      // If session expired, surface a clear message (recruiterApiJson already cleared the token)
+      if (e instanceof Error && e.message.toLowerCase().includes("session expired")) {
+        alert("Your recruiter session expired. Please reload your shortlist.")
+      }
+    }
     setSaving(false)
   }
 
   const handleDelete = async () => {
     if (!confirm("Remove this candidate from your shortlist?")) return
     try {
-      await deleteRecruiterSavedPassport(saved.id, saved.requester_email)
+      // requester_email not needed — backend authenticates via X-Recruiter-Token
+      await deleteRecruiterSavedPassport(saved.id)
       onDelete(saved.id)
     } catch {}
   }
@@ -241,11 +251,21 @@ export function RecruiterSavedCandidatesPanel() {
     setLoading(true)
     setError(null)
     try {
-      const results = await listRecruiterSavedPassports(emailInput.trim())
+      // Step 1: Obtain a recruiter session token from the backend.
+      //         The token is stored in sessionStorage by createRecruiterSession().
+      await createRecruiterSession(emailInput.trim())
+
+      // Step 2: Fetch saved passports; X-Recruiter-Token is injected automatically.
+      const results = await listRecruiterSavedPassports()
       setCandidates(results)
       setEmail(emailInput.trim())
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load")
+      const msg = e instanceof Error ? e.message : "Failed to load"
+      // If the session was invalid or expired, ensure it is cleared.
+      if (msg.toLowerCase().includes("session") || msg.includes("401")) {
+        clearRecruiterSession()
+      }
+      setError(msg)
     } finally {
       setLoading(false)
     }

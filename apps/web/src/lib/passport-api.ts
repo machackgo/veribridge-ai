@@ -6,8 +6,15 @@
 "use client"
 
 import { fetchAPI } from "./api"
+import {
+  withRecruiterTokenHeader,
+  clearRecruiterSession,
+} from "./recruiter-session"
 
 const API = "/api/v1"
+
+/** Base URL for direct fetch calls (recruiter public endpoints don't use Supabase auth). */
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
 
 // ─── Shared helpers ────────────────────────────────────────────────────────
 
@@ -17,6 +24,43 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
     const text = await res.text().catch(() => "")
     throw new Error(`API ${res.status}: ${text}`)
   }
+  return res.json() as Promise<T>
+}
+
+/**
+ * Fetch helper for private recruiter endpoints.
+ *
+ * Adds X-Recruiter-Token from sessionStorage.  On 401 the session is cleared
+ * and a user-facing error is thrown prompting re-authentication.
+ * Token is NEVER logged.
+ */
+async function recruiterApiJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = withRecruiterTokenHeader({
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string>) ?? {}),
+  })
+  const res = await fetch(`${API_BASE_URL}${path}`, { ...init, headers })
+
+  if (res.status === 401) {
+    clearRecruiterSession()
+    const raw = await res.text().catch(() => "")
+    let msg = "Recruiter session expired. Please re-enter your email to continue."
+    try {
+      const parsed = JSON.parse(raw) as { detail?: { message?: string } | string }
+      const d = parsed.detail
+      if (d && typeof d === "object" && typeof d.message === "string") msg = d.message
+      else if (typeof d === "string") msg = d
+    } catch { /* not JSON */ }
+    throw new Error(msg)
+  }
+
+  if (res.status === 204) return undefined as unknown as T
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "")
+    throw new Error(`API ${res.status}: ${text}`)
+  }
+
   return res.json() as Promise<T>
 }
 
@@ -330,7 +374,8 @@ export type RecruiterSavedPassportCreate = {
 }
 
 export type RecruiterSavedPassportUpdate = {
-  requester_email: string
+  /** Retained for backward compatibility; ignored by the backend (identity comes from X-Recruiter-Token). */
+  requester_email?: string | null
   status?: string | null
   tags?: string[] | null
   private_notes?: string | null
@@ -721,29 +766,47 @@ export function archiveProofVersion(sessionId: string, versionId: string): Promi
 }
 
 // ─── Recruiter Saved Passports ─────────────────────────────────────────────
+// All endpoints below require X-Recruiter-Token (injected by recruiterApiJson).
 
-export function listRecruiterSavedPassports(requesterEmail: string): Promise<RecruiterSavedPassportResponse[]> {
-  return apiJson(`${API}/public/recruiter/saved-passports?requester_email=${encodeURIComponent(requesterEmail)}`)
+/**
+ * List saved passports for the authenticated recruiter session.
+ * Requires a valid session token stored via createRecruiterSession().
+ */
+export function listRecruiterSavedPassports(): Promise<RecruiterSavedPassportResponse[]> {
+  return recruiterApiJson(`${API}/public/recruiter/saved-passports`)
 }
 
+/**
+ * Update a saved passport.
+ * Requires a valid session token — requester_email in body is ignored by the backend.
+ */
 export function updateRecruiterSavedPassport(
   savedId: string,
   body: RecruiterSavedPassportUpdate,
 ): Promise<RecruiterSavedPassportResponse> {
-  return apiJson(`${API}/public/recruiter/saved-passports/${savedId}`, {
+  return recruiterApiJson(`${API}/public/recruiter/saved-passports/${savedId}`, {
     method: "PATCH",
     body: JSON.stringify(body),
   })
 }
 
-export function deleteRecruiterSavedPassport(savedId: string, requesterEmail: string): Promise<void> {
-  return apiJson<void>(`${API}/public/recruiter/saved-passports/${savedId}?requester_email=${encodeURIComponent(requesterEmail)}`, {
+/**
+ * Delete a saved passport.
+ * Requires a valid session token — no requester_email query param needed.
+ */
+export function deleteRecruiterSavedPassport(savedId: string): Promise<void> {
+  return recruiterApiJson<void>(`${API}/public/recruiter/saved-passports/${savedId}`, {
     method: "DELETE",
   }).catch(() => undefined)
 }
 
 // ─── Candidate Comparison ──────────────────────────────────────────────────
 
+/**
+ * Create a new candidate comparison.
+ * This endpoint is open (no session token required); requester_email in body
+ * is used for scoping the comparison record.
+ */
 export function createCandidateComparison(
   body: RecruiterCandidateComparisonRequest,
 ): Promise<RecruiterCandidateComparisonResponse> {
@@ -753,10 +816,12 @@ export function createCandidateComparison(
   })
 }
 
-export function listCandidateComparisons(
-  requesterEmail: string,
-): Promise<RecruiterCandidateComparisonResponse[]> {
-  return apiJson(`${API}/public/recruiter/candidate-comparisons?requester_email=${encodeURIComponent(requesterEmail)}`)
+/**
+ * List past comparisons for the authenticated recruiter session.
+ * Requires a valid session token stored via createRecruiterSession().
+ */
+export function listCandidateComparisons(): Promise<RecruiterCandidateComparisonResponse[]> {
+  return recruiterApiJson(`${API}/public/recruiter/candidate-comparisons`)
 }
 
 // ─── RBAC / Permissions ────────────────────────────────────────────────────

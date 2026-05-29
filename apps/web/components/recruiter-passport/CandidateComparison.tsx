@@ -1,11 +1,15 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   createCandidateComparison,
   type RecruiterCandidateComparisonResponse,
   type RecruiterCandidateResult,
 } from "@/lib/passport-api"
+import {
+  getStoredRecruiterEmail,
+  createRecruiterSession,
+} from "@/lib/recruiter-session"
 import {
   Badge,
   Btn,
@@ -140,11 +144,24 @@ export function CandidateComparisonPanel({ savedPassportIds }: { savedPassportId
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Pre-fill email from an existing recruiter session (e.g. set via the Saved Candidates page).
+  // Email is display/context only — identity is established by the session token.
+  useEffect(() => {
+    const storedEmail = getStoredRecruiterEmail()
+    if (storedEmail) setRequesterEmail(storedEmail)
+  }, [])
+
   const handleCompare = async () => {
     if (!requesterEmail.trim() || selectedIds.length < 2) return
     setLoading(true)
     setError(null)
     try {
+      // Ensure a session token exists for this email before submitting.
+      // createCandidateComparison itself is an open endpoint (no token required),
+      // but creating the session here keeps state consistent for any subsequent
+      // token-required operations (e.g. listing past comparisons).
+      await createRecruiterSession(requesterEmail.trim())
+
       const res = await createCandidateComparison({
         requester_email: requesterEmail.trim(),
         saved_passport_ids: selectedIds,
