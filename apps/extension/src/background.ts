@@ -91,6 +91,60 @@ const state: InternalState = {
   trackedTabUrls: new Map(),
 }
 
+// ── Persisted recording state key ────────────────────────────────────────────
+// Written on START_RECORDING; cleared on STOP_RECORDING and successful upload.
+// Lets the service worker restore recording context after Chrome kills it.
+const _SW_STATE_KEY = "vb_sw_recording"
+
+interface PersistedRecordingState {
+  sessionId: string
+  apiUrl: string
+  authToken: string
+  startedAt: string
+}
+
+/**
+ * Persist the minimal recording context that must survive a service-worker restart.
+ * MV3 service workers are killed when idle; without this, module-level state resets
+ * to `isRecording = false` and all subsequent VISIBLE_EVIDENCE_EVENT messages are
+ * silently dropped, causing 0 DOM rows for the session.
+ */
+function persistRecordingState(): void {
+  const payload: PersistedRecordingState = {
+    sessionId: state.sessionId,
+    apiUrl: state.apiUrl,
+    authToken: state.authToken,
+    startedAt: state.startedAt ?? new Date().toISOString(),
+  }
+  void chrome.storage.local.set({ [_SW_STATE_KEY]: payload })
+  dbgVE("persistRecordingState: saved session", state.sessionId)
+}
+
+/** Remove the persisted recording state (recording stopped or proof uploaded). */
+function clearPersistedRecordingState(): void {
+  void chrome.storage.local.remove(_SW_STATE_KEY)
+  dbgVE("clearPersistedRecordingState: cleared")
+}
+
+// On service-worker startup, check whether a recording was active before the SW
+// was killed.  If so, restore the core fields so VISIBLE_EVIDENCE_EVENT messages
+// are accepted again and re-broadcast START_CAPTURING to all open tabs.
+void chrome.storage.local.get(_SW_STATE_KEY).then((data) => {
+  const rs = (data as Record<string, unknown>)[_SW_STATE_KEY] as PersistedRecordingState | undefined
+  if (!rs?.sessionId) return
+  dbgVE("service-worker restarted — restoring recording state for session:", rs.sessionId)
+  state.sessionId    = rs.sessionId
+  state.apiUrl       = (rs.apiUrl || "http://localhost:8000").replace(/\/$/, "")
+  state.authToken    = rs.authToken || ""
+  state.isRecording  = true
+  state.startedAt    = rs.startedAt
+  state.status       = "recording"
+  state.statusMessage = "Recording resumed after extension restart…"
+  // Re-broadcast START_CAPTURING so any content scripts that missed the original
+  // broadcast (because the SW was dead) begin capturing immediately.
+  void broadcastToAllTabs({ type: "START_CAPTURING" })
+})
+
 async function broadcastToAllTabs(message: unknown): Promise<void> {
   const tabs = await chrome.tabs.query({})
   for (const tab of tabs) {
@@ -149,6 +203,8 @@ chrome.runtime.onMessage.addListener(
         if (state.originalTabId !== null) {
           state.trackedTabIds.add(state.originalTabId)
         }
+        // Persist recording state so a service-worker restart can restore it.
+        persistRecordingState()
         void broadcastToAllTabs({ type: "START_CAPTURING" })
         sendResponse({ ok: true })
         break
@@ -159,6 +215,8 @@ chrome.runtime.onMessage.addListener(
         state.stoppedAt = new Date().toISOString()
         state.status = "stopped"
         state.statusMessage = `Stopped — ${state.events.length} event(s) captured. Click Send Proof to upload.`
+        // Clear persisted state — recording is explicitly stopped.
+        clearPersistedRecordingState()
         void broadcastToAllTabs({ type: "STOP_CAPTURING" })
         sendResponse({ ok: true })
         break
@@ -398,6 +456,9 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     state.status = "uploaded"
     state.statusMessage = "Proof uploaded successfully ✓"
     state.lastUploadError = null
+    // Proof uploaded — clear persisted recording state so a future SW restart
+    // doesn't incorrectly resume a completed recording.
+    clearPersistedRecordingState()
     return { ok: true }
 
   } catch (err) {
