@@ -361,17 +361,29 @@ async function safeSendMessage<T = unknown>(message: unknown): Promise<T | null>
       msg.includes("Extension context invalidated") ||
       msg.includes("Receiving end does not exist")
     ) {
-      contextInvalidated = true
       handleContextInvalidated()
     }
     return null
   }
 }
 
+/**
+ * Handle extension context invalidation (extension reloaded/disabled).
+ *
+ * Idempotent — safe to call multiple times; only the first call takes effect.
+ * Stops all timers, removes event listeners, hides the bar, and sets the
+ * contextInvalidated flag so all subsequent safeSendMessage calls short-circuit
+ * without attempting any chrome.runtime calls.
+ *
+ * Only logs one console warning so the extension error log stays clean.
+ */
 function handleContextInvalidated(): void {
-  // Stop all timers, then remove the bar entirely so users don't see a
-  // broken "Extension reloaded" overlay. A console warning is enough.
-  console.warn("VeriBridge: extension reloaded — refresh this page to continue.")
+  if (contextInvalidated) return   // already handled — do not log again
+  contextInvalidated = true
+  console.warn(
+    "VeriBridge extension was reloaded. " +
+    "Refresh this page before continuing recording.",
+  )
   stopCapture()
   hideFloatingBar()
 }

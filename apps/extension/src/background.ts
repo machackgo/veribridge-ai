@@ -377,6 +377,11 @@ chrome.runtime.onMessage.addListener(
       }
 
       case "STOP_RECORDING":
+        // Capture a recording-end frame while isRecording is still true.
+        // This covers the "Stop → Send" path (where sendProof runs after
+        // isRecording is already false and would skip the capture there).
+        state.lastFrameCaptureMs = 0  // override throttle for this final frame
+        void captureVisualFrame("recording_end")
         state.isRecording = false
         state.stoppedAt = new Date().toISOString()
         state.status = "stopped"
@@ -590,9 +595,12 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
   state.lastUploadError = null
 
   // Capture a final recording-end frame before uploading (best-effort).
-  // Override the throttle by resetting lastFrameCaptureMs so this always fires.
-  state.lastFrameCaptureMs = 0
-  await captureVisualFrame("recording_end")
+  // Only fires when still recording (i.e. "Stop & Send" without a prior STOP_RECORDING).
+  // When the user did "Stop" then "Send", STOP_RECORDING already captured this frame.
+  if (state.isRecording) {
+    state.lastFrameCaptureMs = 0  // override throttle
+    await captureVisualFrame("recording_end")
+  }
 
   // Fire-and-forget: send visible evidence events to the backend.
   // This must not block or affect the main proof upload.
