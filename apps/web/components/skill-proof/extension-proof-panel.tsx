@@ -3930,6 +3930,14 @@ export function ExtensionProofPanel({
   const urlType = classifyUrl(form.websiteUrl)
   const local = isLocal(urlType)
 
+  // ── Session-scoped analysis ───────────────────────────────────────────────
+  // workflowAnalysis state may hold a result from a previous session (if the user
+  // created a new session without unmounting the panel).  Treat any analysis whose
+  // proof_session_id doesn't match the current session as absent so the UI never
+  // displays stale data from the wrong session.
+  const currentSessionAnalysis: WorkflowAnalysisResponse | null =
+    workflowAnalysis?.proof_session_id === session?.id ? workflowAnalysis : null
+
   // ── Verification Readiness Report (computed from existing state) ──────────
   // Re-computed whenever any piece of evidence changes. No extra API call needed.
   const readinessReport = useMemo<ReadinessReport | null>(() => {
@@ -3944,7 +3952,7 @@ export function ExtensionProofPanel({
       claimedSkills: form.skillName.trim()
         ? form.skillName.split(",").map(s => s.trim()).filter(Boolean)
         : [],
-      workflowAnalysis,
+      workflowAnalysis: currentSessionAnalysis,
       liveCheck,
       githubAnalysis,
       privacyScan,
@@ -3954,7 +3962,7 @@ export function ExtensionProofPanel({
     session?.id, session?.status,
     urlType,
     form.skillName,
-    workflowAnalysis?.id,
+    currentSessionAnalysis?.id,
     liveCheck?.id,
     githubAnalysis?.id,
     privacyScan?.status,
@@ -3989,14 +3997,17 @@ export function ExtensionProofPanel({
 
   // ── Auto-fetch workflow analysis ──────────────────────────────────────────
   // When session reaches completed, try to load any persisted result.
+  // Guard: skip only if we already have an analysis for THIS specific session.
+  // If workflowAnalysis belongs to a different (prior) session, proceed to fetch
+  // the result for the current one.
   useEffect(() => {
     if (!session) return
     if (session.status !== "completed") return
-    if (workflowAnalysis) return
+    if (workflowAnalysis?.proof_session_id === session.id) return
     void getWorkflowAnalysis(session.id).then((r) => {
       if (r) setWorkflowAnalysis(r)
     }).catch(() => undefined)
-  }, [session?.id, session?.status, workflowAnalysis])
+  }, [session?.id, session?.status, workflowAnalysis?.proof_session_id])
 
   // ── Auto-fetch live website check ─────────────────────────────────────────
   // When session reaches completed and url is live, load any persisted check.
@@ -4290,7 +4301,7 @@ export function ExtensionProofPanel({
         transcript_text: defenseTranscript.trim(),
         claimed_skills: parseSkills(),
         proof_objective: form.proofObjective.trim(),
-        workflow_summary: workflowAnalysis?.workflow_summary ?? "",
+        workflow_summary: currentSessionAnalysis?.workflow_summary ?? "",
         github_summary: githubAnalysis?.recruiter_summary ?? "",
         live_check_summary: liveCheck?.recruiter_summary ?? "",
       })
@@ -4593,7 +4604,7 @@ export function ExtensionProofPanel({
         <EvidenceChecklist
           status={session.status}
           urlType={urlType}
-          analysis={workflowAnalysis}
+          analysis={currentSessionAnalysis}
           liveCheck={liveCheck}
           liveChecking={liveChecking}
           hasGithubUrl={!!form.githubUrl.trim()}
@@ -4627,7 +4638,7 @@ export function ExtensionProofPanel({
         )}
 
         {/* Analyze button — shown when uploaded and not yet analyzing */}
-        {session.status === "uploaded_pending_analysis" && !workflowAnalysis && !analyzing && (
+        {session.status === "uploaded_pending_analysis" && !currentSessionAnalysis && !analyzing && (
           <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 10 }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>Ready to analyze your workflow</div>
@@ -4657,7 +4668,7 @@ export function ExtensionProofPanel({
         )}
 
         {/* Error display — always visible, outside any conditional container */}
-        {analyzeError && !workflowAnalysis && (
+        {analyzeError && !currentSessionAnalysis && (
           <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 10, padding: "10px 14px", display: "grid", gap: 8 }}>
             <div style={{ color: "#991b1b", fontSize: 12 }}>{analyzeError}</div>
             {!analyzing && (
@@ -4678,7 +4689,7 @@ export function ExtensionProofPanel({
         )}
 
         {/* Stuck analyzing state — session is analyzing but no active request and no error */}
-        {session.status === "analyzing" && !workflowAnalysis && !analyzing && !analyzeError && (
+        {session.status === "analyzing" && !currentSessionAnalysis && !analyzing && !analyzeError && (
           <div style={{ border: "1px solid #ddd6fe", borderRadius: 12, background: "#faf5ff", padding: "14px 16px", display: "grid", gap: 8 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>Analysis in progress</div>
             <p style={{ margin: 0, fontSize: 12, color: "#4c1d95", lineHeight: 1.65 }}>
@@ -4703,7 +4714,19 @@ export function ExtensionProofPanel({
         {analyzing && <WorkflowAnalysisInProgress simProgress={simProgress} simStageIdx={simStageIdx} />}
 
         {/* Workflow analysis result card */}
-        {workflowAnalysis && <WorkflowAnalysisCard analysis={workflowAnalysis} />}
+        {currentSessionAnalysis && <WorkflowAnalysisCard analysis={currentSessionAnalysis} />}
+
+        {/* Dev-only: session ID linkage debug info */}
+        {process.env.NODE_ENV === "development" && (
+          <div style={{ fontSize: 10, fontFamily: "monospace", background: "#f8f9fa", border: "1px solid #dee2e6", borderRadius: 6, padding: "6px 10px", color: "#6c757d", display: "grid", gap: 2 }}>
+            <span>🔬 DEV: session.id = {session.id}</span>
+            <span>🔬 DEV: analysis.proof_session_id = {workflowAnalysis?.proof_session_id ?? "—"}</span>
+            {workflowAnalysis && workflowAnalysis.proof_session_id !== session.id && (
+              <span style={{ color: "#dc3545", fontWeight: 700 }}>⚠ SESSION MISMATCH — analysis is from a different session and is hidden</span>
+            )}
+            {!workflowAnalysis && <span style={{ color: "#6c757d" }}>no analysis loaded</span>}
+          </div>
+        )}
 
         {/* ── Live Website Check ─────────────────────────────────────────── */}
 
@@ -4845,10 +4868,10 @@ export function ExtensionProofPanel({
         )}
 
         {/* ── Combined evidence summary — shown when both analyses exist ── */}
-        {workflowAnalysis && githubAnalysis && !githubAnalyzing && (
+        {currentSessionAnalysis && githubAnalysis && !githubAnalyzing && (
           <CombinedEvidenceSummaryCard
             claimedSkills={parseSkills()}
-            workflowAnalysis={workflowAnalysis}
+            workflowAnalysis={currentSessionAnalysis}
             githubAnalysis={githubAnalysis}
             liveCheck={liveCheck}
           />
