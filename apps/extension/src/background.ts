@@ -9,6 +9,27 @@ function dbgVE(...args: unknown[]): void {
   if (DEBUG_VISIBLE_EVIDENCE) console.log("[VisibleEvidence]", ...args)
 }
 
+// ── Visual frame capture constants ────────────────────────────────────────────
+/**
+ * Maximum number of visual frames captured per recording session.
+ * Kept low to avoid memory pressure in the service worker.
+ */
+const MAX_VISUAL_FRAMES = 10
+
+/**
+ * Minimum milliseconds between consecutive frame captures.
+ * Prevents flooding the backend with duplicate frames.
+ */
+const MIN_FRAME_INTERVAL_MS = 2000
+
+/** Internal representation of one captured visual frame. */
+interface VisualFrameData {
+  frame_base64: string          // base64-encoded JPEG (no data: prefix)
+  frame_type: string            // recording_start | page_load | after_result_detected | …
+  timestamp_ms: number          // ms since recording started
+  visible_evidence_event_id?: string
+}
+
 // ── URL privacy redaction ─────────────────────────────────────────────────────
 // Mirrors the same set used in content.ts. Defined here independently because
 // the background service worker and content scripts run in separate V8 contexts.
@@ -61,6 +82,10 @@ interface InternalState {
   events: WorkflowEvent[]
   /** Visible evidence DOM snapshots accumulated during the recording. */
   visibleEvidenceEvents: VisibleEvidenceEvent[]
+  /** Visual frame screenshots captured during the recording. */
+  visualFrames: VisualFrameData[]
+  /** Epoch-ms when the last visual frame was captured (for throttling). */
+  lastFrameCaptureMs: number
   startedAt: string | null
   stoppedAt: string | null
   status: RecordingStatus
@@ -80,6 +105,8 @@ const state: InternalState = {
   isRecording: false,
   events: [],
   visibleEvidenceEvents: [],
+  visualFrames: [],
+  lastFrameCaptureMs: 0,
   startedAt: null,
   stoppedAt: null,
   status: "idle",
@@ -145,6 +172,141 @@ void chrome.storage.local.get(_SW_STATE_KEY).then((data) => {
   void broadcastToAllTabs({ type: "START_CAPTURING" })
 })
 
+// ── Visual frame capture ──────────────────────────────────────────────────────
+
+/**
+ * Capture a JPEG screenshot of the current visible content of the recording
+ * tab and append it to state.visualFrames.
+ *
+ * Silently no-ops when:
+ *   - not recording
+ *   - frame cap (MAX_VISUAL_FRAMES) already reached
+ *   - throttle interval hasn't elapsed since the last capture
+ *   - originalTabId is unknown
+ *   - the tracked tab is not currently active (avoids capturing wrong content)
+ *   - the visible URL is a VeriBridge-internal or chrome:// page
+ *   - chrome.tabs.captureVisibleTab throws for any reason
+ */
+async function captureVisualFrame(
+  frameType: string,
+  visibleEvidenceEventId?: string,
+): Promise<void> {
+  if (!state.isRecording || !state.sessionId) return
+  if (state.visualFrames.length >= MAX_VISUAL_FRAMES) return
+
+  const now = Date.now()
+  if (now - state.lastFrameCaptureMs < MIN_FRAME_INTERVAL_MS) return
+
+  const tabId = state.originalTabId
+  if (tabId === null) return
+
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    // Only capture when the tracked tab is the active tab in its window.
+    // captureVisibleTab always captures the ACTIVE tab, so if the user has
+    // switched away we'd capture the wrong content.
+    if (!tab.active) {
+      dbgVE("[VisualFrame] skip — tracked tab not active (tabId=%d)", tabId)
+      return
+    }
+    if (!tab.windowId) return
+
+    // Skip VeriBridge-internal and chrome:// pages — no useful evidence there.
+    const tabUrl = tab.url ?? tab.pendingUrl ?? ""
+    if (
+      tabUrl.startsWith("chrome://") ||
+      tabUrl.startsWith("about:") ||
+      tabUrl.includes("veribridge.ai/dashboard") ||
+      tabUrl.includes("veribridge.ai/admin") ||
+      tabUrl.includes("localhost:3000/dashboard") ||
+      tabUrl.includes("localhost:3000/admin")
+    ) {
+      dbgVE("[VisualFrame] skip — internal page:", tabUrl.slice(0, 60))
+      return
+    }
+
+    // Update throttle timestamp BEFORE the async capture so concurrent calls
+    // don't both pass the throttle check.
+    state.lastFrameCaptureMs = now
+
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: "jpeg",
+      quality: 40,   // low quality → small payload
+    })
+
+    // Strip the "data:image/jpeg;base64," prefix
+    const commaIdx = dataUrl.indexOf(",")
+    if (commaIdx < 0) return
+    const base64 = dataUrl.slice(commaIdx + 1)
+    if (!base64) return
+
+    const timestampMs = state.startedAt
+      ? now - new Date(state.startedAt).getTime()
+      : now
+
+    state.visualFrames.push({
+      frame_base64: base64,
+      frame_type: frameType,
+      timestamp_ms: Math.max(0, timestampMs),
+      visible_evidence_event_id: visibleEvidenceEventId,
+    })
+
+    dbgVE(
+      "[VisualFrame] captured type=%s total=%d session=%s",
+      frameType, state.visualFrames.length, state.sessionId,
+    )
+  } catch (err) {
+    // captureVisibleTab throws if the tab is restricted (devtools, etc.) —
+    // swallow silently so recording is not affected.
+    dbgVE("[VisualFrame] capture failed:", err)
+  }
+}
+
+/**
+ * POST accumulated visual frames to the backend visual-frames endpoint.
+ * Fire-and-forget — never throws, never retries, never blocks proof upload.
+ */
+async function sendVisualFrames(): Promise<void> {
+  if (!state.sessionId || state.visualFrames.length === 0) {
+    dbgVE(
+      "[VisualFrame] sendVisualFrames skip — session=%s frames=%d",
+      state.sessionId || "(none)", state.visualFrames.length,
+    )
+    return
+  }
+
+  const frames = [...state.visualFrames]  // snapshot
+  const url = `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/workflow/visual-frames`
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (state.authToken) headers["Authorization"] = `Bearer ${state.authToken}`
+
+  const body = JSON.stringify({
+    frames: frames.map((f) => ({
+      frame_type: f.frame_type,
+      frame_base64: f.frame_base64,
+      timestamp_ms: f.timestamp_ms,
+      visible_evidence_event_id: f.visible_evidence_event_id ?? null,
+    })),
+  })
+
+  dbgVE("[VisualFrame] POSTing %d frames to backend session=%s", frames.length, state.sessionId)
+
+  try {
+    const resp = await fetch(url, { method: "POST", headers, body })
+    if (!resp.ok) {
+      let errBody = ""
+      try { errBody = await resp.text() } catch { /* ignore */ }
+      dbgVE("[VisualFrame] POST error — HTTP %d | %s", resp.status, errBody.slice(0, 200))
+    } else {
+      let respBody = ""
+      try { respBody = await resp.text() } catch { /* ignore */ }
+      dbgVE("[VisualFrame] POST success — HTTP %d | %s", resp.status, respBody.slice(0, 200))
+    }
+  } catch (err) {
+    dbgVE("[VisualFrame] POST network error:", err)
+  }
+}
+
 async function broadcastToAllTabs(message: unknown): Promise<void> {
   const tabs = await chrome.tabs.query({})
   for (const tab of tabs) {
@@ -191,6 +353,8 @@ chrome.runtime.onMessage.addListener(
         state.isRecording = true
         state.events = []
         state.visibleEvidenceEvents = []
+        state.visualFrames = []
+        state.lastFrameCaptureMs = 0
         state.startedAt = new Date().toISOString()
         state.stoppedAt = null
         state.status = "recording"
@@ -206,6 +370,8 @@ chrome.runtime.onMessage.addListener(
         // Persist recording state so a service-worker restart can restore it.
         persistRecordingState()
         void broadcastToAllTabs({ type: "START_CAPTURING" })
+        // Capture recording-start frame after a brief delay so the tab is ready.
+        setTimeout(() => { void captureVisualFrame("recording_start") }, 800)
         sendResponse({ ok: true })
         break
       }
@@ -280,11 +446,39 @@ chrome.runtime.onMessage.addListener(
 
       case "VISIBLE_EVIDENCE_EVENT":
         if (state.isRecording) {
-          state.visibleEvidenceEvents.push(msg.payload as VisibleEvidenceEvent)
+          const veEvent = msg.payload as VisibleEvidenceEvent
+          state.visibleEvidenceEvents.push(veEvent)
           dbgVE("background received event batch",
-            "| event_type:", (msg.payload as VisibleEvidenceEvent).event_type,
+            "| event_type:", veEvent.event_type,
             "| session_id:", state.sessionId,
             "| total accumulated:", state.visibleEvidenceEvents.length)
+          // Trigger visual frame capture for the most evidence-rich event types.
+          // Each call respects MAX_VISUAL_FRAMES and MIN_FRAME_INTERVAL_MS.
+          switch (veEvent.event_type) {
+            case "result_detected":
+              void captureVisualFrame("after_result_detected", veEvent.event_id)
+              break
+            case "page_load":
+              void captureVisualFrame("page_load", veEvent.event_id)
+              break
+            case "form_submit":
+              void captureVisualFrame("after_form_submit", veEvent.event_id)
+              break
+            case "file_upload":
+              void captureVisualFrame("after_upload", veEvent.event_id)
+              break
+            case "dom_snapshot":
+              // Only capture dom_snapshot frames if we haven't hit the cap yet
+              // and it looks like a result-rich page (result_like_blocks present)
+              if (
+                veEvent.result_like_blocks &&
+                veEvent.result_like_blocks.length > 0 &&
+                state.visualFrames.length < MAX_VISUAL_FRAMES - 2
+              ) {
+                void captureVisualFrame("after_dom_mutation", veEvent.event_id)
+              }
+              break
+          }
         } else {
           dbgVE("VISIBLE_EVIDENCE_EVENT received but isRecording=false — event dropped")
         }
@@ -395,9 +589,18 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
   state.statusMessage = "Uploading proof…"
   state.lastUploadError = null
 
+  // Capture a final recording-end frame before uploading (best-effort).
+  // Override the throttle by resetting lastFrameCaptureMs so this always fires.
+  state.lastFrameCaptureMs = 0
+  await captureVisualFrame("recording_end")
+
   // Fire-and-forget: send visible evidence events to the backend.
   // This must not block or affect the main proof upload.
   void sendVisibleEvidence()
+
+  // Fire-and-forget: send visual frames to the backend.
+  // This must not block or affect the main proof upload.
+  void sendVisualFrames()
 
   const trackedUrls = [
     ...new Set(

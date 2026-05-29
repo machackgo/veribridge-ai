@@ -1123,8 +1123,14 @@ export type WorkflowAnalysisResponse = {
   noise_filtered_count?: number
   // v3/v4 precise visual evidence
   observed_demonstration?: ObservedDemonstration | null
-  // OCR/frame analysis — always "not_available" until implemented
+  // Visual frame analysis (v5): provider-agnostic screenshot evidence
   visual_analysis_status?: VisualAnalysisStatus
+  /** Provider used for visual analysis (none | local_ocr | local_vision | openai | veribridge_future) */
+  visual_analysis_provider?: string
+  /** Number of analyzed (OCR/vision-processed) visual frames */
+  visual_frame_count?: number
+  /** Total stored frames including not_configured (frames captured regardless of provider) */
+  visual_frames_stored?: number
   // DOM text capture status from the browser extension
   dom_evidence_status?: VisibleEvidenceStatus
   /** v4: alias for dom_evidence_status (backward compat) */

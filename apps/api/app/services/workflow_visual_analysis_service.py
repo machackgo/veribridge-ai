@@ -770,6 +770,27 @@ def _get_provider_singleton() -> VisualAnalysisProvider:
     return _PROVIDER_SINGLETON
 
 
+# ── Module-level DB helpers ────────────────────────────────────────────────────
+
+def _count_stored_frames(db: Any, user_id: str, session_id: str) -> int:
+    """Count every stored frame for a session, regardless of analysis status.
+
+    Used to populate visual_frames_stored in the analysis result, which lets
+    the UI distinguish "frames captured but OCR not configured" from "no frames at all".
+    """
+    try:
+        resp = (
+            db.table(_TABLE)
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("proof_session_id", session_id)
+            .execute()
+        )
+        return len(resp.data or [])
+    except Exception:
+        return 0
+
+
 # ── Service ────────────────────────────────────────────────────────────────────
 
 class WorkflowVisualAnalysisService:
@@ -864,6 +885,16 @@ class WorkflowVisualAnalysisService:
             except Exception:
                 pass
 
+        # Set the initial status based on whether the provider is configured.
+        # Not-configured frames are immediately marked so get_visual_observations()
+        # can distinguish "frames stored but no provider" from "no frames at all".
+        provider = _get_provider_singleton()
+        initial_status = (
+            VISUAL_STATUS_PENDING
+            if provider.is_configured()
+            else VISUAL_STATUS_NOT_CONFIGURED
+        )
+
         row: dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "user_id": user_id,
@@ -873,7 +904,7 @@ class WorkflowVisualAnalysisService:
             "frame_width": frame_width,
             "frame_height": frame_height,
             "visual_analysis_provider": settings.visual_analysis_provider,
-            "visual_analysis_status": VISUAL_STATUS_PENDING,
+            "visual_analysis_status": initial_status,
             "ocr_text": [],
             "visual_objects": [],
             "extracted_result_values": [],
@@ -1041,6 +1072,12 @@ class WorkflowVisualAnalysisService:
             "limitations": [],
         }
 
+    # ── Count all stored frames ──────────────────────────────────────────────
+
+    def count_stored_frames(self, user_id: str, session_id: str) -> int:
+        """Count every stored frame for a session, regardless of analysis status."""
+        return _count_stored_frames(self._db, user_id, session_id)
+
     # ── Get observations for workflow analysis integration ───────────────────
 
     def get_visual_observations(
@@ -1087,13 +1124,18 @@ class WorkflowVisualAnalysisService:
 
             if not any_rows:
                 status = "not_captured"
-            elif any_rows[0].get("visual_analysis_status") == VISUAL_STATUS_NOT_CONFIGURED:
-                status = VISUAL_STATUS_NOT_CONFIGURED
+                stored_count = 0
             else:
-                status = VISUAL_STATUS_SKIPPED
+                any_status = any_rows[0].get("visual_analysis_status", "")
+                stored_count = _count_stored_frames(self._db, user_id, session_id)
+                if any_status == VISUAL_STATUS_NOT_CONFIGURED:
+                    status = VISUAL_STATUS_NOT_CONFIGURED
+                else:
+                    status = VISUAL_STATUS_SKIPPED
 
             return {
-                "visual_frame_count": 0,
+                "visual_frame_count": 0,          # analyzed frames (0 here)
+                "visual_frames_stored": stored_count,  # total stored frames
                 "visual_frame_analysis_status": status,
                 "extracted_result_values": [],
                 "visual_summary": "",
@@ -1122,6 +1164,7 @@ class WorkflowVisualAnalysisService:
 
         return {
             "visual_frame_count": len(rows),
+            "visual_frames_stored": _count_stored_frames(self._db, user_id, session_id),
             "visual_frame_analysis_status": VISUAL_STATUS_ANALYZED,
             "extracted_result_values": unique_values,
             "visual_summary": " | ".join(all_summaries[:4])[:600],

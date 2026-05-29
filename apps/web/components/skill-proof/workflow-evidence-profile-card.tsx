@@ -116,31 +116,50 @@ function VisibleEvidenceBadge({ status }: { status: VisibleEvidenceStatus | unde
 
 type VisualFrameStatus = "not_configured" | "not_captured" | "analyzed" | "skipped" | "failed" | "pending"
 
-function VisualFrameBadge({ status, provider, frameCount }: {
+function VisualFrameBadge({
+  status,
+  provider,
+  frameCount,
+  framesStored,
+}: {
   status: VisualFrameStatus | undefined
   provider?: string
   frameCount?: number
+  framesStored?: number
 }) {
-  if (!status || status === "not_captured" || status === "not_configured") {
-    const isNone = !status || status === "not_captured"
+  const stored = framesStored ?? 0
+  const analyzed = frameCount ?? 0
+
+  // Frames were captured by the extension but no OCR/vision provider is configured
+  if (status === "not_configured" && stored > 0) {
     return (
       <span
-        title={
-          isNone
-            ? "No visual frames captured. Set ENABLE_WORKFLOW_FRAME_CAPTURE=true to enable."
-            : "Visual analysis provider not configured. Set VISUAL_ANALYSIS_PROVIDER to enable."
-        }
+        title="Visual frames were captured. Configure VISUAL_ANALYSIS_PROVIDER to enable OCR/vision analysis."
+        style={{
+          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+          background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe",
+        }}
+      >
+        Visual frames: {stored} captured ✓
+      </span>
+    )
+  }
+  // No frames and not configured
+  if (!status || status === "not_captured" || (status === "not_configured" && stored === 0)) {
+    return (
+      <span
+        title="No visual frames were captured. Extension will capture frames automatically during recording."
         style={{
           fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
           background: "#f1f5f9", color: "#64748b", border: "1px dashed #cbd5e1",
         }}
       >
-        Visual frames: not configured
+        Visual frames: not captured
       </span>
     )
   }
   if (status === "analyzed") {
-    const label = frameCount ? `Visual frames: ${frameCount} analyzed ✓` : "Visual frames: analyzed ✓"
+    const label = analyzed > 0 ? `Visual frames: ${analyzed} analyzed ✓` : "Visual frames: analyzed ✓"
     return (
       <span
         title={`Provider: ${provider ?? "unknown"}. Visual frame analysis uses local/open-source models — no external API required.`}
@@ -169,47 +188,81 @@ function VisualFrameBadge({ status, provider, frameCount }: {
   )
 }
 
-// ── OCR status badge ──────────────────────────────────────────────────────────
+// ── OCR / vision not-configured badge ─────────────────────────────────────────
 
-function OCRBadge({ status, provider }: { status: string | undefined; provider?: string }) {
-  if (!status || status === "not_configured" || status === "not_available") {
-    return (
-      <span
-        title="Local OCR not configured. Set VISUAL_ANALYSIS_PROVIDER=local_ocr and install PaddleOCR or EasyOCR."
-        style={{
-          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
-          background: "#f1f5f9", color: "#64748b", border: "1px dashed #cbd5e1",
-        }}
-      >
-        Local OCR: not configured
-      </span>
-    )
-  }
-  if (status === "analyzed") {
-    return (
-      <span
-        title={`OCR provider: ${provider ?? "local"}. No external API required.`}
-        style={{
-          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
-          background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe",
-        }}
-      >
-        Local OCR: active ✓
-      </span>
-    )
-  }
-  return null
+function OCRNotConfiguredBadge({ show }: { show: boolean }) {
+  if (!show) return null
+  return (
+    <span
+      title="Visual frames were captured but no OCR/vision provider is configured. Set VISUAL_ANALYSIS_PROVIDER=local_ocr (PaddleOCR/EasyOCR) or openai to enable analysis."
+      style={{
+        fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+        background: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a",
+      }}
+    >
+      OCR/vision not configured
+    </span>
+  )
+}
+
+// ── OCR active badge ──────────────────────────────────────────────────────────
+
+function OCRActiveBadge({ status, provider }: { status: string | undefined; provider?: string }) {
+  if (status !== "analyzed") return null
+  return (
+    <span
+      title={`OCR provider: ${provider ?? "local"}. No external API required.`}
+      style={{
+        fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+        background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe",
+      }}
+    >
+      Local OCR: active ✓
+    </span>
+  )
+}
+
+// ── Combined DOM + visual evidence badge ─────────────────────────────────────
+
+function CombinedEvidenceBadge({ show }: { show: boolean }) {
+  if (!show) return null
+  return (
+    <span
+      title="Both DOM text evidence and visual frame analysis are available for this session."
+      style={{
+        fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+        background: "#fdf4ff", color: "#7e22ce", border: "1px solid #e9d5ff",
+      }}
+    >
+      Combined DOM + visual evidence ✓
+    </span>
+  )
 }
 
 // ── Evidence layer legend (full panel) ───────────────────────────────────────
 
-function EvidenceLayerLegend({ analysis }: { analysis: WorkflowAnalysisResponse }) {
+function EvidenceLayerLegend({
+  analysis,
+  sessionId,
+}: {
+  analysis: WorkflowAnalysisResponse
+  sessionId?: string
+}) {
+  const isDev = process.env.NODE_ENV === "development"
+
   const hasEvents = (analysis.demonstrated_actions?.length ?? 0) > 0
   const domStatus = analysis.dom_evidence_status ?? analysis.visible_evidence_status ?? "not_captured"
-  const visualStatus = (analysis as Record<string, unknown>).visual_analysis_status as VisualFrameStatus | undefined
-  const ocrStatus = (analysis as Record<string, unknown>).ocr_status as string | undefined
-  const visualProvider = (analysis as Record<string, unknown>).visual_analysis_provider as string | undefined
-  const visualFrameCount = (analysis as Record<string, unknown>).visual_frame_count as number | undefined
+  const visualStatus = analysis.visual_analysis_status as VisualFrameStatus | undefined
+  const ocrStatus = analysis.ocr_status
+  const visualProvider = analysis.visual_analysis_provider
+  const visualFrameCount = analysis.visual_frame_count ?? 0
+  const visualFramesStored = analysis.visual_frames_stored ?? 0
+
+  const hasDOM = domStatus === "available" || domStatus === "partial"
+  const hasVisualAnalyzed = visualStatus === "analyzed" && visualFrameCount > 0
+  const hasFramesCaptured = visualFramesStored > 0
+  const ocrNotConfigured = hasFramesCaptured && (visualStatus === "not_configured" || visualStatus === "skipped")
+  const showCombined = hasDOM && hasVisualAnalyzed
 
   return (
     <div
@@ -252,20 +305,62 @@ function EvidenceLayerLegend({ analysis }: { analysis: WorkflowAnalysisResponse 
       {/* Row: Visual frames */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Visual frames</span>
-        <VisualFrameBadge status={visualStatus} provider={visualProvider} frameCount={visualFrameCount} />
+        <VisualFrameBadge
+          status={visualStatus}
+          provider={visualProvider}
+          frameCount={visualFrameCount}
+          framesStored={visualFramesStored}
+        />
       </div>
 
-      {/* Row: Local OCR */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Local OCR</span>
-        <OCRBadge status={ocrStatus} provider={visualProvider} />
-      </div>
+      {/* Row: OCR/vision not configured (only when frames captured but no provider) */}
+      {ocrNotConfigured && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>OCR/vision</span>
+          <OCRNotConfiguredBadge show />
+        </div>
+      )}
+
+      {/* Row: OCR active (when provider is running) */}
+      {ocrStatus === "analyzed" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Local OCR</span>
+          <OCRActiveBadge status={ocrStatus} provider={visualProvider} />
+        </div>
+      )}
+
+      {/* Row: Combined DOM + visual evidence (best case) */}
+      {showCombined && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Combined</span>
+          <CombinedEvidenceBadge show />
+        </div>
+      )}
 
       {/* Privacy note */}
       <div style={{ marginTop: 4, fontSize: 9, color: "#94a3b8", fontStyle: "italic", lineHeight: 1.4 }}>
         Visual frame analysis uses local/open-source providers when configured.
         No external vision API is required for the local pipeline.
       </div>
+
+      {/* Dev-only debug panel */}
+      {isDev && (
+        <details style={{ marginTop: 6 }}>
+          <summary style={{ fontSize: 9, color: "#64748b", cursor: "pointer", fontWeight: 600 }}>
+            🛠 Dev debug
+          </summary>
+          <div style={{ marginTop: 4, fontSize: 9, color: "#64748b", lineHeight: 1.6, fontFamily: "monospace" }}>
+            <div>analysis.proof_session_id: <b>{analysis.proof_session_id ?? "(none)"}</b></div>
+            {sessionId && <div>current session_id: <b>{sessionId}</b></div>}
+            <div>dom_evidence_status: <b>{domStatus}</b></div>
+            <div>visual_analysis_status: <b>{visualStatus ?? "(none)"}</b></div>
+            <div>visual_frames_stored: <b>{visualFramesStored}</b></div>
+            <div>visual_frame_count (analyzed): <b>{visualFrameCount}</b></div>
+            <div>visual_analysis_provider: <b>{visualProvider ?? "none"}</b></div>
+            <div>ocr_status: <b>{ocrStatus ?? "none"}</b></div>
+          </div>
+        </details>
+      )}
     </div>
   )
 }
@@ -450,7 +545,7 @@ function StepCard({ step }: { step: DemonstrationStep }) {
 
 // ── Inline analysis view ──────────────────────────────────────────────────────
 
-function InlineAnalysisView({ analysis }: { analysis: WorkflowAnalysisResponse }) {
+function InlineAnalysisView({ analysis, sessionId }: { analysis: WorkflowAnalysisResponse; sessionId?: string }) {
   const [showTimeline, setShowTimeline] = useState(false)
   const visStatus = analysis.visible_evidence_status ?? analysis.observed_demonstration?.visible_evidence_status
 
@@ -520,7 +615,7 @@ function InlineAnalysisView({ analysis }: { analysis: WorkflowAnalysisResponse }
       )}
 
       {/* Evidence layer badges */}
-      <EvidenceLayerLegend analysis={analysis} />
+      <EvidenceLayerLegend analysis={analysis} sessionId={sessionId} />
 
       {/* Observed Demonstration Timeline toggle */}
       {analysis.observed_demonstration && (
@@ -847,7 +942,9 @@ export function WorkflowEvidenceProfileCard({
         )}
 
         {/* Inline analysis */}
-        {showAnalysis && analysis && <InlineAnalysisView analysis={analysis} />}
+        {showAnalysis && analysis && (
+          <InlineAnalysisView analysis={analysis} sessionId={profile.latest_session_id ?? undefined} />
+        )}
 
         {/* History timeline */}
         {showHistory && <HistoryTimeline profile={profile} />}

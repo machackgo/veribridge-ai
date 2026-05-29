@@ -664,8 +664,8 @@ def _build_completed_stages(
         {"key": "mapping_skills",            "label": "Mapping demonstration to skills",         "status": "complete"},
         {"key": "generating_summary",        "label": "Generating recruiter-safe summary",       "status": "complete"},
         {"key": "finalizing",                "label": "Finalizing Work Passport evidence",        "status": "complete" if db_saved else "failed"},
-        # ── Not yet available ──────────────────────────────────────────────────
-        {"key": "video_frame_analysis",      "label": "Video frame analysis",                    "status": "coming_soon"},
+        # ── Visual frame capture stage ─────────────────────────────────────────
+        {"key": "visual_frame_capture",      "label": "Visual frame capture (screenshot evidence)", "status": "complete"},
     ]
 
 
@@ -1279,12 +1279,12 @@ def _build_observed_demonstration(
     if _has_graphical and _graphical_note:
         limitations.append(_graphical_note)
 
-    # Frame/OCR limitation — only shown when no visual provider is configured
-    # When local OCR or vision model is active, this limitation is removed.
+    # Visual frame / OCR limitation — always append so UI can show the right badge.
+    # The UI reads this from observed_demonstration.limitations and visual_analysis_status.
     limitations.append(
-        "Visual frame analysis is not configured — "
-        "to enable local OCR or vision model analysis of screenshots, "
-        "set VISUAL_ANALYSIS_PROVIDER and ENABLE_WORKFLOW_FRAME_CAPTURE=true."
+        "OCR/vision provider not configured — visual frames are captured but not analyzed. "
+        "Set VISUAL_ANALYSIS_PROVIDER (local_ocr, local_vision, or openai) to enable "
+        "automatic OCR/vision analysis of the captured screenshots."
     )
 
     if not iao_patterns:
@@ -1477,6 +1477,7 @@ def _analyze_workflow(
     _vf_status: str = "not_configured"
     _ocr_status: str = "not_configured"
     _visual_frame_count: int = 0
+    _visual_frames_stored: int = 0    # total frames in DB (inc. not_configured)
     _visual_provider: str = "none"
     _visual_result_values: list[dict] = []
     _visual_summary: str = ""
@@ -1487,6 +1488,7 @@ def _analyze_workflow(
         _vf_status = raw_vf if raw_vf != "not_captured" else "not_configured"
         _visual_provider = visual_frame_observations.get("provider_used", "none")
         _visual_frame_count = visual_frame_observations.get("visual_frame_count", 0)
+        _visual_frames_stored = visual_frame_observations.get("visual_frames_stored", 0)
         _visual_result_values = visual_frame_observations.get("extracted_result_values", [])
         _visual_summary  = visual_frame_observations.get("visual_summary", "")
 
@@ -1576,7 +1578,8 @@ def _analyze_workflow(
         # Status values: not_configured | pending | analyzed | skipped | failed
         "visual_analysis_status":     _vf_status,
         "visual_analysis_provider":   _visual_provider,
-        "visual_frame_count":         _visual_frame_count,
+        "visual_frame_count":         _visual_frame_count,  # analyzed frames
+        "visual_frames_stored":       _visual_frames_stored, # total stored (inc. not_configured)
         "visual_result_values":       _visual_result_values,
         "visual_summary":             _visual_summary,
         # OCR status (sub-component of visual analysis when local_ocr provider used)
