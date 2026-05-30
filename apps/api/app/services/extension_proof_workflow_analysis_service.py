@@ -1591,6 +1591,46 @@ def _analyze_workflow(
 
     human_review_needed = confidence in ("low", "insufficient") or score < 35
 
+    # ── Sequence analysis (v6 — Week 3) ──────────────────────────────────────
+    # Analyses extracted keyframes + DOM events + visible evidence as a temporal
+    # sequence to produce a structured before/after / IAO chain proof.
+    sequence_analysis: dict[str, Any] = {}
+    try:
+        from app.services.workflow_sequence_analysis_service import (
+            WorkflowSequenceAnalysisService,
+        )
+        _seq_svc = WorkflowSequenceAnalysisService()
+        # Retrieve stored keyframe result for this session (if any)
+        _kf_result = None
+        try:
+            from app.services.workflow_visual_analysis_service import (
+                WorkflowVisualAnalysisService,
+            )
+            _va_svc2 = WorkflowVisualAnalysisService(None)  # read-only helper
+            _kf_result = getattr(_va_svc2, "_get_keyframe_result_for_session", lambda *a: None)(
+                proof_data
+            )
+        except Exception:
+            pass
+
+        _seq_result = _seq_svc.analyze(
+            keyframe_result=_kf_result,
+            dom_events=events,
+            visible_observations=visible_observations,
+            visual_frame_obs=visual_frame_observations,
+        )
+        sequence_analysis = _seq_result.to_public_dict()
+        logger.info(
+            "WORKFLOW_SEQUENCE_ANALYSIS session=... status=%s confidence=%d",
+            sequence_analysis.get("sequence_analysis_status"),
+            sequence_analysis.get("confidence_score", 0),
+        )
+    except Exception:
+        logger.warning(
+            "WORKFLOW_SEQUENCE_ANALYSIS_FAILED — continuing without",
+            exc_info=True,
+        )
+
     return {
         "analysis_type":              "timeline_only",
         "workflow_summary":           workflow_summary,
@@ -1630,6 +1670,10 @@ def _analyze_workflow(
         "graphical_rendering_note":   graphical_rendering_note,
         "top_result_snippets":        top_result_snippets,
         "page_context_summary":       page_context_summary,
+        # ── Sequence analysis (v6 — Week 3) ──────────────────────────────────
+        # Multi-frame temporal analysis: keyframes + DOM + visible evidence.
+        # to_public_dict() used — no raw paths or private metadata.
+        "sequence_analysis":          sequence_analysis,
     }
 
 
