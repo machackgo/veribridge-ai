@@ -31,11 +31,15 @@ import base64
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user_id, get_db
 from app.core.config import settings
+from app.services.video_keyframe_extractor_service import (
+    VideoKeyframeExtractorService,
+    VIDEO_STATUS_ANALYZED,
+)
 from app.services.workflow_visual_analysis_service import (
     WorkflowVisualAnalysisService,
     VISUAL_STATUS_NOT_CONFIGURED,
@@ -90,6 +94,24 @@ class VisualFrameBatchResponse(BaseModel):
     provider_status: str
     provider_configured: bool
     frame_capture_enabled: bool
+    message: str
+
+
+class VideoUploadResponse(BaseModel):
+    """Public-safe response for video keyframe upload.
+
+    Never exposes frame bytes, storage paths, access tokens, or
+    private debug metadata.  Only status/count/timestamp metadata.
+    """
+    session_id: str
+    video_analysis_status: str
+    keyframe_count: int
+    selected_frame_timestamps_ms: list[int]
+    extraction_method: str
+    duration_ms: int | None = None
+    frames_stored: int
+    frames_queued_for_visual_analysis: int
+    limitations: list[str]
     message: str
 
 
@@ -237,3 +259,152 @@ def get_visual_frames_status(
             "No external vision API is required for the local pipeline."
         ),
     }
+
+
+# ── Video upload endpoint ──────────────────────────────────────────────────────
+
+_ALLOWED_CONTENT_TYPES: frozenset[str] = frozenset({
+    "video/webm",
+    "video/mp4",
+    "video/x-matroska",
+    "video/ogg",
+    "video/x-msvideo",
+    "application/octet-stream",
+})
+
+# Frame types accepted by store_visual_frame — keep in sync with extension triggers
+_VALID_FRAME_TYPES: frozenset[str] = frozenset({
+    "recording_start", "page_load", "after_click", "after_upload",
+    "after_form_submit", "after_dom_mutation", "after_result_detected",
+    "recording_end", "screenshot", "video_keyframe",
+})
+
+
+@router.post(
+    "/{session_id}/workflow/video",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=VideoUploadResponse,
+    summary="Upload a recorded workflow video for keyframe extraction",
+    description=(
+        "Accepts a browser-recorded workflow video (WebM, MP4, etc.), extracts "
+        "evenly-spaced keyframes in-memory, and stores each frame as a visual "
+        "evidence record for downstream visual analysis.\n\n"
+        "**Privacy**: raw video bytes are never persisted.  Only extracted JPEG "
+        "keyframes are stored privately as workflow_visual_frame_evidence records.  "
+        "No frame paths or storage URLs are returned in the response.\n\n"
+        "**Fallback**: if cv2 and ffmpeg are both unavailable, the endpoint returns "
+        "video_analysis_status='not_available' without crashing.  "
+        "DOM evidence continues to work."
+    ),
+)
+async def upload_workflow_video(
+    session_id: str,
+    video: UploadFile = File(
+        ...,
+        description="Recorded workflow video file (WebM or MP4 from browser MediaRecorder).",
+    ),
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VideoUploadResponse:
+    logger.info(
+        "[WorkflowVideo] session=%s user=%s filename=%r content_type=%r",
+        session_id, user_id, video.filename, video.content_type,
+    )
+
+    # ── 1. Read video bytes (bounded by MAX_VIDEO_SIZE_BYTES + 1 byte) ─────────
+    # Read one byte more than the limit so we can detect oversized files without
+    # loading the entire file into memory first.
+    limit_bytes = settings.max_video_size_bytes
+    raw = await video.read(limit_bytes + 1)
+
+    mime_type    = (video.content_type or "application/octet-stream").split(";")[0].strip()
+    filename_val = video.filename or "recording.webm"
+
+    # ── 2. Reject unsupported MIME types early (before extraction) ─────────────
+    if mime_type not in _ALLOWED_CONTENT_TYPES:
+        ext = filename_val.rsplit(".", 1)[-1].lower() if "." in filename_val else ""
+        if f".{ext}" not in {".webm", ".mp4", ".mkv", ".ogg", ".ogv", ".avi"}:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=(
+                    f"Unsupported video format '{mime_type}'. "
+                    "Upload a WebM or MP4 browser recording."
+                ),
+            )
+
+    # ── 3. Extract keyframes ────────────────────────────────────────────────────
+    extractor = VideoKeyframeExtractorService()
+    result    = extractor.extract_keyframes(
+        video_bytes=raw,
+        filename=filename_val,
+        mime_type=mime_type,
+    )
+
+    public = result.to_public_dict()
+    frames_stored   = 0
+    queued_for_analysis = 0
+
+    if result.video_analysis_status == VIDEO_STATUS_ANALYZED and result._extracted_frames:
+        # ── 4. Store extracted frames privately via visual analysis service ─────
+        va_svc        = WorkflowVisualAnalysisService(db)
+        provider_info = va_svc.get_provider_status()
+        frame_bytes_map: dict[str, bytes] = {}
+
+        for ts_ms, jpeg_bytes in result._extracted_frames:
+            frame_id = va_svc.store_visual_frame(
+                user_id=user_id,
+                session_id=session_id,
+                frame_type="video_keyframe",
+                frame_bytes=jpeg_bytes,
+                timestamp_ms=ts_ms,
+                frame_width=result.frame_width,
+                frame_height=result.frame_height,
+            )
+            frame_bytes_map[frame_id] = jpeg_bytes
+            frames_stored += 1
+
+        # ── 5. Trigger visual analysis if provider is configured ────────────────
+        if frames_stored > 0 and provider_info["provider_configured"]:
+            try:
+                va_svc.analyze_frames_for_session(
+                    user_id=user_id,
+                    session_id=session_id,
+                    frame_bytes_map=frame_bytes_map,
+                )
+                queued_for_analysis = frames_stored
+            except Exception as exc:
+                logger.warning("[WorkflowVideo] Visual analysis failed (non-fatal): %s", exc)
+
+    # ── 6. Build public-safe response ───────────────────────────────────────────
+    status_val = public["video_analysis_status"]
+
+    if status_val == VIDEO_STATUS_ANALYZED:
+        message = (
+            f"{frames_stored} keyframe(s) extracted and stored. "
+            f"Visual analysis queued: {queued_for_analysis > 0}."
+        )
+    elif status_val == "not_available":
+        message = (
+            "Video keyframe extraction is not available. "
+            "Install opencv-python-headless or ffmpeg to enable it. "
+            "DOM evidence is still used for workflow analysis."
+        )
+    elif status_val == "limit_exceeded":
+        message = "Video exceeds size or duration limits. " + " ".join(public.get("limitations", []))
+    elif status_val == "unsupported_format":
+        message = "Unsupported video format. Use WebM or MP4."
+    else:
+        message = "Video could not be processed. " + " ".join(public.get("limitations", []))
+
+    return VideoUploadResponse(
+        session_id=session_id,
+        video_analysis_status=status_val,
+        keyframe_count=public["keyframe_count"],
+        selected_frame_timestamps_ms=public["selected_frame_timestamps_ms"],
+        extraction_method=public["extraction_method"],
+        duration_ms=public.get("duration_ms"),
+        frames_stored=frames_stored,
+        frames_queued_for_visual_analysis=queued_for_analysis,
+        limitations=public.get("limitations", []),
+        message=message,
+    )

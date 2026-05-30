@@ -12,6 +12,19 @@ playwright==1.49.1
 sentence-transformers==3.3.1
 scikit-learn==1.6.0
 
+# ── Optional: Video Keyframe Extraction ───────────────────────────────────────
+# Required only when students upload recorded workflow videos for keyframe analysis.
+# The backend degrades gracefully to not_available when neither is installed.
+#
+# cv2 (recommended — pure Python, no system deps):
+#   pip install opencv-python-headless
+#
+# ffmpeg (fallback — system binary):
+#   brew install ffmpeg   # macOS
+#   apt install ffmpeg    # Linux
+#
+# opencv-python-headless
+
 # ── Optional: local Whisper provider ──────────────────────────────────────────
 # Required only when TRANSCRIPTION_PROVIDER=local_whisper.
 # Adds ~500 MB of model weights on first run (model downloaded to ~/.cache).

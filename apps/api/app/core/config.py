@@ -165,6 +165,27 @@ class Settings(BaseSettings):
         alias="LOCAL_VISION_PROVIDER",
     )
 
+    # ── Video Keyframe Extraction ─────────────────────────────────────────────
+    # Limits applied before extraction begins.  All values are configurable
+    # via environment variables so they can be tightened per deployment.
+    #
+    # Extraction backends (no required pip install — both optional):
+    #   cv2:    pip install opencv-python-headless
+    #   ffmpeg: brew install ffmpeg  OR  apt install ffmpeg
+    # When neither is available the endpoint returns not_available gracefully.
+    max_video_size_bytes: int = Field(
+        default=100 * 1024 * 1024,   # 100 MB
+        alias="MAX_VIDEO_SIZE_BYTES",
+    )
+    max_video_duration_seconds: int = Field(
+        default=300,                 # 5 minutes
+        alias="MAX_VIDEO_DURATION_SECONDS",
+    )
+    max_video_keyframes: int = Field(
+        default=10,
+        alias="MAX_VIDEO_KEYFRAMES",
+    )
+
     # OpenAI Whisper (used when transcription_provider=openai)
     openai_api_key: SecretStr = Field(
         default=SecretStr(""),
