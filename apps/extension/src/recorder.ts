@@ -1,49 +1,67 @@
-// Recorder tab — persistent screen capture for fullscreen / media recording sessions.
+// Recorder tab — persistent WebM screen recording for fullscreen / media sessions.
 //
-// This is a dedicated Chrome extension page (NOT the popup).  It opens as a real
-// browser tab so it survives popup close and continues running while the user
-// watches fullscreen video on another tab.
+// MV3 design: this is a real browser tab (not the popup), so it keeps running
+// while the user is in fullscreen on another tab.  It uses MediaRecorder to
+// capture a WebM video from getDisplayMedia, then uploads it directly to the
+// VeriBridge backend — no hop through the background service worker for the
+// video bytes.
 //
 // Flow:
-//   1. User clicks "Open Fullscreen Recorder" in the extension popup.
-//   2. This tab opens.  Background recording must already be active.
-//   3. User clicks "Start Screen Capture" → user gesture → getDisplayMedia() succeeds.
-//   4. Browser screen-share picker appears → user selects Entire Screen or Window.
-//   5. This tab captures one JPEG frame every 2 s via canvas / ImageCapture API.
-//   6. Each frame is sent to the background service worker (CAPTURE_SCREEN_FRAME).
-//   7. User minimises this tab, enters fullscreen on another tab.
-//   8. Frame capture CONTINUES (this tab's JS keeps running in the background).
-//   9. User exits fullscreen, returns here, clicks "Stop Screen Capture".
-//  10. User then uses extension popup → Stop Recording → Send Proof.
+//   1. User clicks "Start Recording" in the popup → popup auto-opens this tab.
+//   2. User clicks "Start Screen Capture" → user gesture → getDisplayMedia().
+//   3. Browser screen-share picker → user selects Entire Screen or Window.
+//   4. MediaRecorder starts → WebM chunks accumulate in memory.
+//   5. User minimises this tab, enters fullscreen on another tab.
+//   6. Recording continues (this tab's JS runs in background).
+//   7. User exits fullscreen, returns here, clicks "Stop Screen Capture".
+//   8. MediaRecorder stops → WebM blob assembled → uploaded to /workflow/video.
+//   9. Upload result reported back to background via RECORDER_VIDEO_UPLOADED.
+//  10. User goes to popup → Stop Recording → Send Proof.
 //
-// Chrome note: getDisplayMedia at OS level bypasses the hardware-decoded video
-// compositor limitation that makes captureVisibleTab return black frames during
-// native fullscreen playback.  Selecting "Entire Screen" in the picker is the
-// recommended choice for fullscreen video proof.
+// Why getDisplayMedia instead of captureVisibleTab:
+//   captureVisibleTab returns black frames for hardware-decoded fullscreen video
+//   (GPU overlay compositor bypasses the normal tab pixel pipeline).
+//   getDisplayMedia at OS level captures what is actually displayed on screen.
 
 import type { ExtensionState } from "./types"
 
-// ── ImageCapture type shim ─────────────────────────────────────────────────
-// TypeScript DOM lib does not include ImageCapture.grabFrame().
-interface ImageCaptureShim {
-  grabFrame(): Promise<ImageBitmap>
-}
-declare const ImageCapture:
-  | { new (track: MediaStreamTrack): ImageCaptureShim }
-  | undefined
-
 // ── Constants ─────────────────────────────────────────────────────────────────
-/** Milliseconds between consecutive frame captures. */
-const CAPTURE_INTERVAL_MS = 2000
-/** Hard cap per session — prevents unbounded memory growth. */
-const MAX_FRAMES_PER_SESSION = 40
+/** Maximum recording duration in ms (5 minutes) after which capture auto-stops. */
+const MAX_RECORDING_MS = 5 * 60 * 1000
+/** Maximum video size accepted by the backend (100 MB). */
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024
+
+// ── MediaRecorder MIME type selection ────────────────────────────────────────
+function chooseMimeType(): string {
+  const candidates = [
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ]
+  for (const c of candidates) {
+    if (MediaRecorder.isTypeSupported(c)) return c
+  }
+  return "video/webm"
+}
 
 // ── Module state ──────────────────────────────────────────────────────────────
 let displayStream: MediaStream | null = null
-let captureInterval: ReturnType<typeof setInterval> | null = null
-let framesSent = 0
-let isRecordingActive = false
+let mediaRecorder: MediaRecorder | null = null
+let videoChunks: Blob[] = []
+let videoMimeType = "video/webm"
+let recordingStartMs = 0
+let durationTimer: ReturnType<typeof setInterval> | null = null
+let autoStopTimer: ReturnType<typeof setTimeout> | null = null
+
+let isRecordingActive = false   // background recording is active
 let currentSessionId = ""
+let currentApiUrl = "http://localhost:8000"
+let currentAuthToken = ""
+
+let isUploading = false
+let uploadDone = false
+let uploadError: string | null = null
+
 let statePoll: ReturnType<typeof setInterval> | null = null
 let contextInvalidated = false
 
@@ -59,7 +77,7 @@ const recStatusEl   = el("recStatus")
 const recSessionEl  = el("recSession")
 const streamIndEl   = el("streamIndicator")
 const streamLblEl   = el("streamLabel")
-const frameBadgeEl  = el("frameBadge")
+const frameBadgeEl  = el("frameBadge")    // repurposed: shows duration / upload status
 const msgBoxEl      = el("msgBox")
 const instructionsEl = el("instructions")
 
@@ -74,7 +92,7 @@ function setMsg(text: string, variant: MsgVariant = "default"): void {
 
 function updateStreamUI(active: boolean): void {
   if (active) {
-    streamIndEl.textContent = "🟢"
+    streamIndEl.textContent = "🔴"
     streamLblEl.textContent = "Screen capture active — minimise this tab and enter fullscreen"
     streamLblEl.className = "stream-label active"
     instructionsEl.classList.add("visible")
@@ -86,17 +104,46 @@ function updateStreamUI(active: boolean): void {
   }
 }
 
-function updateFrameBadge(): void {
-  frameBadgeEl.textContent = `${framesSent} frame${framesSent !== 1 ? "s" : ""}`
-  frameBadgeEl.className = `frame-badge${framesSent > 0 ? " has-frames" : ""}`
+function formatDuration(ms: number): string {
+  const secs = Math.floor(ms / 1000)
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return m > 0 ? `${m}m ${s}s` : `${s}s`
+}
+
+function updateDurationBadge(): void {
+  if (isUploading) {
+    frameBadgeEl.textContent = "Uploading…"
+    frameBadgeEl.className = "frame-badge has-frames"
+    return
+  }
+  if (uploadDone && !uploadError) {
+    frameBadgeEl.textContent = "✓ Uploaded"
+    frameBadgeEl.className = "frame-badge has-frames"
+    return
+  }
+  if (uploadError) {
+    frameBadgeEl.textContent = "Upload failed"
+    frameBadgeEl.className = "frame-badge"
+    return
+  }
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    const elapsed = Date.now() - recordingStartMs
+    frameBadgeEl.textContent = formatDuration(elapsed)
+    frameBadgeEl.className = "frame-badge has-frames"
+  } else {
+    frameBadgeEl.textContent = "—"
+    frameBadgeEl.className = "frame-badge"
+  }
 }
 
 function applyRecordingState(state: ExtensionState): void {
   const wasRecording = isRecordingActive
   isRecordingActive  = state.isRecording
   currentSessionId   = state.sessionId ?? ""
+  currentApiUrl      = (state.apiUrl || "http://localhost:8000").replace(/\/$/, "")
+  currentAuthToken   = state.authToken ?? ""
 
-  // Update recording status dot and label
   if (state.isRecording) {
     recDot.className = "status-dot recording"
     recStatusEl.textContent = `Recording active · ${state.eventCount} event(s)`
@@ -113,211 +160,270 @@ function applyRecordingState(state: ExtensionState): void {
 
   recSessionEl.textContent = currentSessionId ? currentSessionId.slice(0, 16) + "…" : ""
 
-  // Enable Start only when recording is active and no stream yet
-  btnStart.disabled = !isRecordingActive || displayStream !== null
-  // Stop enabled only when stream is active
-  btnStop.disabled = displayStream === null
+  // Buttons: Start enabled only when recording active and no capture in progress
+  const capturing = displayStream !== null || isUploading
+  btnStart.disabled = !isRecordingActive || capturing
+  btnStop.disabled  = displayStream === null || isUploading
 
-  // If recording just stopped while stream is active, notify user
+  // If recording stopped from popup while screen capture is active, warn
   if (wasRecording && !isRecordingActive && displayStream) {
     setMsg(
-      "Recording stopped from the extension popup. Stop screen capture here too, then send proof.",
+      "Background recording stopped. Stop screen capture here too.",
       "warn",
     )
   }
 
-  // Initial message when no recording is active
-  if (!isRecordingActive && !displayStream) {
-    setMsg(
-      'Start a recording session in the extension popup first, then click "Start Screen Capture" here.',
-    )
-  }
-}
-
-// ── Frame capture ──────────────────────────────────────────────────────────────
-
-/**
- * Grab one JPEG frame from the display stream.
- * Prefers ImageCapture.grabFrame() (Chrome 60+) and falls back to a <video> element.
- * Returns null on any error so capture keeps running.
- */
-async function grabFrame(track: MediaStreamTrack): Promise<string | null> {
-  try {
-    if (typeof ImageCapture !== "undefined" && ImageCapture !== undefined) {
-      const ic     = new ImageCapture(track)
-      const bitmap = await ic.grabFrame()
-      const canvas = document.createElement("canvas")
-      canvas.width  = bitmap.width
-      canvas.height = bitmap.height
-      const ctx = canvas.getContext("2d")
-      if (!ctx) { bitmap.close(); return null }
-      ctx.drawImage(bitmap, 0, 0)
-      bitmap.close()
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.5)
-      return dataUrl.slice(dataUrl.indexOf(",") + 1)
+  if (!isRecordingActive && !displayStream && !isUploading) {
+    if (uploadDone && !uploadError) {
+      setMsg("✓ Video uploaded. Return to extension popup → Stop Recording → Send Proof.", "ok")
+    } else if (uploadError) {
+      setMsg(`Video upload failed: ${uploadError}`, "err")
+    } else {
+      setMsg('Start a recording session in the extension popup first, then click "Start Screen Capture" here.')
     }
-
-    // Fallback: draw through a <video> element.
-    // We create a temporary stream wrapping the single track so the video element
-    // can display it without affecting the module-level displayStream reference.
-    const tmpStream = new MediaStream([track])
-    const video = document.createElement("video")
-    video.srcObject = tmpStream
-    video.muted = true
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => {
-        video.play().then(resolve).catch(reject)
-      }
-      video.onerror = () => reject(new Error("video error"))
-      setTimeout(() => reject(new Error("video timeout")), 3000)
-    })
-    const canvas = document.createElement("canvas")
-    canvas.width  = video.videoWidth  || 1280
-    canvas.height = video.videoHeight || 720
-    const ctx = canvas.getContext("2d")
-    if (!ctx) { video.pause(); video.srcObject = null; return null }
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    video.pause()
-    video.srcObject = null
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.5)
-    return dataUrl.slice(dataUrl.indexOf(",") + 1)
-  } catch (err) {
-    console.warn("[VB Recorder] grabFrame error:", err)
-    return null
   }
 }
 
-/** Send one captured frame to the background service worker. */
-function sendFrame(base64: string): void {
-  if (contextInvalidated) return
-  chrome.runtime.sendMessage(
-    {
-      type: "CAPTURE_SCREEN_FRAME",
-      payload: { frame_base64: base64, frame_type: "fullscreen_recorder" },
-    },
-    (resp: { ok: boolean; error?: string; total?: number }) => {
-      if (chrome.runtime.lastError) {
-        const msg = chrome.runtime.lastError.message ?? "unknown"
-        if (msg.includes("Extension context invalidated")) {
-          contextInvalidated = true
-          setMsg("Extension was reloaded. Refresh this tab.", "err")
-        }
-        return
-      }
-      if (!resp?.ok) {
-        if (resp?.error === "Frame cap reached") {
-          // Background has hit its frame limit — stop capturing
-          stopCapture()
-          setMsg(
-            `Frame cap reached (${MAX_FRAMES_PER_SESSION} max). Stop recording and send proof.`,
-            "warn",
-          )
-        } else if (resp?.error === "Not recording") {
-          setMsg("Recording is not active. Start recording in the popup first.", "warn")
-        }
-      }
-    },
-  )
-}
+// ── Video upload ───────────────────────────────────────────────────────────────
 
-/** Capture one frame and send it. Called by the capture interval. */
-async function captureOneTick(): Promise<void> {
-  if (!displayStream || framesSent >= MAX_FRAMES_PER_SESSION) {
-    stopCapture()
+async function uploadVideo(blob: Blob): Promise<void> {
+  isUploading = true
+  uploadDone  = false
+  uploadError = null
+  updateDurationBadge()
+  setMsg(`Uploading recording (${(blob.size / 1024 / 1024).toFixed(1)} MB) to backend…`, "default")
+  btnStop.disabled = true
+  btnStart.disabled = true
+
+  const sessionId = currentSessionId
+  const apiUrl    = currentApiUrl
+  const authToken = currentAuthToken
+
+  if (!sessionId) {
+    uploadError = "No session ID — cannot upload video"
+    isUploading = false
+    updateDurationBadge()
+    setMsg(`Upload skipped: ${uploadError}`, "warn")
+    notifyBackground(false, uploadError, 0)
     return
   }
-  const track = displayStream.getVideoTracks()[0]
-  if (!track) { stopCapture(); return }
 
-  const base64 = await grabFrame(track)
-  if (!base64) return  // silently skip failed captures
+  if (blob.size > MAX_VIDEO_BYTES) {
+    uploadError = `Video too large (${(blob.size / 1024 / 1024).toFixed(0)} MB > 100 MB limit)`
+    isUploading = false
+    updateDurationBadge()
+    setMsg(`Upload failed: ${uploadError}`, "err")
+    notifyBackground(false, uploadError, 0)
+    return
+  }
 
-  framesSent++
-  updateFrameBadge()
-  sendFrame(base64)
+  const ext  = videoMimeType.includes("mp4") ? "mp4" : "webm"
+  const form = new FormData()
+  form.append("video", blob, `recording.${ext}`)
+
+  const url = `${apiUrl}/api/v1/student/extension-proof/sessions/${sessionId}/workflow/video`
+  const headers: HeadersInit = {}
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`
+
+  try {
+    const resp = await fetch(url, { method: "POST", headers, body: form })
+    const bodyText = await resp.text().catch(() => "")
+
+    if (!resp.ok) {
+      // Parse backend error detail for exact reason
+      let reason = `HTTP ${resp.status}`
+      try {
+        const parsed = JSON.parse(bodyText) as { detail?: string | { message?: string } }
+        const d = parsed?.detail
+        reason = (typeof d === "string" ? d : d?.message) ?? reason
+      } catch { /* keep HTTP status */ }
+      reason = reason.slice(0, 200)
+
+      uploadError = reason
+      isUploading = false
+      uploadDone  = false
+      updateDurationBadge()
+      setMsg(`Video upload failed: ${reason}`, "err")
+      notifyBackground(false, reason, 0)
+      return
+    }
+
+    // Parse success response for keyframe count
+    let keyframeCount = 0
+    let uploadMsg = "Video uploaded."
+    try {
+      const parsed = JSON.parse(bodyText) as {
+        keyframe_count?: number
+        video_analysis_status?: string
+        message?: string
+      }
+      keyframeCount = parsed?.keyframe_count ?? 0
+      const status  = parsed?.video_analysis_status ?? "unknown"
+      const kfStr   = keyframeCount > 0 ? `${keyframeCount} keyframe(s) extracted.` : "Keyframe extraction pending."
+      uploadMsg = `✓ Video uploaded (${status}). ${kfStr}`
+    } catch { /* keep default */ }
+
+    uploadDone  = true
+    isUploading = false
+    uploadError = null
+    updateDurationBadge()
+    setMsg(uploadMsg + " Return to popup → Stop Recording → Send Proof.", "ok")
+    notifyBackground(true, null, keyframeCount)
+
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Network error — check your connection."
+    uploadError = msg.slice(0, 200)
+    isUploading = false
+    updateDurationBadge()
+    setMsg(`Video upload failed: ${uploadError}`, "err")
+    notifyBackground(false, uploadError, 0)
+  }
+
+  // Re-evaluate button states
+  btnStart.disabled = !isRecordingActive || displayStream !== null
+  btnStop.disabled  = displayStream === null
+}
+
+/** Inform the background service worker about the upload result. */
+function notifyBackground(ok: boolean, error: string | null, keyframeCount: number): void {
+  if (contextInvalidated) return
+  try {
+    chrome.runtime.sendMessage(
+      {
+        type: "RECORDER_VIDEO_UPLOADED",
+        payload: { ok, error, keyframe_count: keyframeCount },
+      },
+      () => { if (chrome.runtime.lastError) { /* ignore */ } },
+    )
+  } catch { /* context may be gone */ }
+}
+
+// ── MediaRecorder lifecycle ───────────────────────────────────────────────────
+
+function startMediaRecorder(stream: MediaStream): void {
+  videoChunks    = []
+  videoMimeType  = chooseMimeType()
+  recordingStartMs = Date.now()
+
+  const options: MediaRecorderOptions = {
+    mimeType: videoMimeType,
+    videoBitsPerSecond: 500_000,   // 500 kbps — good quality, small file
+  }
+
+  try {
+    mediaRecorder = new MediaRecorder(stream, options)
+  } catch {
+    // Some browsers don't support all codec options — fall back to defaults
+    mediaRecorder = new MediaRecorder(stream)
+    videoMimeType = mediaRecorder.mimeType || "video/webm"
+  }
+
+  mediaRecorder.ondataavailable = (e: BlobEvent) => {
+    if (e.data && e.data.size > 0) videoChunks.push(e.data)
+  }
+
+  mediaRecorder.onstop = () => {
+    if (durationTimer) { clearInterval(durationTimer); durationTimer = null }
+    if (autoStopTimer) { clearTimeout(autoStopTimer);  autoStopTimer  = null }
+    const blob = new Blob(videoChunks, { type: videoMimeType })
+    videoChunks = []
+    if (blob.size < 100) {
+      // Near-empty blob — nothing was captured
+      setMsg("Recording stopped with no video data. Was the stream active?", "warn")
+      updateDurationBadge()
+      return
+    }
+    void uploadVideo(blob)
+  }
+
+  // 2-second timeslice — chunks arrive frequently so onstop gets data quickly
+  mediaRecorder.start(2000)
+
+  // Duration counter
+  durationTimer = setInterval(updateDurationBadge, 1000)
+
+  // Safety cap: auto-stop after MAX_RECORDING_MS
+  autoStopTimer = setTimeout(() => {
+    stopCapture()
+    setMsg(`Auto-stopped after ${formatDuration(MAX_RECORDING_MS)} (max recording duration).`, "warn")
+  }, MAX_RECORDING_MS)
 }
 
 // ── Start / stop capture ───────────────────────────────────────────────────────
 
 async function startCapture(): Promise<void> {
-  if (displayStream) return   // already capturing
+  if (displayStream) return
   btnStart.disabled = true
   setMsg("Opening screen picker… select Entire Screen or your Window.", "default")
 
   let stream: MediaStream
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: 2, max: 5 } },
-      audio: false,
+      video: {
+        frameRate: { ideal: 15, max: 30 },
+        // No width/height constraints — let the OS pick native resolution
+      },
+      audio: false,  // Audio recording would require system permissions; skip for now
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (msg.includes("Permission denied") || msg.includes("NotAllowedError")) {
+    if (msg.toLowerCase().includes("permission denied") || msg.includes("NotAllowedError")) {
       setMsg("Screen selection cancelled. Click Start to try again.")
     } else {
-      setMsg(`Could not open screen picker: ${msg.slice(0, 80)}`, "err")
+      setMsg(`Could not open screen picker: ${msg.slice(0, 100)}`, "err")
     }
     btnStart.disabled = !isRecordingActive
     return
   }
 
   displayStream = stream
-  framesSent    = 0
+  uploadDone    = false
+  uploadError   = null
+
   updateStreamUI(true)
-  updateFrameBadge()
-  setMsg(
-    "✓ Screen capture started! Minimise this tab and enter fullscreen on your video page.",
-    "ok",
-  )
+  updateDurationBadge()
+  setMsg("✓ Recording started! Minimise this tab and go fullscreen. Return here when done.", "ok")
+
   btnStart.disabled = true
   btnStop.disabled  = false
 
-  // Capture the first frame immediately, then on interval
-  await captureOneTick()
-  captureInterval = setInterval(() => { void captureOneTick() }, CAPTURE_INTERVAL_MS)
+  startMediaRecorder(stream)
 
-  // Handle stream ending via browser UI (user clicks the "Stop sharing" button)
+  // Auto-stop when user clicks browser "Stop sharing" button
   stream.getVideoTracks().forEach((track) => {
     track.addEventListener("ended", () => {
+      // MediaRecorder.stop() triggers onstop → uploadVideo
       cleanupStream()
-      setMsg(
-        `Screen sharing ended by browser. ${framesSent} frame(s) captured and saved to proof.`,
-        "warn",
-      )
     })
   })
 }
 
-/** Stop and clean up the display stream and interval. Does NOT modify framesSent. */
+/** Stop the MediaRecorder (which triggers onstop → uploadVideo), then clean up stream. */
+function stopCapture(): void {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    // Requesting final chunk, then onstop fires
+    mediaRecorder.stop()
+  }
+  cleanupStream()
+}
+
 function cleanupStream(): void {
-  if (captureInterval) { clearInterval(captureInterval); captureInterval = null }
+  if (durationTimer)  { clearInterval(durationTimer); durationTimer = null }
+  if (autoStopTimer)  { clearTimeout(autoStopTimer);  autoStopTimer  = null }
   if (displayStream) {
     displayStream.getTracks().forEach((t) => t.stop())
     displayStream = null
   }
+  mediaRecorder = null
   updateStreamUI(false)
   btnStart.disabled = !isRecordingActive
   btnStop.disabled  = true
 }
 
-function stopCapture(): void {
-  const captured = framesSent
-  cleanupStream()
-  if (captured > 0) {
-    setMsg(
-      `✓ Capture stopped. ${captured} frame(s) saved to the proof session. ` +
-      `Return to the extension popup → Stop Recording → Send Proof.`,
-      "ok",
-    )
-  } else {
-    setMsg("Capture stopped. No frames were captured.")
-  }
-}
-
 // ── Button handlers ────────────────────────────────────────────────────────────
 
 btnStart.addEventListener("click", () => { void startCapture() })
-btnStop.addEventListener("click",  () => { stopCapture() })
+btnStop.addEventListener("click",  stopCapture)
 
 // ── State polling ──────────────────────────────────────────────────────────────
 
@@ -326,10 +432,8 @@ function safeSendGet(): void {
   try {
     chrome.runtime.sendMessage({ type: "GET_STATE" }, (resp: ExtensionState) => {
       if (chrome.runtime.lastError) {
-        const msg = chrome.runtime.lastError.message ?? ""
-        if (msg.includes("Extension context invalidated")) {
-          contextInvalidated = true
-        }
+        const m = chrome.runtime.lastError.message ?? ""
+        if (m.includes("Extension context invalidated")) contextInvalidated = true
         return
       }
       if (resp) applyRecordingState(resp)
@@ -339,7 +443,7 @@ function safeSendGet(): void {
 
 // Initial state check
 safeSendGet()
-// Poll every 1.5 s to keep status in sync with recording / upload progress
+// Poll every 1.5 s to keep recording status in sync
 statePoll = setInterval(safeSendGet, 1500)
 
 // Cleanup on page unload

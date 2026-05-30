@@ -85,4 +85,12 @@ export interface ExtensionState {
   // Tab tracking — IDs of tabs currently being recorded in this session.
   trackedTabIds: number[]
   originalTabId: number | null
+  // ── Video upload state (set by recorder tab via RECORDER_VIDEO_UPLOADED) ───
+  /** "none" = no recording yet, "uploading" = in progress (recorder tab),
+   *  "uploaded" = done, "failed" = error */
+  videoUploadStatus: "none" | "uploading" | "uploaded" | "failed"
+  /** Exact error string from the backend or network layer when upload fails. */
+  videoUploadError: string | null
+  /** Number of keyframes extracted from the uploaded video (0 if not yet extracted). */
+  videoKeyframeCount: number
 }

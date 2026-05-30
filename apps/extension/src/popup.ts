@@ -1,27 +1,35 @@
+// Popup — VeriBridge extension recording controls.
+//
+// Unified Phase-0 flow:
+//   1. Paste session ID → Start Recording
+//   2. Recorder tab opens automatically (getDisplayMedia requires user gesture there)
+//   3. In recorder tab: Start Screen Capture → go fullscreen → Stop Screen Capture → video uploads
+//   4. Back to popup: Stop Recording → Send Proof
+//
+// captureVisibleTab is used ONLY as a background helper for DOM-event correlated
+// screenshots — it is NOT the primary visual recorder and NOT surfaced in the UI.
+
 import type { ExtensionState, RecordingStatus } from "./types"
 
 function el<T extends HTMLElement>(id: string): T {
   return document.getElementById(id) as T
 }
 
-const sessionIdInput       = el<HTMLInputElement>("sessionId")
-const apiUrlInput          = el<HTMLInputElement>("apiUrl")
-const authTokenInput       = el<HTMLInputElement>("authToken")
-const finalNoteInput       = el<HTMLTextAreaElement>("finalNote")
-const btnStart             = el<HTMLButtonElement>("btnStart")
-const btnStop              = el<HTMLButtonElement>("btnStop")
-const btnSend              = el<HTMLButtonElement>("btnSend")
-const btnCaptureScreen     = el<HTMLButtonElement>("btnCaptureScreen")
-const captureScreenStatus  = el("captureScreenStatus")
-const btnOpenRecorder      = el<HTMLButtonElement>("btnOpenRecorder")
-const recorderTabStatus    = el("recorderTabStatus")
-const statusDot            = el("statusDot")
-const statusText           = el("statusText")
-const eventCountEl         = el("eventCount")
-const detectedBanner       = el("detectedBanner")
+const sessionIdInput    = el<HTMLInputElement>("sessionId")
+const apiUrlInput       = el<HTMLInputElement>("apiUrl")
+const authTokenInput    = el<HTMLInputElement>("authToken")
+const finalNoteInput    = el<HTMLTextAreaElement>("finalNote")
+const btnStart          = el<HTMLButtonElement>("btnStart")
+const btnStop           = el<HTMLButtonElement>("btnStop")
+const btnSend           = el<HTMLButtonElement>("btnSend")
+const btnReopenRecorder = el<HTMLButtonElement>("btnReopenRecorder")
+const statusDot         = el("statusDot")
+const statusText        = el("statusText")
+const eventCountEl      = el("eventCount")
+const detectedBanner    = el("detectedBanner")
+const videoStatusEl     = el("videoStatus")
 
 // ── Restore persisted inputs ───────────────────────────────────────────────────
-// currentSessionId is written by the background when a session is detected from a page URL.
 chrome.storage.local.get(["sessionId", "apiUrl", "authToken", "currentSessionId"], (data) => {
   const preFill = (data.currentSessionId as string | undefined) ?? (data.sessionId as string | undefined) ?? ""
   if (preFill) sessionIdInput.value = preFill
@@ -58,31 +66,44 @@ function applyState(state: ExtensionState): void {
   eventCountEl.textContent =
     state.eventCount > 0 ? `${state.eventCount} event(s) captured` : ""
 
-  // Pre-fill session ID if the field is currently empty and the background has one.
   if (state.sessionId && !sessionIdInput.value.trim()) {
     sessionIdInput.value = state.sessionId
   }
 
-  // Show detection banner when a session has been auto-detected but recording hasn't started.
   detectedBanner.style.display = state.status === "ready" ? "" : "none"
 
   btnStart.disabled = state.isRecording || state.status === "uploading"
   btnStop.disabled = !state.isRecording
-  // Enable Send for stopped, upload_failed (retry), and error states.
   btnSend.disabled =
     state.isRecording ||
     state.status === "uploading" ||
     !["stopped", "upload_failed", "error"].includes(state.status)
 
-  // Enable screen capture tools when a session is active (recording or stopped, before upload).
-  const screenEnabled =
-    state.status !== "idle" &&
-    state.status !== "uploading" &&
-    state.status !== "uploaded"
-  btnCaptureScreen.disabled = !screenEnabled
+  // "Re-open Recorder Tab" — available whenever recording is active
+  btnReopenRecorder.style.display = state.isRecording ? "" : "none"
 
-  // Open Recorder Tab: enable when recording is active (user should set up before going fullscreen)
-  btnOpenRecorder.disabled = !state.isRecording
+  // ── Video upload status bar ────────────────────────────────────────────────
+  const vs = state.videoUploadStatus
+  if (vs === "none" || !vs) {
+    videoStatusEl.style.display = "none"
+    videoStatusEl.textContent = ""
+  } else if (vs === "uploading") {
+    videoStatusEl.style.display = ""
+    videoStatusEl.className = "video-status uploading"
+    videoStatusEl.textContent = "⏳ Uploading screen recording…"
+  } else if (vs === "uploaded") {
+    videoStatusEl.style.display = ""
+    videoStatusEl.className = "video-status uploaded"
+    const kf = state.videoKeyframeCount ?? 0
+    videoStatusEl.textContent =
+      kf > 0
+        ? `✓ Recording uploaded — ${kf} keyframe(s) extracted`
+        : "✓ Screen recording uploaded"
+  } else if (vs === "failed") {
+    videoStatusEl.style.display = ""
+    videoStatusEl.className = "video-status failed"
+    videoStatusEl.textContent = `✗ Video upload failed: ${state.videoUploadError ?? "unknown error"}`
+  }
 }
 
 function refreshState(): void {
@@ -97,6 +118,7 @@ const poll = setInterval(refreshState, 1000)
 window.addEventListener("unload", () => clearInterval(poll))
 
 // ── Start recording ────────────────────────────────────────────────────────────
+// The background service worker auto-opens the recorder tab on START_RECORDING.
 
 btnStart.addEventListener("click", () => {
   const sessionId = sessionIdInput.value.trim()
@@ -143,130 +165,8 @@ btnSend.addEventListener("click", () => {
   )
 })
 
-// ── Open Fullscreen Recorder Tab ───────────────────────────────────────────────
-// Opens recorder.html as a separate browser tab.  Unlike the popup (which closes
-// when the user clicks away or enters fullscreen), this tab persists and continues
-// running the getDisplayMedia frame-capture loop in the background.
+// ── Re-open Recorder Tab (fallback if user closed it) ─────────────────────────
 
-btnOpenRecorder.addEventListener("click", () => {
-  btnOpenRecorder.disabled = true
-  recorderTabStatus.textContent = "Opening recorder tab…"
-
-  chrome.runtime.sendMessage({ type: "OPEN_RECORDER_TAB" }, (resp: { ok: boolean; tabId?: number; error?: string }) => {
-    if (chrome.runtime.lastError || !resp?.ok) {
-      recorderTabStatus.textContent = `Error: ${chrome.runtime.lastError?.message ?? resp?.error ?? "unknown"}`
-      btnOpenRecorder.disabled = false
-      return
-    }
-    recorderTabStatus.textContent = "✓ Recorder tab opened — switch to it and click Start Screen Capture"
-    // Re-enable after a short delay so the user can open another tab if needed
-    setTimeout(() => {
-      recorderTabStatus.textContent = ""
-      refreshState()  // re-evaluates btnOpenRecorder.disabled
-    }, 4000)
-  })
+btnReopenRecorder.addEventListener("click", () => {
+  chrome.runtime.sendMessage({ type: "OPEN_RECORDER_TAB" }, () => { /* tab opens */ })
 })
-
-// ── ImageCapture type shim ─────────────────────────────────────────────────────
-// The TypeScript DOM lib does not include ImageCapture.grabFrame().
-interface ImageCaptureShim {
-  grabFrame(): Promise<ImageBitmap>
-}
-declare const ImageCapture: {
-  new (track: MediaStreamTrack): ImageCaptureShim
-} | undefined
-
-// ── Screen / window capture (getDisplayMedia) — manual fallback ────────────────
-// One-shot screen grab from the popup.  Useful for:
-//   • After exiting fullscreen (popup is accessible again)
-//   • Users who don't need the persistent recorder tab
-//   • Quick frame grab at any point during recording
-//
-// For continuous capture DURING fullscreen, use the Recorder Tab instead.
-
-btnCaptureScreen.addEventListener("click", () => {
-  void captureScreenNow()
-})
-
-async function captureScreenNow(): Promise<void> {
-  btnCaptureScreen.disabled = true
-  captureScreenStatus.textContent = "Opening screen picker…"
-
-  let stream: MediaStream | null = null
-  try {
-    stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: 1 },   // one frame is enough for a snapshot
-      audio: false,
-    })
-
-    captureScreenStatus.textContent = "Capturing frame…"
-
-    const track = stream.getVideoTracks()[0]
-    if (!track) throw new Error("No video track")
-
-    let base64: string
-
-    if (typeof ImageCapture !== "undefined" && ImageCapture !== undefined) {
-      const capture = new ImageCapture(track)
-      const bitmap  = await capture.grabFrame()
-      const canvas  = document.createElement("canvas")
-      canvas.width  = bitmap.width
-      canvas.height = bitmap.height
-      const ctx = canvas.getContext("2d")
-      if (!ctx) throw new Error("Canvas 2D context unavailable")
-      ctx.drawImage(bitmap, 0, 0)
-      bitmap.close()
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.5)
-      const comma = dataUrl.indexOf(",")
-      base64 = dataUrl.slice(comma + 1)
-    } else {
-      // Fallback: draw stream to a <video> element, then snapshot via canvas.
-      const video = document.createElement("video")
-      video.srcObject = stream
-      video.muted = true
-      await new Promise<void>((resolve) => {
-        video.onloadedmetadata = () => { void video.play().then(resolve) }
-      })
-      const canvas  = document.createElement("canvas")
-      canvas.width  = video.videoWidth  || 1280
-      canvas.height = video.videoHeight || 720
-      const ctx = canvas.getContext("2d")
-      if (!ctx) throw new Error("Canvas 2D context unavailable")
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.5)
-      const comma = dataUrl.indexOf(",")
-      base64 = dataUrl.slice(comma + 1)
-    }
-
-    // Send to background
-    chrome.runtime.sendMessage(
-      {
-        type: "CAPTURE_SCREEN_FRAME",
-        payload: { frame_base64: base64, frame_type: "screen_capture_manual" },
-      },
-      (resp: { ok: boolean; error?: string; total?: number }) => {
-        if (chrome.runtime.lastError || !resp?.ok) {
-          captureScreenStatus.textContent =
-            `Failed: ${chrome.runtime.lastError?.message ?? resp?.error ?? "unknown"}`
-        } else {
-          captureScreenStatus.textContent =
-            `✓ Screen captured (${resp.total ?? "?"} frames total)`
-          setTimeout(() => { captureScreenStatus.textContent = "" }, 4000)
-        }
-        refreshState()
-      }
-    )
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    if (msg.includes("Permission denied") || msg.includes("NotAllowedError")) {
-      captureScreenStatus.textContent = "Screen capture cancelled."
-    } else {
-      captureScreenStatus.textContent = `Error: ${msg.slice(0, 60)}`
-    }
-    setTimeout(() => { captureScreenStatus.textContent = "" }, 5000)
-  } finally {
-    // Always stop all tracks — never leave a persistent screen-share stream.
-    stream?.getTracks().forEach((t) => t.stop())
-    refreshState()  // re-evaluates btnCaptureScreen.disabled
-  }
-}

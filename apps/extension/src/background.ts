@@ -95,7 +95,7 @@ interface InternalState {
   events: WorkflowEvent[]
   /** Visible evidence DOM snapshots accumulated during the recording. */
   visibleEvidenceEvents: VisibleEvidenceEvent[]
-  /** Visual frame screenshots captured during the recording. */
+  /** Visual frame screenshots captured during the recording (captureVisibleTab helper). */
   visualFrames: VisualFrameData[]
   /** Epoch-ms when the last visual frame was captured (for throttling). */
   lastFrameCaptureMs: number
@@ -109,9 +109,13 @@ interface InternalState {
   trackedTabIds: Set<number>
   originalTabId: number | null
   trackedTabUrls: Map<number, string>  // last known URL per tracked tab (for navigation detection)
-  // Fullscreen recorder tab — opened by OPEN_RECORDER_TAB message from popup.
-  // Tracked so we can close it automatically after proof is sent (optional).
+  // Recorder tab — auto-opened on START_RECORDING.
+  // Tracks the tab so we can focus it if it already exists.
   recorderTabId: number | null
+  // ── Video upload state (reported by recorder tab) ──────────────────────────
+  videoUploadStatus: "none" | "uploading" | "uploaded" | "failed"
+  videoUploadError: string | null
+  videoKeyframeCount: number
 }
 
 const state: InternalState = {
@@ -133,6 +137,9 @@ const state: InternalState = {
   originalTabId: null,
   trackedTabUrls: new Map(),
   recorderTabId: null,
+  videoUploadStatus: "none",
+  videoUploadError: null,
+  videoKeyframeCount: 0,
 }
 
 // ── Persisted recording state key ────────────────────────────────────────────
@@ -364,6 +371,9 @@ function publicState(): ExtensionState {
     dismissedForSessionId: state.dismissedForSessionId,
     trackedTabIds: [...state.trackedTabIds],
     originalTabId: state.originalTabId,
+    videoUploadStatus: state.videoUploadStatus,
+    videoUploadError: state.videoUploadError,
+    videoKeyframeCount: state.videoKeyframeCount,
   }
 }
 
@@ -394,6 +404,10 @@ chrome.runtime.onMessage.addListener(
         state.statusMessage = "Recording…"
         state.lastUploadError = null
         state.dismissedForSessionId = ""  // new session clears any prior dismiss
+        // Reset video upload state for new session
+        state.videoUploadStatus = "none"
+        state.videoUploadError  = null
+        state.videoKeyframeCount = 0
         // Reset tab tracking — seed with the original tab detected from the page URL.
         state.trackedTabIds = new Set()
         state.trackedTabUrls = new Map()
@@ -403,8 +417,32 @@ chrome.runtime.onMessage.addListener(
         // Persist recording state so a service-worker restart can restore it.
         persistRecordingState()
         void broadcastToAllTabs({ type: "START_CAPTURING" })
-        // Capture recording-start frame after a brief delay so the tab is ready.
-        setTimeout(() => { void captureVisualFrame("recording_start") }, 800)
+        // Auto-open the recorder tab so the user can start screen capture immediately.
+        // If the recorder tab is already open (recorderTabId set), focus it instead.
+        const recorderUrl = chrome.runtime.getURL("recorder.html")
+        const existingRecorderTabId = state.recorderTabId
+        if (existingRecorderTabId !== null) {
+          chrome.tabs.get(existingRecorderTabId, (existingTab) => {
+            if (chrome.runtime.lastError || !existingTab) {
+              // Tab was closed — open a fresh one
+              chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
+                if (tab?.id !== undefined) state.recorderTabId = tab.id
+              })
+            } else {
+              // Focus the existing recorder tab
+              chrome.tabs.update(existingRecorderTabId, { active: true })
+              if (existingTab.windowId) {
+                chrome.windows.update(existingTab.windowId, { focused: true })
+              }
+            }
+          })
+        } else {
+          chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
+            if (tab?.id !== undefined) state.recorderTabId = tab.id
+          })
+        }
+        // DOM-event frame capture at recording start (background helper — not primary)
+        setTimeout(() => { void captureVisualFrame("recording_start") }, 1200)
         sendResponse({ ok: true })
         break
       }
@@ -518,18 +556,56 @@ chrome.runtime.onMessage.addListener(
         break
       }
 
-      // ── Open the Fullscreen Recorder Tab ────────────────────────────────────
-      // The recorder tab (recorder.html) is a real browser tab — not the popup.
-      // It persists even when the popup is closed or the user enters fullscreen
-      // on another tab, and continues capturing getDisplayMedia frames.
+      // ── Video upload result from recorder tab ────────────────────────────────
+      // Sent by recorder.ts after the WebM video is POSTed to /workflow/video.
+      case "RECORDER_VIDEO_UPLOADED": {
+        const { ok, error, keyframe_count } = (msg.payload ?? {}) as {
+          ok?: boolean
+          error?: string | null
+          keyframe_count?: number
+        }
+        if (ok) {
+          state.videoUploadStatus   = "uploaded"
+          state.videoUploadError    = null
+          state.videoKeyframeCount  = keyframe_count ?? 0
+          dbgVE(
+            "[Video] upload succeeded — keyframes=%d session=%s",
+            state.videoKeyframeCount, state.sessionId,
+          )
+        } else {
+          state.videoUploadStatus   = "failed"
+          state.videoUploadError    = error ?? "Unknown error"
+          state.videoKeyframeCount  = 0
+          dbgVE("[Video] upload failed — %s session=%s", state.videoUploadError, state.sessionId)
+        }
+        sendResponse({ ok: true })
+        break
+      }
+
+      // ── Open / focus the Recorder Tab (manual fallback) ──────────────────────
+      // Auto-opened by START_RECORDING above.  This handler is kept so the popup
+      // can re-open the tab if the user accidentally closed it.
       case "OPEN_RECORDER_TAB": {
         const recorderUrl = chrome.runtime.getURL("recorder.html")
-        chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
-          if (tab?.id !== undefined) {
-            state.recorderTabId = tab.id
-          }
-          sendResponse({ ok: true, tabId: tab?.id ?? null })
-        })
+        const existingTabId = state.recorderTabId
+        if (existingTabId !== null) {
+          chrome.tabs.get(existingTabId, (existingTab) => {
+            if (chrome.runtime.lastError || !existingTab) {
+              chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
+                if (tab?.id !== undefined) state.recorderTabId = tab.id
+                sendResponse({ ok: true, tabId: tab?.id ?? null })
+              })
+            } else {
+              chrome.tabs.update(existingTabId, { active: true })
+              sendResponse({ ok: true, tabId: existingTabId })
+            }
+          })
+        } else {
+          chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
+            if (tab?.id !== undefined) state.recorderTabId = tab.id
+            sendResponse({ ok: true, tabId: tab?.id ?? null })
+          })
+        }
         return true  // async sendResponse
       }
 

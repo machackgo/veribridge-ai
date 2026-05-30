@@ -338,6 +338,14 @@ function EvidenceLayerLegend({
               background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
               {analysis.video_keyframe_count ?? 0} extracted ✓
             </span>
+          ) : analysis.video_keyframe_status === "failed" ? (
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}
+              title={analysis.video_upload_error ?? "Keyframe extraction failed"}>
+              {analysis.video_upload_error
+                ? `Failed: ${analysis.video_upload_error.slice(0, 60)}`
+                : "Keyframe extraction failed"}
+            </span>
           ) : (
             <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
               background: "#f1f5f9", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>

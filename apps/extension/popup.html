@@ -97,57 +97,59 @@
     .btn-stop   { background: #dc2626; color: #fff; }
     .btn-send   { background: #111; color: #fff; }
 
-    /* Fullscreen mode section */
-    .fs-section {
-      border: 1px solid #ede9fe;
-      border-radius: 10px;
-      overflow: hidden;
+    /* How it works — step flow */
+    .flow-box {
+      border: 1px solid #e0f2fe;
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #f0f9ff;
+      font-size: 11px;
+      color: #0369a1;
+      line-height: 1.7;
       margin-bottom: 10px;
     }
-    .fs-header {
-      background: #faf5ff;
-      padding: 9px 12px;
-      display: flex; align-items: center; gap: 7px;
-      border-bottom: 1px solid #ede9fe;
+    .flow-box ol {
+      margin: 6px 0 0 16px;
+      padding: 0;
     }
-    .fs-header-icon { font-size: 16px; }
-    .fs-header-title { font-weight: 700; font-size: 12px; color: #5b21b6; flex: 1; }
-    .fs-body { padding: 10px 12px; display: grid; gap: 8px; }
-    .fs-desc { font-size: 11px; color: #7c3aed; line-height: 1.6; }
-    .fs-desc strong { font-weight: 700; }
+    .flow-box strong { font-weight: 700; }
 
-    .btn-recorder {
-      background: #7c3aed; color: #fff;
-      padding: 9px 12px; border-radius: 8px;
-      font-size: 12px; font-weight: 700;
-      cursor: pointer; border: none;
-      font-family: inherit; transition: opacity 0.1s;
+    /* Re-open recorder tab link-button */
+    .btn-reopen {
+      background: none;
+      border: 1px solid #c4b5fd;
+      color: #7c3aed;
+      border-radius: 7px;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
       width: 100%;
+      text-align: center;
+      margin-bottom: 10px;
+      display: none;         /* shown by JS when recording */
     }
-    .btn-recorder:hover { opacity: 0.88; }
-    .btn-recorder:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-reopen:hover { background: #faf5ff; }
+    .btn-reopen:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    /* Manual screen capture (fallback) */
-    .screen-fallback {
-      background: #f8f9fa;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 8px 10px;
-      display: grid; gap: 6px;
+    /* Video upload status */
+    .video-status {
+      display: none;
+      padding: 7px 10px;
+      border-radius: 7px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 10px;
     }
-    .screen-fallback-title { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.08em; }
-    .btn-screen {
-      background: #6b7280; color: #fff;
-      padding: 7px 10px; border-radius: 7px;
-      font-size: 11px; font-weight: 600;
-      cursor: pointer; border: none;
-      font-family: inherit; transition: opacity 0.1s;
-      width: 100%;
+    .video-status.uploading {
+      background: #fefce8; border: 1px solid #fde68a; color: #92400e;
     }
-    .btn-screen:hover { opacity: 0.82; }
-    .btn-screen:disabled { opacity: 0.4; cursor: not-allowed; }
-    .screen-note-sm { font-size: 10px; color: #9ca3af; line-height: 1.5; }
-    #captureScreenStatus { font-size: 10px; color: #7c3aed; min-height: 12px; }
+    .video-status.uploaded {
+      background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;
+    }
+    .video-status.failed {
+      background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+    }
 
     /* Privacy notice */
     .privacy {
@@ -204,11 +206,19 @@
     <div class="event-count" id="eventCount"></div>
   </div>
 
-  <!-- Standard recording controls -->
+  <!-- Recording controls -->
   <div class="actions">
     <button class="btn-start" id="btnStart">▶ Start Recording</button>
     <button class="btn-stop"  id="btnStop"  disabled>■ Stop Recording</button>
   </div>
+
+  <!-- Video upload status (shown once recorder tab sends result) -->
+  <div id="videoStatus" class="video-status"></div>
+
+  <!-- Re-open recorder tab (shown only during recording) -->
+  <button class="btn-reopen" id="btnReopenRecorder" disabled>
+    📺 Re-open Recorder Tab
+  </button>
 
   <div class="field">
     <label for="finalNote">Final note (optional)</label>
@@ -221,41 +231,17 @@
 
   <div class="divider"></div>
 
-  <!-- ── Fullscreen / Media Recording Mode ───────────────────────────────── -->
-  <div class="fs-section">
-    <div class="fs-header">
-      <span class="fs-header-icon">📺</span>
-      <span class="fs-header-title">Fullscreen / Media Recording Mode</span>
-    </div>
-    <div class="fs-body">
-      <p class="fs-desc">
-        For <strong>fullscreen video proof</strong> (e.g. watching a tutorial).
-        Opens a background tab that captures screen frames even while you're in fullscreen —
-        without needing this popup.
-      </p>
-      <p class="fs-desc" style="margin-top:-2px;">
-        ① Start recording above &nbsp;② Click below &nbsp;③ Select <em>Entire Screen</em>
-        in the picker &nbsp;④ Enter fullscreen &nbsp;⑤ Return here to stop &amp; send.
-      </p>
-      <button class="btn-recorder" id="btnOpenRecorder">
-        📺 Open Fullscreen Recorder Tab
-      </button>
-      <div id="recorderTabStatus" style="font-size:10px;color:#7c3aed;min-height:12px;"></div>
-    </div>
-  </div>
-
-  <!-- ── Manual screen capture (fallback) ────────────────────────────────── -->
-  <div class="screen-fallback" style="margin-bottom:10px;">
-    <div class="screen-fallback-title">📸 Quick screen capture (fallback)</div>
-    <p class="screen-note-sm">
-      After exiting fullscreen, use this for a one-shot frame — no separate tab needed.
-    </p>
-    <button class="btn-screen" id="btnCaptureScreen" disabled>📸 Capture Screen Now</button>
-    <div id="captureScreenStatus"></div>
-  </div>
-
-  <div style="border:1px solid #e0f2fe;border-radius:8px;padding:8px 10px;background:#f0f9ff;font-size:11px;color:#0369a1;line-height:1.55;margin-bottom:10px;">
-    💡 Tip: A floating recorder bar appears on the page while recording so you can stop and send proof without opening this popup.
+  <!-- How it works -->
+  <div class="flow-box">
+    <strong>How to record fullscreen video proof:</strong>
+    <ol>
+      <li>Enter session ID → click <strong>Start Recording</strong></li>
+      <li>A recorder tab opens automatically</li>
+      <li>In the recorder tab: click <strong>Start Screen Capture</strong> → select <em>Entire Screen</em></li>
+      <li>Enter fullscreen on your video/workflow page</li>
+      <li>Return to recorder tab → click <strong>Stop Screen Capture</strong> → video uploads</li>
+      <li>Return here → <strong>Stop Recording</strong> → <strong>Send Proof</strong></li>
+    </ol>
   </div>
 
   <div class="privacy">

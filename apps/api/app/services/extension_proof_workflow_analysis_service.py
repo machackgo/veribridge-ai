@@ -664,8 +664,11 @@ def _build_completed_stages(
         {"key": "mapping_skills",            "label": "Mapping demonstration to skills",         "status": "complete"},
         {"key": "generating_summary",        "label": "Generating recruiter-safe summary",       "status": "complete"},
         {"key": "finalizing",                "label": "Finalizing Work Passport evidence",        "status": "complete" if db_saved else "failed"},
-        # ── Visual frame capture stage ─────────────────────────────────────────
-        {"key": "visual_frame_capture",      "label": "Visual frame capture (screenshot evidence)", "status": "complete"},
+        # ── Video recording + visual frame evidence stages ─────────────────────
+        # Phase 0 (unified recorder): MediaRecorder WebM video uploaded, keyframes extracted.
+        {"key": "video_recording",           "label": "Screen recording + keyframe extraction",   "status": "complete"},
+        # Screenshot evidence (captureVisibleTab helper — supplementary DOM evidence).
+        {"key": "visual_frame_capture",      "label": "Visual frame capture (DOM screenshot evidence)", "status": "complete"},
     ]
 
 

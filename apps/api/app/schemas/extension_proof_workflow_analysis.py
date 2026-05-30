@@ -222,6 +222,26 @@ class WorkflowAnalysisResponse(BaseModel):
     )
 
     # ── Progress tracking ──────────────────────────────────────────────────────
+    # ── Video keyframe evidence (Phase 0 — unified recorder) ──────────────────
+    # Populated by live query against workflow_visual_frame_evidence at response time.
+    # None when no video was uploaded for this session.
+    video_keyframe_status: str | None = Field(
+        default=None,
+        description=(
+            "'extracted' when keyframes were extracted from the uploaded WebM video. "
+            "'failed' when the video was uploaded but extraction failed. "
+            "None when no video was recorded for this session."
+        ),
+    )
+    video_keyframe_count: int = Field(
+        default=0,
+        description="Number of keyframes extracted from the uploaded video (0 when not extracted).",
+    )
+    video_upload_error: str | None = Field(
+        default=None,
+        description="Exact error reason from the backend when video_keyframe_status='failed'.",
+    )
+
     # Computed at response time, not stored in DB.
     # After successful analysis all stages are "complete" and progress = 100.
     progress: int = Field(default=100, ge=0, le=100)

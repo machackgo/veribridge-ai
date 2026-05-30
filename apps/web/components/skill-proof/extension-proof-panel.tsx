@@ -1310,8 +1310,11 @@ function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse
                   color: "#991b1b",
                   border: "1px solid #fecaca",
                 }}
+                title={analysis.video_upload_error ?? "Keyframe extraction failed"}
               >
-                Extraction failed
+                {analysis.video_upload_error
+                  ? `Failed: ${analysis.video_upload_error.slice(0, 80)}`
+                  : "Keyframe extraction failed"}
               </span>
             ) : (
               <span

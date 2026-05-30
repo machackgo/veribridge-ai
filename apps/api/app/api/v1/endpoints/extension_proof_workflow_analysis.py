@@ -72,6 +72,7 @@ def analyze_workflow(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"message": "Workflow analysis failed unexpectedly."},
         ) from exc
+    row = _enrich_video_keyframes(db, user_id, session_id, row)
     return _to_response(row)
 
 
@@ -102,6 +103,7 @@ def get_workflow_analysis(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"message": "No workflow analysis found for this session."},
         )
+    row = _enrich_video_keyframes(db, user_id, session_id, row)
     return _to_response(row)
 
 
@@ -203,6 +205,11 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
         observed_demonstration=observed_demonstration,
         visual_analysis_status=row.get("visual_analysis_status", "not_available"),
         visible_evidence_status=raw_ve_status,
+        # ── Video keyframe evidence (Phase 0 unified recorder) ────────────────
+        # Populated by _enrich_video_keyframes() live query — always current.
+        video_keyframe_status=row.get("video_keyframe_status"),
+        video_keyframe_count=int(row.get("video_keyframe_count", 0)),
+        video_upload_error=row.get("video_upload_error"),
         progress=100,
         current_stage="AI reviewed",
         stages=stages,
@@ -211,6 +218,62 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
         created_at=str(row.get("created_at", "")),
         updated_at=row.get("updated_at"),
     )
+
+
+# ── Video keyframe enrichment ──────────────────────────────────────────────────
+
+_VF_TABLE = "workflow_visual_frame_evidence"
+
+
+def _enrich_video_keyframes(
+    db: Any,
+    user_id: str,
+    session_id: str,
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    """Live-query for video keyframe frames and inject status into the row dict.
+
+    This is done at response time (not stored) so the status is always current
+    even if the video was uploaded AFTER the analysis was run.
+
+    Injects:
+      video_keyframe_status: "extracted" | "failed" | None
+      video_keyframe_count: int
+      video_upload_error: str | None
+    """
+    try:
+        resp = (
+            db.table(_VF_TABLE)
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .eq("proof_session_id", session_id)
+            .eq("frame_type", "video_keyframe")
+            .execute()
+        )
+        # Supabase returns count in resp.count when count="exact" is set
+        count: int = 0
+        if hasattr(resp, "count") and resp.count is not None:
+            count = int(resp.count)
+        elif resp.data:
+            count = len(resp.data)
+
+        if count > 0:
+            return {
+                **row,
+                "video_keyframe_status": "extracted",
+                "video_keyframe_count": count,
+                "video_upload_error": None,
+            }
+
+        # No keyframe records — video may not have been uploaded
+        return {**row, "video_keyframe_status": None, "video_keyframe_count": 0, "video_upload_error": None}
+
+    except Exception:
+        logger.warning(
+            "_enrich_video_keyframes: query failed for session %s — returning null status",
+            session_id, exc_info=True,
+        )
+        return {**row, "video_keyframe_status": None, "video_keyframe_count": 0, "video_upload_error": None}
 
 
 def _not_found(session_id: str) -> HTTPException:

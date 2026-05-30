@@ -214,7 +214,7 @@
     <div class="stream-row">
       <span class="stream-indicator" id="streamIndicator">⚪</span>
       <span class="stream-label" id="streamLabel">No screen selected</span>
-      <span class="frame-badge" id="frameBadge">0 frames</span>
+      <span class="frame-badge" id="frameBadge">—</span>
     </div>
 
     <!-- Main capture card -->
@@ -222,8 +222,8 @@
       <div class="capture-header">
         <span class="capture-icon">📺</span>
         <div>
-          <div class="capture-title">Fullscreen Screen Capture</div>
-          <div class="capture-sub">Click below, then select Entire Screen or your window</div>
+          <div class="capture-title">Fullscreen Screen Recording</div>
+          <div class="capture-sub">Click below → select Entire Screen → record → Stop &amp; Upload</div>
         </div>
       </div>
       <div class="capture-body">
@@ -235,25 +235,25 @@
 
         <!-- Start button -->
         <button class="btn-primary" id="btnStart" disabled>
-          <span>📺</span> Start Screen Capture
+          <span>🔴</span> Start Screen Recording
         </button>
 
         <!-- Stop button -->
         <button class="btn-danger" id="btnStop" disabled>
-          ■ Stop Screen Capture
+          ■ Stop &amp; Upload Video
         </button>
 
         <!-- Instructions (shown when capture is active) -->
         <div class="instructions" id="instructions">
-          <div class="instructions-title">📋 Capture is running — follow these steps:</div>
+          <div class="instructions-title">📋 Recording — follow these steps:</div>
           <ol>
             <li>Minimize or move this tab to the background</li>
-            <li>Navigate to your video page</li>
-            <li>Enter fullscreen — recording continues in background</li>
-            <li>Watch / interact with the fullscreen content</li>
+            <li>Navigate to your video or workflow page</li>
+            <li>Enter fullscreen — video recording continues</li>
+            <li>Complete your workflow / watch the content</li>
             <li>Exit fullscreen when done</li>
-            <li>Return here and click <strong>Stop Screen Capture</strong></li>
-            <li>Then use the extension popup → <strong>Stop &amp; Send Proof</strong></li>
+            <li>Return here → click <strong>Stop &amp; Upload Video</strong></li>
+            <li>Return to popup → <strong>Stop Recording</strong> → <strong>Send Proof</strong></li>
           </ol>
         </div>
 
@@ -262,13 +262,13 @@
 
     <!-- Chrome limitation notice -->
     <div class="limit-notice">
-      <strong>ℹ Chrome Screen Capture</strong><br>
-      This tab uses <code>getDisplayMedia</code> (OS-level capture) which bypasses the hardware-video
-      compositor limitation. Select <strong>Entire Screen</strong> in the picker for best results —
-      it can capture hardware-decoded fullscreen video that the standard tab-capture cannot.
+      <strong>ℹ Chrome Screen Recording</strong><br>
+      This tab records a <strong>WebM video</strong> using <code>MediaRecorder</code> + <code>getDisplayMedia</code>
+      (OS-level). Select <strong>Entire Screen</strong> in the picker to capture hardware-decoded
+      fullscreen video — standard tab capture cannot do this.
       <br><br>
-      The green 🟢 screen-share indicator in the browser confirms capture is active. This tab's JS
-      continues running even while minimized or while fullscreen is active on another tab.
+      Recording is stored at ~500 kbps. After stopping, the video is uploaded to VeriBridge where
+      keyframes are extracted for evidence. Max recording: 5 minutes / 100 MB.
     </div>
 
     <!-- Privacy note -->

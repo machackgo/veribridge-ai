@@ -1197,9 +1197,13 @@ export type WorkflowAnalysisResponse = {
   graphical_rendering_note?: string | null
   top_result_snippets?: string[]
   page_context_summary?: string | null
-  // ── Video keyframe evidence (v6 — Week 2) ────────────────────────────────────
+  // ── Video keyframe evidence (Phase 0 — unified MediaRecorder) ───────────────
+  /** "extracted" when keyframes extracted from uploaded video; null when no video. */
   video_keyframe_status?: VideoKeyframeEvidenceStatus | null
+  /** Number of keyframes extracted from the uploaded video. */
   video_keyframe_count?: number | null
+  /** Exact error reason from the backend when video_keyframe_status is "failed". */
+  video_upload_error?: string | null
   // ── Sequence analysis (v6 — Week 3) ──────────────────────────────────────────
   /** Full sequence analysis result. Public-safe — no raw paths or private metadata. */
   sequence_analysis?: SequenceAnalysisResult | null

@@ -645,10 +645,13 @@ class TestWorkflowAnalysisEndpointV3:
         assert "detecting_iao_flow" in keys
         assert "mapping_skills" in keys
         assert "finalizing" in keys
-        # video_frame_analysis should be "coming_soon"
-        vf = next((s for s in stages if s["key"] == "video_frame_analysis"), None)
+        # video_recording stage present and complete (Phase 0: unified MediaRecorder)
+        vf = next((s for s in stages if s["key"] == "video_recording"), None)
         assert vf is not None
-        assert vf["status"] == "coming_soon"
+        assert vf["status"] == "complete"
+        # visual_frame_capture (DOM screenshot helper) also present
+        vfc = next((s for s in stages if s["key"] == "visual_frame_capture"), None)
+        assert vfc is not None
 
     def test_endpoint_recruiter_summary_mentions_workflow_pattern(
         self, client: TestClient, mem_store: dict
