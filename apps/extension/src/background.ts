@@ -22,6 +22,17 @@ const MAX_VISUAL_FRAMES = 10
  */
 const MIN_FRAME_INTERVAL_MS = 2000
 
+/**
+ * Minimum base64 string length for a valid (non-black) JPEG frame.
+ *
+ * A nearly-all-black JPEG captured from a hardware-decoded fullscreen video
+ * compresses extremely well and comes back as ~400–900 base64 chars.
+ * A real screenshot (even a simple page) is typically 5 000+ chars.
+ * Threshold set at 1 200 to safely skip blank/black frames without discarding
+ * legitimate low-complexity pages.
+ */
+const MIN_VALID_FRAME_BASE64_LEN = 1200
+
 /** Internal representation of one captured visual frame. */
 interface VisualFrameData {
   frame_base64: string          // base64-encoded JPEG (no data: prefix)
@@ -240,6 +251,22 @@ async function captureVisualFrame(
     const base64 = dataUrl.slice(commaIdx + 1)
     if (!base64) return
 
+    // ── Black-frame detection ────────────────────────────────────────────────
+    // captureVisibleTab returns a nearly-all-black JPEG when the tab is
+    // displaying hardware-decoded video in native fullscreen (the video is
+    // composited by the GPU overlay, bypassing the normal tab pixel pipeline).
+    // Such frames are useless as evidence; skip them and log a debug note.
+    if (base64.length < MIN_VALID_FRAME_BASE64_LEN) {
+      dbgVE(
+        "[VisualFrame] skipped likely-black/blank frame — base64 len=%d (threshold=%d) type=%s",
+        base64.length, MIN_VALID_FRAME_BASE64_LEN, frameType,
+      )
+      // Reset the throttle timestamp so the NEXT call (e.g. after fullscreen exit)
+      // is not blocked by this failed capture attempt.
+      state.lastFrameCaptureMs = 0
+      return
+    }
+
     const timestampMs = state.startedAt
       ? now - new Date(state.startedAt).getTime()
       : now
@@ -428,6 +455,60 @@ chrome.runtime.onMessage.addListener(
             "Proof session detected from VeriBridge. You can start recording."
         }
         sendResponse({ ok: true })
+        break
+      }
+
+      // ── Immediate frame capture (fullscreen transitions) ─────────────────────
+      // Sent by content.ts just before entering fullscreen and immediately after
+      // exiting fullscreen.  overrideThrottle bypasses MIN_FRAME_INTERVAL_MS so
+      // the transition frame is never silently skipped.
+      case "CAPTURE_FRAME_NOW": {
+        const { frameType, overrideThrottle } = (msg.payload ?? {}) as {
+          frameType?: string
+          overrideThrottle?: boolean
+        }
+        if (overrideThrottle) state.lastFrameCaptureMs = 0
+        void captureVisualFrame(frameType ?? "manual")
+        sendResponse({ ok: true })
+        break
+      }
+
+      // ── Screen / window capture frame (from popup getDisplayMedia) ───────────
+      // The popup uses navigator.mediaDevices.getDisplayMedia, captures one JPEG
+      // frame from the stream, and posts it here.  This bypasses the hardware-
+      // overlay limitation that makes captureVisibleTab return black frames during
+      // native fullscreen video.
+      case "CAPTURE_SCREEN_FRAME": {
+        const { frame_base64, frame_type } = (msg.payload ?? {}) as {
+          frame_base64?: string
+          frame_type?: string
+        }
+        if (!frame_base64) {
+          sendResponse({ ok: false, error: "No frame data" })
+          break
+        }
+        if (!state.isRecording && state.status !== "stopped") {
+          sendResponse({ ok: false, error: "Not recording" })
+          break
+        }
+        if (state.visualFrames.length >= MAX_VISUAL_FRAMES) {
+          sendResponse({ ok: false, error: "Frame cap reached" })
+          break
+        }
+        const now = Date.now()
+        const timestampMs = state.startedAt
+          ? now - new Date(state.startedAt).getTime()
+          : now
+        state.visualFrames.push({
+          frame_base64,
+          frame_type: frame_type ?? "screen_capture",
+          timestamp_ms: Math.max(0, timestampMs),
+        })
+        dbgVE(
+          "[VisualFrame] screen-capture frame added type=%s total=%d session=%s",
+          frame_type ?? "screen_capture", state.visualFrames.length, state.sessionId,
+        )
+        sendResponse({ ok: true, total: state.visualFrames.length })
         break
       }
 

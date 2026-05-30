@@ -132,9 +132,21 @@
       transition: opacity 0.1s;
     }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
-    .btn-start { background: #16a34a; color: #fff; }
-    .btn-stop  { background: #dc2626; color: #fff; }
-    .btn-send  { background: #111; color: #fff; }
+    .btn-start  { background: #16a34a; color: #fff; }
+    .btn-stop   { background: #dc2626; color: #fff; }
+    .btn-send   { background: #111; color: #fff; }
+    .btn-screen { background: #7c3aed; color: #fff; }
+    .btn-screen:disabled { opacity: 0.4; cursor: not-allowed; }
+    .screen-note {
+      border: 1px solid #ede9fe;
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #faf5ff;
+      font-size: 11px;
+      color: #6d28d9;
+      line-height: 1.55;
+      margin-bottom: 10px;
+    }
 
     /* Privacy notice */
     .privacy {
@@ -207,6 +219,17 @@
   <div class="actions single" style="margin-bottom: 12px;">
     <button class="btn-send" id="btnSend" disabled>↑ Send Proof</button>
   </div>
+
+  <!-- Screen capture (for fullscreen / hardware-decoded video) -->
+  <div class="screen-note">
+    <strong>📸 Fullscreen video recording?</strong><br>
+    Chrome cannot screenshot hardware-decoded fullscreen video automatically.
+    Exit fullscreen, then click below — or use this anytime for a full-screen capture.
+  </div>
+  <div class="actions single" style="margin-bottom:12px;">
+    <button class="btn-screen" id="btnCaptureScreen" disabled>📸 Capture Screen Now</button>
+  </div>
+  <div id="captureScreenStatus" style="font-size:11px;color:#6d28d9;text-align:center;margin-bottom:8px;min-height:14px;"></div>
 
   <div style="border:1px solid #e0f2fe;border-radius:8px;padding:8px 10px;background:#f0f9ff;font-size:11px;color:#0369a1;line-height:1.55;margin-bottom:10px;">
     💡 Tip: A floating recorder bar appears on the page while recording so you can stop and send proof without opening this popup.

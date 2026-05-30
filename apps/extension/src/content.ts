@@ -280,6 +280,14 @@ let lastState: StateSnapshot | null = null
  */
 let isFullscreen = false
 
+/**
+ * Set to true for ~8 seconds after the user EXITS fullscreen.
+ * Drives the "screenshot taken on fullscreen exit" notice in the bar —
+ * avoids showing the message when the user has never been in fullscreen.
+ */
+let recentlyExitedFullscreen = false
+let _fullscreenExitTimer: ReturnType<typeof setTimeout> | null = null
+
 // ── Visible Evidence — module state ──────────────────────────────────────────
 /** Epoch-ms at which the current recording started; offset basis for timestamp_ms. */
 let recordingStartMs = 0
@@ -547,19 +555,59 @@ function detectFullscreen(): boolean {
 
 /**
  * Handle fullscreen enter/exit events.
- * Updates the isFullscreen flag and re-renders the bar with a warning when fullscreen
- * is active. Recording state and event capture are NOT interrupted — only the UI
- * warning changes.
  *
- * Chrome limitation: `captureVisibleTab` (used in background.ts for screenshots)
- * may return a blank/black frame for native video content in hardware-accelerated
- * fullscreen. DOM event capture continues normally. A warning is shown in the bar.
+ * Captures a visual frame at the transition boundary:
+ *  - BEFORE entering fullscreen  → captures the last normal-compositor frame
+ *    (hardware-decoded fullscreen video would return black AFTER transition).
+ *  - AFTER exiting fullscreen    → captures the restored page view.
+ *
+ * Both calls set overrideThrottle=true so MIN_FRAME_INTERVAL_MS never silently
+ * blocks a transition-boundary capture.
+ *
+ * Chrome limitation: captureVisibleTab returns a black/blank frame when native
+ * fullscreen with hardware-decoded video is active.  The before-enter capture
+ * is the best screenshot available in that scenario.  The popup's
+ * "Capture Screen" button (getDisplayMedia) can be used for a post-fullscreen
+ * screenshot if the user needs one.
  */
 function handleFullscreenChange(): void {
   const nowFullscreen = detectFullscreen()
-  if (nowFullscreen === isFullscreen) return  // no change, skip re-render
+  if (nowFullscreen === isFullscreen) return  // no change, skip work
+
+  const wasFullscreen = isFullscreen
   isFullscreen = nowFullscreen
   dbgVE("[Fullscreen] changed — fullscreen:", isFullscreen)
+
+  if (!wasFullscreen && nowFullscreen) {
+    // ── Entering fullscreen ───────────────────────────────────────────────────
+    // Capture IMMEDIATELY — before the fullscreen transition completes and the
+    // GPU overlay takes over.  This is the last frame captureVisibleTab can
+    // reliably deliver for hardware-decoded video.
+    void safeSendMessage({
+      type: "CAPTURE_FRAME_NOW",
+      payload: { frameType: "before_fullscreen", overrideThrottle: true },
+    })
+  } else if (wasFullscreen && !nowFullscreen) {
+    // ── Exiting fullscreen ────────────────────────────────────────────────────
+    // Wait briefly for the browser to restore the normal compositor view, then
+    // capture.  250 ms is enough for Chrome's fullscreen-exit animation.
+    setTimeout(() => {
+      void safeSendMessage({
+        type: "CAPTURE_FRAME_NOW",
+        payload: { frameType: "after_fullscreen_exit", overrideThrottle: true },
+      })
+    }, 250)
+
+    // Show the "screenshot taken on exit" notice in the bar for 8 seconds.
+    recentlyExitedFullscreen = true
+    if (_fullscreenExitTimer) clearTimeout(_fullscreenExitTimer)
+    _fullscreenExitTimer = setTimeout(() => {
+      recentlyExitedFullscreen = false
+      _fullscreenExitTimer = null
+      if (barHost) fetchAndRender()
+    }, 8000)
+  }
+
   // Re-render bar so the warning badge appears/disappears without polling delay.
   if (barHost) {
     fetchAndRender()
@@ -630,6 +678,8 @@ function stopCapture(): void {
   document.removeEventListener("fullscreenchange", handleFullscreenChange)
   document.removeEventListener("webkitfullscreenchange", handleFullscreenChange)
   isFullscreen = false
+  recentlyExitedFullscreen = false
+  if (_fullscreenExitTimer) { clearTimeout(_fullscreenExitTimer); _fullscreenExitTimer = null }
 
   if (postActionSnapTimer) { clearTimeout(postActionSnapTimer); postActionSnapTimer = null }
   if (mutDebounceTimer) { clearTimeout(mutDebounceTimer); mutDebounceTimer = null }
@@ -817,14 +867,18 @@ function buildBarHTML(s: StateSnapshot | null): string {
     acts = `<button class="btn b-send" id="vb-send">Send Proof</button>`
   }
 
-  // ── Fullscreen warning (shown when isFullscreen and recording) ────────────
-  // The floating bar is hidden by the browser's fullscreen compositor layer,
-  // so we can't show it while fullscreen is active. After the user exits
-  // fullscreen, the bar reappears and shows this contextual note.
-  const fullscreenWarn = (!isFullscreen && rec && capturing)
-    ? ""   // not in fullscreen — no warning needed
-    : isFullscreen
-    ? `<span class="fs-warn">Fullscreen recording may be limited by browser restrictions. Exit fullscreen if capture appears paused.</span>`
+  // ── Fullscreen warning ────────────────────────────────────────────────────
+  // • While IN fullscreen: bar is actually hidden by the browser's fullscreen
+  //   compositor, so this branch is never visible.  Kept as a safety fallback
+  //   for non-native pseudo-fullscreen (CSS-only).
+  // • After EXITING fullscreen (recentlyExitedFullscreen flag, 8 s window):
+  //   show an actionable note so the user knows a screenshot was attempted and
+  //   how to capture screen content if needed.
+  // • Normal recording (never entered fullscreen): no warning shown.
+  const fullscreenWarn = isFullscreen
+    ? `<span class="fs-warn">⚠ Fullscreen active — screenshot queued for exit.</span>`
+    : recentlyExitedFullscreen
+    ? `<span class="fs-warn">📸 Screenshot attempted on fullscreen exit. Need the video frame? Open popup → "Capture Screen Now".</span>`
     : ""
 
   return `<div class="bar">

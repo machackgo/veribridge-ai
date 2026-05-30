@@ -136,53 +136,158 @@ describe("fmtTime — timer display", () => {
 
 describe("fullscreen state reset on stop", () => {
   it("isFullscreen resets to false after stopCapture clears it", () => {
-    // Simulates the state management in stopCapture:
-    // isFullscreen is set to false after listeners are removed.
-    let isFullscreen = true  // simulated state during recording
-    // On stop:
+    let isFullscreen = true
     isFullscreen = false
     expect(isFullscreen).toBe(false)
   })
 
+  it("recentlyExitedFullscreen resets to false on stop", () => {
+    let recentlyExitedFullscreen = true
+    recentlyExitedFullscreen = false
+    expect(recentlyExitedFullscreen).toBe(false)
+  })
+
   it("fullscreen warning is not shown after stop", () => {
-    // Simulates buildBarHTML logic: warning only shown when isFullscreen && recording
-    let isFullscreen = false
-    const isRecording = false
-    const showWarning = isFullscreen && isRecording
+    const isFullscreen = false
+    const recentlyExitedFullscreen = false
+    const showWarning = isFullscreen || recentlyExitedFullscreen
     expect(showWarning).toBe(false)
   })
 })
 
-describe("fullscreen warning logic", () => {
-  it("shows warning when isFullscreen is true during recording", () => {
+describe("fullscreen warning logic (updated)", () => {
+  it("shows 'fullscreen active' warning when isFullscreen is true", () => {
     const isFullscreen = true
-    const capturing = true
-    // Simplified warning logic from buildBarHTML
-    const showWarning = isFullscreen && capturing
-    expect(showWarning).toBe(true)
+    const recentlyExitedFullscreen = false
+    const warning = isFullscreen
+      ? "fullscreen_active"
+      : recentlyExitedFullscreen
+      ? "recently_exited"
+      : "none"
+    expect(warning).toBe("fullscreen_active")
   })
 
-  it("does NOT show warning when not in fullscreen", () => {
+  it("shows 'recently exited' warning for 8 s after exiting fullscreen", () => {
     const isFullscreen = false
-    const capturing = true
-    const showWarning = isFullscreen && capturing
-    expect(showWarning).toBe(false)
+    const recentlyExitedFullscreen = true
+    const warning = isFullscreen
+      ? "fullscreen_active"
+      : recentlyExitedFullscreen
+      ? "recently_exited"
+      : "none"
+    expect(warning).toBe("recently_exited")
   })
 
-  it("does NOT show warning when not recording", () => {
-    const isFullscreen = true
-    const capturing = false
-    const showWarning = isFullscreen && capturing
-    expect(showWarning).toBe(false)
+  it("shows no warning during normal recording (never entered fullscreen)", () => {
+    const isFullscreen = false
+    const recentlyExitedFullscreen = false
+    const warning = isFullscreen
+      ? "fullscreen_active"
+      : recentlyExitedFullscreen
+      ? "recently_exited"
+      : "none"
+    expect(warning).toBe("none")
   })
 
-  it("does NOT show warning after stop even if fullscreen flag was previously set", () => {
+  it("does NOT show warning after stop clears both flags", () => {
     let isFullscreen = true
-    let capturing = true
-    // Stop: both reset
+    let recentlyExitedFullscreen = true
+    // On stop:
     isFullscreen = false
-    capturing = false
-    const showWarning = isFullscreen && capturing
+    recentlyExitedFullscreen = false
+    const showWarning = isFullscreen || recentlyExitedFullscreen
     expect(showWarning).toBe(false)
+  })
+})
+
+describe("black frame detection (background captureVisualFrame)", () => {
+  const MIN_VALID_FRAME_BASE64_LEN = 1200  // matches background.ts constant
+
+  it("rejects a very short base64 string (likely black frame)", () => {
+    const shortBase64 = "a".repeat(800)
+    expect(shortBase64.length < MIN_VALID_FRAME_BASE64_LEN).toBe(true)
+  })
+
+  it("accepts a normal-length base64 string", () => {
+    const normalBase64 = "a".repeat(5000)
+    expect(normalBase64.length < MIN_VALID_FRAME_BASE64_LEN).toBe(false)
+  })
+
+  it("threshold boundary: 1199 chars is rejected", () => {
+    const borderBase64 = "a".repeat(1199)
+    expect(borderBase64.length < MIN_VALID_FRAME_BASE64_LEN).toBe(true)
+  })
+
+  it("threshold boundary: 1200 chars is accepted", () => {
+    const borderBase64 = "a".repeat(1200)
+    expect(borderBase64.length < MIN_VALID_FRAME_BASE64_LEN).toBe(false)
+  })
+})
+
+describe("fullscreen transition frame capture logic", () => {
+  it("overrideThrottle resets lastFrameCaptureMs to 0 (allows immediate re-capture)", () => {
+    let lastFrameCaptureMs = Date.now()
+    const overrideThrottle = true
+    if (overrideThrottle) lastFrameCaptureMs = 0
+    expect(lastFrameCaptureMs).toBe(0)
+  })
+
+  it("CAPTURE_FRAME_NOW with overrideThrottle=false does NOT reset the throttle", () => {
+    const originalMs = Date.now()
+    let lastFrameCaptureMs = originalMs
+    const overrideThrottle = false
+    if (overrideThrottle) lastFrameCaptureMs = 0
+    expect(lastFrameCaptureMs).toBe(originalMs)
+  })
+
+  it("entering fullscreen → frameType should be 'before_fullscreen'", () => {
+    const wasFullscreen = false
+    const nowFullscreen = true
+    const frameType = (!wasFullscreen && nowFullscreen) ? "before_fullscreen" : "after_fullscreen_exit"
+    expect(frameType).toBe("before_fullscreen")
+  })
+
+  it("exiting fullscreen → frameType should be 'after_fullscreen_exit'", () => {
+    const wasFullscreen = true
+    const nowFullscreen = false
+    const frameType = (!wasFullscreen && nowFullscreen) ? "before_fullscreen" : "after_fullscreen_exit"
+    expect(frameType).toBe("after_fullscreen_exit")
+  })
+})
+
+describe("screen capture frame injection (CAPTURE_SCREEN_FRAME)", () => {
+  // Simulates the background state.visualFrames.push logic
+  const MAX_VISUAL_FRAMES = 10
+
+  it("adds a valid frame to visualFrames", () => {
+    const visualFrames: Array<{ frame_base64: string; frame_type: string; timestamp_ms: number }> = []
+    const base64 = "a".repeat(5000)
+    if (visualFrames.length < MAX_VISUAL_FRAMES && base64) {
+      visualFrames.push({ frame_base64: base64, frame_type: "screen_capture_manual", timestamp_ms: 1000 })
+    }
+    expect(visualFrames).toHaveLength(1)
+    expect(visualFrames[0].frame_type).toBe("screen_capture_manual")
+  })
+
+  it("rejects an empty frame_base64", () => {
+    const visualFrames: Array<{ frame_base64: string; frame_type: string; timestamp_ms: number }> = []
+    const base64 = ""
+    if (base64) {
+      visualFrames.push({ frame_base64: base64, frame_type: "screen_capture_manual", timestamp_ms: 1000 })
+    }
+    expect(visualFrames).toHaveLength(0)
+  })
+
+  it("does not exceed MAX_VISUAL_FRAMES", () => {
+    const visualFrames: Array<{ frame_base64: string; frame_type: string; timestamp_ms: number }> = []
+    for (let i = 0; i < MAX_VISUAL_FRAMES; i++) {
+      visualFrames.push({ frame_base64: "a".repeat(5000), frame_type: "test", timestamp_ms: i })
+    }
+    // Attempt to add one more
+    const base64 = "a".repeat(5000)
+    if (visualFrames.length < MAX_VISUAL_FRAMES && base64) {
+      visualFrames.push({ frame_base64: base64, frame_type: "screen_capture_manual", timestamp_ms: 999 })
+    }
+    expect(visualFrames).toHaveLength(MAX_VISUAL_FRAMES)
   })
 })
