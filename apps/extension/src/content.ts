@@ -273,6 +273,13 @@ let barPoll: ReturnType<typeof setInterval> | null = null
 let barMinimized = false
 let lastState: StateSnapshot | null = null
 
+// ── Fullscreen state tracking ─────────────────────────────────────────────────
+/**
+ * True when the document (or any element) is in fullscreen.
+ * Used to show a warning in the floating bar and handle stop safely.
+ */
+let isFullscreen = false
+
 // ── Visible Evidence — module state ──────────────────────────────────────────
 /** Epoch-ms at which the current recording started; offset basis for timestamp_ms. */
 let recordingStartMs = 0
@@ -524,6 +531,41 @@ function handleChange(e: Event): void {
   }
 }
 
+// ── Fullscreen change handlers ─────────────────────────────────────────────────
+
+/**
+ * Returns true if the document has an active fullscreen element,
+ * checking both the standard and WebKit-prefixed APIs.
+ */
+function detectFullscreen(): boolean {
+  return (
+    !!document.fullscreenElement ||
+    !!(document as unknown as { webkitFullscreenElement: Element | null })
+      .webkitFullscreenElement
+  )
+}
+
+/**
+ * Handle fullscreen enter/exit events.
+ * Updates the isFullscreen flag and re-renders the bar with a warning when fullscreen
+ * is active. Recording state and event capture are NOT interrupted — only the UI
+ * warning changes.
+ *
+ * Chrome limitation: `captureVisibleTab` (used in background.ts for screenshots)
+ * may return a blank/black frame for native video content in hardware-accelerated
+ * fullscreen. DOM event capture continues normally. A warning is shown in the bar.
+ */
+function handleFullscreenChange(): void {
+  const nowFullscreen = detectFullscreen()
+  if (nowFullscreen === isFullscreen) return  // no change, skip re-render
+  isFullscreen = nowFullscreen
+  dbgVE("[Fullscreen] changed — fullscreen:", isFullscreen)
+  // Re-render bar so the warning badge appears/disappears without polling delay.
+  if (barHost) {
+    fetchAndRender()
+  }
+}
+
 function startCapture(): void {
   if (capturing) return
   capturing = true
@@ -536,6 +578,14 @@ function startCapture(): void {
   document.addEventListener("click", handleClick, { capture: true, passive: true })
   document.addEventListener("change", handleChange, { capture: true, passive: true })
   document.addEventListener("submit", handleFormSubmit, { capture: true, passive: true })
+
+  // ── Fullscreen detection ────────────────────────────────────────────────────
+  // Detect initial fullscreen state on capture start (e.g. if already fullscreen).
+  isFullscreen = detectFullscreen()
+  // Standard API (Chrome 61+)
+  document.addEventListener("fullscreenchange", handleFullscreenChange, { passive: true })
+  // WebKit prefix — needed for older Safari and some embedded webviews.
+  document.addEventListener("webkitfullscreenchange", handleFullscreenChange, { passive: true })
 
   // Capture the page's current visible state on load.
   captureSnapshot("page_load")
@@ -575,6 +625,11 @@ function stopCapture(): void {
   document.removeEventListener("click", handleClick, true)
   document.removeEventListener("change", handleChange, true)
   document.removeEventListener("submit", handleFormSubmit, true)
+
+  // Remove fullscreen listeners to avoid memory leaks.
+  document.removeEventListener("fullscreenchange", handleFullscreenChange)
+  document.removeEventListener("webkitfullscreenchange", handleFullscreenChange)
+  isFullscreen = false
 
   if (postActionSnapTimer) { clearTimeout(postActionSnapTimer); postActionSnapTimer = null }
   if (mutDebounceTimer) { clearTimeout(mutDebounceTimer); mutDebounceTimer = null }
@@ -699,6 +754,11 @@ const BAR_CSS = `
   padding:0 2px;font-family:inherit;flex-shrink:0;
 }
 .b-icon:hover{color:#d1d5db}
+.fs-warn{
+  font-size:10px;font-weight:600;color:#fbbf24;
+  background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.3);
+  border-radius:5px;padding:2px 7px;white-space:normal;max-width:220px;line-height:1.3;
+}
 `
 
 function buildBarHTML(s: StateSnapshot | null): string {
@@ -757,9 +817,19 @@ function buildBarHTML(s: StateSnapshot | null): string {
     acts = `<button class="btn b-send" id="vb-send">Send Proof</button>`
   }
 
+  // ── Fullscreen warning (shown when isFullscreen and recording) ────────────
+  // The floating bar is hidden by the browser's fullscreen compositor layer,
+  // so we can't show it while fullscreen is active. After the user exits
+  // fullscreen, the bar reappears and shows this contextual note.
+  const fullscreenWarn = (!isFullscreen && rec && capturing)
+    ? ""   // not in fullscreen — no warning needed
+    : isFullscreen
+    ? `<span class="fs-warn">Fullscreen recording may be limited by browser restrictions. Exit fullscreen if capture appears paused.</span>`
+    : ""
+
   return `<div class="bar">
     <div class="logo">VB</div>
-    <div class="info">${info}</div>
+    <div class="info">${info}${fullscreenWarn}</div>
     <div class="acts">${acts}</div>
     <button class="b-icon" id="vb-minimize" title="Minimize">−</button>
   </div>`
@@ -811,6 +881,16 @@ function wireBarButtons(): void {
 }
 
 async function onBarStop(): Promise<void> {
+  // Best-effort: exit fullscreen before stopping so the bar reappears
+  // and the final screenshot is not a black frame.
+  if (isFullscreen && document.fullscreenElement) {
+    try {
+      await document.exitFullscreen()
+    } catch {
+      // exitFullscreen() throws if there is no fullscreen element or if not
+      // allowed from this context — silently ignore and stop anyway.
+    }
+  }
   stopCapture()
   await safeSendMessage({ type: "STOP_RECORDING" })
   const s = await safeSendMessage<StateSnapshot>({ type: "GET_STATE" })

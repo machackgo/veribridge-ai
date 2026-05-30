@@ -329,6 +329,42 @@ function EvidenceLayerLegend({
         </div>
       )}
 
+      {/* Row: Video keyframes */}
+      {(analysis.video_keyframe_status || (analysis.video_keyframe_count ?? 0) > 0) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Video keyframes</span>
+          {analysis.video_keyframe_status === "extracted" ? (
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+              {analysis.video_keyframe_count ?? 0} extracted ✓
+            </span>
+          ) : (
+            <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+              background: "#f1f5f9", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>
+              {analysis.video_keyframe_status ?? "not captured"}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Row: Sequence analysis */}
+      {analysis.sequence_analysis && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Sequence analysis</span>
+          {analysis.sequence_analysis.sequence_analysis_status === "completed" ? (
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: "#fdf4ff", color: "#7e22ce", border: "1px solid #e9d5ff" }}>
+              {analysis.sequence_analysis.analyzed_frame_count} frames · {analysis.sequence_analysis.evidence_strength} ✓
+            </span>
+          ) : (
+            <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+              background: "#f1f5f9", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>
+              {analysis.sequence_analysis.sequence_analysis_status}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Row: Combined DOM + visual evidence (best case) */}
       {showCombined && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -358,6 +394,10 @@ function EvidenceLayerLegend({
             <div>visual_frame_count (analyzed): <b>{visualFrameCount}</b></div>
             <div>visual_analysis_provider: <b>{visualProvider ?? "none"}</b></div>
             <div>ocr_status: <b>{ocrStatus ?? "none"}</b></div>
+            <div>video_keyframe_status: <b>{analysis.video_keyframe_status ?? "none"}</b></div>
+            <div>video_keyframe_count: <b>{analysis.video_keyframe_count ?? 0}</b></div>
+            <div>sequence_analysis_status: <b>{analysis.sequence_analysis?.sequence_analysis_status ?? "none"}</b></div>
+            <div>sequence_confidence_score: <b>{analysis.sequence_analysis?.confidence_score ?? "n/a"}</b></div>
           </div>
         </details>
       )}

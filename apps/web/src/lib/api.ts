@@ -1099,6 +1099,61 @@ export type ObservedDemonstration = {
   limitations: string[]
 }
 
+// ── Sequence Analysis types (v6 — Week 3) ─────────────────────────────────────
+
+/** One workflow stage captured during sequence analysis. */
+export type WorkflowStageSummary = {
+  stage: string
+  description: string
+  frame_index?: number | null
+  confidence?: string | null
+}
+
+/** Input→Action→Output chain captured by sequence analysis. */
+export type InputActionOutputChain = {
+  inputs?: string[]
+  actions?: string[]
+  outputs?: string[]
+  [key: string]: unknown
+}
+
+/**
+ * Result of multi-frame sequence analysis (backend Week 3).
+ * Returned via WorkflowAnalysisResponse.sequence_analysis.
+ * All fields use to_public_dict() — no raw paths or private metadata.
+ */
+export type SequenceAnalysisResult = {
+  /** Status: completed | not_available | failed | insufficient_frames | skipped */
+  sequence_analysis_status: string
+  analyzed_frame_count: number
+  workflow_stage_summaries: WorkflowStageSummary[]
+  input_action_output_chain: InputActionOutputChain
+  before_after_changes: string[]
+  observed_outputs: string[]
+  /** Skills the sequence evidence supports */
+  supported_skills: string[]
+  /** Claims made but not confirmed by frames */
+  unsupported_claims: string[]
+  /** Qualitative strength: strong | moderate | weak | insufficient */
+  evidence_strength: string
+  /** 0–100 confidence score */
+  confidence_score: number
+  /** Safe for public/recruiter view — no private metadata */
+  public_safe_summary: string
+  /** Recruiter-oriented safe summary */
+  recruiter_safe_summary: string
+  limitations: string[]
+}
+
+// ── Video keyframe evidence types (v6 — Week 2) ────────────────────────────────
+
+export type VideoKeyframeEvidenceStatus =
+  | "not_captured"
+  | "pending"
+  | "extracted"
+  | "failed"
+  | "skipped"
+
 export type WorkflowAnalysisResponse = {
   id: string
   proof_session_id: string
@@ -1142,6 +1197,12 @@ export type WorkflowAnalysisResponse = {
   graphical_rendering_note?: string | null
   top_result_snippets?: string[]
   page_context_summary?: string | null
+  // ── Video keyframe evidence (v6 — Week 2) ────────────────────────────────────
+  video_keyframe_status?: VideoKeyframeEvidenceStatus | null
+  video_keyframe_count?: number | null
+  // ── Sequence analysis (v6 — Week 3) ──────────────────────────────────────────
+  /** Full sequence analysis result. Public-safe — no raw paths or private metadata. */
+  sequence_analysis?: SequenceAnalysisResult | null
   // progress tracking
   progress: number
   current_stage: string

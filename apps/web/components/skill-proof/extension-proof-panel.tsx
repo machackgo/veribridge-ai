@@ -42,6 +42,7 @@ import {
 } from "@/lib/api"
 import { VerificationReviewSection } from "./verification-review-section"
 import { EvidenceAnalysisProgress } from "./EvidenceAnalysisProgress"
+import { SequenceAnalysisPanel } from "./sequence-analysis-panel"
 import type {
   ObservedDemonstration,
   DemonstrationStep,
@@ -1269,6 +1270,74 @@ function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse
           <ObservedDemonstrationTimeline demo={analysis.observed_demonstration} />
         )}
 
+        {/* ── Video keyframe evidence badge ─────────────────────────────────── */}
+        {(analysis.video_keyframe_status || (analysis.video_keyframe_count ?? 0) > 0) && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 10px",
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: 8,
+              flexWrap: "wrap",
+            }}
+          >
+            <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Video keyframes</span>
+            {analysis.video_keyframe_status === "extracted" ? (
+              <span
+                style={{
+                  fontSize: 9,
+                  fontWeight: 700,
+                  padding: "2px 7px",
+                  borderRadius: 4,
+                  background: "#f0fdf4",
+                  color: "#166534",
+                  border: "1px solid #bbf7d0",
+                }}
+              >
+                {analysis.video_keyframe_count ?? 0} keyframe{(analysis.video_keyframe_count ?? 0) !== 1 ? "s" : ""} extracted ✓
+              </span>
+            ) : analysis.video_keyframe_status === "failed" ? (
+              <span
+                style={{
+                  fontSize: 9,
+                  fontWeight: 700,
+                  padding: "2px 7px",
+                  borderRadius: 4,
+                  background: "#fef2f2",
+                  color: "#991b1b",
+                  border: "1px solid #fecaca",
+                }}
+              >
+                Extraction failed
+              </span>
+            ) : (
+              <span
+                style={{
+                  fontSize: 9,
+                  fontWeight: 700,
+                  padding: "2px 7px",
+                  borderRadius: 4,
+                  background: "#f8fafc",
+                  color: "#94a3b8",
+                  border: "1px dashed #cbd5e1",
+                }}
+              >
+                {analysis.video_keyframe_status ?? "not captured"}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* ── Sequence Analysis (v6 — Week 3) ──────────────────────────────── */}
+        {analysis.sequence_analysis && (
+          <AnalysisSection title="Sequence Analysis">
+            <SequenceAnalysisPanel analysis={analysis.sequence_analysis} viewMode="student" />
+          </AnalysisSection>
+        )}
+
         {/* Recruiter summary */}
         <AnalysisSection title="Recruiter Summary">
           <div style={{ background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px" }}>
@@ -1311,11 +1380,9 @@ function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse
         {/* Footer note */}
         <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
           <p style={{ margin: 0, fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
-            This is a Workflow Timeline Analysis based on recorded browser events.
-            Video frame analysis is not yet available — the Observed Demonstration Timeline
-            above shows the inferred workflow pattern from event metadata only.
-            Final verification remains pending until GitHub evidence, live website check
-            (if applicable), and all other evidence steps are complete.
+            Workflow analysis is based on browser events, DOM evidence, visual frames, video
+            keyframes, and sequence analysis where available. Final verification remains pending
+            until GitHub evidence, live website check (if applicable), and all evidence steps are complete.
           </p>
         </div>
       </div>
