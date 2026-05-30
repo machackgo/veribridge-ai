@@ -116,6 +116,12 @@ interface InternalState {
   videoUploadStatus: "none" | "uploading" | "uploaded" | "failed"
   videoUploadError: string | null
   videoKeyframeCount: number
+  // ── Recorder tab stream state ───────────────────────────────────────────────
+  // True while recorder tab has an active getDisplayMedia MediaRecorder stream.
+  // Set via RECORDER_STREAM_STARTED / RECORDER_STREAM_STOPPED messages.
+  // Lets the popup show ONE status ("screen recording active in recorder tab")
+  // instead of two conflicting indicators.
+  recorderTabStreamActive: boolean
 }
 
 const state: InternalState = {
@@ -140,6 +146,7 @@ const state: InternalState = {
   videoUploadStatus: "none",
   videoUploadError: null,
   videoKeyframeCount: 0,
+  recorderTabStreamActive: false,
 }
 
 // ── Persisted recording state key ────────────────────────────────────────────
@@ -374,6 +381,7 @@ function publicState(): ExtensionState {
     videoUploadStatus: state.videoUploadStatus,
     videoUploadError: state.videoUploadError,
     videoKeyframeCount: state.videoKeyframeCount,
+    recorderTabStreamActive: state.recorderTabStreamActive,
   }
 }
 
@@ -408,6 +416,7 @@ chrome.runtime.onMessage.addListener(
         state.videoUploadStatus = "none"
         state.videoUploadError  = null
         state.videoKeyframeCount = 0
+        state.recorderTabStreamActive = false
         // Reset tab tracking — seed with the original tab detected from the page URL.
         state.trackedTabIds = new Set()
         state.trackedTabUrls = new Map()
@@ -581,6 +590,21 @@ chrome.runtime.onMessage.addListener(
         sendResponse({ ok: true })
         break
       }
+
+      // ── Recorder tab stream state (sent by recorder.ts) ─────────────────────
+      // Lets the popup show ONE status line instead of duplicating the recorder
+      // tab's "Screen capture active" indicator.
+      case "RECORDER_STREAM_STARTED":
+        state.recorderTabStreamActive = true
+        dbgVE("[RecorderStream] stream started — recorderTabStreamActive=true session=%s", state.sessionId)
+        sendResponse({ ok: true })
+        break
+
+      case "RECORDER_STREAM_STOPPED":
+        state.recorderTabStreamActive = false
+        dbgVE("[RecorderStream] stream stopped — recorderTabStreamActive=false session=%s", state.sessionId)
+        sendResponse({ ok: true })
+        break
 
       // ── Open / focus the Recorder Tab (manual fallback) ──────────────────────
       // Auto-opened by START_RECORDING above.  This handler is kept so the popup

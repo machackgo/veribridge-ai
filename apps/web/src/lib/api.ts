@@ -1202,6 +1202,10 @@ export type WorkflowAnalysisResponse = {
   video_keyframe_status?: VideoKeyframeEvidenceStatus | null
   /** Number of keyframes extracted from the uploaded video. */
   video_keyframe_count?: number | null
+  /** Timestamps (ms from start) of each extracted keyframe. Empty when no video. */
+  video_keyframe_timestamps_ms?: number[]
+  /** Duration of the uploaded video in milliseconds (approximate, from last keyframe). */
+  video_duration_ms?: number | null
   /** Exact error reason from the backend when video_keyframe_status is "failed". */
   video_upload_error?: string | null
   // ── Sequence analysis (v6 — Week 3) ──────────────────────────────────────────

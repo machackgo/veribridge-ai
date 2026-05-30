@@ -60,8 +60,22 @@ const DOT_CLASS: Record<RecordingStatus, string> = {
 }
 
 function applyState(state: ExtensionState): void {
+  const streamActive = !!state.recorderTabStreamActive
+
+  // Status dot — always reflects background recording session state
   statusDot.className = `status-dot ${DOT_CLASS[state.status] ?? ""}`.trim()
-  statusText.textContent = state.statusMessage
+
+  // Status text — when stream is active, defer to recorder tab to avoid two timers
+  if (streamActive && state.isRecording) {
+    statusText.textContent = "Screen recording active — open recorder tab to stop & upload"
+  } else if (state.videoUploadStatus === "uploaded" && state.isRecording) {
+    const kf = state.videoKeyframeCount ?? 0
+    statusText.textContent = kf > 0
+      ? `✓ Video uploaded (${kf} keyframe${kf !== 1 ? "s" : ""}) — Stop Recording → Send Proof`
+      : "✓ Video uploaded — Stop Recording → Send Proof"
+  } else {
+    statusText.textContent = state.statusMessage
+  }
 
   eventCountEl.textContent =
     state.eventCount > 0 ? `${state.eventCount} event(s) captured` : ""
@@ -73,14 +87,23 @@ function applyState(state: ExtensionState): void {
   detectedBanner.style.display = state.status === "ready" ? "" : "none"
 
   btnStart.disabled = state.isRecording || state.status === "uploading"
-  btnStop.disabled = !state.isRecording
+  // Lock Stop Recording while screen capture is active — prevents orphaned sessions
+  btnStop.disabled = !state.isRecording || streamActive
   btnSend.disabled =
     state.isRecording ||
     state.status === "uploading" ||
     !["stopped", "upload_failed", "error"].includes(state.status)
 
-  // "Re-open Recorder Tab" — available whenever recording is active
+  // "Recorder Tab" button — primary action when stream active, fallback when not
   btnReopenRecorder.style.display = state.isRecording ? "" : "none"
+  btnReopenRecorder.disabled = false   // always clickable when visible
+  if (streamActive) {
+    btnReopenRecorder.textContent = "📺 Open Recorder Tab (Recording Active)"
+    btnReopenRecorder.classList.add("active")
+  } else {
+    btnReopenRecorder.textContent = "📺 Re-open Recorder Tab"
+    btnReopenRecorder.classList.remove("active")
+  }
 
   // ── Video upload status bar ────────────────────────────────────────────────
   const vs = state.videoUploadStatus

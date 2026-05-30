@@ -128,9 +128,19 @@
       text-align: center;
       margin-bottom: 10px;
       display: none;         /* shown by JS when recording */
+      transition: background 0.12s, opacity 0.12s;
     }
     .btn-reopen:hover { background: #faf5ff; }
     .btn-reopen:disabled { opacity: 0.4; cursor: not-allowed; }
+    /* Active state — stream is live in recorder tab */
+    .btn-reopen.active {
+      background: #7c3aed;
+      color: #fff;
+      border-color: #7c3aed;
+      animation: pulse-btn 1.5s ease-in-out infinite;
+    }
+    .btn-reopen.active:hover { background: #6d28d9; border-color: #6d28d9; }
+    @keyframes pulse-btn { 0%, 100% { opacity: 1; } 50% { opacity: 0.82; } }
 
     /* Video upload status */
     .video-status {
@@ -215,8 +225,8 @@
   <!-- Video upload status (shown once recorder tab sends result) -->
   <div id="videoStatus" class="video-status"></div>
 
-  <!-- Re-open recorder tab (shown only during recording) -->
-  <button class="btn-reopen" id="btnReopenRecorder" disabled>
+  <!-- Re-open recorder tab (shown only during recording; JS manages active/disabled state) -->
+  <button class="btn-reopen" id="btnReopenRecorder">
     📺 Re-open Recorder Tab
   </button>
 

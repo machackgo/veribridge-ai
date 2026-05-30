@@ -284,6 +284,21 @@ async function uploadVideo(blob: Blob): Promise<void> {
   btnStop.disabled  = displayStream === null
 }
 
+/**
+ * Notify the background service worker whether the screen capture stream is active.
+ * Background broadcasts this to the popup so it shows ONE unified status
+ * ("Screen recording active in recorder tab") instead of two conflicting indicators.
+ */
+function notifyStreamState(active: boolean): void {
+  if (contextInvalidated) return
+  const type = active ? "RECORDER_STREAM_STARTED" : "RECORDER_STREAM_STOPPED"
+  try {
+    chrome.runtime.sendMessage({ type }, () => {
+      if (chrome.runtime.lastError) { /* context may have been invalidated */ }
+    })
+  } catch { /* extension context may be gone */ }
+}
+
 /** Inform the background service worker about the upload result. */
 function notifyBackground(ok: boolean, error: string | null, keyframeCount: number): void {
   if (contextInvalidated) return
@@ -380,6 +395,9 @@ async function startCapture(): Promise<void> {
   uploadDone    = false
   uploadError   = null
 
+  // Notify background so popup shows ONE unified status (no duplicate indicators)
+  notifyStreamState(true)
+
   updateStreamUI(true)
   updateDurationBadge()
   setMsg("✓ Recording started! Minimise this tab and go fullscreen. Return here when done.", "ok")
@@ -410,11 +428,14 @@ function stopCapture(): void {
 function cleanupStream(): void {
   if (durationTimer)  { clearInterval(durationTimer); durationTimer = null }
   if (autoStopTimer)  { clearTimeout(autoStopTimer);  autoStopTimer  = null }
+  const hadStream = displayStream !== null
   if (displayStream) {
     displayStream.getTracks().forEach((t) => t.stop())
     displayStream = null
   }
   mediaRecorder = null
+  // Notify background that screen capture ended (popup can re-enable Stop/Send)
+  if (hadStream) notifyStreamState(false)
   updateStreamUI(false)
   btnStart.disabled = !isRecordingActive
   btnStop.disabled  = true

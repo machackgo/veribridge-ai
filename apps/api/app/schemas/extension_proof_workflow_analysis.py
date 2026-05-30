@@ -237,6 +237,14 @@ class WorkflowAnalysisResponse(BaseModel):
         default=0,
         description="Number of keyframes extracted from the uploaded video (0 when not extracted).",
     )
+    video_keyframe_timestamps_ms: list[int] = Field(
+        default_factory=list,
+        description="Timestamps (ms from start) of each extracted keyframe. Empty when no video.",
+    )
+    video_duration_ms: int | None = Field(
+        default=None,
+        description="Duration of the uploaded video in milliseconds (None when no video).",
+    )
     video_upload_error: str | None = Field(
         default=None,
         description="Exact error reason from the backend when video_keyframe_status='failed'.",

@@ -175,6 +175,41 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
     if raw_ve_status not in valid_ve:
         raw_ve_status = "not_captured"
 
+    # ── Fix observed_demonstration limitations when video keyframes exist ──────
+    # The analysis service sets "Visual frame analysis is not configured" at
+    # analysis time (before the video is typically uploaded).  When keyframes ARE
+    # extracted we replace that message with a more accurate one that acknowledges
+    # the video evidence while still explaining OCR is not configured.
+    video_kf_status = row.get("video_keyframe_status")
+    video_kf_count  = int(row.get("video_keyframe_count", 0))
+    visual_status   = row.get("visual_analysis_status", "not_configured")
+    raw_demo = row.get("observed_demonstration")
+    if (
+        video_kf_status == "extracted"
+        and visual_status in ("not_configured", "not_available")
+        and isinstance(raw_demo, dict)
+    ):
+        raw_lims = list(raw_demo.get("limitations") or [])
+        new_lims: list[str] = []
+        replaced = False
+        for lim in raw_lims:
+            if "VISUAL_ANALYSIS_PROVIDER" in lim or "Visual frame analysis is not configured" in lim:
+                if not replaced:
+                    kf_str = f"{video_kf_count} keyframe{'s' if video_kf_count != 1 else ''}"
+                    new_lims.append(
+                        f"Video was recorded and {kf_str} extracted, but OCR/visual model "
+                        "analysis is not configured.  Verification is based on recording "
+                        "metadata, browser events, DOM/visible evidence where available, and "
+                        "sequence timing.  "
+                        "Set VISUAL_ANALYSIS_PROVIDER=local_ocr or local_vision to enable "
+                        "frame analysis."
+                    )
+                    replaced = True
+            else:
+                new_lims.append(lim)
+        # Update the raw_demo dict with corrected limitations
+        row = {**row, "observed_demonstration": {**raw_demo, "limitations": new_lims}}
+
     stages_raw = _build_completed_stages(
         db_saved=db_saved,
         visible_evidence_status=raw_ve_status,
@@ -209,6 +244,8 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
         # Populated by _enrich_video_keyframes() live query — always current.
         video_keyframe_status=row.get("video_keyframe_status"),
         video_keyframe_count=int(row.get("video_keyframe_count", 0)),
+        video_keyframe_timestamps_ms=list(row.get("video_keyframe_timestamps_ms") or []),
+        video_duration_ms=row.get("video_duration_ms"),
         video_upload_error=row.get("video_upload_error"),
         progress=100,
         current_stage="AI reviewed",
@@ -231,20 +268,22 @@ def _enrich_video_keyframes(
     session_id: str,
     row: dict[str, Any],
 ) -> dict[str, Any]:
-    """Live-query for video keyframe frames and inject status into the row dict.
+    """Live-query for video keyframe frames and inject status/metadata into the row dict.
 
-    This is done at response time (not stored) so the status is always current
-    even if the video was uploaded AFTER the analysis was run.
+    Done at response time (not stored) so the status is always current even if
+    the video was uploaded AFTER the analysis was run.
 
     Injects:
-      video_keyframe_status: "extracted" | "failed" | None
-      video_keyframe_count: int
-      video_upload_error: str | None
+      video_keyframe_status:       "extracted" | None
+      video_keyframe_count:        int
+      video_keyframe_timestamps_ms: list[int]  — timestamps from each stored frame
+      video_duration_ms:           int | None  — derived from max timestamp (approximate)
+      video_upload_error:          str | None
     """
     try:
         resp = (
             db.table(_VF_TABLE)
-            .select("id", count="exact")
+            .select("id,timestamp_ms", count="exact")
             .eq("user_id", user_id)
             .eq("proof_session_id", session_id)
             .eq("frame_type", "video_keyframe")
@@ -258,22 +297,47 @@ def _enrich_video_keyframes(
             count = len(resp.data)
 
         if count > 0:
+            # Extract timestamps for the frontend "Video Keyframe Evidence" section
+            timestamps: list[int] = sorted([
+                int(r["timestamp_ms"])
+                for r in (resp.data or [])
+                if r.get("timestamp_ms") is not None
+            ])
+            # Approximate duration: last keyframe timestamp
+            duration_ms: int | None = timestamps[-1] if timestamps else None
+
             return {
                 **row,
                 "video_keyframe_status": "extracted",
                 "video_keyframe_count": count,
+                "video_keyframe_timestamps_ms": timestamps,
+                "video_duration_ms": duration_ms,
                 "video_upload_error": None,
             }
 
-        # No keyframe records — video may not have been uploaded
-        return {**row, "video_keyframe_status": None, "video_keyframe_count": 0, "video_upload_error": None}
+        # No keyframe records — video may not have been uploaded yet
+        return {
+            **row,
+            "video_keyframe_status": None,
+            "video_keyframe_count": 0,
+            "video_keyframe_timestamps_ms": [],
+            "video_duration_ms": None,
+            "video_upload_error": None,
+        }
 
     except Exception:
         logger.warning(
             "_enrich_video_keyframes: query failed for session %s — returning null status",
             session_id, exc_info=True,
         )
-        return {**row, "video_keyframe_status": None, "video_keyframe_count": 0, "video_upload_error": None}
+        return {
+            **row,
+            "video_keyframe_status": None,
+            "video_keyframe_count": 0,
+            "video_keyframe_timestamps_ms": [],
+            "video_duration_ms": None,
+            "video_upload_error": None,
+        }
 
 
 def _not_found(session_id: str) -> HTTPException:

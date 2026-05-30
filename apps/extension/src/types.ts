@@ -93,4 +93,11 @@ export interface ExtensionState {
   videoUploadError: string | null
   /** Number of keyframes extracted from the uploaded video (0 if not yet extracted). */
   videoKeyframeCount: number
+  // ── Recorder tab screen-capture state ─────────────────────────────────────
+  /**
+   * True while the recorder tab has an active getDisplayMedia stream (MediaRecorder running).
+   * Set via RECORDER_STREAM_STARTED / RECORDER_STREAM_STOPPED messages.
+   * Used by the popup to show ONE clear status without duplicating the recorder tab's UI.
+   */
+  recorderTabStreamActive: boolean
 }
