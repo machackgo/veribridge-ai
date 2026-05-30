@@ -12,9 +12,11 @@ function dbgVE(...args: unknown[]): void {
 // ── Visual frame capture constants ────────────────────────────────────────────
 /**
  * Maximum number of visual frames captured per recording session.
- * Kept low to avoid memory pressure in the service worker.
+ * Set to 40 to support the Fullscreen Recorder Tab mode which captures one
+ * frame every 2 seconds — 40 frames ≈ 80 seconds of fullscreen coverage.
+ * Standard tab capture (captureVisibleTab) uses a subset of this budget.
  */
-const MAX_VISUAL_FRAMES = 10
+const MAX_VISUAL_FRAMES = 40
 
 /**
  * Minimum milliseconds between consecutive frame captures.
@@ -107,6 +109,9 @@ interface InternalState {
   trackedTabIds: Set<number>
   originalTabId: number | null
   trackedTabUrls: Map<number, string>  // last known URL per tracked tab (for navigation detection)
+  // Fullscreen recorder tab — opened by OPEN_RECORDER_TAB message from popup.
+  // Tracked so we can close it automatically after proof is sent (optional).
+  recorderTabId: number | null
 }
 
 const state: InternalState = {
@@ -127,6 +132,7 @@ const state: InternalState = {
   trackedTabIds: new Set(),
   originalTabId: null,
   trackedTabUrls: new Map(),
+  recorderTabId: null,
 }
 
 // ── Persisted recording state key ────────────────────────────────────────────
@@ -510,6 +516,21 @@ chrome.runtime.onMessage.addListener(
         )
         sendResponse({ ok: true, total: state.visualFrames.length })
         break
+      }
+
+      // ── Open the Fullscreen Recorder Tab ────────────────────────────────────
+      // The recorder tab (recorder.html) is a real browser tab — not the popup.
+      // It persists even when the popup is closed or the user enters fullscreen
+      // on another tab, and continues capturing getDisplayMedia frames.
+      case "OPEN_RECORDER_TAB": {
+        const recorderUrl = chrome.runtime.getURL("recorder.html")
+        chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
+          if (tab?.id !== undefined) {
+            state.recorderTabId = tab.id
+          }
+          sendResponse({ ok: true, tabId: tab?.id ?? null })
+        })
+        return true  // async sendResponse
       }
 
       case "DISMISS_UPLOAD_SUCCESS": {

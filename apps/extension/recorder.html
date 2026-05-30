@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>VeriBridge — Screen Recorder</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 32px 16px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 520px;
+      display: grid;
+      gap: 16px;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .logo {
+      width: 36px; height: 36px;
+      background: #fff;
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      color: #111; font-weight: 900; font-size: 16px;
+      flex-shrink: 0; letter-spacing: -1px;
+    }
+    .brand-name { font-weight: 700; font-size: 16px; color: #f1f5f9; }
+    .brand-sub  { font-size: 11px; color: #64748b; margin-top: 2px; }
+
+    /* Status bar */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+    }
+    .status-dot {
+      width: 9px; height: 9px;
+      border-radius: 50%; flex-shrink: 0;
+      background: #64748b;
+    }
+    .status-dot.recording { background: #ef4444; animation: pulse 1.1s ease-in-out infinite; }
+    .status-dot.ready     { background: #22c55e; }
+    .status-dot.stopped   { background: #f59e0b; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .status-text { font-size: 12px; color: #cbd5e1; flex: 1; }
+    .status-session { font-size: 11px; color: #64748b; font-family: monospace; }
+
+    /* Stream status */
+    .stream-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 14px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      font-size: 12px;
+    }
+    .stream-indicator { font-size: 14px; }
+    .stream-label { flex: 1; color: #94a3b8; }
+    .stream-label.active { color: #86efac; font-weight: 600; }
+    .frame-badge {
+      font-size: 11px; font-weight: 700;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 2px 8px;
+      color: #94a3b8;
+    }
+    .frame-badge.has-frames { color: #86efac; border-color: #166534; background: #052e16; }
+
+    /* Main capture card */
+    .capture-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      overflow: hidden;
+    }
+    .capture-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid #334155;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .capture-icon { font-size: 22px; }
+    .capture-title { font-weight: 700; font-size: 14px; color: #f1f5f9; }
+    .capture-sub   { font-size: 11px; color: #64748b; margin-top: 2px; }
+    .capture-body  { padding: 16px; display: grid; gap: 12px; }
+
+    /* Buttons */
+    .btn-primary {
+      width: 100%; padding: 12px 16px;
+      background: #7c3aed; color: #fff;
+      border: none; border-radius: 10px;
+      font-size: 14px; font-weight: 700;
+      cursor: pointer; font-family: inherit;
+      transition: opacity 0.1s;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    .btn-primary:hover:not(:disabled) { opacity: 0.88; }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-danger {
+      width: 100%; padding: 10px 16px;
+      background: #991b1b; color: #fff;
+      border: none; border-radius: 10px;
+      font-size: 13px; font-weight: 700;
+      cursor: pointer; font-family: inherit;
+      transition: opacity 0.1s;
+    }
+    .btn-danger:hover:not(:disabled) { opacity: 0.88; }
+    .btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Status message */
+    .msg-box {
+      padding: 10px 12px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #94a3b8;
+      line-height: 1.6;
+      min-height: 42px;
+    }
+    .msg-box.ok   { color: #86efac; border-color: #166534; background: #052e16; }
+    .msg-box.warn { color: #fbbf24; border-color: #78350f; background: #1c0f00; }
+    .msg-box.err  { color: #fca5a5; border-color: #7f1d1d; background: #1c0000; }
+
+    /* Instructions panel */
+    .instructions {
+      display: none; /* shown when capture is active */
+      padding: 12px 14px;
+      background: #0c4a6e22;
+      border: 1px solid #0369a1;
+      border-radius: 10px;
+      display: none;
+    }
+    .instructions.visible { display: block; }
+    .instructions ol {
+      margin: 6px 0 0 18px;
+      padding: 0;
+      font-size: 12px;
+      color: #7dd3fc;
+      line-height: 1.8;
+    }
+    .instructions-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #38bdf8;
+    }
+
+    /* Limitation notice */
+    .limit-notice {
+      padding: 10px 14px;
+      background: #1c1300;
+      border: 1px solid #78350f;
+      border-radius: 8px;
+      font-size: 11px;
+      color: #fbbf24;
+      line-height: 1.65;
+    }
+    .limit-notice strong { color: #fde68a; }
+
+    /* Privacy note */
+    .privacy-note {
+      padding: 8px 12px;
+      background: #052e16;
+      border: 1px solid #14532d;
+      border-radius: 8px;
+      font-size: 11px;
+      color: #86efac;
+      line-height: 1.55;
+    }
+
+    /* Divider */
+    .divider { height: 1px; background: #1e293b; }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header -->
+    <div class="header">
+      <div class="logo">VB</div>
+      <div>
+        <div class="brand-name">VeriBridge Screen Recorder</div>
+        <div class="brand-sub">Fullscreen / Media Recording Mode — keep this tab open</div>
+      </div>
+    </div>
+
+    <!-- Recording status (from extension background) -->
+    <div class="status-bar">
+      <div class="status-dot" id="recDot"></div>
+      <span class="status-text" id="recStatus">Checking recording status…</span>
+      <span class="status-session" id="recSession"></span>
+    </div>
+
+    <!-- Stream status row -->
+    <div class="stream-row">
+      <span class="stream-indicator" id="streamIndicator">⚪</span>
+      <span class="stream-label" id="streamLabel">No screen selected</span>
+      <span class="frame-badge" id="frameBadge">0 frames</span>
+    </div>
+
+    <!-- Main capture card -->
+    <div class="capture-card">
+      <div class="capture-header">
+        <span class="capture-icon">📺</span>
+        <div>
+          <div class="capture-title">Fullscreen Screen Capture</div>
+          <div class="capture-sub">Click below, then select Entire Screen or your window</div>
+        </div>
+      </div>
+      <div class="capture-body">
+
+        <!-- Status message -->
+        <div class="msg-box" id="msgBox">
+          Start a recording session in the extension popup first, then click "Start Screen Capture" here.
+        </div>
+
+        <!-- Start button -->
+        <button class="btn-primary" id="btnStart" disabled>
+          <span>📺</span> Start Screen Capture
+        </button>
+
+        <!-- Stop button -->
+        <button class="btn-danger" id="btnStop" disabled>
+          ■ Stop Screen Capture
+        </button>
+
+        <!-- Instructions (shown when capture is active) -->
+        <div class="instructions" id="instructions">
+          <div class="instructions-title">📋 Capture is running — follow these steps:</div>
+          <ol>
+            <li>Minimize or move this tab to the background</li>
+            <li>Navigate to your video page</li>
+            <li>Enter fullscreen — recording continues in background</li>
+            <li>Watch / interact with the fullscreen content</li>
+            <li>Exit fullscreen when done</li>
+            <li>Return here and click <strong>Stop Screen Capture</strong></li>
+            <li>Then use the extension popup → <strong>Stop &amp; Send Proof</strong></li>
+          </ol>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Chrome limitation notice -->
+    <div class="limit-notice">
+      <strong>ℹ Chrome Screen Capture</strong><br>
+      This tab uses <code>getDisplayMedia</code> (OS-level capture) which bypasses the hardware-video
+      compositor limitation. Select <strong>Entire Screen</strong> in the picker for best results —
+      it can capture hardware-decoded fullscreen video that the standard tab-capture cannot.
+      <br><br>
+      The green 🟢 screen-share indicator in the browser confirms capture is active. This tab's JS
+      continues running even while minimized or while fullscreen is active on another tab.
+    </div>
+
+    <!-- Privacy note -->
+    <div class="privacy-note">
+      🔒 Frames are captured at low quality (JPEG 50%) and sent only to your VeriBridge backend.
+      Sensitive fields are masked by the extension before upload. Local file paths and auth tokens
+      are automatically redacted.
+    </div>
+
+  </div>
+
+  <script src="dist/recorder.js"></script>
+</body>
+</html>

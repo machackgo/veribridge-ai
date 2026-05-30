@@ -24,18 +24,12 @@
       margin-bottom: 14px;
     }
     .logo {
-      width: 30px;
-      height: 30px;
+      width: 30px; height: 30px;
       background: #111;
       border-radius: 7px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #fff;
-      font-weight: 900;
-      font-size: 15px;
-      flex-shrink: 0;
-      letter-spacing: -1px;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-weight: 900; font-size: 15px;
+      flex-shrink: 0; letter-spacing: -1px;
     }
     .brand { font-weight: 700; font-size: 15px; }
     .brand-sub { font-size: 11px; color: #666; margin-top: 1px; }
@@ -43,23 +37,13 @@
     /* Fields */
     .field { display: grid; gap: 4px; margin-bottom: 10px; }
     label {
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #555;
+      font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.08em; color: #555;
     }
     input, textarea {
-      width: 100%;
-      border: 1px solid #ddd;
-      border-radius: 8px;
-      padding: 8px 10px;
-      font-size: 13px;
-      color: #111;
-      background: #fff;
-      outline: none;
-      font-family: inherit;
-      transition: border-color 0.12s;
+      width: 100%; border: 1px solid #ddd; border-radius: 8px;
+      padding: 8px 10px; font-size: 13px; color: #111; background: #fff;
+      outline: none; font-family: inherit; transition: border-color 0.12s;
     }
     input:focus, textarea:focus { border-color: #111; }
     textarea { resize: vertical; min-height: 58px; }
@@ -67,17 +51,10 @@
     /* Advanced collapsible */
     details { margin-bottom: 10px; }
     details summary {
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #888;
-      cursor: pointer;
-      user-select: none;
-      list-style: none;
-      display: flex;
-      align-items: center;
-      gap: 4px;
+      font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.08em; color: #888;
+      cursor: pointer; user-select: none; list-style: none;
+      display: flex; align-items: center; gap: 4px;
     }
     details summary::before { content: "▸"; font-size: 10px; }
     details[open] summary::before { content: "▾"; }
@@ -89,32 +66,20 @@
 
     /* Status */
     .status-box {
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 9px 11px;
-      background: #f9fafb;
-      margin-bottom: 10px;
+      border: 1px solid #e5e7eb; border-radius: 8px;
+      padding: 9px 11px; background: #f9fafb; margin-bottom: 10px;
     }
     .status-row { display: flex; align-items: center; gap: 7px; }
     .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
-      background: #9ca3af;
+      width: 8px; height: 8px; border-radius: 50%;
+      flex-shrink: 0; background: #9ca3af;
     }
-    .status-dot.ready { background: #0284c7; }
-    .status-dot.recording {
-      background: #16a34a;
-      animation: pulse 1.1s ease-in-out infinite;
-    }
-    .status-dot.stopped { background: #f59e0b; }
+    .status-dot.ready    { background: #0284c7; }
+    .status-dot.recording { background: #16a34a; animation: pulse 1.1s ease-in-out infinite; }
+    .status-dot.stopped  { background: #f59e0b; }
     .status-dot.uploaded { background: #3b82f6; }
-    .status-dot.error { background: #dc2626; }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.35; }
-    }
+    .status-dot.error    { background: #dc2626; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
     .status-text { font-size: 12px; color: #374151; flex: 1; }
     .event-count { font-size: 11px; color: #9ca3af; margin-top: 3px; }
 
@@ -122,41 +87,73 @@
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
     .actions.single { grid-template-columns: 1fr; }
     button {
-      padding: 9px 12px;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      border: 1px solid transparent;
-      font-family: inherit;
-      transition: opacity 0.1s;
+      padding: 9px 12px; border-radius: 8px;
+      font-size: 13px; font-weight: 600;
+      cursor: pointer; border: 1px solid transparent;
+      font-family: inherit; transition: opacity 0.1s;
     }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn-start  { background: #16a34a; color: #fff; }
     .btn-stop   { background: #dc2626; color: #fff; }
     .btn-send   { background: #111; color: #fff; }
-    .btn-screen { background: #7c3aed; color: #fff; }
-    .btn-screen:disabled { opacity: 0.4; cursor: not-allowed; }
-    .screen-note {
+
+    /* Fullscreen mode section */
+    .fs-section {
       border: 1px solid #ede9fe;
-      border-radius: 8px;
-      padding: 8px 10px;
-      background: #faf5ff;
-      font-size: 11px;
-      color: #6d28d9;
-      line-height: 1.55;
+      border-radius: 10px;
+      overflow: hidden;
       margin-bottom: 10px;
     }
+    .fs-header {
+      background: #faf5ff;
+      padding: 9px 12px;
+      display: flex; align-items: center; gap: 7px;
+      border-bottom: 1px solid #ede9fe;
+    }
+    .fs-header-icon { font-size: 16px; }
+    .fs-header-title { font-weight: 700; font-size: 12px; color: #5b21b6; flex: 1; }
+    .fs-body { padding: 10px 12px; display: grid; gap: 8px; }
+    .fs-desc { font-size: 11px; color: #7c3aed; line-height: 1.6; }
+    .fs-desc strong { font-weight: 700; }
+
+    .btn-recorder {
+      background: #7c3aed; color: #fff;
+      padding: 9px 12px; border-radius: 8px;
+      font-size: 12px; font-weight: 700;
+      cursor: pointer; border: none;
+      font-family: inherit; transition: opacity 0.1s;
+      width: 100%;
+    }
+    .btn-recorder:hover { opacity: 0.88; }
+    .btn-recorder:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Manual screen capture (fallback) */
+    .screen-fallback {
+      background: #f8f9fa;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 8px 10px;
+      display: grid; gap: 6px;
+    }
+    .screen-fallback-title { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.08em; }
+    .btn-screen {
+      background: #6b7280; color: #fff;
+      padding: 7px 10px; border-radius: 7px;
+      font-size: 11px; font-weight: 600;
+      cursor: pointer; border: none;
+      font-family: inherit; transition: opacity 0.1s;
+      width: 100%;
+    }
+    .btn-screen:hover { opacity: 0.82; }
+    .btn-screen:disabled { opacity: 0.4; cursor: not-allowed; }
+    .screen-note-sm { font-size: 10px; color: #9ca3af; line-height: 1.5; }
+    #captureScreenStatus { font-size: 10px; color: #7c3aed; min-height: 12px; }
 
     /* Privacy notice */
     .privacy {
-      border: 1px solid #dcfce7;
-      border-radius: 8px;
-      padding: 8px 10px;
-      background: #f0fdf4;
-      font-size: 11px;
-      color: #166534;
-      line-height: 1.55;
+      border: 1px solid #dcfce7; border-radius: 8px;
+      padding: 8px 10px; background: #f0fdf4;
+      font-size: 11px; color: #166534; line-height: 1.55;
     }
   </style>
 </head>
@@ -198,6 +195,7 @@
 
   <div class="divider"></div>
 
+  <!-- Status -->
   <div class="status-box">
     <div class="status-row">
       <div class="status-dot" id="statusDot"></div>
@@ -206,6 +204,7 @@
     <div class="event-count" id="eventCount"></div>
   </div>
 
+  <!-- Standard recording controls -->
   <div class="actions">
     <button class="btn-start" id="btnStart">▶ Start Recording</button>
     <button class="btn-stop"  id="btnStop"  disabled>■ Stop Recording</button>
@@ -220,16 +219,40 @@
     <button class="btn-send" id="btnSend" disabled>↑ Send Proof</button>
   </div>
 
-  <!-- Screen capture (for fullscreen / hardware-decoded video) -->
-  <div class="screen-note">
-    <strong>📸 Fullscreen video recording?</strong><br>
-    Chrome cannot screenshot hardware-decoded fullscreen video automatically.
-    Exit fullscreen, then click below — or use this anytime for a full-screen capture.
+  <div class="divider"></div>
+
+  <!-- ── Fullscreen / Media Recording Mode ───────────────────────────────── -->
+  <div class="fs-section">
+    <div class="fs-header">
+      <span class="fs-header-icon">📺</span>
+      <span class="fs-header-title">Fullscreen / Media Recording Mode</span>
+    </div>
+    <div class="fs-body">
+      <p class="fs-desc">
+        For <strong>fullscreen video proof</strong> (e.g. watching a tutorial).
+        Opens a background tab that captures screen frames even while you're in fullscreen —
+        without needing this popup.
+      </p>
+      <p class="fs-desc" style="margin-top:-2px;">
+        ① Start recording above &nbsp;② Click below &nbsp;③ Select <em>Entire Screen</em>
+        in the picker &nbsp;④ Enter fullscreen &nbsp;⑤ Return here to stop &amp; send.
+      </p>
+      <button class="btn-recorder" id="btnOpenRecorder">
+        📺 Open Fullscreen Recorder Tab
+      </button>
+      <div id="recorderTabStatus" style="font-size:10px;color:#7c3aed;min-height:12px;"></div>
+    </div>
   </div>
-  <div class="actions single" style="margin-bottom:12px;">
+
+  <!-- ── Manual screen capture (fallback) ────────────────────────────────── -->
+  <div class="screen-fallback" style="margin-bottom:10px;">
+    <div class="screen-fallback-title">📸 Quick screen capture (fallback)</div>
+    <p class="screen-note-sm">
+      After exiting fullscreen, use this for a one-shot frame — no separate tab needed.
+    </p>
     <button class="btn-screen" id="btnCaptureScreen" disabled>📸 Capture Screen Now</button>
+    <div id="captureScreenStatus"></div>
   </div>
-  <div id="captureScreenStatus" style="font-size:11px;color:#6d28d9;text-align:center;margin-bottom:8px;min-height:14px;"></div>
 
   <div style="border:1px solid #e0f2fe;border-radius:8px;padding:8px 10px;background:#f0f9ff;font-size:11px;color:#0369a1;line-height:1.55;margin-bottom:10px;">
     💡 Tip: A floating recorder bar appears on the page while recording so you can stop and send proof without opening this popup.
