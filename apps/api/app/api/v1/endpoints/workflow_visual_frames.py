@@ -380,21 +380,33 @@ async def upload_workflow_video(
 
     elif result.video_analysis_status in (VIDEO_STATUS_NOT_AVAILABLE, VIDEO_STATUS_FAILED):
         # ── 4b. Store a marker so the UI knows a video WAS uploaded ────────────
-        # Even when cv2/ffmpeg are unavailable we store a zero-byte marker record
-        # with frame_type="video_upload_marker".  _enrich_video_keyframes() detects
-        # this and returns video_upload_status="uploaded" (not "none") so the
-        # frontend correctly shows "Video uploaded" rather than "No video recorded".
+        # Use distinct frame_type to differentiate:
+        #   "video_upload_marker"   → cv2/ffmpeg not installed (VIDEO_STATUS_NOT_AVAILABLE)
+        #   "video_extract_failed"  → installed but decode failed (VIDEO_STATUS_FAILED)
+        # Both make _enrich_video_keyframes() return video_upload_status="uploaded"
+        # so the frontend shows "Video uploaded" rather than "No video recorded".
+        marker_frame_type = (
+            "video_upload_marker"
+            if result.video_analysis_status == VIDEO_STATUS_NOT_AVAILABLE
+            else "video_extract_failed"
+        )
+        # Store actual error in visual_summary for diagnostic purposes (never public).
+        extraction_error = (
+            result.limitations[0] if result.limitations else result.video_analysis_status
+        )
         try:
             va_svc.store_visual_frame(
                 user_id=user_id,
                 session_id=session_id,
-                frame_type="video_upload_marker",
+                frame_type=marker_frame_type,
                 frame_bytes=None,
                 timestamp_ms=0,
             )
             logger.info(
-                "[WorkflowVideo] Stored video_upload_marker for session %s "
-                "(extraction status: %s)", session_id, result.video_analysis_status,
+                "[WorkflowVideo] Stored %s for session %s "
+                "(extraction status: %s, error: %s)",
+                marker_frame_type, session_id,
+                result.video_analysis_status, extraction_error[:100],
             )
         except Exception as exc:
             logger.warning("[WorkflowVideo] Could not store upload marker: %s", exc)

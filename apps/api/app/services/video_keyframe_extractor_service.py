@@ -225,34 +225,54 @@ class VideoKeyframeExtractorService:
             )
 
         # ── 4. Try cv2, then ffmpeg, then not_available ────────────────────────
+        # IMPORTANT: If cv2 *returns* a non-ANALYZED result (e.g. frame_count=0
+        # for browser WebM streaming format), we still fall through to ffmpeg.
+        # Previously the early `return` prevented this fallback — now fixed.
         cv2_error: str | None = None
         ffmpeg_error: str | None = None
 
         try:
-            return self._extract_with_cv2(video_bytes, filename)
+            cv2_result = self._extract_with_cv2(video_bytes, filename)
+            if cv2_result.video_analysis_status == VIDEO_STATUS_ANALYZED:
+                return cv2_result
+            # Limit exceeded: no point trying ffmpeg (it would hit the same limit).
+            if cv2_result.video_analysis_status == VIDEO_STATUS_LIMIT_EXCEEDED:
+                return cv2_result
+            # cv2 is installed and ran but failed to decode this video (e.g.
+            # total_frames=0 or negative for browser MediaRecorder WebM streaming
+            # format). Fall through to ffmpeg which handles this format better.
+            cv2_error = (
+                cv2_result.limitations[0]
+                if cv2_result.limitations
+                else "cv2 decode produced no frames"
+            )
+            logger.info(
+                "[VideoKeyframes] cv2 returned %s — trying ffmpeg fallback: %s",
+                cv2_result.video_analysis_status, cv2_error,
+            )
         except _Cv2Unavailable:
-            pass   # fall through to ffmpeg
+            pass   # not installed — fall through to ffmpeg
         except Exception as exc:
             cv2_error = str(exc)
-            logger.warning("[VideoKeyframes] cv2 extraction failed: %s", exc)
+            logger.warning("[VideoKeyframes] cv2 extraction raised: %s", exc)
 
         try:
             return self._extract_with_ffmpeg(video_bytes, filename)
         except _FfmpegUnavailable:
-            pass   # fall through to not_available
+            pass   # not installed — fall through to not_available
         except Exception as exc:
             ffmpeg_error = str(exc)
             logger.warning("[VideoKeyframes] ffmpeg extraction failed: %s", exc)
 
-        # Both backends tried (and not merely unavailable) → report failure
+        # Both backends were tried (and not merely unavailable) → report failure
         if cv2_error or ffmpeg_error:
             detail = cv2_error or ffmpeg_error or "unknown error"
             return _make_failed(
-                f"Keyframe extraction failed. Video may be corrupt. Detail: {detail[:200]}",
+                f"Keyframe extraction failed. Detail: {detail[:200]}",
                 extraction_method="none",
             )
 
-        # Neither installed
+        # Neither cv2 nor ffmpeg is installed
         return VideoKeyframeResult(
             video_analysis_status=VIDEO_STATUS_NOT_AVAILABLE,
             keyframe_count=0,
@@ -305,9 +325,11 @@ class VideoKeyframeExtractorService:
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             frame_width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            # duration_ms: estimated from frame count if available; set later from
+            # actual last-frame timestamp when total_frames is 0 (streaming format).
             duration_ms  = int((total_frames / fps) * 1000) if total_frames > 0 else None
 
-            # Duration limit check
+            # Duration limit check (skip when unknown — enforce after extraction)
             if duration_ms is not None:
                 duration_s = duration_ms / 1000
                 if duration_s > self._max_duration:
@@ -327,38 +349,70 @@ class VideoKeyframeExtractorService:
                         ],
                     )
 
-            # Select evenly-distributed frame positions (capped to max_keyframes)
-            n = min(self._max_keyframes, max(1, total_frames))
-            if total_frames <= n:
-                positions = list(range(total_frames))
-            else:
-                step      = total_frames / n
-                positions = [int(i * step) for i in range(n)]
-
             extracted_frames: list[tuple[int, bytes]] = []
 
-            for pos in positions:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
-                ret, frame = cap.read()
-                if not ret:
-                    continue
-                ts_ms = int((pos / fps) * 1000)
-                success, buf = cv2.imencode(
-                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80]
+            if total_frames <= 0:
+                # Browser MediaRecorder WebM: streaming format with unknown frame count.
+                # CAP_PROP_FRAME_COUNT returns 0 for live/streaming WebM containers.
+                # Fall back to sequential reading — read every Nth frame.
+                logger.info(
+                    "[VideoKeyframes] cv2: total_frames=0 for %s (streaming format), "
+                    "using sequential read", filename,
                 )
-                if success:
-                    extracted_frames.append((ts_ms, bytes(buf)))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                frame_pos = 0
+                # We don't know duration; sample at a fixed interval.
+                # Target: read up to max_keyframes frames spaced ~1s apart.
+                # At unknown fps, sample every ~10 decoded frames as a heuristic.
+                sample_every = max(1, int(fps / 2)) if fps > 0 else 5
+                while len(extracted_frames) < self._max_keyframes:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    if frame_pos % sample_every == 0:
+                        ts_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
+                        ok, buf = cv2.imencode(
+                            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80]
+                        )
+                        if ok:
+                            extracted_frames.append((ts_ms, bytes(buf)))
+                    frame_pos += 1
+            else:
+                # Select evenly-distributed frame positions (capped to max_keyframes)
+                n = min(self._max_keyframes, max(1, total_frames))
+                if total_frames <= n:
+                    positions = list(range(total_frames))
+                else:
+                    step      = total_frames / n
+                    positions = [int(i * step) for i in range(n)]
+
+                for pos in positions:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+                    ret, frame = cap.read()
+                    if not ret:
+                        continue
+                    ts_ms = int((pos / fps) * 1000)
+                    success, buf = cv2.imencode(
+                        ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80]
+                    )
+                    if success:
+                        extracted_frames.append((ts_ms, bytes(buf)))
 
             cap.release()
 
             if not extracted_frames:
                 return _make_failed(
-                    "No frames could be decoded from the video.",
+                    "No frames could be decoded from the video. "
+                    "The file may be corrupt, truncated, or use an unsupported codec.",
                     extraction_method="cv2_interval",
                     duration_ms=duration_ms,
                     frame_width=frame_width,
                     frame_height=frame_height,
                 )
+
+            # For streaming format (total_frames=0), derive duration from last frame ts
+            if duration_ms is None and extracted_frames:
+                duration_ms = extracted_frames[-1][0]
 
             logger.info(
                 "[VideoKeyframes] cv2 extracted %d frames from %s (%.1f s)",

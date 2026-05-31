@@ -1021,11 +1021,20 @@ function VideoKeyframeEvidenceSection({
               {kfCount} keyframe{kfCount !== 1 ? "s" : ""} ✓
             </span>
           ) : kfStatus === "not_available" ? (
-            <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
-              background: "#fff7ed", color: "#9a3412", border: "1px solid #fed7aa" }}
-              title="Install opencv-python-headless or ffmpeg to enable keyframe extraction">
-              cv2/ffmpeg not installed
-            </span>
+            // Distinguish: truly no deps installed vs installed but decode failed
+            uploadError && !uploadError.includes("Install") ? (
+              <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+                background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}
+                title={uploadError}>
+                Extraction failed (video decode error)
+              </span>
+            ) : (
+              <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+                background: "#fff7ed", color: "#9a3412", border: "1px solid #fed7aa" }}
+                title={uploadError ?? "Install opencv-python-headless or ffmpeg to enable keyframe extraction"}>
+                cv2/ffmpeg not installed
+              </span>
+            )
           ) : kfStatus === "failed" ? (
             <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
               background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}
@@ -1101,13 +1110,20 @@ function VideoKeyframeEvidenceSection({
         {/* Limitation notice: video uploaded but keyframe extraction unavailable */}
         {kfStatus === "not_available" && (
           <div style={{
-            fontSize: 11, color: "#9a3412", background: "#fff7ed",
-            border: "1px solid #fed7aa", borderRadius: 6, padding: "6px 9px", lineHeight: 1.5,
+            fontSize: 11,
+            color: uploadError && !uploadError.includes("Install") ? "#991b1b" : "#9a3412",
+            background: uploadError && !uploadError.includes("Install") ? "#fef2f2" : "#fff7ed",
+            border: `1px solid ${uploadError && !uploadError.includes("Install") ? "#fecaca" : "#fed7aa"}`,
+            borderRadius: 6, padding: "6px 9px", lineHeight: 1.5,
           }}>
-            Video was recorded but keyframe extraction is not available.
-            Install <code style={{ fontSize: 10 }}>opencv-python-headless</code> or{" "}
-            <code style={{ fontSize: 10 }}>ffmpeg</code> on the backend to enable frame extraction.
-            Verification uses recording metadata, browser events, and DOM evidence.
+            {uploadError ?? (
+              <>
+                Video was recorded but keyframe extraction is not available.
+                Install <code style={{ fontSize: 10 }}>opencv-python-headless</code> or{" "}
+                <code style={{ fontSize: 10 }}>ffmpeg</code> on the backend to enable frame extraction.
+              </>
+            )}
+            {" "}Verification uses recording metadata, browser events, and DOM evidence.
           </div>
         )}
 

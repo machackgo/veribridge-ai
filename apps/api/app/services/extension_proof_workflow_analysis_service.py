@@ -461,6 +461,37 @@ class ExtensionProofWorkflowAnalysisService:
                 session_id, exc_info=True,
             )
 
+        # ── Load stored video keyframe timestamps for sequence analysis ──────────
+        # These come from the workflow/video upload endpoint (VideoKeyframeExtractorService).
+        # Used to provide temporal anchoring to the sequence analysis even when
+        # _analyze_workflow is a pure function with no DB access.
+        stored_keyframe_timestamps: list[int] = []
+        try:
+            _kf_ts_resp = (
+                self._client.table("workflow_visual_frame_evidence")
+                .select("timestamp_ms")
+                .eq("user_id", user_id)
+                .eq("proof_session_id", session_id)
+                .eq("frame_type", "video_keyframe")
+                .order("timestamp_ms", desc=False)
+                .execute()
+            )
+            stored_keyframe_timestamps = sorted([
+                int(r["timestamp_ms"])
+                for r in (_kf_ts_resp.data or [])
+                if r.get("timestamp_ms") is not None
+            ])
+            if stored_keyframe_timestamps:
+                logger.info(
+                    "WORKFLOW_ANALYSIS_KF_TIMESTAMPS_LOADED session=%s count=%d",
+                    session_id, len(stored_keyframe_timestamps),
+                )
+        except Exception:
+            logger.debug(
+                "WORKFLOW_ANALYSIS_KF_TIMESTAMPS_LOAD_FAILED session=%s — continuing without",
+                session_id, exc_info=True,
+            )
+
         result = _analyze_workflow(
             proof_data=proof_data,
             claimed_skills=claimed_skills,
@@ -470,6 +501,7 @@ class ExtensionProofWorkflowAnalysisService:
             github_url=github_url,
             visible_observations=visible_observations,
             visual_frame_observations=visual_frame_observations,
+            stored_keyframe_timestamps=stored_keyframe_timestamps,
         )
 
         logger.info("WORKFLOW_ANALYSIS_DB_INSERT_START session=%s", session_id)
@@ -1393,6 +1425,7 @@ def _analyze_workflow(
     github_url: str | None,
     visible_observations: "Any | None" = None,
     visual_frame_observations: "dict | None" = None,
+    stored_keyframe_timestamps: "list[int] | None" = None,
 ) -> dict[str, Any]:
     events: list[dict[str, Any]] = proof_data.get("workflow_events") or []
     started_at_str: str | None = proof_data.get("started_at")
@@ -1602,19 +1635,27 @@ def _analyze_workflow(
         from app.services.workflow_sequence_analysis_service import (
             WorkflowSequenceAnalysisService,
         )
+        from app.services.video_keyframe_extractor_service import (
+            VideoKeyframeResult,
+            VIDEO_STATUS_ANALYZED,
+        )
         _seq_svc = WorkflowSequenceAnalysisService()
-        # Retrieve stored keyframe result for this session (if any)
+
+        # Build a minimal VideoKeyframeResult from stored timestamps (loaded by run_analysis).
+        # This replaces the broken _get_keyframe_result_for_session method lookup.
         _kf_result = None
-        try:
-            from app.services.workflow_visual_analysis_service import (
-                WorkflowVisualAnalysisService,
+        _kf_ts = stored_keyframe_timestamps or []
+        if _kf_ts:
+            _kf_result = VideoKeyframeResult(
+                video_analysis_status=VIDEO_STATUS_ANALYZED,
+                keyframe_count=len(_kf_ts),
+                selected_frame_timestamps_ms=_kf_ts,
+                extraction_method="db_stored",
+                duration_ms=_kf_ts[-1] if _kf_ts else None,
+                frame_width=None,
+                frame_height=None,
+                limitations=[],
             )
-            _va_svc2 = WorkflowVisualAnalysisService(None)  # read-only helper
-            _kf_result = getattr(_va_svc2, "_get_keyframe_result_for_session", lambda *a: None)(
-                proof_data
-            )
-        except Exception:
-            pass
 
         _seq_result = _seq_svc.analyze(
             keyframe_result=_kf_result,
@@ -1624,8 +1665,9 @@ def _analyze_workflow(
         )
         sequence_analysis = _seq_result.to_public_dict()
         logger.info(
-            "WORKFLOW_SEQUENCE_ANALYSIS session=... status=%s confidence=%d",
+            "WORKFLOW_SEQUENCE_ANALYSIS status=%s frames=%d confidence=%d",
             sequence_analysis.get("sequence_analysis_status"),
+            sequence_analysis.get("analyzed_frame_count", 0),
             sequence_analysis.get("confidence_score", 0),
         )
     except Exception:

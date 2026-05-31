@@ -359,38 +359,69 @@ def _enrich_video_keyframes(
                 "video_upload_error": None,
             }
 
-        # No keyframe records — check for video_upload_marker (video received but
-        # cv2/ffmpeg unavailable, so no keyframes could be extracted).
+        # No keyframe records — check for upload markers:
+        #   "video_upload_marker"  → cv2/ffmpeg not installed
+        #   "video_extract_failed" → installed but decode failed
+        # Both mean a video WAS uploaded (so UI shows "Video uploaded" ✓).
         try:
             marker_resp = (
                 db.table(_VF_TABLE)
-                .select("id", count="exact")
+                .select("id,frame_type", count="exact")
                 .eq("user_id", user_id)
                 .eq("proof_session_id", session_id)
-                .eq("frame_type", "video_upload_marker")
+                .in_("frame_type", ["video_upload_marker", "video_extract_failed"])
                 .execute()
             )
-            marker_count = (
-                int(marker_resp.count)
-                if hasattr(marker_resp, "count") and marker_resp.count is not None
-                else len(marker_resp.data or [])
-            )
+            marker_rows = marker_resp.data or []
+            marker_count = len(marker_rows)
         except Exception:
-            marker_count = 0
+            # Fallback: try original single-type query (backward compat)
+            try:
+                marker_resp = (
+                    db.table(_VF_TABLE)
+                    .select("id", count="exact")
+                    .eq("user_id", user_id)
+                    .eq("proof_session_id", session_id)
+                    .eq("frame_type", "video_upload_marker")
+                    .execute()
+                )
+                marker_rows = []
+                marker_count = (
+                    int(marker_resp.count)
+                    if hasattr(marker_resp, "count") and marker_resp.count is not None
+                    else len(marker_resp.data or [])
+                )
+            except Exception:
+                marker_rows = []
+                marker_count = 0
 
         if marker_count > 0:
-            # Video was uploaded but keyframe extraction was unavailable.
-            # Show upload_status="uploaded" so the UI doesn't say "No video recorded".
+            # Determine precise error message based on marker type
+            has_extract_failed = any(
+                r.get("frame_type") == "video_extract_failed"
+                for r in marker_rows
+            )
+            if has_extract_failed:
+                upload_error = (
+                    "Video was uploaded but keyframe extraction failed. "
+                    "cv2 and ffmpeg are installed but could not decode this video. "
+                    "The recording may use an unsupported codec or be corrupted. "
+                    "Try recording in MP4 format instead of WebM."
+                )
+            else:
+                upload_error = (
+                    "Video was uploaded but keyframe extraction is not available. "
+                    "Install opencv-python-headless (pip install opencv-python-headless) "
+                    "or ffmpeg (brew install ffmpeg) to enable frame extraction."
+                )
+
             return {
                 **row,
                 "video_keyframe_status": "not_available",
                 "video_keyframe_count": 0,
                 "video_keyframe_timestamps_ms": [],
                 "video_duration_ms": None,
-                "video_upload_error": (
-                    "Keyframe extraction requires opencv-python-headless or ffmpeg. "
-                    "Install one to enable frame extraction."
-                ),
+                "video_upload_error": upload_error,
             }
 
         # No video at all
