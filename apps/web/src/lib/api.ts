@@ -1289,6 +1289,16 @@ export type WorkflowAnalysisResponse = {
     supported_signals: string[]
     missing_claims: string[]
     limitations: string[]
+    skill_timeline?: Array<{
+      timestamp_ms: number | null
+      timestamp_label: string
+      detected_skill: string
+      evidence_source: "Qwen" | "OCR" | "DOM" | "fusion"
+      evidence_text: string
+      confidence: number
+      support_level: "supported" | "partial" | "missing" | "unclear"
+      reason: string
+    }>
   } | null
   // progress tracking
   progress: number

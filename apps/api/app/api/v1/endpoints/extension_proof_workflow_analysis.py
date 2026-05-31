@@ -485,6 +485,7 @@ _OCR_PRIVATE_FIELDS = frozenset({
 _REASONING_PUBLIC_FIELDS = frozenset({
     "status", "provider", "frames_analyzed", "summary",
     "observations", "supported_signals", "missing_claims", "limitations",
+    "skill_timeline",
 })
 
 

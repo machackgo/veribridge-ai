@@ -674,6 +674,137 @@ def _build_frame_ocr_evidence_summary(
 
 # ── Visual Reasoning Session Summary builder ──────────────────────────────────
 
+def _build_skill_timeline(
+    analyzed_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build a skill evidence timeline from per-frame Qwen + OCR data.
+
+    For each analyzed frame, emits one entry per confirmed/partial skill
+    from Qwen's skill_evidence checklist.  Also emits OCR-sourced entries
+    when OCR text clearly indicates a known tool or skill.
+
+    Returns entries sorted by timestamp_ms.  Each entry is public-safe:
+    no raw paths, storage URLs, or private metadata.
+    """
+    timeline: list[dict[str, Any]] = []
+
+    # OCR keyword → skill hint
+    _OCR_KEYWORDS: dict[str, str] = {
+        "tensorflow":       "TensorFlow",
+        "neural network":   "Neural Networks",
+        "playground":       "Interactive Model Demo",
+        "machine learning": "Machine Learning",
+        "hidden layer":     "Neural Networks",
+        "output":           "Machine Learning",
+        "accuracy":         "Machine Learning",
+        "loss":             "Machine Learning",
+        "chart":            "Data Visualization",
+        "graph":            "Data Visualization",
+        "training":         "Machine Learning",
+        "epoch":            "Machine Learning",
+        "colab":            "Google Colab",
+        "jupyter":          "Jupyter Notebook",
+        "sklearn":          "scikit-learn",
+        "pytorch":          "PyTorch",
+        "keras":            "TensorFlow",
+        "torch":            "PyTorch",
+    }
+
+    for row in analyzed_rows:
+        obs    = row.get("visual_reasoning_json") or {}
+        ts_ms  = row.get("timestamp_ms")
+        ts_lbl = f"{ts_ms / 1000:.1f}s" if ts_ms is not None else "?"
+        confidence = float(obs.get("confidence_score", 0.5))
+
+        # ── 1. Qwen skill_evidence entries (most reliable source) ─────────────
+        skill_evidence: dict[str, Any] = obs.get("skill_evidence") or {}
+        for skill_name, evidence in skill_evidence.items():
+            if not isinstance(evidence, dict):
+                continue
+            verdict = str(evidence.get("verdict", "not_visible")).lower()
+            if verdict == "not_visible":
+                continue
+            items_visible = evidence.get("items_visible") or []
+            support_level = "supported" if verdict == "supported" else "partial"
+            ev_text = (
+                ", ".join(str(x) for x in items_visible[:3])
+                if items_visible
+                else str(obs.get("visual_summary", ""))[:100]
+            )
+            timeline.append({
+                "timestamp_ms":    ts_ms,
+                "timestamp_label": ts_lbl,
+                "detected_skill":  str(skill_name),
+                "evidence_source": "Qwen",
+                "evidence_text":   ev_text[:200],
+                "confidence":      round(confidence, 2),
+                "support_level":   support_level,
+                "reason":          f"Qwen [{verdict}]: {ev_text[:80]}",
+            })
+
+        # ── 2. Qwen supported_skills fallback ────────────────────────────────
+        # Used when skill_evidence is empty but supported_skills is populated.
+        supported = (
+            obs.get("supported_skills")
+            or obs.get("detected_skills_supported")
+            or []
+        )
+        covered_skills = {str(k).lower() for k in skill_evidence}
+        for s in supported:
+            if str(s).lower() in covered_skills:
+                continue  # already emitted via skill_evidence above
+            timeline.append({
+                "timestamp_ms":    ts_ms,
+                "timestamp_label": ts_lbl,
+                "detected_skill":  str(s),
+                "evidence_source": "Qwen",
+                "evidence_text":   str(obs.get("visual_summary", ""))[:100],
+                "confidence":      round(confidence, 2),
+                "support_level":   "partial",
+                "reason":          f"Qwen reported skill visible: {s}",
+            })
+
+        # ── 3. OCR-based timeline entries ─────────────────────────────────────
+        ocr_raw = row.get("ocr_text")
+        ocr_lines: list[str] = []
+        if isinstance(ocr_raw, list):
+            for item in ocr_raw:
+                if isinstance(item, dict):
+                    ocr_lines.append(str(item.get("text", "")))
+                else:
+                    ocr_lines.append(str(item))
+        elif isinstance(ocr_raw, str):
+            ocr_lines = [ocr_raw]
+
+        ocr_combined = " ".join(ocr_lines).lower()
+        ocr_seen: set[str] = set()
+        for kw, skill in _OCR_KEYWORDS.items():
+            if kw in ocr_combined and skill.lower() not in ocr_seen:
+                # Only add OCR entry if not already covered by Qwen at higher confidence
+                qwen_already = any(
+                    e["detected_skill"].lower() == skill.lower()
+                    and e["evidence_source"] == "Qwen"
+                    for e in timeline
+                    if e.get("timestamp_ms") == ts_ms
+                )
+                if not qwen_already:
+                    ocr_seen.add(skill.lower())
+                    timeline.append({
+                        "timestamp_ms":    ts_ms,
+                        "timestamp_label": ts_lbl,
+                        "detected_skill":  skill,
+                        "evidence_source": "OCR",
+                        "evidence_text":   f"OCR text contains '{kw}'",
+                        "confidence":      0.6,
+                        "support_level":   "partial",
+                        "reason":          f"OCR keyword '{kw}' found in frame at {ts_lbl}",
+                    })
+
+    # Sort by timestamp_ms ascending (None last)
+    timeline.sort(key=lambda e: (e.get("timestamp_ms") is None, e.get("timestamp_ms") or 0))
+    return timeline
+
+
 def _build_visual_reasoning_session_summary_from_db(
     db: Any,
     user_id: str,
@@ -682,9 +813,13 @@ def _build_visual_reasoning_session_summary_from_db(
     """Read per-frame visual_reasoning_json from DB and aggregate into session summary.
 
     Returns None when no reasoning data exists (reasoning disabled or not run).
-    Returns a public-safe dict matching VisualReasoningSessionSummary.to_public_dict().
+    Returns a public-safe dict matching VisualReasoningSessionSummary.to_public_dict()
+    plus skill_timeline (list of per-timestamp skill evidence entries).
 
     Privacy: never returns raw frame paths, storage URLs, or access tokens.
+    Session isolation: only rows belonging to this proof_session_id are read.
+    Stale-result safety: upload_workflow_video NULLs old visual_reasoning_json
+    before each new upload, so this query always sees current-upload data only.
     """
     logger.info(
         "[VisualReasoning] reading per-frame visual_reasoning_json from DB: session=%s",
@@ -693,7 +828,7 @@ def _build_visual_reasoning_session_summary_from_db(
     try:
         resp = (
             db.table(_FRAME_EVIDENCE_TABLE)
-            .select("visual_reasoning_json, timestamp_ms, frame_type")
+            .select("id, visual_reasoning_json, timestamp_ms, frame_type, ocr_text")
             .eq("user_id", user_id)
             .eq("proof_session_id", session_id)
             .eq("frame_type", "video_keyframe")
@@ -716,12 +851,16 @@ def _build_visual_reasoning_session_summary_from_db(
 
     # Aggregate observations
     analyzed_obs: list[dict[str, Any]] = []
+    analyzed_rows: list[dict[str, Any]] = []  # parallel list: rows corresponding to analyzed_obs
     all_skills: list[str] = []
     all_missing: list[str] = []
     all_summaries: list[str] = []
     seen_skills: set[str] = set()
     seen_missing: set[str] = set()
     provider = "none"
+
+    _PRIVATE = frozenset({"frame_storage_path", "raw_frame", "frame_bytes",
+                           "access_token", "raw_dom", "debug_metadata"})
 
     for row in rows:
         obs = row.get("visual_reasoning_json")
@@ -730,11 +869,9 @@ def _build_visual_reasoning_session_summary_from_db(
         if obs.get("status") != "analyzed":
             continue
 
-        # Strip private fields
-        _PRIVATE = frozenset({"frame_storage_path", "raw_frame", "frame_bytes",
-                               "access_token", "raw_dom", "debug_metadata"})
         clean_obs = {k: v for k, v in obs.items() if k not in _PRIVATE}
         analyzed_obs.append(clean_obs)
+        analyzed_rows.append(row)
 
         mp = obs.get("model_provider", "")
         if mp and mp != "none":
@@ -743,7 +880,8 @@ def _build_visual_reasoning_session_summary_from_db(
         if obs.get("visual_summary"):
             all_summaries.append(str(obs["visual_summary"]))
 
-        for s in (obs.get("detected_skills_supported") or []):
+        # Prefer supported_skills (new field); fall back to detected_skills_supported (legacy)
+        for s in (obs.get("supported_skills") or obs.get("detected_skills_supported") or []):
             key = str(s).strip().lower()
             if key not in seen_skills:
                 seen_skills.add(key)
@@ -764,10 +902,18 @@ def _build_visual_reasoning_session_summary_from_db(
             "observations": [],
             "supported_signals": [],
             "missing_claims": [],
+            "skill_timeline": [],
             "limitations": ["No frames had analyzed status in visual_reasoning_json."],
         }
 
     combined_summary = " | ".join(all_summaries[:4])[:600]
+
+    # Build skill evidence timeline from analyzed frames + OCR text
+    skill_timeline = _build_skill_timeline(analyzed_rows)
+    logger.info(
+        "[VisualReasoning] skill_timeline: session=%s entries=%d",
+        session_id, len(skill_timeline),
+    )
 
     return {
         "status": "analyzed",
@@ -777,6 +923,7 @@ def _build_visual_reasoning_session_summary_from_db(
         "observations": analyzed_obs,
         "supported_signals": all_skills,
         "missing_claims": all_missing,
+        "skill_timeline": skill_timeline,
         "limitations": [],
     }
 

@@ -358,6 +358,30 @@ async def upload_workflow_video(
         provider_info = va_svc.get_provider_status()
         frame_bytes_map: dict[str, bytes] = {}
 
+        # Clear stale visual_reasoning_json from any previous video uploads to this
+        # session.  Without this, a second upload would leave old Qwen results (from
+        # a different recording) in the DB, causing the session summary to mix
+        # results from two different recordings.  The clear is a soft wipe: it NULLs
+        # the json column on existing rows but does NOT delete them, so the row count
+        # and timestamp history remain intact for debugging.
+        try:
+            db.table("workflow_visual_frame_evidence").update({
+                "visual_reasoning_json": None,
+            }).eq("proof_session_id", session_id).eq(
+                "user_id", user_id,
+            ).eq("frame_type", "video_keyframe").execute()
+            logger.info(
+                "[WorkflowVideo] Cleared stale visual_reasoning_json "
+                "for session=%s before new upload",
+                session_id,
+            )
+        except Exception as _clr_exc:
+            logger.warning(
+                "[WorkflowVideo] Could not clear stale visual_reasoning_json "
+                "(non-fatal): session=%s error=%s",
+                session_id, _clr_exc,
+            )
+
         for ts_ms, jpeg_bytes in result._extracted_frames:
             frame_id = va_svc.store_visual_frame(
                 user_id=user_id,
@@ -646,7 +670,8 @@ def debug_visual_reasoning_frames(
             db.table("workflow_visual_frame_evidence")
             .select(
                 "id, frame_type, timestamp_ms, frame_width, frame_height, "
-                "ocr_text, frame_storage_path, visual_reasoning_json"
+                "ocr_text, frame_storage_path, visual_reasoning_json, "
+                "proof_session_id, frame_sha256, created_at"
             )
             .eq("proof_session_id", session_id)
             .eq("user_id", user_id)
@@ -665,42 +690,71 @@ def debug_visual_reasoning_frames(
 
     for row in rows:
         vr_json = row.get("visual_reasoning_json")
-        vr_status = vr_json.get("status") if isinstance(vr_json, dict) else None
+        vr_status        = vr_json.get("status")        if isinstance(vr_json, dict) else None
         vr_visual_summary = vr_json.get("visual_summary") if isinstance(vr_json, dict) else None
-        vr_provider = vr_json.get("model_provider") if isinstance(vr_json, dict) else None
+        vr_provider      = vr_json.get("model_provider") if isinstance(vr_json, dict) else None
+        vr_model         = vr_json.get("model_id")       if isinstance(vr_json, dict) else None
+        vr_confidence    = vr_json.get("confidence_score") if isinstance(vr_json, dict) else None
+        vr_supported     = (vr_json.get("supported_skills") or vr_json.get("detected_skills_supported")) \
+                           if isinstance(vr_json, dict) else None
 
         ocr_raw = row.get("ocr_text")
         if isinstance(ocr_raw, list):
-            ocr_preview = " | ".join(str(x) for x in ocr_raw[:3])[:120]
+            # ocr_text is stored as [{"text": "..."}] by analyze_visual_frame
+            parts: list[str] = []
+            for item in ocr_raw[:3]:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("text", ""))[:60])
+                else:
+                    parts.append(str(item)[:60])
+            ocr_preview: str | None = " | ".join(parts)[:120] or None
         elif isinstance(ocr_raw, str):
             ocr_preview = ocr_raw[:120]
         else:
             ocr_preview = None
 
-        # Derive a safe integrity hash from the storage path (not the bytes).
-        # The hash allows cross-referencing the exact stored file without
-        # exposing the path or any downloadable URL.
+        # frame_sha256: stored at upload time (migration 042).
+        # frame_path_sha256_prefix: integrity check from storage path (pre-migration fallback).
+        frame_sha256_val: str | None = row.get("frame_sha256")
         storage_path: str | None = row.get("frame_storage_path")
         frame_path_hash: str | None = None
         if storage_path:
             frame_path_hash = hashlib.sha256(storage_path.encode()).hexdigest()[:16]
 
+        row_session_id = row.get("proof_session_id", "")
         frames_debug.append({
-            "frame_id":                row.get("id"),
-            "frame_type":              row.get("frame_type"),
-            "timestamp_ms":            row.get("timestamp_ms"),
-            "frame_width":             row.get("frame_width"),
-            "frame_height":            row.get("frame_height"),
-            "frame_path_sha256_prefix": frame_path_hash,
-            "ocr_text_preview":        ocr_preview,
-            "visual_reasoning_status": vr_status,
-            "visual_reasoning_summary": vr_visual_summary,
+            "frame_id":                  row.get("id"),
+            "proof_session_id":          row_session_id,
+            "belongs_to_current_session": row_session_id == session_id,
+            "frame_type":                row.get("frame_type"),
+            "timestamp_ms":              row.get("timestamp_ms"),
+            "timestamp_label":           f"{row['timestamp_ms'] / 1000:.1f}s"
+                                         if row.get("timestamp_ms") is not None else None,
+            "frame_width":               row.get("frame_width"),
+            "frame_height":              row.get("frame_height"),
+            "created_at":                row.get("created_at"),
+            # Frame integrity — frame_sha256 is the SHA-256 of the raw bytes (migration 042),
+            # frame_path_sha256_prefix is a fallback from the storage path.
+            "frame_sha256":              frame_sha256_val,
+            "frame_path_sha256_prefix":  frame_path_hash,
+            "ocr_text_preview":          ocr_preview,
+            "visual_reasoning_status":   vr_status,
+            "visual_reasoning_summary":  vr_visual_summary,
             "visual_reasoning_provider": vr_provider,
+            "visual_reasoning_model":    vr_model,
+            "visual_reasoning_confidence": vr_confidence,
+            "visual_reasoning_supported_skills": vr_supported,
         })
 
+    # Summary line: how many frames have Qwen results vs. stale/missing
+    analyzed_count  = sum(1 for f in frames_debug if f["visual_reasoning_status"] == "analyzed")
+    stale_count     = sum(1 for f in frames_debug if f["visual_reasoning_status"] is None)
+
     return {
-        "session_id":   session_id,
-        "user_id":      user_id,
-        "frame_count":  len(frames_debug),
-        "frames":       frames_debug,
+        "session_id":       session_id,
+        "user_id":          user_id,
+        "frame_count":      len(frames_debug),
+        "qwen_analyzed":    analyzed_count,
+        "qwen_missing":     stale_count,
+        "frames":           frames_debug,
     }

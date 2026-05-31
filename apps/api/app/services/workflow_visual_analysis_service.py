@@ -1244,6 +1244,15 @@ class WorkflowVisualAnalysisService:
             else VISUAL_STATUS_NOT_CONFIGURED
         )
 
+        # Compute SHA-256 of frame bytes for dev traceability (migration 042).
+        # Never stored in a public API response — only the debug endpoint exposes it.
+        frame_sha256: str | None = None
+        if frame_bytes:
+            try:
+                frame_sha256 = hashlib.sha256(frame_bytes).hexdigest()
+            except Exception:
+                pass
+
         row: dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "user_id": user_id,
@@ -1260,6 +1269,8 @@ class WorkflowVisualAnalysisService:
             "privacy_flags": [],
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
+        if frame_sha256:
+            row["frame_sha256"] = frame_sha256
         if visible_evidence_event_id:
             row["visible_evidence_event_id"] = visible_evidence_event_id
 

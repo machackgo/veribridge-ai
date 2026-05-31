@@ -994,6 +994,11 @@ function AdvancedVisualReasoningSection({
         </div>
       )}
 
+      {/* Skill Evidence Timeline */}
+      {reasoning.skill_timeline && reasoning.skill_timeline.length > 0 && (
+        <SkillEvidenceTimeline timeline={reasoning.skill_timeline} />
+      )}
+
       {/* Limitations */}
       {limitations.length > 0 && (
         <div style={{ fontSize: 9, color: "#6b7280", fontStyle: "italic",
@@ -1001,6 +1006,111 @@ function AdvancedVisualReasoningSection({
           <strong>Limitations:</strong> {limitations.slice(0, 2).join(" · ")}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Skill Evidence Timeline ───────────────────────────────────────────────────
+
+type SkillTimelineEntry = NonNullable<
+  NonNullable<WorkflowAnalysisResponse["visual_reasoning_summary"]>["skill_timeline"]
+>[number]
+
+const SUPPORT_COLORS: Record<string, { bg: string; border: string; text: string }> = {
+  supported: { bg: "#dcfce7", border: "#86efac", text: "#166534" },
+  partial:   { bg: "#fef9c3", border: "#fde047", text: "#854d0e" },
+  missing:   { bg: "#fee2e2", border: "#fca5a5", text: "#991b1b" },
+  unclear:   { bg: "#f3f4f6", border: "#d1d5db", text: "#374151" },
+}
+
+const SOURCE_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
+  Qwen:    { bg: "#ede9fe", text: "#6d28d9" },
+  OCR:     { bg: "#dbeafe", text: "#1e40af" },
+  DOM:     { bg: "#dcfce7", text: "#166534" },
+  fusion:  { bg: "#fef3c7", text: "#92400e" },
+}
+
+function SkillEvidenceTimeline({ timeline }: { timeline: SkillTimelineEntry[] }) {
+  if (!timeline || timeline.length === 0) return null
+
+  // Deduplicate: one entry per (timestamp_ms, detected_skill, evidence_source)
+  const seen = new Set<string>()
+  const deduped = timeline.filter(e => {
+    const key = `${e.timestamp_ms}|${e.detected_skill}|${e.evidence_source}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+
+  return (
+    <div style={{ marginTop: 2 }}>
+      <div style={{ fontSize: 9, fontWeight: 700, color: "#6d28d9",
+        textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+        Skill Evidence Timeline
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        {deduped.slice(0, 12).map((entry, i) => {
+          const colors   = SUPPORT_COLORS[entry.support_level] ?? SUPPORT_COLORS.unclear
+          const srcColor = SOURCE_BADGE_COLORS[entry.evidence_source] ?? SOURCE_BADGE_COLORS.fusion
+          return (
+            <div key={i} style={{
+              display: "grid",
+              gridTemplateColumns: "36px 1fr",
+              gap: 6,
+              alignItems: "start",
+            }}>
+              {/* Timestamp */}
+              <span style={{
+                fontSize: 8, fontFamily: "monospace", fontWeight: 700,
+                padding: "2px 4px", borderRadius: 3,
+                background: "#ede9fe", color: "#6d28d9",
+                border: "1px solid #c4b5fd", textAlign: "center", whiteSpace: "nowrap",
+              }}>
+                {entry.timestamp_label}
+              </span>
+              {/* Entry body */}
+              <div style={{
+                padding: "4px 7px", borderRadius: 4,
+                background: colors.bg, border: `1px solid ${colors.border}`,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: colors.text }}>
+                    {entry.detected_skill}
+                  </span>
+                  <span style={{
+                    fontSize: 8, padding: "1px 5px", borderRadius: 10,
+                    background: srcColor.bg, color: srcColor.text, fontWeight: 600,
+                  }}>
+                    {entry.evidence_source}
+                  </span>
+                  <span style={{ fontSize: 8, color: colors.text }}>
+                    {(entry.confidence * 100).toFixed(0)}%
+                  </span>
+                  <span style={{
+                    fontSize: 8, fontWeight: 600,
+                    color: entry.support_level === "supported" ? "#166534"
+                         : entry.support_level === "partial"   ? "#92400e"
+                         : "#6b7280",
+                  }}>
+                    {entry.support_level}
+                  </span>
+                </div>
+                {entry.evidence_text && (
+                  <div style={{ fontSize: 9, color: colors.text, marginTop: 2,
+                    lineHeight: 1.3, fontStyle: "italic" }}>
+                    {entry.evidence_text.slice(0, 120)}
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+        {deduped.length > 12 && (
+          <div style={{ fontSize: 9, color: "#6b7280", fontStyle: "italic", paddingLeft: 42 }}>
+            +{deduped.length - 12} more timeline entries
+          </div>
+        )}
+      </div>
     </div>
   )
 }
