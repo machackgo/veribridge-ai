@@ -383,33 +383,55 @@ async def upload_workflow_video(
                 logger.warning("[WorkflowVideo] Visual analysis failed (non-fatal): %s", exc)
 
         # ── 6. Trigger advanced visual reasoning if enabled ────────────────────
-        # Runs after OCR. Uses same frame_bytes_map (in-memory).
+        # Runs after OCR. Uses result._extracted_frames (in-memory, real timestamps).
         # Stores per-frame reasoning JSON in workflow_visual_frame_evidence.
         # Non-fatal: reasoning failure never blocks the upload response.
         if frames_stored > 0:
             try:
                 reasoning_svc = VisualReasoningService()
-                if reasoning_svc.get_provider_status()["visual_reasoning_configured"]:
-                    # Build (timestamp_ms, jpeg_bytes) list from map
-                    frame_pairs = [
-                        (va_svc._db.table("workflow_visual_frame_evidence")  # type: ignore[attr-defined]
-                         # We can't recover ts_ms here from frame_id easily;
-                         # use frame_bytes_map iteration order + 0-indexed timestamps.
-                         # Actual timestamps are in frame_bytes_map keys via store_visual_frame.
-                         , jpeg_bytes)
-                        for jpeg_bytes in frame_bytes_map.values()
-                    ]
-                    # Use the already-extracted frames list from result._extracted_frames
-                    # which has real timestamps
-                    frames_for_reasoning = result._extracted_frames[
-                        : settings.visual_reasoning_max_frames
-                    ]
+                provider_status = reasoning_svc.get_provider_status()
+                is_reasoning_enabled = provider_status["visual_reasoning_enabled"]
+                is_reasoning_configured = provider_status["visual_reasoning_configured"]
+                reasoning_max_frames = provider_status["visual_reasoning_max_frames"]
+                logger.info(
+                    "[WorkflowVideo] visual_reasoning_enabled=%s "
+                    "visual_reasoning_configured=%s "
+                    "provider=%s max_frames=%d frames_stored=%d session=%s",
+                    is_reasoning_enabled,
+                    is_reasoning_configured,
+                    provider_status.get("local_vision_provider", "none"),
+                    reasoning_max_frames,
+                    frames_stored,
+                    session_id,
+                )
+                if is_reasoning_configured:
+                    # result._extracted_frames has real (ts_ms, jpeg_bytes) — pass full list,
+                    # service applies midpoint-of-interval sampling internally.
+                    frames_for_reasoning = result._extracted_frames
+                    selected_ts = [
+                        frames_for_reasoning[min(int((i + 0.5) * (len(frames_for_reasoning) / reasoning_max_frames)), len(frames_for_reasoning) - 1)][0]
+                        for i in range(min(reasoning_max_frames, len(frames_for_reasoning)))
+                    ] if frames_for_reasoning else []
+                    logger.info(
+                        "[WorkflowVideo] Qwen inference STARTING: session=%s "
+                        "total_frames=%d expected_selected_timestamps_ms=%s",
+                        session_id, len(frames_for_reasoning), selected_ts,
+                    )
                     summary = reasoning_svc.analyze_frames(
                         frames=frames_for_reasoning,
+                        max_frames=reasoning_max_frames,
+                    )
+                    logger.info(
+                        "[WorkflowVideo] Qwen inference DONE: session=%s "
+                        "status=%s frames_analyzed=%d",
+                        session_id, summary.status, summary.frames_analyzed,
                     )
                     if summary.status == REASONING_STATUS_ANALYZED:
-                        # Persist per-frame reasoning into workflow_visual_frame_evidence
+                        # Persist per-frame reasoning into workflow_visual_frame_evidence.
+                        # frame_ids ordered by insertion == same order as result._extracted_frames
+                        # was iterated in step 4, so index i matches the i-th stored frame.
                         frame_ids = list(frame_bytes_map.keys())
+                        persisted = 0
                         for i, obs_dict in enumerate(summary.observations):
                             if i >= len(frame_ids):
                                 break
@@ -419,18 +441,34 @@ async def upload_workflow_video(
                                 }).eq("id", frame_ids[i]).eq(
                                     "user_id", user_id
                                 ).execute()
+                                persisted += 1
                             except Exception as _exc:
-                                logger.debug(
-                                    "[WorkflowVideo] Could not persist frame reasoning: %s", _exc
+                                logger.warning(
+                                    "[WorkflowVideo] Could not persist visual_reasoning_json "
+                                    "frame_id=%s: %s",
+                                    frame_ids[i], _exc,
                                 )
                         logger.info(
-                            "[WorkflowVideo] Visual reasoning complete: %d frames analyzed "
-                            "for session %s",
-                            summary.frames_analyzed, session_id,
+                            "[WorkflowVideo] visual_reasoning_json STORED: "
+                            "session=%s persisted=%d/%d",
+                            session_id, persisted, len(summary.observations),
                         )
+                    else:
+                        logger.info(
+                            "[WorkflowVideo] Visual reasoning not analyzed: "
+                            "session=%s status=%s limitations=%s",
+                            session_id, summary.status, summary.limitations,
+                        )
+                else:
+                    logger.info(
+                        "[WorkflowVideo] Visual reasoning skipped (not configured): "
+                        "enabled=%s configured=%s session=%s",
+                        is_reasoning_enabled, is_reasoning_configured, session_id,
+                    )
             except Exception as exc:
                 logger.warning(
-                    "[WorkflowVideo] Advanced visual reasoning failed (non-fatal): %s", exc
+                    "[WorkflowVideo] Advanced visual reasoning FAILED (non-fatal): %s",
+                    exc, exc_info=True,
                 )
 
     elif result.video_analysis_status in (VIDEO_STATUS_NOT_AVAILABLE, VIDEO_STATUS_FAILED):

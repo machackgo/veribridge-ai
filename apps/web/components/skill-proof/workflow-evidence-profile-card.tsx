@@ -816,25 +816,20 @@ function AdvancedVisualReasoningSection({
 }: {
   reasoning: VisualReasoningSummary | null | undefined
 }) {
-  // Nothing to show when reasoning is disabled or null
-  if (!reasoning) {
-    return (
-      <div style={{ fontSize: 10, color: "#6b7280", fontStyle: "italic", marginTop: 4 }}>
-        Advanced visual reasoning is not enabled. OCR-based frame analysis was used.
-      </div>
-    )
-  }
+  // null = reasoning not run for this session (disabled, or analysis stored before video upload)
+  // Show nothing — the OCR / keyframe section already covers it.
+  if (!reasoning) return null
 
   const isAnalyzed  = reasoning.status === "analyzed"
   const isMissing   = reasoning.status === "missing_dependency"
   const isDisabled  = reasoning.status === "disabled" || reasoning.status === "not_configured"
   const isFailed    = reasoning.status === "failed"
 
-  // Show minimal note when disabled
+  // Minimal note when explicitly disabled (VISUAL_REASONING_ENABLED=false stored in dict)
   if (isDisabled) {
     return (
       <div style={{ fontSize: 10, color: "#6b7280", fontStyle: "italic", marginTop: 4 }}>
-        Advanced visual reasoning is not enabled. OCR-based frame analysis was used.
+        Advanced visual reasoning (Qwen-VL) is not enabled for this session. OCR analysis was used.
       </div>
     )
   }
@@ -1127,10 +1122,11 @@ function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysis
       )}
 
       {/* Advanced Visual Reasoning section (v7) — Qwen2.5-VL / Qwen3-VL */}
-      {/* Only shown when reasoning was attempted (status present) or enabled */}
-      {analysis.visual_reasoning_summary !== undefined && (
+      {/* Renders only when reasoning data is present (status in summary dict). */}
+      {/* null = reasoning not run / disabled for this session → section hidden. */}
+      {analysis.visual_reasoning_summary != null && (
         <AdvancedVisualReasoningSection
-          reasoning={analysis.visual_reasoning_summary ?? null}
+          reasoning={analysis.visual_reasoning_summary}
         />
       )}
 

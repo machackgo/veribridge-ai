@@ -686,6 +686,10 @@ def _build_visual_reasoning_session_summary_from_db(
 
     Privacy: never returns raw frame paths, storage URLs, or access tokens.
     """
+    logger.info(
+        "[VisualReasoning] reading per-frame visual_reasoning_json from DB: session=%s",
+        session_id,
+    )
     try:
         resp = (
             db.table(_FRAME_EVIDENCE_TABLE)
@@ -699,9 +703,14 @@ def _build_visual_reasoning_session_summary_from_db(
         )
         rows: list[dict[str, Any]] = resp.data or []
     except Exception as exc:
-        logger.debug("[VisualReasoning] DB read failed (non-fatal): %s", exc)
+        logger.warning("[VisualReasoning] DB read FAILED (non-fatal): %s", exc)
         return None
 
+    logger.info(
+        "[VisualReasoning] found %d video_keyframe row(s) with visual_reasoning_json "
+        "session=%s",
+        len(rows), session_id,
+    )
     if not rows:
         return None
 
@@ -1035,11 +1044,19 @@ class ExtensionProofWorkflowAnalysisService:
             result["visual_reasoning_summary"] = vr_summary
             if vr_summary:
                 logger.info(
-                    "WORKFLOW_ANALYSIS_VISUAL_REASONING_ATTACHED session=%s "
-                    "frames=%d signals=%d",
+                    "WORKFLOW_ANALYSIS_VISUAL_REASONING_SUMMARY_GENERATED: "
+                    "session=%s status=%s frames=%d signals=%s",
                     session_id,
+                    vr_summary.get("status", "?"),
                     vr_summary.get("frames_analyzed", 0),
-                    len(vr_summary.get("supported_signals", [])),
+                    vr_summary.get("supported_signals", []),
+                )
+            else:
+                logger.info(
+                    "WORKFLOW_ANALYSIS_VISUAL_REASONING_SUMMARY_NULL: session=%s "
+                    "(no per-frame visual_reasoning_json found in DB — "
+                    "reasoning may not have run yet or was disabled)",
+                    session_id,
                 )
         except Exception:
             logger.warning(
@@ -1055,7 +1072,13 @@ class ExtensionProofWorkflowAnalysisService:
         try:
             row = self._upsert_result(user_id, session_id, result)
             db_saved = True
-            logger.info("WORKFLOW_ANALYSIS_DB_INSERT_SUCCESS session=%s", session_id)
+            _stored_vrs = row.get("visual_reasoning_summary")
+            logger.info(
+                "WORKFLOW_ANALYSIS_DB_INSERT_SUCCESS session=%s "
+                "visual_reasoning_summary_stored=%s",
+                session_id,
+                isinstance(_stored_vrs, dict) and bool(_stored_vrs),
+            )
         except Exception:
             logger.warning(
                 "WORKFLOW_ANALYSIS_DB_INSERT_FAILED session=%s — degrading to in-memory result",

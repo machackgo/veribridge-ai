@@ -24,6 +24,7 @@ from app.services.extension_proof_workflow_analysis_service import (
     SessionNotFoundError,
     _build_completed_stages,
     _build_frame_ocr_evidence_summary,
+    _build_visual_reasoning_session_summary_from_db,
 )
 from typing import Any
 
@@ -75,6 +76,7 @@ def analyze_workflow(
         ) from exc
     row = _enrich_video_keyframes(db, user_id, session_id, row)
     row = _enrich_frame_ocr_evidence(row)
+    row = _enrich_visual_reasoning_summary(db, user_id, session_id, row)
     return _to_response(row)
 
 
@@ -107,6 +109,7 @@ def get_workflow_analysis(
         )
     row = _enrich_video_keyframes(db, user_id, session_id, row)
     row = _enrich_frame_ocr_evidence(row)
+    row = _enrich_visual_reasoning_summary(db, user_id, session_id, row)
     return _to_response(row)
 
 
@@ -173,6 +176,18 @@ def _parse_observed_demonstration(raw: Any) -> ObservedDemonstration | None:
 
 def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
     db_saved = bool(row.get("_db_saved", True))
+
+    # Log visual_reasoning_summary status for tracing.
+    _vrs = row.get("visual_reasoning_summary")
+    logger.info(
+        "[WorkflowAnalysis] _to_response: visual_reasoning_summary_returned=%s "
+        "status=%s frames=%d session=%s",
+        _vrs is not None,
+        _vrs.get("status", "?") if isinstance(_vrs, dict) else "none",
+        _vrs.get("frames_analyzed", 0) if isinstance(_vrs, dict) else 0,
+        row.get("proof_session_id", "?"),
+    )
+
     raw_ve_status = row.get("visible_evidence_status", "not_captured")
     valid_ve: tuple[Any, ...] = ("available", "partial", "not_captured")
     if raw_ve_status not in valid_ve:
@@ -545,6 +560,67 @@ def _enrich_frame_ocr_evidence(row: dict[str, Any]) -> dict[str, Any]:
 
     summary = _build_frame_ocr_evidence_summary(vf_obs, claimed_skills)
     return {**row, "frame_ocr_evidence_summary": summary}
+
+
+def _enrich_visual_reasoning_summary(
+    db: Any,
+    user_id: str,
+    session_id: str,
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    """Live-enrich visual_reasoning_summary from per-frame DB data at response time.
+
+    This handles two cases where the stored row has a null visual_reasoning_summary:
+      1. The workflow analysis was run BEFORE the video was uploaded (timing race).
+      2. The session was analysed before visual reasoning was introduced (old rows).
+
+    When the stored summary is already non-null (was set during analysis), it is
+    returned as-is — no additional DB query is made.
+
+    Privacy: calls _build_visual_reasoning_session_summary_from_db() which strips
+    all private fields before returning.
+    """
+    existing = row.get("visual_reasoning_summary")
+    if isinstance(existing, dict) and existing:
+        # Already populated — log and return as-is.
+        logger.info(
+            "[WorkflowAnalysis] visual_reasoning_summary already populated: "
+            "session=%s status=%s frames=%d",
+            session_id,
+            existing.get("status", "?"),
+            existing.get("frames_analyzed", 0),
+        )
+        return row
+
+    # Attempt live-read from per-frame visual_reasoning_json in DB.
+    try:
+        vr_summary = _build_visual_reasoning_session_summary_from_db(
+            db, user_id, session_id
+        )
+        if vr_summary:
+            logger.info(
+                "[WorkflowAnalysis] visual_reasoning_summary LIVE-ENRICHED: "
+                "session=%s status=%s frames=%d supported_signals=%s",
+                session_id,
+                vr_summary.get("status", "?"),
+                vr_summary.get("frames_analyzed", 0),
+                vr_summary.get("supported_signals", []),
+            )
+            return {**row, "visual_reasoning_summary": vr_summary}
+        else:
+            logger.info(
+                "[WorkflowAnalysis] visual_reasoning_summary: no per-frame data "
+                "found in DB for session=%s (reasoning disabled or not yet run)",
+                session_id,
+            )
+    except Exception as exc:
+        logger.warning(
+            "[WorkflowAnalysis] visual_reasoning_summary live-enrich failed "
+            "(non-fatal): session=%s error=%s",
+            session_id, exc,
+        )
+
+    return row
 
 
 def _not_found(session_id: str) -> HTTPException:

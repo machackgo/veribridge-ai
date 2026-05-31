@@ -872,8 +872,12 @@ class VisualReasoningService:
     ) -> VisualReasoningSessionSummary:
         """Analyze up to max_frames representative keyframes.
 
+        Frame selection uses midpoint-of-interval sampling so that for
+        VISUAL_REASONING_MAX_FRAMES=1 the MIDDLE frame is chosen (not frame 0
+        which is often a blank/pre-navigation frame).
+
         Args:
-            frames:       list of (timestamp_ms, jpeg_bytes) pairs
+            frames:       list of (timestamp_ms, jpeg_bytes) pairs (ordered by ts)
             claimed_skills: skills the student claims to demonstrate
             max_frames:   cap on frames to analyze (default: VISUAL_REASONING_MAX_FRAMES)
 
@@ -882,8 +886,25 @@ class VisualReasoningService:
         """
         provider = self._provider
         limit = max_frames or settings.visual_reasoning_max_frames
+        model_name = getattr(provider, "_resolved_model_id", lambda: "unknown")()
+
+        logger.info(
+            "[VisionReasoning] VISUAL_REASONING_ENABLED=%s provider=%s model=%s "
+            "max_frames=%d total_frames_available=%d",
+            settings.visual_reasoning_enabled,
+            provider.provider_name,
+            model_name or "unknown",
+            limit,
+            len(frames),
+        )
 
         if not provider.is_configured():
+            logger.info(
+                "[VisionReasoning] provider not configured — returning %s",
+                REASONING_STATUS_DISABLED
+                if not settings.visual_reasoning_enabled
+                else REASONING_STATUS_MISSING_DEPENDENCY,
+            )
             return VisualReasoningSessionSummary(
                 status=REASONING_STATUS_DISABLED
                 if not settings.visual_reasoning_enabled
@@ -900,8 +921,12 @@ class VisualReasoningService:
                 ],
             )
 
-        # Select representative frames (evenly spaced up to limit)
+        # Select representative frames using midpoint-of-interval sampling.
+        # For limit=1:  picks the MIDDLE frame   (not frame[0] which is often blank).
+        # For limit=3:  picks frames at ~17%, 50%, 83% of the recording.
+        # This avoids the common issue of frame[0] being a black/pre-navigation frame.
         if not frames:
+            logger.warning("[VisionReasoning] no frames provided — returning failed")
             return VisualReasoningSessionSummary(
                 status=REASONING_STATUS_FAILED,
                 provider=provider.provider_name,
@@ -913,21 +938,45 @@ class VisualReasoningService:
         if len(frames) <= limit:
             selected = list(frames)
         else:
+            # Midpoint-of-interval: index = int((i + 0.5) * step)
+            # clamped to [0, len-1] to be safe.
             step = len(frames) / limit
-            selected = [frames[int(i * step)] for i in range(limit)]
+            selected = [
+                frames[min(int((i + 0.5) * step), len(frames) - 1)]
+                for i in range(limit)
+            ]
+
+        selected_ts = [ts for ts, _ in selected]
+        logger.info(
+            "[VisionReasoning] selected %d frame(s) for inference: timestamps_ms=%s",
+            len(selected), selected_ts,
+        )
 
         observations: list[VisualReasoningObservation] = []
         for idx, (ts_ms, jpeg_bytes) in enumerate(selected):
             ctx = {"frame_index": idx, "timestamp_ms": ts_ms}
+            logger.info(
+                "[VisionReasoning] Qwen inference STARTED frame_index=%d timestamp_ms=%d "
+                "bytes=%d",
+                idx, ts_ms, len(jpeg_bytes),
+            )
             try:
                 obs = provider.analyze_frame_reasoning(
                     frame_bytes=jpeg_bytes,
                     claimed_skills=claimed_skills,
                     context=ctx,
                 )
+                logger.info(
+                    "[VisionReasoning] Qwen inference COMPLETED frame_index=%d "
+                    "status=%s confidence=%.2f stage=%s",
+                    idx,
+                    obs.status,
+                    obs.confidence_score,
+                    obs.detected_workflow_stage,
+                )
             except Exception as exc:
                 logger.warning(
-                    "[VisionReasoning] analyze_frame_reasoning raised (frame %d): %s",
+                    "[VisionReasoning] analyze_frame_reasoning RAISED frame_index=%d: %s",
                     idx, exc,
                 )
                 obs = VisualReasoningObservation(
@@ -939,4 +988,10 @@ class VisualReasoningService:
                 )
             observations.append(obs)
 
-        return _build_session_summary(observations, provider.provider_name)
+        summary = _build_session_summary(observations, provider.provider_name)
+        logger.info(
+            "[VisionReasoning] session summary: status=%s frames_analyzed=%d "
+            "supported_signals=%s",
+            summary.status, summary.frames_analyzed, summary.supported_signals,
+        )
+        return summary

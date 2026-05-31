@@ -285,12 +285,21 @@ def test_sensitive_text_masked_in_model_output():
 # ---------------------------------------------------------------------------
 
 def test_service_with_disabled_provider_returns_disabled():
-    """VisualReasoningService with DisabledReasoningProvider → disabled summary."""
-    svc = VisualReasoningService(provider=DisabledReasoningProvider())
-    summary = svc.analyze_frames(
-        frames=[(1000, _TINY_JPEG), (2000, _TINY_JPEG)],
-        claimed_skills=["Machine Learning"],
-    )
+    """VisualReasoningService with DisabledReasoningProvider → disabled (or missing_dep) summary.
+
+    When VISUAL_REASONING_ENABLED=true but provider is DisabledReasoningProvider,
+    status is REASONING_STATUS_MISSING_DEPENDENCY (provider is unconfigured though enabled).
+    When VISUAL_REASONING_ENABLED=false, status is REASONING_STATUS_DISABLED.
+    Both are valid — the test accepts either, patching settings to false to force disabled.
+    """
+    with patch("app.services.visual_reasoning_service.settings") as mock_settings:
+        mock_settings.visual_reasoning_enabled = False
+        mock_settings.visual_reasoning_max_frames = 3
+        svc = VisualReasoningService(provider=DisabledReasoningProvider())
+        summary = svc.analyze_frames(
+            frames=[(1000, _TINY_JPEG), (2000, _TINY_JPEG)],
+            claimed_skills=["Machine Learning"],
+        )
     assert summary.status == REASONING_STATUS_DISABLED
     assert summary.frames_analyzed == 0
 
