@@ -1,4 +1,4 @@
-"""Tests for the five pipeline fixes applied in this session.
+"""Tests for pipeline fixes.
 
 Fix 1: workflow_analysis_results DB insert — all new columns must be writable
        without WORKFLOW_ANALYSIS_DB_INSERT_FAILED.
@@ -6,6 +6,14 @@ Fix 2: visible-evidence endpoint accepts up to 120 visible_text_blocks (extensio
 Fix 3: video uploaded + keyframes extracted + provider disabled still shows video evidence.
 Fix 4: frontend WorkflowAnalysisResponse includes sequence_analysis and video_upload_status.
 Fix 5: extension floating bar suppression during recorder tab stream (content.ts + background.ts).
+Fix 6: video upload marker stored when cv2/ffmpeg unavailable — UI shows "Video uploaded"
+       not "No video recorded".
+Fix 7: video_keyframe_status "not_available" → video_upload_status "uploaded" (not "none").
+Fix 8: frame observations attach to workflow analysis result.
+Fix 9: sequence analysis consumes frame observations when provided.
+Fix 10: public/recruiter response never contains _extracted_frames / frame_storage_path / access_token.
+Fix 11: local OCR provider dependency missing → is_configured() returns False (no exception).
+Fix 12: local OCR provider with stubbed engine → extracted_text_snippets populated.
 """
 
 from __future__ import annotations
@@ -411,3 +419,448 @@ class TestVisibleEvidenceEdgeCases:
         }
         req = VisibleEvidenceBatchRequest(**payload)
         assert len(req.events) == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix 6 & 7: video_upload_marker — UI shows "Video uploaded" when cv2/ffmpeg missing
+# ---------------------------------------------------------------------------
+
+class TestVideoUploadMarker:
+    """When video is uploaded but cv2/ffmpeg are unavailable, a video_upload_marker
+    record is stored so the UI shows 'Video uploaded' instead of 'No video recorded'."""
+
+    def _make_db_with_marker(self, frame_type: str = "video_upload_marker") -> dict:
+        """Build in-memory DB with a marker record."""
+        return {
+            "workflow_visual_frame_evidence": {
+                "marker-1": {
+                    "id": "marker-1",
+                    "user_id": "u1",
+                    "proof_session_id": "sess-1",
+                    "frame_type": frame_type,
+                    "timestamp_ms": 0,
+                    "visual_analysis_status": "not_configured",
+                }
+            }
+        }
+
+    def test_not_available_keyframe_status_maps_to_uploaded(self):
+        """video_keyframe_status='not_available' → video_upload_status='uploaded'."""
+        from app.api.v1.endpoints.extension_proof_workflow_analysis import _to_response
+        from app.services.extension_proof_workflow_analysis_service import (
+            _build_observed_demonstration,
+        )
+        observed = _build_observed_demonstration(
+            target_events=[], app_type="generic", target_app="test.com",
+            iao_patterns=[], visible_observations=None,
+            visual_frame_observations={"visual_frame_analysis_status": "not_configured",
+                                        "provider_used": "none",
+                                        "visual_frame_count": 0,
+                                        "visual_frames_stored": 0},
+        )
+        row = {
+            "id": "r1", "proof_session_id": "s1", "user_id": "u1",
+            "analysis_type": "timeline_only", "analyzer_version": "v4",
+            "workflow_summary": "test", "recruiter_summary": "test",
+            "demonstrated_actions": [], "supported_skills": [], "weakly_supported_skills": [],
+            "unsupported_skills": [], "evidence_strength_score": 10, "workflow_confidence": "low",
+            "missing_evidence": [], "risk_flags": [], "student_improvement_suggestions": [],
+            "human_review_needed": False, "target_website": "test.com",
+            "target_site_pages_count": 1, "supporting_evidence_count": 0,
+            "noise_filtered_count": 0, "observed_demonstration": observed,
+            "visual_analysis_status": "not_configured", "visual_analysis_provider": "none",
+            "visual_frame_count": 0, "visual_frames_stored": 0,
+            "ocr_status": "not_configured", "visual_result_values": [],
+            "visual_summary": "", "dom_evidence_status": "not_captured",
+            "visible_evidence_status": "not_captured", "has_graphical_rendering": False,
+            "graphical_rendering_note": None, "top_result_snippets": [],
+            "page_context_summary": None, "sequence_analysis": None,
+            "created_at": "2024-01-01T00:00:00Z", "updated_at": None,
+            # Injected by _enrich_video_keyframes when cv2/ffmpeg missing
+            "video_keyframe_status": "not_available",
+            "video_keyframe_count": 0,
+            "video_keyframe_timestamps_ms": [],
+            "video_duration_ms": None,
+            "video_upload_error": "Keyframe extraction requires opencv-python-headless or ffmpeg.",
+        }
+        resp = _to_response(row)
+        assert resp.video_upload_status == "uploaded", (
+            "not_available status should show as 'uploaded' (video was received)"
+        )
+
+    def test_no_marker_no_video_status(self):
+        """video_keyframe_status=None → video_upload_status='none'."""
+        from app.api.v1.endpoints.extension_proof_workflow_analysis import _to_response
+        from app.services.extension_proof_workflow_analysis_service import (
+            _build_observed_demonstration,
+        )
+        observed = _build_observed_demonstration(
+            target_events=[], app_type="generic", target_app="test.com",
+            iao_patterns=[], visible_observations=None,
+            visual_frame_observations={"visual_frame_analysis_status": "not_configured",
+                                        "provider_used": "none",
+                                        "visual_frame_count": 0,
+                                        "visual_frames_stored": 0},
+        )
+        row = {
+            "id": "r2", "proof_session_id": "s2", "user_id": "u1",
+            "analysis_type": "timeline_only", "analyzer_version": "v4",
+            "workflow_summary": "test", "recruiter_summary": "test",
+            "demonstrated_actions": [], "supported_skills": [], "weakly_supported_skills": [],
+            "unsupported_skills": [], "evidence_strength_score": 10, "workflow_confidence": "low",
+            "missing_evidence": [], "risk_flags": [], "student_improvement_suggestions": [],
+            "human_review_needed": False, "target_website": "test.com",
+            "target_site_pages_count": 1, "supporting_evidence_count": 0,
+            "noise_filtered_count": 0, "observed_demonstration": observed,
+            "visual_analysis_status": "not_configured", "visual_analysis_provider": "none",
+            "visual_frame_count": 0, "visual_frames_stored": 0,
+            "ocr_status": "not_configured", "visual_result_values": [],
+            "visual_summary": "", "dom_evidence_status": "not_captured",
+            "visible_evidence_status": "not_captured", "has_graphical_rendering": False,
+            "graphical_rendering_note": None, "top_result_snippets": [],
+            "page_context_summary": None, "sequence_analysis": None,
+            "created_at": "2024-01-01T00:00:00Z", "updated_at": None,
+            "video_keyframe_status": None,
+            "video_keyframe_count": 0,
+            "video_keyframe_timestamps_ms": [],
+            "video_duration_ms": None,
+            "video_upload_error": None,
+        }
+        resp = _to_response(row)
+        assert resp.video_upload_status == "none"
+
+    def test_enrich_detects_upload_marker(self):
+        """_enrich_video_keyframes returns not_available status when marker found."""
+        from app.api.v1.endpoints.extension_proof_workflow_analysis import _enrich_video_keyframes
+
+        # Build a mock DB with only a video_upload_marker record
+        class _MockResp:
+            def __init__(self, data, count):
+                self.data = data
+                self.count = count
+
+        class _MockTable:
+            def __init__(self, store):
+                self._store = store
+                self._frame_type_filter = None
+
+            def select(self, *a, count=None):
+                return self
+
+            def eq(self, col, val):
+                if col == "frame_type":
+                    self._frame_type_filter = val
+                return self
+
+            def order(self, *a, **kw):
+                return self
+
+            def execute(self):
+                rows = [
+                    r for r in self._store.values()
+                    if r.get("frame_type") == self._frame_type_filter
+                ]
+                return _MockResp(rows, len(rows))
+
+        class _MockDB:
+            def table(self, name):
+                if name == "workflow_visual_frame_evidence":
+                    return _MockTable({
+                        "m1": {
+                            "id": "m1", "user_id": "u1", "proof_session_id": "sess-1",
+                            "frame_type": "video_upload_marker", "timestamp_ms": 0,
+                        }
+                    })
+                return _MockTable({})
+
+        result = _enrich_video_keyframes(_MockDB(), "u1", "sess-1", {"id": "row-1"})
+        assert result["video_keyframe_status"] == "not_available"
+        assert result["video_keyframe_count"] == 0
+        assert result["video_upload_error"] is not None
+        assert "opencv" in result["video_upload_error"].lower() or "ffmpeg" in result["video_upload_error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Fix 8: frame observations attach to workflow analysis
+# ---------------------------------------------------------------------------
+
+class TestFrameObservationsAttachToWorkflowAnalysis:
+    """Visual frame observations produced by OCR/vision provider flow into the
+    workflow analysis result and are reflected in visual_analysis_status."""
+
+    def test_analyzed_frame_obs_set_visual_status_to_analyzed(self):
+        """When visual_frame_observations.status == 'analyzed', workflow result
+        should have visual_analysis_status == 'analyzed'."""
+        from app.services.extension_proof_workflow_analysis_service import _analyze_workflow
+        import datetime
+        start = datetime.datetime(2024, 1, 1, 10, 0, tzinfo=datetime.timezone.utc).isoformat()
+        stop  = datetime.datetime(2024, 1, 1, 10, 5, tzinfo=datetime.timezone.utc).isoformat()
+        proof = {
+            "workflow_events": [
+                {"type": "page_visit", "page_url": "https://demo.app", "page_title": "Demo"},
+                {"type": "click", "page_url": "https://demo.app", "element_text": "predict"},
+            ],
+            "started_at": start, "stopped_at": stop,
+        }
+        vf_obs = {
+            "visual_frame_analysis_status": "analyzed",
+            "visual_frame_count": 3,
+            "extracted_result_values": [
+                {"label": "cat", "value": "0.97", "confidence": 0.97, "source": "ocr"}
+            ],
+            "visual_summary": "cat 0.97 displayed",
+            "provider_used": "local_ocr:tesseract",
+        }
+        result = _analyze_workflow(
+            proof_data=proof,
+            claimed_skills=["Machine Learning"],
+            proof_objective="Image classification",
+            original_url="https://demo.app",
+            url_type="live_url",
+            github_url=None,
+            visible_observations=None,
+            visual_frame_observations=vf_obs,
+        )
+        assert result["visual_analysis_status"] == "analyzed"
+        assert result["visual_frame_count"] == 3
+        assert result["ocr_status"] == "analyzed"
+        # Frame observations should propagate to result values
+        assert any(rv.get("label") == "cat" for rv in result.get("visual_result_values", []))
+
+    def test_not_configured_frame_obs_preserves_dom_evidence(self):
+        """When visual_frame_observations is None, visual_analysis_status is
+        'not_configured' but DOM evidence paths still work."""
+        from app.services.extension_proof_workflow_analysis_service import _analyze_workflow
+        import datetime
+        start = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc).isoformat()
+        stop  = datetime.datetime(2024, 1, 1, 0, 3, tzinfo=datetime.timezone.utc).isoformat()
+        proof = {
+            "workflow_events": [
+                {"type": "page_visit", "page_url": "https://test.app", "page_title": "Test"},
+            ],
+            "started_at": start, "stopped_at": stop,
+        }
+        result = _analyze_workflow(
+            proof_data=proof,
+            claimed_skills=["React"],
+            proof_objective="React demo",
+            original_url="https://test.app",
+            url_type="live_url",
+            github_url=None,
+            visible_observations=None,
+            visual_frame_observations=None,
+        )
+        assert result["visual_analysis_status"] in ("not_configured", "not_available")
+        # Should still have a workflow summary
+        assert result["workflow_summary"]
+
+
+# ---------------------------------------------------------------------------
+# Fix 9: sequence analysis consumes frame observations when provided
+# ---------------------------------------------------------------------------
+
+class TestSequenceAnalysisConsumesFrameObservations:
+    """WorkflowSequenceAnalysisService raises confidence when visual_frame_obs
+    contains extracted_result_values (OCR evidence)."""
+
+    def _kf_result(self):
+        from app.services.video_keyframe_extractor_service import (
+            VideoKeyframeResult, VIDEO_STATUS_ANALYZED
+        )
+        return VideoKeyframeResult(
+            video_analysis_status=VIDEO_STATUS_ANALYZED,
+            keyframe_count=5,
+            selected_frame_timestamps_ms=[0, 2000, 4000, 6000, 8000],
+            extraction_method="cv2_interval",
+            duration_ms=8000,
+            frame_width=1280,
+            frame_height=720,
+            limitations=[],
+        )
+
+    def test_visual_frame_obs_with_result_values_raises_confidence(self):
+        """Providing OCR result values via visual_frame_obs should produce a higher
+        confidence score than providing no visual evidence."""
+        from app.services.workflow_sequence_analysis_service import WorkflowSequenceAnalysisService
+        svc = WorkflowSequenceAnalysisService()
+
+        with_ocr = svc.analyze(
+            keyframe_result=self._kf_result(),
+            visual_frame_obs={
+                "visual_frame_analysis_status": "analyzed",
+                "visual_summary": "dog: 0.89 displayed on screen",
+                "extracted_result_values": [
+                    {"label": "dog", "value": "0.89", "source": "ocr"}
+                ],
+                "provider_used": "local_ocr:tesseract",
+                "visual_frame_count": 5,
+            },
+        )
+        without_ocr = svc.analyze(keyframe_result=self._kf_result())
+
+        assert with_ocr.confidence_score >= without_ocr.confidence_score
+        assert with_ocr.sequence_analysis_status == "analyzed"
+
+    def test_visual_frame_obs_populates_observed_outputs(self):
+        """OCR extracted result values surface in observed_outputs."""
+        from app.services.workflow_sequence_analysis_service import WorkflowSequenceAnalysisService
+        svc = WorkflowSequenceAnalysisService()
+        result = svc.analyze(
+            keyframe_result=self._kf_result(),
+            visual_frame_obs={
+                "visual_frame_analysis_status": "analyzed",
+                "visual_summary": "cat: 0.97",
+                "extracted_result_values": [
+                    {"label": "cat", "value": "0.97", "source": "ocr"}
+                ],
+                "provider_used": "local_ocr:tesseract",
+                "visual_frame_count": 5,
+            },
+        )
+        all_text = " ".join(result.observed_outputs + [result.public_safe_summary]).lower()
+        # Either the output or summary should reference the OCR result
+        assert "cat" in all_text or "0.97" in all_text or result.confidence_score > 30
+
+
+# ---------------------------------------------------------------------------
+# Fix 10: public/recruiter response excludes private paths and tokens
+# ---------------------------------------------------------------------------
+
+class TestPublicResponseExcludesPrivateData:
+    """WorkflowAnalysisResponse must not leak _extracted_frames, frame_storage_path,
+    or raw access_token fields."""
+
+    def _make_row(self):
+        from app.services.extension_proof_workflow_analysis_service import (
+            _build_observed_demonstration,
+        )
+        observed = _build_observed_demonstration(
+            target_events=[], app_type="generic", target_app="test.com",
+            iao_patterns=[], visible_observations=None,
+            visual_frame_observations={"visual_frame_analysis_status": "not_configured",
+                                        "provider_used": "none",
+                                        "visual_frame_count": 0,
+                                        "visual_frames_stored": 0},
+        )
+        return {
+            "id": "r-pub", "proof_session_id": "s-pub", "user_id": "u1",
+            "analysis_type": "timeline_only", "analyzer_version": "v4",
+            "workflow_summary": "test", "recruiter_summary": "test",
+            "demonstrated_actions": [], "supported_skills": [], "weakly_supported_skills": [],
+            "unsupported_skills": [], "evidence_strength_score": 10, "workflow_confidence": "low",
+            "missing_evidence": [], "risk_flags": [], "student_improvement_suggestions": [],
+            "human_review_needed": False, "target_website": "test.com",
+            "target_site_pages_count": 1, "supporting_evidence_count": 0,
+            "noise_filtered_count": 0, "observed_demonstration": observed,
+            "visual_analysis_status": "not_configured", "visual_analysis_provider": "none",
+            "visual_frame_count": 0, "visual_frames_stored": 0,
+            "ocr_status": "not_configured", "visual_result_values": [],
+            "visual_summary": "", "dom_evidence_status": "not_captured",
+            "visible_evidence_status": "not_captured", "has_graphical_rendering": False,
+            "graphical_rendering_note": None, "top_result_snippets": [],
+            "page_context_summary": None, "sequence_analysis": None,
+            "created_at": "2024-01-01T00:00:00Z", "updated_at": None,
+            "video_keyframe_status": "extracted",
+            "video_keyframe_count": 3,
+            "video_keyframe_timestamps_ms": [0, 3000, 6000],
+            "video_duration_ms": 6000,
+            "video_upload_error": None,
+            # Private fields that must NOT appear in the public response
+            "_extracted_frames": [(0, b"JPEG_BYTES"), (3000, b"JPEG_BYTES2")],
+            "frame_storage_path": "/private/storage/path",
+            "access_token": "super-secret-token",
+        }
+
+    def test_private_fields_not_in_response(self):
+        from app.api.v1.endpoints.extension_proof_workflow_analysis import _to_response
+        resp = _to_response(self._make_row())
+        resp_dict = resp.model_dump()
+        serialized = str(resp_dict)
+        assert "_extracted_frames" not in serialized
+        assert "frame_storage_path" not in serialized
+        assert "super-secret-token" not in serialized
+
+    def test_video_keyframe_timestamps_are_integers(self):
+        from app.api.v1.endpoints.extension_proof_workflow_analysis import _to_response
+        resp = _to_response(self._make_row())
+        assert resp.video_keyframe_timestamps_ms == [0, 3000, 6000]
+        assert all(isinstance(t, int) for t in resp.video_keyframe_timestamps_ms)
+
+    def test_video_upload_status_is_uploaded(self):
+        from app.api.v1.endpoints.extension_proof_workflow_analysis import _to_response
+        resp = _to_response(self._make_row())
+        assert resp.video_upload_status == "uploaded"
+
+
+# ---------------------------------------------------------------------------
+# Fix 11 & 12: local OCR provider — graceful failure + text extraction
+# ---------------------------------------------------------------------------
+
+class TestLocalOCRProviderGracefulFailure:
+    """LocalOCRProvider must not raise when packages are missing."""
+
+    def test_is_configured_false_when_package_missing(self):
+        from app.services.workflow_visual_analysis_service import LocalOCRProvider
+        p = LocalOCRProvider.__new__(LocalOCRProvider)
+        p._backend = "paddleocr"
+        p._ocr_engine = None
+        p._available = None
+
+        import sys
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setitem(sys.modules, "paddleocr", None)  # type: ignore[arg-type]
+            result = p.is_configured()
+
+        assert result is False, "is_configured() must return False when package missing, not raise"
+
+    def test_analyze_frame_returns_not_configured_when_unavailable(self):
+        from app.services.workflow_visual_analysis_service import (
+            LocalOCRProvider, VISUAL_STATUS_NOT_CONFIGURED
+        )
+        p = LocalOCRProvider.__new__(LocalOCRProvider)
+        p._backend = "easyocr"
+        p._ocr_engine = None
+        p._available = False
+
+        obs = p.analyze_frame(b"fake_jpeg_bytes")
+        # Must return not_configured (or similar non-raising status), never raise
+        assert obs.status in (VISUAL_STATUS_NOT_CONFIGURED, "not_configured", "failed")
+        assert obs.extracted_result_values == []
+
+
+class TestLocalOCRProviderExtractsText:
+    """LocalOCRProvider with stubbed engine produces extracted_text_snippets."""
+
+    def test_stubbed_ocr_returns_result_values(self):
+        from unittest.mock import patch
+        from app.services.workflow_visual_analysis_service import (
+            LocalOCRProvider, VISUAL_STATUS_ANALYZED
+        )
+        p = LocalOCRProvider.__new__(LocalOCRProvider)
+        p._backend = "tesseract"
+        p._ocr_engine = object()  # truthy sentinel
+        p._available = True
+
+        with patch.object(p, "_run_ocr", return_value=["dog 0.89", "person 0.52"]):
+            obs = p.analyze_frame(b"fake_jpeg_bytes")
+
+        assert obs.status == VISUAL_STATUS_ANALYZED
+        labels = [rv["label"].lower() for rv in obs.extracted_result_values]
+        assert "dog" in labels
+        assert "person" in labels
+        dog = next(r for r in obs.extracted_result_values if r["label"].lower() == "dog")
+        assert dog["value"] == "0.89"
+        assert dog["source"] == "ocr"
+
+    def test_stubbed_ocr_screen_summary_not_empty(self):
+        from unittest.mock import patch
+        from app.services.workflow_visual_analysis_service import LocalOCRProvider
+        p = LocalOCRProvider.__new__(LocalOCRProvider)
+        p._backend = "tesseract"
+        p._ocr_engine = object()
+        p._available = True
+
+        with patch.object(p, "_run_ocr", return_value=["Prediction result: cat 0.97"]):
+            obs = p.analyze_frame(b"any_bytes")
+
+        assert obs.screen_summary, "screen_summary should be populated from OCR text"

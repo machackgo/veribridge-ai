@@ -184,31 +184,52 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
     video_kf_count  = int(row.get("video_keyframe_count", 0))
     visual_status   = row.get("visual_analysis_status", "not_configured")
     raw_demo = row.get("observed_demonstration")
-    if (
-        video_kf_status == "extracted"
-        and visual_status in ("not_configured", "not_available")
-        and isinstance(raw_demo, dict)
-    ):
+    if isinstance(raw_demo, dict):
         raw_lims = list(raw_demo.get("limitations") or [])
         new_lims: list[str] = []
         replaced = False
-        for lim in raw_lims:
-            if "VISUAL_ANALYSIS_PROVIDER" in lim or "Visual frame analysis is not configured" in lim:
-                if not replaced:
-                    kf_str = f"{video_kf_count} keyframe{'s' if video_kf_count != 1 else ''}"
-                    new_lims.append(
-                        f"Video was recorded and {kf_str} extracted, but OCR/visual model "
-                        "analysis is not configured.  Verification is based on recording "
-                        "metadata, browser events, DOM/visible evidence where available, and "
-                        "sequence timing.  "
-                        "Set VISUAL_ANALYSIS_PROVIDER=local_ocr or local_vision to enable "
-                        "frame analysis."
-                    )
-                    replaced = True
-            else:
-                new_lims.append(lim)
-        # Update the raw_demo dict with corrected limitations
-        row = {**row, "observed_demonstration": {**raw_demo, "limitations": new_lims}}
+
+        if video_kf_status == "not_available":
+            # Video was uploaded but cv2/ffmpeg are not installed — replace the generic
+            # "not_configured" limitation with a precise message.
+            for lim in raw_lims:
+                if "VISUAL_ANALYSIS_PROVIDER" in lim or "Visual frame analysis is not configured" in lim:
+                    if not replaced:
+                        new_lims.append(
+                            "Video was recorded but keyframe extraction is not available.  "
+                            "Install opencv-python-headless (pip install opencv-python-headless) "
+                            "or ffmpeg (brew install ffmpeg) to enable frame extraction.  "
+                            "Verification is based on recording metadata, browser events, and "
+                            "DOM/visible evidence where available."
+                        )
+                        replaced = True
+                else:
+                    new_lims.append(lim)
+        elif (
+            video_kf_status == "extracted"
+            and visual_status in ("not_configured", "not_available")
+        ):
+            # Keyframes extracted but OCR not configured.
+            for lim in raw_lims:
+                if "VISUAL_ANALYSIS_PROVIDER" in lim or "Visual frame analysis is not configured" in lim:
+                    if not replaced:
+                        kf_str = f"{video_kf_count} keyframe{'s' if video_kf_count != 1 else ''}"
+                        new_lims.append(
+                            f"Video was recorded and {kf_str} extracted, but OCR/visual model "
+                            "analysis is not configured.  Verification is based on recording "
+                            "metadata, browser events, DOM/visible evidence where available, and "
+                            "sequence timing.  "
+                            "Set VISUAL_ANALYSIS_PROVIDER=local_ocr or local_vision to enable "
+                            "frame analysis."
+                        )
+                        replaced = True
+                else:
+                    new_lims.append(lim)
+        else:
+            new_lims = raw_lims
+
+        if replaced or new_lims != raw_lims:
+            row = {**row, "observed_demonstration": {**raw_demo, "limitations": new_lims}}
 
     stages_raw = _build_completed_stages(
         db_saved=db_saved,
@@ -220,6 +241,9 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
     _kf_status = row.get("video_keyframe_status")
     _video_upload_status: str
     if _kf_status == "extracted":
+        _video_upload_status = "uploaded"
+    elif _kf_status == "not_available":
+        # Video was received but cv2/ffmpeg not installed — still show as uploaded
         _video_upload_status = "uploaded"
     elif _kf_status == "failed":
         _video_upload_status = "failed"
@@ -335,7 +359,41 @@ def _enrich_video_keyframes(
                 "video_upload_error": None,
             }
 
-        # No keyframe records — video may not have been uploaded yet
+        # No keyframe records — check for video_upload_marker (video received but
+        # cv2/ffmpeg unavailable, so no keyframes could be extracted).
+        try:
+            marker_resp = (
+                db.table(_VF_TABLE)
+                .select("id", count="exact")
+                .eq("user_id", user_id)
+                .eq("proof_session_id", session_id)
+                .eq("frame_type", "video_upload_marker")
+                .execute()
+            )
+            marker_count = (
+                int(marker_resp.count)
+                if hasattr(marker_resp, "count") and marker_resp.count is not None
+                else len(marker_resp.data or [])
+            )
+        except Exception:
+            marker_count = 0
+
+        if marker_count > 0:
+            # Video was uploaded but keyframe extraction was unavailable.
+            # Show upload_status="uploaded" so the UI doesn't say "No video recorded".
+            return {
+                **row,
+                "video_keyframe_status": "not_available",
+                "video_keyframe_count": 0,
+                "video_keyframe_timestamps_ms": [],
+                "video_duration_ms": None,
+                "video_upload_error": (
+                    "Keyframe extraction requires opencv-python-headless or ffmpeg. "
+                    "Install one to enable frame extraction."
+                ),
+            }
+
+        # No video at all
         return {
             **row,
             "video_keyframe_status": None,

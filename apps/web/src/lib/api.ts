@@ -1164,6 +1164,7 @@ export type VideoKeyframeEvidenceStatus =
   | "extracted"
   | "failed"
   | "skipped"
+  | "not_available"
 
 export type WorkflowAnalysisResponse = {
   id: string

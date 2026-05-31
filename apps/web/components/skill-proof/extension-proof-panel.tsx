@@ -967,7 +967,8 @@ function VideoKeyframeEvidenceSection({
   const uploadError  = analysis.video_upload_error
 
   // Derive whether video was uploaded based on upload_status or kf_status
-  const videoUploaded = uploadStatus === "uploaded" || kfStatus === "extracted" || kfStatus === "failed"
+  // "not_available" = video received but cv2/ffmpeg missing — still show as uploaded
+  const videoUploaded = uploadStatus === "uploaded" || kfStatus === "extracted" || kfStatus === "failed" || kfStatus === "not_available"
 
   // Format duration
   const durationStr = durationMs != null && durationMs > 0
@@ -1018,6 +1019,12 @@ function VideoKeyframeEvidenceSection({
             <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
               background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
               {kfCount} keyframe{kfCount !== 1 ? "s" : ""} ✓
+            </span>
+          ) : kfStatus === "not_available" ? (
+            <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+              background: "#fff7ed", color: "#9a3412", border: "1px solid #fed7aa" }}
+              title="Install opencv-python-headless or ffmpeg to enable keyframe extraction">
+              cv2/ffmpeg not installed
             </span>
           ) : kfStatus === "failed" ? (
             <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
@@ -1091,7 +1098,20 @@ function VideoKeyframeEvidenceSection({
           )}
         </div>
 
-        {/* Limitation notice: video uploaded but OCR not configured */}
+        {/* Limitation notice: video uploaded but keyframe extraction unavailable */}
+        {kfStatus === "not_available" && (
+          <div style={{
+            fontSize: 11, color: "#9a3412", background: "#fff7ed",
+            border: "1px solid #fed7aa", borderRadius: 6, padding: "6px 9px", lineHeight: 1.5,
+          }}>
+            Video was recorded but keyframe extraction is not available.
+            Install <code style={{ fontSize: 10 }}>opencv-python-headless</code> or{" "}
+            <code style={{ fontSize: 10 }}>ffmpeg</code> on the backend to enable frame extraction.
+            Verification uses recording metadata, browser events, and DOM evidence.
+          </div>
+        )}
+
+        {/* Limitation notice: video uploaded + keyframes extracted but OCR not configured */}
         {kfStatus === "extracted" && (visualStatus === "not_configured" || visualStatus === "not_available") && (
           <div style={{
             fontSize: 11, color: "#854d0e", background: "#fffbeb",
@@ -1305,8 +1325,9 @@ function ObservedDemonstrationTimeline({
         onClick={() => setCollapsed(v => !v)}
         style={{
           width: "100%", textAlign: "left", background: "#fdf4ff",
+          borderTop: "none", borderLeft: "none", borderRight: "none",
           borderBottom: collapsed ? "none" : "1px solid #e9d5ff",
-          border: "none", padding: "11px 14px", cursor: "pointer",
+          padding: "11px 14px", cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
         }}
       >
@@ -3432,7 +3453,7 @@ function ProjectDefenseSection({
     fontWeight: active ? 700 : 500,
     color: active ? "#065f46" : "#6b7280",
     background: active ? "#f0fdf4" : "transparent",
-    border: "none",
+    borderTop: "none", borderLeft: "none", borderRight: "none",
     borderBottom: active ? "2px solid #16a34a" : "2px solid transparent",
     cursor: "pointer",
     transition: "all 0.15s",
