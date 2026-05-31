@@ -1124,6 +1124,59 @@ function VideoKeyframeEvidenceSection({
           </div>
         )}
 
+        {/* Frames analyzed count (when OCR ran) */}
+        {visualStatus === "analyzed" && (analysis.visual_frame_count ?? 0) > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Frames analyzed</span>
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+              {analysis.visual_frame_count} frame{(analysis.visual_frame_count ?? 0) !== 1 ? "s" : ""} ✓
+            </span>
+          </div>
+        )}
+
+        {/* OCR extracted text snippets */}
+        {visualStatus === "analyzed" && analysis.visual_summary && (
+          <div style={{ display: "grid", gap: 3 }}>
+            <span style={{ fontSize: 10, color: "#64748b" }}>OCR text extracted</span>
+            <div style={{
+              fontSize: 10, color: "#1e293b", background: "#f8fafc",
+              border: "1px solid #e2e8f0", borderRadius: 5,
+              padding: "5px 8px", lineHeight: 1.6, fontFamily: "monospace",
+              maxHeight: 72, overflow: "hidden",
+            }}>
+              {analysis.visual_summary.split(" | ").slice(0, 4).map((snippet, i) => (
+                <div key={i} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {snippet.length > 80 ? snippet.slice(0, 80) + "…" : snippet}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Detected result values from OCR */}
+        {visualStatus === "analyzed" &&
+          analysis.visual_result_values && analysis.visual_result_values.length > 0 && (
+          <div style={{ display: "grid", gap: 3 }}>
+            <span style={{ fontSize: 10, color: "#64748b" }}>Detected values (OCR)</span>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {analysis.visual_result_values.slice(0, 8).map((rv, i) => (
+                <span key={i} style={{
+                  fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4,
+                  background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0",
+                }}>
+                  {rv.label}: {rv.value}
+                </span>
+              ))}
+              {analysis.visual_result_values.length > 8 && (
+                <span style={{ fontSize: 9, color: "#94a3b8" }}>
+                  +{analysis.visual_result_values.length - 8} more
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Sequence analysis status row */}
         {analysis.sequence_analysis && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>

@@ -1227,6 +1227,11 @@ export type WorkflowAnalysisResponse = {
    * 'none'     = no video recorded for this session.
    */
   video_upload_status?: string | null
+  // ── OCR / frame evidence (v5 — local_ocr provider) ───────────────────────────
+  /** Detected label:value pairs from OCR (e.g. [{label:"dog",value:"0.89",source:"ocr"}]) */
+  visual_result_values?: Array<{ label: string; value: string; confidence?: number; source?: string }>
+  /** Condensed summary of OCR text from analyzed keyframes (pipe-separated lines) */
+  visual_summary?: string | null
   // ── Sequence analysis (v6 — Week 3) ──────────────────────────────────────────
   /** Full sequence analysis result. Public-safe — no raw paths or private metadata. */
   sequence_analysis?: SequenceAnalysisResult | null

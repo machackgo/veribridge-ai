@@ -171,25 +171,49 @@ def extract_result_values_from_ocr(
 
 @dataclass
 class VisualFrameObservation:
-    """Structured output from visual analysis of a single frame."""
+    """Structured output from visual analysis of a single frame.
 
+    Normalised field names (pipeline-level):
+        frame_index             — 0-based index of this frame in the session
+        timestamp_ms            — position in the video/recording (ms)
+        provider                — alias for provider_used
+        provider_status         — alias for status
+        extracted_text_snippets — alias for extracted_text
+        detected_result_values  — alias for extracted_result_values
+        frame_summary           — alias for screen_summary
+        confidence_score        — numeric 0.0–1.0 (derived from confidence string)
+        limitations             — list of human-readable limitation messages
+    """
+
+    frame_index: int | None = None            # 0-based position in session
     timestamp_ms: int | None = None
-    screen_summary: str = ""
+    screen_summary: str = ""                  # alias: frame_summary
     visible_inputs: list[dict[str, Any]] = field(default_factory=list)
     visible_outputs: list[dict[str, Any]] = field(default_factory=list)
     detected_objects_or_ui_elements: list[dict[str, Any]] = field(default_factory=list)
-    extracted_text: list[str] = field(default_factory=list)
+    extracted_text: list[str] = field(default_factory=list)    # alias: extracted_text_snippets
     extracted_result_values: list[dict[str, Any]] = field(default_factory=list)
     workflow_interpretation: str = ""
-    confidence: str = "low"          # high | medium | low
+    confidence: str = "low"                   # high | medium | low
+    confidence_score: float = 0.0             # numeric 0.0–1.0
     limitations: list[str] = field(default_factory=list)
     privacy_flags: list[str] = field(default_factory=list)
-    provider_used: str = "none"
-    status: str = VISUAL_STATUS_NOT_CONFIGURED
+    provider_used: str = "none"               # alias: provider
+    status: str = VISUAL_STATUS_NOT_CONFIGURED  # alias: provider_status
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            # Canonical fields
+            "frame_index":                      self.frame_index,
             "timestamp_ms":                     self.timestamp_ms,
+            "provider":                         self.provider_used,
+            "provider_status":                  self.status,
+            "extracted_text_snippets":          self.extracted_text,
+            "detected_result_values":           self.extracted_result_values,
+            "frame_summary":                    self.screen_summary,
+            "confidence_score":                 self.confidence_score,
+            "limitations":                      self.limitations,
+            # Extended fields
             "screen_summary":                   self.screen_summary,
             "visible_inputs":                   self.visible_inputs,
             "visible_outputs":                  self.visible_outputs,
@@ -198,7 +222,6 @@ class VisualFrameObservation:
             "extracted_result_values":          self.extracted_result_values,
             "workflow_interpretation":          self.workflow_interpretation,
             "confidence":                       self.confidence,
-            "limitations":                      self.limitations,
             "privacy_flags":                    self.privacy_flags,
             "provider_used":                    self.provider_used,
             "status":                           self.status,
@@ -376,12 +399,23 @@ class LocalOCRProvider(VisualAnalysisProvider):
         frame_bytes_or_path: bytes | str,
         context: dict[str, Any] | None = None,
     ) -> VisualFrameObservation:
+        ctx = context or {}
+        frame_index: int | None = ctx.get("frame_index")
+        timestamp_ms: int | None = ctx.get("timestamp_ms")
+
         if not self._try_init_engine():
+            _install_hint = {
+                "paddleocr":  "paddleocr paddlepaddle",
+                "easyocr":    "easyocr",
+                "tesseract":  "pytesseract pillow  (plus: brew install tesseract)",
+            }.get(self._backend, self._backend)
             return VisualFrameObservation(
+                frame_index=frame_index,
+                timestamp_ms=timestamp_ms,
                 status=VISUAL_STATUS_NOT_CONFIGURED,
                 limitations=[
                     f"Local OCR provider '{self._backend}' is not installed. "
-                    f"Install with: pip install {self._backend}.",
+                    f"Install with: pip install {_install_hint}",
                 ],
                 provider_used=f"local_ocr:{self._backend}",
             )
@@ -396,6 +430,8 @@ class LocalOCRProvider(VisualAnalysisProvider):
         except Exception as exc:
             logger.warning("[LocalOCR] Could not load frame: %s", exc)
             return VisualFrameObservation(
+                frame_index=frame_index,
+                timestamp_ms=timestamp_ms,
                 status=VISUAL_STATUS_FAILED,
                 limitations=[f"Could not load frame: {exc}"],
                 provider_used=f"local_ocr:{self._backend}",
@@ -418,14 +454,20 @@ class LocalOCRProvider(VisualAnalysisProvider):
         # Build summary from non-empty lines (max 300 chars)
         summary_text = " | ".join(cleaned_lines[:8])[:300]
 
-        confidence = "medium" if result_values else "low"
+        has_values = bool(result_values)
+        has_text   = bool(cleaned_lines)
+        confidence      = "medium" if has_values else ("low" if has_text else "low")
+        confidence_score = 0.7 if has_values else (0.4 if has_text else 0.1)
 
         return VisualFrameObservation(
+            frame_index=frame_index,
+            timestamp_ms=timestamp_ms,
             screen_summary=summary_text,
             extracted_text=cleaned_lines,
             extracted_result_values=result_values,
             confidence=confidence,
-            limitations=[] if result_values else [
+            confidence_score=confidence_score,
+            limitations=[] if has_values else [
                 "No structured result values detected in this frame via OCR.",
             ],
             privacy_flags=list(set(all_flags)),
@@ -1115,6 +1157,30 @@ class WorkflowVisualAnalysisService:
         ocr_provider = settings.local_ocr_provider if provider_name == "local_ocr" else None
         vision_provider = settings.local_vision_provider if provider_name == "local_vision" else None
 
+        # Build developer setup message when OCR is not configured
+        setup_message: str | None = None
+        if not is_configured:
+            if provider_name == "none":
+                setup_message = (
+                    "Local OCR setup (Mac):\n"
+                    "  pip install opencv-python-headless pytesseract pillow\n"
+                    "  brew install tesseract\n"
+                    "  export VISUAL_ANALYSIS_PROVIDER=local_ocr\n"
+                    "  export LOCAL_OCR_PROVIDER=tesseract\n"
+                    "Optional ffmpeg: brew install ffmpeg"
+                )
+            elif provider_name == "local_ocr":
+                backend = ocr_provider or "tesseract"
+                _hints = {
+                    "tesseract":  "pip install pytesseract pillow && brew install tesseract",
+                    "paddleocr":  "pip install paddleocr paddlepaddle",
+                    "easyocr":    "pip install easyocr",
+                }
+                setup_message = (
+                    f"OCR backend '{backend}' not installed. "
+                    f"Install: {_hints.get(backend, f'pip install {backend}')}"
+                )
+
         return {
             "visual_analysis_provider": provider_name,
             "provider_configured": is_configured,
@@ -1122,6 +1188,7 @@ class WorkflowVisualAnalysisService:
             "max_frames": settings.max_workflow_frames,
             "local_ocr_provider": ocr_provider,
             "local_vision_provider": vision_provider,
+            "setup_message": setup_message,
         }
 
     # ── Store ────────────────────────────────────────────────────────────────
@@ -1210,10 +1277,12 @@ class WorkflowVisualAnalysisService:
         frame_id: str,
         user_id: str,
         frame_bytes: bytes | None = None,
+        context: dict[str, Any] | None = None,
     ) -> VisualFrameObservation:
         """Run visual analysis on a stored frame record.
 
         frame_bytes: the raw image bytes (if not yet stored in blob storage).
+        context: optional dict with frame_index, timestamp_ms for normalized output.
         """
         provider = self._provider
 
@@ -1227,6 +1296,8 @@ class WorkflowVisualAnalysisService:
             except Exception:
                 pass
             return VisualFrameObservation(
+                frame_index=(context or {}).get("frame_index"),
+                timestamp_ms=(context or {}).get("timestamp_ms"),
                 status=VISUAL_STATUS_NOT_CONFIGURED,
                 limitations=[
                     "Visual analysis provider is not configured. "
@@ -1246,12 +1317,14 @@ class WorkflowVisualAnalysisService:
             except Exception:
                 pass
             return VisualFrameObservation(
+                frame_index=(context or {}).get("frame_index"),
+                timestamp_ms=(context or {}).get("timestamp_ms"),
                 status=VISUAL_STATUS_SKIPPED,
                 limitations=["Frame bytes not available for analysis."],
                 provider_used=provider.provider_name,
             )
 
-        observation = provider.analyze_frame(frame_bytes)
+        observation = provider.analyze_frame(frame_bytes, context=context)
 
         # Persist results
         try:
@@ -1263,6 +1336,7 @@ class WorkflowVisualAnalysisService:
                 "visual_summary": observation.screen_summary,
                 "extracted_result_values": observation.extracted_result_values,
                 "privacy_flags": observation.privacy_flags,
+                "confidence_score": observation.confidence_score,
                 "analyzed_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", frame_id).eq("user_id", user_id).execute()
         except Exception as exc:
@@ -1321,17 +1395,26 @@ class WorkflowVisualAnalysisService:
 
         all_result_values: list[dict[str, Any]] = []
         all_summaries: list[str] = []
+        all_observations: list[dict[str, Any]] = []
         analyzed_count = 0
 
-        for row in pending_rows:
+        for frame_idx, row in enumerate(pending_rows):
             frame_id = row["id"]
             fb = frame_bytes_map.get(frame_id)
-            obs = self.analyze_visual_frame(frame_id, user_id, frame_bytes=fb)
+            # Pass frame_index and timestamp_ms via context so providers can populate them
+            ctx = {
+                "frame_index": frame_idx,
+                "timestamp_ms": row.get("timestamp_ms"),
+            }
+            obs = self.analyze_visual_frame(
+                frame_id, user_id, frame_bytes=fb, context=ctx
+            )
             if obs.status == VISUAL_STATUS_ANALYZED:
                 analyzed_count += 1
                 all_result_values.extend(obs.extracted_result_values)
                 if obs.screen_summary:
                     all_summaries.append(obs.screen_summary)
+                all_observations.append(obs.to_dict())
 
         # Deduplicate result values
         seen: set[str] = set()
@@ -1351,6 +1434,7 @@ class WorkflowVisualAnalysisService:
             "extracted_result_values": unique_values,
             "visual_summary": combined_summary,
             "provider_used": settings.visual_analysis_provider,
+            "frame_observations": all_observations,   # normalized per-frame output
             "limitations": [],
         }
 
