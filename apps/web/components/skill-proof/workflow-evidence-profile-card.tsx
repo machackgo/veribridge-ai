@@ -1030,87 +1030,143 @@ const SOURCE_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
   fusion:  { bg: "#fef3c7", text: "#92400e" },
 }
 
+// ── Skill Evidence Timeline (compact, readable) ───────────────────────────────
+
+const MAX_TIMELINE_SHOWN = 8
+
+function supportIcon(level: string): string {
+  if (level === "supported") return "✓"
+  if (level === "partial")   return "~"
+  if (level === "unclear")   return "?"
+  return "✗"
+}
+
 function SkillEvidenceTimeline({ timeline }: { timeline: SkillTimelineEntry[] }) {
   if (!timeline || timeline.length === 0) return null
 
-  // Deduplicate: one entry per (timestamp_ms, detected_skill, evidence_source)
-  const seen = new Set<string>()
-  const deduped = timeline.filter(e => {
-    const key = `${e.timestamp_ms}|${e.detected_skill}|${e.evidence_source}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+  // Deduplicate by (detected_skill, evidence_source, support_level)
+  // keeping the highest-confidence entry per skill+source
+  const bestByKey = new Map<string, SkillTimelineEntry>()
+  for (const entry of timeline) {
+    const key = `${entry.detected_skill}|${entry.evidence_source}`
+    const existing = bestByKey.get(key)
+    if (!existing || (entry.confidence ?? 0) > (existing.confidence ?? 0)) {
+      bestByKey.set(key, entry)
+    }
+  }
+
+  // Sort by confidence descending, take top MAX_TIMELINE_SHOWN
+  const sorted = [...bestByKey.values()].sort(
+    (a, b) => (b.confidence ?? 0) - (a.confidence ?? 0)
+  )
+  const shown = sorted.slice(0, MAX_TIMELINE_SHOWN)
+  const remaining = sorted.length - shown.length
 
   return (
-    <div style={{ marginTop: 2 }}>
-      <div style={{ fontSize: 9, fontWeight: 700, color: "#6d28d9",
-        textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+    <div style={{ marginTop: 4 }}>
+      <div style={{
+        fontSize: 9, fontWeight: 800, color: "#6d28d9",
+        textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6,
+      }}>
         Skill Evidence Timeline
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-        {deduped.slice(0, 12).map((entry, i) => {
+
+      {/* Header row */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "40px 1fr 52px 46px 36px",
+        gap: "0 6px",
+        fontSize: 8, fontWeight: 700, color: "#94a3b8",
+        textTransform: "uppercase", letterSpacing: "0.06em",
+        padding: "2px 6px", marginBottom: 3,
+      }}>
+        <span>Time</span>
+        <span>Skill</span>
+        <span>Source</span>
+        <span>Level</span>
+        <span style={{ textAlign: "right" }}>Conf.</span>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {shown.map((entry, i) => {
           const colors   = SUPPORT_COLORS[entry.support_level] ?? SUPPORT_COLORS.unclear
-          const srcColor = SOURCE_BADGE_COLORS[entry.evidence_source] ?? SOURCE_BADGE_COLORS.fusion
+          const srcColor = SOURCE_BADGE_COLORS[entry.evidence_source] ?? { bg: "#f3f4f6", text: "#374151" }
+          const confPct  = Math.round((entry.confidence ?? 0) * 100)
           return (
             <div key={i} style={{
               display: "grid",
-              gridTemplateColumns: "36px 1fr",
-              gap: 6,
-              alignItems: "start",
+              gridTemplateColumns: "40px 1fr 52px 46px 36px",
+              gap: "0 6px",
+              alignItems: "center",
+              padding: "4px 6px",
+              borderRadius: 5,
+              background: colors.bg,
+              border: `1px solid ${colors.border}`,
             }}>
               {/* Timestamp */}
               <span style={{
                 fontSize: 8, fontFamily: "monospace", fontWeight: 700,
-                padding: "2px 4px", borderRadius: 3,
-                background: "#ede9fe", color: "#6d28d9",
-                border: "1px solid #c4b5fd", textAlign: "center", whiteSpace: "nowrap",
+                color: "#6d28d9", whiteSpace: "nowrap",
               }}>
-                {entry.timestamp_label}
+                {entry.timestamp_label ?? "?"}
               </span>
-              {/* Entry body */}
-              <div style={{
-                padding: "4px 7px", borderRadius: 4,
-                background: colors.bg, border: `1px solid ${colors.border}`,
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: colors.text }}>
-                    {entry.detected_skill}
-                  </span>
-                  <span style={{
-                    fontSize: 8, padding: "1px 5px", borderRadius: 10,
-                    background: srcColor.bg, color: srcColor.text, fontWeight: 600,
-                  }}>
-                    {entry.evidence_source}
-                  </span>
-                  <span style={{ fontSize: 8, color: colors.text }}>
-                    {(entry.confidence * 100).toFixed(0)}%
-                  </span>
-                  <span style={{
-                    fontSize: 8, fontWeight: 600,
-                    color: entry.support_level === "supported" ? "#166534"
-                         : entry.support_level === "partial"   ? "#92400e"
-                         : "#6b7280",
-                  }}>
-                    {entry.support_level}
-                  </span>
+
+              {/* Skill + evidence text */}
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: colors.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {entry.detected_skill}
                 </div>
                 {entry.evidence_text && (
-                  <div style={{ fontSize: 9, color: colors.text, marginTop: 2,
-                    lineHeight: 1.3, fontStyle: "italic" }}>
-                    {entry.evidence_text.slice(0, 120)}
+                  <div style={{ fontSize: 8, color: colors.text, opacity: 0.8, marginTop: 1,
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                    title={entry.evidence_text}>
+                    {entry.evidence_text.slice(0, 80)}
+                  </div>
+                )}
+                {entry.reason && entry.reason !== entry.evidence_text && (
+                  <div style={{ fontSize: 8, color: "#6b7280", marginTop: 1,
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                    title={entry.reason}>
+                    {entry.reason.slice(0, 60)}
                   </div>
                 )}
               </div>
+
+              {/* Source badge */}
+              <span style={{
+                fontSize: 8, padding: "1px 5px", borderRadius: 10,
+                background: srcColor.bg, color: srcColor.text,
+                fontWeight: 700, textAlign: "center", whiteSpace: "nowrap",
+              }}>
+                {entry.evidence_source}
+              </span>
+
+              {/* Support level */}
+              <span style={{
+                fontSize: 8, fontWeight: 700, color: colors.text,
+                textAlign: "center", whiteSpace: "nowrap",
+              }}>
+                {supportIcon(entry.support_level)} {entry.support_level}
+              </span>
+
+              {/* Confidence */}
+              <span style={{
+                fontSize: 9, fontWeight: 700,
+                color: confPct >= 70 ? "#166534" : confPct >= 45 ? "#92400e" : "#6b7280",
+                textAlign: "right",
+              }}>
+                {confPct}%
+              </span>
             </div>
           )
         })}
-        {deduped.length > 12 && (
-          <div style={{ fontSize: 9, color: "#6b7280", fontStyle: "italic", paddingLeft: 42 }}>
-            +{deduped.length - 12} more timeline entries
-          </div>
-        )}
       </div>
+
+      {remaining > 0 && (
+        <div style={{ fontSize: 8, color: "#6b7280", fontStyle: "italic", marginTop: 4, paddingLeft: 4 }}>
+          +{remaining} more entries (showing top {MAX_TIMELINE_SHOWN} by confidence)
+        </div>
+      )}
     </div>
   )
 }

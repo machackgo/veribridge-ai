@@ -293,6 +293,15 @@ _OCR_PREDICTION_OUTPUT_SIGNALS: frozenset[str] = frozenset({
     "test your model", "your model is ready", "no input",
 })
 
+# Words strongly associated with interactive demos / data visualizations
+_OCR_INTERACTIVE_DEMO_SIGNALS: frozenset[str] = frozenset({
+    "slider", "control", "controls", "parameter", "canvas", "demo",
+    "interactive", "visualization", "chart", "graph", "animate", "p5",
+    "sketch", "example", "play", "run", "simulate", "output", "result",
+    "toggle", "button", "reset", "zoom", "hover", "filter", "d3",
+    "observable", "draw", "render", "svg",
+})
+
 # OCR snippets that are likely UI noise from other tabs / chrome UI / navigation
 _OCR_NOISE_SNIPPETS: frozenset[str] = frozenset({
     "table of contents", "copyright", "all rights reserved", "privacy policy",
@@ -353,6 +362,53 @@ _SKILL_OCR_KEYWORDS: dict[str, list[str]] = {
     "natural language processing": [
         "nlp", "text", "sentiment", "language model", "bert", "gpt",
         "tokenize", "entity", "summarize", "translate",
+    ],
+    # ── Interactive Model Demo ────────────────────────────────────────────────
+    "interactive model demo": [
+        "slider", "control", "controls", "parameter", "knob", "toggle",
+        "button", "output", "result", "canvas", "interactive", "demo",
+        "visualization", "chart", "graph", "real-time", "animate", "playground",
+        "run", "execute", "compute", "simulate",
+    ],
+    "browser-based interactive demo": [
+        "canvas", "p5", "sketch", "interactive", "demo", "visualization",
+        "example", "browser", "web", "javascript", "html", "svg",
+    ],
+    # ── Creative Coding / p5.js ───────────────────────────────────────────────
+    "creative coding": [
+        "p5", "sketch", "canvas", "draw", "animate", "creative",
+        "processing", "generative", "art", "visual", "code",
+    ],
+    # ── Data Visualization ────────────────────────────────────────────────────
+    "data visualization": [
+        "chart", "graph", "plot", "visualization", "d3", "observable",
+        "axis", "legend", "dataset", "bar chart", "line chart", "scatter",
+        "histogram", "heatmap", "treemap", "svg", "canvas",
+    ],
+    "interactive web visualization": [
+        "chart", "graph", "interactive", "filter", "zoom", "hover",
+        "d3", "observable", "canvas", "svg", "visualization", "tooltip",
+    ],
+    "data/visual output": [
+        "chart", "graph", "plot", "output", "visualization", "result",
+        "canvas", "svg", "animation", "render",
+    ],
+    # ── JavaScript / Browser Technologies ─────────────────────────────────────
+    "javascript": [
+        "javascript", "js", "p5.js", "d3.js", "script", "console",
+        "function", "const", "let", "var", "import", "node",
+    ],
+    "interactive dashboard": [
+        "dashboard", "filter", "chart", "graph", "metric", "analytics",
+        "interactive", "panel", "widget", "kpi",
+    ],
+    "chart analysis": [
+        "chart", "axis", "legend", "data", "value", "trend",
+        "percentage", "graph", "plot",
+    ],
+    "browser-based visualization": [
+        "canvas", "svg", "d3", "p5", "chart", "visualization",
+        "browser", "web", "html", "interactive",
     ],
     # ── React / JS frameworks ────────────────────────────────────────────────
     "react": ["react", "component", "jsx", "hooks", "usestate"],
@@ -672,6 +728,249 @@ def _build_frame_ocr_evidence_summary(
     }
 
 
+# ── Interactive Model Demo: combined evidence detection ───────────────────────
+
+# Skill name fragments that indicate an "interactive demo" claim
+_INTERACTIVE_DEMO_SKILL_FRAGMENTS: tuple[str, ...] = (
+    "interactive model demo",
+    "interactive demo",
+    "interactive web visualization",
+    "browser-based interactive demo",
+    "browser-based demo",
+    "data/visual output",
+    "interactive dashboard",
+)
+
+
+def _is_interactive_demo_skill(skill_name: str) -> bool:
+    """Return True if this skill name refers to some kind of interactive demo."""
+    lower = skill_name.lower()
+    return any(frag in lower for frag in _INTERACTIVE_DEMO_SKILL_FRAGMENTS)
+
+
+def _detect_interactive_model_demo_support(
+    target_clicks: list[dict[str, Any]],
+    target_inputs: list[dict[str, Any]],
+    visible_observations: Any | None,
+    frame_ocr_evidence_summary: dict[str, Any] | None,
+    proof_objective: str,
+    visual_reasoning_summary: dict[str, Any] | None,
+) -> tuple[str, str]:
+    """Detect 'Interactive Model Demo' evidence from combined sources.
+
+    Checks:
+    1. Browser events (clicks/inputs show user interacted with controls)
+    2. DOM/visible evidence (result snippets, graphical rendering)
+    3. OCR evidence (sliders, controls, output panels)
+    4. Qwen visual observations (skill_evidence for interactive skill checklist)
+    5. Proof objective mentions interactive demonstration
+
+    Returns (support_level, reasoning):
+        support_level: "supported" | "partial" | "unclear" | "missing"
+        reasoning:     one-line explanation of what evidence was found
+    """
+    signals: list[str] = []
+    strength = 0
+
+    # 1. Browser events: user clicked controls on target site
+    click_count = len(target_clicks)
+    input_count = len(target_inputs)
+    if click_count >= 8:
+        strength += 3
+        signals.append(f"{click_count} clicks on target site (strong interaction)")
+    elif click_count >= 4:
+        strength += 2
+        signals.append(f"{click_count} clicks on target site")
+    elif click_count >= 2:
+        strength += 1
+        signals.append(f"{click_count} clicks on target site")
+
+    if input_count >= 2:
+        strength += 2
+        signals.append(f"{input_count} parameter/input changes")
+    elif input_count >= 1:
+        strength += 1
+        signals.append(f"{input_count} input interaction")
+
+    # 2. DOM / visible evidence: graphical content or result snippets
+    if visible_observations is not None:
+        has_graphical = getattr(visible_observations, "has_graphical_rendering", False)
+        top_snippets = list(getattr(visible_observations, "top_result_snippets", []) or [])
+        if has_graphical:
+            strength += 2
+            signals.append("canvas/SVG/chart detected in DOM")
+        if top_snippets:
+            strength += 1
+            signals.append(f"DOM result text: {top_snippets[0][:60]}")
+
+    # 3. OCR evidence: interactive UI signals in keyframe text
+    if frame_ocr_evidence_summary and frame_ocr_evidence_summary.get("has_ocr_evidence"):
+        top_snippets = frame_ocr_evidence_summary.get("top_ocr_snippets", [])
+        ocr_text = " ".join(top_snippets).lower()
+        ocr_hit_count = sum(1 for s in _OCR_INTERACTIVE_DEMO_SIGNALS if s in ocr_text)
+        if ocr_hit_count >= 4:
+            strength += 3
+            signals.append(f"OCR: {ocr_hit_count} interactive UI signals in keyframes")
+        elif ocr_hit_count >= 2:
+            strength += 2
+            signals.append(f"OCR: {ocr_hit_count} interactive UI signals in keyframes")
+        elif ocr_hit_count >= 1:
+            strength += 1
+            signals.append("OCR: some interactive UI text detected")
+        page_ctx = frame_ocr_evidence_summary.get("detected_page_context", "unknown")
+        if page_ctx == "prediction_output":
+            strength += 1
+            signals.append("OCR context: output/result visible")
+
+    # 4. Qwen visual reasoning: check skill_evidence for interactive/demo checklist items
+    if visual_reasoning_summary and visual_reasoning_summary.get("status") == "analyzed":
+        for obs in (visual_reasoning_summary.get("observations") or []):
+            skill_ev = obs.get("skill_evidence") or {}
+            for skill_key, evidence in skill_ev.items():
+                if not isinstance(evidence, dict):
+                    continue
+                if "interactive" in skill_key.lower() or "demo" in skill_key.lower():
+                    verdict = str(evidence.get("verdict", "not_visible")).lower()
+                    items_visible = list(evidence.get("items_visible") or [])
+                    if verdict == "supported":
+                        strength += 4
+                        sample = items_visible[:2]
+                        signals.append(f"Qwen confirmed interactive demo: {sample}")
+                    elif verdict == "partial":
+                        strength += 2
+                        signals.append("Qwen: partial interactive demo evidence")
+            # Workflow stage: results_display or prediction_output strongly suggests output visible
+            stage = obs.get("detected_workflow_stage", "unknown")
+            if stage in ("results_display", "prediction_output"):
+                strength += 1
+        # If Qwen is weak but clicks/DOM are strong, add fusion note
+        avg_conf = sum(
+            float(obs.get("confidence_score", 0))
+            for obs in (visual_reasoning_summary.get("observations") or [])
+        )
+        frame_count = visual_reasoning_summary.get("frames_analyzed", 0)
+        if frame_count > 0:
+            avg_conf = avg_conf / frame_count
+            if avg_conf < 0.4 and strength >= 3:
+                signals.append(
+                    "Qwen confidence low — DOM/OCR evidence more reliable for this claim"
+                )
+
+    # 5. Proof objective mentions interactive demonstration
+    obj_lower = proof_objective.lower()
+    if any(
+        term in obj_lower
+        for term in ("interactive", "demo", "control", "parameter", "slider", "canvas", "visual")
+    ):
+        strength += 1
+        signals.append("proof objective mentions interactive demonstration")
+
+    # Map strength score to support level
+    reasoning_base = " | ".join(signals) if signals else "no evidence found"
+    if strength >= 6:
+        return "supported", f"Interactive demo evidence: {reasoning_base}"
+    elif strength >= 3:
+        return "partial", f"Partial interactive demo evidence: {reasoning_base}"
+    elif strength >= 1:
+        return "unclear", f"Limited interactive demo signals: {reasoning_base}"
+    else:
+        return "missing", (
+            "No interactive model demo evidence: "
+            "no user interactions with controls or output detected. "
+            "Record clicking sliders/buttons and showing output/result changes."
+        )
+
+
+def _promote_interactive_demo_skills(
+    result: dict[str, Any],
+    proof_data: dict[str, Any],
+    claimed_skills: list[str],
+    visible_observations: Any | None,
+    visual_frame_observations: dict[str, Any] | None,
+    proof_objective: str,
+) -> dict[str, Any]:
+    """Promote interactive demo skills using combined evidence.
+
+    Called after both _analyze_workflow() and Qwen visual reasoning are complete.
+    Upgrades skills from unsupported→weakly or weakly→supported when evidence
+    from clicks, DOM, OCR, and Qwen visual reasoning supports it.
+
+    Never fabricates support — only promotes when concrete signals exist.
+    """
+    # Check if any claimed skill is an interactive demo type
+    interactive_claimed = [s for s in claimed_skills if _is_interactive_demo_skill(s)]
+    if not interactive_claimed:
+        return result
+
+    # Extract events from proof_data for click/input counts
+    events: list[dict[str, Any]] = proof_data.get("workflow_events") or []
+    # Rough filter: count all non-noise clicks and inputs
+    all_clicks = [e for e in events if e.get("type") == "click"]
+    all_inputs = [e for e in events if e.get("type") == "input_change"]
+
+    frame_ocr = result.get("frame_ocr_evidence_summary") or {}
+    vr_summary = result.get("visual_reasoning_summary")
+
+    supported = list(result.get("supported_skills") or [])
+    weakly = list(result.get("weakly_supported_skills") or [])
+    unsupported = list(result.get("unsupported_skills") or [])
+
+    for skill in interactive_claimed:
+        # Skip if already in a good state
+        if skill in supported:
+            continue
+
+        support_level, reasoning = _detect_interactive_model_demo_support(
+            target_clicks=all_clicks,
+            target_inputs=all_inputs,
+            visible_observations=visible_observations,
+            frame_ocr_evidence_summary=frame_ocr,
+            proof_objective=proof_objective,
+            visual_reasoning_summary=vr_summary,
+        )
+
+        if support_level == "supported":
+            if skill in weakly:
+                weakly.remove(skill)
+            if skill in unsupported:
+                unsupported.remove(skill)
+            if skill not in supported:
+                supported.append(skill)
+            logger.info(
+                "[InteractiveDemo] promoted '%s' → supported. reason: %s",
+                skill, reasoning[:100],
+            )
+
+        elif support_level == "partial":
+            if skill in unsupported:
+                unsupported.remove(skill)
+            if skill not in weakly and skill not in supported:
+                weakly.append(skill)
+            logger.info(
+                "[InteractiveDemo] promoted '%s' → weakly. reason: %s",
+                skill, reasoning[:100],
+            )
+
+        elif support_level == "unclear":
+            # Keep as weakly if already there; upgrade from unsupported to weakly
+            if skill in unsupported:
+                unsupported.remove(skill)
+            if skill not in weakly and skill not in supported:
+                weakly.append(skill)
+            logger.info(
+                "[InteractiveDemo] promoted '%s' → weakly (unclear evidence). reason: %s",
+                skill, reasoning[:100],
+            )
+        # "missing" → no change
+
+    return {
+        **result,
+        "supported_skills": supported,
+        "weakly_supported_skills": weakly,
+        "unsupported_skills": unsupported,
+    }
+
+
 # ── Visual Reasoning Session Summary builder ──────────────────────────────────
 
 def _build_skill_timeline(
@@ -688,18 +987,15 @@ def _build_skill_timeline(
     """
     timeline: list[dict[str, Any]] = []
 
-    # OCR keyword → skill hint
+    # OCR keyword → skill hint (project-agnostic, do NOT add specific-site names)
     _OCR_KEYWORDS: dict[str, str] = {
         "tensorflow":       "TensorFlow",
         "neural network":   "Neural Networks",
         "playground":       "Interactive Model Demo",
         "machine learning": "Machine Learning",
         "hidden layer":     "Neural Networks",
-        "output":           "Machine Learning",
         "accuracy":         "Machine Learning",
         "loss":             "Machine Learning",
-        "chart":            "Data Visualization",
-        "graph":            "Data Visualization",
         "training":         "Machine Learning",
         "epoch":            "Machine Learning",
         "colab":            "Google Colab",
@@ -708,6 +1004,19 @@ def _build_skill_timeline(
         "pytorch":          "PyTorch",
         "keras":            "TensorFlow",
         "torch":            "PyTorch",
+        # Interactive demo / visualization signals
+        "canvas":           "Browser-Based Interactive Demo",
+        "slider":           "Interactive Model Demo",
+        "controls":         "Interactive Model Demo",
+        "interactive":      "Interactive Model Demo",
+        "visualization":    "Data Visualization",
+        "p5":               "Creative Coding",
+        "sketch":           "Creative Coding",
+        "d3":               "Data Visualization",
+        "observable":       "Data Visualization",
+        "javascript":       "JavaScript",
+        "svg":              "Data Visualization",
+        "animation":        "Creative Coding",
     }
 
     for row in analyzed_rows:
@@ -1212,6 +1521,24 @@ class ExtensionProofWorkflowAnalysisService:
                 session_id, exc_info=True,
             )
             result["visual_reasoning_summary"] = None
+
+        # ── Promote interactive demo skills using combined evidence (Task A) ──────
+        # Must run AFTER visual_reasoning_summary is attached so Qwen data is available.
+        # Non-fatal: any error leaves result unchanged.
+        try:
+            result = _promote_interactive_demo_skills(
+                result=result,
+                proof_data=proof_data,
+                claimed_skills=claimed_skills,
+                visible_observations=visible_observations,
+                visual_frame_observations=visual_frame_observations,
+                proof_objective=proof_objective,
+            )
+        except Exception:
+            logger.warning(
+                "WORKFLOW_ANALYSIS_INTERACTIVE_DEMO_PROMOTION_FAILED session=%s — continuing",
+                session_id, exc_info=True,
+            )
 
         logger.info("WORKFLOW_ANALYSIS_DB_INSERT_START session=%s", session_id)
         db_saved = False

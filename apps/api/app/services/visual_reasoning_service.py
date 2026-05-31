@@ -843,6 +843,64 @@ class MockReasoningProvider(VisualReasoningProvider):
         )
 
 
+# ── Smart frame selection ──────────────────────────────────────────────────────
+
+# Preferred percentile positions for 1–3 frames.
+# These avoid the very start (often blank/loading) and oversample the end
+# (which is likely to show output/results after interaction).
+_FRAME_PERCENTILES: dict[int, list[float]] = {
+    1: [0.50],
+    2: [0.25, 0.80],
+    3: [0.20, 0.50, 0.85],
+}
+
+
+def _select_frames_smart(
+    frames: list[tuple[int, bytes]],
+    limit: int,
+) -> list[tuple[int, bytes]]:
+    """Select up to `limit` representative frames using percentile-based positions.
+
+    Frame selection strategy:
+    - limit=1: single frame at 50% (middle of recording)
+    - limit=2: frames at 25% and 80% (early stable content + late output)
+    - limit=3: frames at 20%, 50%, 85% (stable open, interaction, output/result)
+    - limit>3: evenly-spaced midpoints (same as legacy behaviour)
+
+    Avoids duplicate timestamps: if two selected indices resolve to the same
+    frame, only one is kept and the rest fall back to the midpoint approach.
+
+    Returns a list of (timestamp_ms, jpeg_bytes) tuples, length <= limit.
+    """
+    n = len(frames)
+    if n <= limit:
+        return list(frames)
+
+    percentiles = _FRAME_PERCENTILES.get(limit)
+    if percentiles:
+        # Percentile-based selection: clamp to [0, n-1]
+        indices = [min(int(p * n), n - 1) for p in percentiles]
+        # Deduplicate while preserving order
+        seen_idx: set[int] = set()
+        unique: list[tuple[int, bytes]] = []
+        for idx in indices:
+            if idx not in seen_idx:
+                seen_idx.add(idx)
+                unique.append(frames[idx])
+        return unique
+
+    # Fallback for limit > 3: evenly-spaced midpoints
+    step = n / limit
+    indices_fallback = [min(int((i + 0.5) * step), n - 1) for i in range(limit)]
+    seen_idx = set()
+    unique = []
+    for idx in indices_fallback:
+        if idx not in seen_idx:
+            seen_idx.add(idx)
+            unique.append(frames[idx])
+    return unique
+
+
 # ── Session-level aggregation ──────────────────────────────────────────────────
 
 def _build_session_summary(
@@ -903,12 +961,21 @@ def _build_session_summary(
     if combined_summary and dominant_stage != "unknown":
         combined_summary = f"[{dominant_stage}] {combined_summary}"
 
-    # Fusion note: if average confidence is low, flag that Qwen output may be generic
+    # Fusion note: characterise Qwen output reliability vs DOM/OCR evidence
     avg_confidence = sum(o.confidence_score for o in analyzed) / len(analyzed)
-    if avg_confidence < 0.45:
+    if avg_confidence < 0.35:
         fusion_note = (
-            "Note: Qwen visual analysis returned low-confidence or generic output for this session. "
-            "DOM and OCR evidence should be treated as more reliable for skill verification."
+            "Fusion note: Qwen visual analysis returned low-confidence output (avg "
+            f"{avg_confidence:.0%}) for this session — likely generic or unclear frames. "
+            "DOM and OCR evidence are more reliable for skill verification here. "
+            "Skill support levels reflect combined DOM+OCR+Qwen signals."
+        )
+        combined_summary = (combined_summary + " | " + fusion_note) if combined_summary else fusion_note
+    elif avg_confidence < 0.50:
+        fusion_note = (
+            "Fusion note: Qwen confidence was moderate "
+            f"(avg {avg_confidence:.0%}). "
+            "Where Qwen evidence is unclear, DOM and OCR signals take precedence."
         )
         combined_summary = (combined_summary + " | " + fusion_note) if combined_summary else fusion_note
 
@@ -1082,10 +1149,12 @@ class VisualReasoningService:
                 ],
             )
 
-        # Select representative frames using midpoint-of-interval sampling.
-        # For limit=1:  picks the MIDDLE frame   (not frame[0] which is often blank).
-        # For limit=3:  picks frames at ~17%, 50%, 83% of the recording.
-        # This avoids the common issue of frame[0] being a black/pre-navigation frame.
+        # Smart frame selection.
+        # Avoids blank/loading frames at the very start of recordings.
+        # For limit=1: picks the middle frame (~50%).
+        # For limit=2: picks frames at ~25% and ~80% — early stable + late output.
+        # For limit=3: picks frames at ~20%, ~50%, ~85% — first stable, interaction, output.
+        # For limit>3: falls back to evenly-spaced midpoints.
         if not frames:
             logger.warning("[VisionReasoning] no frames provided — returning failed")
             return VisualReasoningSessionSummary(
@@ -1096,16 +1165,7 @@ class VisualReasoningService:
                 limitations=["No keyframes were available for analysis."],
             )
 
-        if len(frames) <= limit:
-            selected = list(frames)
-        else:
-            # Midpoint-of-interval: index = int((i + 0.5) * step)
-            # clamped to [0, len-1] to be safe.
-            step = len(frames) / limit
-            selected = [
-                frames[min(int((i + 0.5) * step), len(frames) - 1)]
-                for i in range(limit)
-            ]
+        selected = _select_frames_smart(frames, limit)
 
         selected_ts = [ts for ts, _ in selected]
         logger.info(
