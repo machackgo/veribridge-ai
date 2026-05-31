@@ -805,6 +805,211 @@ function FrameOCREvidenceSubsection({
   )
 }
 
+// ── Advanced Visual Reasoning Section (v7) ───────────────────────────────────
+// Shows structured Qwen2.5-VL / Qwen3-VL reasoning when enabled.
+// Hidden cleanly when reasoning is disabled (VISUAL_REASONING_ENABLED=false).
+
+type VisualReasoningSummary = NonNullable<WorkflowAnalysisResponse["visual_reasoning_summary"]>
+
+function AdvancedVisualReasoningSection({
+  reasoning,
+}: {
+  reasoning: VisualReasoningSummary | null | undefined
+}) {
+  // Nothing to show when reasoning is disabled or null
+  if (!reasoning) {
+    return (
+      <div style={{ fontSize: 10, color: "#6b7280", fontStyle: "italic", marginTop: 4 }}>
+        Advanced visual reasoning is not enabled. OCR-based frame analysis was used.
+      </div>
+    )
+  }
+
+  const isAnalyzed  = reasoning.status === "analyzed"
+  const isMissing   = reasoning.status === "missing_dependency"
+  const isDisabled  = reasoning.status === "disabled" || reasoning.status === "not_configured"
+  const isFailed    = reasoning.status === "failed"
+
+  // Show minimal note when disabled
+  if (isDisabled) {
+    return (
+      <div style={{ fontSize: 10, color: "#6b7280", fontStyle: "italic", marginTop: 4 }}>
+        Advanced visual reasoning is not enabled. OCR-based frame analysis was used.
+      </div>
+    )
+  }
+
+  // Installation note when packages missing
+  if (isMissing) {
+    return (
+      <div style={{ marginTop: 6, padding: "8px 10px", background: "#fefce8",
+        border: "1px solid #fef08a", borderRadius: 6, fontSize: 10, color: "#78350f" }}>
+        <strong>Advanced Visual Reasoning — missing dependency:</strong>{" "}
+        Install Qwen-VL packages to enable structured visual skill analysis.
+        <br />
+        <code style={{ fontSize: 9, fontFamily: "monospace" }}>
+          pip install &quot;transformers&gt;=4.45&quot; torch pillow accelerate
+        </code>
+      </div>
+    )
+  }
+
+  const observations = reasoning.observations ?? []
+  const signals      = reasoning.supported_signals ?? []
+  const missing      = reasoning.missing_claims ?? []
+  const limitations  = reasoning.limitations ?? []
+
+  return (
+    <div style={{
+      marginTop: 6,
+      padding: "10px 12px",
+      background: "#f5f3ff",
+      border: "1px solid #c4b5fd",
+      borderRadius: 7,
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+    }}>
+      {/* Header */}
+      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+        textTransform: "uppercase", color: "#6d28d9" }}>
+        Advanced Visual Reasoning
+      </div>
+
+      {/* Provider + counts */}
+      <div style={{ display: "grid", gridTemplateColumns: "130px 1fr", gap: "3px 8px", fontSize: 11 }}>
+        <span style={{ color: "#64748b" }}>Provider</span>
+        <span style={{ color: "#5b21b6", fontWeight: 600, fontFamily: "monospace" }}>
+          {reasoning.provider || "qwen_vl"}
+        </span>
+
+        <span style={{ color: "#64748b" }}>Status</span>
+        <span style={{ color: isFailed ? "#b91c1c" : "#166534", fontWeight: 600 }}>
+          {isFailed ? "failed" : reasoning.status}
+        </span>
+
+        <span style={{ color: "#64748b" }}>Frames analyzed</span>
+        <span style={{ color: "#1e40af", fontWeight: 600 }}>{reasoning.frames_analyzed}</span>
+      </div>
+
+      {/* Combined visual summary */}
+      {reasoning.summary && (
+        <div style={{ fontSize: 11, color: "#1e293b", lineHeight: 1.5,
+          padding: "6px 8px", background: "#ede9fe", borderRadius: 5,
+          border: "1px solid #c4b5fd" }}>
+          <strong style={{ color: "#6d28d9" }}>What the model observed: </strong>
+          {reasoning.summary}
+        </div>
+      )}
+
+      {/* Per-frame observations (collapsed by default — show first 2) */}
+      {observations.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#6d28d9",
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+            Frame-level observations
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {observations.slice(0, 3).map((obs, i) => {
+              const tsLabel = obs.timestamp_ms != null
+                ? `${(obs.timestamp_ms / 1000).toFixed(1)}s`
+                : null
+              return (
+                <div key={i} style={{ padding: "6px 8px", background: "#f3f4f6",
+                  borderRadius: 5, border: "1px solid #e5e7eb" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6,
+                    marginBottom: 3 }}>
+                    {tsLabel && (
+                      <span style={{ fontSize: 8, fontFamily: "monospace",
+                        padding: "1px 5px", borderRadius: 3, background: "#ede9fe",
+                        color: "#6d28d9", border: "1px solid #c4b5fd" }}>
+                        {tsLabel}
+                      </span>
+                    )}
+                    <span style={{ fontSize: 9, fontWeight: 600, color: "#374151" }}>
+                      {obs.detected_workflow_stage !== "unknown"
+                        ? obs.detected_workflow_stage.replace(/_/g, " ")
+                        : "unknown stage"}
+                    </span>
+                    <span style={{ fontSize: 9, color: "#9ca3af" }}>
+                      confidence: {(obs.confidence_score * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  {obs.visual_summary && (
+                    <div style={{ fontSize: 10, color: "#374151", lineHeight: 1.4 }}>
+                      {obs.visual_summary}
+                    </div>
+                  )}
+                  {obs.detected_outputs && obs.detected_outputs.length > 0 && (
+                    <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 3 }}>
+                      {obs.detected_outputs.slice(0, 4).map((out, j) => (
+                        <span key={j} style={{ fontSize: 9, padding: "1px 6px",
+                          background: "#dcfce7", color: "#166534",
+                          borderRadius: 3, border: "1px solid #bbf7d0",
+                          fontFamily: "monospace" }}>
+                          {out}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            {observations.length > 3 && (
+              <div style={{ fontSize: 9, color: "#6b7280", fontStyle: "italic" }}>
+                +{observations.length - 3} more frame observations
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Skill signals found */}
+      {signals.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#166534",
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+            Skill signals found
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {signals.map((sig, i) => (
+              <span key={i} style={{ fontSize: 10, padding: "2px 8px",
+                background: "#dcfce7", color: "#166534", borderRadius: 12,
+                border: "1px solid #bbf7d0", fontWeight: 500 }}>
+                ✓ {sig}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Missing / unclear proof */}
+      {missing.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#92400e",
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+            Missing or unclear evidence
+          </div>
+          <ul style={{ margin: 0, padding: "0 0 0 14px",
+            display: "flex", flexDirection: "column", gap: 2 }}>
+            {missing.slice(0, 5).map((item, i) => (
+              <li key={i} style={{ fontSize: 10, color: "#78350f", lineHeight: 1.4 }}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Limitations */}
+      {limitations.length > 0 && (
+        <div style={{ fontSize: 9, color: "#6b7280", fontStyle: "italic",
+          borderTop: "1px solid #e9d5ff", paddingTop: 4 }}>
+          <strong>Limitations:</strong> {limitations.slice(0, 2).join(" · ")}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Video / Keyframe Evidence Section ────────────────────────────────────────
 // Shown when a WebM video was recorded. Surfaces all video metadata so the
 // user knows exactly what was captured even when OCR is not configured.
@@ -919,6 +1124,14 @@ function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysis
       {/* Frame OCR Evidence sub-section — shown when OCR produced evidence */}
       {ocrSummary && hasOCREvidence && (
         <FrameOCREvidenceSubsection ocr={ocrSummary} keyframeTimestamps={kfTs} />
+      )}
+
+      {/* Advanced Visual Reasoning section (v7) — Qwen2.5-VL / Qwen3-VL */}
+      {/* Only shown when reasoning was attempted (status present) or enabled */}
+      {analysis.visual_reasoning_summary !== undefined && (
+        <AdvancedVisualReasoningSection
+          reasoning={analysis.visual_reasoning_summary ?? null}
+        />
       )}
 
       {/* Limitation notice when OCR not configured and no OCR evidence */}

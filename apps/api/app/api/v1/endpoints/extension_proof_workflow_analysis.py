@@ -297,6 +297,12 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
         # ── Frame OCR evidence summary (v6 — computed by _enrich_frame_ocr_evidence) ─
         # Safe to expose: never includes raw frame paths, storage URLs, or tokens.
         frame_ocr_evidence_summary=_safe_frame_ocr_summary(row.get("frame_ocr_evidence_summary")),
+        # ── Advanced visual reasoning summary (v7 — Qwen2.5-VL / Qwen3-VL) ─────
+        # None when VISUAL_REASONING_ENABLED=false (the default).
+        # Safe to expose: _safe_visual_reasoning_summary() strips private fields.
+        visual_reasoning_summary=_safe_visual_reasoning_summary(
+            row.get("visual_reasoning_summary")
+        ),
         progress=100,
         current_stage="AI reviewed",
         stages=stages,
@@ -460,6 +466,35 @@ _OCR_PRIVATE_FIELDS = frozenset({
     "access_token", "raw_dom", "debug_metadata", "admin_notes",
     "raw_frame", "frame_bytes",
 })
+
+_REASONING_PUBLIC_FIELDS = frozenset({
+    "status", "provider", "frames_analyzed", "summary",
+    "observations", "supported_signals", "missing_claims", "limitations",
+})
+
+
+def _safe_visual_reasoning_summary(summary: Any) -> dict | None:
+    """Return only public-safe fields from visual_reasoning_summary.
+
+    Keeps only the documented public fields (status, provider, frames_analyzed,
+    summary, observations, supported_signals, missing_claims, limitations).
+    Returns None when input is not a dict.
+
+    Each observation dict within 'observations' is also sanitised — private
+    fields (frame_storage_path, raw_frame, etc.) are stripped.
+    """
+    if not isinstance(summary, dict):
+        return None
+    result = {k: v for k, v in summary.items() if k in _REASONING_PUBLIC_FIELDS}
+    # Sanitise each per-frame observation
+    raw_obs = result.get("observations")
+    if isinstance(raw_obs, list):
+        result["observations"] = [
+            {k: v for k, v in obs.items() if k not in _OCR_PRIVATE_FIELDS}
+            if isinstance(obs, dict) else obs
+            for obs in raw_obs
+        ]
+    return result
 
 
 def _safe_frame_ocr_summary(summary: Any) -> dict | None:

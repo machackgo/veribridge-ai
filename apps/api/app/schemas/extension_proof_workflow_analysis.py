@@ -296,6 +296,22 @@ class WorkflowAnalysisResponse(BaseModel):
         ),
     )
 
+    # ── Advanced visual reasoning summary (v7 — Qwen2.5-VL / Qwen3-VL) ──────
+    # Structured skill-evidence reasoning from open-weight vision models.
+    # Populated when VISUAL_REASONING_ENABLED=true and model is installed.
+    # None when reasoning is disabled (VISUAL_REASONING_ENABLED=false, default).
+    # NEVER includes raw frame paths, storage URLs, or private metadata.
+    visual_reasoning_summary: dict | None = Field(
+        default=None,
+        description=(
+            "Advanced visual reasoning summary from Qwen2.5-VL / Qwen3-VL. "
+            "Contains: status, provider, frames_analyzed, summary, "
+            "observations (list[dict]), supported_signals (list[str]), "
+            "missing_claims (list[str]), limitations (list[str]). "
+            "None when VISUAL_REASONING_ENABLED=false (the default)."
+        ),
+    )
+
     # Computed at response time, not stored in DB.
     # After successful analysis all stages are "complete" and progress = 100.
     progress: int = Field(default=100, ge=0, le=100)

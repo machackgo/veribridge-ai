@@ -46,6 +46,10 @@ from app.services.workflow_visual_analysis_service import (
     WorkflowVisualAnalysisService,
     VISUAL_STATUS_NOT_CONFIGURED,
 )
+from app.services.visual_reasoning_service import (
+    VisualReasoningService,
+    REASONING_STATUS_ANALYZED,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -377,6 +381,57 @@ async def upload_workflow_video(
                 queued_for_analysis = frames_stored
             except Exception as exc:
                 logger.warning("[WorkflowVideo] Visual analysis failed (non-fatal): %s", exc)
+
+        # ── 6. Trigger advanced visual reasoning if enabled ────────────────────
+        # Runs after OCR. Uses same frame_bytes_map (in-memory).
+        # Stores per-frame reasoning JSON in workflow_visual_frame_evidence.
+        # Non-fatal: reasoning failure never blocks the upload response.
+        if frames_stored > 0:
+            try:
+                reasoning_svc = VisualReasoningService()
+                if reasoning_svc.get_provider_status()["visual_reasoning_configured"]:
+                    # Build (timestamp_ms, jpeg_bytes) list from map
+                    frame_pairs = [
+                        (va_svc._db.table("workflow_visual_frame_evidence")  # type: ignore[attr-defined]
+                         # We can't recover ts_ms here from frame_id easily;
+                         # use frame_bytes_map iteration order + 0-indexed timestamps.
+                         # Actual timestamps are in frame_bytes_map keys via store_visual_frame.
+                         , jpeg_bytes)
+                        for jpeg_bytes in frame_bytes_map.values()
+                    ]
+                    # Use the already-extracted frames list from result._extracted_frames
+                    # which has real timestamps
+                    frames_for_reasoning = result._extracted_frames[
+                        : settings.visual_reasoning_max_frames
+                    ]
+                    summary = reasoning_svc.analyze_frames(
+                        frames=frames_for_reasoning,
+                    )
+                    if summary.status == REASONING_STATUS_ANALYZED:
+                        # Persist per-frame reasoning into workflow_visual_frame_evidence
+                        frame_ids = list(frame_bytes_map.keys())
+                        for i, obs_dict in enumerate(summary.observations):
+                            if i >= len(frame_ids):
+                                break
+                            try:
+                                db.table("workflow_visual_frame_evidence").update({
+                                    "visual_reasoning_json": obs_dict,
+                                }).eq("id", frame_ids[i]).eq(
+                                    "user_id", user_id
+                                ).execute()
+                            except Exception as _exc:
+                                logger.debug(
+                                    "[WorkflowVideo] Could not persist frame reasoning: %s", _exc
+                                )
+                        logger.info(
+                            "[WorkflowVideo] Visual reasoning complete: %d frames analyzed "
+                            "for session %s",
+                            summary.frames_analyzed, session_id,
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "[WorkflowVideo] Advanced visual reasoning failed (non-fatal): %s", exc
+                )
 
     elif result.video_analysis_status in (VIDEO_STATUS_NOT_AVAILABLE, VIDEO_STATUS_FAILED):
         # ── 4b. Store a marker so the UI knows a video WAS uploaded ────────────

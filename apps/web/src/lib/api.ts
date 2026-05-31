@@ -1256,6 +1256,36 @@ export type WorkflowAnalysisResponse = {
       ocr_terms_found: string[]
     }>
   } | null
+  // ── Advanced Visual Reasoning (v7 — Qwen2.5-VL / Qwen3-VL) ──────────────────
+  /**
+   * Structured skill-evidence reasoning from open-weight vision models.
+   * null when VISUAL_REASONING_ENABLED=false (the default).
+   */
+  visual_reasoning_summary?: {
+    status: "analyzed" | "failed" | "disabled" | "missing_dependency" | "not_configured"
+    provider: string
+    frames_analyzed: number
+    summary: string
+    observations: Array<{
+      frame_index: number | null
+      timestamp_ms: number | null
+      model_provider: string
+      visual_summary: string
+      visible_ui_elements: string[]
+      visible_objects: string[]
+      detected_workflow_stage: string
+      detected_actions: string[]
+      detected_outputs: string[]
+      detected_skills_supported: string[]
+      missing_or_unclear_evidence: string[]
+      confidence_score: number
+      limitations: string[]
+      status: string
+    }>
+    supported_signals: string[]
+    missing_claims: string[]
+    limitations: string[]
+  } | null
   // progress tracking
   progress: number
   current_stage: string

@@ -60,6 +60,7 @@ logger = logging.getLogger(__name__)
 
 _TABLE = "workflow_analysis_results"
 _SESSION_TABLE = "extension_proof_sessions"
+_FRAME_EVIDENCE_TABLE = "workflow_visual_frame_evidence"
 
 ANALYZER_VERSION = "workflow-analysis-v4"
 
@@ -671,6 +672,106 @@ def _build_frame_ocr_evidence_summary(
     }
 
 
+# ── Visual Reasoning Session Summary builder ──────────────────────────────────
+
+def _build_visual_reasoning_session_summary_from_db(
+    db: Any,
+    user_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Read per-frame visual_reasoning_json from DB and aggregate into session summary.
+
+    Returns None when no reasoning data exists (reasoning disabled or not run).
+    Returns a public-safe dict matching VisualReasoningSessionSummary.to_public_dict().
+
+    Privacy: never returns raw frame paths, storage URLs, or access tokens.
+    """
+    try:
+        resp = (
+            db.table(_FRAME_EVIDENCE_TABLE)
+            .select("visual_reasoning_json, timestamp_ms, frame_type")
+            .eq("user_id", user_id)
+            .eq("proof_session_id", session_id)
+            .eq("frame_type", "video_keyframe")
+            .not_.is_("visual_reasoning_json", "null")
+            .order("timestamp_ms", desc=False)
+            .execute()
+        )
+        rows: list[dict[str, Any]] = resp.data or []
+    except Exception as exc:
+        logger.debug("[VisualReasoning] DB read failed (non-fatal): %s", exc)
+        return None
+
+    if not rows:
+        return None
+
+    # Aggregate observations
+    analyzed_obs: list[dict[str, Any]] = []
+    all_skills: list[str] = []
+    all_missing: list[str] = []
+    all_summaries: list[str] = []
+    seen_skills: set[str] = set()
+    seen_missing: set[str] = set()
+    provider = "none"
+
+    for row in rows:
+        obs = row.get("visual_reasoning_json")
+        if not isinstance(obs, dict):
+            continue
+        if obs.get("status") != "analyzed":
+            continue
+
+        # Strip private fields
+        _PRIVATE = frozenset({"frame_storage_path", "raw_frame", "frame_bytes",
+                               "access_token", "raw_dom", "debug_metadata"})
+        clean_obs = {k: v for k, v in obs.items() if k not in _PRIVATE}
+        analyzed_obs.append(clean_obs)
+
+        mp = obs.get("model_provider", "")
+        if mp and mp != "none":
+            provider = mp
+
+        if obs.get("visual_summary"):
+            all_summaries.append(str(obs["visual_summary"]))
+
+        for s in (obs.get("detected_skills_supported") or []):
+            key = str(s).strip().lower()
+            if key not in seen_skills:
+                seen_skills.add(key)
+                all_skills.append(str(s).strip())
+
+        for m in (obs.get("missing_or_unclear_evidence") or []):
+            key = str(m).strip().lower()
+            if key not in seen_missing:
+                seen_missing.add(key)
+                all_missing.append(str(m).strip())
+
+    if not analyzed_obs:
+        return {
+            "status": "failed",
+            "provider": provider,
+            "frames_analyzed": 0,
+            "summary": "Visual reasoning data found in DB but no frames had analyzed status.",
+            "observations": [],
+            "supported_signals": [],
+            "missing_claims": [],
+            "limitations": ["No frames had analyzed status in visual_reasoning_json."],
+        }
+
+    combined_summary = " | ".join(all_summaries[:4])[:600]
+
+    return {
+        "status": "analyzed",
+        "provider": provider,
+        "frames_analyzed": len(analyzed_obs),
+        "summary": combined_summary,
+        "observations": analyzed_obs,
+        "supported_signals": all_skills,
+        "missing_claims": all_missing,
+        "limitations": [],
+    }
+
+
 # ── URL filtering: noise patterns ─────────────────────────────────────────────
 
 # Exact netlocs that are always noise (no matter what path)
@@ -923,6 +1024,30 @@ class ExtensionProofWorkflowAnalysisService:
             visual_frame_observations=visual_frame_observations,
             stored_keyframe_timestamps=stored_keyframe_timestamps,
         )
+
+        # ── Attach visual reasoning summary (v7) ──────────────────────────────
+        # Build from per-frame visual_reasoning_json stored during video upload.
+        # Non-fatal: if DB read fails or no reasoning data exists, field is None.
+        try:
+            vr_summary = _build_visual_reasoning_session_summary_from_db(
+                self._client, user_id, session_id
+            )
+            result["visual_reasoning_summary"] = vr_summary
+            if vr_summary:
+                logger.info(
+                    "WORKFLOW_ANALYSIS_VISUAL_REASONING_ATTACHED session=%s "
+                    "frames=%d signals=%d",
+                    session_id,
+                    vr_summary.get("frames_analyzed", 0),
+                    len(vr_summary.get("supported_signals", [])),
+                )
+        except Exception:
+            logger.warning(
+                "WORKFLOW_ANALYSIS_VISUAL_REASONING_FAILED session=%s — "
+                "continuing without visual reasoning summary",
+                session_id, exc_info=True,
+            )
+            result["visual_reasoning_summary"] = None
 
         logger.info("WORKFLOW_ANALYSIS_DB_INSERT_START session=%s", session_id)
         db_saved = False
@@ -2176,6 +2301,10 @@ def _analyze_workflow(
         # Structured summary of OCR evidence from video keyframes.
         # Shows page context, OCR snippets, and per-skill OCR support signals.
         "frame_ocr_evidence_summary": frame_ocr_evidence_summary,
+        # ── Advanced visual reasoning summary (v7) ────────────────────────────
+        # Populated AFTER _analyze_workflow() returns, in ExtensionProofWorkflowAnalysisService.analyze().
+        # Placeholder so the key is always present in the result dict.
+        "visual_reasoning_summary": None,
     }
 
 

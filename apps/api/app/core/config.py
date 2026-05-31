@@ -165,6 +165,32 @@ class Settings(BaseSettings):
         alias="LOCAL_VISION_PROVIDER",
     )
 
+    # ── Advanced Visual Reasoning (Level 3) ──────────────────────────────────
+    # Structured skill-evidence reasoning using Qwen2.5-VL / Qwen3-VL.
+    # Runs ON TOP of existing OCR (Level 1) for richer frame analysis.
+    #
+    # VISUAL_REASONING_ENABLED=true enables the reasoning service.
+    # Default: false (safe — OCR evidence still works; no model loaded).
+    #
+    # Backend selection: reuses LOCAL_VISION_PROVIDER (qwen_vl recommended).
+    # Install: pip install "transformers>=4.45" torch pillow accelerate
+    #
+    # VISUAL_REASONING_MAX_FRAMES: number of representative frames to analyze.
+    # Keep low (3-5) to control memory / latency on first run.
+    #
+    # Memory guidance:
+    #   Qwen2.5-VL-7B: ~14 GB CPU / ~7 GB GPU (float16)
+    #   Mac M-series:  supported via CPU/MPS
+    #   NVIDIA GPU:    recommended for interactive speed
+    visual_reasoning_enabled: bool = Field(
+        default=False,
+        alias="VISUAL_REASONING_ENABLED",
+    )
+    visual_reasoning_max_frames: int = Field(
+        default=3,
+        alias="VISUAL_REASONING_MAX_FRAMES",
+    )
+
     # ── Video Keyframe Extraction ─────────────────────────────────────────────
     # Limits applied before extraction begins.  All values are configurable
     # via environment variables so they can be tightened per deployment.
