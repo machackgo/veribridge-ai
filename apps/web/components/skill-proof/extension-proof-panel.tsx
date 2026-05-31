@@ -1151,22 +1151,139 @@ function VideoKeyframeEvidenceSection({
           </div>
         )}
 
-        {/* OCR extracted text snippets */}
-        {visualStatus === "analyzed" && analysis.visual_summary && (
-          <div style={{ display: "grid", gap: 3 }}>
-            <span style={{ fontSize: 10, color: "#64748b" }}>OCR text extracted</span>
-            <div style={{
-              fontSize: 10, color: "#1e293b", background: "#f8fafc",
-              border: "1px solid #e2e8f0", borderRadius: 5,
-              padding: "5px 8px", lineHeight: 1.6, fontFamily: "monospace",
-              maxHeight: 72, overflow: "hidden",
-            }}>
-              {analysis.visual_summary.split(" | ").slice(0, 4).map((snippet, i) => (
-                <div key={i} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {snippet.length > 80 ? snippet.slice(0, 80) + "…" : snippet}
-                </div>
-              ))}
+        {/* OCR extracted text snippets — use top_ocr_snippets from frame_ocr_evidence_summary
+            when available (cleaner, deduped); fall back to splitting visual_summary */}
+        {visualStatus === "analyzed" && (() => {
+          const foes = analysis.frame_ocr_evidence_summary
+          const snippets = foes?.top_ocr_snippets?.length
+            ? foes.top_ocr_snippets
+            : analysis.visual_summary
+              ? analysis.visual_summary.split(" | ").map(s => s.trim()).filter(Boolean)
+              : []
+          if (!snippets.length) return null
+          return (
+            <div style={{ display: "grid", gap: 3 }}>
+              <span style={{ fontSize: 10, color: "#64748b" }}>
+                OCR text extracted
+                <span style={{ marginLeft: 6, fontSize: 9, color: "#94a3b8", fontWeight: 400 }}>
+                  from keyframes · DOM evidence separate
+                </span>
+              </span>
+              <div style={{
+                fontSize: 10, color: "#1e293b", background: "#f8fafc",
+                border: "1px solid #e2e8f0", borderRadius: 5,
+                padding: "5px 8px", lineHeight: 1.6, fontFamily: "monospace",
+                maxHeight: 90, overflow: "auto",
+              }}>
+                {snippets.slice(0, 6).map((snippet, i) => (
+                  <div key={i} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {snippet.length > 100 ? snippet.slice(0, 100) + "…" : snippet}
+                  </div>
+                ))}
+                {snippets.length > 6 && (
+                  <div style={{ color: "#94a3b8", fontStyle: "italic" }}>
+                    +{snippets.length - 6} more snippets
+                  </div>
+                )}
+              </div>
             </div>
+          )
+        })()}
+
+        {/* Frame Evidence Summary — observed_summary + page context */}
+        {analysis.frame_ocr_evidence_summary?.has_ocr_evidence && (
+          <div style={{ display: "grid", gap: 4 }}>
+            {/* Page context chip */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Frame context</span>
+              {(() => {
+                const ctx = analysis.frame_ocr_evidence_summary!.detected_page_context
+                const ctxCfg: Record<string, { bg: string; color: string; border: string; label: string }> = {
+                  homepage_marketing: { bg: "#fff7ed", color: "#9a3412", border: "#fed7aa", label: "Homepage / marketing" },
+                  training_ui:        { bg: "#f0fdf4", color: "#166534", border: "#bbf7d0", label: "Training UI" },
+                  prediction_output:  { bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe", label: "Prediction output" },
+                  demo_content:       { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "Demo content" },
+                  unknown:            { bg: "#f1f5f9", color: "#475569", border: "#e2e8f0", label: "Unknown context" },
+                }
+                const c = ctxCfg[ctx] ?? ctxCfg.unknown
+                return (
+                  <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 4,
+                    background: c.bg, color: c.color, border: `1px solid ${c.border}` }}>
+                    {c.label}
+                  </span>
+                )
+              })()}
+            </div>
+
+            {/* Observed summary */}
+            <div style={{
+              fontSize: 10, color: "#334155", background: "#f8fafc",
+              border: "1px solid #e2e8f0", borderRadius: 5,
+              padding: "6px 9px", lineHeight: 1.55,
+            }}>
+              {analysis.frame_ocr_evidence_summary.observed_summary}
+            </div>
+
+            {/* What was NOT observed */}
+            {analysis.frame_ocr_evidence_summary.what_was_not_observed.length > 0 && (
+              <div style={{ display: "grid", gap: 2 }}>
+                <span style={{ fontSize: 9, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Not observed in frames
+                </span>
+                {analysis.frame_ocr_evidence_summary.what_was_not_observed.map((item, i) => (
+                  <div key={i} style={{ display: "flex", gap: 5, alignItems: "flex-start" }}>
+                    <span style={{ fontSize: 9, color: "#ef4444", marginTop: 1 }}>✗</span>
+                    <span style={{ fontSize: 10, color: "#64748b" }}>{item}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Per-skill OCR signals */}
+            {analysis.frame_ocr_evidence_summary.skill_signals.length > 0 && (
+              <div style={{ display: "grid", gap: 3 }}>
+                <span style={{ fontSize: 9, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  OCR evidence per skill
+                </span>
+                {analysis.frame_ocr_evidence_summary.skill_signals.map((sig, i) => (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "flex-start", gap: 6, flexWrap: "wrap",
+                    padding: "4px 7px", borderRadius: 5,
+                    background: sig.ocr_support === "partial" ? "#f0fdf4" : "#fef2f2",
+                    border: `1px solid ${sig.ocr_support === "partial" ? "#bbf7d0" : "#fecaca"}`,
+                  }}>
+                    <span style={{ fontSize: 9, fontWeight: 700, minWidth: 10,
+                      color: sig.ocr_support === "partial" ? "#166534" : "#991b1b" }}>
+                      {sig.ocr_support === "partial" ? "◑" : "○"}
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: "#1e293b" }}>{sig.skill}</span>
+                        <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3,
+                          background: sig.ocr_support === "partial" ? "#dcfce7" : "#fee2e2",
+                          color: sig.ocr_support === "partial" ? "#166534" : "#991b1b" }}>
+                          {sig.ocr_support === "partial" ? "OCR partial" : "OCR insufficient"}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 10, color: "#64748b", marginTop: 2, lineHeight: 1.4 }}>
+                        {sig.reasoning}
+                      </div>
+                      {sig.ocr_terms_found.length > 0 && (
+                        <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 3 }}>
+                          {sig.ocr_terms_found.map((term, j) => (
+                            <span key={j} style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3,
+                              background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe",
+                              fontFamily: "monospace" }}>
+                              {term}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

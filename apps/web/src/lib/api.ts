@@ -1235,6 +1235,27 @@ export type WorkflowAnalysisResponse = {
   // ── Sequence analysis (v6 — Week 3) ──────────────────────────────────────────
   /** Full sequence analysis result. Public-safe — no raw paths or private metadata. */
   sequence_analysis?: SequenceAnalysisResult | null
+  // ── Frame OCR evidence summary (v6) ──────────────────────────────────────────
+  /**
+   * Structured summary of what OCR/visual analysis found in video keyframes.
+   * Includes page context (homepage vs training UI vs prediction output),
+   * top OCR text snippets, what was/wasn't observed, and per-skill OCR signals.
+   */
+  frame_ocr_evidence_summary?: {
+    has_ocr_evidence: boolean
+    ocr_provider: string
+    frames_analyzed: number
+    top_ocr_snippets: string[]
+    detected_page_context: "homepage_marketing" | "training_ui" | "prediction_output" | "demo_content" | "unknown"
+    observed_summary: string
+    what_was_not_observed: string[]
+    skill_signals: Array<{
+      skill: string
+      ocr_support: "partial" | "insufficient"
+      reasoning: string
+      ocr_terms_found: string[]
+    }>
+  } | null
   // progress tracking
   progress: number
   current_stage: string

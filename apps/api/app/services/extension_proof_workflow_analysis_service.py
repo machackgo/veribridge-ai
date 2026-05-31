@@ -178,6 +178,18 @@ _SKILL_ALIASES: dict[str, str] = {
     "aws": "AWS",
     "azure": "Azure",
     "google maps": "Google Maps API",
+    # AI/ML aliases to preserve capitalisation through title()
+    "tensorflow.js": "TensorFlow.js",
+    "tfjs": "TensorFlow.js",
+    "browser-based ai": "Browser-Based AI",
+    "browser based ai": "Browser-Based AI",
+    "image classification": "Image Classification",
+    "model testing": "Model Testing",
+    "computer vision": "Computer Vision",
+    "object detection": "Object Detection",
+    "natural language processing": "Natural Language Processing",
+    "deep learning": "Deep Learning",
+    "reinforcement learning": "Reinforcement Learning",
 }
 
 # ── App-type detection patterns ───────────────────────────────────────────────
@@ -249,6 +261,414 @@ _REQUIRES_CODE_EVIDENCE: frozenset[str] = frozenset({
     "fastai", "ray", "dask", "airflow", "prefect",
     "github actions", "ci/cd",
 })
+
+
+# ── OCR frame evidence: page-context detection ────────────────────────────────
+# These keyword sets are used to classify what type of content is shown in
+# video keyframe OCR text (homepage vs training UI vs prediction output).
+
+# Words strongly associated with homepage / marketing content (no interactive UI)
+_OCR_HOMEPAGE_SIGNALS: frozenset[str] = frozenset({
+    "get started", "no expertise", "no coding required", "quick, practical",
+    "used by", "watch video", "see examples", "how it works", "sign in",
+    "sign up", "log in", "create account", "accessibility", "faq",
+    "free to use", "download", "documentation", "learn more",
+    "a fast, easy way", "no expertise or coding", "sites, apps",
+})
+
+# Words strongly associated with training / data collection UI
+_OCR_TRAINING_UI_SIGNALS: frozenset[str] = frozenset({
+    "add image samples", "image samples", "add samples", "webcam",
+    "upload images", "train model", "training", "class 1", "class 2",
+    "add a class", "samples added", "epochs", "model trained",
+    "you can now", "add class", "sample", "hold to record",
+    "flip camera", "upload from file",
+})
+
+# Words strongly associated with prediction / testing output being shown
+_OCR_PREDICTION_OUTPUT_SIGNALS: frozenset[str] = frozenset({
+    "confidence", "prediction", "predicted class", "accuracy",
+    "output", "result", "score", "probability", "class label",
+    "test your model", "your model is ready", "no input",
+})
+
+# OCR snippets that are likely UI noise from other tabs / chrome UI / navigation
+_OCR_NOISE_SNIPPETS: frozenset[str] = frozenset({
+    "table of contents", "copyright", "all rights reserved", "privacy policy",
+    "terms of service", "cookie policy", "subscribe", "newsletter",
+    "click here", "read more",
+})
+
+# ── OCR → skill keyword maps ───────────────────────────────────────────────────
+# Conservative mapping: claim → list of OCR terms that would *partially* support it.
+# Ordered by specificity — more specific terms → higher weight.
+_SKILL_OCR_KEYWORDS: dict[str, list[str]] = {
+    # ── Machine Learning ──────────────────────────────────────────────────────
+    "machine learning": [
+        "teachable machine", "machine learning", "neural network",
+        "train a computer", "train your model", "training",
+        "deep learning", "model", "tensorflow", "keras",
+        "sklearn", "scikit", "hugging face", "pytorch",
+    ],
+    # ── Image Classification ──────────────────────────────────────────────────
+    "image classification": [
+        "add image samples", "image samples", "classify", "classification",
+        "class 1", "class 2", "class label", "add a class",
+        "predicted class", "recognized", "detected class",
+        "confidence", "prediction",
+    ],
+    # ── TensorFlow / TensorFlow.js ────────────────────────────────────────────
+    "tensorflow": [
+        "tensorflow", "tfjs", "tensorflow.js", "teachable machine",
+        "keras", "tensor", "saved model",
+    ],
+    "tensorflow.js": [
+        "tensorflow.js", "tfjs", "teachable machine",
+        "javascript ml", "browser ml", "client-side ml",
+    ],
+    # ── Browser-Based AI ──────────────────────────────────────────────────────
+    "browser-based ai": [
+        "teachable machine", "tensorflow.js", "tfjs", "browser",
+        "in-browser", "client-side", "webcam", "ml5", "ml in the browser",
+        "machine learning", "train a computer",
+    ],
+    # ── Model Testing ─────────────────────────────────────────────────────────
+    "model testing": [
+        "confidence", "prediction", "predicted", "accuracy",
+        "test your model", "output", "result", "score",
+        "probability", "your model is ready",
+    ],
+    # ── Deep Learning ────────────────────────────────────────────────────────
+    "deep learning": [
+        "neural network", "deep learning", "convolutional", "layers",
+        "epochs", "training", "tensorflow", "keras", "pytorch",
+    ],
+    # ── Computer Vision ──────────────────────────────────────────────────────
+    "computer vision": [
+        "image", "detect", "detection", "vision", "object", "classify",
+        "bounding box", "segmentation", "yolo", "recognition",
+    ],
+    # ── NLP ──────────────────────────────────────────────────────────────────
+    "natural language processing": [
+        "nlp", "text", "sentiment", "language model", "bert", "gpt",
+        "tokenize", "entity", "summarize", "translate",
+    ],
+    # ── React / JS frameworks ────────────────────────────────────────────────
+    "react": ["react", "component", "jsx", "hooks", "usestate"],
+    "next.js": ["next.js", "nextjs", "getstaticprops", "getserversideprops"],
+    # ── Generic ML/AI ────────────────────────────────────────────────────────
+    "ai": [
+        "artificial intelligence", "ai", "machine learning",
+        "neural network", "model", "prediction",
+    ],
+}
+
+
+# ── OCR page-context classifier ────────────────────────────────────────────────
+
+def _detect_ocr_page_context(ocr_text: str) -> str:
+    """Classify OCR text into a page-context category.
+
+    Returns one of:
+        "training_ui"         — training data collection / model training UI
+        "prediction_output"   — prediction/inference result output shown
+        "homepage_marketing"  — platform homepage or marketing page only
+        "demo_content"        — demo or tutorial content
+        "unknown"             — cannot classify confidently
+
+    Conservative: only returns a specific category when strong signals are present.
+    """
+    if not ocr_text or not ocr_text.strip():
+        return "unknown"
+
+    lower = ocr_text.lower()
+
+    prediction_matches = sum(1 for s in _OCR_PREDICTION_OUTPUT_SIGNALS if s in lower)
+    training_matches   = sum(1 for s in _OCR_TRAINING_UI_SIGNALS if s in lower)
+    homepage_matches   = sum(1 for s in _OCR_HOMEPAGE_SIGNALS if s in lower)
+    has_numeric        = bool(re.search(r"\b\d+(?:\.\d+)?%?\b", ocr_text))
+
+    # Prediction output — check FIRST: confidence/result with numeric values is
+    # unambiguous proof of inference being shown, even if "class N" labels appear.
+    if prediction_matches >= 2 and has_numeric:
+        return "prediction_output"
+    if prediction_matches >= 3:
+        return "prediction_output"
+
+    # Training UI — explicit training/data-collection actions
+    if training_matches >= 2:
+        return "training_ui"
+
+    # Homepage/marketing — explicit marketing phrases
+    if homepage_matches >= 2:
+        return "homepage_marketing"
+
+    # Fallback: single unambiguous match
+    if training_matches >= 1:
+        return "training_ui"
+    if prediction_matches >= 1:
+        return "prediction_output"
+
+    return "unknown"
+
+
+# ── OCR → claimed-skill signal mapper ─────────────────────────────────────────
+
+def _ocr_skill_signals(
+    claimed_skills: list[str],
+    ocr_text: str,
+    page_context: str,
+) -> list[dict[str, Any]]:
+    """Map claimed skills to OCR-based support signals.
+
+    Returns a list of dicts:
+        {
+            "skill":          str   — canonical skill name
+            "ocr_support":    str   — "partial" | "insufficient"
+            "reasoning":      str   — plain-English explanation
+            "ocr_terms_found": list[str]  — OCR terms that matched
+        }
+
+    Rules:
+    • Only "partial" at most — OCR text alone is never "strong" evidence;
+      it shows the platform/context was visible, not that the skill was fully exercised.
+    • Homepage-only context: skill-agnostic ML terms (e.g. Machine Learning,
+      Browser-Based AI) → partial; specific workflow skills (Image Classification,
+      Model Testing) → insufficient (homepage mentions concept ≠ using the feature).
+    • Training UI context: classification-related skills → partial.
+    • Prediction output context: testing/classification/ML skills → partial.
+    """
+    if not ocr_text.strip():
+        return []
+
+    ocr_lower = ocr_text.lower()
+    signals: list[dict[str, Any]] = []
+
+    for raw_skill in claimed_skills:
+        canonical = _normalize_skill(raw_skill)
+        c_lower = canonical.lower()
+
+        # Build keyword list for this skill
+        kw_list = _SKILL_OCR_KEYWORDS.get(c_lower, [])
+        if not kw_list:
+            # Fallback: use words from the skill name
+            kw_list = [w for w in c_lower.split() if len(w) > 3]
+
+        terms_found = [kw for kw in kw_list if kw in ocr_lower]
+
+        if not terms_found:
+            signals.append({
+                "skill": canonical,
+                "ocr_support": "insufficient",
+                "reasoning": (
+                    f"No OCR text relevant to '{canonical}' was detected in the keyframes. "
+                    "The recording frames may not show this skill being used."
+                ),
+                "ocr_terms_found": [],
+            })
+            continue
+
+        # Determine support level based on context
+        ocr_terms_str = "', '".join(terms_found[:3])
+
+        # Skills that require specific interactive UI evidence (not just platform text)
+        _requires_ui_evidence = frozenset({
+            "image classification", "model testing", "object detection",
+            "computer vision", "natural language processing",
+        })
+
+        if page_context == "homepage_marketing":
+            if c_lower in _requires_ui_evidence:
+                # Homepage mentions the concept but doesn't show it being done
+                signals.append({
+                    "skill": canonical,
+                    "ocr_support": "insufficient",
+                    "reasoning": (
+                        f"OCR found '{ocr_terms_str}' but this appears in homepage/marketing text. "
+                        f"'{canonical}' requires observing the actual feature "
+                        "(training classes, prediction output, or classification result) — "
+                        "which was not detected in the keyframes."
+                    ),
+                    "ocr_terms_found": terms_found[:5],
+                })
+            else:
+                # Platform-level skills (Machine Learning, Browser-Based AI) are
+                # partially supported even from homepage — the platform itself is relevant
+                signals.append({
+                    "skill": canonical,
+                    "ocr_support": "partial",
+                    "reasoning": (
+                        f"OCR detected '{ocr_terms_str}' in keyframes. "
+                        "Content appears to be homepage/platform description — "
+                        "the recording shows the platform context for this skill, "
+                        "but an interactive demonstration was not observed."
+                    ),
+                    "ocr_terms_found": terms_found[:5],
+                })
+
+        elif page_context == "training_ui":
+            signals.append({
+                "skill": canonical,
+                "ocr_support": "partial",
+                "reasoning": (
+                    f"OCR detected '{ocr_terms_str}' and training UI was visible in keyframes. "
+                    f"The recording shows training-related activity relevant to '{canonical}'."
+                ),
+                "ocr_terms_found": terms_found[:5],
+            })
+
+        elif page_context == "prediction_output":
+            signals.append({
+                "skill": canonical,
+                "ocr_support": "partial",
+                "reasoning": (
+                    f"OCR detected '{ocr_terms_str}' and prediction/output content was visible. "
+                    f"Evidence supports '{canonical}' being exercised."
+                ),
+                "ocr_terms_found": terms_found[:5],
+            })
+
+        else:
+            # Unknown context — conservative partial if terms found
+            signals.append({
+                "skill": canonical,
+                "ocr_support": "partial",
+                "reasoning": (
+                    f"OCR detected '{ocr_terms_str}' in keyframes. "
+                    f"Partial contextual evidence supports '{canonical}'."
+                ),
+                "ocr_terms_found": terms_found[:5],
+            })
+
+    return signals
+
+
+# ── Frame OCR evidence summary builder ────────────────────────────────────────
+
+def _build_frame_ocr_evidence_summary(
+    visual_frame_observations: dict[str, Any] | None,
+    claimed_skills: list[str],
+) -> dict[str, Any]:
+    """Build a structured frame/OCR evidence summary for display.
+
+    Returned dict:
+        has_ocr_evidence      bool
+        ocr_provider          str
+        frames_analyzed       int
+        top_ocr_snippets      list[str]   — top N cleaned, deduped text snippets
+        detected_page_context str         — homepage_marketing | training_ui | prediction_output | unknown
+        observed_summary      str         — what was visually/textually observed
+        what_was_not_observed list[str]   — specific things not observed
+        skill_signals         list[dict]  — per-skill OCR support signals
+    """
+    if not visual_frame_observations:
+        return {
+            "has_ocr_evidence": False,
+            "ocr_provider": "none",
+            "frames_analyzed": 0,
+            "top_ocr_snippets": [],
+            "detected_page_context": "unknown",
+            "observed_summary": "No keyframe OCR evidence was available.",
+            "what_was_not_observed": [],
+            "skill_signals": [],
+        }
+
+    vf_status = visual_frame_observations.get("visual_frame_analysis_status", "not_configured")
+    if vf_status not in ("analyzed",):
+        return {
+            "has_ocr_evidence": False,
+            "ocr_provider": visual_frame_observations.get("provider_used", "none"),
+            "frames_analyzed": visual_frame_observations.get("visual_frame_count", 0),
+            "top_ocr_snippets": [],
+            "detected_page_context": "unknown",
+            "observed_summary": (
+                "Keyframes were extracted but OCR/visual analysis was not configured. "
+                "Set VISUAL_ANALYSIS_PROVIDER=local_ocr to enable frame text analysis."
+                if vf_status == "not_configured" else
+                "Frame OCR analysis was not completed for this recording."
+            ),
+            "what_was_not_observed": [],
+            "skill_signals": [],
+        }
+
+    visual_summary = visual_frame_observations.get("visual_summary", "") or ""
+    frames_analyzed = visual_frame_observations.get("visual_frame_count", 0)
+    provider = visual_frame_observations.get("provider_used", "local_ocr")
+
+    # Extract and clean top OCR snippets
+    raw_snippets = [s.strip() for s in visual_summary.split("|") if s.strip()]
+    # Filter out known noisy snippets
+    clean_snippets: list[str] = []
+    for s in raw_snippets:
+        lower_s = s.lower()
+        if any(noise in lower_s for noise in _OCR_NOISE_SNIPPETS):
+            continue
+        if len(s) < 3:
+            continue
+        clean_snippets.append(s[:120])   # cap snippet length
+
+    top_snippets = clean_snippets[:8]
+
+    # Detect page context from the combined OCR text
+    page_context = _detect_ocr_page_context(visual_summary)
+
+    # What was and wasn't observed based on context
+    what_was_not_observed: list[str] = []
+
+    if page_context == "homepage_marketing":
+        observed_summary = (
+            f"OCR text from {frames_analyzed} keyframe(s) shows homepage or platform "
+            "description content. The recording appears to capture the platform landing page "
+            "rather than interactive features. No training UI, classification classes, "
+            "or prediction output was detected in the keyframes."
+        )
+        what_was_not_observed = [
+            "training UI (e.g. 'Add Image Samples', class labels, training progress)",
+            "classification output or prediction results",
+            "confidence scores or model output values",
+        ]
+
+    elif page_context == "training_ui":
+        observed_summary = (
+            f"OCR text from {frames_analyzed} keyframe(s) shows training-related content. "
+            "The recording appears to capture training data collection or model training activity."
+        )
+        what_was_not_observed = [
+            "prediction output or test results (test your model phase)",
+        ]
+
+    elif page_context == "prediction_output":
+        observed_summary = (
+            f"OCR text from {frames_analyzed} keyframe(s) shows prediction or output content. "
+            "The recording appears to capture model inference/testing results."
+        )
+        what_was_not_observed = []
+
+    else:
+        observed_summary = (
+            f"OCR text from {frames_analyzed} keyframe(s) was analyzed. "
+            "The page context could not be clearly classified as training UI or prediction output."
+        )
+        if not top_snippets:
+            observed_summary = (
+                f"OCR analysis ran on {frames_analyzed} keyframe(s) but extracted minimal text. "
+                "The recording frames may show graphical content (charts, canvas) or low-contrast text."
+            )
+            what_was_not_observed = ["readable text in keyframes"]
+
+    # Skill signals
+    skill_signals = _ocr_skill_signals(claimed_skills, visual_summary, page_context)
+
+    return {
+        "has_ocr_evidence": True,
+        "ocr_provider": provider,
+        "frames_analyzed": frames_analyzed,
+        "top_ocr_snippets": top_snippets,
+        "detected_page_context": page_context,
+        "observed_summary": observed_summary,
+        "what_was_not_observed": what_was_not_observed,
+        "skill_signals": skill_signals,
+    }
 
 
 # ── URL filtering: noise patterns ─────────────────────────────────────────────
@@ -1590,11 +2010,43 @@ def _analyze_workflow(
         noise_count=len(noise_urls),
     )
 
+    # ── Frame OCR evidence summary (v6) ──────────────────────────────────────
+    # Summarises what OCR/visual analysis found in keyframes, per claimed skill.
+    # Conservative: OCR alone never moves a skill to "supported" — only partial.
+    frame_ocr_evidence_summary = _build_frame_ocr_evidence_summary(
+        visual_frame_observations, claimed_skills
+    )
+
+    # Promote OCR-supported skills from "unsupported" to "weakly" when OCR
+    # evidence provides partial backing.  Never moves to "supported" — requires
+    # DOM or code evidence for that.
+    if frame_ocr_evidence_summary.get("has_ocr_evidence"):
+        _ocr_sig_map = {
+            s["skill"]: s["ocr_support"]
+            for s in frame_ocr_evidence_summary.get("skill_signals", [])
+        }
+        _newly_weakly: list[str] = []
+        _remaining_unsupported: list[str] = []
+        for us in unsupported:
+            if _ocr_sig_map.get(us) == "partial":
+                _newly_weakly.append(us)
+                skill_obs[us] = "from_ocr_evidence"
+            else:
+                _remaining_unsupported.append(us)
+        if _newly_weakly:
+            weakly = weakly + _newly_weakly
+            unsupported = _remaining_unsupported
+            logger.info(
+                "WORKFLOW_ANALYSIS_OCR_SKILL_PROMOTION skills=%s session=promoted",
+                _newly_weakly,
+            )
+
     # ── Missing evidence ──────────────────────────────────────────────────────
     missing_evidence = _determine_missing_evidence(
         claimed_skills, supported, weakly, url_type, github_url,
         target_visited_urls, skill_obs,
         supporting_visited_urls=supporting_visited_urls,
+        frame_ocr_evidence_summary=frame_ocr_evidence_summary,
     )
 
     # ── Risk flags (uses TARGET site data) ───────────────────────────────────
@@ -1618,6 +2070,7 @@ def _analyze_workflow(
         supporting_visited_urls=supporting_visited_urls,
         original_url=original_url,
         iao_patterns=iao_patterns,
+        frame_ocr_evidence_summary=frame_ocr_evidence_summary,
     )
     suggestions = _build_suggestions(
         url_type, duration_secs, len(events),
@@ -1719,6 +2172,10 @@ def _analyze_workflow(
         # Multi-frame temporal analysis: keyframes + DOM + visible evidence.
         # to_public_dict() used — no raw paths or private metadata.
         "sequence_analysis":          sequence_analysis,
+        # ── Frame OCR evidence summary (v6) ──────────────────────────────────
+        # Structured summary of OCR evidence from video keyframes.
+        # Shows page context, OCR snippets, and per-skill OCR support signals.
+        "frame_ocr_evidence_summary": frame_ocr_evidence_summary,
     }
 
 
@@ -2046,10 +2503,12 @@ def _determine_missing_evidence(
     skill_obs: dict[str, str] | None = None,
     *,
     supporting_visited_urls: list[str] | None = None,
+    frame_ocr_evidence_summary: dict[str, Any] | None = None,
 ) -> list[str]:
     missing: list[str] = []
     skill_obs = skill_obs or {}
     supporting_visited_urls = supporting_visited_urls or []
+    frame_ocr_evidence_summary = frame_ocr_evidence_summary or {}
 
     is_local = url_type in ("localhost_url", "local_network_url")
 
@@ -2077,8 +2536,38 @@ def _determine_missing_evidence(
     truly_unsupported = [
         s for s in claimed_skills if s not in supported and s not in weakly
     ]
-    for skill in truly_unsupported[:3]:
-        missing.append(f"Observable evidence for claimed skill: {skill}")
+
+    # Build skill-specific missing evidence messages
+    # When OCR evidence is available, give specific feedback per unsupported skill
+    ocr_skill_signals_map: dict[str, dict] = {}
+    if frame_ocr_evidence_summary.get("has_ocr_evidence"):
+        for sig in frame_ocr_evidence_summary.get("skill_signals", []):
+            ocr_skill_signals_map[sig["skill"]] = sig
+
+    page_context = frame_ocr_evidence_summary.get("detected_page_context", "unknown")
+    what_not_observed = frame_ocr_evidence_summary.get("what_was_not_observed", [])
+
+    for skill in truly_unsupported[:4]:
+        ocr_sig = ocr_skill_signals_map.get(skill)
+        if ocr_sig and ocr_sig.get("ocr_support") == "insufficient":
+            # Give specific OCR-backed missing evidence message
+            _ocr_reasoning = ocr_sig.get("reasoning", "")
+            if _ocr_reasoning:
+                missing.append(
+                    f"Observable evidence for '{skill}': {_ocr_reasoning}"
+                )
+            else:
+                missing.append(f"Observable evidence for claimed skill: {skill}")
+        elif page_context == "homepage_marketing" and what_not_observed:
+            # Mention what specific UI elements would demonstrate the skill
+            missing.append(
+                f"Observable evidence for '{skill}': "
+                f"Keyframes show homepage content only. "
+                f"To demonstrate this skill, record the interactive UI — "
+                f"{what_not_observed[0]}."
+            )
+        else:
+            missing.append(f"Observable evidence for claimed skill: {skill}")
 
     if not target_visited_urls:
         missing.append(
@@ -2223,6 +2712,7 @@ def _build_recruiter_summary(
     supporting_visited_urls: list[str] | None = None,
     original_url: str = "",
     iao_patterns: list[dict[str, Any]] | None = None,
+    frame_ocr_evidence_summary: dict[str, Any] | None = None,
 ) -> str:
     """Recruiter-facing summary focused on the proof target website.
 
@@ -2358,6 +2848,17 @@ def _build_recruiter_summary(
             "A live deployment URL would significantly strengthen this proof."
         )
 
+    # ── Frame OCR evidence note ───────────────────────────────────────────────
+    # When OCR was analyzed, append a concise summary of what frames showed.
+    if frame_ocr_evidence_summary and frame_ocr_evidence_summary.get("has_ocr_evidence"):
+        _ctx = frame_ocr_evidence_summary.get("detected_page_context", "unknown")
+        _fcount = frame_ocr_evidence_summary.get("frames_analyzed", 0)
+        _observed_summary = frame_ocr_evidence_summary.get("observed_summary", "")
+        if _observed_summary and _fcount > 0:
+            lines.append(
+                f"Keyframe OCR analysis ({_fcount} frame(s)): {_observed_summary}"
+            )
+
     # ── Score / confidence footer ─────────────────────────────────────────────
     confidence_label = {
         "high": "High",
@@ -2365,9 +2866,14 @@ def _build_recruiter_summary(
         "low": "Low",
         "insufficient": "Insufficient",
     }.get(confidence, confidence.capitalize())
+    ocr_note = (
+        " OCR keyframe analysis included."
+        if frame_ocr_evidence_summary and frame_ocr_evidence_summary.get("has_ocr_evidence")
+        else " visual video evidence not yet available"
+    )
     lines.append(
         f"Evidence strength: {score}/100 · Confidence: {confidence_label} "
-        f"(Workflow Timeline Analysis — visual video evidence not yet available)."
+        f"(Workflow Timeline Analysis —{ocr_note})."
     )
 
     return " ".join(lines)
