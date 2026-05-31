@@ -28,6 +28,7 @@ Throttling:
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 from typing import Any
 
@@ -473,17 +474,37 @@ async def upload_workflow_video(
                     )
                     if summary.status == REASONING_STATUS_ANALYZED:
                         # Persist per-frame reasoning into workflow_visual_frame_evidence.
-                        # frame_ids ordered by insertion == same order as result._extracted_frames
-                        # was iterated in step 4, so index i matches the i-th stored frame.
+                        #
+                        # IMPORTANT: frame_ids[j] corresponds to frames_for_reasoning[j].
+                        # analyze_frames() applies midpoint-of-interval sampling, so
+                        # observations[i] is NOT from frames_for_reasoning[i] — it is from
+                        # the frame at the sampled index.  We must compute the same selected
+                        # indices here and map observations[i] → frame_ids[selected_idx].
                         frame_ids = list(frame_bytes_map.keys())
+                        n_total = len(frames_for_reasoning)
+                        n_limit = reasoning_max_frames
+                        if n_total <= n_limit:
+                            selected_frame_ids = frame_ids
+                        else:
+                            step = n_total / n_limit
+                            selected_frame_ids = [
+                                frame_ids[min(int((i + 0.5) * step), n_total - 1)]
+                                for i in range(n_limit)
+                            ]
+                        logger.info(
+                            "[WorkflowVideo] frame_id→observation mapping: "
+                            "session=%s total_frames=%d selected_frame_ids=%s",
+                            session_id, n_total, selected_frame_ids,
+                        )
                         persisted = 0
                         for i, obs_dict in enumerate(summary.observations):
-                            if i >= len(frame_ids):
+                            if i >= len(selected_frame_ids):
                                 break
+                            target_id = selected_frame_ids[i]
                             try:
                                 db.table("workflow_visual_frame_evidence").update({
                                     "visual_reasoning_json": obs_dict,
-                                }).eq("id", frame_ids[i]).eq(
+                                }).eq("id", target_id).eq(
                                     "user_id", user_id
                                 ).execute()
                                 persisted += 1
@@ -491,7 +512,7 @@ async def upload_workflow_video(
                                 logger.warning(
                                     "[WorkflowVideo] Could not persist visual_reasoning_json "
                                     "frame_id=%s: %s",
-                                    frame_ids[i], _exc,
+                                    target_id, _exc,
                                 )
                         logger.info(
                             "[WorkflowVideo] visual_reasoning_json STORED: "
@@ -582,3 +603,104 @@ async def upload_workflow_video(
         limitations=public.get("limitations", []),
         message=message,
     )
+
+
+# ── Dev-only debug endpoint ────────────────────────────────────────────────────
+# Returns per-frame reasoning metadata for the given session.
+# Only accessible when ENVIRONMENT != "production".
+# Never exposes raw frame bytes, storage paths, or private URLs.
+
+@router.get(
+    "/{session_id}/debug/visual-reasoning-frames",
+    summary="[DEV ONLY] Per-frame visual reasoning debug info for a session",
+    include_in_schema=False,
+)
+def debug_visual_reasoning_frames(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> dict[str, Any]:
+    """Return per-frame reasoning metadata — dev/staging only.
+
+    Safe fields returned per frame:
+      - frame_id
+      - frame_type
+      - timestamp_ms
+      - frame_dimensions (width × height)
+      - frame_bytes_sha256  (first 16 hex chars — integrity check, not reversible)
+      - ocr_text_preview    (first 120 chars of OCR)
+      - visual_reasoning_status
+      - visual_reasoning_summary (the visual_summary field from Qwen output)
+      - visual_reasoning_provider
+
+    Never returns: frame_storage_path, raw bytes, signed URLs, access tokens.
+    """
+    if settings.environment == "production":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Debug endpoint not available in production.",
+        )
+
+    try:
+        resp = (
+            db.table("workflow_visual_frame_evidence")
+            .select(
+                "id, frame_type, timestamp_ms, frame_width, frame_height, "
+                "ocr_text, frame_storage_path, visual_reasoning_json"
+            )
+            .eq("proof_session_id", session_id)
+            .eq("user_id", user_id)
+            .eq("frame_type", "video_keyframe")
+            .order("timestamp_ms", desc=False)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"DB query failed: {exc}",
+        ) from exc
+
+    rows = resp.data or []
+    frames_debug: list[dict[str, Any]] = []
+
+    for row in rows:
+        vr_json = row.get("visual_reasoning_json")
+        vr_status = vr_json.get("status") if isinstance(vr_json, dict) else None
+        vr_visual_summary = vr_json.get("visual_summary") if isinstance(vr_json, dict) else None
+        vr_provider = vr_json.get("model_provider") if isinstance(vr_json, dict) else None
+
+        ocr_raw = row.get("ocr_text")
+        if isinstance(ocr_raw, list):
+            ocr_preview = " | ".join(str(x) for x in ocr_raw[:3])[:120]
+        elif isinstance(ocr_raw, str):
+            ocr_preview = ocr_raw[:120]
+        else:
+            ocr_preview = None
+
+        # Derive a safe integrity hash from the storage path (not the bytes).
+        # The hash allows cross-referencing the exact stored file without
+        # exposing the path or any downloadable URL.
+        storage_path: str | None = row.get("frame_storage_path")
+        frame_path_hash: str | None = None
+        if storage_path:
+            frame_path_hash = hashlib.sha256(storage_path.encode()).hexdigest()[:16]
+
+        frames_debug.append({
+            "frame_id":                row.get("id"),
+            "frame_type":              row.get("frame_type"),
+            "timestamp_ms":            row.get("timestamp_ms"),
+            "frame_width":             row.get("frame_width"),
+            "frame_height":            row.get("frame_height"),
+            "frame_path_sha256_prefix": frame_path_hash,
+            "ocr_text_preview":        ocr_preview,
+            "visual_reasoning_status": vr_status,
+            "visual_reasoning_summary": vr_visual_summary,
+            "visual_reasoning_provider": vr_provider,
+        })
+
+    return {
+        "session_id":   session_id,
+        "user_id":      user_id,
+        "frame_count":  len(frames_debug),
+        "frames":       frames_debug,
+    }

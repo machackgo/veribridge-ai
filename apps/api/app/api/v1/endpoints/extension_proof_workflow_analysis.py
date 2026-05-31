@@ -570,29 +570,18 @@ def _enrich_visual_reasoning_summary(
 ) -> dict[str, Any]:
     """Live-enrich visual_reasoning_summary from per-frame DB data at response time.
 
-    This handles two cases where the stored row has a null visual_reasoning_summary:
-      1. The workflow analysis was run BEFORE the video was uploaded (timing race).
-      2. The session was analysed before visual reasoning was introduced (old rows).
-
-    When the stored summary is already non-null (was set during analysis), it is
-    returned as-is — no additional DB query is made.
+    Always re-derives from per-frame visual_reasoning_json records in the DB.
+    The stored visual_reasoning_summary on the analysis row is intentionally
+    bypassed: a new video upload for the same session updates per-frame records
+    but does NOT update the analysis row's cached summary, so the cached value
+    can be stale and must not be trusted.
 
     Privacy: calls _build_visual_reasoning_session_summary_from_db() which strips
     all private fields before returning.
     """
-    existing = row.get("visual_reasoning_summary")
-    if isinstance(existing, dict) and existing:
-        # Already populated — log and return as-is.
-        logger.info(
-            "[WorkflowAnalysis] visual_reasoning_summary already populated: "
-            "session=%s status=%s frames=%d",
-            session_id,
-            existing.get("status", "?"),
-            existing.get("frames_analyzed", 0),
-        )
-        return row
-
-    # Attempt live-read from per-frame visual_reasoning_json in DB.
+    # Always re-query per-frame data — never short-circuit on the stored value.
+    # Stale-cache bug: if a second video was uploaded to the same session after
+    # the analysis was first run, the stored summary would reflect the OLD video.
     try:
         vr_summary = _build_visual_reasoning_session_summary_from_db(
             db, user_id, session_id
