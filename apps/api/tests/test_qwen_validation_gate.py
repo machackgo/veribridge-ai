@@ -31,6 +31,7 @@ from app.services.visual_reasoning_service import (
     REASONING_STATUS_ANALYZED,
     REASONING_STATUS_REJECTED_INCONSISTENT,
     _check_observation_consistency,
+    validate_visual_reasoning_observation,
     select_frame_ids_for_reasoning,
 )
 from app.services.extension_proof_workflow_analysis_service import (
@@ -584,3 +585,290 @@ class TestConsistencyCheckerEdgeCases:
         }
         is_consistent, _ = _check_observation_consistency(obs, context)
         assert is_consistent
+
+
+# ── Regression tests: Gapminder and data visualization context ────────────────
+# Covers the live failure in session 7795b731-2fcf-4b52-8bc1-9b72f6be8f1f where
+# Qwen returned "person wearing red shirt and black pants standing in front of
+# white wall" for a Gapminder Tools recording.
+
+_GAPMINDER_OCR = [
+    "Gapminder Tools",
+    "Income Life expectancy Population Year 2019",
+    "Bubbles Maps Trends Ranks Ages",
+    "data visualization interactive chart",
+]
+
+_GAPMINDER_PERSON_SUMMARY = (
+    "A person wearing a red shirt and black pants is standing in front of a white wall."
+)
+
+
+class TestGapminderRejection:
+    """Test 1: Gapminder context + person/wall Qwen → rejected_inconsistent."""
+
+    def test_gapminder_person_wall_rejected_via_strong_term(self):
+        """'gapminder' is a _STRONG_APP_UI_TERM; one hit + 2 person hits → reject."""
+        obs = _make_obs(
+            visual_summary=_GAPMINDER_PERSON_SUMMARY,
+            objects=["person", "white wall"],
+            user_action="person standing",
+        )
+        context = {
+            "website_context": "https://www.gapminder.org/tools",
+            "ocr_snippets": _GAPMINDER_OCR,
+            "dom_snippets": [],
+        }
+        is_consistent, reason = validate_visual_reasoning_observation(obs, context)
+        assert not is_consistent, (
+            "Gapminder context + person/wall Qwen must be rejected. "
+            f"Got is_consistent={is_consistent}, reason={reason!r}"
+        )
+        assert "person" in reason.lower() or "shirt" in reason.lower() or "wall" in reason.lower()
+
+    def test_gapminder_person_wall_rejected_ocr_only_context(self):
+        """Even with only OCR context (no website_context), rejection fires via 'gapminder'."""
+        obs = _make_obs(
+            visual_summary=_GAPMINDER_PERSON_SUMMARY,
+            objects=["person", "white wall"],
+        )
+        context = {
+            "website_context": "",  # no URL
+            "ocr_snippets": ["Gapminder Tools interactive chart data visualization"],
+            "dom_snippets": [],
+        }
+        is_consistent, reason = validate_visual_reasoning_observation(obs, context)
+        assert not is_consistent, "Rejection must fire from OCR 'gapminder' alone as strong term."
+
+    def test_gapminder_full_pipeline_rejects_person_wall(self):
+        """Full analyze_frames pipeline rejects person/wall for Gapminder session."""
+        person_obs = _make_obs(
+            visual_summary=_GAPMINDER_PERSON_SUMMARY,
+            objects=["person", "white wall", "red shirt", "black pants"],
+            confidence=0.7,
+        )
+        provider = MockReasoningProvider(observations=[person_obs])
+        svc = VisualReasoningService(provider=provider)
+
+        summary = svc.analyze_frames(
+            frames=[(1000, _TINY_JPEG)],
+            claimed_skills=["Data Visualization", "Interactive Tools"],
+            website_context="https://www.gapminder.org/tools",
+            ocr_snippets=_GAPMINDER_OCR,
+        )
+
+        assert summary.status == REASONING_STATUS_REJECTED_INCONSISTENT, (
+            f"Expected rejected_inconsistent, got {summary.status!r}"
+        )
+        assert summary.frames_analyzed == 0
+        assert summary.supported_signals == []
+
+    def test_gapminder_person_not_in_supported_signals_from_db(self):
+        """DB row with stored 'analyzed' person/wall obs is re-validated and excluded from signals."""
+        rows = [
+            _vr_row(
+                _GAPMINDER_PERSON_SUMMARY,
+                status="analyzed",
+                skills=[],
+            ),
+        ]
+        # Simulate DB row with Gapminder OCR context
+        rows[0]["ocr_text"] = _GAPMINDER_OCR
+
+        db = _make_db(rows)
+        result = _build_visual_reasoning_session_summary_from_db(db, "user-1", "session-gap")
+
+        # Read-time re-validation must reject the stored "analyzed" obs
+        assert result is not None
+        assert result["status"] == "rejected_inconsistent", (
+            f"Read-time re-validation must reject person/wall stored as 'analyzed'. "
+            f"Got status={result['status']!r}"
+        )
+        assert result["supported_signals"] == []
+        assert result["frames_analyzed"] == 0
+        # Safe rejection message — no hallucinated Qwen content
+        assert "person" not in result["summary"].lower()
+        assert "red shirt" not in result["summary"].lower()
+
+
+class TestGapminderValidAccepted:
+    """Test 5: Valid Gapminder Qwen (charts/bubbles/data) → analyzed."""
+
+    def test_valid_gapminder_frame_accepted(self):
+        """Qwen describing the actual chart is accepted for a Gapminder session."""
+        obs = _make_obs(
+            visual_summary=(
+                "Interactive bubble chart showing country data with income on x-axis, "
+                "life expectancy on y-axis, and population as bubble size. "
+                "Gapminder Tools dashboard with data visualization controls and year slider."
+            ),
+            objects=["bubble chart", "x-axis label", "y-axis label", "data points"],
+            ui_elements=["year slider", "play button", "filter controls", "data panel"],
+            skills=["Data Visualization", "Interactive Tools"],
+            confidence=0.88,
+        )
+        context = {
+            "website_context": "https://www.gapminder.org/tools",
+            "ocr_snippets": _GAPMINDER_OCR,
+            "dom_snippets": [],
+        }
+        is_consistent, reason = validate_visual_reasoning_observation(obs, context)
+        assert is_consistent, (
+            f"Valid Gapminder chart description must be accepted. Reason: {reason!r}"
+        )
+
+    def test_valid_gapminder_pipeline_accepted(self):
+        """Full pipeline: Gapminder data viz Qwen → analyzed with skill signals."""
+        valid_obs = _make_obs(
+            visual_summary=(
+                "Gapminder Tools interactive bubble chart displaying global development data."
+            ),
+            objects=["bubble chart", "data points", "map"],
+            ui_elements=["slider", "controls"],
+            skills=["Data Visualization", "Interactive Tools"],
+            confidence=0.85,
+        )
+        provider = MockReasoningProvider(observations=[valid_obs])
+        svc = VisualReasoningService(provider=provider)
+
+        summary = svc.analyze_frames(
+            frames=[(1000, _TINY_JPEG)],
+            claimed_skills=["Data Visualization", "Interactive Tools"],
+            website_context="https://www.gapminder.org/tools",
+            ocr_snippets=_GAPMINDER_OCR,
+        )
+
+        assert summary.status == REASONING_STATUS_ANALYZED, (
+            f"Valid Gapminder data viz frame must be analyzed, got {summary.status!r}"
+        )
+        assert summary.frames_analyzed == 1
+        assert len(summary.supported_signals) > 0
+
+
+class TestContextP5jsAndTensorFlow:
+    """Tests 2–3: p5.js and TensorFlow person/wall → rejected."""
+
+    def test_p5js_person_holding_phone_rejected(self):
+        """Test 2: p5.js context + Qwen 'person holding phone' → rejected."""
+        obs = _make_obs(
+            visual_summary="A person holding a phone and standing near a wall.",
+            objects=["person", "phone", "wall"],
+            user_action="person holding phone",
+        )
+        context = {
+            "website_context": "p5js.org",
+            "ocr_snippets": ["p5.js javascript canvas sketch draw createCanvas"],
+            "dom_snippets": [],
+        }
+        is_consistent, reason = validate_visual_reasoning_observation(obs, context)
+        assert not is_consistent, f"p5.js + person/phone/wall must be rejected: {reason!r}"
+
+    def test_tensorflow_person_wall_rejected(self):
+        """Test 3: TensorFlow/chart context + Qwen 'person/wall' → rejected."""
+        obs = _make_obs(
+            visual_summary="A person wearing a blue shirt standing near a white wall.",
+            objects=["person", "wall"],
+        )
+        context = {
+            "website_context": "playground.tensorflow.org",
+            "ocr_snippets": ["tensorflow neural network chart layers output accuracy"],
+            "dom_snippets": [],
+        }
+        is_consistent, reason = validate_visual_reasoning_observation(obs, context)
+        assert not is_consistent, f"TF + person/wall must be rejected: {reason!r}"
+
+
+class TestEcommercePersonNotRejected:
+    """Test 4: ecommerce/product page + person wearing shirt → NOT rejected.
+
+    Fashion / product listing pages legitimately show people wearing clothes.
+    The validator must not blindly reject this combination.
+    """
+
+    def test_ecommerce_person_wearing_shirt_not_rejected(self):
+        """Generic ecommerce context lacks strong tech indicators → no rejection."""
+        obs = _make_obs(
+            visual_summary="A person wearing a blue shirt displayed on a product page.",
+            objects=["person", "shirt", "product"],
+        )
+        context = {
+            "website_context": "shop.example.com/clothing",
+            "ocr_snippets": ["Buy now Add to cart Product details Size guide Price $29.99"],
+            "dom_snippets": [],
+        }
+        is_consistent, _ = validate_visual_reasoning_observation(obs, context)
+        assert is_consistent, (
+            "ecommerce/fashion page + person wearing shirt must NOT be rejected "
+            "(page legitimately shows people wearing clothing)"
+        )
+
+    def test_fashion_site_no_strong_tech_terms_no_rejection(self):
+        """No tech/data terms in context → gate cannot confirm software session → no reject."""
+        obs = _make_obs(
+            visual_summary="Model wearing a red dress and black shoes in front of a white wall.",
+            objects=["person", "dress", "shoes", "white wall"],
+        )
+        context = {
+            "website_context": "fashion.brand.com",
+            "ocr_snippets": ["New collection Free shipping Returns policy"],
+            "dom_snippets": [],
+        }
+        is_consistent, _ = validate_visual_reasoning_observation(obs, context)
+        assert is_consistent, "Fashion site with no tech terms must not trigger rejection"
+
+
+class TestFrontendRejectedNotShowingHallucination:
+    """Test 6: rejected_inconsistent never shows hallucinated Qwen text in frontend."""
+
+    def test_safe_filter_never_exposes_person_wall_on_rejection(self):
+        """_safe_visual_reasoning_summary for a rejected summary omits hallucinated content."""
+        from app.api.v1.endpoints.extension_proof_workflow_analysis import (
+            _safe_visual_reasoning_summary,
+        )
+        summary = {
+            "status": "rejected_inconsistent",
+            "provider": "qwen_vl:qwen_vl",
+            "frames_analyzed": 0,
+            "summary": (
+                "Visual reasoning result was rejected because it did not match "
+                "the current recording evidence."
+            ),
+            "observations": [
+                {
+                    "status": "rejected_inconsistent",
+                    "visual_summary": _GAPMINDER_PERSON_SUMMARY,
+                }
+            ],
+            "supported_signals": [],
+            "missing_claims": [],
+            "limitations": ["Qwen output was inconsistent with session context."],
+        }
+        safe = _safe_visual_reasoning_summary(summary)
+        assert safe is not None
+        assert safe["status"] == "rejected_inconsistent"
+        assert "person" not in safe["summary"].lower()
+        assert "red shirt" not in safe["summary"].lower()
+        assert "black pants" not in safe["summary"].lower()
+        # observations are included but private fields stripped
+        assert len(safe["observations"]) == 1
+        assert safe["observations"][0]["status"] == "rejected_inconsistent"
+
+    def test_rejected_session_has_no_supported_signals(self):
+        """A session summary with rejected_inconsistent must have empty supported_signals."""
+        from app.api.v1.endpoints.extension_proof_workflow_analysis import (
+            _safe_visual_reasoning_summary,
+        )
+        summary = {
+            "status": "rejected_inconsistent",
+            "provider": "qwen_vl",
+            "frames_analyzed": 0,
+            "summary": "Visual reasoning result was rejected because it did not match the current recording evidence.",
+            "observations": [],
+            "supported_signals": [],
+            "missing_claims": [],
+            "limitations": [],
+            "skill_timeline": [],
+        }
+        safe = _safe_visual_reasoning_summary(summary)
+        assert safe is not None
+        assert safe["supported_signals"] == []

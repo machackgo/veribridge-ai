@@ -56,6 +56,8 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from app.services.visual_reasoning_service import validate_visual_reasoning_observation
+
 logger = logging.getLogger(__name__)
 
 _TABLE = "workflow_analysis_results"
@@ -1189,6 +1191,40 @@ def _build_visual_reasoning_session_summary_from_db(
             continue
 
         if obs_status != "analyzed":
+            continue
+
+        # ── Read-time re-validation ──────────────────────────────────────────
+        # Re-check stored "analyzed" observations against frame OCR context.
+        # This catches observations stored before the write-time gate was
+        # strengthened (e.g., session 7795b731 stored with the old validator
+        # that lacked Gapminder/map/bubble terms in _APP_UI_TERMS).
+        _ocr_raw = row.get("ocr_text")
+        _ocr_parts: list[str] = []
+        if isinstance(_ocr_raw, list):
+            for _item in _ocr_raw:
+                if isinstance(_item, dict):
+                    _ocr_parts.append(str(_item.get("text", "")))
+                elif isinstance(_item, str) and _item.strip():
+                    _ocr_parts.append(_item.strip())
+        elif isinstance(_ocr_raw, str) and _ocr_raw.strip():
+            _ocr_parts.append(_ocr_raw.strip())
+
+        _read_ctx: dict[str, Any] = {
+            "website_context": "",
+            "ocr_snippets": _ocr_parts,
+            "dom_snippets": [],
+        }
+        _is_valid, _reject_reason = validate_visual_reasoning_observation(obs, _read_ctx)
+        if not _is_valid:
+            rejected_count += 1
+            mp = obs.get("model_provider", "")
+            if mp and mp != "none":
+                provider = mp
+            logger.warning(
+                "[VisualReasoning] read-time RE-VALIDATION rejected stored obs: "
+                "session=%s frame_id=%s reason=%s",
+                session_id, row.get("id"), _reject_reason,
+            )
             continue
 
         clean_obs = {k: v for k, v in obs.items() if k not in _PRIVATE}

@@ -863,17 +863,44 @@ _PERSON_SCENE_TERMS: frozenset[str] = frozenset({
     "holding phone", "hand holding",
 })
 
-# Terms that indicate the session context is a software/web application.
+# Broad terms that indicate the session context is a software/web/data application.
 # Two or more distinct matches → context is clearly an app/software session.
 _APP_UI_TERMS: frozenset[str] = frozenset({
+    # General web/code
     "p5", "p5.js", "canvas", "sketch", "javascript", "html", "css",
     "code", "function", "class", "import", "browser", "web", "app",
-    "chart", "graph", "dashboard", "model", "editor", "notebook",
-    "output", "visualization", "terminal", "colab", "jupyter",
+    "editor", "notebook", "terminal", "framework", "library",
+    # Data visualization / charting
+    "chart", "graph", "dashboard", "visualization", "plot", "scatter",
+    "heatmap", "treemap", "histogram", "bubble", "map",
+    # ML / data science
+    "model", "output", "colab", "jupyter",
     "tensorflow", "pytorch", "keras", "sklearn", "pandas", "numpy",
-    "react", "vue", "angular", "nextjs", "next.js", "framework", "library",
+    "algorithm", "neural", "dataset", "data",
+    # Frontend / UI terms
+    "react", "vue", "angular", "nextjs", "next.js",
     "animation", "demo", "playground", "interface", "controls", "slider",
-    "button", "form", "panel", "data", "dataset", "table", "grid", "plot",
+    "button", "form", "panel", "table", "grid",
+    # Domain-specific tools and platforms
+    "gapminder", "svg", "d3", "vega", "highcharts", "tableau",
+    "matplotlib", "seaborn", "plotly", "bokeh", "altair",
+    "github", "repository", "documentation", "indicator",
+    "tool", "interactive", "workspace",
+})
+
+# Unambiguous tech/data-science terms that — even one hit — confirm a software context.
+# When present, only 1 match (plus 2+ person-scene terms) is enough to reject.
+# Excludes generic UI words that appear on ecommerce/fashion sites ("button", "form").
+_STRONG_APP_UI_TERMS: frozenset[str] = frozenset({
+    "gapminder", "p5", "p5.js", "canvas", "javascript", "svg", "d3",
+    "chart", "graph", "dashboard", "visualization", "scatter", "heatmap",
+    "treemap", "bubble", "map",
+    "tensorflow", "pytorch", "keras", "sklearn", "pandas", "numpy",
+    "colab", "jupyter", "notebook", "react", "vue", "angular",
+    "algorithm", "neural", "github", "repository",
+    "interactive", "playground", "animation", "demo",
+    "matplotlib", "seaborn", "plotly", "bokeh", "altair", "vega",
+    "highcharts", "tableau", "indicator", "dataset",
 })
 
 
@@ -883,30 +910,58 @@ def _score_text(text: str, terms: frozenset[str]) -> list[str]:
     return [t for t in terms if t in lower]
 
 
-def _check_observation_consistency(
-    obs: "VisualReasoningObservation",
+def _build_qwen_text(obs: "Any") -> str:
+    """Extract a single string from a VisualReasoningObservation or a dict."""
+    if isinstance(obs, dict):
+        visual_summary = str(obs.get("visual_summary", ""))
+        objects = obs.get("visible_objects_or_diagrams") or obs.get("visible_objects") or []
+        ui_elems = obs.get("visible_ui_elements") or []
+        user_action = str(obs.get("detected_user_action", ""))
+        outputs = obs.get("detected_outputs") or []
+    else:
+        visual_summary = obs.visual_summary
+        objects = obs.visible_objects_or_diagrams or obs.visible_objects
+        ui_elems = obs.visible_ui_elements
+        user_action = obs.detected_user_action
+        outputs = obs.detected_outputs
+
+    parts = [
+        visual_summary,
+        " ".join(str(x) for x in objects),
+        " ".join(str(x) for x in ui_elems),
+        user_action,
+        " ".join(str(x) for x in outputs),
+    ]
+    return " ".join(p for p in parts if p)
+
+
+def validate_visual_reasoning_observation(
+    obs: "Any",
     context: dict,
 ) -> tuple[bool, str]:
-    """Return (is_consistent, dev_reason).
+    """Centralized validation gate for Qwen visual reasoning output.
 
-    Returns (False, reason) when Qwen's output is semantically inconsistent
-    with the session context — e.g., Qwen describes a person/wall scene but
-    the session context shows a software/web application.
+    Accepts both VisualReasoningObservation objects and plain dicts (DB rows).
+    Must be called before storing or serving any Qwen result as skill evidence.
 
-    Conservative thresholds: requires at least 2 distinct person-scene terms
-    in Qwen output AND at least 2 distinct app-ui terms in context.
+    Returns (True, "") when the observation is consistent with context.
+    Returns (False, reason) when the observation must be rejected.
+
+    Rejection rules
+    ---------------
+    Primary  : 2+ person-scene terms in Qwen output AND 2+ broad app-ui terms
+               in context.
+    Secondary: 2+ person-scene terms in Qwen output AND 1+ unambiguous tech term
+               (_STRONG_APP_UI_TERMS) in context.  Catches domain-specific sites
+               (Gapminder, p5.js, GitHub, D3 charts, etc.) that produce no generic
+               UI words but contain one clear non-ecommerce tech indicator.
+
+    Conservative by design: ecommerce/fashion pages that show "button", "form",
+    "table" do NOT trigger rejection for a Qwen summary that mentions a person
+    wearing a shirt, because those UI words appear on shopping sites too.
     """
-    # Build Qwen output text
-    qwen_parts = [
-        obs.visual_summary,
-        " ".join(obs.visible_objects_or_diagrams or obs.visible_objects),
-        " ".join(obs.visible_ui_elements),
-        obs.detected_user_action,
-        " ".join(obs.detected_outputs),
-    ]
-    qwen_text = " ".join(p for p in qwen_parts if p)
+    qwen_text = _build_qwen_text(obs)
 
-    # Build context text from all available sources
     ctx_parts = [
         str(context.get("website_context", "")),
         " ".join(context.get("ocr_snippets") or []),
@@ -916,17 +971,34 @@ def _check_observation_consistency(
 
     person_hits = _score_text(qwen_text, _PERSON_SCENE_TERMS)
     app_hits = _score_text(context_text, _APP_UI_TERMS)
+    strong_hits = _score_text(context_text, _STRONG_APP_UI_TERMS)
 
-    if len(person_hits) >= 2 and len(app_hits) >= 2:
-        return False, (
+    def _reject_reason(app_matched: list[str]) -> str:
+        return (
             f"Qwen output describes a real-world person scene "
             f"({', '.join(person_hits[:4])}) "
             f"but session context indicates a software/web application "
-            f"({', '.join(app_hits[:4])}). "
-            f"Qwen likely hallucinated or analyzed the wrong frame."
+            f"({', '.join(app_matched[:4])}). "
+            f"Qwen visual summary appears unrelated to the recorded software/web workflow."
         )
 
+    # Primary: 2+ person terms AND 2+ broad app terms
+    if len(person_hits) >= 2 and len(app_hits) >= 2:
+        return False, _reject_reason(app_hits)
+
+    # Secondary: 2+ person terms AND 1+ unambiguous tech/data-viz term
+    if len(person_hits) >= 2 and len(strong_hits) >= 1:
+        return False, _reject_reason(strong_hits)
+
     return True, ""
+
+
+def _check_observation_consistency(
+    obs: "VisualReasoningObservation",
+    context: dict,
+) -> tuple[bool, str]:
+    """Backwards-compatible wrapper — delegates to validate_visual_reasoning_observation."""
+    return validate_visual_reasoning_observation(obs, context)
 
 
 # ── Smart frame selection ──────────────────────────────────────────────────────
