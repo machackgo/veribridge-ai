@@ -313,6 +313,15 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
         self._available: bool | None = None
         self._model: Any = None
         self._processor: Any = None
+        # Allow LOCAL_VISION_MODEL to override the default model ID for the provider.
+        # E.g. Qwen/Qwen2.5-VL-3B-Instruct as a lighter fallback.
+        self._model_id_override: str = settings.local_vision_model.strip()
+
+    def _resolved_model_id(self) -> str | None:
+        """Return the HF model ID to use, respecting LOCAL_VISION_MODEL override."""
+        if self._model_id_override:
+            return self._model_id_override
+        return self._MODEL_IDS.get(self._backend)
 
     # ── Package importability check (fast, no weight loading) ─────────────────
 
@@ -320,7 +329,7 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
         if self._available is not None:
             return self._available
 
-        model_id = self._MODEL_IDS.get(self._backend)
+        model_id = self._resolved_model_id()
         if not model_id:
             logger.warning(
                 "[VisionReasoning] LOCAL_VISION_PROVIDER=%r is not a supported backend "
@@ -337,6 +346,8 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
                 Qwen2_5_VLForConditionalGeneration,
                 AutoProcessor,
             )
+            import torchvision  # type: ignore[import]  # noqa: F401
+            from qwen_vl_utils import process_vision_info  # type: ignore[import]  # noqa: F401
             logger.info(
                 "[VisionReasoning] Packages verified for %r.  "
                 "Model weights (%s) download on first inference.",
@@ -346,7 +357,7 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
         except ImportError as exc:
             logger.info(
                 "[VisionReasoning] Required packages missing for %r.  "
-                "Install: pip install 'transformers>=4.45' torch pillow accelerate\n"
+                "Install: pip install 'transformers>=4.45' torch torchvision pillow accelerate qwen-vl-utils\n"
                 "Error: %s",
                 self._backend, exc,
             )
@@ -366,22 +377,51 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
         if self._model is not None:
             return True
 
-        model_id = self._MODEL_IDS.get(self._backend, "")
+        model_id = self._resolved_model_id() or ""
         try:
             import torch  # type: ignore[import]
-            device = "cuda" if torch.cuda.is_available() else "cpu"
             from transformers import (  # type: ignore[import]
                 Qwen2_5_VLForConditionalGeneration,
                 AutoProcessor,
             )
-            logger.info("[VisionReasoning] Loading %s from %s …", self._backend, model_id)
-            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                model_id,
-                torch_dtype="auto",
-                device_map="auto" if device == "cuda" else "cpu",
+
+            # Device selection: CUDA > MPS (Apple Silicon) > CPU
+            if torch.cuda.is_available():
+                device = "cuda"
+                dtype = torch.float16
+            elif torch.backends.mps.is_available():
+                device = "mps"
+                dtype = torch.float16  # float16 on MPS; bfloat16 also supported in PyTorch 2.x
+            else:
+                device = "cpu"
+                dtype = torch.float32
+
+            logger.info(
+                "[VisionReasoning] Loading %s from %s … (device=%s, dtype=%s)",
+                self._backend, model_id, device, dtype,
             )
+
+            # For CUDA use device_map="auto" (multi-GPU friendly).
+            # For MPS/CPU load on CPU first (device_map not supported for MPS),
+            # then move to target device.
+            if device == "cuda":
+                self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    model_id,
+                    dtype=dtype,
+                    device_map="auto",
+                )
+            else:
+                self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    model_id,
+                    dtype=dtype,
+                )
+                self._model = self._model.to(device)
+
             self._processor = AutoProcessor.from_pretrained(model_id)
-            logger.info("[VisionReasoning] %r loaded (device=%s).", self._backend, device)
+            logger.info(
+                "[VisionReasoning] %r loaded (device=%s, dtype=%s).",
+                self._backend, device, dtype,
+            )
             return True
         except MemoryError:
             logger.warning(
@@ -413,6 +453,8 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
 
         try:
             import torch  # type: ignore[import]
+            from qwen_vl_utils import process_vision_info  # type: ignore[import]
+
             messages = [
                 {
                     "role": "user",
@@ -422,12 +464,19 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
                     ],
                 }
             ]
+
+            # Build chat text
             text = self._processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
+
+            # Use qwen_vl_utils to extract image/video tensors (official Qwen2.5-VL path)
+            image_inputs, video_inputs = process_vision_info(messages)
+
             inputs = self._processor(
                 text=[text],
-                images=[img],
+                images=image_inputs,
+                videos=video_inputs,
                 padding=True,
                 return_tensors="pt",
             )
@@ -748,10 +797,13 @@ def get_visual_reasoning_provider() -> VisualReasoningProvider:
         return DisabledReasoningProvider()
 
     backend = settings.local_vision_provider.lower()
-    if backend not in QwenVLReasoningProvider._MODEL_IDS:
+    # Allow if either the backend is known OR a direct LOCAL_VISION_MODEL override is set.
+    model_override = settings.local_vision_model.strip()
+    if backend not in QwenVLReasoningProvider._MODEL_IDS and not model_override:
         logger.warning(
-            "[VisionReasoning] LOCAL_VISION_PROVIDER=%r is not supported for reasoning. "
-            "Supported: %s.  Falling back to DisabledReasoningProvider.",
+            "[VisionReasoning] LOCAL_VISION_PROVIDER=%r is not supported for reasoning "
+            "and LOCAL_VISION_MODEL is not set. "
+            "Supported providers: %s.  Falling back to DisabledReasoningProvider.",
             backend, ", ".join(QwenVLReasoningProvider._MODEL_IDS),
         )
         return DisabledReasoningProvider()

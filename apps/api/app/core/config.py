@@ -159,10 +159,21 @@ class Settings(BaseSettings):
     #   qwen_vl   — Qwen2.5-VL-7B-Instruct  (requires transformers>=4.45)
     #   qwen3_vl  — Qwen3-VL-7B-Instruct    (requires transformers>=4.45)
     # Additional: llava | minicpm_v | blip
-    # Install: pip install "transformers>=4.45" torch pillow accelerate
+    # Install: pip install "transformers>=4.45" torch torchvision pillow accelerate qwen-vl-utils
     local_vision_provider: str = Field(
         default="qwen_vl",
         alias="LOCAL_VISION_PROVIDER",
+    )
+
+    # LOCAL_VISION_MODEL: optional override for the HuggingFace model ID.
+    # When set, overrides the default model for the selected LOCAL_VISION_PROVIDER.
+    # Useful for switching between 7B and 3B variants without changing provider names:
+    #   Qwen/Qwen2.5-VL-7B-Instruct   (default for qwen_vl — ~14 GB, best quality)
+    #   Qwen/Qwen2.5-VL-3B-Instruct   (lighter — ~6 GB, recommended for Mac CPU)
+    # Example: LOCAL_VISION_MODEL=Qwen/Qwen2.5-VL-3B-Instruct
+    local_vision_model: str = Field(
+        default="",
+        alias="LOCAL_VISION_MODEL",
     )
 
     # ── Advanced Visual Reasoning (Level 3) ──────────────────────────────────

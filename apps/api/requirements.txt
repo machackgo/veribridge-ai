@@ -53,17 +53,35 @@ scikit-learn==1.6.0
 #     Set: LOCAL_OCR_PROVIDER=tesseract
 #
 # LOCAL VISION MODEL (VISUAL_ANALYSIS_PROVIDER=local_vision)
-# Primary targets (open-source, recommended):
-#   Qwen2.5-VL: pip install "transformers>=4.45" torch pillow accelerate
-#               Set: LOCAL_VISION_PROVIDER=qwen_vl
-#   Qwen3-VL:   pip install "transformers>=4.45" torch pillow accelerate
-#               Set: LOCAL_VISION_PROVIDER=qwen3_vl
-# Additional backends:
-#   LLaVA / MiniCPM-V / BLIP-2:
-#               pip install transformers torch pillow accelerate
-#               Set: LOCAL_VISION_PROVIDER=llava|minicpm_v|blip
-#   Models (~2–14 GB) download on first use to ~/.cache/huggingface.
-#   GPU recommended; CPU inference supported (~10–60× slower).
+# AND Advanced Visual Reasoning (VISUAL_REASONING_ENABLED=true)
+#
+# Recommended — Qwen2.5-VL-7B-Instruct (best quality, ~14 GB download):
+#   pip install "transformers>=4.45" torch torchvision pillow accelerate qwen-vl-utils
+#   export VISUAL_ANALYSIS_PROVIDER=hybrid_ocr_qwen
+#   export VISUAL_REASONING_ENABLED=true
+#   export LOCAL_VISION_PROVIDER=qwen_vl
+#   export LOCAL_VISION_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
+#   export VISUAL_REASONING_MAX_FRAMES=3
+#   export LOCAL_OCR_PROVIDER=tesseract
+#
+# Lighter option — Qwen2.5-VL-3B-Instruct (~6 GB, recommended for Mac CPU):
+#   export LOCAL_VISION_MODEL=Qwen/Qwen2.5-VL-3B-Instruct
+#
+# Also supported:
+#   Qwen3-VL: Set LOCAL_VISION_PROVIDER=qwen3_vl
+#   LLaVA / MiniCPM-V / BLIP-2: Set LOCAL_VISION_PROVIDER=llava|minicpm_v|blip
+#
+# Mac M-series: MPS acceleration is used automatically (PyTorch 2.x).
+# NVIDIA GPU: CUDA is used automatically.
+# CPU fallback: supported (~5–20× slower than MPS/CUDA).
+#
+# Models download on first use to ~/.cache/huggingface.
+# GPU/MPS recommended; CPU inference supported (~10–60× slower).
+#
+# Memory guidance:
+#   Qwen2.5-VL-7B: ~14 GB (float32 CPU) / ~8 GB (float16 MPS/GPU)
+#   Qwen2.5-VL-3B: ~6 GB  (float32 CPU) / ~3 GB (float16 MPS/GPU)
+#   Mac M4 Pro 24 GB: 7B fits; 3B is comfortable
 #
 # Pillow is needed for image dimension detection regardless of OCR/vision provider.
 # It is listed as optional because it is not needed for DOM-only workflows.
