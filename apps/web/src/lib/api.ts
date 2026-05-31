@@ -1273,9 +1273,13 @@ export type WorkflowAnalysisResponse = {
       visual_summary: string
       visible_ui_elements: string[]
       visible_objects: string[]
+      visible_objects_or_diagrams: string[]
       detected_workflow_stage: string
+      detected_user_action: string
       detected_actions: string[]
       detected_outputs: string[]
+      skill_evidence: Record<string, { items_visible: string[]; verdict: string }>
+      supported_skills: string[]
       detected_skills_supported: string[]
       missing_or_unclear_evidence: string[]
       confidence_score: number

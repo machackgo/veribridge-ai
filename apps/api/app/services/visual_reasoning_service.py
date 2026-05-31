@@ -94,32 +94,134 @@ VALID_WORKFLOW_STAGES = frozenset({
     "unknown",
 })
 
-# ── Structured JSON prompt (generic, project-agnostic) ────────────────────────
+# ── Skill checklist generator ─────────────────────────────────────────────────
 
-_STRUCTURED_REASONING_PROMPT = """You are a visual evidence analyzer for a professional skill verification system.
-Analyze this screenshot of a web application, tool, dashboard, or document.
-
-Return ONLY a valid JSON object. No markdown, no code blocks, no explanation.
-
-{
-  "visual_summary": "<one clear sentence about what is visible>",
-  "visible_ui_elements": ["<UI components: buttons, forms, charts, tables, etc>"],
-  "visible_objects": ["<content types: images, graphs, text, code, data, etc>"],
-  "detected_workflow_stage": "<data_input|processing|model_training|results_display|prediction_output|navigation|idle|unknown>",
-  "detected_actions": ["<user workflow steps or actions visible>"],
-  "detected_outputs": ["<output values, results, metrics, or conclusions visible>"],
-  "detected_skills_supported": ["<skill categories evidenced by visible content>"],
-  "missing_or_unclear_evidence": ["<things needed but not clearly visible>"],
-  "confidence_score": 0.7,
-  "limitations": ["<limitations in this analysis>"]
+_SKILL_CHECKLIST: dict[str, list[str]] = {
+    "machine learning":          ["model/training UI", "dataset or training controls", "prediction or output", "loss/accuracy/metric result"],
+    "neural network":            ["layer structure (hidden layers, neurons)", "connections or weights", "activation or architecture diagram", "training progress or output"],
+    "neural networks":           ["layer structure (hidden layers, neurons)", "connections or weights", "activation or architecture diagram", "training progress or output"],
+    "deep learning":             ["layer structure (hidden layers, neurons)", "connections or weights", "activation or architecture diagram", "training progress or output"],
+    "data visualization":        ["chart or plot", "graph axes labeled", "decision boundary or output heatmap", "dashboard or results panel"],
+    "interactive model demo":    ["user controls (sliders, buttons, knobs)", "user interaction visible", "before/after or real-time output change", "output or result panel"],
+    "browser-based ai":          ["AI/ML tool running in browser", "browser navigation or toolbar", "model or demo interaction visible", "AI/ML workflow output"],
+    "model testing":             ["test result or prediction output", "confidence score or probability", "before/after output visible", "evaluation metric"],
+    "image classification":      ["image input panel", "class label or prediction", "confidence or probability score", "model output or result"],
+    "object detection":          ["bounding boxes on image", "class labels on objects", "detection score or confidence", "detected object count"],
+    "text classification":       ["text input panel", "category or label prediction", "confidence or probability", "classification result"],
+    "natural language processing": ["text input or output panel", "NLP model result", "token or entity highlight", "language model output"],
+    "regression":                ["scatter plot or prediction line", "numeric prediction output", "error or loss metric", "regression chart"],
+    "clustering":                ["cluster visualization", "data points grouped by color", "centroid or cluster label", "cluster count or metric"],
+    "reinforcement learning":    ["agent or environment visualization", "reward or score display", "episode or step counter", "action or policy output"],
+    "computer vision":           ["image or video input", "visual detection or segmentation", "bounding box or mask", "CV model output"],
+    "tensorflow":                ["TensorFlow or Keras import or logo", "model definition or training code", "tf. API calls visible", "training output or accuracy"],
+    "pytorch":                   ["PyTorch import or logo", "model definition (nn.Module)", "torch. API calls visible", "training output or loss"],
+    "scikit-learn":              ["sklearn import visible", "model fit/predict call", "accuracy or classification report", "confusion matrix or chart"],
+    "jupyter notebook":          ["notebook cell interface", "code and output cells", "kernel or execution badge", "notebook toolbar"],
+    "google colab":              ["Colab notebook UI", "runtime or GPU badge", "code cells with output", "Colab toolbar or branding"],
+    "data analysis":             ["data table or dataframe", "summary statistics or describe()", "chart or plot of data", "data transformation code"],
+    "web development":           ["HTML/CSS/JS code", "web page rendered in browser", "DOM elements or inspector", "network request or console"],
 }
 
-Rules:
-1. Only report what is ACTUALLY VISIBLE in the image.
-2. Do NOT invent values, labels, or results not shown.
-3. detected_skills_supported must be based ONLY on visible content.
-4. confidence_score: 0.9=very clear, 0.7=clear, 0.5=somewhat clear, 0.3=unclear.
-5. Return ONLY the JSON object — no other text before or after."""
+_GENERIC_CHECKLIST = ["task-specific UI or tool visible", "output or result visible", "user interaction observed", "workflow stage identifiable"]
+
+
+def build_skill_checklist(claimed_skills: list[str] | None) -> dict[str, list[str]]:
+    """Return a checklist dict mapping each claimed skill to observable items."""
+    if not claimed_skills:
+        return {}
+    result: dict[str, list[str]] = {}
+    for skill in claimed_skills:
+        key = skill.strip().lower()
+        items = _SKILL_CHECKLIST.get(key)
+        if items:
+            result[skill] = items
+        else:
+            # Partial match
+            matched = next(
+                (v for k, v in _SKILL_CHECKLIST.items() if k in key or key in k),
+                None,
+            )
+            result[skill] = matched if matched else _GENERIC_CHECKLIST
+    return result
+
+
+# ── Dynamic proof-verification prompt ────────────────────────────────────────
+
+def _build_proof_verification_prompt(
+    claimed_skills: list[str] | None,
+    proof_objective: str,
+    website_context: str,
+    dom_snippets: list[str],
+    ocr_snippets: list[str],
+    timestamp_ms: int | None,
+    skill_checklist: dict[str, list[str]],
+) -> str:
+    """Build a targeted, context-aware proof-verification prompt for Qwen-VL."""
+    parts: list[str] = []
+
+    ts_label = f"{timestamp_ms / 1000:.1f}s" if timestamp_ms is not None else "unknown"
+    skills_str = ", ".join(claimed_skills) if claimed_skills else "unspecified"
+
+    parts.append(
+        "You are verifying a student's proof video frame for a professional skill verification system.\n"
+        "Do NOT just describe the image. Your task is to check whether this frame provides VISUAL EVIDENCE\n"
+        "for the claimed skills listed below.\n"
+    )
+
+    parts.append(f"Frame timestamp: {ts_label} into the recording.")
+    parts.append(f"Claimed skills: {skills_str}")
+
+    if proof_objective:
+        parts.append(f"Proof objective: {proof_objective[:200]}")
+
+    if website_context:
+        parts.append(f"Target website/app: {website_context[:100]}")
+
+    if ocr_snippets:
+        parts.append("\nOCR text extracted from this frame:")
+        for snip in ocr_snippets[:6]:
+            parts.append(f"  - {snip[:120]}")
+
+    if dom_snippets:
+        parts.append("\nDOM/page context:")
+        for snip in dom_snippets[:4]:
+            parts.append(f"  - {snip[:120]}")
+
+    if skill_checklist:
+        parts.append("\nSkill verification checklist — check each item against the image:")
+        for skill, items in skill_checklist.items():
+            parts.append(f"{skill}:")
+            for item in items:
+                parts.append(f"  □ {item}")
+
+    parts.append(
+        "\nReturn ONLY a valid JSON object. No markdown, no code blocks, no explanation.\n"
+        "\n"
+        "{\n"
+        '  "visual_summary": "<one sentence: what is most prominent in this frame>",\n'
+        '  "visible_ui_elements": ["<UI components: buttons, panels, controls, toolbars>"],\n'
+        '  "visible_objects_or_diagrams": ["<neural network diagram, chart, plot, model architecture, code, etc>"],\n'
+        '  "detected_workflow_stage": "<model_training|results_display|data_input|prediction_output|processing|navigation|browsing|idle|unknown>",\n'
+        '  "detected_user_action": "<what the user appears to be doing>",\n'
+        '  "detected_outputs": ["<visible numbers, metrics, labels, results>"],\n'
+        '  "skill_evidence": {\n'
+        '    "<skill name>": {"items_visible": ["<checklist items confirmed visible>"], "verdict": "<supported|partial|not_visible>"}\n'
+        "  },\n"
+        '  "supported_skills": ["<skills with clear visible evidence>"],\n'
+        '  "missing_or_unclear_evidence": ["<skills or items not clearly visible>"],\n'
+        '  "confidence_score": 0.7,\n'
+        '  "limitations": ["<any analysis limitations>"]\n'
+        "}\n"
+        "\n"
+        "Rules:\n"
+        "1. Only report what is ACTUALLY VISIBLE in the image — do not invent or assume.\n"
+        "2. If the image shows a neural network, ML tool, or interactive demo, describe it specifically.\n"
+        "3. confidence_score: 0.9=very clear evidence, 0.7=clear, 0.5=partial, 0.3=unclear or generic.\n"
+        "4. If evidence is unclear, mark it unclear — do not guess or hallucinate.\n"
+        "5. Return ONLY the JSON object — no other text before or after."
+    )
+
+    return "\n".join(parts)
 
 
 # ── Sensitive-text masking (mirrors workflow_visual_analysis_service) ──────────
@@ -167,9 +269,14 @@ class VisualReasoningObservation:
     visual_summary: str = ""
     visible_ui_elements: list[str] = field(default_factory=list)
     visible_objects: list[str] = field(default_factory=list)
+    visible_objects_or_diagrams: list[str] = field(default_factory=list)
     detected_workflow_stage: str = "unknown"
     detected_actions: list[str] = field(default_factory=list)
+    detected_user_action: str = ""
     detected_outputs: list[str] = field(default_factory=list)
+    # skill_evidence: per-skill checklist results from dynamic prompt
+    skill_evidence: dict[str, Any] = field(default_factory=dict)
+    supported_skills: list[str] = field(default_factory=list)
     detected_skills_supported: list[str] = field(default_factory=list)
     missing_or_unclear_evidence: list[str] = field(default_factory=list)
     confidence_score: float = 0.0
@@ -182,20 +289,23 @@ class VisualReasoningObservation:
     def to_public_dict(self) -> dict[str, Any]:
         """Public-safe serialisation — never includes raw frames or tokens."""
         return {
-            "frame_index":              self.frame_index,
-            "timestamp_ms":             self.timestamp_ms,
-            "model_provider":           self.model_provider,
-            "visual_summary":           self.visual_summary,
-            "visible_ui_elements":      self.visible_ui_elements,
-            "visible_objects":          self.visible_objects,
-            "detected_workflow_stage":  self.detected_workflow_stage,
-            "detected_actions":         self.detected_actions,
-            "detected_outputs":         self.detected_outputs,
-            "detected_skills_supported": self.detected_skills_supported,
-            "missing_or_unclear_evidence": self.missing_or_unclear_evidence,
-            "confidence_score":         self.confidence_score,
-            "limitations":              self.limitations,
-            "status":                   self.status,
+            "frame_index":                  self.frame_index,
+            "timestamp_ms":                 self.timestamp_ms,
+            "model_provider":               self.model_provider,
+            "visual_summary":               self.visual_summary,
+            "visible_ui_elements":          self.visible_ui_elements,
+            "visible_objects_or_diagrams":  self.visible_objects_or_diagrams or self.visible_objects,
+            "detected_workflow_stage":      self.detected_workflow_stage,
+            "detected_user_action":         self.detected_user_action,
+            "detected_actions":             self.detected_actions,
+            "detected_outputs":             self.detected_outputs,
+            "skill_evidence":               self.skill_evidence,
+            "supported_skills":             self.supported_skills,
+            "detected_skills_supported":    self.supported_skills or self.detected_skills_supported,
+            "missing_or_unclear_evidence":  self.missing_or_unclear_evidence,
+            "confidence_score":             self.confidence_score,
+            "limitations":                  self.limitations,
+            "status":                       self.status,
         }
 
 
@@ -440,8 +550,8 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
 
     # ── Inference ──────────────────────────────────────────────────────────────
 
-    def _run_inference(self, frame_bytes: bytes) -> str:
-        """Run Qwen-VL inference with structured JSON prompt.  Returns raw output."""
+    def _run_inference(self, frame_bytes: bytes, prompt: str) -> str:
+        """Run Qwen-VL inference with the given prompt.  Returns raw output."""
         if not self._load_model():
             return ""
         try:
@@ -460,7 +570,7 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
                     "role": "user",
                     "content": [
                         {"type": "image", "image": img},
-                        {"type": "text",  "text":  _STRUCTURED_REASONING_PROMPT},
+                        {"type": "text",  "text":  prompt},
                     ],
                 }
             ]
@@ -485,7 +595,7 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
             with torch.no_grad():
                 generated_ids = self._model.generate(
                     **inputs,
-                    max_new_tokens=512,
+                    max_new_tokens=768,
                     do_sample=False,
                 )
 
@@ -548,6 +658,11 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
                 return [v]
             return []
 
+        def to_safe_dict(v: Any) -> dict[str, Any]:
+            if isinstance(v, dict):
+                return {str(k)[:80]: val for k, val in v.items()}
+            return {}
+
         stage = str(parsed.get("detected_workflow_stage", "unknown")).lower()
         if stage not in VALID_WORKFLOW_STAGES:
             stage = "unknown"
@@ -559,17 +674,24 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
         except (TypeError, ValueError):
             score = 0.5
 
+        # supported_skills: prefer new field, fall back to legacy detected_skills_supported
+        supported = to_str_list(parsed.get("supported_skills") or parsed.get("detected_skills_supported"))
+
         return {
-            "visual_summary":              str(parsed.get("visual_summary", ""))[:500],
-            "visible_ui_elements":         to_str_list(parsed.get("visible_ui_elements")),
-            "visible_objects":             to_str_list(parsed.get("visible_objects")),
-            "detected_workflow_stage":     stage,
-            "detected_actions":            to_str_list(parsed.get("detected_actions")),
-            "detected_outputs":            to_str_list(parsed.get("detected_outputs")),
-            "detected_skills_supported":   to_str_list(parsed.get("detected_skills_supported")),
-            "missing_or_unclear_evidence": to_str_list(parsed.get("missing_or_unclear_evidence")),
-            "confidence_score":            score,
-            "limitations":                 to_str_list(parsed.get("limitations")),
+            "visual_summary":               str(parsed.get("visual_summary", ""))[:500],
+            "visible_ui_elements":          to_str_list(parsed.get("visible_ui_elements")),
+            "visible_objects":              to_str_list(parsed.get("visible_objects")),
+            "visible_objects_or_diagrams":  to_str_list(parsed.get("visible_objects_or_diagrams") or parsed.get("visible_objects")),
+            "detected_workflow_stage":      stage,
+            "detected_user_action":         str(parsed.get("detected_user_action", ""))[:200],
+            "detected_actions":             to_str_list(parsed.get("detected_actions")),
+            "detected_outputs":             to_str_list(parsed.get("detected_outputs")),
+            "skill_evidence":               to_safe_dict(parsed.get("skill_evidence")),
+            "supported_skills":             supported,
+            "detected_skills_supported":    supported,
+            "missing_or_unclear_evidence":  to_str_list(parsed.get("missing_or_unclear_evidence")),
+            "confidence_score":             score,
+            "limitations":                  to_str_list(parsed.get("limitations")),
         }
 
     # ── Public analysis method ─────────────────────────────────────────────────
@@ -597,7 +719,24 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
                 ],
             )
 
-        raw = self._run_inference(frame_bytes)
+        # Build dynamic proof-verification prompt from session context
+        skills = claimed_skills or []
+        checklist = build_skill_checklist(skills)
+        prompt = _build_proof_verification_prompt(
+            claimed_skills=skills,
+            proof_objective=str(ctx.get("proof_objective", "")),
+            website_context=str(ctx.get("website_context", "")),
+            dom_snippets=list(ctx.get("dom_snippets") or []),
+            ocr_snippets=list(ctx.get("ocr_snippets") or []),
+            timestamp_ms=timestamp_ms,
+            skill_checklist=checklist,
+        )
+        logger.debug(
+            "[VisionReasoning] dynamic prompt built: frame_index=%s skills=%s",
+            frame_index, skills,
+        )
+
+        raw = self._run_inference(frame_bytes, prompt)
         if not raw:
             return VisualReasoningObservation(
                 frame_index=frame_index,
@@ -623,9 +762,13 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
             visual_summary=norm["visual_summary"],
             visible_ui_elements=norm["visible_ui_elements"],
             visible_objects=norm["visible_objects"],
+            visible_objects_or_diagrams=norm["visible_objects_or_diagrams"],
             detected_workflow_stage=norm["detected_workflow_stage"],
+            detected_user_action=norm["detected_user_action"],
             detected_actions=norm["detected_actions"],
             detected_outputs=norm["detected_outputs"],
+            skill_evidence=norm["skill_evidence"],
+            supported_skills=norm["supported_skills"],
             detected_skills_supported=norm["detected_skills_supported"],
             missing_or_unclear_evidence=norm["missing_or_unclear_evidence"],
             confidence_score=norm["confidence_score"],
@@ -724,11 +867,12 @@ def _build_session_summary(
             limitations=[first_limitation],
         )
 
-    # Aggregate skill signals across frames (deduplicated)
+    # Aggregate skill signals across frames (deduplicated, prefer supported_skills over legacy)
     all_skills: list[str] = []
     seen_skills: set[str] = set()
     for obs in analyzed:
-        for s in obs.detected_skills_supported:
+        skill_src = obs.supported_skills or obs.detected_skills_supported
+        for s in skill_src:
             key = s.strip().lower()
             if key not in seen_skills:
                 seen_skills.add(key)
@@ -758,6 +902,15 @@ def _build_session_summary(
 
     if combined_summary and dominant_stage != "unknown":
         combined_summary = f"[{dominant_stage}] {combined_summary}"
+
+    # Fusion note: if average confidence is low, flag that Qwen output may be generic
+    avg_confidence = sum(o.confidence_score for o in analyzed) / len(analyzed)
+    if avg_confidence < 0.45:
+        fusion_note = (
+            "Note: Qwen visual analysis returned low-confidence or generic output for this session. "
+            "DOM and OCR evidence should be treated as more reliable for skill verification."
+        )
+        combined_summary = (combined_summary + " | " + fusion_note) if combined_summary else fusion_note
 
     # Aggregate limitations
     all_limits: list[str] = []
@@ -869,6 +1022,10 @@ class VisualReasoningService:
         frames: list[tuple[int, bytes]],
         claimed_skills: list[str] | None = None,
         max_frames: int | None = None,
+        proof_objective: str = "",
+        website_context: str = "",
+        dom_snippets: list[str] | None = None,
+        ocr_snippets: list[str] | None = None,
     ) -> VisualReasoningSessionSummary:
         """Analyze up to max_frames representative keyframes.
 
@@ -877,9 +1034,13 @@ class VisualReasoningService:
         which is often a blank/pre-navigation frame).
 
         Args:
-            frames:       list of (timestamp_ms, jpeg_bytes) pairs (ordered by ts)
-            claimed_skills: skills the student claims to demonstrate
-            max_frames:   cap on frames to analyze (default: VISUAL_REASONING_MAX_FRAMES)
+            frames:          list of (timestamp_ms, jpeg_bytes) pairs (ordered by ts)
+            claimed_skills:  skills the student claims to demonstrate
+            max_frames:      cap on frames to analyze (default: VISUAL_REASONING_MAX_FRAMES)
+            proof_objective: what the student said they would prove
+            website_context: target website or app name/URL
+            dom_snippets:    short DOM/page title snippets for context
+            ocr_snippets:    short OCR text snippets already extracted from frames
 
         Returns:
             VisualReasoningSessionSummary — never raises.
@@ -954,7 +1115,14 @@ class VisualReasoningService:
 
         observations: list[VisualReasoningObservation] = []
         for idx, (ts_ms, jpeg_bytes) in enumerate(selected):
-            ctx = {"frame_index": idx, "timestamp_ms": ts_ms}
+            ctx: dict[str, Any] = {
+                "frame_index":    idx,
+                "timestamp_ms":   ts_ms,
+                "proof_objective": proof_objective,
+                "website_context": website_context,
+                "dom_snippets":    dom_snippets or [],
+                "ocr_snippets":    ocr_snippets or [],
+            }
             logger.info(
                 "[VisionReasoning] Qwen inference STARTED frame_index=%d timestamp_ms=%d "
                 "bytes=%d",

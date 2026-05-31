@@ -417,9 +417,54 @@ async def upload_workflow_video(
                         "total_frames=%d expected_selected_timestamps_ms=%s",
                         session_id, len(frames_for_reasoning), selected_ts,
                     )
+
+                    # Fetch session context (claimed skills, objective, URL) for dynamic prompt
+                    _claimed_skills: list[str] = []
+                    _proof_objective: str = ""
+                    _website_context: str = ""
+                    _ocr_snippets: list[str] = []
+                    try:
+                        _sess = db.table("extension_proof_sessions").select(
+                            "claimed_skills, proof_objective, website_url"
+                        ).eq("id", session_id).eq("user_id", user_id).maybe_single().execute()
+                        if _sess and _sess.data:
+                            raw_skills = _sess.data.get("claimed_skills") or []
+                            _claimed_skills = [str(s) for s in raw_skills if s] if isinstance(raw_skills, list) else []
+                            _proof_objective = str(_sess.data.get("proof_objective") or "")[:300]
+                            _website_context = str(_sess.data.get("website_url") or "")[:100]
+                    except Exception as _ctx_exc:
+                        logger.warning("[WorkflowVideo] Could not fetch session context for Qwen prompt (non-fatal): %s", _ctx_exc)
+
+                    # Fetch OCR text already extracted from keyframes (OCR ran in step 5)
+                    try:
+                        _ocr_resp = db.table("workflow_visual_frame_evidence").select(
+                            "ocr_text"
+                        ).eq("proof_session_id", session_id).eq(
+                            "user_id", user_id
+                        ).eq("frame_type", "video_keyframe").limit(10).execute()
+                        for _row in (_ocr_resp.data or []):
+                            _ocr_val = _row.get("ocr_text")
+                            if isinstance(_ocr_val, str) and _ocr_val.strip():
+                                _ocr_snippets.append(_ocr_val.strip()[:150])
+                            elif isinstance(_ocr_val, list):
+                                for _item in _ocr_val[:3]:
+                                    if isinstance(_item, str) and _item.strip():
+                                        _ocr_snippets.append(_item.strip()[:150])
+                    except Exception as _ocr_ctx_exc:
+                        logger.warning("[WorkflowVideo] Could not fetch OCR context for Qwen prompt (non-fatal): %s", _ocr_ctx_exc)
+
+                    logger.info(
+                        "[WorkflowVideo] Qwen context: skills=%s objective=%r website=%r ocr_snippets=%d",
+                        _claimed_skills, _proof_objective[:60], _website_context, len(_ocr_snippets),
+                    )
+
                     summary = reasoning_svc.analyze_frames(
                         frames=frames_for_reasoning,
                         max_frames=reasoning_max_frames,
+                        claimed_skills=_claimed_skills or None,
+                        proof_objective=_proof_objective,
+                        website_context=_website_context,
+                        ocr_snippets=_ocr_snippets or None,
                     )
                     logger.info(
                         "[WorkflowVideo] Qwen inference DONE: session=%s "

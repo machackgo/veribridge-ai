@@ -1030,7 +1030,7 @@ function AdvancedVisualReasoningSection({
         <div style={{ fontSize: 11, color: "#1e293b", lineHeight: 1.5,
           padding: "6px 8px", background: "#ede9fe", borderRadius: 5,
           border: "1px solid #c4b5fd" }}>
-          <strong style={{ color: "#6d28d9" }}>What the model observed: </strong>
+          <strong style={{ color: "#6d28d9" }}>What Qwen saw: </strong>
           {reasoning.summary}
         </div>
       )}
@@ -1072,6 +1072,19 @@ function AdvancedVisualReasoningSection({
                       {obs.visual_summary}
                     </div>
                   )}
+                  {/* Visible diagrams / objects */}
+                  {(obs.visible_objects_or_diagrams ?? obs.visible_objects ?? []).length > 0 && (
+                    <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 3 }}>
+                      <span style={{ fontSize: 9, color: "#6b7280", marginRight: 2 }}>Visible:</span>
+                      {(obs.visible_objects_or_diagrams ?? obs.visible_objects ?? []).slice(0, 4).map((el, j) => (
+                        <span key={j} style={{ fontSize: 9, padding: "1px 5px",
+                          background: "#f0fdf4", color: "#166534",
+                          borderRadius: 3, border: "1px solid #bbf7d0" }}>
+                          {el}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {obs.visible_ui_elements && obs.visible_ui_elements.length > 0 && (
                     <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 3 }}>
                       <span style={{ fontSize: 9, color: "#6b7280", marginRight: 2 }}>UI:</span>
@@ -1086,6 +1099,7 @@ function AdvancedVisualReasoningSection({
                   )}
                   {obs.detected_outputs && obs.detected_outputs.length > 0 && (
                     <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 3 }}>
+                      <span style={{ fontSize: 9, color: "#6b7280", marginRight: 2 }}>Outputs:</span>
                       {obs.detected_outputs.slice(0, 4).map((out, j) => (
                         <span key={j} style={{ fontSize: 9, padding: "1px 6px",
                           background: "#dcfce7", color: "#166534",
@@ -1094,6 +1108,24 @@ function AdvancedVisualReasoningSection({
                           {out}
                         </span>
                       ))}
+                    </div>
+                  )}
+                  {/* Skill evidence checklist */}
+                  {obs.skill_evidence && Object.keys(obs.skill_evidence).length > 0 && (
+                    <div style={{ marginTop: 4 }}>
+                      <span style={{ fontSize: 9, color: "#6b7280" }}>Skill evidence:</span>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 2 }}>
+                        {Object.entries(obs.skill_evidence).slice(0, 4).map(([skill, ev], j) => (
+                          <span key={j} style={{
+                            fontSize: 9, padding: "1px 6px", borderRadius: 3,
+                            background: ev.verdict === "supported" ? "#dcfce7" : ev.verdict === "partial" ? "#fef9c3" : "#f3f4f6",
+                            color: ev.verdict === "supported" ? "#166534" : ev.verdict === "partial" ? "#78350f" : "#6b7280",
+                            border: `1px solid ${ev.verdict === "supported" ? "#bbf7d0" : ev.verdict === "partial" ? "#fde68a" : "#e5e7eb"}`,
+                          }}>
+                            {ev.verdict === "supported" ? "✓" : ev.verdict === "partial" ? "~" : "—"} {skill}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1108,12 +1140,12 @@ function AdvancedVisualReasoningSection({
         </div>
       )}
 
-      {/* Skill signals found */}
+      {/* Evidence matched to claimed skills */}
       {signals.length > 0 && (
         <div>
           <div style={{ fontSize: 9, fontWeight: 700, color: "#166534",
             textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
-            Skill signals found
+            Evidence matched to claimed skills
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
             {signals.map((sig, i) => (
@@ -1127,12 +1159,12 @@ function AdvancedVisualReasoningSection({
         </div>
       )}
 
-      {/* Missing / unclear proof */}
+      {/* Missing or unclear proof */}
       {missing.length > 0 && (
         <div>
           <div style={{ fontSize: 9, fontWeight: 700, color: "#92400e",
             textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
-            Missing or unclear evidence
+            Missing or unclear proof
           </div>
           <ul style={{ margin: 0, padding: "0 0 0 14px",
             display: "flex", flexDirection: "column", gap: 2 }}>
@@ -1143,11 +1175,27 @@ function AdvancedVisualReasoningSection({
         </div>
       )}
 
-      {/* Limitations */}
+      {/* Confidence */}
+      {observations.length > 0 && (() => {
+        const avgConf = observations.reduce((s, o) => s + (o.confidence_score ?? 0), 0) / observations.length
+        const isLow = avgConf < 0.45
+        return (
+          <div style={{ fontSize: 9, color: isLow ? "#92400e" : "#374151" }}>
+            <strong>Confidence:</strong> {(avgConf * 100).toFixed(0)}%
+            {isLow && (
+              <span style={{ marginLeft: 6, fontStyle: "italic", color: "#92400e" }}>
+                — Qwen output may be generic or imprecise. DOM and OCR evidence is more reliable here.
+              </span>
+            )}
+          </div>
+        )
+      })()}
+
+      {/* Model limitation / possible mismatch */}
       {limitations.length > 0 && (
         <div style={{ fontSize: 9, color: "#6b7280", fontStyle: "italic",
           borderTop: "1px solid #e9d5ff", paddingTop: 4 }}>
-          <strong>Limitations:</strong> {limitations.slice(0, 2).join(" · ")}
+          <strong>Model limitation / possible mismatch:</strong> {limitations.slice(0, 2).join(" · ")}
         </div>
       )}
 
