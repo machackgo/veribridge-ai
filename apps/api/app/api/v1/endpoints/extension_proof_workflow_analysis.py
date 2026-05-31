@@ -216,6 +216,23 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
     )
     stages = [AnalysisStage(**s) for s in stages_raw]
     observed_demonstration = _parse_observed_demonstration(row.get("observed_demonstration"))
+    # ── Derive video_upload_status from keyframe status ───────────────────────
+    _kf_status = row.get("video_keyframe_status")
+    _video_upload_status: str
+    if _kf_status == "extracted":
+        _video_upload_status = "uploaded"
+    elif _kf_status == "failed":
+        _video_upload_status = "failed"
+    else:
+        _video_upload_status = "none"
+
+    # ── Sequence analysis (v6) — pass through raw dict from service/DB ────────
+    # The service stores it as a jsonb dict (to_public_dict() output).
+    # None is safe — the frontend treats it as "not available".
+    _seq_analysis = row.get("sequence_analysis") or None
+    if isinstance(_seq_analysis, dict) and not _seq_analysis:
+        _seq_analysis = None   # treat empty dict same as None
+
     return WorkflowAnalysisResponse(
         id=str(row.get("id", "")),
         proof_session_id=str(row.get("proof_session_id", "")),
@@ -238,10 +255,13 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
         supporting_evidence_count=int(row.get("supporting_evidence_count", 0)),
         noise_filtered_count=int(row.get("noise_filtered_count", 0)),
         observed_demonstration=observed_demonstration,
-        visual_analysis_status=row.get("visual_analysis_status", "not_available"),
+        visual_analysis_status=row.get("visual_analysis_status", "not_configured"),
         visible_evidence_status=raw_ve_status,
+        # ── Sequence analysis (v6 — Week 3) ───────────────────────────────────
+        sequence_analysis=_seq_analysis,
         # ── Video keyframe evidence (Phase 0 unified recorder) ────────────────
         # Populated by _enrich_video_keyframes() live query — always current.
+        video_upload_status=_video_upload_status,
         video_keyframe_status=row.get("video_keyframe_status"),
         video_keyframe_count=int(row.get("video_keyframe_count", 0)),
         video_keyframe_timestamps_ms=list(row.get("video_keyframe_timestamps_ms") or []),

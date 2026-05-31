@@ -256,6 +256,8 @@ interface StateSnapshot {
   lastUploadError: string | null
   sessionId: string
   dismissedForSessionId: string
+  /** True while the recorder tab has an active getDisplayMedia stream (screen capturing). */
+  recorderTabStreamActive?: boolean
 }
 
 // ── Module-level state ────────────────────────────────────────────────────────
@@ -689,7 +691,24 @@ function stopCapture(): void {
 chrome.runtime.onMessage.addListener((msg: { type: string }) => {
   if (msg.type === "START_CAPTURING") {
     startCapture()
-    showFloatingBar()
+    // Suppress the floating bar when the recorder tab stream is active —
+    // the recorder tab is the sole control UI during screen-capture mode.
+    void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
+      if (!s?.recorderTabStreamActive) {
+        showFloatingBar()
+      } else {
+        dbgVE("floating bar suppressed on START_CAPTURING — recorder tab stream active")
+      }
+    })
+  } else if (msg.type === "RECORDER_STREAM_STARTED") {
+    // Recorder tab just started screen capture — hide floating bar on this tab
+    hideFloatingBar()
+    dbgVE("floating bar hidden — RECORDER_STREAM_STARTED received")
+  } else if (msg.type === "RECORDER_STREAM_STOPPED") {
+    // Recorder tab stream ended — re-show the bar if still recording
+    void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
+      if (s?.isRecording) showFloatingBar()
+    })
   } else if (msg.type === "STOP_CAPTURING") {
     stopCapture()
     refreshBar()
@@ -717,10 +736,18 @@ detectSessionFromUrl()
 
 // On init, check if recording is already active (handles page navigation during a session).
 void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
-  dbgVE("recording active", s?.isRecording ?? false, "| session_id:", s?.sessionId ?? "(none)")
+  dbgVE("recording active", s?.isRecording ?? false, "| session_id:", s?.sessionId ?? "(none)",
+        "| recorderTabStreamActive:", s?.recorderTabStreamActive ?? false)
   if (s?.isRecording) {
     startCapture()
-    showFloatingBar()
+    // When the recorder tab is actively screen-capturing, suppress the floating bar
+    // on target pages — it would appear inside the recording and confuse the user.
+    // The recorder tab itself is the single UI control in this mode.
+    if (!s.recorderTabStreamActive) {
+      showFloatingBar()
+    } else {
+      dbgVE("floating bar suppressed — recorder tab stream is active")
+    }
   }
 })
 

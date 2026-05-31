@@ -881,17 +881,53 @@ function DomEvidenceBadge({ status }: { status: string | undefined }) {
 }
 
 /**
- * Frame/OCR analysis badge — always "not available" until implemented.
- * Shown separately so DOM capture success isn't hidden behind OCR unavailability.
+ * Frame/OCR analysis badge — reflects actual visual_analysis_status from backend.
+ * "not_configured" is the safe default when no VISUAL_ANALYSIS_PROVIDER is set.
+ * "analyzed" means a local OCR/vision provider ran successfully.
  */
-function FrameAnalysisBadge() {
+function FrameAnalysisBadge({ status }: { status?: string | null }) {
+  const s = status ?? "not_configured"
+  if (s === "analyzed") {
+    return (
+      <span style={{
+        display: "inline-flex", alignItems: "center", gap: 4,
+        fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
+        background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0",
+      }}>
+        ✓ Frame analysis done
+      </span>
+    )
+  }
+  if (s === "pending") {
+    return (
+      <span style={{
+        display: "inline-flex", alignItems: "center", gap: 4,
+        fontSize: 10, fontWeight: 500, padding: "3px 8px", borderRadius: 999,
+        background: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a",
+      }}>
+        ◌ Frame analysis pending
+      </span>
+    )
+  }
+  if (s === "failed") {
+    return (
+      <span style={{
+        display: "inline-flex", alignItems: "center", gap: 4,
+        fontSize: 10, fontWeight: 500, padding: "3px 8px", borderRadius: 999,
+        background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca",
+      }}>
+        ✗ Frame analysis failed
+      </span>
+    )
+  }
+  // not_configured / not_available / not_captured → neutral grey
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 4,
       fontSize: 10, fontWeight: 500, padding: "3px 8px", borderRadius: 999,
       background: "#f8fafc", color: "#94a3b8", border: "1px solid #e2e8f0",
     }}>
-      ○ Frame/OCR not available
+      ○ OCR/vision not configured
     </span>
   )
 }
@@ -906,6 +942,181 @@ function GraphicalRenderingBadge() {
     }}>
       ◈ Graphical visualization detected
     </span>
+  )
+}
+
+// ── Video / Keyframe Evidence Section ────────────────────────────────────────
+/**
+ * Full Video / Keyframe Evidence section.
+ * Shows upload status, keyframe count, timestamps, OCR/visual provider status,
+ * and a contextual limitation message when video exists but OCR is not configured.
+ *
+ * Always rendered — shows "no video recorded" state when no video was uploaded.
+ */
+function VideoKeyframeEvidenceSection({
+  analysis,
+}: {
+  analysis: WorkflowAnalysisResponse
+}) {
+  const kfStatus    = analysis.video_keyframe_status
+  const kfCount     = analysis.video_keyframe_count ?? 0
+  const timestamps  = analysis.video_keyframe_timestamps_ms ?? []
+  const durationMs  = analysis.video_duration_ms
+  const uploadStatus = analysis.video_upload_status ?? "none"
+  const visualStatus = analysis.visual_analysis_status ?? "not_configured"
+  const uploadError  = analysis.video_upload_error
+
+  // Derive whether video was uploaded based on upload_status or kf_status
+  const videoUploaded = uploadStatus === "uploaded" || kfStatus === "extracted" || kfStatus === "failed"
+
+  // Format duration
+  const durationStr = durationMs != null && durationMs > 0
+    ? durationMs >= 60000
+      ? `${Math.floor(durationMs / 60000)}m ${Math.round((durationMs % 60000) / 1000)}s`
+      : `${Math.round(durationMs / 1000)}s`
+    : null
+
+  // Format timestamps as readable list (up to 8)
+  const shownTimestamps = timestamps.slice(0, 8)
+
+  return (
+    <div style={{
+      border: "1px solid #e2e8f0",
+      borderRadius: 10,
+      overflow: "hidden",
+      background: "#f8fafc",
+    }}>
+      {/* Header */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "8px 12px",
+        borderBottom: "1px solid #e2e8f0",
+        background: "#f1f5f9",
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#334155", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          Video / Keyframe Evidence
+        </span>
+        {/* Upload status chip */}
+        {videoUploaded ? (
+          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+            background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+            ✓ Video uploaded
+          </span>
+        ) : (
+          <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+            background: "#f1f5f9", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>
+            No video recorded
+          </span>
+        )}
+      </div>
+
+      <div style={{ padding: "10px 12px", display: "grid", gap: 7 }}>
+        {/* Keyframe row */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Keyframes extracted</span>
+          {kfStatus === "extracted" ? (
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+              {kfCount} keyframe{kfCount !== 1 ? "s" : ""} ✓
+            </span>
+          ) : kfStatus === "failed" ? (
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}
+              title={uploadError ?? "Keyframe extraction failed"}>
+              {uploadError ? `Failed: ${uploadError.slice(0, 70)}` : "Extraction failed"}
+            </span>
+          ) : videoUploaded ? (
+            <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+              background: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a" }}>
+              Pending / unknown
+            </span>
+          ) : (
+            <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+              background: "#f1f5f9", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>
+              —
+            </span>
+          )}
+          {/* Duration */}
+          {durationStr && (
+            <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+              background: "#f1f5f9", color: "#64748b", border: "1px solid #e2e8f0" }}>
+              ⏱ {durationStr}
+            </span>
+          )}
+        </div>
+
+        {/* Timestamps */}
+        {shownTimestamps.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Keyframe times</span>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {shownTimestamps.map((ts, i) => (
+                <span key={i} style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3,
+                  background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe" }}>
+                  {ts >= 60000
+                    ? `${Math.floor(ts / 60000)}:${String(Math.round((ts % 60000) / 1000)).padStart(2, "0")}`
+                    : `${(ts / 1000).toFixed(1)}s`}
+                </span>
+              ))}
+              {timestamps.length > 8 && (
+                <span style={{ fontSize: 9, color: "#94a3b8" }}>+{timestamps.length - 8} more</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* OCR/Visual provider status */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>OCR/visual analysis</span>
+          {visualStatus === "analyzed" ? (
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+              ✓ Analyzed
+            </span>
+          ) : visualStatus === "failed" ? (
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
+              ✗ Failed
+            </span>
+          ) : visualStatus === "pending" ? (
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: "#fef9c3", color: "#854d0e", border: "1px solid #fef08a" }}>
+              ◌ Pending
+            </span>
+          ) : (
+            <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+              background: "#f1f5f9", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>
+              Not configured
+            </span>
+          )}
+        </div>
+
+        {/* Limitation notice: video uploaded but OCR not configured */}
+        {kfStatus === "extracted" && (visualStatus === "not_configured" || visualStatus === "not_available") && (
+          <div style={{
+            fontSize: 11, color: "#854d0e", background: "#fffbeb",
+            border: "1px solid #fef08a", borderRadius: 6, padding: "6px 9px", lineHeight: 1.5,
+          }}>
+            Video was recorded and {kfCount} keyframe{kfCount !== 1 ? "s" : ""} extracted, but OCR/visual model
+            analysis is not configured. Verification uses recording metadata, browser events,
+            and DOM evidence. Set <code style={{ fontSize: 10 }}>VISUAL_ANALYSIS_PROVIDER=local_ocr</code> or{" "}
+            <code style={{ fontSize: 10 }}>local_vision</code> to enable frame analysis.
+          </div>
+        )}
+
+        {/* Sequence analysis status row */}
+        {analysis.sequence_analysis && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Sequence analysis</span>
+            <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+              background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe" }}>
+              {analysis.sequence_analysis.sequence_analysis_status ?? "unknown"} ·{" "}
+              {analysis.sequence_analysis.analyzed_frame_count ?? 0} frames
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -1118,7 +1329,7 @@ function ObservedDemonstrationTimeline({
               ✦ {demo.top_result_snippets!.length} result-like block{demo.top_result_snippets!.length !== 1 ? "s" : ""} captured
             </span>
           )}
-          <FrameAnalysisBadge />
+          <FrameAnalysisBadge status={demo.visual_analysis_status} />
           {demo.has_graphical_rendering && <GraphicalRenderingBadge />}
           <span style={{ fontSize: 11, color: "#94a3b8" }}>{collapsed ? "▼" : "▲"}</span>
         </div>
@@ -1270,69 +1481,8 @@ function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse
           <ObservedDemonstrationTimeline demo={analysis.observed_demonstration} />
         )}
 
-        {/* ── Video keyframe evidence badge ─────────────────────────────────── */}
-        {(analysis.video_keyframe_status || (analysis.video_keyframe_count ?? 0) > 0) && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "8px 10px",
-              background: "#f8fafc",
-              border: "1px solid #e2e8f0",
-              borderRadius: 8,
-              flexWrap: "wrap",
-            }}
-          >
-            <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>Video keyframes</span>
-            {analysis.video_keyframe_status === "extracted" ? (
-              <span
-                style={{
-                  fontSize: 9,
-                  fontWeight: 700,
-                  padding: "2px 7px",
-                  borderRadius: 4,
-                  background: "#f0fdf4",
-                  color: "#166534",
-                  border: "1px solid #bbf7d0",
-                }}
-              >
-                {analysis.video_keyframe_count ?? 0} keyframe{(analysis.video_keyframe_count ?? 0) !== 1 ? "s" : ""} extracted ✓
-              </span>
-            ) : analysis.video_keyframe_status === "failed" ? (
-              <span
-                style={{
-                  fontSize: 9,
-                  fontWeight: 700,
-                  padding: "2px 7px",
-                  borderRadius: 4,
-                  background: "#fef2f2",
-                  color: "#991b1b",
-                  border: "1px solid #fecaca",
-                }}
-                title={analysis.video_upload_error ?? "Keyframe extraction failed"}
-              >
-                {analysis.video_upload_error
-                  ? `Failed: ${analysis.video_upload_error.slice(0, 80)}`
-                  : "Keyframe extraction failed"}
-              </span>
-            ) : (
-              <span
-                style={{
-                  fontSize: 9,
-                  fontWeight: 700,
-                  padding: "2px 7px",
-                  borderRadius: 4,
-                  background: "#f8fafc",
-                  color: "#94a3b8",
-                  border: "1px dashed #cbd5e1",
-                }}
-              >
-                {analysis.video_keyframe_status ?? "not captured"}
-              </span>
-            )}
-          </div>
-        )}
+        {/* ── Video / Keyframe Evidence section ────────────────────────────── */}
+        <VideoKeyframeEvidenceSection analysis={analysis} />
 
         {/* ── Sequence Analysis (v6 — Week 3) ──────────────────────────────── */}
         {analysis.sequence_analysis && (

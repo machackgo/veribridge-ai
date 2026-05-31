@@ -90,7 +90,7 @@ class VisibleEvidenceEventInput(BaseModel):
             "Must be sanitized by the extension before sending: no passwords, API keys, "
             "tokens, local paths, or sensitive personal data."
         ),
-        max_length=100,   # cap items
+        max_length=200,   # cap items; extension MAX_VE_BLOCKS=120, keep headroom
     )
     result_like_blocks: list[str] = Field(
         default_factory=list,
@@ -98,7 +98,7 @@ class VisibleEvidenceEventInput(BaseModel):
             "Text blocks near result/output/prediction keywords. "
             "Extension should pre-filter for relevance."
         ),
-        max_length=50,
+        max_length=100,   # raised to 100 to allow headroom above extension's 30-item slice
     )
     input_snapshot: dict = Field(
         default_factory=dict,

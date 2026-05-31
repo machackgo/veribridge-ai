@@ -1041,7 +1041,18 @@ export type WorkflowAnalysisStage = {
 
 // ── Observed Demonstration types (v3/v4) ─────────────────────────────────────
 
-export type VisualAnalysisStatus = "available" | "partial" | "not_available"
+export type VisualAnalysisStatus =
+  // v5 provider-agnostic values (current)
+  | "analyzed"       // provider ran and frames were analyzed
+  | "pending"        // frames stored, analysis queued
+  | "skipped"        // frames stored but skipped (no bytes)
+  | "failed"         // provider error
+  | "not_configured" // no VISUAL_ANALYSIS_PROVIDER set (safe default)
+  // legacy values (pre-v5, kept for backward compatibility)
+  | "available"
+  | "partial"
+  | "not_available"
+  | "not_captured"
 
 /** DOM text capture status from the browser extension (distinct from OCR/frame analysis). */
 export type VisibleEvidenceStatus = "available" | "partial" | "not_captured"
@@ -1208,6 +1219,13 @@ export type WorkflowAnalysisResponse = {
   video_duration_ms?: number | null
   /** Exact error reason from the backend when video_keyframe_status is "failed". */
   video_upload_error?: string | null
+  /**
+   * High-level video upload status derived from keyframe status:
+   * 'uploaded' = video uploaded and keyframes extracted;
+   * 'failed'   = video uploaded but keyframe extraction failed;
+   * 'none'     = no video recorded for this session.
+   */
+  video_upload_status?: string | null
   // ── Sequence analysis (v6 — Week 3) ──────────────────────────────────────────
   /** Full sequence analysis result. Public-safe — no raw paths or private metadata. */
   sequence_analysis?: SequenceAnalysisResult | null

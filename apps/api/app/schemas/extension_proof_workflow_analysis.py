@@ -250,6 +250,33 @@ class WorkflowAnalysisResponse(BaseModel):
         description="Exact error reason from the backend when video_keyframe_status='failed'.",
     )
 
+    # ── Sequence analysis (v6 — Week 3) ──────────────────────────────────────
+    # Multi-frame temporal chain: keyframes + DOM + visible evidence.
+    # Serialised via to_public_dict() — no raw paths or private metadata.
+    # None when no keyframes or insufficient frames for sequence analysis.
+    sequence_analysis: dict | None = Field(
+        default=None,
+        description=(
+            "Sequence analysis result (v6). "
+            "Contains sequence_analysis_status, analyzed_frame_count, "
+            "workflow_stage_summaries, input_action_output_chain, before_after_changes, "
+            "observed_outputs, supported_skills, evidence_strength, confidence_score. "
+            "None when video keyframes or DOM events are insufficient."
+        ),
+    )
+
+    # ── Video upload status ────────────────────────────────────────────────────
+    # Whether a video was uploaded for this session.
+    # Derived from video_keyframe_status at response time.
+    video_upload_status: str = Field(
+        default="none",
+        description=(
+            "'uploaded' when the video upload completed and keyframes were extracted or attempted. "
+            "'none' when no video was recorded. "
+            "'failed' when keyframe extraction failed."
+        ),
+    )
+
     # Computed at response time, not stored in DB.
     # After successful analysis all stages are "complete" and progress = 100.
     progress: int = Field(default=100, ge=0, le=100)

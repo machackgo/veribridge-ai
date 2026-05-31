@@ -597,12 +597,17 @@ chrome.runtime.onMessage.addListener(
       case "RECORDER_STREAM_STARTED":
         state.recorderTabStreamActive = true
         dbgVE("[RecorderStream] stream started — recorderTabStreamActive=true session=%s", state.sessionId)
+        // Broadcast to all tracked content scripts so they hide the floating bar
+        // (prevents the VeriBridge overlay from appearing inside the screen recording).
+        void broadcastToAllTabs({ type: "RECORDER_STREAM_STARTED" })
         sendResponse({ ok: true })
         break
 
       case "RECORDER_STREAM_STOPPED":
         state.recorderTabStreamActive = false
         dbgVE("[RecorderStream] stream stopped — recorderTabStreamActive=false session=%s", state.sessionId)
+        // Broadcast so content scripts can re-show the floating bar
+        void broadcastToAllTabs({ type: "RECORDER_STREAM_STOPPED" })
         sendResponse({ ok: true })
         break
 
