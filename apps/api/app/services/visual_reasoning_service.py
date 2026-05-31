@@ -861,6 +861,8 @@ _PERSON_SCENE_TERMS: frozenset[str] = frozenset({
     "face", "selfie", "portrait",
     "white wall", "blank wall", "bedroom", "living room", "indoor scene",
     "holding phone", "hand holding",
+    # Device/phone terms — unambiguous in software/data contexts
+    "smartphone", "mobile phone", "cellphone", "cell phone",
 })
 
 # Broad terms that indicate the session context is a software/web/data application.

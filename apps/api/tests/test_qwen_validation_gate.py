@@ -872,3 +872,259 @@ class TestFrontendRejectedNotShowingHallucination:
         safe = _safe_visual_reasoning_summary(summary)
         assert safe is not None
         assert safe["supported_signals"] == []
+
+
+# ── New tests: smartphone/phone rejection + read-time URL context ─────────────
+# These tests should FAIL before Fix 1 (adding "smartphone" to _PERSON_SCENE_TERMS)
+# and PASS after.
+
+class TestSmartphoneHallucinationRejection:
+    """Gapminder / p5.js context + 'person holding smartphone' → rejected."""
+
+    def test_gapminder_smartphone_green_screen_rejected(self):
+        """Test 1 (smartphone): Gapminder + Qwen 'person holding smartphone with green screen'
+        → rejected_inconsistent.  Fails before adding 'smartphone' to _PERSON_SCENE_TERMS."""
+        obs = _make_obs(
+            visual_summary="A person is holding a smartphone with a green screen.",
+            objects=["person", "smartphone", "green screen"],
+            user_action="person holding smartphone",
+        )
+        context = {
+            "website_context": "https://www.gapminder.org/tools",
+            "ocr_snippets": _GAPMINDER_OCR,
+            "dom_snippets": [],
+        }
+        is_consistent, reason = validate_visual_reasoning_observation(obs, context)
+        assert not is_consistent, (
+            "Gapminder + 'person holding smartphone' must be rejected_inconsistent. "
+            f"Got is_consistent={is_consistent!r}. "
+            "Fix: add 'smartphone' to _PERSON_SCENE_TERMS so person_hits >= 2."
+        )
+
+    def test_gapminder_smartphone_full_pipeline_rejected(self):
+        """Full pipeline: Gapminder session + Qwen 'smartphone' → rejected_inconsistent."""
+        smartphone_obs = _make_obs(
+            visual_summary="A person is holding a smartphone with a green screen.",
+            objects=["person", "smartphone"],
+            confidence=0.6,
+        )
+        provider = MockReasoningProvider(observations=[smartphone_obs])
+        svc = VisualReasoningService(provider=provider)
+
+        summary = svc.analyze_frames(
+            frames=[(1000, _TINY_JPEG)],
+            claimed_skills=["Data Visualization", "Interactive Dashboard"],
+            website_context="https://www.gapminder.org/tools",
+            ocr_snippets=_GAPMINDER_OCR,
+        )
+
+        assert summary.status == REASONING_STATUS_REJECTED_INCONSISTENT, (
+            f"Expected rejected_inconsistent, got {summary.status!r}"
+        )
+        assert summary.frames_analyzed == 0
+        assert summary.supported_signals == []
+
+    def test_p5js_smartphone_rejected(self):
+        """Test 2 (smartphone p5.js): p5.js + 'person holding smartphone' → rejected."""
+        obs = _make_obs(
+            visual_summary="A person is holding a smartphone with a green screen.",
+            objects=["person", "smartphone"],
+        )
+        context = {
+            "website_context": "p5js.org",
+            "ocr_snippets": ["p5.js canvas javascript sketch draw createCanvas"],
+            "dom_snippets": [],
+        }
+        is_consistent, reason = validate_visual_reasoning_observation(obs, context)
+        assert not is_consistent, (
+            f"p5.js + 'person holding smartphone' must be rejected: {reason!r}"
+        )
+
+    def test_mobile_phone_term_also_rejected(self):
+        """'mobile phone' in Qwen text + software context → rejected."""
+        obs = _make_obs(
+            visual_summary="A person holding a mobile phone in front of a blank wall.",
+            objects=["person", "mobile phone", "wall"],
+        )
+        context = {
+            "website_context": "https://www.gapminder.org/tools",
+            "ocr_snippets": _GAPMINDER_OCR,
+            "dom_snippets": [],
+        }
+        is_consistent, reason = validate_visual_reasoning_observation(obs, context)
+        assert not is_consistent, f"mobile phone must be rejected: {reason!r}"
+
+    def test_smartphone_alone_no_rejection_when_context_empty(self):
+        """'smartphone' in Qwen output + empty context → no rejection (no software signal)."""
+        obs = _make_obs(
+            visual_summary="A person is holding a smartphone.",
+            objects=["person", "smartphone"],
+        )
+        context = {"website_context": "", "ocr_snippets": [], "dom_snippets": []}
+        is_consistent, _ = validate_visual_reasoning_observation(obs, context)
+        assert is_consistent, "No rejection when context is empty (could be a phone-review site)"
+
+
+class TestReadTimeRevalidationWithWebsiteUrl:
+    """Read-time re-validation uses website_url from session, not just OCR."""
+
+    def _make_db_with_url(self, rows: list, website_url: str) -> MagicMock:
+        """Build a mock DB that returns rows for the frame query AND a URL for session query."""
+        from unittest.mock import MagicMock, patch
+        db = MagicMock()
+
+        # Frame rows query: .table().select().eq().eq().eq().not_.is_().order().execute()
+        frame_chain = (
+            db.table.return_value
+            .select.return_value
+            .eq.return_value
+            .eq.return_value
+            .eq.return_value
+        )
+        frame_chain.not_.is_.return_value.order.return_value.execute.return_value.data = rows
+
+        # Session URL query: .table().select().eq().eq().maybe_single().execute()
+        url_resp = MagicMock()
+        url_resp.data = {"website_url": website_url}
+        (
+            db.table.return_value
+            .select.return_value
+            .eq.return_value
+            .eq.return_value
+            .maybe_single.return_value
+            .execute.return_value
+        ) = url_resp
+
+        return db
+
+    def test_stale_analyzed_smartphone_obs_rejected_with_url_context(self):
+        """Stale 'analyzed' smartphone row from before validation is rejected via website_url."""
+        # Simulate a row stored as "analyzed" before the write-time gate was added
+        row = _vr_row(
+            "A person is holding a smartphone with a green screen.",
+            status="analyzed",  # was stored as analyzed before gate
+            skills=[],
+        )
+        row["ocr_text"] = []  # no OCR — URL context must carry the rejection
+
+        db = self._make_db_with_url([row], "https://www.gapminder.org/tools")
+        result = _build_visual_reasoning_session_summary_from_db(db, "user-1", "session-stale-phone")
+
+        assert result is not None
+        assert result["status"] == "rejected_inconsistent", (
+            f"Stale smartphone obs must be re-validated and rejected. Got {result['status']!r}. "
+            "Fix: pass website_url into read-time re-validation context."
+        )
+        assert result["supported_signals"] == []
+        assert result["frames_analyzed"] == 0
+        assert "smartphone" not in result["summary"].lower()
+
+    def test_stale_analyzed_person_wall_rejected_with_url_context_no_ocr(self):
+        """Stale 'analyzed' person/wall row rejected via website_url when OCR is empty."""
+        row = _vr_row(
+            _GAPMINDER_PERSON_SUMMARY,
+            status="analyzed",
+            skills=[],
+        )
+        row["ocr_text"] = None  # no OCR at all
+
+        db = self._make_db_with_url([row], "https://www.gapminder.org/tools")
+        result = _build_visual_reasoning_session_summary_from_db(db, "user-1", "session-stale-wall")
+
+        assert result is not None
+        assert result["status"] == "rejected_inconsistent", (
+            f"Stale person/wall obs must be rejected via URL context. Got {result['status']!r}"
+        )
+        assert "red shirt" not in result["summary"].lower()
+
+    def test_valid_obs_not_rejected_when_url_set(self):
+        """Valid chart/dashboard observation is NOT rejected even with URL in context."""
+        row = _vr_row(
+            "Interactive bubble chart with income and life expectancy data on Gapminder Tools.",
+            status="analyzed",
+            skills=["Data Visualization"],
+        )
+        row["ocr_text"] = _GAPMINDER_OCR
+
+        db = self._make_db_with_url([row], "https://www.gapminder.org/tools")
+        result = _build_visual_reasoning_session_summary_from_db(db, "user-1", "session-valid-chart")
+
+        assert result is not None
+        assert result["status"] == "analyzed", (
+            f"Valid chart obs must not be rejected. Got {result['status']!r}"
+        )
+        assert "Data Visualization" in result["supported_signals"]
+
+
+class TestSummaryBuilderRejectsHallucination:
+    """Summary builder and recruiter summary must not include rejected Qwen text."""
+
+    def test_rejected_summary_does_not_have_hallucinated_skills(self):
+        """When all Qwen obs are rejected, supported_signals is empty."""
+        rows = [
+            _vr_row(
+                "A person is holding a smartphone with a green screen.",
+                status="analyzed",  # stale
+                skills=["mobile_phone_usage", "standing"],  # fake skills from hallucination
+            )
+        ]
+        rows[0]["ocr_text"] = _GAPMINDER_OCR
+
+        db = _make_db(rows)
+        result = _build_visual_reasoning_session_summary_from_db(db, "u1", "s1")
+
+        assert result is not None
+        assert result["supported_signals"] == [], (
+            "Hallucinated skills from rejected obs must not appear in supported_signals"
+        )
+        assert "mobile_phone_usage" not in result["supported_signals"]
+        assert "standing" not in result["supported_signals"]
+
+    def test_rejected_summary_message_does_not_contain_hallucinated_text(self):
+        """The rejection summary message never exposes hallucinated Qwen text."""
+        rows = [
+            _vr_row(
+                "A person is holding a smartphone with a green screen.",
+                status="rejected_inconsistent",
+            )
+        ]
+        db = _make_db(rows)
+        result = _build_visual_reasoning_session_summary_from_db(db, "u1", "s1")
+
+        assert result is not None
+        assert "smartphone" not in result["summary"].lower()
+        assert "green screen" not in result["summary"].lower()
+        assert "person" not in result["summary"].lower()
+
+
+class TestMultiUploadSameSession:
+    """Test 8: Multi-upload — second upload clears first upload's Qwen results."""
+
+    def test_second_upload_clears_first_upload_hallucination(self):
+        """DB query after second upload should only have new-upload rows (old rows NULLed).
+
+        The upload endpoint clears visual_reasoning_json from prior uploads.
+        This simulates: Upload A had person hallucination (NULLed).
+        Upload B has Gapminder chart (current).
+        Only Upload B result appears.
+        """
+        # After second upload: old rows have NULL visual_reasoning_json (filtered out by query),
+        # new rows have chart data.
+        new_rows = [
+            _vr_row(
+                "Interactive bubble chart showing Gapminder data visualization.",
+                status="analyzed",
+                skills=["Data Visualization"],
+                ts_ms=1000,
+            )
+        ]
+        # Old rows with person hallucination are NOT returned because visual_reasoning_json=NULL
+        # is filtered by .not_.is_("visual_reasoning_json", "null") in the DB query.
+        db = _make_db(new_rows)
+        result = _build_visual_reasoning_session_summary_from_db(db, "u1", "session-multi")
+
+        assert result is not None
+        assert result["status"] == "analyzed"
+        assert "Data Visualization" in result["supported_signals"]
+        assert "person" not in result["summary"].lower()
+        assert "smartphone" not in result["summary"].lower()

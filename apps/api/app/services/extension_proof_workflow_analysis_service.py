@@ -1160,6 +1160,28 @@ def _build_visual_reasoning_session_summary_from_db(
     if not rows:
         return None
 
+    # Fetch session website_url for read-time re-validation context.
+    # Write-time validation uses the URL; read-time must too so stale "analyzed"
+    # observations stored before the validation gate was added can still be caught.
+    _session_website_url = ""
+    try:
+        _url_resp = (
+            db.table("extension_proof_sessions")
+            .select("website_url")
+            .eq("id", session_id)
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        if _url_resp and isinstance(getattr(_url_resp, "data", None), dict):
+            _session_website_url = str(_url_resp.data.get("website_url") or "")
+    except Exception as _url_exc:
+        logger.warning(
+            "[VisualReasoning] Could not fetch session website_url for re-validation "
+            "(non-fatal): session=%s error=%s",
+            session_id, _url_exc,
+        )
+
     # Aggregate observations
     analyzed_obs: list[dict[str, Any]] = []
     analyzed_rows: list[dict[str, Any]] = []  # parallel list: rows corresponding to analyzed_obs
@@ -1210,7 +1232,7 @@ def _build_visual_reasoning_session_summary_from_db(
             _ocr_parts.append(_ocr_raw.strip())
 
         _read_ctx: dict[str, Any] = {
-            "website_context": "",
+            "website_context": _session_website_url,
             "ocr_snippets": _ocr_parts,
             "dom_snippets": [],
         }
