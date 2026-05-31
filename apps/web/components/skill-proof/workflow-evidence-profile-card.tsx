@@ -647,6 +647,164 @@ function StepCard({ step }: { step: DemonstrationStep }) {
   )
 }
 
+// ── Frame OCR Evidence Sub-section ───────────────────────────────────────────
+
+type FrameOCRSummary = NonNullable<WorkflowAnalysisResponse["frame_ocr_evidence_summary"]>
+
+function FrameOCREvidenceSubsection({
+  ocr,
+  keyframeTimestamps,
+}: {
+  ocr: FrameOCRSummary
+  keyframeTimestamps: number[]
+}) {
+  if (!ocr.has_ocr_evidence) return null
+
+  const snippets = ocr.top_ocr_snippets ?? []
+  const signals  = ocr.skill_signals ?? []
+  const missing  = ocr.what_was_not_observed ?? []
+
+  const partialSkills = signals.filter((s) => s.ocr_support === "partial")
+  const weakSkills    = signals.filter((s) => s.ocr_support === "insufficient")
+
+  const pageContextLabel: Record<string, string> = {
+    homepage_marketing: "Homepage / platform marketing content",
+    training_ui: "Training UI content",
+    prediction_output: "Prediction / output content",
+    demo_content: "Demo / tutorial content",
+    unknown: "Unknown (minimal text detected)",
+  }
+
+  return (
+    <div style={{
+      marginTop: 6,
+      padding: "10px 12px",
+      background: "#eff6ff",
+      border: "1px solid #bfdbfe",
+      borderRadius: 7,
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+    }}>
+      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+        textTransform: "uppercase", color: "#1d4ed8" }}>
+        Frame OCR Evidence
+      </div>
+
+      {/* Provider + counts */}
+      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "3px 8px", fontSize: 11 }}>
+        <span style={{ color: "#64748b" }}>Provider</span>
+        <span style={{ color: "#1e40af", fontWeight: 600, fontFamily: "monospace" }}>{ocr.ocr_provider}</span>
+
+        <span style={{ color: "#64748b" }}>Frames analyzed</span>
+        <span style={{ color: "#1e40af", fontWeight: 600 }}>{ocr.frames_analyzed}</span>
+
+        <span style={{ color: "#64748b" }}>Page context</span>
+        <span style={{ color: "#334155" }}>
+          {pageContextLabel[ocr.detected_page_context] ?? ocr.detected_page_context}
+        </span>
+      </div>
+
+      {/* What the video appears to show */}
+      {ocr.observed_summary && (
+        <div style={{ fontSize: 11, color: "#1e293b", lineHeight: 1.5,
+          padding: "6px 8px", background: "#dbeafe", borderRadius: 5,
+          border: "1px solid #93c5fd" }}>
+          <strong style={{ color: "#1d4ed8" }}>What the video appears to show: </strong>
+          {ocr.observed_summary}
+        </div>
+      )}
+
+      {/* Top OCR snippets with approximate timestamps */}
+      {snippets.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#1d4ed8",
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+            Top OCR text snippets from keyframes
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+            {snippets.map((text, i) => {
+              const tsMs = keyframeTimestamps[Math.min(i, keyframeTimestamps.length - 1)]
+              const tsLabel = tsMs != null ? `${(tsMs / 1000).toFixed(1)}s` : null
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                  {tsLabel && (
+                    <span style={{ fontSize: 8, fontFamily: "monospace", padding: "1px 5px",
+                      borderRadius: 3, background: "#dbeafe", color: "#1d4ed8",
+                      border: "1px solid #93c5fd", flexShrink: 0, marginTop: 2 }}>
+                      {tsLabel}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 10, color: "#334155", fontFamily: "monospace",
+                    background: "#f8fafc", padding: "1px 6px", borderRadius: 3,
+                    border: "1px solid #e2e8f0", lineHeight: 1.4 }}>
+                    {text}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* OCR-supported skill signals (partial) */}
+      {partialSkills.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#166534",
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+            OCR-supported signals (partial)
+          </div>
+          {partialSkills.map((sig, i) => (
+            <div key={i} style={{ fontSize: 10, color: "#166534", lineHeight: 1.4,
+              padding: "4px 7px", background: "#f0fdf4", borderRadius: 4,
+              border: "1px solid #bbf7d0", marginBottom: 3 }}>
+              <strong>{sig.skill}:</strong>{" "}{sig.reasoning}
+              {sig.ocr_terms_found.length > 0 && (
+                <span style={{ color: "#64748b" }}>
+                  {" "}(terms: {sig.ocr_terms_found.slice(0, 5).join(", ")})
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Insufficient OCR signals */}
+      {weakSkills.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#92400e",
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+            Insufficient OCR evidence
+          </div>
+          {weakSkills.map((sig, i) => (
+            <div key={i} style={{ fontSize: 10, color: "#92400e", lineHeight: 1.4,
+              padding: "4px 7px", background: "#fef9c3", borderRadius: 4,
+              border: "1px solid #fef08a", marginBottom: 3 }}>
+              <strong>{sig.skill}:</strong>{" "}{sig.reasoning}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* What was not observed / proof still missing */}
+      {missing.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#991b1b",
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+            Proof still missing from frames
+          </div>
+          <ul style={{ margin: 0, padding: "0 0 0 14px", display: "flex",
+            flexDirection: "column", gap: 2 }}>
+            {missing.map((item, i) => (
+              <li key={i} style={{ fontSize: 10, color: "#7f1d1d", lineHeight: 1.4 }}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Video / Keyframe Evidence Section ────────────────────────────────────────
 // Shown when a WebM video was recorded. Surfaces all video metadata so the
 // user knows exactly what was captured even when OCR is not configured.
@@ -658,6 +816,8 @@ function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysis
   const durationMs = analysis.video_duration_ms
   const uploaded   = kfStatus === "extracted" || kfStatus === "failed"
   const visualStatus = analysis.visual_analysis_status
+  const ocrSummary   = analysis.frame_ocr_evidence_summary ?? null
+  const hasOCREvidence = ocrSummary?.has_ocr_evidence === true
 
   // Only render when we have video evidence to show
   if (!kfStatus && kfCount === 0) return null
@@ -716,6 +876,22 @@ function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysis
             Not configured — set VISUAL_ANALYSIS_PROVIDER to enable
           </span>
         )}
+
+        {/* OCR analysis row — only when summary is available */}
+        {ocrSummary && (
+          <>
+            <span style={{ color: "#64748b" }}>OCR/visual analysis</span>
+            {hasOCREvidence ? (
+              <span style={{ color: "#1d4ed8", fontWeight: 600 }}>
+                Analyzed — {ocrSummary.frames_analyzed} frame{ocrSummary.frames_analyzed !== 1 ? "s" : ""} ✓
+              </span>
+            ) : (
+              <span style={{ color: "#92400e", fontSize: 10 }}>
+                {ocrSummary.observed_summary?.slice(0, 100) ?? "Not available"}
+              </span>
+            )}
+          </>
+        )}
       </div>
 
       {/* Keyframe timestamps */}
@@ -740,8 +916,13 @@ function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysis
         </div>
       )}
 
-      {/* Limitation notice when OCR not configured */}
-      {!isConfigured && kfStatus === "extracted" && (
+      {/* Frame OCR Evidence sub-section — shown when OCR produced evidence */}
+      {ocrSummary && hasOCREvidence && (
+        <FrameOCREvidenceSubsection ocr={ocrSummary} keyframeTimestamps={kfTs} />
+      )}
+
+      {/* Limitation notice when OCR not configured and no OCR evidence */}
+      {!isConfigured && kfStatus === "extracted" && !hasOCREvidence && (
         <div style={{ fontSize: 10, color: "#92400e", lineHeight: 1.5,
           padding: "6px 8px", background: "#fef9c3",
           border: "1px solid #fef08a", borderRadius: 6 }}>

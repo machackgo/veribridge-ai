@@ -277,6 +277,25 @@ class WorkflowAnalysisResponse(BaseModel):
         ),
     )
 
+    # ── Frame OCR evidence summary (v6 — computed at response time) ──────────
+    # Structured summary of what OCR/visual analysis found in video keyframes.
+    # Includes: provider, frames analyzed, top OCR text snippets,
+    # detected page context, observed summary, what was not observed,
+    # and per-skill OCR support signals.
+    # None when no video was uploaded or OCR was not configured.
+    # NEVER includes raw frame paths, storage URLs, or private metadata.
+    frame_ocr_evidence_summary: dict | None = Field(
+        default=None,
+        description=(
+            "Structured OCR evidence summary from video keyframes. "
+            "Contains: has_ocr_evidence (bool), ocr_provider (str), "
+            "frames_analyzed (int), top_ocr_snippets (list[str]), "
+            "detected_page_context (str), observed_summary (str), "
+            "what_was_not_observed (list[str]), skill_signals (list[dict]). "
+            "None when no video or OCR not configured."
+        ),
+    )
+
     # Computed at response time, not stored in DB.
     # After successful analysis all stages are "complete" and progress = 100.
     progress: int = Field(default=100, ge=0, le=100)

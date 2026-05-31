@@ -23,6 +23,7 @@ from app.services.extension_proof_workflow_analysis_service import (
     InvalidAnalysisStateError,
     SessionNotFoundError,
     _build_completed_stages,
+    _build_frame_ocr_evidence_summary,
 )
 from typing import Any
 
@@ -73,6 +74,7 @@ def analyze_workflow(
             detail={"message": "Workflow analysis failed unexpectedly."},
         ) from exc
     row = _enrich_video_keyframes(db, user_id, session_id, row)
+    row = _enrich_frame_ocr_evidence(row)
     return _to_response(row)
 
 
@@ -104,6 +106,7 @@ def get_workflow_analysis(
             detail={"message": "No workflow analysis found for this session."},
         )
     row = _enrich_video_keyframes(db, user_id, session_id, row)
+    row = _enrich_frame_ocr_evidence(row)
     return _to_response(row)
 
 
@@ -291,6 +294,9 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
         video_keyframe_timestamps_ms=list(row.get("video_keyframe_timestamps_ms") or []),
         video_duration_ms=row.get("video_duration_ms"),
         video_upload_error=row.get("video_upload_error"),
+        # ── Frame OCR evidence summary (v6 — computed by _enrich_frame_ocr_evidence) ─
+        # Safe to expose: never includes raw frame paths, storage URLs, or tokens.
+        frame_ocr_evidence_summary=_safe_frame_ocr_summary(row.get("frame_ocr_evidence_summary")),
         progress=100,
         current_stage="AI reviewed",
         stages=stages,
@@ -447,6 +453,63 @@ def _enrich_video_keyframes(
             "video_duration_ms": None,
             "video_upload_error": None,
         }
+
+
+_OCR_PRIVATE_FIELDS = frozenset({
+    "frame_storage_path", "frame_path", "storage_url", "signed_url",
+    "access_token", "raw_dom", "debug_metadata", "admin_notes",
+    "raw_frame", "frame_bytes",
+})
+
+
+def _safe_frame_ocr_summary(summary: Any) -> dict | None:
+    """Return only public-safe fields from frame_ocr_evidence_summary.
+
+    Strips any field whose name is in _OCR_PRIVATE_FIELDS.
+    Returns None when input is not a dict.
+    """
+    if not isinstance(summary, dict):
+        return None
+    return {k: v for k, v in summary.items() if k not in _OCR_PRIVATE_FIELDS}
+
+
+def _enrich_frame_ocr_evidence(row: dict[str, Any]) -> dict[str, Any]:
+    """Compute frame_ocr_evidence_summary from existing row fields if not already set.
+
+    The analysis service stores this in the result dict and (when the DB column
+    exists) in the DB.  For sessions analysed before migration 040, the DB value
+    is null, so we reconstruct from the visual_summary / visual_analysis_status
+    columns that ARE always stored.
+
+    Privacy: reconstructed dict never includes raw paths, storage URLs, or tokens.
+    """
+    # If already present and non-empty, use it directly
+    existing = row.get("frame_ocr_evidence_summary")
+    if isinstance(existing, dict) and existing:
+        return row
+
+    # Reconstruct visual_frame_observations from stored columns
+    visual_status = row.get("visual_analysis_status", "not_configured")
+    visual_provider = row.get("visual_analysis_provider", "none")
+    visual_frame_count = int(row.get("visual_frame_count", 0))
+    visual_summary = row.get("visual_summary", "") or ""
+
+    vf_obs: dict[str, Any] = {
+        "visual_frame_analysis_status": visual_status,
+        "provider_used": visual_provider,
+        "visual_frame_count": visual_frame_count,
+        "visual_summary": visual_summary,
+    }
+
+    # Reconstruct claimed_skills from stored skill lists
+    claimed_skills: list[str] = (
+        list(row.get("supported_skills") or [])
+        + list(row.get("weakly_supported_skills") or [])
+        + list(row.get("unsupported_skills") or [])
+    )
+
+    summary = _build_frame_ocr_evidence_summary(vf_obs, claimed_skills)
+    return {**row, "frame_ocr_evidence_summary": summary}
 
 
 def _not_found(session_id: str) -> HTTPException:
