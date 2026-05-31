@@ -1262,7 +1262,7 @@ export type WorkflowAnalysisResponse = {
    * null when VISUAL_REASONING_ENABLED=false (the default).
    */
   visual_reasoning_summary?: {
-    status: "analyzed" | "failed" | "disabled" | "missing_dependency" | "not_configured"
+    status: "analyzed" | "failed" | "disabled" | "missing_dependency" | "not_configured" | "rejected_inconsistent" | "rejected_stale"
     provider: string
     frames_analyzed: number
     summary: string

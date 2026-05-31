@@ -74,11 +74,18 @@ logger = logging.getLogger(__name__)
 
 # ── Status values ──────────────────────────────────────────────────────────────
 
-REASONING_STATUS_ANALYZED           = "analyzed"
-REASONING_STATUS_FAILED             = "failed"
-REASONING_STATUS_DISABLED           = "disabled"
-REASONING_STATUS_MISSING_DEPENDENCY = "missing_dependency"
-REASONING_STATUS_NOT_CONFIGURED     = "not_configured"
+REASONING_STATUS_ANALYZED              = "analyzed"
+REASONING_STATUS_FAILED                = "failed"
+REASONING_STATUS_DISABLED              = "disabled"
+REASONING_STATUS_MISSING_DEPENDENCY    = "missing_dependency"
+REASONING_STATUS_NOT_CONFIGURED        = "not_configured"
+REASONING_STATUS_REJECTED_INCONSISTENT = "rejected_inconsistent"
+REASONING_STATUS_REJECTED_STALE        = "rejected_stale"
+
+_REJECTED_STATUSES: frozenset[str] = frozenset({
+    REASONING_STATUS_REJECTED_INCONSISTENT,
+    REASONING_STATUS_REJECTED_STALE,
+})
 
 # ── Valid workflow stage labels ────────────────────────────────────────────────
 
@@ -843,6 +850,85 @@ class MockReasoningProvider(VisualReasoningProvider):
         )
 
 
+# ── Inconsistency detection ────────────────────────────────────────────────────
+
+# Terms that indicate Qwen described a real-world person scene.
+# Two or more distinct matches → Qwen is reporting a person scene.
+_PERSON_SCENE_TERMS: frozenset[str] = frozenset({
+    "person", "man", "woman", "girl", "boy", "individual", "human", "people",
+    "shirt", "pants", "jeans", "jacket", "coat", "dress", "clothes", "clothing",
+    "standing", "sitting", "walking", "wearing", "dressed",
+    "face", "selfie", "portrait",
+    "white wall", "blank wall", "bedroom", "living room", "indoor scene",
+    "holding phone", "hand holding",
+})
+
+# Terms that indicate the session context is a software/web application.
+# Two or more distinct matches → context is clearly an app/software session.
+_APP_UI_TERMS: frozenset[str] = frozenset({
+    "p5", "p5.js", "canvas", "sketch", "javascript", "html", "css",
+    "code", "function", "class", "import", "browser", "web", "app",
+    "chart", "graph", "dashboard", "model", "editor", "notebook",
+    "output", "visualization", "terminal", "colab", "jupyter",
+    "tensorflow", "pytorch", "keras", "sklearn", "pandas", "numpy",
+    "react", "vue", "angular", "nextjs", "next.js", "framework", "library",
+    "animation", "demo", "playground", "interface", "controls", "slider",
+    "button", "form", "panel", "data", "dataset", "table", "grid", "plot",
+})
+
+
+def _score_text(text: str, terms: frozenset[str]) -> list[str]:
+    """Return matched terms (distinct) present in `text`."""
+    lower = text.lower()
+    return [t for t in terms if t in lower]
+
+
+def _check_observation_consistency(
+    obs: "VisualReasoningObservation",
+    context: dict,
+) -> tuple[bool, str]:
+    """Return (is_consistent, dev_reason).
+
+    Returns (False, reason) when Qwen's output is semantically inconsistent
+    with the session context — e.g., Qwen describes a person/wall scene but
+    the session context shows a software/web application.
+
+    Conservative thresholds: requires at least 2 distinct person-scene terms
+    in Qwen output AND at least 2 distinct app-ui terms in context.
+    """
+    # Build Qwen output text
+    qwen_parts = [
+        obs.visual_summary,
+        " ".join(obs.visible_objects_or_diagrams or obs.visible_objects),
+        " ".join(obs.visible_ui_elements),
+        obs.detected_user_action,
+        " ".join(obs.detected_outputs),
+    ]
+    qwen_text = " ".join(p for p in qwen_parts if p)
+
+    # Build context text from all available sources
+    ctx_parts = [
+        str(context.get("website_context", "")),
+        " ".join(context.get("ocr_snippets") or []),
+        " ".join(context.get("dom_snippets") or []),
+    ]
+    context_text = " ".join(p for p in ctx_parts if p)
+
+    person_hits = _score_text(qwen_text, _PERSON_SCENE_TERMS)
+    app_hits = _score_text(context_text, _APP_UI_TERMS)
+
+    if len(person_hits) >= 2 and len(app_hits) >= 2:
+        return False, (
+            f"Qwen output describes a real-world person scene "
+            f"({', '.join(person_hits[:4])}) "
+            f"but session context indicates a software/web application "
+            f"({', '.join(app_hits[:4])}). "
+            f"Qwen likely hallucinated or analyzed the wrong frame."
+        )
+
+    return True, ""
+
+
 # ── Smart frame selection ──────────────────────────────────────────────────────
 
 # Preferred percentile positions for 1–3 frames.
@@ -901,16 +987,69 @@ def _select_frames_smart(
     return unique
 
 
+def select_frame_ids_for_reasoning(frame_ids: list[str], n_limit: int) -> list[str]:
+    """Select frame IDs using the SAME percentile algorithm as analyze_frames().
+
+    Upload endpoints must use this to map Qwen observations back to the
+    correct DB row IDs.  Using a different algorithm (e.g., evenly-spaced
+    midpoints) produces a frame_id → observation mismatch.
+
+    Args:
+        frame_ids: ordered list of DB row IDs matching the frames list.
+        n_limit:   max frames to select (matches VISUAL_REASONING_MAX_FRAMES).
+
+    Returns:
+        Ordered list of selected frame IDs, length <= n_limit.
+    """
+    n_total = len(frame_ids)
+    if n_total <= n_limit:
+        return list(frame_ids)
+
+    percentiles = _FRAME_PERCENTILES.get(n_limit)
+    if percentiles:
+        indices = [min(int(p * n_total), n_total - 1) for p in percentiles]
+        seen: set[int] = set()
+        result: list[str] = []
+        for idx in indices:
+            if idx not in seen:
+                seen.add(idx)
+                result.append(frame_ids[idx])
+        return result
+
+    # Fallback for n_limit > 3: evenly-spaced midpoints
+    step = n_total / n_limit
+    return [frame_ids[min(int((i + 0.5) * step), n_total - 1)] for i in range(n_limit)]
+
+
 # ── Session-level aggregation ──────────────────────────────────────────────────
 
 def _build_session_summary(
     observations: list[VisualReasoningObservation],
     provider_name: str,
 ) -> VisualReasoningSessionSummary:
-    """Aggregate per-frame observations into a session-level summary."""
+    """Aggregate per-frame observations into a session-level summary.
+
+    Includes rejected observations in the output so they are stored in the DB
+    (for traceability), but excluded from supported_signals and skill aggregation.
+    """
     analyzed = [o for o in observations if o.status == REASONING_STATUS_ANALYZED]
+    rejected = [o for o in observations if o.status in _REJECTED_STATUSES]
 
     if not analyzed:
+        if rejected:
+            return VisualReasoningSessionSummary(
+                status=REASONING_STATUS_REJECTED_INCONSISTENT,
+                provider=provider_name,
+                frames_analyzed=0,
+                summary=(
+                    "Visual reasoning result was rejected because it did not match "
+                    "the current recording evidence."
+                ),
+                observations=[o.to_public_dict() for o in rejected],
+                limitations=[
+                    o.limitations[0] for o in rejected if o.limitations
+                ][:3] or ["Qwen output was inconsistent with session context."],
+            )
         status = REASONING_STATUS_FAILED if observations else REASONING_STATUS_DISABLED
         first_limitation = (
             observations[0].limitations[0]
@@ -989,12 +1128,16 @@ def _build_session_summary(
                 seen_limits.add(key)
                 all_limits.append(lim.strip())
 
+    # Include ALL observations (analyzed + rejected) so they are all stored to
+    # DB by the upload endpoint.  Only analyzed obs contribute to skill signals.
+    all_public_obs = [o.to_public_dict() for o in (analyzed + rejected)]
+
     return VisualReasoningSessionSummary(
         status=REASONING_STATUS_ANALYZED,
         provider=provider_name,
         frames_analyzed=len(analyzed),
         summary=combined_summary,
-        observations=[obs.to_public_dict() for obs in analyzed],
+        observations=all_public_obs,
         supported_signals=all_skills,
         missing_claims=all_missing,
         limitations=all_limits,
@@ -1214,6 +1357,30 @@ class VisualReasoningService:
                     status=REASONING_STATUS_FAILED,
                     limitations=[f"Frame analysis raised an unexpected error: {exc}"],
                 )
+
+            # ── Consistency gate ─────────────────────────────────────────────
+            # Reject Qwen output that is semantically inconsistent with the
+            # session context (e.g., person/wall description on a software page).
+            if obs.status == REASONING_STATUS_ANALYZED:
+                is_consistent, reject_reason = _check_observation_consistency(obs, ctx)
+                if not is_consistent:
+                    logger.warning(
+                        "[VisionReasoning] REJECTED frame_index=%d: %s",
+                        idx, reject_reason,
+                    )
+                    obs = VisualReasoningObservation(
+                        frame_index=idx,
+                        timestamp_ms=ts_ms,
+                        model_provider=obs.model_provider,
+                        status=REASONING_STATUS_REJECTED_INCONSISTENT,
+                        visual_summary=(
+                            "Visual reasoning result was rejected because it did not "
+                            "match the current recording evidence."
+                        ),
+                        limitations=[reject_reason],
+                        confidence_score=0.0,
+                    )
+
             observations.append(obs)
 
         summary = _build_session_summary(observations, provider.provider_name)

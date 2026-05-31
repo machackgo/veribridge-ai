@@ -824,6 +824,7 @@ function AdvancedVisualReasoningSection({
   const isMissing   = reasoning.status === "missing_dependency"
   const isDisabled  = reasoning.status === "disabled" || reasoning.status === "not_configured"
   const isFailed    = reasoning.status === "failed"
+  const isRejected  = reasoning.status === "rejected_inconsistent" || reasoning.status === "rejected_stale"
 
   // Minimal note when explicitly disabled (VISUAL_REASONING_ENABLED=false stored in dict)
   if (isDisabled) {
@@ -845,6 +846,30 @@ function AdvancedVisualReasoningSection({
         <code style={{ fontSize: 9, fontFamily: "monospace" }}>
           pip install &quot;transformers&gt;=4.45&quot; torch pillow accelerate
         </code>
+      </div>
+    )
+  }
+
+  // Rejection: Qwen output was inconsistent with session context
+  if (isRejected) {
+    return (
+      <div style={{
+        marginTop: 6,
+        padding: "8px 10px",
+        background: "#fef2f2",
+        border: "1px solid #fca5a5",
+        borderRadius: 6,
+        fontSize: 10,
+        color: "#7f1d1d",
+      }}>
+        <strong style={{ color: "#991b1b" }}>Advanced Visual Reasoning — rejected</strong>
+        <div style={{ marginTop: 4, lineHeight: 1.5 }}>
+          Qwen visual reasoning was rejected because it did not match the current
+          recording evidence.
+        </div>
+        <div style={{ marginTop: 3, color: "#6b7280", fontStyle: "italic" }}>
+          Fallback used: DOM / OCR / sequence evidence.
+        </div>
       </div>
     )
   }

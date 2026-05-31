@@ -50,6 +50,9 @@ from app.services.workflow_visual_analysis_service import (
 from app.services.visual_reasoning_service import (
     VisualReasoningService,
     REASONING_STATUS_ANALYZED,
+    REASONING_STATUS_REJECTED_INCONSISTENT,
+    REASONING_STATUS_REJECTED_STALE,
+    select_frame_ids_for_reasoning,
 )
 
 logger = logging.getLogger(__name__)
@@ -496,29 +499,24 @@ async def upload_workflow_video(
                         "status=%s frames_analyzed=%d",
                         session_id, summary.status, summary.frames_analyzed,
                     )
-                    if summary.status == REASONING_STATUS_ANALYZED:
-                        # Persist per-frame reasoning into workflow_visual_frame_evidence.
-                        #
-                        # IMPORTANT: frame_ids[j] corresponds to frames_for_reasoning[j].
-                        # analyze_frames() applies midpoint-of-interval sampling, so
-                        # observations[i] is NOT from frames_for_reasoning[i] — it is from
-                        # the frame at the sampled index.  We must compute the same selected
-                        # indices here and map observations[i] → frame_ids[selected_idx].
+                    # Persist per-frame reasoning (both analyzed and rejected obs).
+                    # summary.observations now includes analyzed + rejected obs.
+                    #
+                    # Frame mapping: use select_frame_ids_for_reasoning() which applies
+                    # the SAME percentile algorithm as VisualReasoningService.analyze_frames().
+                    # Using a different algorithm here would store observations to wrong rows.
+                    if summary.observations:
                         frame_ids = list(frame_bytes_map.keys())
                         n_total = len(frames_for_reasoning)
-                        n_limit = reasoning_max_frames
-                        if n_total <= n_limit:
-                            selected_frame_ids = frame_ids
-                        else:
-                            step = n_total / n_limit
-                            selected_frame_ids = [
-                                frame_ids[min(int((i + 0.5) * step), n_total - 1)]
-                                for i in range(n_limit)
-                            ]
+                        selected_frame_ids = select_frame_ids_for_reasoning(
+                            frame_ids, reasoning_max_frames
+                        )
                         logger.info(
                             "[WorkflowVideo] frame_id→observation mapping: "
-                            "session=%s total_frames=%d selected_frame_ids=%s",
+                            "session=%s total_frames=%d selected_frame_ids=%s "
+                            "obs_count=%d status=%s",
                             session_id, n_total, selected_frame_ids,
+                            len(summary.observations), summary.status,
                         )
                         persisted = 0
                         for i, obs_dict in enumerate(summary.observations):
@@ -540,8 +538,8 @@ async def upload_workflow_video(
                                 )
                         logger.info(
                             "[WorkflowVideo] visual_reasoning_json STORED: "
-                            "session=%s persisted=%d/%d",
-                            session_id, persisted, len(summary.observations),
+                            "session=%s persisted=%d/%d status=%s",
+                            session_id, persisted, len(summary.observations), summary.status,
                         )
                     else:
                         logger.info(

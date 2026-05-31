@@ -1161,6 +1161,7 @@ def _build_visual_reasoning_session_summary_from_db(
     # Aggregate observations
     analyzed_obs: list[dict[str, Any]] = []
     analyzed_rows: list[dict[str, Any]] = []  # parallel list: rows corresponding to analyzed_obs
+    rejected_count: int = 0
     all_skills: list[str] = []
     all_missing: list[str] = []
     all_summaries: list[str] = []
@@ -1170,12 +1171,24 @@ def _build_visual_reasoning_session_summary_from_db(
 
     _PRIVATE = frozenset({"frame_storage_path", "raw_frame", "frame_bytes",
                            "access_token", "raw_dom", "debug_metadata"})
+    _REJECTED_STATUSES = frozenset({"rejected_inconsistent", "rejected_stale"})
 
     for row in rows:
         obs = row.get("visual_reasoning_json")
         if not isinstance(obs, dict):
             continue
-        if obs.get("status") != "analyzed":
+
+        obs_status = obs.get("status", "")
+
+        if obs_status in _REJECTED_STATUSES:
+            # Count rejections but do not include in skill signals.
+            rejected_count += 1
+            mp = obs.get("model_provider", "")
+            if mp and mp != "none":
+                provider = mp
+            continue
+
+        if obs_status != "analyzed":
             continue
 
         clean_obs = {k: v for k, v in obs.items() if k not in _PRIVATE}
@@ -1203,6 +1216,24 @@ def _build_visual_reasoning_session_summary_from_db(
                 all_missing.append(str(m).strip())
 
     if not analyzed_obs:
+        if rejected_count > 0:
+            return {
+                "status": "rejected_inconsistent",
+                "provider": provider,
+                "frames_analyzed": 0,
+                "summary": (
+                    "Visual reasoning result was rejected because it did not match "
+                    "the current recording evidence."
+                ),
+                "observations": [],
+                "supported_signals": [],
+                "missing_claims": [],
+                "skill_timeline": [],
+                "limitations": [
+                    "Qwen visual reasoning was rejected as inconsistent with session context. "
+                    "Fallback used: DOM/OCR/sequence evidence.",
+                ],
+            }
         return {
             "status": "failed",
             "provider": provider,
