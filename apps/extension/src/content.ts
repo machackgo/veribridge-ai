@@ -1,7 +1,7 @@
 // Content script — injected into every page; only captures events while recording is active.
 // Never collects cookies, localStorage, sessionStorage, or password values.
 
-import type { VisibleEvidenceEvent, FileUploadMeta } from "./types"
+import type { VisibleEvidenceEvent, FileUploadMeta, LiveCoachState } from "./types"
 
 // ── Debug flag — set to false to silence visible evidence logs in production ──
 const DEBUG_VISIBLE_EVIDENCE = true
@@ -258,6 +258,9 @@ interface StateSnapshot {
   dismissedForSessionId: string
   /** True while the recorder tab has an active getDisplayMedia stream (screen capturing). */
   recorderTabStreamActive?: boolean
+  /** Target website URL for website proof sessions. */
+  targetWebsiteUrl?: string | null
+  liveCoach?: LiveCoachState | null
 }
 
 // ── Module-level state ────────────────────────────────────────────────────────
@@ -265,6 +268,8 @@ interface StateSnapshot {
 let capturing = false
 let barHost: HTMLElement | null = null
 let barShadow: ShadowRoot | null = null
+/** Target website URL from the recording session (null = no target = show on all tabs). */
+let targetWebsiteUrl: string | null = null
 
 // Set to true if the extension is reloaded while this content script is running.
 // All chrome.runtime calls are gated on this flag to prevent uncaught exceptions.
@@ -299,6 +304,8 @@ let postActionSnapTimer: ReturnType<typeof setTimeout> | null = null
 let mutDebounceTimer: ReturnType<typeof setTimeout> | null = null
 /** Active MutationObserver — null when not recording. */
 let mutObs: MutationObserver | null = null
+/** Periodic snapshot timer — fires every 6 s while recording to keep tutor updated. */
+let periodicSnapTimer: ReturnType<typeof setInterval> | null = null
 
 // ── Local dismiss storage ─────────────────────────────────────────────────────
 // Persists dismissed state in sessionStorage so it survives polling restarts and
@@ -334,6 +341,19 @@ function nowIso(): string {
  */
 function safePageUrl(): string {
   return redactSensitiveQueryParams(location.href)
+}
+
+/**
+ * Returns true when the current page belongs to the same origin as the session's
+ * target website URL. Always true when no target is configured (backward compat).
+ */
+function isOnTargetPage(): boolean {
+  if (!targetWebsiteUrl) return true
+  try {
+    return new URL(targetWebsiteUrl).origin === location.origin
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -395,14 +415,62 @@ async function safeSendMessage<T = unknown>(message: unknown): Promise<T | null>
  * Only logs one console warning so the extension error log stays clean.
  */
 function handleContextInvalidated(): void {
-  if (contextInvalidated) return   // already handled — do not log again
+  if (contextInvalidated) return
   contextInvalidated = true
-  console.warn(
-    "VeriBridge extension was reloaded. " +
-    "Refresh this page before continuing recording.",
-  )
-  stopCapture()
-  hideFloatingBar()
+  console.warn("VeriBridge extension was updated. Refresh this page and start a fresh proof session.")
+
+  // Stop bar poll and auto-dismiss timer immediately
+  if (barPoll) { clearInterval(barPoll); barPoll = null }
+  if (autoDismissTimer) { clearTimeout(autoDismissTimer); autoDismissTimer = null }
+
+  // Clean up all capture state directly — bypasses stopCapture's capturing guard
+  capturing = false
+  document.removeEventListener("click", handleClick, true)
+  document.removeEventListener("change", handleChange, true)
+  document.removeEventListener("submit", handleFormSubmit, true)
+  document.removeEventListener("fullscreenchange", handleFullscreenChange)
+  document.removeEventListener("webkitfullscreenchange", handleFullscreenChange)
+  if (_fullscreenExitTimer) { clearTimeout(_fullscreenExitTimer); _fullscreenExitTimer = null }
+  if (periodicSnapTimer) { clearInterval(periodicSnapTimer); periodicSnapTimer = null }
+  if (postActionSnapTimer) { clearTimeout(postActionSnapTimer); postActionSnapTimer = null }
+  if (mutDebounceTimer) { clearTimeout(mutDebounceTimer); mutDebounceTimer = null }
+  if (mutObs) { mutObs.disconnect(); mutObs = null }
+
+  // Ensure a shadow root exists to show the warning in
+  let shadow = barShadow
+  if (!shadow) {
+    const host = document.createElement("div")
+    host.setAttribute("style",
+      "all:initial!important;position:fixed!important;top:90px!important;" +
+      "right:18px!important;z-index:2147483647!important;pointer-events:auto!important;")
+    ;(document.body ?? document.documentElement).appendChild(host)
+    barHost = host
+    barShadow = host.attachShadow({ mode: "open" })
+    shadow = barShadow
+  }
+
+  shadow.innerHTML = `<style>
+.ctx-warn{display:flex;align-items:center;gap:10px;background:rgba(127,29,29,.95);
+  color:#fecaca;border-radius:14px;padding:12px 14px;font-size:12px;font-weight:500;
+  line-height:1.45;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  box-shadow:0 18px 50px rgba(0,0,0,.4);border:1px solid rgba(239,68,68,.5);
+  width:340px;white-space:normal;user-select:none;}
+.ctx-close{margin-left:auto;background:none;border:none;color:#fca5a5;font-size:18px;
+  cursor:pointer;padding:0 4px;flex-shrink:0;line-height:1;}
+.ctx-close:hover{color:#fff}
+</style>
+<div class="ctx-warn">
+  <span style="font-size:18px;flex-shrink:0">⚠</span>
+  <span style="flex:1">VeriBridge extension updated. Refresh this page and start a fresh proof session.</span>
+  <button class="ctx-close" id="vb-ctx-close">✕</button>
+</div>`
+
+  shadow.getElementById("vb-ctx-close")?.addEventListener("click", () => {
+    if (barHost) { barHost.remove(); barHost = null; barShadow = null }
+  })
+  setTimeout(() => {
+    if (barHost) { barHost.remove(); barHost = null; barShadow = null }
+  }, 15000)
 }
 
 // ── Visible Evidence — emit & capture ────────────────────────────────────────
@@ -424,7 +492,7 @@ function captureSnapshot(
   actionMeta?: Record<string, string>,
   fileUploadMeta?: FileUploadMeta | null,
 ): void {
-  if (!capturing || isVeriBridgeInternal()) return
+  if (contextInvalidated || !capturing || isVeriBridgeInternal()) return
   const visibleBlocks = getVisibleBlocks()
   const resultBlocks = getResultBlocks(visibleBlocks)
   const { canvas_count, svg_count } = getGraphicalElementCounts()
@@ -630,15 +698,17 @@ function startCapture(): void {
   document.addEventListener("submit", handleFormSubmit, { capture: true, passive: true })
 
   // ── Fullscreen detection ────────────────────────────────────────────────────
-  // Detect initial fullscreen state on capture start (e.g. if already fullscreen).
   isFullscreen = detectFullscreen()
-  // Standard API (Chrome 61+)
   document.addEventListener("fullscreenchange", handleFullscreenChange, { passive: true })
-  // WebKit prefix — needed for older Safari and some embedded webviews.
   document.addEventListener("webkitfullscreenchange", handleFullscreenChange, { passive: true })
 
-  // Capture the page's current visible state on load.
   captureSnapshot("page_load")
+
+  // Periodic DOM snapshots for post-recording evidence analysis
+  if (periodicSnapTimer) clearInterval(periodicSnapTimer)
+  periodicSnapTimer = setInterval(() => {
+    captureSnapshot("dom_snapshot", { source: "periodic" })
+  }, 6000)
 
   // Watch for DOM mutations (debounced 1.5 s) — emits result_detected if result
   // keywords appear in the updated content, otherwise dom_snapshot.
@@ -683,6 +753,7 @@ function stopCapture(): void {
   recentlyExitedFullscreen = false
   if (_fullscreenExitTimer) { clearTimeout(_fullscreenExitTimer); _fullscreenExitTimer = null }
 
+  if (periodicSnapTimer) { clearInterval(periodicSnapTimer); periodicSnapTimer = null }
   if (postActionSnapTimer) { clearTimeout(postActionSnapTimer); postActionSnapTimer = null }
   if (mutDebounceTimer) { clearTimeout(mutDebounceTimer); mutDebounceTimer = null }
   if (mutObs) { mutObs.disconnect(); mutObs = null }
@@ -690,25 +761,17 @@ function stopCapture(): void {
 
 chrome.runtime.onMessage.addListener((msg: { type: string }) => {
   if (msg.type === "START_CAPTURING") {
-    startCapture()
-    // Suppress the floating bar when the recorder tab stream is active —
-    // the recorder tab is the sole control UI during screen-capture mode.
     void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
-      if (!s?.recorderTabStreamActive) {
+      if (s?.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
+      startCapture()
+      if (!targetWebsiteUrl || isOnTargetPage()) {
         showFloatingBar()
-      } else {
-        dbgVE("floating bar suppressed on START_CAPTURING — recorder tab stream active")
       }
     })
   } else if (msg.type === "RECORDER_STREAM_STARTED") {
-    // Recorder tab just started screen capture — hide floating bar on this tab
-    hideFloatingBar()
-    dbgVE("floating bar hidden — RECORDER_STREAM_STARTED received")
+    dbgVE("RECORDER_STREAM_STARTED — recorder tab active")
   } else if (msg.type === "RECORDER_STREAM_STOPPED") {
-    // Recorder tab stream ended — re-show the bar if still recording
-    void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
-      if (s?.isRecording) showFloatingBar()
-    })
+    if (barHost) fetchAndRender()
   } else if (msg.type === "STOP_CAPTURING") {
     stopCapture()
     refreshBar()
@@ -736,17 +799,12 @@ detectSessionFromUrl()
 
 // On init, check if recording is already active (handles page navigation during a session).
 void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
-  dbgVE("recording active", s?.isRecording ?? false, "| session_id:", s?.sessionId ?? "(none)",
-        "| recorderTabStreamActive:", s?.recorderTabStreamActive ?? false)
+  if (s?.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
+  dbgVE("recording active", s?.isRecording ?? false, "| session_id:", s?.sessionId ?? "(none)")
   if (s?.isRecording) {
     startCapture()
-    // When the recorder tab is actively screen-capturing, suppress the floating bar
-    // on target pages — it would appear inside the recording and confuse the user.
-    // The recorder tab itself is the single UI control in this mode.
-    if (!s.recorderTabStreamActive) {
+    if (!targetWebsiteUrl || isOnTargetPage()) {
       showFloatingBar()
-    } else {
-      dbgVE("floating bar suppressed — recorder tab stream is active")
     }
   }
 })
@@ -791,11 +849,14 @@ const BAR_CSS = `
 :host{all:initial}
 .bar{
   display:flex;align-items:center;gap:10px;
-  background:#111;color:#fff;border-radius:12px;
+  background:rgba(15,23,42,0.94);
+  backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+  color:#f8fafc;border-radius:14px;
   padding:10px 14px;font-size:13px;line-height:1;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  box-shadow:0 4px 24px rgba(0,0,0,.5),0 1px 4px rgba(0,0,0,.3);
-  border:1px solid rgba(255,255,255,.1);user-select:none;white-space:nowrap;
+  box-shadow:0 18px 50px rgba(0,0,0,.35),0 1px 4px rgba(0,0,0,.15);
+  border:1px solid rgba(255,255,255,.18);user-select:none;white-space:nowrap;flex-wrap:wrap;
+  width:380px;
 }
 .bar.mini{padding:8px 10px;gap:8px}
 .logo{
@@ -917,7 +978,7 @@ function buildBarHTML(s: StateSnapshot | null): string {
 }
 
 function renderBar(s: StateSnapshot | null): void {
-  if (!barShadow) return
+  if (contextInvalidated || !barShadow) return
   if (s) lastState = s
   barShadow.innerHTML = `<style>${BAR_CSS}</style>${buildBarHTML(lastState)}`
   wireBarButtons()
@@ -937,27 +998,9 @@ function wireBarButtons(): void {
   })
   barShadow.getElementById("vb-dismiss")?.addEventListener("click", () => {
     const sessionId = lastState?.sessionId ?? ""
-    console.log("Dismiss clicked on target page")
-
-    // Store local flag and remove DOM immediately — do NOT wait for the background
-    // message. This is the real guard; background message is best-effort.
-    if (sessionId) {
-      setLocallyDismissed(sessionId)
-      console.log(`Stored local dismissed flag for session: ${sessionId}`)
-    }
+    if (sessionId) setLocallyDismissed(sessionId)
     hideFloatingBar()
-
-    // Notify background so other tabs and future poll cycles also skip the bar.
-    void safeSendMessage({
-      type: "DISMISS_UPLOAD_SUCCESS",
-      payload: { sessionId },
-    }).then((r) => {
-      if (r !== null) {
-        console.log("Sent DISMISS_UPLOAD_SUCCESS to background")
-      } else {
-        console.log("Background dismiss failed, using local fallback")
-      }
-    })
+    void safeSendMessage({ type: "DISMISS_UPLOAD_SUCCESS", payload: { sessionId } })
   })
 }
 
@@ -1005,8 +1048,18 @@ function shouldSkipRender(s: StateSnapshot): boolean {
 }
 
 function fetchAndRender(): void {
+  if (contextInvalidated) return
   void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
-    if (!s) return
+    if (contextInvalidated || !s) return
+
+    // Keep targetWebsiteUrl in sync with background state
+    if (s.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
+
+    // On non-target tabs when a target is configured: hide bar entirely
+    if (targetWebsiteUrl && !isOnTargetPage()) {
+      hideFloatingBar()
+      return
+    }
 
     if (shouldSkipRender(s)) {
       hideFloatingBar()
@@ -1031,6 +1084,7 @@ function fetchAndRender(): void {
 }
 
 function showFloatingBar(): void {
+  if (contextInvalidated) return
   if (!barHost) {
     // Reuse a leftover host from a previous content script execution in this tab
     // rather than creating a duplicate element.
@@ -1043,8 +1097,8 @@ function showFloatingBar(): void {
       host.id = BAR_HOST_ID
       host.setAttribute(
         "style",
-        "all:initial!important;position:fixed!important;bottom:20px!important;" +
-        "right:20px!important;z-index:2147483647!important;pointer-events:auto!important;"
+        "all:initial!important;position:fixed!important;top:90px!important;" +
+        "right:18px!important;z-index:2147483647!important;pointer-events:auto!important;"
       )
       ;(document.body ?? document.documentElement).appendChild(host)
       barHost = host
@@ -1076,6 +1130,7 @@ function hideFloatingBar(): void {
 }
 
 function refreshBar(): void {
+  if (contextInvalidated) return
   if (barHost) {
     fetchAndRender()
   }
