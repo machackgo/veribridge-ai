@@ -902,11 +902,22 @@ export type ExtensionProofSessionResponse = {
 }
 
 export async function createExtensionProofSession(
-  skillEvidenceId: string
+  skillEvidenceId: string,
+  opts?: {
+    parent_proof_session_id?: string
+    followup_target_skill?: string
+    followup_objective?: string
+    proof_attempt_type?: "original" | "followup"
+  }
 ): Promise<ExtensionProofSessionResponse> {
+  const body: Record<string, unknown> = { skill_evidence_id: skillEvidenceId }
+  if (opts?.parent_proof_session_id) body.parent_proof_session_id = opts.parent_proof_session_id
+  if (opts?.followup_target_skill) body.followup_target_skill = opts.followup_target_skill
+  if (opts?.followup_objective) body.followup_objective = opts.followup_objective
+  if (opts?.proof_attempt_type) body.proof_attempt_type = opts.proof_attempt_type
   const res = await fetchAPI("/api/v1/student/extension-proof/sessions", {
     method: "POST",
-    body: JSON.stringify({ skill_evidence_id: skillEvidenceId }),
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
     const raw = await res.text()

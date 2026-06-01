@@ -55,11 +55,19 @@ class ExtensionProofSessionService:
         self, user_id: str, payload: ExtensionProofSessionCreate
     ) -> ExtensionProofSessionResponse:
         now = _now()
-        data = {
+        data: dict = {
             "user_id": user_id,
             "skill_evidence_id": payload.skill_evidence_id,
             "status": "created",
         }
+        if payload.parent_proof_session_id:
+            data["parent_proof_session_id"] = payload.parent_proof_session_id
+        if payload.followup_target_skill:
+            data["followup_target_skill"] = payload.followup_target_skill
+        if payload.followup_objective:
+            data["followup_objective"] = payload.followup_objective
+        if payload.proof_attempt_type == "followup":
+            data["proof_attempt_type"] = "followup"
 
         if isinstance(self._client, dict):
             row = {"id": str(uuid4()), "created_at": now, "updated_at": now, **data}

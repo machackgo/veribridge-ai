@@ -848,17 +848,22 @@ function elapsedSecs(startedAt: string | null, stoppedAt: string | null): number
 const BAR_CSS = `
 :host{all:initial}
 .bar{
-  display:flex;align-items:center;gap:10px;
+  display:flex;flex-direction:column;gap:5px;
   background:rgba(15,23,42,0.94);
   backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
   color:#f8fafc;border-radius:14px;
-  padding:10px 14px;font-size:13px;line-height:1;
+  padding:9px 13px;font-size:13px;line-height:1;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   box-shadow:0 18px 50px rgba(0,0,0,.35),0 1px 4px rgba(0,0,0,.15);
-  border:1px solid rgba(255,255,255,.18);user-select:none;white-space:nowrap;flex-wrap:wrap;
-  width:380px;
+  border:1px solid rgba(255,255,255,.18);user-select:none;max-width:520px;
 }
-.bar.mini{padding:8px 10px;gap:8px}
+.bar-row{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.bar-sub{
+  font-size:10px;font-weight:600;color:#fbbf24;
+  background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.3);
+  border-radius:5px;padding:3px 8px;line-height:1.35;white-space:normal;
+}
+.bar.mini{padding:7px 10px;flex-direction:row;align-items:center;gap:8px}
 .logo{
   background:#fff;color:#111;font-weight:900;font-size:11px;
   border-radius:5px;padding:2px 6px;letter-spacing:-.5px;flex-shrink:0;
@@ -867,20 +872,20 @@ const BAR_CSS = `
 .dot.rec{background:#ef4444;animation:vbpulse 1.1s ease-in-out infinite}
 .dot.stp{background:#f59e0b}
 @keyframes vbpulse{0%,100%{opacity:1}50%{opacity:.3}}
-.info{display:flex;align-items:center;gap:8px;flex:1;min-width:0}
-.lbl{font-weight:600;color:#f9fafb}
-.tmr{font-variant-numeric:tabular-nums;color:#d1d5db}
-.sep{color:#4b5563}
-.cnt{color:#9ca3af;font-size:12px}
-.msg{font-size:12px}
+.info{display:flex;align-items:center;gap:6px;flex:1;min-width:0;overflow:hidden}
+.lbl{font-weight:600;color:#f9fafb;white-space:nowrap;flex-shrink:0}
+.tmr{font-variant-numeric:tabular-nums;color:#d1d5db;white-space:nowrap;flex-shrink:0}
+.sep{color:#4b5563;flex-shrink:0}
+.cnt{color:#9ca3af;font-size:12px;white-space:nowrap;flex-shrink:0}
+.msg{font-size:12px;white-space:nowrap}
 .msg.up{color:#93c5fd}
 .msg.ok{color:#86efac;font-weight:600}
 .msg.er{color:#fca5a5}
-.acts{display:flex;gap:6px;align-items:center}
+.acts{display:flex;gap:6px;align-items:center;flex-shrink:0}
 .btn{
   border:none;border-radius:7px;padding:5px 10px;
   font-size:12px;font-weight:600;cursor:pointer;
-  font-family:inherit;transition:opacity .1s;
+  font-family:inherit;transition:opacity .1s;white-space:nowrap;
 }
 .btn:hover{opacity:.82}
 .b-stop{background:#dc2626;color:#fff}
@@ -892,11 +897,6 @@ const BAR_CSS = `
   padding:0 2px;font-family:inherit;flex-shrink:0;
 }
 .b-icon:hover{color:#d1d5db}
-.fs-warn{
-  font-size:10px;font-weight:600;color:#fbbf24;
-  background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.3);
-  border-radius:5px;padding:2px 7px;white-space:normal;max-width:220px;line-height:1.3;
-}
 `
 
 function buildBarHTML(s: StateSnapshot | null): string {
@@ -920,12 +920,12 @@ function buildBarHTML(s: StateSnapshot | null): string {
     info = `<span class="msg up">Uploading proof…</span>`
 
   } else if (status === "uploaded") {
-    info = `<span class="msg ok">✓ Proof uploaded successfully</span>`
+    info = `<span class="msg ok">✓ Proof uploaded</span>`
     acts = `<button class="btn b-dismiss" id="vb-dismiss">Dismiss</button>`
 
   } else if (status === "upload_failed" || status === "error") {
-    const reason = (s?.lastUploadError ?? "Unknown error").slice(0, 55)
-    info = `<span class="msg er">Upload failed: ${reason}</span>`
+    const reason = (s?.lastUploadError ?? "Unknown error").slice(0, 40)
+    info = `<span class="msg er">Failed: ${reason}</span>`
     acts = `
       <button class="btn b-send" id="vb-send">Retry</button>
       <button class="btn b-dismiss" id="vb-dismiss">Dismiss</button>
@@ -955,25 +955,21 @@ function buildBarHTML(s: StateSnapshot | null): string {
     acts = `<button class="btn b-send" id="vb-send">Send Proof</button>`
   }
 
-  // ── Fullscreen warning ────────────────────────────────────────────────────
-  // • While IN fullscreen: bar is actually hidden by the browser's fullscreen
-  //   compositor, so this branch is never visible.  Kept as a safety fallback
-  //   for non-native pseudo-fullscreen (CSS-only).
-  // • After EXITING fullscreen (recentlyExitedFullscreen flag, 8 s window):
-  //   show an actionable note so the user knows a screenshot was attempted and
-  //   how to capture screen content if needed.
-  // • Normal recording (never entered fullscreen): no warning shown.
-  const fullscreenWarn = isFullscreen
-    ? `<span class="fs-warn">⚠ Fullscreen active — screenshot queued for exit.</span>`
+  // Fullscreen warning shown as a separate row so it never overlaps the main bar.
+  const fsWarnText = isFullscreen
+    ? "⚠ Fullscreen active — screenshot queued for exit."
     : recentlyExitedFullscreen
-    ? `<span class="fs-warn">📸 Screenshot attempted on fullscreen exit. Need the video frame? Open popup → "Capture Screen Now".</span>`
+    ? "📸 Screenshot attempted on exit. Need a frame? Open popup → Capture Screen Now."
     : ""
 
   return `<div class="bar">
-    <div class="logo">VB</div>
-    <div class="info">${info}${fullscreenWarn}</div>
-    <div class="acts">${acts}</div>
-    <button class="b-icon" id="vb-minimize" title="Minimize">−</button>
+    <div class="bar-row">
+      <div class="logo">VB</div>
+      <div class="info">${info}</div>
+      <div class="acts">${acts}</div>
+      <button class="b-icon" id="vb-minimize" title="Minimize">−</button>
+    </div>
+    ${fsWarnText ? `<div class="bar-sub">${fsWarnText}</div>` : ""}
   </div>`
 }
 

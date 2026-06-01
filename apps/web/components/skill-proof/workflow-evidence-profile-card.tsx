@@ -1197,21 +1197,50 @@ function SkillEvidenceTimeline({ timeline }: { timeline: SkillTimelineEntry[] })
 }
 
 // ── Video / Keyframe Evidence Section ────────────────────────────────────────
-// Shown when a WebM video was recorded. Surfaces all video metadata so the
-// user knows exactly what was captured even when OCR is not configured.
+// Always renders — shows "no video" state or full video metadata.
 
 function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysisResponse }) {
   const kfStatus   = analysis.video_keyframe_status
   const kfCount    = analysis.video_keyframe_count ?? 0
   const kfTs       = analysis.video_keyframe_timestamps_ms ?? []
   const durationMs = analysis.video_duration_ms
-  const uploaded   = kfStatus === "extracted" || kfStatus === "failed"
+  const uploaded   = kfStatus === "extracted" || kfStatus === "not_available"
   const visualStatus = analysis.visual_analysis_status
   const ocrSummary   = analysis.frame_ocr_evidence_summary ?? null
   const hasOCREvidence = ocrSummary?.has_ocr_evidence === true
 
-  // Only render when we have video evidence to show
-  if (!kfStatus && kfCount === 0) return null
+  // No video was uploaded for this session
+  if (!kfStatus && kfCount === 0) {
+    return (
+      <div style={{
+        background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8,
+        padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6,
+      }}>
+        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+          textTransform: "uppercase", color: "#64748b", marginBottom: 2 }}>
+          Video / Keyframe Evidence
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: "4px 8px", fontSize: 11 }}>
+          <span style={{ color: "#64748b" }}>Recording captured</span>
+          <span style={{ color: "#94a3b8" }}>No video recorded</span>
+          <span style={{ color: "#64748b" }}>Uploaded to backend</span>
+          <span style={{ color: "#94a3b8" }}>No</span>
+          <span style={{ color: "#64748b" }}>OCR/visual analysis</span>
+          <span style={{ color: "#92400e", fontSize: 10 }}>
+            Not configured — set VISUAL_ANALYSIS_PROVIDER=local_ocr or local_vision
+          </span>
+        </div>
+        <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1.5,
+          padding: "6px 8px", background: "#fef9c3", border: "1px solid #fef08a", borderRadius: 6 }}>
+          To add video evidence: in the recorder tab click{" "}
+          <strong>Stop &amp; Upload Video</strong> before Stop &amp; Send.<br />
+          Visual analysis not configured. Start backend with{" "}
+          <code style={{ fontFamily: "monospace", fontSize: 9 }}>VISUAL_ANALYSIS_PROVIDER=local_ocr</code>{" "}
+          or <code style={{ fontFamily: "monospace", fontSize: 9 }}>local_vision</code>.
+        </div>
+      </div>
+    )
+  }
 
   const isConfigured =
     visualStatus && !["not_configured", "not_available", "not_captured"].includes(visualStatus)
@@ -1244,6 +1273,10 @@ function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysis
         <span style={{ color: "#64748b" }}>Keyframes extracted</span>
         {kfStatus === "extracted" ? (
           <span style={{ color: "#166534", fontWeight: 600 }}>Yes — {kfCount} frame{kfCount !== 1 ? "s" : ""} ✓</span>
+        ) : kfStatus === "not_available" ? (
+          <span style={{ color: "#92400e", fontSize: 10 }}>
+            {analysis.video_upload_error ?? "opencv-python-headless or ffmpeg not installed"}
+          </span>
         ) : kfStatus === "failed" ? (
           <span style={{ color: "#991b1b", fontWeight: 600 }}>
             Failed: {(analysis.video_upload_error ?? "extraction error").slice(0, 80)}
@@ -1321,24 +1354,401 @@ function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysis
         />
       )}
 
-      {/* Limitation notice when OCR not configured and no OCR evidence */}
-      {!isConfigured && kfStatus === "extracted" && !hasOCREvidence && (
+      {/* Developer-safe notice when OCR not configured */}
+      {!isConfigured && (kfStatus === "extracted" || kfStatus === "not_available") && !hasOCREvidence && (
         <div style={{ fontSize: 10, color: "#92400e", lineHeight: 1.5,
           padding: "6px 8px", background: "#fef9c3",
           border: "1px solid #fef08a", borderRadius: 6 }}>
-          <strong>Note:</strong> Video was recorded and keyframes extracted, but
-          OCR/visual model analysis is not configured. Verification is based on
-          recording metadata, browser events, DOM/visible evidence where available,
-          and sequence timing.
+          <strong>Visual analysis not configured.</strong> Start backend with{" "}
+          <code style={{ fontFamily: "monospace", fontSize: 9 }}>VISUAL_ANALYSIS_PROVIDER=local_ocr</code>{" "}
+          or <code style={{ fontFamily: "monospace", fontSize: 9 }}>local_vision</code>.
+          Qwen visual reasoning:{" "}
+          <code style={{ fontFamily: "monospace", fontSize: 9 }}>VISUAL_REASONING_ENABLED=true LOCAL_VISION_PROVIDER=qwen_vl</code>.
         </div>
       )}
     </div>
   )
 }
 
+// ── Skill-by-Skill Evidence (Part C) ─────────────────────────────────────────
+
+type SkillStatus = "strong" | "partial" | "missing"
+
+function skillStatusStyle(s: SkillStatus): { bg: string; border: string; text: string; label: string } {
+  if (s === "strong")  return { bg: "#f0fdf4", border: "#bbf7d0", text: "#166534", label: "supports" }
+  if (s === "partial") return { bg: "#fef9c3", border: "#fef08a", text: "#854d0e", label: "partially supports" }
+  return { bg: "#fef2f2", border: "#fecaca", text: "#991b1b", label: "not enough evidence" }
+}
+
+function deriveSkillEvidenceSources(
+  skill: string,
+  analysis: WorkflowAnalysisResponse
+): { found: string[]; missing: string[]; recommendation: string } {
+  const found: string[] = []
+  const missing: string[] = []
+
+  // DOM / workflow evidence
+  const steps = analysis.observed_demonstration?.steps ?? []
+  const hasStepEvidence = steps.some(s =>
+    s.skill_evidence?.some(se => se.skill === skill && (se.support_level === "strong" || se.support_level === "partial"))
+  )
+  if (hasStepEvidence) {
+    found.push("DOM / workflow events")
+  } else if ((analysis.demonstrated_actions?.length ?? 0) > 0) {
+    found.push("Browser events captured")
+  }
+
+  // OCR evidence
+  const ocrSkill = analysis.frame_ocr_evidence_summary?.skill_signals?.find(s => s.skill === skill)
+  if (ocrSkill) {
+    if (ocrSkill.ocr_support === "partial") found.push(`OCR: ${ocrSkill.reasoning.slice(0, 60)}`)
+    else missing.push("OCR/visual analysis insufficient")
+  }
+
+  // Qwen evidence
+  const qwenTimeline = analysis.visual_reasoning_summary?.skill_timeline ?? []
+  const qwenEntry = qwenTimeline.find(e => e.detected_skill === skill)
+  if (qwenEntry) {
+    if (qwenEntry.support_level === "supported" || qwenEntry.support_level === "partial") {
+      found.push(`Qwen visual: ${qwenEntry.evidence_text.slice(0, 60)}`)
+    } else {
+      missing.push(`Qwen: ${qwenEntry.reason.slice(0, 60)}`)
+    }
+  }
+
+  // GitHub evidence
+  if ((analysis.supporting_evidence_count ?? 0) > 0) {
+    found.push("GitHub repository accessed")
+  } else {
+    missing.push("No GitHub repository evidence")
+  }
+
+  // Video evidence
+  if (analysis.video_keyframe_status === "extracted") {
+    found.push(`Video: ${analysis.video_keyframe_count} keyframe${analysis.video_keyframe_count !== 1 ? "s" : ""} extracted`)
+  } else if (!analysis.video_keyframe_status) {
+    missing.push("No video recording")
+  }
+
+  // Derive recommendation from student_improvement_suggestions
+  const allSuggestions = analysis.student_improvement_suggestions ?? []
+  const skillLower = skill.toLowerCase()
+  const matchedSuggestion = allSuggestions.find(s =>
+    s.toLowerCase().includes(skillLower) ||
+    s.toLowerCase().includes(skillLower.split(" ")[0] ?? "")
+  )
+  const recommendation = matchedSuggestion ?? `Record a focused follow-up showing ${skill} clearly.`
+
+  return { found, missing, recommendation }
+}
+
+function SkillBySkillEvidence({ analysis }: { analysis: WorkflowAnalysisResponse }) {
+  const allSkills: Array<{ skill: string; status: SkillStatus }> = [
+    ...(analysis.supported_skills ?? []).map(s => ({ skill: s, status: "strong" as const })),
+    ...(analysis.weakly_supported_skills ?? []).map(s => ({ skill: s, status: "partial" as const })),
+    ...(analysis.unsupported_skills ?? []).map(s => ({ skill: s, status: "missing" as const })),
+  ]
+  if (allSkills.length === 0) return null
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+        textTransform: "uppercase", color: "#475569" }}>
+        Skill-by-Skill Evidence
+      </div>
+      {allSkills.map(({ skill, status }) => {
+        const st = skillStatusStyle(status)
+        const { found, missing, recommendation } = deriveSkillEvidenceSources(skill, analysis)
+        return (
+          <div key={skill} style={{ padding: "10px 12px", background: st.bg,
+            border: `1px solid ${st.border}`, borderRadius: 8,
+            display: "flex", flexDirection: "column", gap: 5 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: st.text }}>{skill}</span>
+              <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px",
+                borderRadius: 999, background: st.border, color: st.text }}>
+                {st.label}
+              </span>
+            </div>
+            {found.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ fontSize: 9, fontWeight: 700, color: "#166534",
+                  textTransform: "uppercase", letterSpacing: "0.06em" }}>Evidence found</div>
+                {found.map((e, i) => (
+                  <div key={i} style={{ fontSize: 10, color: "#166534", lineHeight: 1.4 }}>
+                    ✓ {e}
+                  </div>
+                ))}
+              </div>
+            )}
+            {missing.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ fontSize: 9, fontWeight: 700, color: "#92400e",
+                  textTransform: "uppercase", letterSpacing: "0.06em" }}>Missing evidence</div>
+                {missing.slice(0, 2).map((m, i) => (
+                  <div key={i} style={{ fontSize: 10, color: "#92400e", lineHeight: 1.4 }}>
+                    · {m}
+                  </div>
+                ))}
+              </div>
+            )}
+            {status !== "strong" && (
+              <div style={{ fontSize: 9, color: "#64748b", fontStyle: "italic",
+                borderTop: `1px solid ${st.border}`, paddingTop: 4, marginTop: 2 }}>
+                <strong style={{ fontStyle: "normal" }}>Recommendation:</strong> {recommendation}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Proof Completeness Checklist (Part D) ─────────────────────────────────────
+
+type CheckStatus = "pass" | "partial" | "missing"
+
+function checkIcon(s: CheckStatus) {
+  if (s === "pass")    return { icon: "✓", bg: "#f0fdf4", border: "#bbf7d0", text: "#166534" }
+  if (s === "partial") return { icon: "~", bg: "#fef9c3", border: "#fef08a", text: "#854d0e" }
+  return { icon: "✗", bg: "#f8fafc", border: "#e2e8f0", text: "#94a3b8" }
+}
+
+function ProofCompletenessChecklist({ analysis }: { analysis: WorkflowAnalysisResponse }) {
+  const steps = analysis.observed_demonstration?.steps ?? []
+  const hasResultValues = steps.some(s => (s.detected_result_values?.length ?? 0) > 0)
+  const hasVisibleText  = steps.some(s => (s.visible_text_evidence?.length ?? 0) > 0)
+  const hasInteraction  = (analysis.demonstrated_actions?.length ?? 0) > 0
+
+  const codingSkills = ["JavaScript", "Python", "TypeScript", "Code", "Programming", "React", "Vue"]
+  const hasCodeSkill = [
+    ...(analysis.supported_skills ?? []),
+    ...(analysis.weakly_supported_skills ?? []),
+  ].some(s => codingSkills.some(c => s.toLowerCase().includes(c.toLowerCase())))
+
+  const qwenStatus = analysis.visual_reasoning_summary?.status
+  const ocrAnalyzed = analysis.visual_analysis_status === "analyzed"
+  const qwenAnalyzed = qwenStatus === "analyzed"
+
+  const items: Array<{ label: string; status: CheckStatus; note?: string }> = [
+    {
+      label: "Website loaded",
+      status: (analysis.target_site_pages_count ?? 0) > 0 ? "pass"
+        : hasInteraction ? "partial" : "missing",
+    },
+    {
+      label: "User interaction captured",
+      status: (analysis.demonstrated_actions?.length ?? 0) > 3 ? "pass"
+        : hasInteraction ? "partial" : "missing",
+    },
+    {
+      label: "Output/result visible",
+      status: hasResultValues ? "pass" : hasVisibleText ? "partial" : "missing",
+    },
+    {
+      label: "Chart/visual visible",
+      status: analysis.has_graphical_rendering ? "pass"
+        : (analysis.visual_frames_stored ?? 0) > 0 ? "partial" : "missing",
+    },
+    {
+      label: "Code/example visible",
+      status: hasCodeSkill ? "partial" : "missing",
+      note: hasCodeSkill ? undefined : "Record a focused code walkthrough",
+    },
+    {
+      label: "GitHub evidence available",
+      status: (analysis.supporting_evidence_count ?? 0) > 0 ? "pass" : "missing",
+    },
+    {
+      label: "Video uploaded",
+      status: analysis.video_upload_status === "uploaded" ? "pass"
+        : analysis.video_upload_status === "failed" ? "missing" : "missing",
+    },
+    {
+      label: "Keyframes extracted",
+      status: analysis.video_keyframe_status === "extracted" ? "pass"
+        : analysis.video_keyframe_status === "not_available" ? "partial" : "missing",
+    },
+    {
+      label: "OCR/Qwen analyzed",
+      status: (ocrAnalyzed || qwenAnalyzed) ? "pass"
+        : analysis.video_keyframe_status === "extracted" ? "partial" : "missing",
+      note: (!ocrAnalyzed && !qwenAnalyzed) ? "Set VISUAL_ANALYSIS_PROVIDER to enable" : undefined,
+    },
+    {
+      label: "Final report generated",
+      status: "pass",
+    },
+  ]
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+        textTransform: "uppercase", color: "#475569" }}>
+        Proof Completeness Checklist
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
+        {items.map(({ label, status, note }) => {
+          const c = checkIcon(status)
+          return (
+            <div key={label} style={{ display: "flex", alignItems: "flex-start", gap: 6,
+              padding: "5px 8px", borderRadius: 6, background: c.bg,
+              border: `1px solid ${c.border}` }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: c.text,
+                lineHeight: 1, flexShrink: 0, marginTop: 1 }}>{c.icon}</span>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: c.text,
+                  lineHeight: 1.3 }}>{label}</div>
+                {note && (
+                  <div style={{ fontSize: 9, color: "#64748b", lineHeight: 1.3,
+                    marginTop: 1 }}>{note}</div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── Recommended Follow-up Proofs (Part E) ─────────────────────────────────────
+
+type FollowupSuggestion = {
+  skill: string
+  why: string
+  objective: string
+  duration: string
+}
+
+function buildFollowupSuggestions(
+  analysis: WorkflowAnalysisResponse,
+  claimedSkills: string[],
+): FollowupSuggestion[] {
+  const suggestions: FollowupSuggestion[] = []
+
+  const missing = analysis.unsupported_skills ?? []
+  const partial = analysis.weakly_supported_skills ?? []
+  const combined = [...missing.map(s => ({ s, isPrimary: true })), ...partial.map(s => ({ s, isPrimary: false }))]
+
+  for (const { s: skill, isPrimary } of combined.slice(0, 3)) {
+    const skillLower = skill.toLowerCase()
+    let why = isPrimary
+      ? `No evidence found for ${skill} in this recording.`
+      : `Only partial evidence found for ${skill}.`
+    let objective = `Record a focused demonstration of ${skill}.`
+    let duration = "30–60 seconds"
+
+    if (skillLower.includes("chart") || skillLower.includes("visualization") || skillLower.includes("plot")) {
+      objective = "Open one chart example, explain axes/marks/trend, and interact with the chart or page if possible."
+      duration = "30–60 seconds"
+      why = `${why} Chart interaction was not captured clearly.`
+    } else if (skillLower.includes("javascript") || skillLower.includes("typescript") || skillLower.includes("code")) {
+      objective = "Open one JavaScript/code example and explain how the code works step by step."
+      duration = "30–60 seconds"
+    } else if (skillLower.includes("github") || skillLower.includes("open source")) {
+      objective = "Open the GitHub repository, show the README and source files, and explain how the repo works."
+      duration = "30–45 seconds"
+    } else if (skillLower.includes("interactive") || skillLower.includes("documentation")) {
+      objective = "Open one interactive documentation example, change a parameter, and explain what changed."
+      duration = "30–60 seconds"
+    }
+
+    suggestions.push({ skill, why, objective, duration })
+  }
+
+  return suggestions
+}
+
+const FOLLOWUP_INTENT_KEY = "vb_followup_intent"
+
+function FollowupProofsSection({
+  analysis,
+  sessionId,
+  claimedSkills,
+}: {
+  analysis: WorkflowAnalysisResponse
+  sessionId?: string
+  claimedSkills?: string[]
+}) {
+  const [recordingSkill, setRecordingSkill] = useState<string | null>(null)
+  const suggestions = buildFollowupSuggestions(analysis, claimedSkills ?? [])
+
+  if (suggestions.length === 0) return null
+
+  function handleRecord(skill: string, objective: string) {
+    try {
+      sessionStorage.setItem(FOLLOWUP_INTENT_KEY, JSON.stringify({
+        parentSessionId: sessionId ?? "",
+        skill,
+        objective,
+      }))
+    } catch { /* sessionStorage unavailable */ }
+    setRecordingSkill(skill)
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+        textTransform: "uppercase", color: "#475569" }}>
+        Recommended Follow-up Proofs
+      </div>
+      {suggestions.map((s, i) => (
+        <div key={s.skill} style={{ padding: "10px 12px",
+          background: "#fdf4ff", border: "1px solid #e9d5ff",
+          borderRadius: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 9, fontWeight: 700, color: "#6d28d9",
+              background: "#ede9fe", border: "1px solid #ddd6fe",
+              borderRadius: 4, padding: "2px 7px" }}>
+              Follow-up {i + 1}
+            </span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#3b0764" }}>
+              {s.skill}
+            </span>
+          </div>
+          <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1.4 }}>{s.why}</div>
+          <div>
+            <div style={{ fontSize: 9, fontWeight: 700, color: "#6d28d9",
+              textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>
+              Objective
+            </div>
+            <div style={{ fontSize: 10, color: "#1e293b", lineHeight: 1.5,
+              padding: "5px 8px", background: "#ede9fe",
+              borderRadius: 5, border: "1px solid #ddd6fe" }}>
+              {s.objective}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 9, color: "#64748b" }}>Duration: {s.duration}</span>
+            {recordingSkill === s.skill ? (
+              <div style={{ fontSize: 10, color: "#6d28d9", fontWeight: 600,
+                padding: "4px 10px", background: "#ede9fe",
+                border: "1px solid #c4b5fd", borderRadius: 6 }}>
+                ✓ Intent saved — scroll to Proof Recording section and click Start New Proof
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleRecord(s.skill, s.objective)}
+                style={{ fontSize: 10, fontWeight: 700, padding: "5px 12px",
+                  borderRadius: 7, border: "none",
+                  background: "#7c3aed", color: "#fff",
+                  cursor: "pointer" }}>
+                Record Follow-up Proof
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ── Inline analysis view ──────────────────────────────────────────────────────
 
-function InlineAnalysisView({ analysis, sessionId }: { analysis: WorkflowAnalysisResponse; sessionId?: string }) {
+function InlineAnalysisView({ analysis, sessionId, claimedSkills }: { analysis: WorkflowAnalysisResponse; sessionId?: string; claimedSkills?: string[] }) {
   const [showTimeline, setShowTimeline] = useState(false)
   const visStatus = analysis.visible_evidence_status ?? analysis.observed_demonstration?.visible_evidence_status
 
@@ -1451,6 +1861,19 @@ function InlineAnalysisView({ analysis, sessionId }: { analysis: WorkflowAnalysi
           </ul>
         </div>
       )}
+
+      {/* Skill-by-Skill Evidence (Part C) */}
+      <SkillBySkillEvidence analysis={analysis} />
+
+      {/* Proof Completeness Checklist (Part D) */}
+      <ProofCompletenessChecklist analysis={analysis} />
+
+      {/* Recommended Follow-up Proofs (Part E) */}
+      <FollowupProofsSection
+        analysis={analysis}
+        sessionId={sessionId}
+        claimedSkills={claimedSkills}
+      />
     </div>
   )
 }
@@ -1743,7 +2166,11 @@ export function WorkflowEvidenceProfileCard({
 
         {/* Inline analysis */}
         {showAnalysis && analysis && (
-          <InlineAnalysisView analysis={analysis} sessionId={profile.latest_session_id ?? undefined} />
+          <InlineAnalysisView
+            analysis={analysis}
+            sessionId={profile.latest_session_id ?? undefined}
+            claimedSkills={profile.all_skill_names}
+          />
         )}
 
         {/* History timeline */}

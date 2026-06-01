@@ -20,6 +20,10 @@ ExtensionProofSessionStatus = Literal[
 
 class ExtensionProofSessionCreate(BaseModel):
     skill_evidence_id: str = Field(..., min_length=1)
+    parent_proof_session_id: str | None = None
+    followup_target_skill: str | None = Field(default=None, max_length=200)
+    followup_objective: str | None = Field(default=None, max_length=1000)
+    proof_attempt_type: Literal["original", "followup"] = "original"
 
     @field_validator("skill_evidence_id", mode="before")
     @classmethod

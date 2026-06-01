@@ -4760,6 +4760,30 @@ export function ExtensionProofPanel({
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
   const [analyzeTimedOut, setAnalyzeTimedOut] = useState(false)
 
+  // Follow-up recording intent (from sessionStorage, set by Record Follow-up button)
+  const [followupIntent, setFollowupIntent] = useState<{
+    parentSessionId: string
+    skill: string
+    objective: string
+  } | null>(null)
+
+  // On mount, check for follow-up intent stored by the evidence card
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem("vb_followup_intent")
+      if (stored) {
+        const intent = JSON.parse(stored) as { parentSessionId: string; skill: string; objective: string }
+        setFollowupIntent(intent)
+        setForm(prev => ({
+          ...prev,
+          skillName: intent.skill || prev.skillName,
+          proofObjective: intent.objective || prev.proofObjective,
+        }))
+        sessionStorage.removeItem("vb_followup_intent")
+      }
+    } catch { /* sessionStorage unavailable */ }
+  }, [])
+
   // Privacy Guard state
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false)
   const [privacyScan, setPrivacyScan] = useState<WorkflowPrivacyScanResponse | null>(null)
@@ -5219,7 +5243,12 @@ export function ExtensionProofPanel({
           url_type:           urlType,
         },
       })
-      const sess = await createExtensionProofSession(evidence.id)
+      const sess = await createExtensionProofSession(evidence.id, followupIntent ? {
+        parent_proof_session_id: followupIntent.parentSessionId || undefined,
+        followup_target_skill:   followupIntent.skill || undefined,
+        followup_objective:      followupIntent.objective || undefined,
+        proof_attempt_type:      "followup",
+      } : undefined)
       setSession(sess)
       setStep("session_active")
     } catch (err) {
@@ -5286,6 +5315,20 @@ export function ExtensionProofPanel({
 
     return (
       <div style={{ display: "grid", gap: 18 }}>
+        {/* Follow-up intent banner */}
+        {followupIntent && (
+          <div style={{ border: "1px solid #c4b5fd", borderRadius: 12, background: "#f5f3ff", padding: "12px 14px" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#6d28d9", marginBottom: 4 }}>
+              Follow-up Proof Recording
+            </div>
+            <p style={{ margin: 0, fontSize: 11, color: "#5b21b6", lineHeight: 1.55 }}>
+              Recording a follow-up proof for <strong>{followupIntent.skill}</strong>.
+              The form has been pre-filled with the follow-up objective.
+              This proof will be linked to the original session.
+            </p>
+          </div>
+        )}
+
         {/* Info banner */}
         <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af", marginBottom: 5 }}>Website Proof</div>
