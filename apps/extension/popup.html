@@ -167,6 +167,80 @@
       padding: 8px 10px; background: #f0fdf4;
       font-size: 11px; color: #166534; line-height: 1.55;
     }
+
+    /* Live Proof Coach */
+    .live-coach {
+      display: none;
+      border: 1px solid #ddd6fe;
+      border-radius: 8px;
+      background: #faf5ff;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+    .coach-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 7px;
+    }
+    .coach-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #7c3aed;
+    }
+    .coach-score {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid;
+    }
+    .coach-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 7px;
+    }
+    .chip {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border: 1px solid;
+    }
+    .chip.captured {
+      background: #f0fdf4;
+      color: #166534;
+      border-color: #bbf7d0;
+    }
+    .chip.missing {
+      background: #f8fafc;
+      color: #94a3b8;
+      border-color: #e2e8f0;
+    }
+    .coach-suggestions {
+      border-top: 1px solid #e9d5ff;
+      padding-top: 6px;
+      margin-top: 2px;
+    }
+    .coach-tip {
+      font-size: 11px;
+      color: #6d28d9;
+      line-height: 1.55;
+      margin-bottom: 2px;
+    }
+    .coach-warning {
+      font-size: 11px;
+      color: #991b1b;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: 6px;
+      padding: 4px 8px;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -182,6 +256,11 @@
   <div class="field">
     <label for="sessionId">Session ID</label>
     <input id="sessionId" type="text" placeholder="Paste session ID from dashboard" />
+  </div>
+
+  <div class="field">
+    <label for="claimedSkills">Claimed Skills (comma-separated)</label>
+    <input id="claimedSkills" type="text" placeholder="e.g. Data Visualization, JavaScript" />
   </div>
 
   <!-- Shown when content script detects veribridge_session_id in the page URL -->
@@ -224,6 +303,9 @@
 
   <!-- Video upload status (shown once recorder tab sends result) -->
   <div id="videoStatus" class="video-status"></div>
+
+  <!-- Live Proof Coach (shown during recording, updated every few events) -->
+  <div id="liveCoach" class="live-coach"></div>
 
   <!-- Re-open recorder tab (shown only during recording; JS manages active/disabled state) -->
   <button class="btn-reopen" id="btnReopenRecorder">

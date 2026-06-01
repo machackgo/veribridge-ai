@@ -1,6 +1,8 @@
 // Background service worker — manages recording state and uploads proof to the backend.
 
 import type { WorkflowEvent, ExtensionState, RecordingStatus, VisibleEvidenceEvent } from "./types"
+import { computeLiveCoach } from "./liveFeedback"
+import type { LiveCoachState } from "./liveFeedback"
 
 // ── Debug flag ────────────────────────────────────────────────────────────────
 const DEBUG_VISIBLE_EVIDENCE = true
@@ -122,6 +124,15 @@ interface InternalState {
   // Lets the popup show ONE status ("screen recording active in recorder tab")
   // instead of two conflicting indicators.
   recorderTabStreamActive: boolean
+  // ── Live Coach ─────────────────────────────────────────────────────────────
+  /** Claimed skills passed to START_RECORDING (optional — set by popup/content). */
+  claimedSkills: string[]
+  /** Recomputed on each VISIBLE_EVIDENCE_EVENT. Null before first event. */
+  liveCoach: LiveCoachState | null
+  /** Set when SENSITIVE_WARNING message is received (from content script pattern match). */
+  sensitiveWarningSeen: boolean
+  /** Event count at which the last snapshot was pushed to the backend. */
+  lastSnapshotEventCount: number
 }
 
 const state: InternalState = {
@@ -147,6 +158,10 @@ const state: InternalState = {
   videoUploadError: null,
   videoKeyframeCount: 0,
   recorderTabStreamActive: false,
+  claimedSkills: [],
+  liveCoach: null,
+  sensitiveWarningSeen: false,
+  lastSnapshotEventCount: 0,
 }
 
 // ── Persisted recording state key ────────────────────────────────────────────
@@ -382,6 +397,7 @@ function publicState(): ExtensionState {
     videoUploadError: state.videoUploadError,
     videoKeyframeCount: state.videoKeyframeCount,
     recorderTabStreamActive: state.recorderTabStreamActive,
+    liveCoach: state.liveCoach,
   }
 }
 
@@ -393,10 +409,11 @@ chrome.runtime.onMessage.addListener(
         break
 
       case "START_RECORDING": {
-        const { sessionId, apiUrl, authToken } = msg.payload as {
+        const { sessionId, apiUrl, authToken, claimedSkills } = msg.payload as {
           sessionId: string
           apiUrl: string
           authToken: string
+          claimedSkills?: string[]
         }
         state.sessionId = sessionId
         state.apiUrl = (apiUrl || "http://localhost:8000").replace(/\/$/, "")
@@ -417,6 +434,11 @@ chrome.runtime.onMessage.addListener(
         state.videoUploadError  = null
         state.videoKeyframeCount = 0
         state.recorderTabStreamActive = false
+        // Reset live coach state for new session
+        state.claimedSkills = claimedSkills ?? []
+        state.liveCoach = null
+        state.sensitiveWarningSeen = false
+        state.lastSnapshotEventCount = 0
         // Reset tab tracking — seed with the original tab detected from the page URL.
         state.trackedTabIds = new Set()
         state.trackedTabUrls = new Map()
@@ -656,6 +678,36 @@ chrome.runtime.onMessage.addListener(
         }
         break
 
+      // ── Live Coach: claimed skills update ────────────────────────────────────
+      // Sent by popup when the user updates the session's claimed skill list.
+      case "SET_CLAIMED_SKILLS": {
+        const { skills } = (msg.payload ?? {}) as { skills?: string[] }
+        state.claimedSkills = skills ?? []
+        if (state.liveCoach !== null) {
+          // Recompute with updated skills immediately
+          state.liveCoach = computeLiveCoach(
+            state.claimedSkills,
+            state.visibleEvidenceEvents,
+            state.sensitiveWarningSeen,
+          )
+        }
+        sendResponse({ ok: true })
+        break
+      }
+
+      // ── Live Coach: sensitive content detected by content script ─────────────
+      case "SENSITIVE_WARNING":
+        state.sensitiveWarningSeen = true
+        if (state.liveCoach !== null) {
+          state.liveCoach = computeLiveCoach(
+            state.claimedSkills,
+            state.visibleEvidenceEvents,
+            true,
+          )
+        }
+        sendResponse({ ok: true })
+        break
+
       case "VISIBLE_EVIDENCE_EVENT":
         if (state.isRecording) {
           const veEvent = msg.payload as VisibleEvidenceEvent
@@ -664,6 +716,20 @@ chrome.runtime.onMessage.addListener(
             "| event_type:", veEvent.event_type,
             "| session_id:", state.sessionId,
             "| total accumulated:", state.visibleEvidenceEvents.length)
+
+          // ── Live Coach: recompute on each event ────────────────────────────
+          state.liveCoach = computeLiveCoach(
+            state.claimedSkills,
+            state.visibleEvidenceEvents,
+            state.sensitiveWarningSeen,
+          )
+          // Push snapshot to backend every 5 events (fire-and-forget)
+          const eventsCount = state.visibleEvidenceEvents.length
+          if (eventsCount - state.lastSnapshotEventCount >= 5) {
+            state.lastSnapshotEventCount = eventsCount
+            void pushLiveSnapshot()
+          }
+
           // Trigger visual frame capture for the most evidence-rich event types.
           // Each call respects MAX_VISUAL_FRAMES and MIN_FRAME_INTERVAL_MS.
           switch (veEvent.event_type) {
@@ -741,6 +807,50 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // worker was idle when the tab first loaded.
   chrome.tabs.sendMessage(tabId, { type: "START_CAPTURING" }).catch(() => undefined)
 })
+
+/**
+ * Push a lightweight live feedback snapshot to the backend during recording.
+ * Fire-and-forget — never throws, never blocks proof upload.
+ * Called every 5 VISIBLE_EVIDENCE_EVENTs during active recording.
+ */
+async function pushLiveSnapshot(): Promise<void> {
+  if (!state.sessionId || !state.isRecording) return
+
+  const events = state.visibleEvidenceEvents
+  const allText = events.flatMap(e => e.visible_text_blocks).join(" ")
+  const allUrls = events.map(e => e.url).join(" ")
+  const lastEvent = events[events.length - 1]
+
+  const payload = {
+    claimed_skills: state.claimedSkills,
+    current_url: lastEvent?.url ?? "",
+    page_title: lastEvent?.page_title ?? "",
+    dom_text_snippets: events.flatMap(e => e.visible_text_blocks).slice(-20),  // last 20 blocks
+    click_count: events.filter(e => e.event_type === "click").length,
+    input_count: events.filter(e => e.event_type === "input_change").length,
+    form_submit_count: events.filter(e => e.event_type === "form_submit").length,
+    output_block_count: events.filter(e => e.result_like_blocks.length > 0).length,
+    canvas_count: Math.max(0, ...events.map(e => e.canvas_count ?? 0)),
+    svg_count: Math.max(0, ...events.map(e => e.svg_count ?? 0)),
+    github_url_seen: events.some(e => /github\.com\/[\w\-]+\/[\w\-]/i.test(e.url)),
+    recording_duration_s: state.startedAt
+      ? (Date.now() - new Date(state.startedAt).getTime()) / 1000
+      : 0,
+    sensitive_warning_seen: state.sensitiveWarningSeen,
+  }
+
+  const url = `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/live-feedback`
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (state.authToken) headers["Authorization"] = `Bearer ${state.authToken}`
+
+  dbgVE("[LiveCoach] pushing snapshot — events=%d score=%d", events.length, state.liveCoach?.live_score ?? 0)
+
+  try {
+    await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) })
+  } catch {
+    // Silent — live snapshot push failure must never affect proof upload
+  }
+}
 
 /**
  * Fire-and-forget upload of accumulated visible evidence events.

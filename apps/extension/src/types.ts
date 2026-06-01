@@ -58,6 +58,11 @@ export interface VisibleEvidenceBatchPayload {
   events: VisibleEvidenceEvent[]
 }
 
+// ── Live Coach types ──────────────────────────────────────────────────────────
+import type { LiveCoachState as _LiveCoachState } from "./liveFeedback"
+export type LiveCoachState = _LiveCoachState
+export type { EvidenceChecklist, SkillSupport, SupportLevel } from "./liveFeedback"
+
 export type RecordingStatus =
   | "idle"
   | "ready"          // session auto-detected from page URL, not yet recording
@@ -100,4 +105,6 @@ export interface ExtensionState {
    * Used by the popup to show ONE clear status without duplicating the recorder tab's UI.
    */
   recorderTabStreamActive: boolean
+  // ── Live Coach state (computed from accumulated visible evidence events) ──────
+  liveCoach: LiveCoachState | null
 }

@@ -18,6 +18,7 @@ import {
   getProjectDefenseAnalysis,
   uploadProjectDefenseMedia,
   transcribeDefenseMedia,
+  getLiveFeedback,
   refineDefenseTranscript,
   type ProjectDefenseTranscribeResponse,
   type ProjectDefenseRefineTranscriptResponse,
@@ -43,6 +44,7 @@ import {
 import { VerificationReviewSection } from "./verification-review-section"
 import { EvidenceAnalysisProgress } from "./EvidenceAnalysisProgress"
 import { SequenceAnalysisPanel } from "./sequence-analysis-panel"
+import { LiveProofCoach } from "./live-proof-coach"
 import type {
   ObservedDemonstration,
   DemonstrationStep,
@@ -5549,6 +5551,15 @@ export function ExtensionProofPanel({
 
         {/* Session stepper */}
         <SessionStepper status={session.status} />
+
+        {/* Live Proof Coach — shown only during active recording */}
+        {session.status === "recording" && (
+          <LiveProofCoach
+            sessionId={session.id}
+            onFetch={getLiveFeedback}
+            pollIntervalMs={5000}
+          />
+        )}
 
         {/* Evidence checklist */}
         <EvidenceChecklist

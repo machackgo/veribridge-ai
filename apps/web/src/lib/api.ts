@@ -2286,3 +2286,51 @@ export async function adminSetDecision(
   }
   return res.json() as Promise<VerificationReviewResponse>
 }
+
+// ── Live Proof Feedback ───────────────────────────────────────────────────────
+
+export type LiveEvidenceChecklist = {
+  website_loaded: boolean
+  dom_text_seen: boolean
+  interaction_seen: boolean
+  form_input_seen: boolean
+  output_or_result_seen: boolean
+  chart_or_visual_seen: boolean
+  code_or_repo_seen: boolean
+  github_seen: boolean
+  sensitive_warning: boolean
+}
+
+export type LiveSkillSupport = {
+  skill: string
+  support_level: "missing" | "partial" | "likely"
+  evidence_source: string
+  short_reason: string
+}
+
+export type LiveFeedbackResponse = {
+  session_id: string
+  recording_status: "recording" | "stopped" | "analyzing"
+  checklist: LiveEvidenceChecklist
+  live_score: number
+  claimed_skill_support: LiveSkillSupport[]
+  suggestions: string[]
+  sensitive_warning: boolean
+  last_updated_at: string
+}
+
+/**
+ * Poll current live feedback state for a session.
+ * Returns null on any error so the frontend can silently ignore failures.
+ */
+export async function getLiveFeedback(sessionId: string): Promise<LiveFeedbackResponse | null> {
+  try {
+    const res = await fetchAPI(
+      `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/live-feedback`,
+    )
+    if (!res.ok) return null
+    return res.json() as Promise<LiveFeedbackResponse>
+  } catch {
+    return null
+  }
+}

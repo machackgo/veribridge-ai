@@ -18,6 +18,7 @@ function el<T extends HTMLElement>(id: string): T {
 const sessionIdInput    = el<HTMLInputElement>("sessionId")
 const apiUrlInput       = el<HTMLInputElement>("apiUrl")
 const authTokenInput    = el<HTMLInputElement>("authToken")
+const claimedSkillsInput = el<HTMLInputElement>("claimedSkills")
 const finalNoteInput    = el<HTMLTextAreaElement>("finalNote")
 const btnStart          = el<HTMLButtonElement>("btnStart")
 const btnStop           = el<HTMLButtonElement>("btnStop")
@@ -28,13 +29,15 @@ const statusText        = el("statusText")
 const eventCountEl      = el("eventCount")
 const detectedBanner    = el("detectedBanner")
 const videoStatusEl     = el("videoStatus")
+const liveCoachEl       = el("liveCoach")
 
 // ── Restore persisted inputs ───────────────────────────────────────────────────
-chrome.storage.local.get(["sessionId", "apiUrl", "authToken", "currentSessionId"], (data) => {
+chrome.storage.local.get(["sessionId", "apiUrl", "authToken", "currentSessionId", "claimedSkills"], (data) => {
   const preFill = (data.currentSessionId as string | undefined) ?? (data.sessionId as string | undefined) ?? ""
   if (preFill) sessionIdInput.value = preFill
   apiUrlInput.value = (data.apiUrl as string | undefined) ?? "http://localhost:8000"
   if (data.authToken) authTokenInput.value = data.authToken as string
+  if (data.claimedSkills) claimedSkillsInput.value = data.claimedSkills as string
 })
 
 sessionIdInput.addEventListener("input", () => {
@@ -45,6 +48,9 @@ apiUrlInput.addEventListener("input", () => {
 })
 authTokenInput.addEventListener("input", () => {
   void chrome.storage.local.set({ authToken: authTokenInput.value })
+})
+claimedSkillsInput.addEventListener("input", () => {
+  void chrome.storage.local.set({ claimedSkills: claimedSkillsInput.value })
 })
 
 // ── Status dot class mapping ───────────────────────────────────────────────────
@@ -127,6 +133,67 @@ function applyState(state: ExtensionState): void {
     videoStatusEl.className = "video-status failed"
     videoStatusEl.textContent = `✗ Video upload failed: ${state.videoUploadError ?? "unknown error"}`
   }
+
+  // ── Live Proof Coach ───────────────────────────────────────────────────────
+  renderLiveCoach(state)
+}
+
+function renderLiveCoach(state: ExtensionState): void {
+  if (!state.isRecording || !state.liveCoach) {
+    liveCoachEl.style.display = "none"
+    return
+  }
+  liveCoachEl.style.display = ""
+
+  const coach = state.liveCoach
+  const score = coach.live_score
+  const scoreColor = score >= 70 ? "#166534" : score >= 40 ? "#92400e" : "#991b1b"
+  const scoreBg    = score >= 70 ? "#f0fdf4"  : score >= 40 ? "#fefce8"  : "#fef2f2"
+  const scoreBorder = score >= 70 ? "#bbf7d0" : score >= 40 ? "#fde68a"  : "#fecaca"
+
+  const chk = coach.checklist
+
+  const chips: Array<{ label: string; captured: boolean }> = [
+    { label: "Website loaded",    captured: chk.website_loaded },
+    { label: "Page content",      captured: chk.dom_text_seen },
+    { label: "Interaction",       captured: chk.interaction_seen },
+    { label: "Form/input",        captured: chk.form_input_seen },
+    { label: "Output/result",     captured: chk.output_or_result_seen },
+    { label: "Chart/visual",      captured: chk.chart_or_visual_seen },
+    { label: "Code/repo",         captured: chk.code_or_repo_seen },
+    { label: "GitHub",            captured: chk.github_seen },
+  ]
+
+  const privacyWarning = coach.sensitive_warning
+    ? `<div class="coach-warning">⚠ Sensitive content detected — avoid showing tokens, passwords, or keys.</div>`
+    : ""
+
+  const chipsHtml = chips
+    .map(c => {
+      const cls = c.captured ? "chip captured" : "chip missing"
+      const icon = c.captured ? "✓" : "○"
+      return `<span class="${cls}">${icon} ${c.label}</span>`
+    })
+    .join("")
+
+  const suggestionsHtml = coach.suggestions.length > 0
+    ? `<div class="coach-suggestions">${coach.suggestions
+        .map(s => `<div class="coach-tip">→ ${s}</div>`)
+        .join("")
+      }</div>`
+    : ""
+
+  liveCoachEl.innerHTML = `
+    <div class="coach-header">
+      <span class="coach-title">Live Proof Coach</span>
+      <span class="coach-score" style="background:${scoreBg};color:${scoreColor};border-color:${scoreBorder}">
+        ${score}/100
+      </span>
+    </div>
+    ${privacyWarning}
+    <div class="coach-chips">${chipsHtml}</div>
+    ${suggestionsHtml}
+  `
 }
 
 function refreshState(): void {
@@ -147,6 +214,10 @@ btnStart.addEventListener("click", () => {
   const sessionId = sessionIdInput.value.trim()
   const apiUrl = apiUrlInput.value.trim() || "http://localhost:8000"
   const authToken = authTokenInput.value.trim()
+  const claimedSkillsRaw = claimedSkillsInput.value.trim()
+  const claimedSkills = claimedSkillsRaw
+    ? claimedSkillsRaw.split(/[,;]+/).map(s => s.trim()).filter(Boolean)
+    : []
 
   if (!sessionId) {
     statusText.textContent = "Enter a session ID first."
@@ -154,7 +225,7 @@ btnStart.addEventListener("click", () => {
   }
 
   chrome.runtime.sendMessage(
-    { type: "START_RECORDING", payload: { sessionId, apiUrl, authToken } },
+    { type: "START_RECORDING", payload: { sessionId, apiUrl, authToken, claimedSkills } },
     () => refreshState()
   )
 })

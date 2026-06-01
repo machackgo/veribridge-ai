@@ -9,6 +9,7 @@ from app.api.v1.endpoints import (
     extension_proof,
     extension_proof_github_analysis,
     extension_proof_workflow_analysis,
+    live_feedback,
     github_portfolio,
     github_proofs,
     github_recruiter_proof_reports,
@@ -164,6 +165,11 @@ api_router.include_router(
     live_website_check.router,
     prefix="/student/extension-proof/sessions",
     tags=["live-website-check"],
+)
+api_router.include_router(
+    live_feedback.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["live-proof-feedback"],
 )
 api_router.include_router(
     workflow_privacy_scan.router,
