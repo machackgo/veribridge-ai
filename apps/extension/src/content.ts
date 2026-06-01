@@ -268,6 +268,7 @@ interface StateSnapshot {
 let capturing = false
 let barHost: HTMLElement | null = null
 let barShadow: ShadowRoot | null = null
+let vpListenersAttached = false
 /** Target website URL from the recording session (null = no target = show on all tabs). */
 let targetWebsiteUrl: string | null = null
 
@@ -440,13 +441,11 @@ function handleContextInvalidated(): void {
   let shadow = barShadow
   if (!shadow) {
     const host = document.createElement("div")
-    host.setAttribute("style",
-      "all:initial!important;position:fixed!important;top:90px!important;" +
-      "right:18px!important;z-index:2147483647!important;pointer-events:auto!important;")
     ;(document.body ?? document.documentElement).appendChild(host)
     barHost = host
     barShadow = host.attachShadow({ mode: "open" })
     shadow = barShadow
+    positionBarHost()
   }
 
   shadow.innerHTML = `<style>
@@ -1079,6 +1078,29 @@ function fetchAndRender(): void {
   })
 }
 
+function positionBarHost(): void {
+  if (!barHost) return
+  const vv = window.visualViewport
+  if (vv) {
+    const margin = 12
+    const maxW = Math.min(520, vv.width - margin * 2)
+    const left = vv.offsetLeft + vv.width - maxW - margin
+    const top = vv.offsetTop + 90
+    barHost.style.cssText =
+      `all:initial!important;position:fixed!important;` +
+      `left:${Math.max(margin, left)}px!important;` +
+      `top:${Math.max(margin, top)}px!important;` +
+      `width:${maxW}px!important;` +
+      `z-index:2147483647!important;pointer-events:auto!important;`
+  } else {
+    barHost.style.cssText =
+      `all:initial!important;position:fixed!important;` +
+      `top:90px!important;right:12px!important;` +
+      `max-width:520px!important;` +
+      `z-index:2147483647!important;pointer-events:auto!important;`
+  }
+}
+
 function showFloatingBar(): void {
   if (contextInvalidated) return
   if (!barHost) {
@@ -1091,15 +1113,18 @@ function showFloatingBar(): void {
     } else {
       const host = document.createElement("div")
       host.id = BAR_HOST_ID
-      host.setAttribute(
-        "style",
-        "all:initial!important;position:fixed!important;top:90px!important;" +
-        "right:18px!important;z-index:2147483647!important;pointer-events:auto!important;"
-      )
       ;(document.body ?? document.documentElement).appendChild(host)
       barHost = host
       barShadow = host.attachShadow({ mode: "open" })
     }
+  }
+
+  positionBarHost()
+
+  if (!vpListenersAttached && window.visualViewport) {
+    window.visualViewport.addEventListener("resize", positionBarHost)
+    window.visualViewport.addEventListener("scroll", positionBarHost)
+    vpListenersAttached = true
   }
 
   barMinimized = false
@@ -1113,6 +1138,11 @@ function showFloatingBar(): void {
 function hideFloatingBar(): void {
   if (barPoll) { clearInterval(barPoll); barPoll = null }
   if (autoDismissTimer) { clearTimeout(autoDismissTimer); autoDismissTimer = null }
+  if (vpListenersAttached && window.visualViewport) {
+    window.visualViewport.removeEventListener("resize", positionBarHost)
+    window.visualViewport.removeEventListener("scroll", positionBarHost)
+    vpListenersAttached = false
+  }
   // Remove the DOM node entirely rather than setting display:none.
   // This prevents any stale poll response from re-rendering the bar through
   // the still-attached shadow root.

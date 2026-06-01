@@ -26,6 +26,8 @@ from app.services.extension_proof_workflow_analysis_service import (
     _build_frame_ocr_evidence_summary,
     _build_visual_reasoning_session_summary_from_db,
 )
+from app.services.final_evidence_evaluator_service import FinalEvidenceEvaluatorService
+from pydantic import BaseModel
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -611,6 +613,63 @@ def _enrich_visual_reasoning_summary(
         )
 
     return row
+
+
+# ── Final Evidence Evaluator endpoint ─────────────────────────────────────────
+
+class FinalEvalRequest(BaseModel):
+    claimed_skills: list[str] = []
+    github_url: str | None = None
+
+
+@router.get(
+    "/{session_id}/evaluate/final",
+    status_code=status.HTTP_200_OK,
+    summary="Get the latest final evidence evaluation for a session",
+)
+def get_final_evaluation(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> dict:
+    svc = FinalEvidenceEvaluatorService(db)
+    try:
+        result = svc.evaluate(user_id=user_id, session_id=session_id)
+    except Exception as exc:
+        logger.exception("GET evaluate/final: unexpected error for session %s", session_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"message": "Final evaluation failed."},
+        ) from exc
+    return result.to_dict()
+
+
+@router.post(
+    "/{session_id}/evaluate/final",
+    status_code=status.HTTP_200_OK,
+    summary="Run final combined evidence evaluation for a session",
+)
+def run_final_evaluation(
+    session_id: str,
+    body: FinalEvalRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> dict:
+    svc = FinalEvidenceEvaluatorService(db)
+    try:
+        result = svc.evaluate(
+            user_id=user_id,
+            session_id=session_id,
+            claimed_skills=body.claimed_skills or [],
+            github_url=body.github_url,
+        )
+    except Exception as exc:
+        logger.exception("POST evaluate/final: unexpected error for session %s", session_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"message": "Final evaluation failed."},
+        ) from exc
+    return result.to_dict()
 
 
 def _not_found(session_id: str) -> HTTPException:

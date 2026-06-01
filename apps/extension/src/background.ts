@@ -723,12 +723,7 @@ chrome.runtime.onMessage.addListener(
             state.visibleEvidenceEvents,
             state.sensitiveWarningSeen,
           )
-          // Push snapshot to backend every 5 events (fire-and-forget)
-          const eventsCount = state.visibleEvidenceEvents.length
-          if (eventsCount - state.lastSnapshotEventCount >= 5) {
-            state.lastSnapshotEventCount = eventsCount
-            void pushLiveSnapshot()
-          }
+          // Live-feedback network push removed — live coach runs locally only.
 
           // Trigger visual frame capture for the most evidence-rich event types.
           // Each call respects MAX_VISUAL_FRAMES and MIN_FRAME_INTERVAL_MS.

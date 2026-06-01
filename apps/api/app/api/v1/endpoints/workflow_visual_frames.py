@@ -94,7 +94,7 @@ class VisualFrameBatchRequest(BaseModel):
     frames: list[VisualFrameInput] = Field(
         default_factory=list,
         description="Batch of visual frames captured during the recording session.",
-        max_length=20,
+        max_length=40,
     )
 
 

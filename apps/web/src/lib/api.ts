@@ -1027,6 +1027,134 @@ export async function getExtensionProofGitHubAnalysis(
   return res.json()
 }
 
+// ── Final Evidence Evaluator ──────────────────────────────────────────────────
+
+export type FinalEvidenceStatus = "pass" | "partial" | "missing" | "not_run" | "not_available"
+
+export type NextBestActionType =
+  | "run_github_analysis"
+  | "add_github_url"
+  | "run_live_website_check"
+  | "upload_document"
+  | "record_followup_proof"
+  | "add_linkedin_proof"
+  | "record_camera_proof"
+  | "record_cad_proof"
+  | "record_presentation"
+
+export type NextBestAction = {
+  action_type: NextBestActionType
+  target_skill: string
+  reason: string
+  objective: string
+  button_label: string
+  priority: "high" | "medium" | "low"
+  is_recording: boolean
+  recommended_duration: string | null
+}
+
+export type EvidenceSourceBreakdown = {
+  key: string
+  status: FinalEvidenceStatus
+  score: number
+  weight: number
+  notes: string
+}
+
+export type EvidenceObject = {
+  evidence_type: "recording_keyframe" | "ocr_text" | "dom_text" | "qwen_visual" | "github_file" | "live_check" | "transcript" | "document"
+  source_name: string
+  confidence: "high" | "medium" | "low"
+  short_summary: string
+  timestamp_seconds?: number | null
+  keyframe_url?: string | null
+  text_snippet?: string | null
+  file_path?: string | null
+  line_range?: string | null
+  route_url?: string | null
+  recruiter_safe: boolean
+}
+
+export type DetectedSkillEntry = {
+  skill: string
+  confidence: "high" | "medium" | "low"
+  evidence_support: string
+  sources: string[]
+  is_inferred: boolean
+  status_label?: string
+  keyframe_evidence?: string[]
+  github_evidence?: string[]
+  category?: string
+  source_labels?: string[]
+  evidence_count?: number
+  sources_count?: number
+  evidence_objects?: EvidenceObject[]
+}
+
+export type GroupedSkillEvidence = {
+  group_name: string
+  category: string
+  confidence: "high" | "medium" | "low"
+  evidence_count: number
+  sources_count: number
+  source_labels: string[]
+  skills: DetectedSkillEntry[]
+}
+
+export type DetectedCapability = {
+  role_title: string
+  confidence: "high" | "medium" | "low"
+  why_detected: string[]
+  supporting_skills: DetectedSkillEntry[]
+}
+
+export type FinalEvaluationResult = {
+  proof_session_id: string
+  final_score: number
+  confidence: "high" | "medium" | "low"
+  evidence_sources_used: string[]
+  evidence_sources_missing: string[]
+  per_skill_scores: Record<string, number>
+  evidence_source_breakdown: EvidenceSourceBreakdown[]
+  final_recruiter_summary: string
+  final_student_summary: string
+  next_best_actions: NextBestAction[]
+  strong_proof: boolean
+  detected_capability?: DetectedCapability | null
+  detected_additional_skills?: DetectedSkillEntry[]
+  grouped_skill_evidence?: GroupedSkillEvidence[]
+}
+
+export async function runFinalEvaluation(
+  sessionId: string,
+  claimedSkills: string[],
+  githubUrl?: string | null,
+): Promise<FinalEvaluationResult> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/evaluate/final`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        claimed_skills: claimedSkills,
+        github_url: githubUrl ?? null,
+      }),
+    },
+  )
+  if (!res.ok) throw new Error(`Final evaluation failed (HTTP ${res.status}).`)
+  return res.json() as Promise<FinalEvaluationResult>
+}
+
+export async function getFinalEvaluation(
+  sessionId: string,
+): Promise<FinalEvaluationResult | null> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/evaluate/final`,
+  )
+  if (res.status === 404) return null
+  if (!res.ok) return null
+  return res.json() as Promise<FinalEvaluationResult>
+}
+
 // ── Extension Proof Workflow Analysis ────────────────────────────────────────
 
 export type WorkflowAnalysisType =
@@ -1273,7 +1401,7 @@ export type WorkflowAnalysisResponse = {
    * null when VISUAL_REASONING_ENABLED=false (the default).
    */
   visual_reasoning_summary?: {
-    status: "analyzed" | "failed" | "disabled" | "missing_dependency" | "not_configured" | "rejected_inconsistent" | "rejected_stale"
+    status: "analyzed" | "failed" | "disabled" | "missing_dependency" | "not_configured" | "rejected_inconsistent" | "rejected_stale" | "skipped"
     provider: string
     frames_analyzed: number
     summary: string

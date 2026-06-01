@@ -81,6 +81,7 @@ REASONING_STATUS_MISSING_DEPENDENCY    = "missing_dependency"
 REASONING_STATUS_NOT_CONFIGURED        = "not_configured"
 REASONING_STATUS_REJECTED_INCONSISTENT = "rejected_inconsistent"
 REASONING_STATUS_REJECTED_STALE        = "rejected_stale"
+REASONING_STATUS_SKIPPED               = "skipped"
 
 _REJECTED_STATUSES: frozenset[str] = frozenset({
     REASONING_STATUS_REJECTED_INCONSISTENT,
@@ -557,6 +558,12 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
 
     # ── Inference ──────────────────────────────────────────────────────────────
 
+    # Max longest side before downscaling. Qwen2.5-VL-3B with qwen_vl_utils uses
+    # dynamic resolution patching; a 4K frame → ~46 GiB buffer (observed crash).
+    # 1024px is safe for all variants including the 3B model on CPU/MPS.
+    _MAX_IMAGE_SIDE = 1024
+    _MAX_IMAGE_PIXELS = _MAX_IMAGE_SIDE * _MAX_IMAGE_SIDE  # 1 MP guard
+
     def _run_inference(self, frame_bytes: bytes, prompt: str) -> str:
         """Run Qwen-VL inference with the given prompt.  Returns raw output."""
         if not self._load_model():
@@ -566,6 +573,30 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
             img = Image.open(io.BytesIO(frame_bytes)).convert("RGB")
         except Exception as exc:
             logger.warning("[VisionReasoning] Could not decode image bytes: %s", exc)
+            return ""
+
+        # ── Downscale to safe resolution before inference ──────────────────────
+        # Qwen2.5-VL with qwen_vl_utils allocates patch tensors proportional to
+        # image area; a 3840×2160 frame produces ~46 GiB buffers and crashes.
+        # Downscale so longest side ≤ _MAX_IMAGE_SIDE and total pixels ≤ limit.
+        try:
+            from PIL import Image as _PIL  # noqa: F401
+            w, h = img.size
+            longest = max(w, h)
+            pixels = w * h
+            if longest > self._MAX_IMAGE_SIDE or pixels > self._MAX_IMAGE_PIXELS:
+                side_scale = self._MAX_IMAGE_SIDE / longest
+                pixel_scale = (self._MAX_IMAGE_PIXELS / pixels) ** 0.5
+                scale = min(side_scale, pixel_scale)
+                new_w = max(1, int(w * scale))
+                new_h = max(1, int(h * scale))
+                img = img.resize((new_w, new_h), _PIL.LANCZOS)
+                logger.info(
+                    "[VisionReasoning] frame resized %dx%d → %dx%d (scale=%.3f)",
+                    w, h, new_w, new_h, scale,
+                )
+        except Exception as exc:
+            logger.warning("[VisionReasoning] Frame resize failed, skipping: %s", exc)
             return ""
 
         try:
@@ -1124,6 +1155,19 @@ def _build_session_summary(
                     o.limitations[0] for o in rejected if o.limitations
                 ][:3] or ["Qwen output was inconsistent with session context."],
             )
+        skipped = [o for o in observations if o.status == REASONING_STATUS_SKIPPED]
+        non_skipped = [o for o in observations if o.status != REASONING_STATUS_SKIPPED]
+        if skipped and not non_skipped:
+            # All frames were skipped due to resource limits — not a failure, just incomplete.
+            return VisualReasoningSessionSummary(
+                status=REASONING_STATUS_SKIPPED,
+                provider=provider_name,
+                frames_analyzed=0,
+                summary="Qwen visual reasoning was skipped for all frames due to resource limits.",
+                limitations=[
+                    o.limitations[0] for o in skipped if o.limitations
+                ][:1] or ["Frames skipped: inference exceeded available memory."],
+            )
         status = REASONING_STATUS_FAILED if observations else REASONING_STATUS_DISABLED
         first_limitation = (
             observations[0].limitations[0]
@@ -1420,17 +1464,43 @@ class VisualReasoningService:
                     obs.detected_workflow_stage,
                 )
             except Exception as exc:
-                logger.warning(
-                    "[VisionReasoning] analyze_frame_reasoning RAISED frame_index=%d: %s",
-                    idx, exc,
+                exc_str = str(exc)
+                # Detect OOM / buffer-size errors (e.g. "Invalid buffer size: 46.17 GiB")
+                # and mark as skipped rather than failed so they don't block the session.
+                is_resource_error = (
+                    "buffer size" in exc_str.lower()
+                    or "out of memory" in exc_str.lower()
+                    or "cuda out of memory" in exc_str.lower()
+                    or "memoryerror" in exc_str.lower()
+                    or isinstance(exc, MemoryError)
                 )
-                obs = VisualReasoningObservation(
-                    frame_index=idx,
-                    timestamp_ms=ts_ms,
-                    model_provider=provider.provider_name,
-                    status=REASONING_STATUS_FAILED,
-                    limitations=[f"Frame analysis raised an unexpected error: {exc}"],
-                )
+                if is_resource_error:
+                    logger.warning(
+                        "[VisionReasoning] frame_index=%d SKIPPED (resource limit): %s",
+                        idx, exc_str[:120],
+                    )
+                    obs = VisualReasoningObservation(
+                        frame_index=idx,
+                        timestamp_ms=ts_ms,
+                        model_provider=provider.provider_name,
+                        status=REASONING_STATUS_SKIPPED,
+                        limitations=[
+                            "Frame skipped: inference exceeded available memory. "
+                            "Reduce VISUAL_REASONING_MAX_FRAMES or use a smaller model."
+                        ],
+                    )
+                else:
+                    logger.warning(
+                        "[VisionReasoning] analyze_frame_reasoning RAISED frame_index=%d: %s",
+                        idx, exc_str,
+                    )
+                    obs = VisualReasoningObservation(
+                        frame_index=idx,
+                        timestamp_ms=ts_ms,
+                        model_provider=provider.provider_name,
+                        status=REASONING_STATUS_FAILED,
+                        limitations=[f"Frame analysis raised an unexpected error: {exc_str[:120]}"],
+                    )
 
             # ── Consistency gate ─────────────────────────────────────────────
             # Reject Qwen output that is semantically inconsistent with the

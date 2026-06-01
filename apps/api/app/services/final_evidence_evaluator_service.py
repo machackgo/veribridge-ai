@@ -1,0 +1,1403 @@
+"""Final Evidence Evaluator — combines all available proof sources.
+
+Produces a final_score (0–100), confidence, evidence source breakdown, and
+a source-aware next_best_actions list.  Only runs scoring on sources that
+have actually been run; missing sources are listed but not penalised if the
+proof type does not require them.
+
+Next Best Action Engine
+-----------------------
+If final_score >= 80: show optional improvements only.
+If final_score < 80: recommend the single most impactful action for the weakest
+evidence gap, prioritised by source type and skill evidence gaps.
+
+Action types (recording-based or not):
+  run_github_analysis      — non-recording, high priority when repo exists
+  add_github_url           — non-recording, when code/OSS claimed but no URL
+  run_live_website_check   — non-recording
+  upload_document          — non-recording
+  record_followup_proof    — recording
+  add_linkedin_proof       — non-recording (future)
+  record_camera_proof      — recording (future)
+  record_cad_proof         — recording (future)
+  record_presentation      — recording (future)
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
+
+# ── Tables ────────────────────────────────────────────────────────────────────
+
+_WF_TABLE     = "workflow_analysis_results"
+_GH_TABLE     = "extension_proof_github_analysis"
+_LW_TABLE     = "live_website_check_results"
+_PD_TABLE     = "project_defense_analysis_results"
+_VF_TABLE     = "workflow_visual_frame_evidence"
+
+# ── Types ─────────────────────────────────────────────────────────────────────
+
+EvidenceSourceKey = Literal[
+    "website_workflow",
+    "dom_visible_evidence",
+    "video_keyframes",
+    "ocr",
+    "qwen_visual_reasoning",
+    "github",
+    "live_website_check",
+    "project_defense",
+    # Future — wired as enum only
+    "transcript_nlp",
+    "uploaded_documents",
+    "pdf_report",
+    "certificate",
+    "resume",
+    "linkedin_profile",
+    "camera_physical_proof",
+    "cad_simulation_proof",
+    "presentation_voice_proof",
+]
+
+# ── Detected Skill Profile types ──────────────────────────────────────────────
+
+_SKILL_CATEGORY_MAP: list[tuple[list[str], str]] = [
+    (["data visualization", "chart analysis", "chart", "plot", "d3", "observable",
+      "vega", "plotly", "matplotlib", "seaborn", "visualization", "highcharts",
+      "bokeh", "altair", "dashboard"], "DATA"),
+    (["javascript", "typescript", "frontend", "react", "vue", "angular", "html",
+      "css", "web development", "interactive documentation", "interactive",
+      "web app", "ui ", "ux "], "FRONTEND"),
+    (["machine learning", "deep learning", "neural network", "tensorflow", "pytorch",
+      "scikit-learn", "sklearn", "nlp", "computer vision", "ai model", "llm",
+      "transformers", "inference", "model evaluation", "mlops"], "AI/ML"),
+    (["technical documentation", "documentation", "technical writing", "docs",
+      "readme", "tutorial", "getting started"], "DOCUMENTATION"),
+    (["open source", "github", "version control", "git", "repository", "open-source"], "OPEN_SOURCE"),
+    (["python", "backend", "fastapi", "django", "flask", "api ", "rest api",
+      "database", "sql", "node", "express"], "BACKEND"),
+    (["devops", "deployment", "docker", "kubernetes", "ci/cd", "cloud", "aws",
+      "gcp", "azure", "hosting"], "DEVOPS"),
+    (["product demo", "workflow demonstration", "demo", "project presentation",
+      "product walkthrough"], "PRODUCT"),
+    (["data analysis", "statistics", "pandas", "numpy", "jupyter", "r programming",
+      "eda", "statistical analysis", "data science"], "DATA"),
+]
+
+_SOURCE_LABEL_MAP: dict[str, str] = {
+    "workflow":        "Recording",
+    "OCR":             "OCR",
+    "Qwen":            "Qwen",
+    "GitHub":          "GitHub",
+    "dom":             "DOM",
+    "live_check":      "Live Website",
+    "project_defense": "Project Defense",
+    "document":        "Documents",
+}
+
+
+def _skill_category(skill_name: str) -> str:
+    lower = skill_name.lower()
+    for keywords, cat in _SKILL_CATEGORY_MAP:
+        if any(kw in lower for kw in keywords):
+            return cat
+    return "OTHER"
+
+
+def _sources_to_labels(sources: list[str]) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for src in sources:
+        label = _SOURCE_LABEL_MAP.get(src)
+        if label and label not in seen:
+            seen.add(label)
+            labels.append(label)
+    return labels
+
+
+@dataclass
+class EvidenceObject:
+    evidence_type: str   # recording_keyframe | ocr_text | dom_text | qwen_visual | github_file | live_check | transcript | document
+    source_name: str
+    confidence: Literal["high", "medium", "low"]
+    short_summary: str
+    timestamp_seconds: float | None = None
+    keyframe_url: str | None = None
+    text_snippet: str | None = None
+    file_path: str | None = None
+    line_range: str | None = None
+    route_url: str | None = None
+    recruiter_safe: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "evidence_type":     self.evidence_type,
+            "source_name":       self.source_name,
+            "confidence":        self.confidence,
+            "short_summary":     self.short_summary,
+            "timestamp_seconds": self.timestamp_seconds,
+            "keyframe_url":      self.keyframe_url,
+            "text_snippet":      self.text_snippet,
+            "file_path":         self.file_path,
+            "line_range":        self.line_range,
+            "route_url":         self.route_url,
+            "recruiter_safe":    self.recruiter_safe,
+        }
+
+
+@dataclass
+class DetectedSkillEntry:
+    skill: str
+    confidence: Literal["high", "medium", "low"]
+    evidence_support: str
+    sources: list[str]
+    is_inferred: bool = False  # True when not in the student's claimed_skills
+    status_label: str = ""     # e.g. "claimed — strongly supported" / "inferred from evidence"
+    keyframe_evidence: list[str] = field(default_factory=list)
+    github_evidence: list[str] = field(default_factory=list)
+    category: str = "OTHER"
+    source_labels: list[str] = field(default_factory=list)
+    evidence_objects: list[EvidenceObject] = field(default_factory=list)
+
+    @property
+    def evidence_count(self) -> int:
+        return len(self.evidence_objects)
+
+    @property
+    def sources_count(self) -> int:
+        return len(self.source_labels)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "skill": self.skill,
+            "confidence": self.confidence,
+            "evidence_support": self.evidence_support,
+            "sources": self.sources,
+            "is_inferred": self.is_inferred,
+            "status_label": self.status_label,
+            "keyframe_evidence": self.keyframe_evidence,
+            "github_evidence": self.github_evidence,
+            "category": self.category,
+            "source_labels": self.source_labels,
+            "evidence_count": self.evidence_count,
+            "sources_count": self.sources_count,
+            "evidence_objects": [e.to_dict() for e in self.evidence_objects],
+        }
+
+
+@dataclass
+class DetectedCapability:
+    role_title: str
+    confidence: Literal["high", "medium", "low"]
+    why_detected: list[str]
+    supporting_skills: list[DetectedSkillEntry]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "role_title": self.role_title,
+            "confidence": self.confidence,
+            "why_detected": self.why_detected,
+            "supporting_skills": [s.to_dict() for s in self.supporting_skills],
+        }
+
+
+# Role profiles for mapping skill clusters → high-level role titles
+# Each entry: (role_title, primary_keywords, secondary_keywords, inferred_extra_skills)
+_ROLE_PROFILES: list[tuple[str, list[str], list[str], list[str]]] = [
+    (
+        "AI / Data Visualization Engineer",
+        ["visualization", "data viz", "chart", "plot", "d3", "observable", "vega",
+         "plotly", "matplotlib", "seaborn", "chart analysis"],
+        ["javascript", "typescript", "open source", "data analysis", "interactive",
+         "dashboard", "technical documentation"],
+        ["JavaScript", "Technical Documentation", "Open Source Project Understanding",
+         "Data Analysis", "Frontend Development"],
+    ),
+    (
+        "ML / AI Engineer",
+        ["machine learning", "deep learning", "neural network", "ai model", "tensorflow",
+         "pytorch", "transformers", "llm", "nlp", "computer vision"],
+        ["python", "data science", "mlops", "api integration", "model evaluation",
+         "inference"],
+        ["Python", "Model Evaluation", "API Integration", "Data Engineering", "MLOps"],
+    ),
+    (
+        "Data Scientist",
+        ["data science", "statistics", "pandas", "numpy", "jupyter", "r programming",
+         "statistical analysis", "eda"],
+        ["python", "visualization", "machine learning", "sql", "hypothesis testing",
+         "feature engineering"],
+        ["Python", "Statistical Analysis", "Data Visualization", "SQL"],
+    ),
+    (
+        "Frontend / Web Engineer",
+        ["frontend", "react", "vue", "angular", "html", "css", "ui", "ux",
+         "web development"],
+        ["javascript", "typescript", "responsive design", "accessibility", "web app"],
+        ["JavaScript", "TypeScript", "API Integration", "Responsive Design"],
+    ),
+    (
+        "Full Stack Engineer",
+        ["full stack", "fullstack", "backend", "django", "fastapi", "flask", "node",
+         "express", "rest api"],
+        ["javascript", "python", "database", "deployment", "devops", "docker"],
+        ["API Design", "Database", "Deployment", "JavaScript"],
+    ),
+    (
+        "Software Engineer",
+        ["software", "programming", "algorithm", "open source", "code", "github",
+         "version control", "software development"],
+        ["javascript", "python", "typescript", "java", "testing", "documentation",
+         "clean code"],
+        ["Software Design", "Testing", "Documentation", "Version Control"],
+    ),
+]
+
+ActionType = Literal[
+    "run_github_analysis",
+    "add_github_url",
+    "run_live_website_check",
+    "upload_document",
+    "record_followup_proof",
+    "add_linkedin_proof",
+    "record_camera_proof",
+    "record_cad_proof",
+    "record_presentation",
+]
+
+
+@dataclass
+class NextBestAction:
+    action_type: ActionType
+    target_skill: str
+    reason: str
+    objective: str
+    button_label: str
+    priority: Literal["high", "medium", "low"]
+    is_recording: bool
+    recommended_duration: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action_type": self.action_type,
+            "target_skill": self.target_skill,
+            "reason": self.reason,
+            "objective": self.objective,
+            "button_label": self.button_label,
+            "priority": self.priority,
+            "is_recording": self.is_recording,
+            "recommended_duration": self.recommended_duration,
+        }
+
+
+@dataclass
+class EvidenceSourceResult:
+    key: EvidenceSourceKey
+    status: Literal["pass", "partial", "missing", "not_run", "not_available"]
+    score: int  # 0–100 contribution
+    weight: float
+    notes: str = ""
+
+
+@dataclass
+class GroupedSkillEvidence:
+    """One category group of skills for the grouped skill evidence UI."""
+    group_name: str
+    category: str
+    confidence: Literal["high", "medium", "low"]
+    evidence_count: int
+    sources_count: int
+    source_labels: list[str]
+    skills: list[DetectedSkillEntry]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "group_name":    self.group_name,
+            "category":      self.category,
+            "confidence":    self.confidence,
+            "evidence_count": self.evidence_count,
+            "sources_count": self.sources_count,
+            "source_labels": self.source_labels,
+            "skills":        [s.to_dict() for s in self.skills],
+        }
+
+
+@dataclass
+class FinalEvaluationResult:
+    proof_session_id: str
+    final_score: int
+    confidence: Literal["high", "medium", "low"]
+    evidence_sources_used: list[EvidenceSourceKey]
+    evidence_sources_missing: list[EvidenceSourceKey]
+    per_skill_scores: dict[str, int]
+    evidence_source_breakdown: list[dict[str, Any]]
+    final_recruiter_summary: str
+    final_student_summary: str
+    next_best_actions: list[dict[str, Any]]
+    strong_proof: bool  # True when final_score >= 80
+    detected_capability: DetectedCapability | None = None
+    detected_additional_skills: list[DetectedSkillEntry] = field(default_factory=list)
+    grouped_skill_evidence: list[GroupedSkillEvidence] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "proof_session_id": self.proof_session_id,
+            "final_score": self.final_score,
+            "confidence": self.confidence,
+            "evidence_sources_used": list(self.evidence_sources_used),
+            "evidence_sources_missing": list(self.evidence_sources_missing),
+            "per_skill_scores": self.per_skill_scores,
+            "evidence_source_breakdown": self.evidence_source_breakdown,
+            "final_recruiter_summary": self.final_recruiter_summary,
+            "final_student_summary": self.final_student_summary,
+            "next_best_actions": self.next_best_actions,
+            "strong_proof": self.strong_proof,
+            "detected_capability": self.detected_capability.to_dict() if self.detected_capability else None,
+            "detected_additional_skills": [s.to_dict() for s in self.detected_additional_skills],
+            "grouped_skill_evidence": [g.to_dict() for g in self.grouped_skill_evidence],
+        }
+
+
+# ── Scoring weights ───────────────────────────────────────────────────────────
+
+_SOURCE_WEIGHTS: dict[EvidenceSourceKey, float] = {
+    "website_workflow":       0.25,
+    "dom_visible_evidence":   0.15,
+    "video_keyframes":        0.10,
+    "ocr":                    0.10,
+    "qwen_visual_reasoning":  0.10,
+    "github":                 0.15,
+    "live_website_check":     0.05,
+    "project_defense":        0.10,
+}
+
+
+def _clamp(v: int, lo: int = 0, hi: int = 100) -> int:
+    return max(lo, min(hi, v))
+
+
+# ── Service ───────────────────────────────────────────────────────────────────
+
+class FinalEvidenceEvaluatorService:
+    """Combines all available evidence sources and produces a final score.
+
+    Usage (sync — follows existing pattern in this repo):
+        svc = FinalEvidenceEvaluatorService(db)
+        result = svc.evaluate(user_id=..., session_id=..., claimed_skills=..., github_url=...)
+    """
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    # ── Data loaders ──────────────────────────────────────────────────────────
+
+    def _load_workflow_analysis(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        try:
+            resp = (
+                self._db.table(_WF_TABLE)
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("proof_session_id", session_id)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = resp.data or []
+            return rows[0] if rows else None
+        except Exception:
+            logger.warning("FinalEvaluator: workflow analysis load failed", exc_info=True)
+            return None
+
+    def _load_github_analysis(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        try:
+            resp = (
+                self._db.table(_GH_TABLE)
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("proof_session_id", session_id)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = resp.data or []
+            return rows[0] if rows else None
+        except Exception:
+            logger.warning("FinalEvaluator: GitHub analysis load failed", exc_info=True)
+            return None
+
+    def _load_live_website_check(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        try:
+            resp = (
+                self._db.table(_LW_TABLE)
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("proof_session_id", session_id)
+                .order("checked_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = resp.data or []
+            return rows[0] if rows else None
+        except Exception:
+            logger.warning("FinalEvaluator: live website check load failed", exc_info=True)
+            return None
+
+    def _load_project_defense(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        try:
+            resp = (
+                self._db.table(_PD_TABLE)
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("proof_session_id", session_id)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = resp.data or []
+            return rows[0] if rows else None
+        except Exception:
+            logger.warning("FinalEvaluator: project defense load failed", exc_info=True)
+            return None
+
+    def _count_video_keyframes(self, user_id: str, session_id: str) -> int:
+        try:
+            resp = (
+                self._db.table(_VF_TABLE)
+                .select("id", count="exact")
+                .eq("user_id", user_id)
+                .eq("proof_session_id", session_id)
+                .eq("frame_type", "video_keyframe")
+                .execute()
+            )
+            if hasattr(resp, "count") and resp.count is not None:
+                return int(resp.count)
+            return len(resp.data or [])
+        except Exception:
+            return 0
+
+    # ── Score individual sources ──────────────────────────────────────────────
+
+    def _score_workflow(self, wf: dict[str, Any] | None) -> EvidenceSourceResult:
+        if wf is None:
+            return EvidenceSourceResult("website_workflow", "not_run", 0, _SOURCE_WEIGHTS["website_workflow"])
+        raw_score = wf.get("evidence_strength_score") or 0
+        score = _clamp(int(raw_score))
+        conf = wf.get("workflow_confidence", "insufficient")
+        if score >= 60:
+            status = "pass"
+        elif score >= 30:
+            status = "partial"
+        else:
+            status = "missing"
+        return EvidenceSourceResult(
+            "website_workflow", status, score, _SOURCE_WEIGHTS["website_workflow"],
+            notes=f"workflow confidence={conf}",
+        )
+
+    def _score_dom(self, wf: dict[str, Any] | None) -> EvidenceSourceResult:
+        if wf is None:
+            return EvidenceSourceResult("dom_visible_evidence", "not_run", 0, _SOURCE_WEIGHTS["dom_visible_evidence"])
+        vis = wf.get("visible_evidence_status", "not_captured")
+        actions = len(wf.get("demonstrated_actions") or [])
+        if vis == "available" and actions > 3:
+            return EvidenceSourceResult("dom_visible_evidence", "pass", 80, _SOURCE_WEIGHTS["dom_visible_evidence"])
+        if vis in ("available", "partial") or actions > 0:
+            return EvidenceSourceResult("dom_visible_evidence", "partial", 50, _SOURCE_WEIGHTS["dom_visible_evidence"])
+        return EvidenceSourceResult("dom_visible_evidence", "missing", 10, _SOURCE_WEIGHTS["dom_visible_evidence"])
+
+    def _score_video_keyframes(self, kf_count: int) -> EvidenceSourceResult:
+        if kf_count >= 3:
+            return EvidenceSourceResult("video_keyframes", "pass", 90, _SOURCE_WEIGHTS["video_keyframes"])
+        if kf_count >= 1:
+            return EvidenceSourceResult("video_keyframes", "partial", 60, _SOURCE_WEIGHTS["video_keyframes"])
+        return EvidenceSourceResult("video_keyframes", "not_run", 0, _SOURCE_WEIGHTS["video_keyframes"])
+
+    def _score_ocr(self, wf: dict[str, Any] | None) -> EvidenceSourceResult:
+        if wf is None:
+            return EvidenceSourceResult("ocr", "not_run", 0, _SOURCE_WEIGHTS["ocr"])
+        status = wf.get("visual_analysis_status", "not_configured")
+        if status == "analyzed":
+            return EvidenceSourceResult("ocr", "pass", 80, _SOURCE_WEIGHTS["ocr"])
+        if status in ("not_configured", "not_available"):
+            return EvidenceSourceResult("ocr", "not_run", 0, _SOURCE_WEIGHTS["ocr"],
+                                        notes="OCR not configured")
+        return EvidenceSourceResult("ocr", "partial", 40, _SOURCE_WEIGHTS["ocr"])
+
+    def _score_qwen(self, wf: dict[str, Any] | None) -> EvidenceSourceResult:
+        if wf is None:
+            return EvidenceSourceResult("qwen_visual_reasoning", "not_run", 0, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
+        vrs = wf.get("visual_reasoning_summary") or {}
+        if isinstance(vrs, str):
+            try:
+                import json as _json
+                vrs = _json.loads(vrs)
+            except Exception:
+                vrs = {}
+        if not isinstance(vrs, dict):
+            return EvidenceSourceResult("qwen_visual_reasoning", "not_run", 0, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
+        qwen_status = vrs.get("status", "disabled")
+        if qwen_status == "analyzed":
+            frames = int(vrs.get("frames_analyzed") or 0)
+            score = min(90, 50 + frames * 15)
+            return EvidenceSourceResult("qwen_visual_reasoning", "pass", score, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
+        if qwen_status in ("disabled", "not_configured"):
+            return EvidenceSourceResult("qwen_visual_reasoning", "not_available", 0, _SOURCE_WEIGHTS["qwen_visual_reasoning"],
+                                        notes="VISUAL_REASONING_ENABLED=false")
+        if qwen_status == "skipped":
+            return EvidenceSourceResult("qwen_visual_reasoning", "not_run", 0, _SOURCE_WEIGHTS["qwen_visual_reasoning"],
+                                        notes="frames skipped (resource limit)")
+        return EvidenceSourceResult("qwen_visual_reasoning", "missing", 20, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
+
+    def _score_github(self, gh: dict[str, Any] | None) -> EvidenceSourceResult:
+        if gh is None:
+            return EvidenceSourceResult("github", "not_run", 0, _SOURCE_WEIGHTS["github"])
+        if gh.get("status") == "success":
+            score = _clamp(int((gh.get("confidence_score") or 0) * 100))
+            matched = len(gh.get("matched_claimed_skills") or [])
+            combined = min(100, score + matched * 5)
+            return EvidenceSourceResult("github", "pass" if combined >= 50 else "partial",
+                                        combined, _SOURCE_WEIGHTS["github"])
+        return EvidenceSourceResult("github", "missing", 10, _SOURCE_WEIGHTS["github"])
+
+    def _score_live_website(self, lw: dict[str, Any] | None) -> EvidenceSourceResult:
+        if lw is None:
+            return EvidenceSourceResult("live_website_check", "not_run", 0, _SOURCE_WEIGHTS["live_website_check"])
+        if lw.get("is_reachable"):
+            return EvidenceSourceResult("live_website_check", "pass", 90, _SOURCE_WEIGHTS["live_website_check"])
+        return EvidenceSourceResult("live_website_check", "missing", 20, _SOURCE_WEIGHTS["live_website_check"])
+
+    def _score_project_defense(self, pd: dict[str, Any] | None) -> EvidenceSourceResult:
+        if pd is None:
+            return EvidenceSourceResult("project_defense", "not_run", 0, _SOURCE_WEIGHTS["project_defense"])
+        analysis_status = pd.get("analysis_status", "not_started")
+        if analysis_status == "analyzed":
+            score_val = _clamp(int(pd.get("overall_score") or 0))
+            return EvidenceSourceResult("project_defense", "pass" if score_val >= 60 else "partial",
+                                        score_val, _SOURCE_WEIGHTS["project_defense"])
+        transcript = str(pd.get("transcript_text") or "")
+        if len(transcript) > 50:
+            return EvidenceSourceResult("project_defense", "partial", 40, _SOURCE_WEIGHTS["project_defense"])
+        return EvidenceSourceResult("project_defense", "not_run", 0, _SOURCE_WEIGHTS["project_defense"])
+
+    # ── Score combination ─────────────────────────────────────────────────────
+
+    def _combine_scores(self, sources: list[EvidenceSourceResult]) -> int:
+        """Weighted average over sources that were actually run."""
+        run_sources = [s for s in sources if s.status not in ("not_run", "not_available")]
+        if not run_sources:
+            return 0
+        total_weight = sum(s.weight for s in run_sources)
+        if total_weight == 0:
+            return 0
+        weighted_sum = sum(s.score * s.weight for s in run_sources)
+        raw = weighted_sum / total_weight
+        # Bonus if multiple source types agree (breadth bonus up to +5)
+        pass_count = sum(1 for s in run_sources if s.status == "pass")
+        bonus = min(5, pass_count)
+        return _clamp(int(raw + bonus))
+
+    def _confidence_label(
+        self,
+        final_score: int,
+        sources_used: list[EvidenceSourceKey],
+    ) -> Literal["high", "medium", "low"]:
+        n = len(sources_used)
+        if n >= 4 and final_score >= 70:
+            return "high"
+        if n >= 2 and final_score >= 50:
+            return "medium"
+        return "low"
+
+    # ── Per-skill scoring ─────────────────────────────────────────────────────
+
+    def _per_skill_scores(
+        self,
+        claimed_skills: list[str],
+        wf: dict[str, Any] | None,
+        gh: dict[str, Any] | None,
+    ) -> dict[str, int]:
+        result: dict[str, int] = {}
+        supported = set(s.lower() for s in (wf or {}).get("supported_skills") or [])
+        partial   = set(s.lower() for s in (wf or {}).get("weakly_supported_skills") or [])
+        gh_matched = set(s.lower() for s in (gh or {}).get("matched_claimed_skills") or []) if gh else set()
+        gh_weak    = set(s.lower() for s in (gh or {}).get("weakly_matched_claimed_skills") or []) if gh else set()
+
+        for skill in claimed_skills:
+            key = skill.lower()
+            base = 0
+            if key in supported:
+                base += 60
+            elif key in partial:
+                base += 35
+            if key in gh_matched:
+                base += 25
+            elif key in gh_weak:
+                base += 12
+            result[skill] = _clamp(base)
+        return result
+
+    # ── Detected Skill Profile inference ─────────────────────────────────────
+
+    def _collect_all_evidence_skills(
+        self,
+        claimed_skills: list[str],
+        wf: dict[str, Any] | None,
+        gh: dict[str, Any] | None,
+    ) -> dict[str, DetectedSkillEntry]:
+        """Collect all skills from evidence sources, keyed by lowercase skill name."""
+        entries: dict[str, DetectedSkillEntry] = {}
+        claimed_lower = {s.lower() for s in claimed_skills}
+
+        def _add(skill: str, confidence: Literal["high", "medium", "low"],
+                 support: str, source: str) -> None:
+            key = skill.lower()
+            is_inferred = key not in claimed_lower
+            if key in entries:
+                existing = entries[key]
+                if source not in existing.sources:
+                    existing.sources.append(source)
+                if confidence == "high" and existing.confidence != "high":
+                    entries[key] = DetectedSkillEntry(
+                        skill=existing.skill, confidence="high",
+                        evidence_support=support, sources=existing.sources,
+                        is_inferred=is_inferred,
+                    )
+            else:
+                entries[key] = DetectedSkillEntry(
+                    skill=skill, confidence=confidence,
+                    evidence_support=support, sources=[source],
+                    is_inferred=is_inferred,
+                )
+
+        # ── Claimed skills themselves ──────────────────────────────────────
+        for s in claimed_skills:
+            _add(s, "low", "Student self-claimed", "claimed")
+
+        # ── Workflow evidence ──────────────────────────────────────────────
+        if wf:
+            for s in (wf.get("supported_skills") or []):
+                _add(s, "high", "Supported by workflow recording and AI analysis", "workflow")
+            for s in (wf.get("weakly_supported_skills") or []):
+                _add(s, "medium", "Partially supported by workflow recording", "workflow")
+
+            # Qwen visual reasoning signals
+            vrs = wf.get("visual_reasoning_summary") or {}
+            if isinstance(vrs, str):
+                try:
+                    import json as _j
+                    vrs = _j.loads(vrs)
+                except Exception:
+                    vrs = {}
+            if isinstance(vrs, dict) and vrs.get("status") == "analyzed":
+                for sig in (vrs.get("supported_signals") or []):
+                    _add(str(sig), "medium", "Evidence suggests this skill from visual frame analysis", "Qwen")
+
+            # OCR skill signals
+            ocr_summary = wf.get("frame_ocr_evidence_summary") or {}
+            if isinstance(ocr_summary, dict):
+                for sig in (ocr_summary.get("skill_signals") or []):
+                    if isinstance(sig, dict) and sig.get("ocr_support") == "partial":
+                        _add(
+                            str(sig.get("skill", "")),
+                            "medium",
+                            sig.get("reasoning", "Partially supported by OCR text analysis")[:120],
+                            "OCR",
+                        )
+
+        # ── GitHub evidence ────────────────────────────────────────────────
+        if gh and gh.get("status") == "success":
+            for s in (gh.get("matched_claimed_skills") or []):
+                _add(s, "high", "Supported by GitHub repository analysis", "GitHub")
+            for s in (gh.get("weakly_matched_claimed_skills") or []):
+                _add(s, "medium", "Partially supported by GitHub repository", "GitHub")
+            # Tech stack detected from repo (may not be in claimed skills)
+            for tech in (gh.get("detected_stack") or []):
+                if tech and len(tech) <= 40:
+                    _add(tech, "medium", "Detected in GitHub repository tech stack", "GitHub")
+
+        # ── Post-process: proof references, status labels, category, evidence_objects ──
+        kf_status = (wf or {}).get("video_keyframe_status")
+        kf_count = int((wf or {}).get("video_keyframe_count") or 0)
+        kf_timestamps: list[int] = (wf or {}).get("video_keyframe_timestamps_ms") or []
+        gh_stack: list[str] = [str(s) for s in ((gh or {}).get("detected_stack") or [])]
+        gh_matched: set[str] = {s.lower() for s in ((gh or {}).get("matched_claimed_skills") or [])}
+        gh_repo_url: str = str((gh or {}).get("github_url") or "")
+        recording_sources = {"workflow", "Qwen", "OCR"}
+
+        # Qwen reasoning summary for per-skill evidence objects
+        vrs_for_obj: dict[str, Any] = {}
+        if wf:
+            _vrs = wf.get("visual_reasoning_summary") or {}
+            if isinstance(_vrs, str):
+                try:
+                    import json as _jj
+                    _vrs = _jj.loads(_vrs)
+                except Exception:
+                    _vrs = {}
+            if isinstance(_vrs, dict):
+                vrs_for_obj = _vrs
+
+        for entry in entries.values():
+            in_claimed = entry.skill.lower() in claimed_lower
+
+            # Category
+            entry.category = _skill_category(entry.skill)
+
+            # Source labels
+            entry.source_labels = _sources_to_labels(entry.sources)
+
+            # Status label — recruiter-safe wording
+            if in_claimed:
+                if entry.confidence == "high":
+                    entry.status_label = "claimed — strongly supported"
+                elif entry.confidence == "medium":
+                    entry.status_label = "claimed — partially supported"
+                else:
+                    entry.status_label = "claimed"
+            else:
+                if entry.confidence == "high":
+                    entry.status_label = "inferred — strongly supported"
+                elif entry.confidence == "medium":
+                    entry.status_label = "inferred from evidence"
+                else:
+                    entry.status_label = "inferred (low confidence)"
+
+            # Keyframe proof references + evidence objects
+            if any(s in recording_sources for s in entry.sources):
+                if kf_count > 0 and kf_status == "extracted":
+                    ts_labels = [f"{ts / 1000:.1f}s" for ts in kf_timestamps[:3]]
+                    ts_str = ", ".join(ts_labels)
+                    entry.keyframe_evidence.append(
+                        f"Recording keyframes captured — {kf_count} frame{'s' if kf_count != 1 else ''}"
+                        + (f" (at {ts_str})" if ts_str else "")
+                    )
+                    # Build evidence objects for recording keyframes
+                    for ts_ms in kf_timestamps[:3]:
+                        entry.evidence_objects.append(EvidenceObject(
+                            evidence_type="recording_keyframe",
+                            source_name="Recording",
+                            confidence=entry.confidence,
+                            short_summary=f"Keyframe at {ts_ms / 1000:.1f}s — workflow evidence captured",
+                            timestamp_seconds=ts_ms / 1000.0,
+                            keyframe_url=None,  # not available without storage URL
+                            recruiter_safe=True,
+                        ))
+                elif kf_count > 0:
+                    entry.keyframe_evidence.append(f"Video frames captured ({kf_count})")
+                    entry.evidence_objects.append(EvidenceObject(
+                        evidence_type="recording_keyframe",
+                        source_name="Recording",
+                        confidence="medium",
+                        short_summary=f"Keyframe evidence captured — screenshot preview coming soon",
+                        recruiter_safe=True,
+                    ))
+                else:
+                    entry.keyframe_evidence.append(
+                        "Keyframe evidence captured — screenshot preview coming soon"
+                    )
+
+            # OCR evidence objects
+            if "OCR" in entry.sources:
+                ocr_summary = (wf or {}).get("frame_ocr_evidence_summary") or {}
+                if isinstance(ocr_summary, dict):
+                    for sig in (ocr_summary.get("skill_signals") or []):
+                        if isinstance(sig, dict) and sig.get("skill", "").lower() == entry.skill.lower():
+                            snippet = str(sig.get("reasoning", ""))[:100]
+                            entry.evidence_objects.append(EvidenceObject(
+                                evidence_type="ocr_text",
+                                source_name="OCR",
+                                confidence="medium",
+                                short_summary=snippet or "OCR text analysis detected relevant terms",
+                                text_snippet=snippet or None,
+                                recruiter_safe=True,
+                            ))
+
+            # Qwen evidence objects
+            if "Qwen" in entry.sources and vrs_for_obj.get("status") == "analyzed":
+                entry.evidence_objects.append(EvidenceObject(
+                    evidence_type="qwen_visual",
+                    source_name="Qwen",
+                    confidence="medium",
+                    short_summary=(
+                        vrs_for_obj.get("summary", "Qwen visual reasoning detected skill-related content")[:120]
+                        or "Qwen visual frame analysis supports this skill"
+                    ),
+                    recruiter_safe=True,
+                ))
+
+            # GitHub proof references + evidence objects
+            if "GitHub" in entry.sources and gh and gh.get("status") == "success":
+                if gh_stack:
+                    entry.github_evidence.append(
+                        f"Tech stack detected: {', '.join(gh_stack[:5])}"
+                    )
+                if entry.skill.lower() in gh_matched:
+                    entry.github_evidence.append(
+                        "Skill directly matched in GitHub repository analysis"
+                    )
+                entry.github_evidence.append("Repository source files analyzed for evidence")
+
+                # Evidence objects for GitHub
+                if entry.skill.lower() in gh_matched:
+                    entry.evidence_objects.append(EvidenceObject(
+                        evidence_type="github_file",
+                        source_name="GitHub",
+                        confidence="high",
+                        short_summary=f"Skill matched in GitHub repository analysis",
+                        route_url=gh_repo_url or None,
+                        recruiter_safe=True,
+                    ))
+                elif gh_stack:
+                    entry.evidence_objects.append(EvidenceObject(
+                        evidence_type="github_file",
+                        source_name="GitHub",
+                        confidence="medium",
+                        short_summary=f"Inferred from GitHub tech stack: {', '.join(gh_stack[:3])}",
+                        route_url=gh_repo_url or None,
+                        recruiter_safe=True,
+                    ))
+
+        return entries
+
+    def _build_grouped_skill_evidence(
+        self,
+        all_skill_entries: dict[str, DetectedSkillEntry],
+    ) -> list[GroupedSkillEvidence]:
+        """Group detected skills by category for the grouped skill evidence UI."""
+        if not all_skill_entries:
+            return []
+
+        # Only include skills with at least medium confidence OR claimed skills
+        visible = [
+            e for e in all_skill_entries.values()
+            if e.confidence in ("high", "medium") or not e.is_inferred
+        ]
+
+        # Group by category
+        by_category: dict[str, list[DetectedSkillEntry]] = {}
+        for entry in visible:
+            by_category.setdefault(entry.category, []).append(entry)
+
+        groups: list[GroupedSkillEvidence] = []
+        for category, skills in by_category.items():
+            # Sort within group: high confidence first, then claimed
+            skills.sort(key=lambda e: (
+                0 if e.confidence == "high" else 1 if e.confidence == "medium" else 2,
+                1 if e.is_inferred else 0,
+                e.skill,
+            ))
+
+            # Group confidence = best confidence among members
+            best_conf: Literal["high", "medium", "low"] = "low"
+            for sk in skills:
+                if sk.confidence == "high":
+                    best_conf = "high"
+                    break
+                if sk.confidence == "medium":
+                    best_conf = "medium"
+
+            # Aggregate source labels across all skills in group
+            all_source_labels: list[str] = []
+            seen_labels: set[str] = set()
+            for sk in skills:
+                for lbl in sk.source_labels:
+                    if lbl not in seen_labels:
+                        seen_labels.add(lbl)
+                        all_source_labels.append(lbl)
+
+            # Total evidence objects across group
+            total_evidence = sum(sk.evidence_count for sk in skills)
+
+            # Group name: use the first (highest confidence) skill name as label,
+            # or build a readable name from the category
+            _CATEGORY_DISPLAY: dict[str, str] = {
+                "DATA":          "Data & Visualization",
+                "FRONTEND":      "JavaScript / Frontend",
+                "AI/ML":         "AI / Machine Learning",
+                "DOCUMENTATION": "Technical Documentation",
+                "OPEN_SOURCE":   "GitHub / Open Source",
+                "BACKEND":       "Backend / API Development",
+                "DEVOPS":        "DevOps / Deployment",
+                "PRODUCT":       "Product Demo / Workflow",
+                "OTHER":         "General Skills",
+            }
+            group_name = _CATEGORY_DISPLAY.get(category, category)
+
+            groups.append(GroupedSkillEvidence(
+                group_name=group_name,
+                category=category,
+                confidence=best_conf,
+                evidence_count=total_evidence,
+                sources_count=len(all_source_labels),
+                source_labels=all_source_labels,
+                skills=skills,
+            ))
+
+        # Sort groups: high confidence first, then by evidence count desc
+        groups.sort(key=lambda g: (
+            0 if g.confidence == "high" else 1 if g.confidence == "medium" else 2,
+            -g.evidence_count,
+        ))
+        return groups
+
+    def _infer_skill_profile(
+        self,
+        claimed_skills: list[str],
+        all_skill_entries: dict[str, DetectedSkillEntry],
+    ) -> DetectedCapability | None:
+        """Map observed skills to a high-level role capability."""
+        if not all_skill_entries:
+            return None
+
+        all_names_lower = list(all_skill_entries.keys())
+
+        best_role: str | None = None
+        best_primary_count = 0
+        best_secondary_count = 0
+
+        for role_title, primary_kws, secondary_kws, _ in _ROLE_PROFILES:
+            pri = sum(
+                1 for kw in primary_kws
+                if any(kw in name for name in all_names_lower)
+            )
+            sec = sum(
+                1 for kw in secondary_kws
+                if any(kw in name for name in all_names_lower)
+            )
+            if (pri > best_primary_count or
+                    (pri == best_primary_count and sec > best_secondary_count)):
+                best_primary_count = pri
+                best_secondary_count = sec
+                best_role = role_title
+
+        if best_role is None or best_primary_count == 0:
+            return None
+
+        # Confidence
+        if best_primary_count >= 3:
+            confidence: Literal["high", "medium", "low"] = "high"
+        elif best_primary_count >= 1:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        # Build "why detected" reasons
+        why: list[str] = []
+        high_skills = [e for e in all_skill_entries.values() if e.confidence == "high"]
+        medium_skills = [e for e in all_skill_entries.values() if e.confidence == "medium"]
+
+        if any("workflow" in e.sources for e in high_skills):
+            why.append("Student demonstrated a relevant workflow in the browser recording.")
+        if any("Qwen" in e.sources for e in (high_skills + medium_skills)):
+            why.append("Visual frame analysis detected skill-related content on screen.")
+        if any("OCR" in e.sources for e in (high_skills + medium_skills)):
+            why.append("OCR analysis found relevant technical terminology in screen text.")
+        if any("GitHub" in e.sources for e in (high_skills + medium_skills)):
+            why.append("GitHub repository evidence supports code-level skill demonstration.")
+        if not why:
+            why.append("Evidence suggests this capability based on observed workflow patterns.")
+
+        # Supporting skills: include all with medium+ confidence
+        supporting = [
+            e for e in all_skill_entries.values()
+            if e.confidence in ("high", "medium")
+        ]
+        # Sort: high confidence first, then claimed, then alpha
+        supporting.sort(key=lambda e: (
+            0 if e.confidence == "high" else 1,
+            1 if e.is_inferred else 0,
+            e.skill,
+        ))
+
+        return DetectedCapability(
+            role_title=best_role,
+            confidence=confidence,
+            why_detected=why[:5],
+            supporting_skills=supporting[:12],
+        )
+
+    # ── Next Best Action engine ───────────────────────────────────────────────
+
+    def _next_best_actions(
+        self,
+        sources: list[EvidenceSourceResult],
+        claimed_skills: list[str],
+        github_url: str | None,
+        final_score: int,
+        detected_skills: dict[str, DetectedSkillEntry] | None = None,
+    ) -> list[NextBestAction]:
+        """Return up to 5 prioritised next best actions.
+
+        Never always-records; recording is the last resort if no other action applies.
+        """
+        actions: list[NextBestAction] = []
+        source_map = {s.key: s for s in sources}
+
+        # ── GitHub gap ────────────────────────────────────────────────────────
+        gh = source_map.get("github")
+        code_skills = [s for s in claimed_skills
+                       if any(kw in s.lower() for kw in ("javascript", "python", "code", "typescript",
+                                                          "open source", "github", "programming",
+                                                          "react", "vue", "angular", "node", "java",
+                                                          "c++", "rust", "go", "swift"))]
+
+        if gh and gh.status in ("not_run", "missing") and code_skills:
+            if github_url:
+                actions.append(NextBestAction(
+                    action_type="run_github_analysis",
+                    target_skill=code_skills[0],
+                    reason=(
+                        f"{code_skills[0]} evidence is weak because the repository "
+                        "has not been analyzed yet."
+                    ),
+                    objective="Analyze the GitHub repository to extract code evidence for claimed skills.",
+                    button_label="Run GitHub Evidence Analysis",
+                    priority="high",
+                    is_recording=False,
+                ))
+            else:
+                actions.append(NextBestAction(
+                    action_type="add_github_url",
+                    target_skill=code_skills[0],
+                    reason=(
+                        f"{code_skills[0]} is claimed but no GitHub repository URL was provided."
+                    ),
+                    objective="Add a public GitHub repository URL to enable code evidence analysis.",
+                    button_label="Add GitHub URL",
+                    priority="high",
+                    is_recording=False,
+                ))
+
+        # ── Live website gap ──────────────────────────────────────────────────
+        lw = source_map.get("live_website_check")
+        deploy_skills = [s for s in claimed_skills
+                         if any(kw in s.lower() for kw in ("deploy", "hosting", "live", "production",
+                                                            "web dev", "website", "web application",
+                                                            "full stack", "fullstack", "saas"))]
+        if lw and lw.status in ("not_run",) and (deploy_skills or len(actions) == 0):
+            target = deploy_skills[0] if deploy_skills else (claimed_skills[0] if claimed_skills else "Website")
+            actions.append(NextBestAction(
+                action_type="run_live_website_check",
+                target_skill=target,
+                reason="Live website accessibility has not been verified.",
+                objective="Confirm the site is publicly reachable and returns a valid HTTP response.",
+                button_label="Run Live Website Check",
+                priority="medium",
+                is_recording=False,
+            ))
+
+        # ── Project defense / transcript gap ──────────────────────────────────
+        pd = source_map.get("project_defense")
+        if pd and pd.status == "not_run" and len(actions) < 5:
+            defense_skills = [s for s in claimed_skills
+                              if any(kw in s.lower() for kw in (
+                                  "civil", "mechanical", "structural", "design",
+                                  "cad", "simulation", "presentation", "defense",
+                                  "explanation", "communication",
+                              ))]
+            target = defense_skills[0] if defense_skills else None
+            if target:
+                actions.append(NextBestAction(
+                    action_type="record_presentation",
+                    target_skill=target,
+                    reason=f"{target} evidence is stronger with a project defense or verbal explanation.",
+                    objective="Record a short verbal walkthrough of your project or skill demonstration.",
+                    button_label="Add Project Defense",
+                    priority="medium",
+                    is_recording=True,
+                    recommended_duration="2–5 minutes",
+                ))
+
+        # ── Document / PDF gap (research, reports, certifications) ────────────
+        doc_skills = [s for s in claimed_skills
+                      if any(kw in s.lower() for kw in (
+                          "research", "report", "analysis", "academic", "thesis",
+                          "certification", "certified", "certificate", "transcript",
+                          "documentation", "technical writing",
+                      ))]
+        if doc_skills and len(actions) < 5:
+            actions.append(NextBestAction(
+                action_type="upload_document",
+                target_skill=doc_skills[0],
+                reason=f"{doc_skills[0]} is better supported by uploading a document or report.",
+                objective="Upload a PDF report, certificate, research paper, or academic transcript.",
+                button_label="Upload Document",
+                priority="medium",
+                is_recording=False,
+            ))
+
+        # ── LinkedIn / profile gap ────────────────────────────────────────────
+        profile_skills = [s for s in claimed_skills
+                          if any(kw in s.lower() for kw in (
+                              "leadership", "management", "product", "strategy",
+                              "business", "marketing", "sales", "consulting",
+                              "professional", "communication", "teamwork",
+                          ))]
+        if profile_skills and len(actions) < 5:
+            actions.append(NextBestAction(
+                action_type="add_linkedin_proof",
+                target_skill=profile_skills[0],
+                reason=f"{profile_skills[0]} is better verified with a professional profile link.",
+                objective="Connect your LinkedIn or professional profile to verify experience and endorsements.",
+                button_label="Add LinkedIn Proof",
+                priority="low",
+                is_recording=False,
+            ))
+
+        # ── CAD / simulation gap ──────────────────────────────────────────────
+        cad_skills = [s for s in claimed_skills
+                      if any(kw in s.lower() for kw in (
+                          "cad", "solidworks", "autocad", "fusion", "ansys",
+                          "mechanical", "electrical", "circuit", "simulation",
+                          "finite element", "matlab",
+                      ))]
+        if cad_skills and len(actions) < 5:
+            actions.append(NextBestAction(
+                action_type="record_cad_proof",
+                target_skill=cad_skills[0],
+                reason=f"{cad_skills[0]} evidence is much stronger with a CAD file or simulation walkthrough.",
+                objective="Upload or screen-record a CAD model, simulation, or engineering design artifact.",
+                button_label="Upload CAD / Simulation",
+                priority="medium",
+                is_recording=False,
+            ))
+
+        # ── Camera / physical proof gap ───────────────────────────────────────
+        physical_skills = [s for s in claimed_skills
+                           if any(kw in s.lower() for kw in (
+                               "hardware", "electronics", "robotics", "physical",
+                               "lab", "manufacturing", "3d print", "prototype",
+                               "embedded", "iot", "sensor",
+                           ))]
+        if physical_skills and len(actions) < 5:
+            actions.append(NextBestAction(
+                action_type="record_camera_proof",
+                target_skill=physical_skills[0],
+                reason=f"{physical_skills[0]} needs physical evidence that a screen recording cannot provide.",
+                objective="Record a short video showing the physical device, hardware, or real-world output.",
+                button_label="Record Camera Proof",
+                priority="medium",
+                is_recording=True,
+                recommended_duration="1–3 minutes",
+            ))
+
+        # ── Detected-skill-aware gap actions ─────────────────────────────────
+        if detected_skills and len(actions) < 5:
+            gh_src = source_map.get("github")
+            # Inferred skills with low confidence where GitHub would help
+            oss_detected = [
+                e for e in detected_skills.values()
+                if e.is_inferred and e.confidence == "low"
+                and any(kw in e.skill.lower() for kw in (
+                    "open source", "github", "javascript", "python", "code",
+                    "typescript", "react", "programming",
+                ))
+            ]
+            if oss_detected and gh_src and gh_src.status in ("not_run", "missing") and not github_url:
+                actions.append(NextBestAction(
+                    action_type="add_github_url",
+                    target_skill=oss_detected[0].skill,
+                    reason=(
+                        f"{oss_detected[0].skill} was detected in evidence but needs "
+                        "GitHub repository analysis for stronger support."
+                    ),
+                    objective="Add a public GitHub repository URL so VeriBridge can analyze your code.",
+                    button_label="Add GitHub URL",
+                    priority="medium",
+                    is_recording=False,
+                ))
+
+            # Weak chart/visualization → focused recording
+            viz_low = [
+                e for e in detected_skills.values()
+                if e.confidence == "low"
+                and any(kw in e.skill.lower() for kw in ("chart", "visualization", "plot", "data viz"))
+            ]
+            if viz_low and len(actions) < 5:
+                already = any(a.action_type == "record_followup_proof" for a in actions)
+                if not already:
+                    actions.append(NextBestAction(
+                        action_type="record_followup_proof",
+                        target_skill=viz_low[0].skill,
+                        reason=(
+                            f"{viz_low[0].skill} was detected but evidence is weak. "
+                            "A focused recording would significantly strengthen this skill."
+                        ),
+                        objective=(
+                            "Record a focused chart explanation showing axes, marks, trends, "
+                            "and any interactive behavior or parameter change."
+                        ),
+                        button_label="Record Focused Chart Demo",
+                        priority="medium",
+                        is_recording=True,
+                        recommended_duration="30–60 seconds",
+                    ))
+
+        # ── Visual / workflow gap → recording (last resort) ───────────────────
+        wf = source_map.get("website_workflow")
+        if wf and wf.status in ("missing", "partial") and len(actions) < 5:
+            target_skill = claimed_skills[0] if claimed_skills else "workflow"
+            skill_lower = target_skill.lower()
+            if "chart" in skill_lower or "visualization" in skill_lower or "plot" in skill_lower:
+                objective = "Open one chart, explain axes/marks/trend, and show a chart interaction or parameter change."
+            elif "javascript" in skill_lower or "code" in skill_lower:
+                objective = "Open one code example and explain how it works step by step."
+            elif "interactive" in skill_lower or "documentation" in skill_lower:
+                objective = "Open an interactive example, change a parameter, and explain what changed."
+            else:
+                objective = f"Record a focused demonstration of {target_skill} showing clear output."
+
+            # Skip if a followup proof action was already added by detected-skill logic
+            already = any(a.action_type == "record_followup_proof" for a in actions)
+            if not already:
+                actions.append(NextBestAction(
+                    action_type="record_followup_proof",
+                    target_skill=target_skill,
+                    reason=f"{target_skill} visual evidence is weak or missing from the current recording.",
+                    objective=objective,
+                    button_label="Record Follow-up Proof",
+                    priority="medium",
+                    is_recording=True,
+                    recommended_duration="30–60 seconds",
+                ))
+
+        # Deduplicate by action_type
+        seen: set[str] = set()
+        unique: list[NextBestAction] = []
+        for a in actions:
+            if a.action_type not in seen:
+                seen.add(a.action_type)
+                unique.append(a)
+
+        return unique[:5]
+
+    # ── Summaries ─────────────────────────────────────────────────────────────
+
+    def _build_summaries(
+        self,
+        final_score: int,
+        claimed_skills: list[str],
+        sources: list[EvidenceSourceResult],
+        per_skill: dict[str, int],
+        actions: list[NextBestAction],
+    ) -> tuple[str, str]:
+        skill_str = ", ".join(claimed_skills[:4]) if claimed_skills else "claimed skills"
+        source_count = sum(1 for s in sources if s.status not in ("not_run", "not_available"))
+
+        if final_score >= 80:
+            recruiter = (
+                f"Strong proof with a combined evidence score of {final_score}/100 across "
+                f"{source_count} evidence source(s). Skills covered: {skill_str}. "
+                "Evidence is consistent across workflow recording and supplementary sources."
+            )
+            student = (
+                f"Your proof scores {final_score}/100. This is strong evidence — good job. "
+                "Optional: run GitHub analysis or live website check to add further depth."
+            )
+        elif final_score >= 60:
+            top_action = actions[0].reason if actions else "Add more evidence sources."
+            recruiter = (
+                f"Moderate proof with a combined score of {final_score}/100. "
+                f"Skills partially covered: {skill_str}. "
+                f"Additional evidence recommended: {top_action}"
+            )
+            student = (
+                f"Your proof scores {final_score}/100. It is partially strong but has gaps. "
+                f"Recommended: {top_action}"
+            )
+        else:
+            top_action = actions[0].reason if actions else "Record a clearer demonstration."
+            recruiter = (
+                f"Weak proof with a combined score of {final_score}/100. "
+                f"Skills: {skill_str}. Evidence sources run: {source_count}. "
+                f"Significant gaps: {top_action}"
+            )
+            student = (
+                f"Your proof scores {final_score}/100. Evidence is insufficient. "
+                f"Most important next step: {top_action}"
+            )
+
+        return recruiter, student
+
+    # ── Main entry point ──────────────────────────────────────────────────────
+
+    def evaluate(
+        self,
+        user_id: str,
+        session_id: str,
+        claimed_skills: list[str] | None = None,
+        github_url: str | None = None,
+    ) -> FinalEvaluationResult:
+        """Run the full final evaluation and return structured results."""
+        skills = claimed_skills or []
+
+        wf = self._load_workflow_analysis(user_id, session_id)
+        gh = self._load_github_analysis(user_id, session_id)
+        lw = self._load_live_website_check(user_id, session_id)
+        pd = self._load_project_defense(user_id, session_id)
+        kf_count = self._count_video_keyframes(user_id, session_id)
+
+        sources: list[EvidenceSourceResult] = [
+            self._score_workflow(wf),
+            self._score_dom(wf),
+            self._score_video_keyframes(kf_count),
+            self._score_ocr(wf),
+            self._score_qwen(wf),
+            self._score_github(gh),
+            self._score_live_website(lw),
+            self._score_project_defense(pd),
+        ]
+
+        final_score = self._combine_scores(sources)
+
+        sources_used:    list[EvidenceSourceKey] = [s.key for s in sources if s.status not in ("not_run", "not_available")]
+        sources_missing: list[EvidenceSourceKey] = [s.key for s in sources if s.status in ("not_run", "missing")]
+
+        confidence = self._confidence_label(final_score, sources_used)
+        per_skill = self._per_skill_scores(skills, wf, gh)
+
+        # Detected skill profile (inferred from all evidence, including beyond claimed)
+        all_skill_entries = self._collect_all_evidence_skills(skills, wf, gh)
+        detected_capability = self._infer_skill_profile(skills, all_skill_entries)
+        detected_additional = [
+            e for e in all_skill_entries.values() if e.is_inferred
+        ]
+        grouped_skill_evidence = self._build_grouped_skill_evidence(all_skill_entries)
+
+        actions = self._next_best_actions(
+            sources, skills, github_url, final_score,
+            detected_skills=all_skill_entries,
+        )
+
+        recruiter_summary, student_summary = self._build_summaries(
+            final_score, skills, sources, per_skill, actions
+        )
+
+        return FinalEvaluationResult(
+            proof_session_id=session_id,
+            final_score=final_score,
+            confidence=confidence,
+            evidence_sources_used=sources_used,
+            evidence_sources_missing=sources_missing,
+            per_skill_scores=per_skill,
+            evidence_source_breakdown=[
+                {
+                    "key": s.key,
+                    "status": s.status,
+                    "score": s.score,
+                    "weight": s.weight,
+                    "notes": s.notes,
+                }
+                for s in sources
+            ],
+            final_recruiter_summary=recruiter_summary,
+            final_student_summary=student_summary,
+            next_best_actions=[a.to_dict() for a in actions],
+            strong_proof=final_score >= 80,
+            detected_capability=detected_capability,
+            detected_additional_skills=detected_additional,
+            grouped_skill_evidence=grouped_skill_evidence,
+        )

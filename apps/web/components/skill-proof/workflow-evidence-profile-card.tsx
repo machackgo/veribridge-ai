@@ -1530,35 +1530,24 @@ function ProofCompletenessChecklist({ analysis }: { analysis: WorkflowAnalysisRe
   const qwenStatus = analysis.visual_reasoning_summary?.status
   const ocrAnalyzed = analysis.visual_analysis_status === "analyzed"
   const qwenAnalyzed = qwenStatus === "analyzed"
+  const qwenNotConfigured = qwenStatus === "disabled" || qwenStatus === "not_configured"
+  const qwenResourceSkipped = qwenStatus === "skipped"
+  const qwenSkipped = qwenNotConfigured || qwenResourceSkipped
 
   const items: Array<{ label: string; status: CheckStatus; note?: string }> = [
     {
-      label: "Website loaded",
+      label: "Website workflow captured",
       status: (analysis.target_site_pages_count ?? 0) > 0 ? "pass"
         : hasInteraction ? "partial" : "missing",
     },
     {
-      label: "User interaction captured",
+      label: "DOM evidence captured",
       status: (analysis.demonstrated_actions?.length ?? 0) > 3 ? "pass"
         : hasInteraction ? "partial" : "missing",
     },
     {
       label: "Output/result visible",
       status: hasResultValues ? "pass" : hasVisibleText ? "partial" : "missing",
-    },
-    {
-      label: "Chart/visual visible",
-      status: analysis.has_graphical_rendering ? "pass"
-        : (analysis.visual_frames_stored ?? 0) > 0 ? "partial" : "missing",
-    },
-    {
-      label: "Code/example visible",
-      status: hasCodeSkill ? "partial" : "missing",
-      note: hasCodeSkill ? undefined : "Record a focused code walkthrough",
-    },
-    {
-      label: "GitHub evidence available",
-      status: (analysis.supporting_evidence_count ?? 0) > 0 ? "pass" : "missing",
     },
     {
       label: "Video uploaded",
@@ -1569,15 +1558,36 @@ function ProofCompletenessChecklist({ analysis }: { analysis: WorkflowAnalysisRe
       label: "Keyframes extracted",
       status: analysis.video_keyframe_status === "extracted" ? "pass"
         : analysis.video_keyframe_status === "not_available" ? "partial" : "missing",
+      note: analysis.video_keyframe_status === "not_available" ? "Install opencv/ffmpeg" : undefined,
     },
     {
-      label: "OCR/Qwen analyzed",
-      status: (ocrAnalyzed || qwenAnalyzed) ? "pass"
+      label: "OCR analyzed",
+      status: ocrAnalyzed ? "pass"
         : analysis.video_keyframe_status === "extracted" ? "partial" : "missing",
-      note: (!ocrAnalyzed && !qwenAnalyzed) ? "Set VISUAL_ANALYSIS_PROVIDER to enable" : undefined,
+      note: (!ocrAnalyzed && analysis.video_keyframe_status === "extracted") ? "Set VISUAL_ANALYSIS_PROVIDER" : undefined,
     },
     {
-      label: "Final report generated",
+      label: qwenAnalyzed ? "Qwen: analyzed"
+        : qwenResourceSkipped ? "Qwen: skipped (resource limit)"
+        : qwenNotConfigured ? "Qwen: not configured"
+        : "Qwen: not run",
+      status: qwenAnalyzed ? "pass" : qwenSkipped ? "partial" : "missing",
+      note: qwenNotConfigured ? "VISUAL_REASONING_ENABLED=false"
+        : qwenResourceSkipped ? "Reduce VISUAL_REASONING_MAX_FRAMES"
+        : undefined,
+    },
+    {
+      label: (analysis.supporting_evidence_count ?? 0) > 0 ? "GitHub: analyzed" : "GitHub: not run",
+      status: (analysis.supporting_evidence_count ?? 0) > 0 ? "pass" : "missing",
+      note: (analysis.supporting_evidence_count ?? 0) === 0 ? "Run GitHub Evidence Analysis" : undefined,
+    },
+    {
+      label: "Live website: not checked",
+      status: "missing" as CheckStatus,
+      note: "Run Live Website Check",
+    },
+    {
+      label: "Final evaluator completed",
       status: "pass",
     },
   ]
@@ -1613,57 +1623,84 @@ function ProofCompletenessChecklist({ analysis }: { analysis: WorkflowAnalysisRe
   )
 }
 
-// ── Recommended Follow-up Proofs (Part E) ─────────────────────────────────────
+// ── Recommended Next Actions (Part E — source-aware) ──────────────────────────
 
-type FollowupSuggestion = {
+type NextAction = {
   skill: string
   why: string
   objective: string
-  duration: string
+  buttonLabel: string
+  isRecording: boolean
+  duration?: string
+  actionType: string
 }
 
-function buildFollowupSuggestions(
+function buildNextActions(
   analysis: WorkflowAnalysisResponse,
   claimedSkills: string[],
-): FollowupSuggestion[] {
-  const suggestions: FollowupSuggestion[] = []
+): NextAction[] {
+  const score = analysis.evidence_strength_score ?? 0
+  if (score >= 80) return []
 
+  const actions: NextAction[] = []
   const missing = analysis.unsupported_skills ?? []
   const partial = analysis.weakly_supported_skills ?? []
-  const combined = [...missing.map(s => ({ s, isPrimary: true })), ...partial.map(s => ({ s, isPrimary: false }))]
+  const allWeak = [...missing, ...partial]
 
-  for (const { s: skill, isPrimary } of combined.slice(0, 3)) {
-    const skillLower = skill.toLowerCase()
-    let why = isPrimary
-      ? `No evidence found for ${skill} in this recording.`
-      : `Only partial evidence found for ${skill}.`
-    let objective = `Record a focused demonstration of ${skill}.`
-    let duration = "30–60 seconds"
+  const codeKeywords = ["javascript", "typescript", "python", "code", "open source", "github",
+                        "programming", "react", "vue", "angular", "node"]
+  const codeSkills = allWeak.filter(s => codeKeywords.some(k => s.toLowerCase().includes(k)))
+  const vizSkills  = allWeak.filter(s => ["chart", "visualization", "plot", "data viz"].some(k => s.toLowerCase().includes(k)))
 
-    if (skillLower.includes("chart") || skillLower.includes("visualization") || skillLower.includes("plot")) {
-      objective = "Open one chart example, explain axes/marks/trend, and interact with the chart or page if possible."
-      duration = "30–60 seconds"
-      why = `${why} Chart interaction was not captured clearly.`
-    } else if (skillLower.includes("javascript") || skillLower.includes("typescript") || skillLower.includes("code")) {
-      objective = "Open one JavaScript/code example and explain how the code works step by step."
-      duration = "30–60 seconds"
-    } else if (skillLower.includes("github") || skillLower.includes("open source")) {
-      objective = "Open the GitHub repository, show the README and source files, and explain how the repo works."
-      duration = "30–45 seconds"
-    } else if (skillLower.includes("interactive") || skillLower.includes("documentation")) {
-      objective = "Open one interactive documentation example, change a parameter, and explain what changed."
-      duration = "30–60 seconds"
-    }
-
-    suggestions.push({ skill, why, objective, duration })
+  // GitHub: prefer run_github_analysis over recording when code skills are weak
+  if (codeSkills.length > 0) {
+    actions.push({
+      skill: codeSkills[0],
+      why: `${codeSkills[0]} evidence is weak. If a GitHub repository exists, analyzing it gives stronger code evidence than recording alone.`,
+      objective: "Run GitHub Evidence Analysis to extract code evidence from the repository.",
+      buttonLabel: "Run GitHub Evidence Analysis",
+      isRecording: false,
+      actionType: "run_github_analysis",
+    })
   }
 
-  return suggestions
+  // Visual / chart gap → recording
+  if (vizSkills.length > 0) {
+    const skill = vizSkills[0]
+    actions.push({
+      skill,
+      why: `${skill} was not captured clearly in this recording.`,
+      objective: "Open one chart, explain axes/marks/trend, and interact with the chart or change a parameter.",
+      buttonLabel: "Record Follow-up Proof",
+      isRecording: true,
+      duration: "30–60 seconds",
+      actionType: "record_followup_proof",
+    })
+  } else if (allWeak.length > 0 && !codeSkills.length) {
+    // Generic weak skill with no better action → recording
+    const skill = allWeak[0]
+    const skillLower = skill.toLowerCase()
+    let objective = `Record a focused demonstration of ${skill} showing clear output.`
+    if (skillLower.includes("interactive") || skillLower.includes("documentation")) {
+      objective = "Open an interactive example, change a parameter, and explain what changed."
+    }
+    actions.push({
+      skill,
+      why: `${skill} evidence is weak or missing from the current recording.`,
+      objective,
+      buttonLabel: "Record Follow-up Proof",
+      isRecording: true,
+      duration: "30–60 seconds",
+      actionType: "record_followup_proof",
+    })
+  }
+
+  return actions.slice(0, 4)
 }
 
 const FOLLOWUP_INTENT_KEY = "vb_followup_intent"
 
-function FollowupProofsSection({
+function NextActionsSection({
   analysis,
   sessionId,
   claimedSkills,
@@ -1672,10 +1709,21 @@ function FollowupProofsSection({
   sessionId?: string
   claimedSkills?: string[]
 }) {
-  const [recordingSkill, setRecordingSkill] = useState<string | null>(null)
-  const suggestions = buildFollowupSuggestions(analysis, claimedSkills ?? [])
+  const [savedAction, setSavedAction] = useState<string | null>(null)
+  const score = analysis.evidence_strength_score ?? 0
+  const actions = buildNextActions(analysis, claimedSkills ?? [])
 
-  if (suggestions.length === 0) return null
+  if (score >= 80) {
+    return (
+      <div style={{ padding: "8px 12px", background: "#f0fdf4",
+        border: "1px solid #bbf7d0", borderRadius: 8,
+        fontSize: 11, color: "#166534", fontWeight: 600 }}>
+        Proof is strong. Optional improvements only.
+      </div>
+    )
+  }
+
+  if (actions.length === 0) return null
 
   function handleRecord(skill: string, objective: string) {
     try {
@@ -1685,30 +1733,33 @@ function FollowupProofsSection({
         objective,
       }))
     } catch { /* sessionStorage unavailable */ }
-    setRecordingSkill(skill)
+    setSavedAction(skill)
   }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
         textTransform: "uppercase", color: "#475569" }}>
-        Recommended Follow-up Proofs
+        Recommended Next Actions
       </div>
-      {suggestions.map((s, i) => (
-        <div key={s.skill} style={{ padding: "10px 12px",
+      <div style={{ fontSize: 10, color: "#64748b", marginTop: -4 }}>
+        Strengthen your proof by completing the highest-priority action below.
+      </div>
+      {actions.map((a, i) => (
+        <div key={a.actionType + i} style={{ padding: "10px 12px",
           background: "#fdf4ff", border: "1px solid #e9d5ff",
           borderRadius: 8, display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <span style={{ fontSize: 9, fontWeight: 700, color: "#6d28d9",
               background: "#ede9fe", border: "1px solid #ddd6fe",
               borderRadius: 4, padding: "2px 7px" }}>
-              Follow-up {i + 1}
+              Action {i + 1}
             </span>
             <span style={{ fontSize: 11, fontWeight: 700, color: "#3b0764" }}>
-              {s.skill}
+              {a.skill}
             </span>
           </div>
-          <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1.4 }}>{s.why}</div>
+          <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1.4 }}>{a.why}</div>
           <div>
             <div style={{ fontSize: 9, fontWeight: 700, color: "#6d28d9",
               textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>
@@ -1717,27 +1768,33 @@ function FollowupProofsSection({
             <div style={{ fontSize: 10, color: "#1e293b", lineHeight: 1.5,
               padding: "5px 8px", background: "#ede9fe",
               borderRadius: 5, border: "1px solid #ddd6fe" }}>
-              {s.objective}
+              {a.objective}
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 9, color: "#64748b" }}>Duration: {s.duration}</span>
-            {recordingSkill === s.skill ? (
+            {a.duration && <span style={{ fontSize: 9, color: "#64748b" }}>Duration: {a.duration}</span>}
+            {savedAction === a.skill && a.isRecording ? (
               <div style={{ fontSize: 10, color: "#6d28d9", fontWeight: 600,
                 padding: "4px 10px", background: "#ede9fe",
                 border: "1px solid #c4b5fd", borderRadius: 6 }}>
                 ✓ Intent saved — scroll to Proof Recording section and click Start New Proof
               </div>
-            ) : (
+            ) : a.isRecording ? (
               <button
                 type="button"
-                onClick={() => handleRecord(s.skill, s.objective)}
+                onClick={() => handleRecord(a.skill, a.objective)}
                 style={{ fontSize: 10, fontWeight: 700, padding: "5px 12px",
                   borderRadius: 7, border: "none",
                   background: "#7c3aed", color: "#fff",
                   cursor: "pointer" }}>
-                Record Follow-up Proof
+                {a.buttonLabel}
               </button>
+            ) : (
+              <span style={{ fontSize: 10, color: "#475569", fontStyle: "italic",
+                padding: "4px 10px", background: "#f1f5f9",
+                border: "1px solid #e2e8f0", borderRadius: 6 }}>
+                {a.buttonLabel} — available in proof session panel
+              </span>
             )}
           </div>
         </div>
@@ -1868,8 +1925,8 @@ function InlineAnalysisView({ analysis, sessionId, claimedSkills }: { analysis: 
       {/* Proof Completeness Checklist (Part D) */}
       <ProofCompletenessChecklist analysis={analysis} />
 
-      {/* Recommended Follow-up Proofs (Part E) */}
-      <FollowupProofsSection
+      {/* Recommended Next Actions (Part E — source-aware) */}
+      <NextActionsSection
         analysis={analysis}
         sessionId={sessionId}
         claimedSkills={claimedSkills}
