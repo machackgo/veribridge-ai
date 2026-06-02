@@ -19,6 +19,12 @@ from app.services.github_evidence_service import (
     parse_github_repo_url,
 )
 
+try:
+    import httpx as _httpx
+    _HTTPX_AVAILABLE = True
+except ImportError:
+    _HTTPX_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # ── Stack detection maps ──────────────────────────────────────────────────────
@@ -433,6 +439,17 @@ def analyze_github_repo(
         matched, missing, confidence, weakly,
     )
 
+    # Deep line-level code evidence — discovers source files beyond _FILES_TO_PROBE
+    # and scans them for skill-relevant keywords to produce file_path + line ranges.
+    skill_code_evidence = _extract_skill_code_evidence(
+        fetched=fetched,
+        claimed_skills=claimed_skills,
+        repo_url=normalized_repo_url,
+        owner=repo_ref.owner,
+        repo=repo_ref.repo,
+        branch="main",
+    )
+
     return {
         "repo_url": normalized_repo_url,
         "status": "success",
@@ -442,6 +459,7 @@ def analyze_github_repo(
         "weakly_matched_claimed_skills": weakly,
         "missing_claimed_skills": missing,
         "evidence_files": accessible_files,
+        "skill_code_evidence": skill_code_evidence,
         "confidence_score": round(confidence, 3),
         "warnings": warnings,
         "recruiter_summary": summary,
@@ -577,6 +595,366 @@ def _detect_features(fetched: dict[str, str | None], stack: list[str]) -> list[s
         features.append("html_frontend")
 
     return features
+
+
+# ── Skill code evidence (line-level) ──────────────────────────────────────────
+
+# Per-skill keyword patterns to search in source code files.
+# Each entry maps lowercase skill names to code-level search terms.
+_SKILL_CODE_KEYWORDS: dict[str, list[str]] = {
+    "machine learning":         ["model.fit", "model.train", "model.predict", "train(", "predict(", "accuracy", "loss"],
+    "tensorflow.js":            ["tf.loadLayersModel", "tf.sequential", "tf.layers", "model.predict", "mobilenet", "@tensorflow/tfjs", "tfjs", "tf.tensor"],
+    "tensorflow":               ["tf.keras", "tf.Session", "model.fit", "model.predict", "@tensorflow/tfjs", "tfjs", "tensorflow"],
+    "browser ai":               ["ml5.", "ml5.imageClassifier", "ml5.neuralNetwork", "ml5.poseNet", "tf.loadLayersModel", "ort.InferenceSession", "transformers", "model.run", "navigator.ml"],
+    "model inference":          ["ml5.", ".predict(", "loadModel", "model.predict", "model.run", "inference", "session.run", "ort.run"],
+    "computer vision":          ["classify", "detect", "mobilenet", "ImageData", "canvas.getContext", "video", "webcam"],
+    "creative coding":          ["p5.", "createCanvas", "draw()", "setup()", "noise(", "random(", "stroke(", "fill(", "background("],
+    "javascript":               ["function ", "const ", "let ", "async ", "await ", "export ", "import "],
+    "typescript":               ["interface ", "type ", ": string", ": number", ": boolean", "implements ", "extends "],
+    "react":                    ["useState", "useEffect", "React.", "<Component", "ReactDOM", "props."],
+    "python":                   ["def ", "import ", "class ", "if __name__", "print(", "return "],
+    "scikit-learn":             ["from sklearn", "import sklearn", ".fit(", ".predict(", ".score(", "train_test_split"],
+    "neural network":           ["Dense(", "Conv2D(", "LSTM(", "model.add(", "activation=", "layers."],
+    "data visualization":       ["plt.plot", "plt.show", "d3.select", "chart.data", "canvas.getContext", "render("],
+    "jupyter notebook":         ["import pandas", "import numpy", "plt.show()", "display(", "%%python"],
+}
+
+_SKILL_CODE_EXTS: dict[str, list[str]] = {
+    "tensorflow.js":   [".js", ".ts", ".html"],
+    "javascript":      [".js", ".ts", ".jsx", ".tsx"],
+    "typescript":      [".ts", ".tsx"],
+    "react":           [".jsx", ".tsx", ".js", ".ts"],
+    "python":          [".py", ".ipynb"],
+    "machine learning":[".py", ".ipynb", ".js", ".ts"],
+    "computer vision": [".js", ".ts", ".py"],
+    "browser ai":      [".js", ".ts", ".html"],
+    "creative coding": [".js", ".ts", ".p5"],
+    "model inference": [".js", ".ts", ".py"],
+    "tensorflow":      [".py", ".js", ".ts", ".ipynb"],
+    "scikit-learn":    [".py", ".ipynb"],
+    "neural network":  [".py", ".js", ".ts"],
+    "data visualization":[".py", ".js", ".ts", ".html"],
+}
+
+
+def _skill_code_keywords(skill: str) -> list[str]:
+    """Return code-level search terms for a claimed skill."""
+    lower = skill.lower()
+    for key, kws in _SKILL_CODE_KEYWORDS.items():
+        if key in lower or lower in key:
+            return kws
+    # Generic fallback using significant terms
+    terms = re.sub(r"[^a-z0-9\s]", "", lower).split()
+    return [t for t in terms if len(t) >= 4]
+
+
+def _skill_code_extensions(skill: str) -> list[str]:
+    """Return preferred file extensions for a claimed skill."""
+    lower = skill.lower()
+    for key, exts in _SKILL_CODE_EXTS.items():
+        if key in lower or lower in key:
+            return exts
+    return [".py", ".js", ".ts", ".ipynb"]
+
+
+def _find_keyword_lines(
+    content: str,
+    keywords: list[str],
+    context_lines: int = 3,
+) -> tuple[int | None, int | None, str | None]:
+    """Find first occurrence of any keyword in content.
+
+    Returns (line_start, line_end, code_snippet) or (None, None, None).
+    line numbers are 1-indexed.
+    """
+    lines = content.splitlines()
+    for i, line in enumerate(lines, start=1):
+        for kw in keywords:
+            if kw.lower() in line.lower():
+                start = max(1, i - 1)
+                end = min(len(lines), i + context_lines - 1)
+                snippet = "\n".join(lines[start - 1:end])[:300]
+                return start, end, snippet
+    return None, None, None
+
+
+def _fetch_directory_items(
+    owner: str,
+    repo: str,
+    branch: str,
+    path: str,
+    timeout: float = 4.0,
+) -> list[dict]:
+    """Fetch the contents listing of a single directory path. Returns [] on any error."""
+    if not _HTTPX_AVAILABLE:
+        return []
+    try:
+        resp = _httpx.get(
+            f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+            params={"ref": branch},
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "veribridge-ai-proof-verifier",
+            },
+            timeout=timeout,
+            follow_redirects=True,
+        )
+        if resp.status_code != 200:
+            return []
+        items = resp.json()
+        return items if isinstance(items, list) else []
+    except Exception:
+        return []
+
+
+def _discover_extra_source_files(
+    owner: str,
+    repo: str,
+    branch: str,
+    skill_extensions: list[str],
+    timeout: float = 4.0,
+) -> list[str]:
+    """Use GitHub contents API to discover source files in root and source subdirs.
+
+    Scans two levels deep for common source directories (src/, lib/) so that
+    files like src/ImageClassifier/index.js are discovered alongside src/index.js.
+    Returns a list of candidate file paths (relative to repo root).
+    Falls back gracefully to [] on any error or rate limit.
+    """
+    if not _HTTPX_AVAILABLE:
+        return []
+    try:
+        resp = _httpx.get(
+            f"https://api.github.com/repos/{owner}/{repo}/contents",
+            params={"ref": branch},
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "veribridge-ai-proof-verifier",
+            },
+            timeout=timeout,
+            follow_redirects=True,
+        )
+        if resp.status_code != 200:
+            logger.debug(
+                "[GitHubCodeEvidence] contents API status=%d for %s/%s",
+                resp.status_code, owner, repo,
+            )
+            return []
+        items = resp.json()
+        if not isinstance(items, list):
+            return []
+    except Exception as exc:
+        logger.debug("[GitHubCodeEvidence] contents API failed: %s", exc)
+        return []
+
+    _SKIP_DIRS = frozenset({
+        "docs", ".github", "node_modules", ".git", "dist", "build",
+        "coverage", "test", "tests", "__pycache__", "vendor",
+    })
+    # Directories worth scanning two levels deep (common source roots)
+    _DEEP_SOURCE_DIRS = frozenset({"src", "lib", "source", "app", "core"})
+
+    candidates: list[str] = []
+
+    # Root-level source files
+    for item in items:
+        if item.get("type") == "file":
+            name = item.get("name", "")
+            if any(name.endswith(ext) for ext in skill_extensions):
+                candidates.append(item.get("path", name))
+
+    # Separate source-like directories for deep scanning from regular directories
+    deep_dirs: list[dict] = []
+    other_dirs: list[dict] = []
+    for item in items:
+        if item.get("type") == "dir":
+            dname = item.get("name", "")
+            if dname.startswith(".") or dname in _SKIP_DIRS:
+                continue
+            if dname.lower() in _DEEP_SOURCE_DIRS:
+                deep_dirs.append(item)
+            else:
+                other_dirs.append(item)
+
+    # For source-like directories: scan their contents (two levels deep)
+    # This finds e.g. src/ImageClassifier/index.js alongside src/index.js
+    for dir_item in deep_dirs[:3]:
+        dpath = dir_item.get("path", dir_item.get("name", ""))
+        sub_items = _fetch_directory_items(owner, repo, branch, dpath, timeout)
+        # Direct files inside src/ or lib/
+        for sub in sub_items:
+            if sub.get("type") == "file":
+                name = sub.get("name", "")
+                if any(name.endswith(ext) for ext in skill_extensions):
+                    candidates.append(sub.get("path", f"{dpath}/{name}"))
+        # One index/main file per sub-directory inside src/ or lib/
+        subdirs_done = 0
+        for sub in sub_items:
+            if sub.get("type") == "dir" and subdirs_done < 6:
+                sdname = sub.get("name", "")
+                if sdname.startswith(".") or sdname in _SKIP_DIRS:
+                    continue
+                subdirs_done += 1
+                sdpath = sub.get("path", f"{dpath}/{sdname}")
+                for fname in ["index.ts", "index.js", "main.ts", "main.js", "index.py", "main.py"]:
+                    if any(fname.endswith(ext) for ext in skill_extensions):
+                        candidates.append(f"{sdpath}/{fname}")
+                        break
+
+    # For other directories: just try common entry-point names (existing behaviour)
+    dirs_tried = 0
+    for item in other_dirs:
+        if dirs_tried >= 5:
+            break
+        dirs_tried += 1
+        dpath = item.get("path", item.get("name", ""))
+        for fname in ["index.ts", "index.js", "main.ts", "main.js", "index.py", "main.py"]:
+            if any(fname.endswith(ext) for ext in skill_extensions):
+                candidates.append(f"{dpath}/{fname}")
+                break
+
+    return candidates[:20]
+
+
+def _extract_skill_code_evidence(
+    fetched: dict[str, str | None],
+    claimed_skills: list[str],
+    repo_url: str,
+    owner: str,
+    repo: str,
+    branch: str = "main",
+) -> list[dict[str, Any]]:
+    """Scan fetched file content and optionally discover source files for line-level evidence.
+
+    Returns a list of evidence dicts with file_path, line_start, line_end, code_snippet,
+    github_url, and reason. Used by the final evaluator to build deep GitHub evidence objects.
+    """
+    if not claimed_skills:
+        return []
+
+    # Collect all extensions needed for any claimed skill
+    all_skill_exts: set[str] = set()
+    for skill in claimed_skills:
+        all_skill_exts.update(_skill_code_extensions(skill))
+
+    # Attempt to discover extra source files beyond _FILES_TO_PROBE
+    extra_paths = _discover_extra_source_files(owner, repo, branch, list(all_skill_exts))
+
+    # Fetch extra files and merge with already-fetched content
+    combined_fetched: dict[str, str | None] = dict(fetched)
+    for path in extra_paths:
+        if path not in combined_fetched:
+            result = fetch_public_github_file(repo_url, path)
+            combined_fetched[path] = result.content if result.ok and result.content else None
+
+    logger.info(
+        "[GitHubCodeEvidence] scanning %d files for skill code evidence: skills=%s",
+        sum(1 for v in combined_fetched.values() if v),
+        claimed_skills,
+    )
+
+    evidence: list[dict[str, Any]] = []
+
+    _GENERIC_META = frozenset({"README.md", "package.json", "requirements.txt"})
+
+    for skill in claimed_skills:
+        kws = _skill_code_keywords(skill)
+        skill_exts = _skill_code_extensions(skill)
+        if not kws:
+            continue
+
+        # Two-pass: scan real source files first; fall back to generic metadata files.
+        # This prevents README.md (which appears first in _FILES_TO_PROBE) from
+        # capturing every skill match before source code files are checked.
+        # seen_paths is per-skill so that multiple skills can all use the best
+        # source file independently (e.g. src/app.js matching both Browser AI and ML).
+        source_items = [
+            (fp, c) for fp, c in combined_fetched.items()
+            if fp not in _GENERIC_META and c and any(fp.endswith(ext) for ext in skill_exts)
+        ]
+        generic_items = [
+            (fp, c) for fp, c in combined_fetched.items()
+            if fp in _GENERIC_META and c
+        ]
+
+        found = False
+        for file_path, content in source_items:
+            line_start, line_end, snippet = _find_keyword_lines(content, kws)
+            if line_start is None:
+                continue
+
+            # Build exact GitHub blob URL with line anchor
+            try:
+                from app.services.github_evidence_service import parse_github_repo_url as _parse
+                _ref = _parse(repo_url)
+                _branch = (getattr(_ref, "branch", None) or branch or "main").strip() or "main"
+                _owner = str(getattr(_ref, "owner", owner) or owner)
+                _repo_name = str(getattr(_ref, "repo", repo) or repo)
+                from urllib.parse import quote as _quote
+                _norm = file_path.lstrip("/")
+                _enc = "/".join(_quote(p, safe="") for p in _norm.split("/"))
+                gh_blob_url = f"https://github.com/{_owner}/{_repo_name}/blob/{_branch}/{_enc}#L{line_start}"
+                if line_end and line_end != line_start:
+                    gh_blob_url += f"-L{line_end}"
+            except Exception:
+                gh_blob_url = None
+
+            matched_kw = next((kw for kw in kws if kw.lower() in content.lower()), kws[0])
+            evidence.append({
+                "skill": skill,
+                "file_path": file_path,
+                "line_start": line_start,
+                "line_end": line_end,
+                "code_snippet": snippet or "",
+                "github_url": gh_blob_url,
+                "reason": f"Found '{matched_kw}' at line {line_start} — evidence for {skill}",
+            })
+            found = True
+            break  # One strong evidence item per skill is enough
+
+        if found:
+            continue
+
+        # Fallback: check generic metadata files only when no source file matched.
+        # README.md mentions are recorded here but filtered from deep code evidence
+        # by the final evaluator — they remain as repo-level fallback only.
+        for file_path, content in generic_items:
+            line_start, line_end, snippet = _find_keyword_lines(content, kws)
+            if line_start is None:
+                continue
+
+            try:
+                from app.services.github_evidence_service import parse_github_repo_url as _parse
+                _ref = _parse(repo_url)
+                _branch = (getattr(_ref, "branch", None) or branch or "main").strip() or "main"
+                _owner = str(getattr(_ref, "owner", owner) or owner)
+                _repo_name = str(getattr(_ref, "repo", repo) or repo)
+                from urllib.parse import quote as _quote
+                _norm = file_path.lstrip("/")
+                _enc = "/".join(_quote(p, safe="") for p in _norm.split("/"))
+                gh_blob_url = f"https://github.com/{_owner}/{_repo_name}/blob/{_branch}/{_enc}#L{line_start}"
+                if line_end and line_end != line_start:
+                    gh_blob_url += f"-L{line_end}"
+            except Exception:
+                gh_blob_url = None
+
+            matched_kw = next((kw for kw in kws if kw.lower() in content.lower()), kws[0])
+            evidence.append({
+                "skill": skill,
+                "file_path": file_path,
+                "line_start": line_start,
+                "line_end": line_end,
+                "code_snippet": snippet or "",
+                "github_url": gh_blob_url,
+                "reason": f"Found '{matched_kw}' at line {line_start} — evidence for {skill}",
+            })
+            break  # One fallback item per skill is enough
+
+    logger.info(
+        "[GitHubCodeEvidence] found %d skill code evidence items for session",
+        len(evidence),
+    )
+    return evidence
 
 
 # ── Skill matching ─────────────────────────────────────────────────────────────
@@ -954,6 +1332,7 @@ class ExtensionProofGitHubAnalysisService:
                 "weakly_matched_claimed_skills": result.get("weakly_matched_claimed_skills", []),
                 "missing_claimed_skills": result["missing_claimed_skills"],
                 "evidence_files": result["evidence_files"],
+                "skill_code_evidence": result.get("skill_code_evidence", []),
                 "confidence_score": result["confidence_score"],
                 "warnings": result["warnings"],
                 "recruiter_summary": result["recruiter_summary"],
@@ -983,6 +1362,7 @@ class ExtensionProofGitHubAnalysisService:
             "weakly_matched_claimed_skills",
             "missing_claimed_skills",
             "evidence_files",
+            "skill_code_evidence",
             "warnings",
         ):
             val = row.get(list_col)

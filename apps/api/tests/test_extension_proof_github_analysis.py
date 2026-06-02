@@ -1208,3 +1208,157 @@ class TestGetGithubAnalysisEndpoint:
         body = r.json()
         assert body["proof_session_id"] == SESSION_ID
         assert body["status"] == "success"
+
+
+# ── Task E: source-file-first scanning tests ──────────────────────────────────
+
+from app.services.extension_proof_github_analysis_service import (
+    _extract_skill_code_evidence,
+    _discover_extra_source_files,
+)
+
+
+class TestSourceFileFirstScanning:
+    """Verify that _extract_skill_code_evidence prefers source files over README.md."""
+
+    def test_source_file_preferred_over_readme(self):
+        """When a JS source file contains skill keywords, it is chosen over README.md."""
+        js_content = "export function classify(img) {\n  return model.predict(img);\n}"
+        readme_content = "# ml5.js\n\nThis project uses `function` and `const` internally."
+        fetched = {
+            "README.md": readme_content,
+            "src/index.js": js_content,
+        }
+        evidence = _extract_skill_code_evidence(
+            fetched=fetched,
+            claimed_skills=["JavaScript"],
+            repo_url="https://github.com/ml5js/ml5-library",
+            owner="ml5js",
+            repo="ml5-library",
+            branch="main",
+        )
+        assert evidence, "Expected at least one evidence item"
+        file_paths = [e["file_path"] for e in evidence]
+        assert "src/index.js" in file_paths, (
+            f"Expected src/index.js in evidence, got {file_paths}"
+        )
+        assert "README.md" not in file_paths, (
+            f"README.md should not be chosen when a source file matches: {file_paths}"
+        )
+
+    def test_readme_used_as_fallback_when_no_source_files(self):
+        """README.md is used only when no source file contains skill keywords."""
+        readme_content = "# MyProject\n\nThis project uses model.predict and accuracy metrics."
+        fetched = {
+            "README.md": readme_content,
+            # No .py or .js source files in fetched
+        }
+        evidence = _extract_skill_code_evidence(
+            fetched=fetched,
+            claimed_skills=["Machine Learning"],
+            repo_url="https://github.com/example/repo",
+            owner="example",
+            repo="repo",
+            branch="main",
+        )
+        assert evidence, "README.md should be used as fallback when no source files exist"
+        assert evidence[0]["file_path"] == "README.md"
+
+    def test_multiple_skills_each_get_best_source(self, monkeypatch):
+        """Each skill independently picks its best source file (not the same README hit)."""
+        monkeypatch.setattr(
+            svc_module, "_discover_extra_source_files",
+            lambda *a, **kw: [],
+        )
+        js_content = "const net = tf.sequential();\nnet.add(tf.layers.dense({units: 10}));"
+        py_content = "from sklearn import datasets\nX, y = datasets.load_iris(return_X_y=True)"
+        fetched = {
+            "README.md": "# Project\nThis project uses machine learning and javascript.",
+            "src/model.js": js_content,
+            "train.py": py_content,
+        }
+        evidence = _extract_skill_code_evidence(
+            fetched=fetched,
+            claimed_skills=["JavaScript", "Machine Learning"],
+            repo_url="https://github.com/example/ml-demo",
+            owner="example",
+            repo="ml-demo",
+            branch="main",
+        )
+        file_paths = {e["file_path"] for e in evidence}
+        # Both source files should appear, not README.md
+        assert "README.md" not in file_paths, (
+            f"README.md should not be chosen when source files are available: {file_paths}"
+        )
+
+    def test_website_proof_uses_same_engine_output_format(self, monkeypatch):
+        """Website Proof and GitHub Proof use the same analyze_github_repo() output.
+
+        When a Website Proof session provides a GitHub URL, calling analyze_github_repo()
+        on that single repo URL must produce the same skill_code_evidence structure as
+        the GitHub Proof flow — file_path, line_start, line_end, github_url.
+        """
+        import app.services.extension_proof_github_analysis_service as svc_mod
+        monkeypatch.setattr(svc_mod, "_discover_extra_source_files", lambda *a, **kw: [])
+
+        js_content = "async function trainModel(data) {\n  const net = tf.sequential();\n  net.add(tf.layers.dense({units: 10}));\n  return net;\n}"
+        fetched = {
+            "README.md": "# ml5-library\nA friendly ML library for the web.",
+            "src/NeuralNetwork/index.js": js_content,
+        }
+        evidence = _extract_skill_code_evidence(
+            fetched=fetched,
+            claimed_skills=["Machine Learning", "JavaScript"],
+            repo_url="https://github.com/ml5js/ml5-library",
+            owner="ml5js",
+            repo="ml5-library",
+            branch="main",
+        )
+        # Must produce evidence with the deep code structure
+        assert evidence, "Expected skill_code_evidence items"
+        for item in evidence:
+            assert "skill" in item, "Missing 'skill' field"
+            assert "file_path" in item, "Missing 'file_path' field"
+            assert "line_start" in item, "Missing 'line_start' field"
+            assert "github_url" in item, "Missing 'github_url' field"
+        # Source file must be preferred over README.md
+        file_paths = {e["file_path"] for e in evidence}
+        assert "README.md" not in file_paths, (
+            f"README.md must not appear in skill_code_evidence: {file_paths}"
+        )
+        # github_url must contain a line anchor
+        for item in evidence:
+            if item.get("line_start"):
+                url = item.get("github_url") or ""
+                assert "#L" in url, f"Expected line anchor in github_url, got: {url}"
+
+    def test_readme_not_in_skill_code_evidence_when_source_matches(self, monkeypatch):
+        """README.md must never appear in skill_code_evidence when source files match.
+
+        This ensures the Website Proof final report never shows 'Open README.md'
+        as the primary GitHub evidence button.
+        """
+        import app.services.extension_proof_github_analysis_service as svc_mod
+        monkeypatch.setattr(svc_mod, "_discover_extra_source_files", lambda *a, **kw: [])
+
+        source_content = "const model = ml5.neuralNetwork({task: 'classification'});\nmodel.train(options, callback);"
+        fetched = {
+            "README.md": "# Project\nUses ml5 and model.train for machine learning.",
+            "src/app.js": source_content,
+        }
+        evidence = _extract_skill_code_evidence(
+            fetched=fetched,
+            claimed_skills=["Browser AI", "Machine Learning"],
+            repo_url="https://github.com/example/ml-demo",
+            owner="example",
+            repo="ml-demo",
+            branch="main",
+        )
+        file_paths = [e["file_path"] for e in evidence]
+        assert "README.md" not in file_paths, (
+            f"README.md must not be in skill_code_evidence when source file matches: {file_paths}"
+        )
+        # Browser AI should find ml5. in src/app.js
+        browser_ai_evidence = [e for e in evidence if e["skill"] == "Browser AI"]
+        assert browser_ai_evidence, "Browser AI should have evidence from src/app.js"
+        assert browser_ai_evidence[0]["file_path"] == "src/app.js"
