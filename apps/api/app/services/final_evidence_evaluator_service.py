@@ -63,6 +63,23 @@ def _build_github_blob_url(
     return url
 
 
+def _github_repo_name(repo_url: str) -> str | None:
+    if not repo_url:
+        return None
+    try:
+        from app.services.github_evidence_service import parse_github_repo_url
+        ref = parse_github_repo_url(repo_url)
+        if ref is None:
+            return None
+        owner = str(ref.owner or "").strip()
+        repo = str(ref.repo or "").strip()
+        if owner and repo:
+            return f"{owner}/{repo}"
+        return repo or None
+    except Exception:
+        return None
+
+
 # ── Tables ────────────────────────────────────────────────────────────────────
 
 _WF_TABLE     = "workflow_analysis_results"
@@ -70,6 +87,7 @@ _GH_TABLE     = "extension_proof_github_analysis"
 _LW_TABLE     = "live_website_check_results"
 _PD_TABLE     = "project_defense_analysis_results"
 _VF_TABLE     = "workflow_visual_frame_evidence"
+_OPT_TABLE    = "optional_evidence_submissions"
 
 # Generic metadata files that should never be shown as deep code evidence.
 # README.md/package.json mentions of skill terms are not line-level proof.
@@ -79,6 +97,86 @@ _GENERIC_META_PATHS = frozenset({
     "requirements.txt", "pyproject.toml", "setup.py", "setup.cfg",
     "Makefile", "Dockerfile", ".env.example",
 })
+
+_SKILL_ALIAS_TOKENS: dict[str, set[str]] = {
+    "frontend development": {"javascript", "typescript", "react", "vue", "angular", "html", "css", "frontend", "web"},
+    "web development": {"javascript", "typescript", "html", "css", "frontend", "web"},
+    "three.js": {"three", "threejs", "webgl", "renderer", "scene", "camera", "mesh", "material"},
+    "threejs": {"three", "threejs", "webgl", "renderer", "scene", "camera", "mesh", "material"},
+    "webgl": {"webgl", "glsl", "shader", "renderer", "three", "threejs"},
+    "interactive 3d graphics": {"three", "threejs", "webgl", "3d", "renderer", "scene", "camera", "mesh", "animation"},
+    "computer graphics": {"three", "threejs", "webgl", "graphics", "renderer", "scene", "camera", "mesh", "shader", "texture"},
+    "video texture rendering": {"video", "texture", "videotexture", "webgl", "three", "threejs", "material"},
+    "javascript": {"javascript", "js", "jsx", "export", "function", "class", "const", "let"},
+    "typescript": {"typescript", "ts", "tsx", "interface", "type"},
+}
+
+# Skills that primarily manifest as rendered visual/GPU output.
+# OCR cannot read the skill name from canvas/WebGL-rendered content.
+# Qwen visual analysis and GitHub code evidence are the appropriate evidence
+# sources for these skills; OCR absence must not mark them as missing.
+_VISUAL_GRAPHICS_SKILL_PATTERNS: tuple[str, ...] = (
+    "three.js", "threejs", "webgl", "webgpu", "interactive 3d graphics",
+    "computer graphics", "video texture rendering", "data visualization",
+    "canvas", "svg", "shader", "glsl", "opengl", "3d graphics", "3d rendering",
+    "visual demo", "particle system", "d3.js", "d3js",
+)
+
+# Qwen observation keywords that indicate visual/graphics rendering was seen
+_QWEN_VISUAL_RENDER_INDICATORS: tuple[str, ...] = (
+    "webgl", "three.js", "threejs", "3d", "canvas", "render", "rendering",
+    "animated", "animation", "rotating", "graphics", "geometric", "interactive",
+    "colorful", "video texture", "mesh", "scene", "shader", "blocky", "objects",
+    "visual", "demo", "texture",
+)
+
+
+def _skill_match_tokens(skill: str) -> set[str]:
+    import re as _re
+
+    raw = skill.lower().replace(".js", "js")
+    tokens = {t for t in _re.split(r"[^a-z0-9]+", raw) if len(t) >= 2}
+    tokens.update(_SKILL_ALIAS_TOKENS.get(skill.lower(), set()))
+    return tokens
+
+
+def _github_code_evidence_matches_skill(ev: dict[str, Any], skill: str) -> bool:
+    """Return True when one GitHub code evidence item supports one skill."""
+    ev_skill = str(ev.get("skill") or "").strip().lower()
+    skill_lower = skill.strip().lower()
+    if ev_skill == skill_lower:
+        return True
+
+    ev_text = " ".join(
+        str(ev.get(k) or "")
+        for k in ("skill", "file_path", "reason", "code_snippet", "github_url")
+    ).lower()
+    tokens = _skill_match_tokens(skill)
+    if not tokens:
+        return False
+
+    hits = {tok for tok in tokens if tok in ev_text}
+    if skill_lower in _SKILL_ALIAS_TOKENS:
+        return len(hits) >= 1
+    return len(hits) >= 2
+
+
+def _github_code_evidence_sort_key(ev: dict[str, Any], skill: str) -> tuple[int, int]:
+    ev_skill = str(ev.get("skill") or "").strip().lower()
+    exact = 0 if ev_skill == skill.strip().lower() else 1
+    has_lines = 0 if ev.get("line_start") is not None and ev.get("line_end") is not None else 1
+    return (exact, has_lines)
+
+
+def _is_visual_graphics_skill(skill: str) -> bool:
+    """Return True for skills that primarily manifest as rendered visual/GPU output.
+
+    OCR cannot read skill names from canvas/WebGL renderers.  For these skills
+    Qwen visual analysis and GitHub code evidence carry more weight than OCR.
+    """
+    lower = skill.lower()
+    return any(pat in lower for pat in _VISUAL_GRAPHICS_SKILL_PATTERNS)
+
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -91,13 +189,13 @@ EvidenceSourceKey = Literal[
     "github",
     "live_website_check",
     "project_defense",
+    "uploaded_documents",
+    "linkedin_profile",
+    "certificate",
     # Future — wired as enum only
     "transcript_nlp",
-    "uploaded_documents",
     "pdf_report",
-    "certificate",
     "resume",
-    "linkedin_profile",
     "camera_physical_proof",
     "cad_simulation_proof",
     "presentation_voice_proof",
@@ -138,6 +236,8 @@ _SOURCE_LABEL_MAP: dict[str, str] = {
     "project_defense": "Project Defense",
     "transcript":      "Transcript",
     "document":        "Documents",
+    "linkedin_profile": "LinkedIn/Profile",
+    "certificate_transcript": "Certificates/Transcript",
 }
 
 
@@ -225,6 +325,14 @@ class EvidenceObject:
     keyframe_url: str | None = None
     text_snippet: str | None = None
     file_path: str | None = None
+    repo_name: str | None = None
+    source_type: str | None = None
+    page_number: int | None = None
+    profile_url: str | None = None
+    section_label: str | None = None
+    issuer: str | None = None
+    title: str | None = None
+    date: str | None = None
     line_range: str | None = None
     line_start: int | None = None
     line_end: int | None = None
@@ -252,6 +360,14 @@ class EvidenceObject:
             "keyframe_url":       self.keyframe_url,
             "text_snippet":       self.text_snippet,
             "file_path":          self.file_path,
+            "repo_name":          self.repo_name,
+            "source_type":        self.source_type,
+            "page_number":        self.page_number,
+            "profile_url":        self.profile_url,
+            "section_label":      self.section_label,
+            "issuer":             self.issuer,
+            "title":              self.title,
+            "date":               self.date,
             "line_range":         self.line_range,
             "line_start":         self.line_start,
             "line_end":           self.line_end,
@@ -492,6 +608,10 @@ _SOURCE_WEIGHTS: dict[EvidenceSourceKey, float] = {
     "github":                 0.15,
     "live_website_check":     0.05,
     "project_defense":        0.10,
+    # Optional boosters are neutral when absent and low-weight when present.
+    "uploaded_documents":     0.04,
+    "linkedin_profile":       0.03,
+    "certificate":            0.03,
 }
 
 
@@ -581,6 +701,21 @@ class FinalEvidenceEvaluatorService:
         except Exception:
             logger.warning("FinalEvaluator: project defense load failed", exc_info=True)
             return None
+
+    def _load_optional_evidence(self, user_id: str, session_id: str) -> list[dict[str, Any]]:
+        try:
+            resp = (
+                self._db.table(_OPT_TABLE)
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("proof_session_id", session_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return resp.data or []
+        except Exception:
+            logger.warning("FinalEvaluator: optional evidence load failed", exc_info=True)
+            return []
 
     def _count_video_keyframes(self, user_id: str, session_id: str) -> int:
         try:
@@ -717,6 +852,25 @@ class FinalEvidenceEvaluatorService:
             return EvidenceSourceResult("project_defense", "partial", 40, _SOURCE_WEIGHTS["project_defense"])
         return EvidenceSourceResult("project_defense", "not_run", 0, _SOURCE_WEIGHTS["project_defense"])
 
+    def _score_optional(
+        self,
+        rows: list[dict[str, Any]],
+        source_type: str,
+        key: EvidenceSourceKey,
+    ) -> EvidenceSourceResult:
+        matching = [r for r in rows if r.get("source_type") == source_type]
+        if not matching:
+            return EvidenceSourceResult(key, "not_available", 0, _SOURCE_WEIGHTS[key],
+                                        notes="Optional — can strengthen your profile")
+        ev_count = sum(len(r.get("evidence_objects") or []) for r in matching)
+        if ev_count > 0:
+            return EvidenceSourceResult(key, "pass", min(90, 55 + ev_count * 8), _SOURCE_WEIGHTS[key])
+        if any(r.get("status") in ("needs_review", "url_added") for r in matching):
+            return EvidenceSourceResult(key, "partial", 55, _SOURCE_WEIGHTS[key],
+                                        notes="needs stronger evidence")
+        return EvidenceSourceResult(key, "partial", 45, _SOURCE_WEIGHTS[key],
+                                    notes="optional evidence submitted but weak")
+
     # ── Score combination ─────────────────────────────────────────────────────
 
     def _combine_scores(self, sources: list[EvidenceSourceResult]) -> int:
@@ -753,12 +907,17 @@ class FinalEvidenceEvaluatorService:
         claimed_skills: list[str],
         wf: dict[str, Any] | None,
         gh: dict[str, Any] | None,
+        optional_rows: list[dict[str, Any]] | None = None,
     ) -> dict[str, int]:
         result: dict[str, int] = {}
         supported = set(s.lower() for s in (wf or {}).get("supported_skills") or [])
         partial   = set(s.lower() for s in (wf or {}).get("weakly_supported_skills") or [])
         gh_matched = set(s.lower() for s in (gh or {}).get("matched_claimed_skills") or []) if gh else set()
         gh_weak    = set(s.lower() for s in (gh or {}).get("weakly_matched_claimed_skills") or []) if gh else set()
+
+        gh_sce: list[dict[str, Any]] = [
+            d for d in ((gh or {}).get("skill_code_evidence") or []) if isinstance(d, dict)
+        ] if gh and (gh or {}).get("status") == "success" else []
 
         for skill in claimed_skills:
             key = skill.lower()
@@ -771,6 +930,16 @@ class FinalEvidenceEvaluatorService:
                 base += 25
             elif key in gh_weak:
                 base += 12
+            # For visual/graphics skills, OCR cannot read rendered content so
+            # supported_skills/gh_matched may be empty.  Credit GitHub code
+            # evidence directly so the score is not forced to zero.
+            if base == 0 and _is_visual_graphics_skill(skill) and gh_sce:
+                if any(_github_code_evidence_matches_skill(ev, skill) for ev in gh_sce):
+                    base = 35
+            for row in optional_rows or []:
+                for ev in row.get("evidence_objects") or []:
+                    if str(ev.get("skill_name") or "").lower() == key:
+                        base += 10 if ev.get("confidence") == "high" else 7 if ev.get("confidence") == "medium" else 3
             result[skill] = _clamp(base)
         return result
 
@@ -782,6 +951,7 @@ class FinalEvidenceEvaluatorService:
         wf: dict[str, Any] | None,
         gh: dict[str, Any] | None,
         pd: dict[str, Any] | None = None,
+        optional_rows: list[dict[str, Any]] | None = None,
     ) -> dict[str, DetectedSkillEntry]:
         """Collect all skills from evidence sources, keyed by lowercase skill name."""
         entries: dict[str, DetectedSkillEntry] = {}
@@ -843,16 +1013,83 @@ class FinalEvidenceEvaluatorService:
                             "OCR",
                         )
 
+            # ── Visual/graphics skill upgrade via Qwen observation ─────────
+            # For canvas/WebGL/GPU-rendered skills, OCR cannot extract the
+            # skill name from the rendered output.  If Qwen analyzed frames
+            # and observed visual/graphics rendering, promote claimed visual
+            # skills from "low" confidence so they are not marked missing
+            # solely because OCR found no matching text.
+            if isinstance(vrs, dict) and vrs.get("status") == "analyzed":
+                _qwen_vis_text = str(vrs.get("summary", "")).lower()
+                for _obs in (vrs.get("observations") or []):
+                    if isinstance(_obs, dict):
+                        _qwen_vis_text += " " + str(_obs.get("description", "")).lower()
+                _qwen_vis_hits = sum(
+                    1 for kw in _QWEN_VISUAL_RENDER_INDICATORS if kw in _qwen_vis_text
+                )
+                if _qwen_vis_hits >= 2:
+                    for _sv in claimed_skills:
+                        if not _is_visual_graphics_skill(_sv):
+                            continue
+                        _ek = _sv.lower()
+                        if _ek not in entries:
+                            continue
+                        _ve = entries[_ek]
+                        if "Qwen" not in _ve.sources:
+                            _ve.sources.append("Qwen")
+                        if _ve.confidence == "low":
+                            _ve.confidence = "medium"
+                            _ve.evidence_support = (
+                                "Visual rendering observed by Qwen — "
+                                "OCR is limited on canvas/WebGL/graphics pages"
+                            )
+
         # ── GitHub evidence ────────────────────────────────────────────────
         if gh and gh.get("status") == "success":
+            raw_skill_code_evidence = [
+                d for d in (gh.get("skill_code_evidence") or [])
+                if isinstance(d, dict)
+            ]
             for s in (gh.get("matched_claimed_skills") or []):
                 _add(s, "high", "Supported by GitHub repository analysis", "GitHub")
             for s in (gh.get("weakly_matched_claimed_skills") or []):
                 _add(s, "medium", "Partially supported by GitHub repository", "GitHub")
+            for s in claimed_skills:
+                if any(_github_code_evidence_matches_skill(ev, s) for ev in raw_skill_code_evidence):
+                    _add(s, "high", "Supported by exact GitHub code evidence", "GitHub")
+            for ev in raw_skill_code_evidence:
+                ev_skill = str(ev.get("skill") or "").strip()
+                if ev_skill:
+                    _add(ev_skill, "high", "Supported by exact GitHub code evidence", "GitHub")
             # Tech stack detected from repo (may not be in claimed skills)
             for tech in (gh.get("detected_stack") or []):
                 if tech and len(tech) <= 40:
                     _add(tech, "medium", "Detected in GitHub repository tech stack", "GitHub")
+
+        # ── Optional booster evidence ──────────────────────────────────────
+        for opt in optional_rows or []:
+            src_type = str(opt.get("source_type") or "")
+            source_label = {
+                "document": "document",
+                "linkedin_profile": "linkedin_profile",
+                "certificate_transcript": "certificate_transcript",
+            }.get(src_type)
+            if not source_label:
+                continue
+            for ev in opt.get("evidence_objects") or []:
+                if not isinstance(ev, dict):
+                    continue
+                skill = str(ev.get("skill_name") or "").strip()
+                if not skill:
+                    continue
+                conf = str(ev.get("confidence") or "medium")
+                confidence: Literal["high", "medium", "low"] = (
+                    "high" if conf == "high" else "low" if conf == "low" else "medium"
+                )
+                support = str(ev.get("reason") or f"Supported by {src_type.replace('_', ' ')} evidence")
+                if src_type == "certificate_transcript" and confidence == "high":
+                    confidence = "medium"
+                _add(skill, confidence, support[:140], source_label)
 
         # ── Post-process: proof references, status labels, category, evidence_objects ──
         kf_status = (wf or {}).get("video_keyframe_status")
@@ -867,6 +1104,7 @@ class FinalEvidenceEvaluatorService:
             d for d in ((gh or {}).get("skill_code_evidence") or [])
             if isinstance(d, dict)
         ]
+        gh_repo_name = str((gh or {}).get("repo_name") or "") or _github_repo_name(gh_repo_url)
         recording_sources = {"workflow", "Qwen", "OCR"}
 
         # Qwen reasoning summary for per-skill evidence objects
@@ -977,6 +1215,33 @@ class FinalEvidenceEvaluatorService:
                                 recruiter_safe=True,
                             ))
 
+            # For visual/graphics skills where OCR ran but found no text:
+            # add a clear explanation rather than showing no evidence at all.
+            # OCR is structurally unable to read canvas/WebGL-rendered content.
+            elif _is_visual_graphics_skill(entry.skill) and wf:
+                _ocr_ran = (wf or {}).get("visual_analysis_status") == "analyzed"
+                _ocr_had_signals = bool(
+                    isinstance((wf or {}).get("frame_ocr_evidence_summary"), dict)
+                    and (wf or {}).get("frame_ocr_evidence_summary", {}).get("skill_signals")
+                )
+                if _ocr_ran or _ocr_had_signals:
+                    entry.evidence_objects.append(EvidenceObject(
+                        evidence_type="ocr_text",
+                        source_name="OCR",
+                        confidence="low",
+                        short_summary=(
+                            "OCR text was limited because this page uses canvas/WebGL/graphics "
+                            "rendering. Visual reasoning and GitHub code evidence are stronger "
+                            "for this skill."
+                        ),
+                        provenance="OCR Evidence",
+                        evidence_kind="contextual_page",
+                        skill_support_level="none",
+                        trace_action="view_ocr",
+                        action_available=False,
+                        recruiter_safe=True,
+                    ))
+
             # Qwen evidence objects — include evidence_kind classification
             if "Qwen" in entry.sources and vrs_for_obj.get("status") == "analyzed":
                 # Derive evidence_kind from Qwen observations if available
@@ -1006,6 +1271,18 @@ class FinalEvidenceEvaluatorService:
                                   "data_input", "processing") and ev_kind != "direct_workflow":
                         ev_kind = "direct_workflow"
                         skill_support = "partial"
+                # For visual/graphics skills, Qwen observing rendered output is
+                # direct evidence — the skill manifests as rendered content, not text.
+                if _is_visual_graphics_skill(entry.skill) and ev_kind != "direct_workflow":
+                    _skill_toks = _skill_match_tokens(entry.skill)
+                    _qsum_lower = qwen_summary.lower()
+                    _vis_indicator_hits = sum(
+                        1 for kw in _QWEN_VISUAL_RENDER_INDICATORS if kw in _qsum_lower
+                    )
+                    _tok_hit = any(tok in _qsum_lower for tok in _skill_toks)
+                    if _vis_indicator_hits >= 2 or _tok_hit:
+                        ev_kind = "direct_workflow"
+                        skill_support = "partial"
                 entry.evidence_objects.append(EvidenceObject(
                     evidence_type="qwen_visual",
                     source_name="Qwen",
@@ -1021,24 +1298,18 @@ class FinalEvidenceEvaluatorService:
 
             # GitHub proof references + evidence objects
             if "GitHub" in entry.sources and gh and gh.get("status") == "success":
-                if gh_stack:
-                    entry.github_evidence.append(
-                        f"Tech stack detected: {', '.join(gh_stack[:5])}"
-                    )
                 is_direct_match = entry.skill.lower() in gh_matched
-                if is_direct_match:
-                    entry.github_evidence.append(
-                        "Skill directly matched in GitHub repository analysis"
-                    )
-                entry.github_evidence.append("Repository source files analyzed for evidence")
 
                 # Filter deep code evidence to this skill, excluding generic meta files
                 # (README.md etc. mentions are not line-level code proof)
-                skill_ev_for_entry = [
-                    ev for ev in gh_skill_code_evidence
-                    if ev.get("skill", "").lower() == entry.skill.lower()
-                    and str(ev.get("file_path") or "") not in _GENERIC_META_PATHS
-                ]
+                skill_ev_for_entry = sorted(
+                    [
+                        ev for ev in gh_skill_code_evidence
+                        if _github_code_evidence_matches_skill(ev, entry.skill)
+                        and str(ev.get("file_path") or "") not in _GENERIC_META_PATHS
+                    ],
+                    key=lambda ev: _github_code_evidence_sort_key(ev, entry.skill),
+                )
 
                 # Source-only evidence_files: exclude README.md/package.json/etc.
                 # so the fallback never shows a README "Open GitHub file" button.
@@ -1047,7 +1318,7 @@ class FinalEvidenceEvaluatorService:
                     if fp not in _GENERIC_META_PATHS
                 ]
 
-                if is_direct_match and skill_ev_for_entry:
+                if skill_ev_for_entry:
                     # Prefer deep line-level code evidence over shallow evidence_files
                     for ev in skill_ev_for_entry[:3]:
                         fp = str(ev.get("file_path") or "")
@@ -1065,6 +1336,7 @@ class FinalEvidenceEvaluatorService:
                             confidence="high",
                             short_summary=reason[:120],
                             file_path=fp or None,
+                            repo_name=str(ev.get("repo_name") or "") or gh_repo_name,
                             line_start=ls,
                             line_end=le,
                             github_url=gh_blob_url,
@@ -1078,6 +1350,7 @@ class FinalEvidenceEvaluatorService:
                             recruiter_safe=True,
                         ))
                 elif is_direct_match and source_evidence_files:
+                    entry.github_evidence.append("Repository source files analyzed for evidence")
                     # Fallback: real source files only (no line numbers)
                     for fp in source_evidence_files[:3]:
                         gh_blob_url = _build_github_blob_url(gh_repo_url, fp) if gh_repo_url and fp else None
@@ -1087,6 +1360,7 @@ class FinalEvidenceEvaluatorService:
                             confidence="high",
                             short_summary=f"GitHub file: {fp}",
                             file_path=fp,
+                            repo_name=gh_repo_name,
                             line_start=None,
                             line_end=None,
                             github_url=gh_blob_url,
@@ -1099,6 +1373,7 @@ class FinalEvidenceEvaluatorService:
                             recruiter_safe=True,
                         ))
                 elif is_direct_match:
+                    entry.github_evidence.append("Skill directly matched in GitHub repository analysis")
                     # Skill directly matched but no specific evidence files — repo-level only.
                     # Label: "Open GitHub repo" (file_path=None → frontend shows repo label).
                     entry.evidence_objects.append(EvidenceObject(
@@ -1106,6 +1381,7 @@ class FinalEvidenceEvaluatorService:
                         source_name="GitHub",
                         confidence="high",
                         short_summary="Skill matched in GitHub repository — repository-level evidence",
+                        repo_name=gh_repo_name,
                         github_url=gh_repo_url or None,
                         provenance="GitHub Evidence",
                         evidence_kind="direct_workflow",
@@ -1116,11 +1392,18 @@ class FinalEvidenceEvaluatorService:
                         recruiter_safe=True,
                     ))
                 elif gh_stack:
+                    entry.github_evidence.append(
+                        f"Tech stack detected: {', '.join(gh_stack[:5])}"
+                    )
                     # Skill inferred from tech stack (not directly matched).
                     # When evidence files are available, link to the first file (file-level).
                     # When no files, fall back to repo-level link.
-                    if gh_evidence_files and gh_repo_url:
-                        fp = gh_evidence_files[0]
+                    stack_fallback_files = source_evidence_files or [
+                        fp for fp in gh_evidence_files
+                        if fp.lower() not in ("readme.md", "readme.rst")
+                    ]
+                    if stack_fallback_files and gh_repo_url:
+                        fp = stack_fallback_files[0]
                         gh_blob_url = _build_github_blob_url(gh_repo_url, fp)
                         entry.evidence_objects.append(EvidenceObject(
                             evidence_type="github_file",
@@ -1131,6 +1414,7 @@ class FinalEvidenceEvaluatorService:
                                 f"— {fp}"
                             ),
                             file_path=fp,
+                            repo_name=gh_repo_name,
                             line_start=None,
                             line_end=None,
                             github_url=gh_blob_url or gh_repo_url or None,
@@ -1149,6 +1433,7 @@ class FinalEvidenceEvaluatorService:
                             source_name="GitHub",
                             confidence="medium",
                             short_summary=f"Inferred from GitHub tech stack: {', '.join(gh_stack[:3])}",
+                            repo_name=gh_repo_name,
                             github_url=gh_repo_url or None,
                             provenance="GitHub Evidence",
                             evidence_kind="contextual_page",
@@ -1206,6 +1491,56 @@ class FinalEvidenceEvaluatorService:
                             action_available=False,
                             recruiter_safe=True,
                         ))
+
+        # ── Optional document/profile/certificate snippet evidence ───────────
+        for entry in entries.values():
+            for opt in optional_rows or []:
+                src_type = str(opt.get("source_type") or "")
+                for raw_obj in opt.get("evidence_objects") or []:
+                    if not isinstance(raw_obj, dict):
+                        continue
+                    if str(raw_obj.get("skill_name") or "").lower() != entry.skill.lower():
+                        continue
+                    conf_raw = str(raw_obj.get("confidence") or "medium")
+                    confidence: Literal["high", "medium", "low"] = (
+                        "high" if conf_raw == "high" else "low" if conf_raw == "low" else "medium"
+                    )
+                    snippet = str(raw_obj.get("snippet") or "")
+                    ev_type = str(raw_obj.get("evidence_type") or "document_snippet")
+                    provenance = {
+                        "document": "Documents/PDF",
+                        "linkedin_profile": "LinkedIn/Profile",
+                        "certificate_transcript": "Certificates/Transcript",
+                    }.get(src_type, "Documents/PDF")
+                    source_name = {
+                        "document": "Document",
+                        "linkedin_profile": "LinkedIn/Profile",
+                        "certificate_transcript": "Certificate/Transcript",
+                    }.get(src_type, "Document")
+                    support_level = "partial" if src_type == "certificate_transcript" else (
+                        "strong" if confidence == "high" else "partial" if confidence == "medium" else "weak"
+                    )
+                    entry.evidence_objects.append(EvidenceObject(
+                        evidence_type=ev_type,
+                        source_name=source_name,
+                        confidence=confidence,
+                        short_summary=str(raw_obj.get("reason") or snippet or "Optional evidence snippet")[:160],
+                        text_snippet=snippet[:280] or None,
+                        source_type=src_type,
+                        page_number=raw_obj.get("page_number"),
+                        profile_url=raw_obj.get("profile_url"),
+                        section_label=raw_obj.get("section_label"),
+                        issuer=raw_obj.get("issuer"),
+                        title=raw_obj.get("title"),
+                        date=raw_obj.get("date"),
+                        file_path=raw_obj.get("file_path"),
+                        provenance=provenance,
+                        evidence_kind="contextual_page" if src_type == "certificate_transcript" else "direct_workflow",
+                        skill_support_level=support_level,
+                        trace_action="view_document",
+                        action_available=False,
+                        recruiter_safe=True,
+                    ))
 
         return entries
 
@@ -1369,6 +1704,12 @@ class FinalEvidenceEvaluatorService:
             why.append("OCR analysis found relevant technical terminology in screen text.")
         if any("GitHub" in e.sources for e in (high_skills + medium_skills)):
             why.append("GitHub repository evidence supports code-level skill demonstration.")
+        if any("document" in e.sources for e in (high_skills + medium_skills)):
+            why.append("Submitted documents or reports provide traceable skill evidence.")
+        if any("linkedin_profile" in e.sources for e in (high_skills + medium_skills)):
+            why.append("Profile text provides additional professional context for skills.")
+        if any("certificate_transcript" in e.sources for e in (high_skills + medium_skills)):
+            why.append("Certificate or transcript evidence supports learning credentials.")
         if not why:
             why.append("Evidence suggests this capability based on observed workflow patterns.")
 
@@ -1483,11 +1824,10 @@ class FinalEvidenceEvaluatorService:
                     recommended_duration="2–5 minutes",
                 ))
 
-        # ── Document / PDF gap (research, reports, certifications) ────────────
+        # ── Document / PDF gap (project reports and technical write-ups) ──────
         doc_skills = [s for s in claimed_skills
                       if any(kw in s.lower() for kw in (
                           "research", "report", "analysis", "academic", "thesis",
-                          "certification", "certified", "certificate", "transcript",
                           "documentation", "technical writing",
                       ))]
         if doc_skills and len(actions) < 5:
@@ -1495,27 +1835,9 @@ class FinalEvidenceEvaluatorService:
                 action_type="upload_document",
                 target_skill=doc_skills[0],
                 reason=f"{doc_skills[0]} is better supported by uploading a document or report.",
-                objective="Upload a PDF report, certificate, research paper, or academic transcript.",
+                objective="Upload a PDF report, project document, research paper, or technical write-up.",
                 button_label="Upload Document",
                 priority="medium",
-                is_recording=False,
-            ))
-
-        # ── LinkedIn / profile gap ────────────────────────────────────────────
-        profile_skills = [s for s in claimed_skills
-                          if any(kw in s.lower() for kw in (
-                              "leadership", "management", "product", "strategy",
-                              "business", "marketing", "sales", "consulting",
-                              "professional", "communication", "teamwork",
-                          ))]
-        if profile_skills and len(actions) < 5:
-            actions.append(NextBestAction(
-                action_type="add_linkedin_proof",
-                target_skill=profile_skills[0],
-                reason=f"{profile_skills[0]} is better verified with a professional profile link.",
-                objective="Connect your LinkedIn or professional profile to verify experience and endorsements.",
-                button_label="Add LinkedIn Proof",
-                priority="low",
                 is_recording=False,
             ))
 
@@ -1710,6 +2032,8 @@ class FinalEvidenceEvaluatorService:
         gh = self._load_github_analysis(user_id, session_id)
         lw = self._load_live_website_check(user_id, session_id)
         pd = self._load_project_defense(user_id, session_id)
+        opt = self._load_optional_evidence(user_id, session_id)
+        project_opt = [row for row in opt if row.get("source_type") == "document"]
         kf_count = self._count_video_keyframes(user_id, session_id)
 
         sources: list[EvidenceSourceResult] = [
@@ -1721,6 +2045,7 @@ class FinalEvidenceEvaluatorService:
             self._score_github(gh),
             self._score_live_website(lw),
             self._score_project_defense(pd),
+            self._score_optional(project_opt, "document", "uploaded_documents"),
         ]
 
         final_score = self._combine_scores(sources)
@@ -1729,10 +2054,10 @@ class FinalEvidenceEvaluatorService:
         sources_missing: list[EvidenceSourceKey] = [s.key for s in sources if s.status in ("not_run", "missing")]
 
         confidence = self._confidence_label(final_score, sources_used)
-        per_skill = self._per_skill_scores(skills, wf, gh)
+        per_skill = self._per_skill_scores(skills, wf, gh, project_opt)
 
         # Detected skill profile (inferred from all evidence, including beyond claimed)
-        all_skill_entries = self._collect_all_evidence_skills(skills, wf, gh, pd)
+        all_skill_entries = self._collect_all_evidence_skills(skills, wf, gh, pd, project_opt)
         detected_capability = self._infer_skill_profile(skills, all_skill_entries)
         detected_additional = [
             e for e in all_skill_entries.values() if e.is_inferred

@@ -18,11 +18,12 @@ from app.services.final_evidence_evaluator_service import (
     _sources_to_labels,
     _build_github_blob_url,
 )
+from app.services.optional_evidence_service import analyze_optional_evidence
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_db(wf=None, gh=None, lw=None, pd=None, kf_count=0):
+def _make_db(wf=None, gh=None, lw=None, pd=None, opt=None, kf_count=0):
     """Return a mock Supabase-style db whose table() calls return canned data."""
     db = MagicMock()
 
@@ -37,6 +38,8 @@ def _make_db(wf=None, gh=None, lw=None, pd=None, kf_count=0):
             chain.execute.return_value.data = [lw] if lw else []
         elif name == "project_defense_analysis_results":
             chain.execute.return_value.data = [pd] if pd else []
+        elif name == "optional_evidence_submissions":
+            chain.execute.return_value.data = opt or []
         elif name == "workflow_visual_frame_evidence":
             chain.execute.return_value.data = [{}] * kf_count
             chain.execute.return_value.count = kf_count
@@ -52,8 +55,8 @@ def _make_db(wf=None, gh=None, lw=None, pd=None, kf_count=0):
     return db
 
 
-def _svc(wf=None, gh=None, lw=None, pd=None, kf_count=0):
-    return FinalEvidenceEvaluatorService(_make_db(wf, gh, lw, pd, kf_count))
+def _svc(wf=None, gh=None, lw=None, pd=None, opt=None, kf_count=0):
+    return FinalEvidenceEvaluatorService(_make_db(wf, gh, lw, pd, opt, kf_count))
 
 
 # ── 1. grouped_skill_evidence is returned ──────────────────────────────────────
@@ -1988,3 +1991,423 @@ def test_skill_code_evidence_maps_to_grouped_evidence():
     assert src_obj is not None, "src/index.js not found in github_file evidence objects"
     assert src_obj.line_start == 12
     assert "L12" in (src_obj.github_url or ""), "github_url must contain line anchor"
+
+
+def test_skill_code_evidence_attaches_to_skill_card_without_generic_text():
+    """Exact GitHub code evidence should be on the skill, not hidden behind generic refs."""
+    gh = {
+        "status": "success",
+        "confidence_score": 0.9,
+        "matched_claimed_skills": ["JavaScript"],
+        "weakly_matched_claimed_skills": [],
+        "detected_stack": ["JavaScript"],
+        "github_url": "https://github.com/mrdoob/three.js",
+        "repo_url": "https://github.com/mrdoob/three.js",
+        "evidence_files": ["README.md", "package.json"],
+        "skill_code_evidence": [
+            {
+                "skill": "JavaScript",
+                "repo_name": "mrdoob/three.js",
+                "file_path": "examples/jsm/libs/motion/Animation.js",
+                "line_start": 370,
+                "line_end": 388,
+                "code_snippet": "update( delta ) {\n  this.time += delta;\n}",
+                "github_url": "https://github.com/mrdoob/three.js/blob/dev/examples/jsm/libs/motion/Animation.js#L370-L388",
+                "reason": "Animation update logic supports JavaScript.",
+            }
+        ],
+    }
+    result = _svc(gh=gh).evaluate("u1", "s1", claimed_skills=["JavaScript"])
+
+    js = next(
+        sk for g in result.grouped_skill_evidence for sk in g.skills
+        if sk.skill == "JavaScript"
+    )
+    gh_objs = [o for o in js.evidence_objects if o.evidence_type == "github_file"]
+    assert gh_objs, "Skill card data must contain GitHub code evidence"
+    assert gh_objs[0].file_path == "examples/jsm/libs/motion/Animation.js"
+    assert gh_objs[0].line_start == 370
+    assert gh_objs[0].line_end == 388
+    assert gh_objs[0].repo_name == "mrdoob/three.js"
+    assert gh_objs[0].provenance == "GitHub Code Evidence"
+    assert js.github_evidence == [], "Generic GitHub text is only fallback when exact code evidence exists"
+
+
+def test_skill_code_evidence_alias_matches_threejs_webgl_skills():
+    """Three.js/WebGL skills should receive relevant source evidence without spraying all skills."""
+    gh = {
+        "status": "success",
+        "confidence_score": 0.9,
+        "matched_claimed_skills": ["JavaScript"],
+        "weakly_matched_claimed_skills": [],
+        "detected_stack": ["JavaScript"],
+        "github_url": "https://github.com/mrdoob/three.js",
+        "repo_url": "https://github.com/mrdoob/three.js",
+        "evidence_files": ["README.md"],
+        "skill_code_evidence": [
+            {
+                "skill": "JavaScript",
+                "repo_name": "mrdoob/three.js",
+                "file_path": "examples/webgl_materials_video.html",
+                "line_start": 82,
+                "line_end": 104,
+                "code_snippet": "const texture = new THREE.VideoTexture( video );\nconst renderer = new THREE.WebGLRenderer();",
+                "github_url": "https://github.com/mrdoob/three.js/blob/dev/examples/webgl_materials_video.html#L82-L104",
+                "reason": "Three.js WebGL renderer and video texture setup.",
+            }
+        ],
+    }
+    result = _svc(gh=gh).evaluate(
+        "u1",
+        "s1",
+        claimed_skills=["JavaScript", "Three.js", "WebGL", "Interactive 3D Graphics", "Payroll Systems"],
+    )
+
+    by_skill = {
+        sk.skill: sk
+        for g in result.grouped_skill_evidence
+        for sk in g.skills
+    }
+    for skill in ["JavaScript", "Three.js", "WebGL", "Interactive 3D Graphics"]:
+        gh_objs = [o for o in by_skill[skill].evidence_objects if o.evidence_type == "github_file"]
+        assert gh_objs, f"{skill} should receive exact GitHub evidence"
+        assert gh_objs[0].line_start == 82
+        assert "webgl_materials_video.html" in (gh_objs[0].file_path or "")
+
+    unrelated = by_skill.get("Payroll Systems")
+    assert unrelated is not None
+    assert not [o for o in unrelated.evidence_objects if o.evidence_type == "github_file"], (
+        "Unrelated claimed skills must not receive aliased GitHub source lines"
+    )
+
+
+# ── Visual/graphics skill evidence tests ──────────────────────────────────────
+
+def _threejs_qwen_summary() -> str:
+    return (
+        "Qwen analyzed 2 frames. The page shows a Three.js WebGL demo with "
+        "colorful rotating 3d objects. A canvas element renders an animated "
+        "scene with geometric mesh objects using WebGL rendering."
+    )
+
+
+def _threejs_wf(*, ocr_ran: bool = True, qwen: bool = True) -> dict:
+    vrs = {
+        "status": "analyzed",
+        "frames_analyzed": 2,
+        "summary": _threejs_qwen_summary() if qwen else "",
+        "observations": [
+            {
+                "frame_index": 0,
+                "detected_workflow_stage": "canvas_rendering",
+                "description": "WebGL canvas showing animated colorful rotating 3d objects",
+                "skill_evidence": {},
+            }
+        ] if qwen else [],
+        "supported_signals": [],
+    } if qwen else {"status": "disabled"}
+    return {
+        "evidence_strength_score": 55,
+        "workflow_confidence": "partial",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["navigate"],
+        "visual_analysis_status": "analyzed" if ocr_ran else "not_configured",
+        "supported_skills": [],
+        "weakly_supported_skills": [],
+        "frame_ocr_evidence_summary": {
+            "skill_signals": [
+                {"skill": "JavaScript", "ocr_support": "partial",
+                 "reasoning": "OCR found js text", "ocr_terms_found": ["js"]},
+                {"skill": "Three.js", "ocr_support": "not_found",
+                 "reasoning": "No OCR text relevant to Three.js was detected",
+                 "ocr_terms_found": []},
+                {"skill": "WebGL", "ocr_support": "not_found",
+                 "reasoning": "No OCR text relevant to WebGL was detected",
+                 "ocr_terms_found": []},
+            ]
+        } if ocr_ran else {},
+        "visual_reasoning_summary": vrs,
+        "video_keyframe_status": "extracted",
+        "video_keyframe_count": 2,
+        "video_keyframe_timestamps_ms": [1000, 4000],
+    }
+
+
+def _threejs_gh() -> dict:
+    return {
+        "status": "success",
+        "confidence_score": 0.88,
+        "matched_claimed_skills": ["JavaScript"],
+        "weakly_matched_claimed_skills": [],
+        "detected_stack": ["JavaScript", "Three.js"],
+        "github_url": "https://github.com/mrdoob/three.js",
+        "repo_url": "https://github.com/mrdoob/three.js",
+        "repo_name": "mrdoob/three.js",
+        "evidence_files": ["examples/webgl_materials_video.html"],
+        "skill_code_evidence": [
+            {
+                "skill": "Three.js",
+                "repo_name": "mrdoob/three.js",
+                "file_path": "examples/jsm/libs/motion/Animation.js",
+                "line_start": 370,
+                "line_end": 388,
+                "code_snippet": "THREE.AnimationMixer.prototype.update = function(delta) { ... }",
+                "github_url": "https://github.com/mrdoob/three.js/blob/dev/examples/jsm/libs/motion/Animation.js#L370-L388",
+                "reason": "Three.js AnimationMixer implementation.",
+            }
+        ],
+    }
+
+
+_THREEJS_SKILLS = [
+    "JavaScript", "Three.js", "WebGL", "Interactive 3D Graphics",
+    "Computer Graphics", "Video Texture Rendering",
+]
+
+
+def test_webgl_skill_not_missing_when_qwen_observed_rendering():
+    """A WebGL/Three.js skill must not be marked missing when Qwen saw rendered output."""
+    result = _svc(wf=_threejs_wf(), gh=_threejs_gh()).evaluate(
+        "u1", "s1", claimed_skills=_THREEJS_SKILLS,
+    )
+    assert "qwen_visual_reasoning" not in result.evidence_sources_missing
+    assert "github" not in result.evidence_sources_missing
+    by_skill = {
+        sk.skill: sk
+        for g in result.grouped_skill_evidence
+        for sk in g.skills
+    }
+    for skill in ["Three.js", "WebGL", "Interactive 3D Graphics", "Computer Graphics"]:
+        entry = by_skill.get(skill)
+        assert entry is not None, f"{skill} must appear in grouped_skill_evidence"
+        assert entry.confidence in ("high", "medium"), (
+            f"{skill} confidence must be medium or high when Qwen saw rendering "
+            f"(got {entry.confidence!r})"
+        )
+        assert "claimed" not in entry.status_label.lower() or "supported" in entry.status_label.lower(), (
+            f"{skill} status_label must indicate support, got {entry.status_label!r}"
+        )
+
+
+def test_visual_skill_qwen_evidence_object_attached():
+    """Qwen evidence object must be attached to visual/graphics skills when Qwen ran."""
+    result = _svc(wf=_threejs_wf(ocr_ran=False), gh=_threejs_gh()).evaluate(
+        "u1", "s1", claimed_skills=["Three.js", "WebGL", "Interactive 3D Graphics"],
+    )
+    by_skill = {
+        sk.skill: sk
+        for g in result.grouped_skill_evidence
+        for sk in g.skills
+    }
+    for skill in ["Three.js", "WebGL", "Interactive 3D Graphics"]:
+        entry = by_skill[skill]
+        qwen_objs = [o for o in entry.evidence_objects if o.evidence_type == "qwen_visual"]
+        assert qwen_objs, f"{skill} must have a Qwen evidence object"
+        qobj = qwen_objs[0]
+        assert qobj.evidence_kind == "direct_workflow", (
+            f"{skill} Qwen evidence_kind must be direct_workflow for visual skill "
+            f"(got {qobj.evidence_kind!r})"
+        )
+        assert qobj.skill_support_level in ("partial", "strong"), (
+            f"{skill} Qwen skill_support_level must not be 'weak' for visual skill "
+            f"(got {qobj.skill_support_level!r})"
+        )
+
+
+def test_ocr_limitation_note_for_visual_skills_when_ocr_ran():
+    """An OCR limitation explanation must appear for visual/graphics skills when OCR ran."""
+    result = _svc(wf=_threejs_wf(ocr_ran=True, qwen=False)).evaluate(
+        "u1", "s1", claimed_skills=["Three.js", "WebGL", "Interactive 3D Graphics", "JavaScript"],
+    )
+    by_skill = {
+        sk.skill: sk
+        for g in result.grouped_skill_evidence
+        for sk in g.skills
+    }
+    # Visual skills: OCR limitation note expected
+    for skill in ["Three.js", "WebGL", "Interactive 3D Graphics"]:
+        entry = by_skill[skill]
+        ocr_objs = [o for o in entry.evidence_objects if o.source_name == "OCR"]
+        assert ocr_objs, f"{skill} must have an OCR evidence object explaining limitation"
+        assert "canvas" in ocr_objs[0].short_summary.lower() or "webgl" in ocr_objs[0].short_summary.lower(), (
+            f"{skill} OCR note must mention canvas/WebGL limitation"
+        )
+        assert ocr_objs[0].skill_support_level == "none", (
+            f"{skill} OCR limitation object must have skill_support_level='none'"
+        )
+    # Non-visual skill (JavaScript) should not get the OCR limitation note
+    # (OCR found partial evidence for it)
+    js_entry = by_skill["JavaScript"]
+    js_ocr = [o for o in js_entry.evidence_objects if o.source_name == "OCR"]
+    if js_ocr:
+        assert js_ocr[0].skill_support_level != "none", (
+            "JavaScript OCR evidence must not be marked as a limitation — OCR found text for it"
+        )
+
+
+def test_threejs_github_evidence_gives_nonzero_per_skill_score():
+    """GitHub code evidence must give visual/graphics skills a non-zero per_skill_score."""
+    result = _svc(gh=_threejs_gh()).evaluate(
+        "u1", "s1",
+        claimed_skills=["Three.js", "WebGL", "Interactive 3D Graphics"],
+    )
+    for skill in ["Three.js", "WebGL", "Interactive 3D Graphics"]:
+        score = result.per_skill_scores.get(skill, 0)
+        assert score > 0, (
+            f"{skill} per_skill_score must be > 0 when GitHub has code evidence "
+            f"(got {score})"
+        )
+
+
+def test_visual_skill_missing_only_when_no_evidence_at_all():
+    """A visual/graphics skill must NOT be marked as having no support when any evidence exists.
+
+    Missing status should only appear when OCR, Qwen, GitHub, DOM, and live check
+    all produce nothing.
+    """
+    # No workflow, no GitHub — zero evidence
+    result_zero = _svc().evaluate(
+        "u1", "s1", claimed_skills=["Three.js", "WebGL"],
+    )
+    by_skill_zero = {
+        sk.skill: sk
+        for g in result_zero.grouped_skill_evidence
+        for sk in g.skills
+    }
+    # With no evidence at all, they should be low confidence (acceptable)
+    for skill in ["Three.js", "WebGL"]:
+        entry = by_skill_zero.get(skill)
+        assert entry is not None
+        assert entry.confidence == "low"
+
+    # With Qwen visual observation → must NOT be low confidence
+    result_qwen = _svc(wf=_threejs_wf(ocr_ran=False, qwen=True)).evaluate(
+        "u1", "s1", claimed_skills=["Three.js", "WebGL"],
+    )
+    by_skill_qwen = {
+        sk.skill: sk
+        for g in result_qwen.grouped_skill_evidence
+        for sk in g.skills
+    }
+    for skill in ["Three.js", "WebGL"]:
+        entry = by_skill_qwen[skill]
+        assert entry.confidence != "low", (
+            f"{skill} must not be 'low' confidence when Qwen observed visual rendering"
+        )
+
+    # With GitHub code evidence → must NOT be low confidence
+    result_gh = _svc(gh=_threejs_gh()).evaluate(
+        "u1", "s1", claimed_skills=["Three.js"],
+    )
+    threejs_entry = next(
+        sk for g in result_gh.grouped_skill_evidence
+        for sk in g.skills if sk.skill == "Three.js"
+    )
+    assert threejs_entry.confidence != "low", (
+        "Three.js must not be 'low' confidence when GitHub has code evidence for it"
+    )
+
+
+# ── Optional evidence booster tests ───────────────────────────────────────────
+
+def test_missing_optional_proofs_do_not_reduce_score():
+    wf = {
+        "evidence_strength_score": 80,
+        "workflow_confidence": "strong",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["open", "click", "submit", "view result"],
+        "supported_skills": ["JavaScript"],
+        "weakly_supported_skills": [],
+        "visual_analysis_status": "not_configured",
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+    base = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=["JavaScript"])
+    assert "uploaded_documents" not in base.evidence_sources_missing
+    assert "linkedin_profile" not in base.evidence_sources_missing
+    assert "certificate" not in base.evidence_sources_missing
+
+
+def test_document_snippet_maps_to_skill_evidence_with_page():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text="--- page 2 --- Built a CNN model using TensorFlow and evaluated accuracy and F1-score.",
+        file_path="report.pdf",
+    )
+    row = {"source_type": "document", "status": analysis.status, "evidence_objects": analysis.evidence_objects}
+    result = _svc(opt=[row]).evaluate("u1", "s1", claimed_skills=[])
+    skills = {sk.skill: sk for g in result.grouped_skill_evidence for sk in g.skills}
+    assert "Machine Learning" in skills
+    ml_objs = [o for o in skills["Machine Learning"].evidence_objects if o.evidence_type == "document_snippet"]
+    assert ml_objs
+    assert ml_objs[0].page_number == 2
+    assert "CNN model" in (ml_objs[0].text_snippet or "")
+
+
+def test_linkedin_profile_text_maps_to_skill_evidence():
+    analysis = analyze_optional_evidence(
+        source_type="linkedin_profile",
+        raw_text="Data Science intern working on a recommendation system using Python and machine learning.",
+        profile_url="https://linkedin.com/in/example",
+        section_label="Experience",
+    )
+    obj = next(o for o in analysis.evidence_objects if o["skill_name"] == "Data Science")
+    assert obj["evidence_type"] == "profile_snippet"
+    assert obj["profile_url"] == "https://linkedin.com/in/example"
+    assert obj["section_label"] == "Experience"
+
+
+def test_certificate_text_maps_metadata_without_fake_fields():
+    analysis = analyze_optional_evidence(
+        source_type="certificate_transcript",
+        raw_text="Issuer: Coursera\nCertificate: Machine Learning\nDate: 2024\nCompleted supervised learning and model training.",
+    )
+    assert analysis.evidence_objects
+    obj = next(o for o in analysis.evidence_objects if o["skill_name"] == "Machine Learning")
+    assert obj["evidence_type"] == "certificate_or_transcript_snippet"
+    assert obj["issuer"] == "Coursera"
+    assert obj["title"] == "Machine Learning"
+    assert obj["date"] == "2024"
+    no_meta = analyze_optional_evidence(source_type="certificate_transcript", raw_text="Completed a Python course.")
+    assert no_meta.analysis_json.get("issuer") is None
+    assert no_meta.analysis_json.get("date") is None
+
+
+def test_optional_evidence_included_when_present_and_actions_source_aware():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text="Project report: built REST APIs using FastAPI and PostgreSQL.",
+    )
+    row = {"source_type": "document", "status": analysis.status, "evidence_objects": analysis.evidence_objects}
+    result = _svc(opt=[row]).evaluate("u1", "s1", claimed_skills=["Technical Documentation"])
+    assert "uploaded_documents" in result.evidence_sources_used
+    skills = {sk.skill for g in result.grouped_skill_evidence for sk in g.skills}
+    assert {"Backend API", "FastAPI", "PostgreSQL"} & skills
+    actions = _svc().evaluate("u1", "s1", claimed_skills=["Technical Documentation"]).next_best_actions
+    assert any(a["action_type"] == "upload_document" for a in actions)
+    assert not any(a["action_type"] == "add_linkedin_proof" for a in actions)
+    upload_actions = [a for a in actions if a["action_type"] == "upload_document"]
+    assert all("certificate" not in a["objective"].lower() for a in upload_actions)
+    assert all("transcript" not in a["objective"].lower() for a in upload_actions)
+
+
+def test_profile_and_certificate_rows_are_reserved_outside_project_proof():
+    profile = analyze_optional_evidence(
+        source_type="linkedin_profile",
+        raw_text="Data Science intern working on recommendation systems.",
+        profile_url="https://linkedin.com/in/example",
+    )
+    certificate = analyze_optional_evidence(
+        source_type="certificate_transcript",
+        raw_text="Issuer: Coursera\nCertificate: Machine Learning\nDate: 2024",
+    )
+    rows = [
+        {"source_type": "linkedin_profile", "status": profile.status, "evidence_objects": profile.evidence_objects},
+        {"source_type": "certificate_transcript", "status": certificate.status, "evidence_objects": certificate.evidence_objects},
+    ]
+    result = _svc(opt=rows).evaluate("u1", "s1", claimed_skills=[])
+    assert "linkedin_profile" not in result.evidence_sources_used
+    assert "certificate" not in result.evidence_sources_used
+    skills = {sk.skill for g in result.grouped_skill_evidence for sk in g.skills}
+    assert "Data Science" not in skills
+    assert "Machine Learning" not in skills

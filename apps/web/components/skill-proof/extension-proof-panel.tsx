@@ -20,11 +20,16 @@ import {
   transcribeDefenseMedia,
   refineDefenseTranscript,
   runFinalEvaluation,
+  submitOptionalEvidence,
   type FinalEvaluationResult,
   type NextBestAction,
   type DetectedCapability,
   type DetectedSkillEntry,
   type GroupedSkillEvidence,
+  type EvidenceObject,
+  type OptionalEvidenceResponse,
+  type OptionalEvidenceSourceType,
+  type TranscriptSegment,
   type ProjectDefenseTranscribeResponse,
   type ProjectDefenseRefineTranscriptResponse,
   type TranscriptCorrectionEntry,
@@ -2120,17 +2125,53 @@ function overallSkillLabel(
 
 const FOLLOWUP_INTENT_KEY_FE = "vb_followup_intent"
 
-// ── Future proof module placeholders ──────────────────────────────────────────
+// ── Optional project proof boosters ───────────────────────────────────────────
 
-// Only show AI/CS/DS-relevant modules in the MVP Website Proof panel.
-// Camera/Physical, CAD/Simulation, and Presentation/Voice are hidden for now.
-const FUTURE_MODULES: Array<{ label: string; icon: string; description: string }> = [
-  { label: "Documents / PDF / Reports Evidence", icon: "📄", description: "Upload project reports, research papers, or technical documents as supporting evidence." },
-  { label: "LinkedIn / Profile Proof", icon: "🔗", description: "Connect your LinkedIn or professional profile to verify work history and endorsements." },
-  { label: "Certificates / Transcript Proof", icon: "🎓", description: "Upload course certificates, academic transcripts, or professional certifications." },
+// Website/Project Proof only uses project documents here. Profile and credential
+// evidence belong to the future Work Passport / student profile credibility layer.
+const FUTURE_MODULES: Array<{ sourceType: OptionalEvidenceSourceType; label: string; icon: string; description: string; placeholder: string }> = [
+  { sourceType: "document", label: "Documents / PDF / Reports Evidence", icon: "📄", description: "Paste project report, research, TXT/Markdown, or PDF-extracted text.", placeholder: "Paste report text, e.g. Built a CNN model using TensorFlow and evaluated accuracy/F1-score..." },
 ]
 
-function FutureProofModulesSection() {
+export function FutureProofModulesSection({
+  sessionId,
+  onAnalyzed,
+}: {
+  sessionId?: string
+  onAnalyzed?: () => void
+}) {
+  const [openType, setOpenType] = useState<OptionalEvidenceSourceType | null>(null)
+  const [texts, setTexts] = useState<Record<OptionalEvidenceSourceType, string>>({
+    document: "",
+    linkedin_profile: "",
+    certificate_transcript: "",
+  })
+  const [profileUrl, setProfileUrl] = useState("")
+  const [sectionLabel, setSectionLabel] = useState("")
+  const [submitting, setSubmitting] = useState<OptionalEvidenceSourceType | null>(null)
+  const [results, setResults] = useState<Partial<Record<OptionalEvidenceSourceType, OptionalEvidenceResponse>>>({})
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSubmit(sourceType: OptionalEvidenceSourceType) {
+    if (!sessionId || submitting) return
+    setSubmitting(sourceType)
+    setError(null)
+    try {
+      const result = await submitOptionalEvidence(sessionId, {
+        source_type: sourceType,
+        raw_text: texts[sourceType],
+        profile_url: sourceType === "linkedin_profile" ? profileUrl.trim() || null : null,
+        section_label: sourceType === "linkedin_profile" ? sectionLabel.trim() || null : null,
+      })
+      setResults((prev) => ({ ...prev, [sourceType]: result }))
+      onAnalyzed?.()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Optional evidence analysis failed.")
+    } finally {
+      setSubmitting(null)
+    }
+  }
+
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
@@ -2141,7 +2182,15 @@ function FutureProofModulesSection() {
           Not adding these does not reduce your score
         </div>
       </div>
-      {FUTURE_MODULES.map((m) => (
+      {error && (
+        <div role="alert" style={{ fontSize: 11, color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 10px" }}>
+          {error}
+        </div>
+      )}
+      {FUTURE_MODULES.map((m) => {
+        const result = results[m.sourceType]
+        const isOpen = openType === m.sourceType
+        return (
         <div
           key={m.label}
           style={{
@@ -2153,17 +2202,53 @@ function FutureProofModulesSection() {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{m.label}</div>
             <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2, lineHeight: 1.5 }}>{m.description}</div>
+            {result && (
+              <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 10, color: result.evidence_objects.length > 0 ? "#166534" : "#854d0e", fontWeight: 700 }}>
+                  {result.status} · {result.evidence_objects.length} extracted evidence item{result.evidence_objects.length !== 1 ? "s" : ""}
+                </div>
+                {result.evidence_objects.slice(0, 3).map((ev, i) => (
+                  <div key={i} style={{ fontSize: 10, color: "#475569", lineHeight: 1.45, padding: "4px 6px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 5 }}>
+                    <strong>{String(ev.skill_name ?? "Skill")}</strong>: {String(ev.snippet ?? "").slice(0, 160)}
+                    {ev.page_number ? ` · page ${ev.page_number}` : ""}
+                    {ev.issuer ? ` · issuer ${ev.issuer}` : ""}
+                    {ev.title ? ` · ${ev.title}` : ""}
+                    {ev.date ? ` · ${ev.date}` : ""}
+                  </div>
+                ))}
+              </div>
+            )}
+            {isOpen && (
+              <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+                {m.sourceType === "linkedin_profile" && (
+                  <>
+                    <input value={profileUrl} onChange={(e) => setProfileUrl(e.target.value)} placeholder="https://linkedin.com/in/..." style={inp} />
+                    <input value={sectionLabel} onChange={(e) => setSectionLabel(e.target.value)} placeholder="Section, e.g. Experience" style={inp} />
+                  </>
+                )}
+                <textarea
+                  value={texts[m.sourceType]}
+                  onChange={(e) => setTexts((prev) => ({ ...prev, [m.sourceType]: e.target.value }))}
+                  placeholder={m.placeholder}
+                  rows={4}
+                  style={{ ...inp, resize: "vertical", fontFamily: "inherit" }}
+                />
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <button type="button" onClick={() => void handleSubmit(m.sourceType)} disabled={!sessionId || submitting === m.sourceType}
+                    style={{ fontSize: 11, fontWeight: 700, padding: "6px 12px", borderRadius: 7, border: "none", background: "#111827", color: "#fff", cursor: !sessionId || submitting ? "not-allowed" : "pointer" }}>
+                    {submitting === m.sourceType ? "Analyzing..." : "Analyze optional evidence"}
+                  </button>
+                  <span style={{ fontSize: 10, color: "#94a3b8" }}>Private unless you share it.</span>
+                </div>
+              </div>
+            )}
           </div>
-          <span style={{
-            fontSize: 9, fontWeight: 600, letterSpacing: "0.06em", flexShrink: 0,
-            padding: "2px 8px", borderRadius: 999,
-            background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0",
-            marginTop: 2, whiteSpace: "nowrap",
-          }}>
-            Optional — can strengthen your profile
-          </span>
+          <button type="button" onClick={() => setOpenType(isOpen ? null : m.sourceType)}
+            style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.06em", flexShrink: 0, padding: "2px 8px", borderRadius: 999, background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0", marginTop: 2, whiteSpace: "nowrap", cursor: "pointer" }}>
+            {isOpen ? "Hide" : "Optional — can strengthen your profile"}
+          </button>
         </div>
-      ))}
+      )})}
     </div>
   )
 }
@@ -2194,7 +2279,11 @@ function SkillEvidenceCard({ s }: { s: DetectedSkillEntry }) {
   const [open, setOpen] = useState(false)
   const chip = confidenceChip(s.confidence)
   const sc = statusChip(s.status_label, s.is_inferred)
-  const hasProofRefs = (s.keyframe_evidence?.length ?? 0) > 0 || (s.github_evidence?.length ?? 0) > 0
+  const githubCodeEvidence = (s.evidence_objects ?? []).filter((obj) => obj.evidence_type === "github_file")
+  const hasGithubCodeEvidence = githubCodeEvidence.length > 0
+  const hasProofRefs = (s.keyframe_evidence?.length ?? 0) > 0
+    || (s.github_evidence?.length ?? 0) > 0
+    || hasGithubCodeEvidence
   const hasDetails = hasProofRefs || s.sources.length > 0
 
   return (
@@ -2281,7 +2370,21 @@ function SkillEvidenceCard({ s }: { s: DetectedSkillEntry }) {
           )}
 
           {/* GitHub proof references */}
-          {(s.github_evidence?.length ?? 0) > 0 && (
+          {hasGithubCodeEvidence && (
+            <div>
+              <div style={{ fontSize: 8, fontWeight: 700, color: "#374151",
+                textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 3 }}>
+                GitHub code proof references
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {githubCodeEvidence.map((obj, i) => (
+                  <EvidenceObjectItem key={`github-code-${i}`} obj={obj} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!hasGithubCodeEvidence && (s.github_evidence?.length ?? 0) > 0 && (
             <div>
               <div style={{ fontSize: 8, fontWeight: 700, color: "#374151",
                 textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 3 }}>
@@ -2338,6 +2441,8 @@ const _SOURCE_LABEL_COLORS: Record<string, { bg: string; text: string }> = {
   "Live Website":  { bg: "#ecfdf5", text: "#065f46" },
   "Project Defense": { bg: "#fff7ed", text: "#9a3412" },
   Documents:       { bg: "#fefce8", text: "#713f12" },
+  "LinkedIn/Profile": { bg: "#eff6ff", text: "#0369a1" },
+  "Certificates/Transcript": { bg: "#fef9c3", text: "#854d0e" },
 }
 
 function SourceLabelChip({ label }: { label: string }) {
@@ -2352,99 +2457,463 @@ function SourceLabelChip({ label }: { label: string }) {
   )
 }
 
-function GroupedSkillEvidenceCard({ group }: { group: GroupedSkillEvidence }) {
-  const [open, setOpen] = useState(false)
-  const confChip = confidenceChip(group.confidence)
-  const catColors = _CATEGORY_BADGE_COLORS[group.category] ?? _CATEGORY_BADGE_COLORS.OTHER
+// ── Evidence object item ──────────────────────────────────────────────────────
+
+const _EVIDENCE_TYPE_LABELS: Record<string, string> = {
+  recording_keyframe: "Recording",
+  ocr_text:           "OCR",
+  dom_text:           "DOM",
+  qwen_visual:        "Qwen",
+  github_file:        "GitHub",
+  document_snippet:   "Document",
+  profile_snippet:    "LinkedIn/Profile",
+  certificate_or_transcript_snippet: "Certificate",
+  live_check:         "Live Website",
+  transcript:         "Transcript",
+  transcript_quote:   "Transcript Quote",
+  document:           "Document",
+}
+
+const _EVIDENCE_TYPE_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  recording_keyframe: { bg: "#ede9fe", text: "#6d28d9", border: "#c4b5fd" },
+  ocr_text:           { bg: "#f0fdf4", text: "#166534", border: "#bbf7d0" },
+  dom_text:           { bg: "#eff6ff", text: "#1d4ed8", border: "#bfdbfe" },
+  qwen_visual:        { bg: "#fdf4ff", text: "#7e22ce", border: "#e9d5ff" },
+  github_file:        { bg: "#f1f5f9", text: "#1e293b", border: "#cbd5e1" },
+  document_snippet:   { bg: "#fefce8", text: "#713f12", border: "#fde68a" },
+  profile_snippet:    { bg: "#eff6ff", text: "#0369a1", border: "#bae6fd" },
+  certificate_or_transcript_snippet: { bg: "#fef9c3", text: "#854d0e", border: "#fef08a" },
+  live_check:         { bg: "#ecfdf5", text: "#065f46", border: "#a7f3d0" },
+  transcript:         { bg: "#fff7ed", text: "#9a3412", border: "#fed7aa" },
+  transcript_quote:   { bg: "#fff7ed", text: "#9a3412", border: "#fed7aa" },
+  document:           { bg: "#fefce8", text: "#713f12", border: "#fde68a" },
+}
+
+const _EVIDENCE_KIND_LABELS: Record<string, { label: string; bg: string; text: string }> = {
+  direct_workflow: { label: "Direct evidence", bg: "#dcfce7", text: "#166534" },
+  contextual_page: { label: "Contextual", bg: "#fef9c3", text: "#854d0e" },
+  embedded_video:  { label: "Embedded video", bg: "#fef2f2", text: "#991b1b" },
+  unrelated:       { label: "Unrelated", bg: "#f1f5f9", text: "#94a3b8" },
+  deployment_only: { label: "Deployment only", bg: "#eff6ff", text: "#1d4ed8" },
+}
+
+const _PROVENANCE_LABELS: Record<string, string> = {
+  "Video / Keyframe Evidence": "Video / Keyframe Evidence",
+  "OCR Evidence": "OCR Evidence",
+  "Advanced Visual Reasoning": "Advanced Visual Reasoning",
+  "GitHub Evidence": "GitHub Evidence",
+  "Workflow Evidence Analysis": "Workflow Evidence Analysis",
+  "Live Website Check": "Live Website Check",
+  "Project Defense": "Project Defense",
+  "Documents/PDF": "Documents/PDF",
+  "LinkedIn/Profile": "LinkedIn/Profile",
+  "Certificates/Transcript": "Certificates/Transcript",
+}
+
+export function getGitHubTraceActionLabel(obj: Pick<EvidenceObject, "github_url" | "file_path" | "line_start" | "line_end">): string {
+  if (obj.github_url && obj.line_start != null && obj.line_end != null) return "Open GitHub lines"
+  if (obj.github_url && obj.file_path) return "Open GitHub file"
+  return "Open GitHub repo"
+}
+
+function TraceActionButton({ obj }: { obj: EvidenceObject }) {
+  const action = obj.trace_action
+  const available = obj.action_available !== false
+  if (!action) return null
+  if (action === "view_ocr" || action === "view_qwen") return null
+
+  // Distinguish line-level / file-level / repo-level GitHub links
+  const openGithubLabel = getGitHubTraceActionLabel(obj)
+
+  const labels: Record<string, string> = {
+    open_github:        openGithubLabel,
+    view_keyframe:      "View keyframe",
+    view_ocr:           "View OCR snippet",
+    view_qwen:          "View Qwen observation",
+    view_workflow_event:"View workflow event",
+    view_live_check:    "View live check",
+    view_document:      "View document page",
+    view_transcript:    "View transcript",
+  }
+  const label = labels[action] ?? action
+
+  if (!available || !obj.github_url) {
+    return (
+      <span style={{
+        fontSize: 9, padding: "2px 7px", borderRadius: 4,
+        border: "1px dashed #cbd5e1", color: "#94a3b8", background: "#f8fafc",
+        cursor: "default", whiteSpace: "nowrap",
+      }} title="This trace action is coming soon">
+        {label} — coming soon
+      </span>
+    )
+  }
+
+  if (action === "open_github" && obj.github_url) {
+    return (
+      <a
+        href={obj.github_url}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          fontSize: 9, padding: "2px 7px", borderRadius: 4,
+          border: "1px solid #cbd5e1", color: "#1d4ed8", background: "#eff6ff",
+          cursor: "pointer", whiteSpace: "nowrap", textDecoration: "none",
+          fontWeight: 600,
+        }}
+      >
+        {label} ↗
+      </a>
+    )
+  }
 
   return (
-    <div style={{
-      border: `1px solid ${catColors.border}`,
-      borderRadius: 10,
-      overflow: "hidden",
-      background: "#fff",
+    <span style={{
+      fontSize: 9, padding: "2px 7px", borderRadius: 4,
+      border: "1px dashed #cbd5e1", color: "#94a3b8", background: "#f8fafc",
+      cursor: "default", whiteSpace: "nowrap",
     }}>
-      {/* Group header row */}
-      <div style={{
-        padding: "10px 13px",
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 10,
-        flexWrap: "wrap",
-        background: catColors.bg,
-      }}>
-        {/* Category badge */}
-        <span style={{
-          fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 4,
-          background: catColors.bg, color: catColors.text, border: `1px solid ${catColors.border}`,
-          letterSpacing: "0.07em", textTransform: "uppercase", whiteSpace: "nowrap", flexShrink: 0,
-        }}>
-          {group.category}
-        </span>
+      {label} — coming soon
+    </span>
+  )
+}
 
-        {/* Group name */}
-        <span style={{ fontSize: 12, fontWeight: 700, color: "#1e293b", flex: 1, minWidth: 0 }}>
-          {group.group_name}
-        </span>
+export function EvidenceObjectItem({ obj }: { obj: EvidenceObject }) {
+  const colors = _EVIDENCE_TYPE_COLORS[obj.evidence_type] ?? { bg: "#f8fafc", text: "#64748b", border: "#e2e8f0" }
+  const typeLabel = _EVIDENCE_TYPE_LABELS[obj.evidence_type] ?? obj.evidence_type
+  const chip = confidenceChip(obj.confidence)
+  const evKind = obj.evidence_kind ? _EVIDENCE_KIND_LABELS[obj.evidence_kind] : null
+  const provenanceLabel = obj.provenance ? (_PROVENANCE_LABELS[obj.provenance] ?? obj.provenance) : null
 
-        {/* Confidence badge */}
-        <span style={{
-          fontSize: 9, fontWeight: 700, padding: "1px 7px", borderRadius: 999,
-          background: confChip.bg, color: confChip.text, border: `1px solid ${confChip.border}`,
-          whiteSpace: "nowrap", flexShrink: 0,
-        }}>
-          {group.confidence}
-        </span>
+  const lineLabel = obj.file_path
+    ? (obj.line_start != null
+        ? `L${obj.line_start}${obj.line_end != null && obj.line_end !== obj.line_start ? `–${obj.line_end}` : ""}`
+        : obj.line_range
+          ? `L${obj.line_range}`
+          : "line trace not available yet")
+    : null
 
-        {/* Evidence count */}
-        {group.evidence_count > 0 && (
-          <span style={{
-            fontSize: 9, padding: "1px 6px", borderRadius: 4,
-            background: "#f8fafc", color: "#64748b", border: "1px solid #e2e8f0",
-            whiteSpace: "nowrap", flexShrink: 0,
-          }}>
-            {group.evidence_count} evidence item{group.evidence_count !== 1 ? "s" : ""}
+  return (
+    <div style={{ padding: "7px 10px", borderRadius: 7, background: colors.bg,
+      border: `1px solid ${colors.border}`, display: "flex", flexDirection: "column", gap: 4 }}>
+
+      {/* Row 1: type chip + confidence + provenance + evidence_kind */}
+      <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 9, fontWeight: 800, padding: "1px 6px", borderRadius: 4,
+          background: colors.bg, color: colors.text, border: `1px solid ${colors.border}`,
+          textTransform: "uppercase", letterSpacing: "0.07em", whiteSpace: "nowrap" }}>
+          {typeLabel}
+        </span>
+        {provenanceLabel && (
+          <span style={{ fontSize: 8, color: "#64748b", padding: "1px 5px", borderRadius: 3,
+            background: "#f8fafc", border: "1px solid #e2e8f0", whiteSpace: "nowrap" }}>
+            {provenanceLabel}
           </span>
         )}
-
-        {/* Expand button */}
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          style={{
-            fontSize: 9, fontWeight: 600, padding: "1px 8px", borderRadius: 5,
-            border: `1px solid ${catColors.border}`, background: open ? catColors.bg : "transparent",
-            color: catColors.text, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
-          }}
-        >
-          {open ? "Hide ▲" : "Expand ▼"}
-        </button>
+        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 999,
+          background: chip.bg, color: chip.text, border: `1px solid ${chip.border}`, whiteSpace: "nowrap" }}>
+          {obj.confidence}
+        </span>
+        {evKind && (
+          <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 6px", borderRadius: 4,
+            background: evKind.bg, color: evKind.text, whiteSpace: "nowrap" }}>
+            {evKind.label}
+          </span>
+        )}
+        {obj.timestamp_seconds != null && (
+          <span style={{ fontSize: 9, color: "#94a3b8", fontFamily: "monospace" }}>
+            @{obj.timestamp_seconds.toFixed(1)}s
+          </span>
+        )}
       </div>
 
-      {/* Source label chips (always visible) */}
-      {group.source_labels.length > 0 && (
-        <div style={{ padding: "6px 13px", display: "flex", gap: 4, flexWrap: "wrap",
-          borderBottom: open ? `1px solid ${catColors.border}` : "none" }}>
-          {group.source_labels.map((lbl) => (
-            <SourceLabelChip key={lbl} label={lbl} />
-          ))}
-          <span style={{ fontSize: 9, color: "#94a3b8", alignSelf: "center" }}>
-            {group.sources_count} source{group.sources_count !== 1 ? "s" : ""}
-          </span>
+      {/* Summary */}
+      <div style={{ fontSize: 10, color: colors.text, lineHeight: 1.4 }}>{obj.short_summary}</div>
+
+      {/* Repository */}
+      {obj.repo_name && (
+        <div style={{ fontSize: 9, color: "#475569", fontFamily: "monospace", lineHeight: 1.3 }}>
+          {obj.repo_name}
         </div>
       )}
 
-      {/* Expanded: individual skill cards */}
-      {open && (
-        <div style={{ padding: "10px 13px", display: "flex", flexDirection: "column", gap: 6 }}>
-          {group.skills.map((s) => (
-            <SkillEvidenceCard key={s.skill} s={s} />
+      {/* File path */}
+      {obj.file_path && (
+        <div style={{ fontSize: 9, color: "#475569", fontFamily: "monospace", lineHeight: 1.3 }}>
+          {obj.file_path}{lineLabel ? ` ${lineLabel}` : ""}
+          {!lineLabel && (
+            <span style={{ color: "#94a3b8", fontFamily: "sans-serif", marginLeft: 4 }}>
+              — file-level evidence available, line trace not available yet
+            </span>
+          )}
+        </div>
+      )}
+
+      {(obj.evidence_type === "document_snippet" || obj.evidence_type === "profile_snippet" || obj.evidence_type === "certificate_or_transcript_snippet") && (
+        <div style={{ fontSize: 9, color: "#475569", lineHeight: 1.35, display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {obj.page_number != null && <span>Page {obj.page_number}</span>}
+          {obj.section_label && <span>Section: {obj.section_label}</span>}
+          {obj.profile_url && (
+            <a href={obj.profile_url} target="_blank" rel="noopener noreferrer" style={{ color: "#0369a1", textDecoration: "none", fontWeight: 600 }}>
+              Open profile
+            </a>
+          )}
+          {obj.issuer && <span>Issuer: {obj.issuer}</span>}
+          {obj.title && <span>Title: {obj.title}</span>}
+          {obj.date && <span>Date: {obj.date}</span>}
+        </div>
+      )}
+
+      {/* Source-specific inline details */}
+      {obj.evidence_type === "ocr_text" && (
+        <div style={{ fontSize: 9, color: obj.text_snippet ? "#166534" : "#64748b",
+          fontStyle: obj.text_snippet ? "italic" : "normal", lineHeight: 1.3 }}>
+          {obj.text_snippet
+            ? `OCR snippet: "${obj.text_snippet.slice(0, 180)}${obj.text_snippet.length > 180 ? "..." : ""}"`
+            : "OCR snippet not available"}
+        </div>
+      )}
+
+      {obj.evidence_type === "qwen_visual" && (
+        <div style={{ fontSize: 9, color: "#6b21a8", lineHeight: 1.3 }}>
+          {obj.short_summary
+            ? `Qwen observation: ${obj.short_summary}`
+            : "Qwen observation not available"}
+        </div>
+      )}
+
+      {/* Text snippet (DOM / transcript / document) */}
+      {obj.text_snippet && obj.evidence_type !== "ocr_text" && (
+        <div style={{ fontSize: 9, color: "#64748b", fontStyle: "italic", lineHeight: 1.3 }}>
+          &ldquo;{obj.text_snippet.slice(0, 140)}{obj.text_snippet.length > 140 ? "…" : ""}&rdquo;
+        </div>
+      )}
+
+      {/* Code snippet */}
+      {obj.code_snippet && (
+        <pre style={{
+          margin: 0, padding: "5px 7px", borderRadius: 5,
+          background: "#0f172a", color: "#e2e8f0", border: "1px solid #334155",
+          fontSize: 9, lineHeight: 1.35, whiteSpace: "pre-wrap", overflowWrap: "anywhere",
+          maxHeight: 96, overflowY: "auto",
+        }}>
+          {obj.code_snippet.slice(0, 500)}
+          {obj.code_snippet.length > 500 ? "..." : ""}
+        </pre>
+      )}
+
+      {/* Matched keywords */}
+      {obj.matched_keywords && obj.matched_keywords.length > 0 && (
+        <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+          {obj.matched_keywords.slice(0, 8).map((kw, i) => (
+            <span key={i} style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3,
+              background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0",
+              fontFamily: "monospace" }}>
+              {kw}
+            </span>
           ))}
+        </div>
+      )}
+
+      {/* Qwen context warning for embedded/contextual evidence */}
+      {obj.evidence_type === "qwen_visual" && obj.evidence_kind === "embedded_video" && (
+        <div style={{ fontSize: 9, color: "#991b1b", fontStyle: "italic", lineHeight: 1.3 }}>
+          Contextual evidence only — embedded video detected, not direct proof of student skill.
+        </div>
+      )}
+      {obj.evidence_type === "qwen_visual" && obj.evidence_kind === "contextual_page" && (
+        <div style={{ fontSize: 9, color: "#854d0e", fontStyle: "italic", lineHeight: 1.3 }}>
+          Contextual evidence — website content visible, not direct student interaction.
+        </div>
+      )}
+
+      {/* Keyframe preview placeholder */}
+      {obj.keyframe_url == null && obj.evidence_type === "recording_keyframe" && (
+        <div style={{ fontSize: 9, color: "#94a3b8", fontStyle: "italic" }}>
+          {obj.timestamp_seconds != null
+            ? `Keyframe captured at ${obj.timestamp_seconds.toFixed(1)}s — preview coming soon.`
+            : "Keyframe evidence captured — screenshot preview coming soon."}
+        </div>
+      )}
+
+      {/* Live check deployment-only note */}
+      {obj.evidence_type === "live_check" && (
+        <div style={{ fontSize: 9, color: "#1d4ed8", fontStyle: "italic" }}>
+          Deployment/accessibility evidence only — does not directly prove skill.
+        </div>
+      )}
+
+      {/* Row: trace action button */}
+      {obj.trace_action && (
+        <div style={{ marginTop: 1 }}>
+          <TraceActionButton obj={obj} />
         </div>
       )}
     </div>
   )
 }
+
+// ── Grouped skill evidence card (GitHub-style) ───────────────────────────────
+
+function GroupedSkillEvidenceCard({
+  group,
+  selected,
+  expanded,
+  onToggle,
+  onToggleExpand,
+}: {
+  group: GroupedSkillEvidence
+  selected: boolean
+  expanded: boolean
+  onToggle: (groupName: string) => void
+  onToggleExpand: (groupName: string) => void
+}) {
+  const confChip = confidenceChip(group.confidence)
+  const catColors = _CATEGORY_BADGE_COLORS[group.category] ?? _CATEGORY_BADGE_COLORS.OTHER
+
+  // Collect all evidence_objects from all skills, grouped by type
+  const evidenceByType = new Map<string, EvidenceObject[]>()
+  for (const skill of group.skills) {
+    for (const obj of skill.evidence_objects ?? []) {
+      if (!evidenceByType.has(obj.evidence_type)) evidenceByType.set(obj.evidence_type, [])
+      evidenceByType.get(obj.evidence_type)!.push(obj)
+    }
+  }
+  const evidenceTypes = Array.from(evidenceByType.keys())
+
+  return (
+    <div style={{
+      border: `1px solid ${selected ? "#7c3aed" : catColors.border}`,
+      borderRadius: 12,
+      background: selected ? "#faf5ff" : "#fff",
+      transition: "border-color 0.12s, background 0.12s",
+    }}>
+      {/* Header row */}
+      <div style={{
+        padding: "11px 14px",
+        display: "grid",
+        gridTemplateColumns: "auto 1fr auto",
+        gap: 12,
+        alignItems: "flex-start",
+        background: selected ? "rgba(124,58,237,0.04)" : catColors.bg,
+        borderRadius: "11px 11px 0 0",
+      }}>
+        {/* Checkbox */}
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggle(group.group_name)}
+          style={{ marginTop: 3, width: 15, height: 15, cursor: "pointer", accentColor: "#7c3aed" }}
+          title={selected ? "Deselect group" : "Select to save to profile"}
+        />
+
+        {/* Main content */}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginBottom: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#1e293b" }}>{group.group_name}</span>
+            <span style={{
+              fontSize: 9, fontWeight: 800, padding: "1px 6px", borderRadius: 4,
+              background: catColors.bg, color: catColors.text, border: `1px solid ${catColors.border}`,
+              letterSpacing: "0.07em", textTransform: "uppercase", whiteSpace: "nowrap",
+            }}>
+              {group.category}
+            </span>
+            <span style={{
+              fontSize: 9, fontWeight: 700, padding: "1px 7px", borderRadius: 999,
+              background: confChip.bg, color: confChip.text, border: `1px solid ${confChip.border}`,
+              whiteSpace: "nowrap",
+            }}>
+              {group.confidence} confidence
+            </span>
+          </div>
+          <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>
+            <strong style={{ color: "#475569" }}>{group.evidence_count}</strong> evidence location{group.evidence_count !== 1 ? "s" : ""} across{" "}
+            <strong style={{ color: "#475569" }}>{group.sources_count}</strong> source{group.sources_count !== 1 ? "s" : ""}
+          </div>
+          {/* Source chips */}
+          {group.source_labels.length > 0 && (
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {group.source_labels.map((lbl) => (
+                <SourceLabelChip key={lbl} label={lbl} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Expand button */}
+        <button
+          type="button"
+          onClick={() => onToggleExpand(group.group_name)}
+          style={{
+            fontSize: 10, fontWeight: 600, padding: "5px 10px", borderRadius: 7,
+            border: `1px solid ${catColors.border}`, background: expanded ? catColors.bg : "transparent",
+            color: catColors.text, cursor: "pointer", whiteSpace: "nowrap",
+          }}
+        >
+          {expanded ? "Collapse ▲" : "Expand ▼"}
+        </button>
+      </div>
+
+      {/* Expanded: evidence by type + individual skill cards */}
+      {expanded && (
+        <div style={{ borderTop: `1px solid ${catColors.border}`, padding: "14px", display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Evidence objects by type */}
+          {evidenceTypes.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+                textTransform: "uppercase", color: "#475569" }}>
+                Evidence Locations
+              </div>
+              {evidenceTypes.map((et) => {
+                const objs = evidenceByType.get(et)!
+                const typeLabel = _EVIDENCE_TYPE_LABELS[et] ?? et
+                const colors = _EVIDENCE_TYPE_COLORS[et] ?? { bg: "#f8fafc", text: "#64748b", border: "#e2e8f0" }
+                return (
+                  <div key={et}>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: colors.text,
+                      textTransform: "uppercase", letterSpacing: "0.07em",
+                      marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}>
+                      <span style={{ padding: "1px 6px", borderRadius: 4, background: colors.bg,
+                        border: `1px solid ${colors.border}` }}>{typeLabel}</span>
+                      <span style={{ color: "#94a3b8", fontSize: 9, fontWeight: 400, textTransform: "none" }}>
+                        {objs.length} item{objs.length !== 1 ? "s" : ""}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {objs.map((obj, i) => (
+                        <EvidenceObjectItem key={`${et}-${i}`} obj={obj} />
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+
+              {/* No evidence objects — show raw skill support text */}
+              {evidenceTypes.length === 0 && (
+                <div style={{ fontSize: 10, color: "#94a3b8", fontStyle: "italic" }}>
+                  No detailed evidence objects captured for this group.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Individual skill cards */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+              textTransform: "uppercase", color: "#475569" }}>
+              Skills in this group
+            </div>
+            {group.skills.map((s) => (
+              <SkillEvidenceCard key={s.skill} s={s} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+type FilterMode = "all" | "high" | "review"
 
 function DetectedSkillProfileSection({
   evaluation,
@@ -2453,6 +2922,10 @@ function DetectedSkillProfileSection({
 }) {
   const groups = evaluation.grouped_skill_evidence ?? []
   const cap = evaluation.detected_capability
+  const [filterMode, setFilterMode] = useState<FilterMode>("all")
+  const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set())
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const [savedToast, setSavedToast] = useState(false)
 
   // Fall back to flat skill list if no grouped evidence
   const additionalSkills = evaluation.detected_additional_skills ?? []
@@ -2469,53 +2942,139 @@ function DetectedSkillProfileSection({
 
   if (groups.length === 0 && !cap && flatSkills.length === 0) return null
 
-  const totalSkills = groups.length > 0
-    ? groups.reduce((n, g) => n + g.skills.length, 0)
-    : flatSkills.length
+  const totalEvidenceLocations = groups.reduce((n, g) => n + g.evidence_count, 0)
+  const allSourceLabels = Array.from(new Set(groups.flatMap((g) => g.source_labels)))
+
+  const filteredGroups =
+    filterMode === "high" ? groups.filter((g) => g.confidence === "high")
+    : filterMode === "review" ? groups.filter((g) => g.confidence !== "high")
+    : groups
+
+  const allSelected = filteredGroups.length > 0 && filteredGroups.every((g) => selectedGroups.has(g.group_name))
+
+  function toggleGroup(groupName: string) {
+    setSelectedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupName)) next.delete(groupName)
+      else next.add(groupName)
+      return next
+    })
+  }
+
+  function toggleExpand(groupName: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupName)) next.delete(groupName)
+      else next.add(groupName)
+      return next
+    })
+  }
+
+  function selectAll() {
+    setSelectedGroups(new Set(filteredGroups.map((g) => g.group_name)))
+  }
+
+  function deselectAll() {
+    setSelectedGroups(new Set())
+  }
+
+  function handleSave() {
+    setSavedToast(true)
+    setTimeout(() => setSavedToast(false), 2500)
+  }
 
   return (
-    <div style={{
-      border: "1px solid #c4b5fd",
-      borderRadius: 14,
-      overflow: "hidden",
-      background: "#faf5ff",
-    }}>
+    <div style={{ border: "1px solid #c4b5fd", borderRadius: 14, overflow: "hidden", background: "#faf5ff" }}>
       {/* Header */}
       <div style={{
         background: "linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%)",
         borderBottom: "1px solid #ddd6fe",
-        padding: "12px 16px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 10,
-        flexWrap: "wrap",
+        padding: "14px 16px",
       }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>
-            Detected Skill Profile
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#5b21b6" }}>
+              Review grouped skill evidence
+            </div>
+            {groups.length > 0 ? (
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>
+                Found <strong style={{ color: "#5b21b6" }}>{groups.length}</strong> grouped skill{groups.length !== 1 ? "s" : ""} from{" "}
+                <strong style={{ color: "#5b21b6" }}>{totalEvidenceLocations}</strong> evidence location{totalEvidenceLocations !== 1 ? "s" : ""} across{" "}
+                {allSourceLabels.join(", ")} sources
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>
+                {flatSkills.length} skill{flatSkills.length !== 1 ? "s" : ""} detected from workflow evidence
+              </div>
+            )}
           </div>
-          <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
-            Review grouped skill evidence — {totalSkills} skill{totalSkills !== 1 ? "s" : ""} across {groups.length || 1} group{groups.length !== 1 ? "s" : ""}
-          </div>
+          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+            background: "#ede9fe", color: "#7c3aed", border: "1px solid #c4b5fd" }}>
+            AI INFERRED
+          </span>
         </div>
-        <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
-          background: "#ede9fe", color: "#7c3aed", border: "1px solid #c4b5fd" }}>
-          AI INFERRED
-        </span>
+
+        {/* Filter tabs + select controls */}
+        {groups.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+            {(["all", "high", "review"] as FilterMode[]).map((mode) => {
+              const count = mode === "all" ? groups.length
+                : mode === "high" ? groups.filter((g) => g.confidence === "high").length
+                : groups.filter((g) => g.confidence !== "high").length
+              const label = mode === "all" ? `All (${count})`
+                : mode === "high" ? `High confidence (${count})`
+                : `Needs review (${count})`
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setFilterMode(mode)}
+                  style={{
+                    fontSize: 10, fontWeight: 600, padding: "4px 10px", borderRadius: 6,
+                    border: filterMode === mode ? "1px solid #7c3aed" : "1px solid #ddd6fe",
+                    background: filterMode === mode ? "#ede9fe" : "transparent",
+                    color: filterMode === mode ? "#7c3aed" : "#6b7280",
+                    cursor: "pointer",
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            })}
+            <div style={{ flex: 1 }} />
+            <button type="button" onClick={allSelected ? deselectAll : selectAll}
+              style={{ fontSize: 9, fontWeight: 600, padding: "3px 9px", borderRadius: 5,
+                border: "1px solid #ddd6fe", background: "transparent",
+                color: "#7c3aed", cursor: "pointer" }}>
+              {allSelected ? "Deselect all" : "Select all"}
+            </button>
+          </div>
+        )}
       </div>
 
       <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
-        {/* Grouped skill cards (new format) */}
-        {groups.length > 0 && (
-          <>
-            {groups.map((g) => (
-              <GroupedSkillEvidenceCard key={g.category} group={g} />
-            ))}
-          </>
+        {/* Grouped skill cards */}
+        {filteredGroups.length > 0 && (
+          filteredGroups.map((g) => (
+            <GroupedSkillEvidenceCard
+              key={g.group_name}
+              group={g}
+              selected={selectedGroups.has(g.group_name)}
+              expanded={expandedGroups.has(g.group_name)}
+              onToggle={toggleGroup}
+              onToggleExpand={toggleExpand}
+            />
+          ))
         )}
 
-        {/* Fallback: flat skill list when no groups produced */}
+        {/* Empty filter state */}
+        {filteredGroups.length === 0 && groups.length > 0 && (
+          <div style={{ fontSize: 11, color: "#94a3b8", fontStyle: "italic", textAlign: "center", padding: "12px 0" }}>
+            No groups match this filter.
+          </div>
+        )}
+
+        {/* Fallback: flat skill list when no groups */}
         {groups.length === 0 && flatSkills.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#6b7280",
@@ -2528,11 +3087,43 @@ function DetectedSkillProfileSection({
           </div>
         )}
 
+        {/* Save selected skills to profile */}
+        {groups.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 6,
+            borderTop: "1px solid #ddd6fe", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={selectedGroups.size === 0}
+              style={{
+                fontSize: 11, fontWeight: 700, padding: "7px 16px", borderRadius: 8,
+                border: selectedGroups.size > 0 ? "1px solid #7c3aed" : "1px solid #ddd6fe",
+                background: selectedGroups.size > 0 ? "#7c3aed" : "#f5f3ff",
+                color: selectedGroups.size > 0 ? "#fff" : "#a78bfa",
+                cursor: selectedGroups.size > 0 ? "pointer" : "default",
+                opacity: selectedGroups.size > 0 ? 1 : 0.6,
+              }}
+            >
+              Save selected skills to profile
+              {selectedGroups.size > 0 && ` (${selectedGroups.size})`}
+            </button>
+            {savedToast ? (
+              <span style={{ fontSize: 10, color: "#6d28d9", fontWeight: 600 }}>
+                ✓ Coming soon — skill save will be connected to your profile
+              </span>
+            ) : (
+              <span style={{ fontSize: 9, color: "#94a3b8" }}>
+                Select groups above, then save to your skill profile
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Disclaimer */}
         <div style={{ fontSize: 9, color: "#94a3b8", fontStyle: "italic", lineHeight: 1.4,
           borderTop: "1px solid #ede9fe", paddingTop: 8 }}>
-          Evidence uses recruiter-safe wording: "Evidence suggests" / "Partially supported" /
-          "Inferred" — not "verified". Expand each group to see individual skill evidence and proof references.
+          Evidence uses recruiter-safe wording: &quot;Evidence suggests&quot; / &quot;Partially supported&quot; /
+          &quot;Inferred&quot; — not &quot;verified&quot;. Expand each group to see evidence locations and proof references.
         </div>
       </div>
     </div>
@@ -4472,9 +5063,10 @@ function ProjectDefenseSection({
   const timerRef                                  = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // ── Transcription state ────────────────────────────────────────────────────
-  const [transcribing, setTranscribing]       = useState(false)
-  const [transcribeMsg, setTranscribeMsg]     = useState<string | null>(null)
-  const [transcribeError, setTranscribeError] = useState<string | null>(null)
+  const [transcribing, setTranscribing]           = useState(false)
+  const [transcribeMsg, setTranscribeMsg]         = useState<string | null>(null)
+  const [transcribeError, setTranscribeError]     = useState<string | null>(null)
+  const [transcriptSegments, setTranscriptSegments] = useState<Array<{start_time: number, end_time: number, text: string}> | null>(null)
 
   // ── Refinement state ───────────────────────────────────────────────────────
   const [rawTranscript, setRawTranscript]             = useState<string | null>(null)
@@ -4548,6 +5140,10 @@ function ProjectDefenseSection({
         }
         if (result.transcript_needs_review) {
           setTranscriptNeedsReview(true)
+        }
+        // Capture timestamped segments from faster-whisper
+        if (result.transcript_segments?.length) {
+          setTranscriptSegments(result.transcript_segments)
         }
         // Always show refined by default
         setShowingRaw(false)
@@ -5108,6 +5704,38 @@ function ProjectDefenseSection({
               {transcribeError}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Timestamped transcript segments (local_whisper / faster-whisper) ─ */}
+      {transcriptSegments && transcriptSegments.length > 0 && (
+        <div style={{ border: "1px solid #dbeafe", borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ background: "#eff6ff", borderBottom: "1px solid #dbeafe", padding: "8px 14px",
+            display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#1d4ed8" }}>⏱ Timestamped Segments</span>
+            <span style={{ fontSize: 11, color: "#3b82f6" }}>— {transcriptSegments.length} segment{transcriptSegments.length !== 1 ? "s" : ""} from local_whisper</span>
+          </div>
+          <div style={{ maxHeight: 180, overflowY: "auto", padding: "8px 14px" }}>
+            {transcriptSegments.map((seg, i) => {
+              const fmtTs = (s: number) => {
+                const m = Math.floor(s / 60).toString().padStart(2, "0")
+                const sec = Math.floor(s % 60).toString().padStart(2, "0")
+                return `${m}:${sec}`
+              }
+              return (
+                <div key={i} style={{ display: "flex", gap: 8, padding: "4px 0",
+                  borderBottom: i < transcriptSegments.length - 1 ? "1px solid #eff6ff" : "none" }}>
+                  <span style={{ fontSize: 10, color: "#3b82f6", fontFamily: "monospace",
+                    whiteSpace: "nowrap", minWidth: 90, paddingTop: 1 }}>
+                    {fmtTs(seg.start_time)}–{fmtTs(seg.end_time)}
+                  </span>
+                  <span style={{ fontSize: 12, color: "#374151", lineHeight: 1.5 }}>
+                    {seg.text}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 
@@ -6720,7 +7348,12 @@ export function ExtensionProofPanel({
         />
 
         {/* ── Additional Evidence Modules (AI/CS/DS modules only — non-CS hidden) ── */}
-        {isCompleted && <FutureProofModulesSection />}
+        {isCompleted && (
+          <FutureProofModulesSection
+            sessionId={session.id}
+            onAnalyzed={() => void handleRunFinalEval()}
+          />
+        )}
 
         {/* ── Final Evidence Score ─────────────────────────────────────────── */}
         {finalEval && currentSessionAnalysis && (
