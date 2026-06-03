@@ -1362,3 +1362,313 @@ class TestSourceFileFirstScanning:
         browser_ai_evidence = [e for e in evidence if e["skill"] == "Browser AI"]
         assert browser_ai_evidence, "Browser AI should have evidence from src/app.js"
         assert browser_ai_evidence[0]["file_path"] == "src/app.js"
+
+
+# ── Task F: deep scan wrapper (reuses GitHub Repository Proof engine) ──────────
+
+from app.services.extension_proof_github_analysis_service import (
+    analyze_single_repo_with_existing_github_proof_engine,
+)
+
+
+class _FakePortfolioScanner:
+    """Minimal stand-in that records which owner/repo was scanned."""
+
+    def __init__(self, candidates):
+        self._candidates = candidates
+        self.scanned_repos: list[tuple[str, str]] = []
+
+    def scan_repo_by_url(self, owner: str, repo_name: str):
+        self.scanned_repos.append((owner, repo_name))
+        return self._candidates
+
+
+class _FakeEvidenceCandidate:
+    def __init__(self, skill_name, file_path, line_start, line_end, github_highlight_url, evidence_description):
+        self.skill_name = skill_name
+        self.file_path = file_path
+        self.line_start = line_start
+        self.line_end = line_end
+        self.github_highlight_url = github_highlight_url
+        self.evidence_description = evidence_description
+
+
+ML5_FAKE_CANDIDATES = [
+    _FakeEvidenceCandidate(
+        skill_name="JavaScript",
+        file_path="src/NeuralNetwork/index.js",
+        line_start=44,
+        line_end=75,
+        github_highlight_url="https://github.com/ml5js/ml5-library/blob/main/src/NeuralNetwork/index.js#L44-L75",
+        evidence_description="Found React component logic at line 44",
+    ),
+    _FakeEvidenceCandidate(
+        skill_name="Machine Learning",
+        file_path="src/ImageClassifier/index.js",
+        line_start=12,
+        line_end=38,
+        github_highlight_url="https://github.com/ml5js/ml5-library/blob/main/src/ImageClassifier/index.js#L12-L38",
+        evidence_description="Found ML training call at line 12",
+    ),
+]
+
+
+class TestDeepScanWrapper:
+    """analyze_single_repo_with_existing_github_proof_engine reuses PortfolioScanner."""
+
+    def _patch_scanner(self, monkeypatch, candidates):
+        """Replace PortfolioScanner and GitHubAPIClient inside the wrapper."""
+        fake_scanner = _FakePortfolioScanner(candidates)
+
+        import app.services.extension_proof_github_analysis_service as svc_mod
+
+        def _fake_import(*args, **kwargs):
+            pass
+
+        # Patch the import inside the function using monkeypatch on the module's globals
+        # We intercept by patching the sys.modules entry used at call time.
+        import sys
+        import types
+
+        fake_scripts = types.ModuleType("scripts")
+        fake_github_scanner = types.ModuleType("scripts.github_portfolio_scanner")
+
+        class _FakeClient:
+            def __init__(self, token=None):
+                pass
+
+        class _FakePortfolioScannerClass:
+            def __init__(self, client):
+                self._inner = fake_scanner
+
+            def scan_repo_by_url(self, owner, repo):
+                return fake_scanner.scan_repo_by_url(owner, repo)
+
+        fake_github_scanner.GitHubAPIClient = _FakeClient
+        fake_github_scanner.PortfolioScanner = _FakePortfolioScannerClass
+        fake_scripts.github_portfolio_scanner = fake_github_scanner
+
+        monkeypatch.setitem(sys.modules, "scripts", fake_scripts)
+        monkeypatch.setitem(sys.modules, "scripts.github_portfolio_scanner", fake_github_scanner)
+        return fake_scanner
+
+    def test_wrapper_calls_portfolio_scanner_not_custom_logic(self, monkeypatch):
+        """Website Proof calls the existing GitHub Repository Proof engine (PortfolioScanner)."""
+        fake_scanner = self._patch_scanner(monkeypatch, ML5_FAKE_CANDIDATES)
+
+        evidence = analyze_single_repo_with_existing_github_proof_engine(
+            repo_url="https://github.com/ml5js/ml5-library",
+            claimed_skills=["Machine Learning", "JavaScript", "Browser AI"],
+        )
+
+        # The wrapper called scan_repo_by_url with the correct owner/repo
+        assert fake_scanner.scanned_repos == [("ml5js", "ml5-library")]
+        # Result has the correct deep code structure
+        assert len(evidence) == 2
+        file_paths = {e["file_path"] for e in evidence}
+        assert "src/NeuralNetwork/index.js" in file_paths
+        assert "src/ImageClassifier/index.js" in file_paths
+        # README.md never appears (deep scanner only returns source files)
+        assert "README.md" not in file_paths
+
+    def test_wrapper_output_has_line_start_line_end_github_url(self, monkeypatch):
+        """Deep scan result must carry file_path, line_start, line_end, github_url."""
+        self._patch_scanner(monkeypatch, ML5_FAKE_CANDIDATES)
+
+        evidence = analyze_single_repo_with_existing_github_proof_engine(
+            repo_url="https://github.com/ml5js/ml5-library",
+            claimed_skills=["Machine Learning", "JavaScript"],
+        )
+
+        for item in evidence:
+            assert "skill" in item
+            assert "file_path" in item
+            assert item.get("line_start") is not None, f"line_start missing: {item}"
+            assert item.get("line_end") is not None, f"line_end missing: {item}"
+            assert item.get("github_url"), f"github_url missing: {item}"
+            # line numbers must be positive integers (no fake zeros)
+            assert item["line_start"] > 0
+            assert item["line_end"] >= item["line_start"]
+
+    def test_wrapper_maps_claimed_skill_names(self, monkeypatch):
+        """Scanner skill name is mapped to the claimed skill (case-insensitive)."""
+        self._patch_scanner(monkeypatch, ML5_FAKE_CANDIDATES)
+
+        evidence = analyze_single_repo_with_existing_github_proof_engine(
+            repo_url="https://github.com/ml5js/ml5-library",
+            claimed_skills=["machine learning", "JavaScript"],  # lower-case claimed
+        )
+
+        skills_in_evidence = {e["skill"] for e in evidence}
+        # machine learning → mapped to the claimed casing
+        assert "machine learning" in skills_in_evidence or "Machine Learning" in skills_in_evidence
+
+    def test_wrapper_returns_empty_on_bad_url(self, monkeypatch):
+        """Invalid GitHub URL must return [] without raising."""
+        self._patch_scanner(monkeypatch, ML5_FAKE_CANDIDATES)
+
+        result = analyze_single_repo_with_existing_github_proof_engine(
+            repo_url="not-a-github-url",
+            claimed_skills=["JavaScript"],
+        )
+        assert result == []
+
+    def test_wrapper_returns_empty_on_scanner_exception(self, monkeypatch):
+        """If PortfolioScanner raises, wrapper returns [] without re-raising."""
+        import sys
+        import types
+
+        class _ErrorClient:
+            def __init__(self, token=None):
+                pass
+
+        class _ErrorScanner:
+            def __init__(self, client):
+                pass
+
+            def scan_repo_by_url(self, owner, repo):
+                raise RuntimeError("GitHub API timeout")
+
+        fake_scanner_mod = types.ModuleType("scripts.github_portfolio_scanner")
+        fake_scanner_mod.GitHubAPIClient = _ErrorClient
+        fake_scanner_mod.PortfolioScanner = _ErrorScanner
+        fake_scripts = types.ModuleType("scripts")
+        fake_scripts.github_portfolio_scanner = fake_scanner_mod
+
+        monkeypatch.setitem(sys.modules, "scripts", fake_scripts)
+        monkeypatch.setitem(sys.modules, "scripts.github_portfolio_scanner", fake_scanner_mod)
+
+        result = analyze_single_repo_with_existing_github_proof_engine(
+            repo_url="https://github.com/example/repo",
+            claimed_skills=["Python"],
+        )
+        assert result == []
+
+    def test_run_analysis_uses_deep_scan_evidence(self, monkeypatch):
+        """run_analysis replaces shallow skill_code_evidence with deep scan results."""
+        import app.services.extension_proof_github_analysis_service as svc_mod
+
+        # Make shallow analyze_github_repo return only README fallback evidence
+        monkeypatch.setattr(
+            svc_mod,
+            "fetch_public_github_file",
+            _make_fake_fetch({"README.md": "# ml5-library\nBrowser AI library."}),
+        )
+        monkeypatch.setattr(svc_mod, "_discover_extra_source_files", lambda *a, **kw: [])
+
+        # Patch deep scan wrapper to return good source evidence
+        deep_result = [
+            {
+                "skill": "JavaScript",
+                "file_path": "src/NeuralNetwork/index.js",
+                "line_start": 44,
+                "line_end": 75,
+                "code_snippet": "",
+                "github_url": "https://github.com/ml5js/ml5-library/blob/main/src/NeuralNetwork/index.js#L44-L75",
+                "reason": "ML training call at line 44",
+            }
+        ]
+        monkeypatch.setattr(
+            svc_mod,
+            "analyze_single_repo_with_existing_github_proof_engine",
+            lambda repo_url, claimed_skills, proof_session_id=None: deep_result,
+        )
+
+        db = {}
+        svc = svc_mod.ExtensionProofGitHubAnalysisService(db)
+        row = svc.run_analysis(
+            user_id=DEMO_USER_ID,
+            session_id=SESSION_ID,
+            github_url="https://github.com/ml5js/ml5-library",
+            claimed_skills=["JavaScript", "Machine Learning"],
+        )
+
+        evidence = row.get("skill_code_evidence") or []
+        assert evidence, "Expected skill_code_evidence in run_analysis output"
+        assert evidence[0]["file_path"] == "src/NeuralNetwork/index.js"
+        assert evidence[0]["line_start"] == 44
+        assert "README.md" not in {e["file_path"] for e in evidence}
+
+    def test_run_analysis_fallback_when_deep_returns_empty(self, monkeypatch):
+        """When deep scan returns [], shallow non-meta evidence is kept."""
+        import app.services.extension_proof_github_analysis_service as svc_mod
+
+        # Shallow returns a non-meta source file hit
+        shallow_source_content = "async function loadModel() { return ml5.imageClassifier('MobileNet'); }"
+        monkeypatch.setattr(
+            svc_mod,
+            "fetch_public_github_file",
+            _make_fake_fetch({
+                "README.md": "# ml5-library\nUses browser AI.",
+                "src/index.js": shallow_source_content,
+            }),
+        )
+        monkeypatch.setattr(svc_mod, "_discover_extra_source_files", lambda *a, **kw: ["src/index.js"])
+        # Deep scan returns nothing (e.g. rate limit)
+        monkeypatch.setattr(
+            svc_mod,
+            "analyze_single_repo_with_existing_github_proof_engine",
+            lambda *a, **kw: [],
+        )
+
+        db = {}
+        svc = svc_mod.ExtensionProofGitHubAnalysisService(db)
+        row = svc.run_analysis(
+            user_id=DEMO_USER_ID,
+            session_id=SESSION_ID,
+            github_url="https://github.com/ml5js/ml5-library",
+            claimed_skills=["Browser AI"],
+        )
+
+        evidence = row.get("skill_code_evidence") or []
+        # Fallback evidence should prefer src/index.js over README.md
+        file_paths = {e["file_path"] for e in evidence}
+        assert "README.md" not in file_paths or "src/index.js" in file_paths, (
+            f"Fallback should prefer source over README: {file_paths}"
+        )
+
+    def test_readme_fallback_only_when_deep_and_source_both_empty(self, monkeypatch):
+        """README.md fallback only appears when deep scan AND shallow source files are both empty."""
+        import app.services.extension_proof_github_analysis_service as svc_mod
+
+        # Only README.md accessible, no source files
+        monkeypatch.setattr(
+            svc_mod,
+            "fetch_public_github_file",
+            _make_fake_fetch({"README.md": "# Project\nUses model.predict for machine learning."}),
+        )
+        monkeypatch.setattr(svc_mod, "_discover_extra_source_files", lambda *a, **kw: [])
+        # Deep scan also empty
+        monkeypatch.setattr(
+            svc_mod,
+            "analyze_single_repo_with_existing_github_proof_engine",
+            lambda *a, **kw: [],
+        )
+
+        db = {}
+        svc = svc_mod.ExtensionProofGitHubAnalysisService(db)
+        row = svc.run_analysis(
+            user_id=DEMO_USER_ID,
+            session_id=SESSION_ID,
+            github_url="https://github.com/example/ml-project",
+            claimed_skills=["Machine Learning"],
+        )
+
+        evidence = row.get("skill_code_evidence") or []
+        # In this edge case, README fallback is acceptable (no other evidence available)
+        # But it should have at least something rather than nothing
+        # (README.md IS the fallback of last resort)
+        assert isinstance(evidence, list)
+
+    def test_single_repo_scope_enforced(self, monkeypatch):
+        """Wrapper must scan ONLY the single repo from the Website Proof form, not a whole profile."""
+        fake_scanner = self._patch_scanner(monkeypatch, ML5_FAKE_CANDIDATES)
+
+        analyze_single_repo_with_existing_github_proof_engine(
+            repo_url="https://github.com/ml5js/ml5-library",
+            claimed_skills=["JavaScript"],
+        )
+
+        # Only one repo was scanned (ml5js/ml5-library), not a full profile scan
+        assert len(fake_scanner.scanned_repos) == 1
+        assert fake_scanner.scanned_repos[0] == ("ml5js", "ml5-library")

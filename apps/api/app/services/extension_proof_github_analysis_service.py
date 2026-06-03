@@ -1263,6 +1263,96 @@ def _build_summary(
     return " ".join(parts)
 
 
+# ── Deep scan wrapper (reuses GitHub Repository Proof engine) ─────────────────
+
+def analyze_single_repo_with_existing_github_proof_engine(
+    repo_url: str,
+    claimed_skills: list[str],
+    proof_session_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Deep-scan a single public repo using the GitHub Repository Proof engine.
+
+    Wraps PortfolioScanner.scan_repo_by_url() — the same engine powering
+    GitHub Repository Proof — and converts EvidenceCandidate output into
+    skill_code_evidence dicts for the final evaluator.
+
+    Returns [] on any error or when the deep scan finds no candidates.
+    README/meta-file fallback is intentionally excluded here: the caller
+    falls back to the shallow analyze_github_repo() path when this returns [].
+    Never duplicates scanner logic.
+    """
+    from app.services.github_evidence_service import parse_github_repo_url as _parse
+
+    repo_ref = _parse(repo_url)
+    if repo_ref is None:
+        return []
+    owner = str(repo_ref.owner or "").strip()
+    repo_name = str(repo_ref.repo or "").strip()
+    if not owner or not repo_name:
+        return []
+
+    # Load GitHub token (same approach as github_portfolio_scan_service)
+    token: str | None = None
+    try:
+        from app.core.config import get_settings
+        secret = get_settings().github_token
+        if secret is not None:
+            token = secret.get_secret_value() or None
+    except Exception:
+        pass
+
+    # Ensure scripts/ is importable (same bootstrap as github_portfolio_scan_service)
+    import sys
+    from pathlib import Path
+    _api_root = str(Path(__file__).resolve().parents[2])
+    if _api_root not in sys.path:
+        sys.path.insert(0, _api_root)
+
+    try:
+        from scripts.github_portfolio_scanner import GitHubAPIClient, PortfolioScanner
+    except ImportError:
+        logger.warning("[DeepScan] github_portfolio_scanner not importable — skipping deep scan")
+        return []
+
+    client = GitHubAPIClient(token=token)
+    scanner = PortfolioScanner(client)
+
+    try:
+        candidates = scanner.scan_repo_by_url(owner, repo_name)
+    except Exception as exc:
+        logger.warning("[DeepScan] scan_repo_by_url failed for %s: %s", repo_url, exc)
+        return []
+
+    if not candidates:
+        return []
+
+    # Case-insensitive lookup: claimed skill lower → original casing
+    claimed_lower: dict[str, str] = {s.lower(): s for s in claimed_skills}
+
+    skill_code_evidence: list[dict[str, Any]] = []
+    for cand in candidates:
+        # Direct case-insensitive match to a claimed skill; otherwise keep scanner's name
+        matched_skill = claimed_lower.get(cand.skill_name.lower(), cand.skill_name)
+        skill_code_evidence.append({
+            "skill": matched_skill,
+            "repo_name": getattr(cand, "repo_name", repo_name),
+            "file_path": cand.file_path,
+            "line_start": cand.line_start,
+            "line_end": cand.line_end,
+            "code_snippet": "",
+            "github_url": cand.github_highlight_url,
+            "reason": cand.evidence_description or f"Deep code evidence for {matched_skill}",
+        })
+
+    logger.info(
+        "[DeepScan] scan_repo_by_url: %d candidates for %s (skills=%s)",
+        len(skill_code_evidence),
+        repo_url,
+        sorted({e["skill"] for e in skill_code_evidence}),
+    )
+    return skill_code_evidence
+
+
 # ── Service class ─────────────────────────────────────────────────────────────
 
 class ExtensionProofGitHubAnalysisService:
@@ -1286,6 +1376,54 @@ class ExtensionProofGitHubAnalysisService:
             live_page_title=live_page_title,
             proof_objective=proof_objective,
         )
+
+        # Deep scan using the existing GitHub Repository Proof engine.
+        # This replaces the shallow skill_code_evidence when it returns results.
+        deep_evidence = analyze_single_repo_with_existing_github_proof_engine(
+            repo_url=github_url,
+            claimed_skills=claimed_skills,
+            proof_session_id=session_id,
+        )
+
+        shallow_evidence: list[dict[str, Any]] = result.get("skill_code_evidence") or []
+
+        if deep_evidence:
+            result["skill_code_evidence"] = deep_evidence
+            fallback_used = False
+        else:
+            # Keep shallow evidence but strip README/meta-only entries when real files exist.
+            _META = frozenset({
+                "README.md", "readme.md", "README.rst",
+                "package.json", "package-lock.json",
+                "requirements.txt", "pyproject.toml", "setup.py", "setup.cfg",
+                "Makefile", "Dockerfile", ".env.example",
+            })
+            non_meta = [e for e in shallow_evidence if str(e.get("file_path") or "") not in _META]
+            result["skill_code_evidence"] = non_meta if non_meta else shallow_evidence
+            fallback_used = True
+
+        final_evidence: list[dict[str, Any]] = result["skill_code_evidence"]
+        logger.info(
+            "[WebsiteProofGitHubDebug] repo_url=%s called_existing_github_proof_engine=%s "
+            "deep_group_count=%d deep_evidence_count=%d "
+            "first_5_file_paths=%s first_5_line_ranges=%s fallback_used=%s",
+            github_url,
+            not fallback_used,
+            len({e.get("skill") for e in deep_evidence}),
+            len(deep_evidence),
+            [e.get("file_path") for e in deep_evidence[:5]],
+            [f"{e.get('line_start')}-{e.get('line_end')}" for e in deep_evidence[:5]],
+            fallback_used,
+        )
+        if fallback_used and not final_evidence:
+            logger.warning(
+                "[WebsiteProofGitHubDebug] fallback_used=True AND evidence_empty for %s — "
+                "deep scan returned 0 candidates, shallow scan also empty. "
+                "Likely causes: private/rate-limited repo, no high-signal source files found "
+                "by PortfolioScanner._scan_repo().",
+                github_url,
+            )
+
         result["proof_session_id"] = session_id
         return self._store_result(user_id, session_id, result)
 
