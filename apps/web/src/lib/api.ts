@@ -1062,7 +1062,7 @@ export type EvidenceSourceBreakdown = {
 }
 
 export type EvidenceObject = {
-  evidence_type: "recording_keyframe" | "ocr_text" | "dom_text" | "qwen_visual" | "github_file" | "live_check" | "transcript" | "document"
+  evidence_type: "recording_keyframe" | "ocr_text" | "dom_text" | "qwen_visual" | "github_file" | "live_check" | "transcript" | "transcript_quote" | "document" | "document_snippet" | "profile_snippet" | "certificate_or_transcript_snippet"
   source_name: string
   confidence: "high" | "medium" | "low"
   short_summary: string
@@ -1070,7 +1070,25 @@ export type EvidenceObject = {
   keyframe_url?: string | null
   text_snippet?: string | null
   file_path?: string | null
+  repo_name?: string | null
+  source_type?: string | null
+  page_number?: number | null
+  profile_url?: string | null
+  section_label?: string | null
+  issuer?: string | null
+  title?: string | null
+  date?: string | null
   line_range?: string | null
+  line_start?: number | null
+  line_end?: number | null
+  github_url?: string | null
+  code_snippet?: string | null
+  matched_keywords?: string[]
+  provenance?: string
+  evidence_kind?: "direct_workflow" | "contextual_page" | "embedded_video" | "unrelated" | "deployment_only" | ""
+  skill_support_level?: "strong" | "partial" | "weak" | "none" | ""
+  trace_action?: "open_github" | "view_keyframe" | "view_ocr" | "view_qwen" | "view_workflow_event" | "view_live_check" | "view_document" | "view_transcript" | ""
+  action_available?: boolean
   route_url?: string | null
   recruiter_safe: boolean
 }
@@ -1153,6 +1171,68 @@ export async function getFinalEvaluation(
   if (res.status === 404) return null
   if (!res.ok) return null
   return res.json() as Promise<FinalEvaluationResult>
+}
+
+export type OptionalEvidenceSourceType = "document" | "linkedin_profile" | "certificate_transcript"
+
+export type OptionalEvidenceResponse = {
+  user_id: string
+  proof_session_id?: string | null
+  source_type: OptionalEvidenceSourceType
+  status: string
+  file_path?: string | null
+  profile_url?: string | null
+  analysis_json: Record<string, unknown>
+  evidence_objects: Array<Record<string, unknown>>
+}
+
+export async function submitOptionalEvidence(
+  sessionId: string,
+  payload: {
+    source_type: OptionalEvidenceSourceType
+    raw_text?: string
+    profile_url?: string | null
+    section_label?: string | null
+    file_path?: string | null
+  },
+): Promise<OptionalEvidenceResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/optional-evidence`,
+    { method: "POST", body: JSON.stringify(payload) },
+  )
+  if (!res.ok) throw new Error(`Optional evidence analysis failed (HTTP ${res.status}).`)
+  return res.json() as Promise<OptionalEvidenceResponse>
+}
+
+export async function listOptionalEvidence(sessionId: string): Promise<OptionalEvidenceResponse[]> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/optional-evidence`,
+  )
+  if (!res.ok) return []
+  return res.json() as Promise<OptionalEvidenceResponse[]>
+}
+
+export async function uploadOptionalEvidenceFile(
+  sessionId: string,
+  file: File,
+): Promise<OptionalEvidenceResponse> {
+  const supabase = (await import("@/lib/supabase/client")).createSupabaseBrowserClient()
+  const { data: { session } } = await supabase.auth.getSession()
+  const headers: Record<string, string> = {}
+  if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`
+
+  const form = new FormData()
+  form.append("file", file)
+  const res = await fetch(
+    `${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"}/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/optional-evidence/upload`,
+    { method: "POST", body: form, headers },
+  )
+  if (!res.ok) {
+    let msg = `File upload failed (HTTP ${res.status}).`
+    try { const j = await res.json(); msg = j?.detail?.message ?? msg } catch { /* ignore */ }
+    throw new Error(msg)
+  }
+  return res.json() as Promise<OptionalEvidenceResponse>
 }
 
 // ── Extension Proof Workflow Analysis ────────────────────────────────────────
@@ -1401,7 +1481,7 @@ export type WorkflowAnalysisResponse = {
    * null when VISUAL_REASONING_ENABLED=false (the default).
    */
   visual_reasoning_summary?: {
-    status: "analyzed" | "failed" | "disabled" | "missing_dependency" | "not_configured" | "rejected_inconsistent" | "rejected_stale" | "skipped"
+    status: "analyzed" | "failed" | "disabled" | "missing_dependency" | "not_configured" | "rejected_inconsistent" | "rejected_stale" | "skipped" | "pending"
     provider: string
     frames_analyzed: number
     summary: string
@@ -2085,6 +2165,12 @@ export async function updateDefenseTranscript(
  * When configured=false the backend has no transcription provider set up.
  * The frontend shows the manual-paste fallback instead of throwing an error.
  */
+export interface TranscriptSegment {
+  start_time: number
+  end_time: number
+  text: string
+}
+
 export interface ProjectDefenseTranscribeResponse {
   proof_session_id: string
   transcript_text: string
@@ -2093,6 +2179,8 @@ export interface ProjectDefenseTranscribeResponse {
   provider_used: string
   configured: boolean
   message: string
+  // Timestamped segments (present when local_whisper/faster-whisper was used)
+  transcript_segments?: TranscriptSegment[]
   // Refinement fields (present when auto-refinement ran after transcription)
   raw_transcript?: string | null
   refined_transcript?: string | null

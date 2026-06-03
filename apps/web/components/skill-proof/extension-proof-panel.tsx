@@ -21,6 +21,7 @@ import {
   refineDefenseTranscript,
   runFinalEvaluation,
   submitOptionalEvidence,
+  uploadOptionalEvidenceFile,
   type FinalEvaluationResult,
   type NextBestAction,
   type DetectedCapability,
@@ -62,6 +63,7 @@ import type {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type PanelStep = "form" | "session_active"
+type OptionalDocumentUiStatus = "not_added" | "processing" | "analyzed" | "failed"
 
 type FormState = {
   websiteUrl: string
@@ -2133,6 +2135,8 @@ const FUTURE_MODULES: Array<{ sourceType: OptionalEvidenceSourceType; label: str
   { sourceType: "document", label: "Documents / PDF / Reports Evidence", icon: "📄", description: "Paste project report, research, TXT/Markdown, or PDF-extracted text.", placeholder: "Paste report text, e.g. Built a CNN model using TensorFlow and evaluated accuracy/F1-score..." },
 ]
 
+const ACCEPTED_DOC_TYPES = ".pdf,.docx,.txt,.md"
+
 export function FutureProofModulesSection({
   sessionId,
   onAnalyzed,
@@ -2146,30 +2150,42 @@ export function FutureProofModulesSection({
     linkedin_profile: "",
     certificate_transcript: "",
   })
-  const [profileUrl, setProfileUrl] = useState("")
-  const [sectionLabel, setSectionLabel] = useState("")
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [submitting, setSubmitting] = useState<OptionalEvidenceSourceType | null>(null)
-  const [results, setResults] = useState<Partial<Record<OptionalEvidenceSourceType, OptionalEvidenceResponse>>>({})
+  const [results, setResults] = useState<Partial<Record<OptionalEvidenceSourceType, OptionalEvidenceResponse & { _fileName?: string }>>>({})
   const [error, setError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function handleSubmit(sourceType: OptionalEvidenceSourceType) {
     if (!sessionId || submitting) return
     setSubmitting(sourceType)
     setError(null)
     try {
-      const result = await submitOptionalEvidence(sessionId, {
-        source_type: sourceType,
-        raw_text: texts[sourceType],
-        profile_url: sourceType === "linkedin_profile" ? profileUrl.trim() || null : null,
-        section_label: sourceType === "linkedin_profile" ? sectionLabel.trim() || null : null,
-      })
-      setResults((prev) => ({ ...prev, [sourceType]: result }))
+      let result: OptionalEvidenceResponse
+      if (sourceType === "document" && selectedFile) {
+        result = await uploadOptionalEvidenceFile(sessionId, selectedFile)
+        setResults((prev) => ({ ...prev, [sourceType]: { ...result, _fileName: selectedFile.name } }))
+      } else {
+        result = await submitOptionalEvidence(sessionId, {
+          source_type: sourceType,
+          raw_text: texts[sourceType],
+        })
+        setResults((prev) => ({ ...prev, [sourceType]: result }))
+      }
       onAnalyzed?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Optional evidence analysis failed.")
     } finally {
       setSubmitting(null)
     }
+  }
+
+  function uiStatus(sourceType: OptionalEvidenceSourceType): OptionalDocumentUiStatus {
+    if (submitting === sourceType) return "processing"
+    if (error) return "failed"
+    const result = results[sourceType]
+    if (!result) return "not_added"
+    return result.status === "analyzed" ? "analyzed" : "failed"
   }
 
   return (
@@ -2190,62 +2206,135 @@ export function FutureProofModulesSection({
       {FUTURE_MODULES.map((m) => {
         const result = results[m.sourceType]
         const isOpen = openType === m.sourceType
+        const status = uiStatus(m.sourceType)
+        const detectedSkills = Array.from(new Set(
+          (result?.evidence_objects ?? [])
+            .map((ev) => String(ev.skill_name ?? "").trim())
+            .filter(Boolean)
+        ))
+        const analysisJson = result?.analysis_json ?? {}
+        const resultFileName = (result as any)?._fileName ?? analysisJson?.file_name as string | undefined
+        const resultFileType = analysisJson?.file_type as string | undefined
+        const extractedPreview = analysisJson?.extracted_text_preview as string | undefined
+        const isDocType = m.sourceType === "document"
+        const canSubmit = isDocType
+          ? (!!selectedFile || texts[m.sourceType].trim().length > 0)
+          : texts[m.sourceType].trim().length > 0
         return (
         <div
           key={m.label}
+          role="button"
+          tabIndex={0}
+          aria-expanded={isOpen}
+          onClick={() => { if (!isOpen) setOpenType(m.sourceType) }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenType(isOpen ? null : m.sourceType) }
+          }}
           style={{
             border: "1px solid #e2e8f0", borderRadius: 10, padding: "10px 14px",
             background: "#f8fafc", display: "flex", gap: 10, alignItems: "flex-start",
+            cursor: isOpen ? "default" : "pointer",
           }}
         >
           <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>{m.icon}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{m.label}</div>
             <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2, lineHeight: 1.5 }}>{m.description}</div>
+            <div style={{ marginTop: 5, fontSize: 10, fontWeight: 700, color: status === "analyzed" ? "#166534" : status === "processing" ? "#1d4ed8" : status === "failed" ? "#991b1b" : "#94a3b8" }}>
+              status: {status}
+            </div>
             {result && (
               <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
+                {resultFileName && (
+                  <div style={{ fontSize: 10, color: "#374151", fontWeight: 600 }}>
+                    {resultFileName}{resultFileType ? ` (${resultFileType})` : ""}
+                  </div>
+                )}
                 <div style={{ fontSize: 10, color: result.evidence_objects.length > 0 ? "#166534" : "#854d0e", fontWeight: 700 }}>
                   {result.status} · {result.evidence_objects.length} extracted evidence item{result.evidence_objects.length !== 1 ? "s" : ""}
                 </div>
+                {detectedSkills.length > 0 && (
+                  <div style={{ fontSize: 10, color: "#475569", lineHeight: 1.45 }}>
+                    Extracted skills: {detectedSkills.slice(0, 8).join(", ")}
+                  </div>
+                )}
                 {result.evidence_objects.slice(0, 3).map((ev, i) => (
                   <div key={i} style={{ fontSize: 10, color: "#475569", lineHeight: 1.45, padding: "4px 6px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 5 }}>
                     <strong>{String(ev.skill_name ?? "Skill")}</strong>: {String(ev.snippet ?? "").slice(0, 160)}
                     {ev.page_number ? ` · page ${ev.page_number}` : ""}
-                    {ev.issuer ? ` · issuer ${ev.issuer}` : ""}
-                    {ev.title ? ` · ${ev.title}` : ""}
-                    {ev.date ? ` · ${ev.date}` : ""}
+                    {ev.section_label ? ` · ${String(ev.section_label)}` : ""}
+                    {ev.line_start ? ` · lines ${ev.line_start}–${ev.line_end ?? "?"}` : ""}
                   </div>
                 ))}
+                {extractedPreview && (
+                  <div style={{ fontSize: 9, color: "#94a3b8", fontStyle: "italic", marginTop: 2 }}>
+                    Preview: {extractedPreview.slice(0, 120)}…
+                  </div>
+                )}
               </div>
             )}
             {isOpen && (
               <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
-                {m.sourceType === "linkedin_profile" && (
-                  <>
-                    <input value={profileUrl} onChange={(e) => setProfileUrl(e.target.value)} placeholder="https://linkedin.com/in/..." style={inp} />
-                    <input value={sectionLabel} onChange={(e) => setSectionLabel(e.target.value)} placeholder="Section, e.g. Experience" style={inp} />
-                  </>
+                {isDocType && (
+                  <div style={{ display: "grid", gap: 4 }}>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: "#374151" }}>Upload file (PDF, DOCX, TXT, MD)</div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept={ACCEPTED_DOC_TYPES}
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0] ?? null
+                          setSelectedFile(f)
+                          if (f) setTexts((prev) => ({ ...prev, document: "" }))
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        style={{ fontSize: 11, padding: "5px 10px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", color: "#374151", cursor: "pointer" }}
+                      >
+                        {selectedFile ? "Change file" : "Choose file"}
+                      </button>
+                      {selectedFile && (
+                        <span style={{ fontSize: 10, color: "#166534", fontWeight: 600 }}>
+                          {selectedFile.name} ({(selectedFile.size / 1024).toFixed(0)} KB)
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>
+                      — or paste document text below —
+                    </div>
+                  </div>
                 )}
                 <textarea
                   value={texts[m.sourceType]}
-                  onChange={(e) => setTexts((prev) => ({ ...prev, [m.sourceType]: e.target.value }))}
+                  onChange={(e) => {
+                    setTexts((prev) => ({ ...prev, [m.sourceType]: e.target.value }))
+                    if (e.target.value) setSelectedFile(null)
+                  }}
                   placeholder={m.placeholder}
                   rows={4}
                   style={{ ...inp, resize: "vertical", fontFamily: "inherit" }}
                 />
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <button type="button" onClick={() => void handleSubmit(m.sourceType)} disabled={!sessionId || submitting === m.sourceType}
-                    style={{ fontSize: 11, fontWeight: 700, padding: "6px 12px", borderRadius: 7, border: "none", background: "#111827", color: "#fff", cursor: !sessionId || submitting ? "not-allowed" : "pointer" }}>
-                    {submitting === m.sourceType ? "Analyzing..." : "Analyze optional evidence"}
+                  <button
+                    type="button"
+                    onClick={() => void handleSubmit(m.sourceType)}
+                    disabled={!sessionId || submitting === m.sourceType || !canSubmit}
+                    style={{ fontSize: 11, fontWeight: 700, padding: "6px 12px", borderRadius: 7, border: "none", background: "#111827", color: "#fff", cursor: (!sessionId || submitting || !canSubmit) ? "not-allowed" : "pointer", opacity: !canSubmit ? 0.5 : 1 }}
+                  >
+                    {submitting === m.sourceType ? "Analyzing..." : "Analyze Document Evidence"}
                   </button>
-                  <span style={{ fontSize: 10, color: "#94a3b8" }}>Private unless you share it.</span>
+                  <span style={{ fontSize: 10, color: "#94a3b8" }}>Document is private unless you choose to share it.</span>
                 </div>
               </div>
             )}
           </div>
           <button type="button" onClick={() => setOpenType(isOpen ? null : m.sourceType)}
             style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.06em", flexShrink: 0, padding: "2px 8px", borderRadius: 999, background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0", marginTop: 2, whiteSpace: "nowrap", cursor: "pointer" }}>
-            {isOpen ? "Hide" : "Optional — can strengthen your profile"}
+            {isOpen ? "Hide" : "Add document proof"}
           </button>
         </div>
       )})}
