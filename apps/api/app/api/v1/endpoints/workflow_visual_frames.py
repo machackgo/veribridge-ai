@@ -253,6 +253,77 @@ def get_visual_frames_status(
     provider_status = svc.get_provider_status()
     visual_obs = svc.get_visual_observations(user_id, session_id)
 
+    # ── Qwen visual reasoning status ─────────────────────────────────────────
+    vr_svc = VisualReasoningService()
+    vr_provider_status = vr_svc.get_provider_status()
+    vr_enabled = vr_provider_status["visual_reasoning_enabled"]
+    vr_configured = vr_provider_status["visual_reasoning_configured"]
+
+    # Count keyframes: total, analyzed by Qwen, and any that have ANY visual_reasoning_json
+    # (even failed/rejected — used to distinguish "Qwen ran and failed" from "pending").
+    total_kf = 0
+    analyzed_kf = 0
+    qwen_ran_count = 0
+    try:
+        _FRAME_TABLE = "workflow_visual_frame_evidence"
+        kf_resp = (
+            db.table(_FRAME_TABLE)
+            .select("id, visual_reasoning_json")
+            .eq("user_id", user_id)
+            .eq("proof_session_id", session_id)
+            .eq("frame_type", "video_keyframe")
+            .execute()
+        )
+        kf_rows = kf_resp.data or []
+        total_kf = len(kf_rows)
+        analyzed_kf = sum(
+            1 for r in kf_rows
+            if isinstance(r.get("visual_reasoning_json"), dict)
+            and r["visual_reasoning_json"].get("status") == "analyzed"
+        )
+        # qwen_ran_count: frames that have ANY visual_reasoning_json set (regardless of status)
+        qwen_ran_count = sum(
+            1 for r in kf_rows
+            if isinstance(r.get("visual_reasoning_json"), dict)
+        )
+    except Exception as _exc:
+        logger.warning("[VisualFramesStatus] Could not count Qwen keyframes: %s", _exc)
+
+    logger.info(
+        "[VisualFramesStatus] session=%s "
+        "qwen_enabled=%s qwen_configured=%s "
+        "frames_found_count=%d analyzed_kf=%d qwen_ran_count=%d",
+        session_id, vr_enabled, vr_configured, total_kf, analyzed_kf, qwen_ran_count,
+    )
+
+    if not vr_enabled:
+        qwen_status = "disabled"
+    elif not vr_configured:
+        # Packages not installed — Qwen can never run until packages are added.
+        qwen_status = "not_configured"
+    elif total_kf == 0:
+        # No keyframes: either no video was uploaded, or extraction failed.
+        # Either way Qwen cannot run — use a terminal status, not "pending".
+        qwen_status = "skipped_no_frames"
+    elif analyzed_kf > 0:
+        qwen_status = "analyzed" if analyzed_kf >= total_kf else "partial"
+    elif qwen_ran_count > 0:
+        # Qwen ran (stored visual_reasoning_json) but all frames failed or were rejected.
+        qwen_status = "failed"
+    else:
+        # Keyframes exist but Qwen hasn't stored any results.
+        # After the sentinel fix, this only happens transiently during upload
+        # or if the DB update for the sentinel also failed.
+        # Report as "skipped" so the UI shows a deterministic state.
+        qwen_status = "skipped"
+
+    logger.info(
+        "[VisualFramesStatus] session=%s qwen_status=%s "
+        "total_keyframes=%d analyzed_keyframes=%d qwen_ran_count=%d "
+        "final_status_returned_to_ui=%s",
+        session_id, qwen_status, total_kf, analyzed_kf, qwen_ran_count, qwen_status,
+    )
+
     return {
         "session_id": session_id,
         "provider": provider_status["visual_analysis_provider"],
@@ -264,6 +335,12 @@ def get_visual_frames_status(
         "visual_frame_count": visual_obs.get("visual_frame_count", 0),
         "visual_frame_analysis_status": visual_obs.get("visual_frame_analysis_status", "not_captured"),
         "extracted_result_values_count": len(visual_obs.get("extracted_result_values", [])),
+        # Qwen visual reasoning config + per-session status
+        "visual_reasoning_enabled": vr_enabled,
+        "visual_reasoning_configured": vr_configured,
+        "qwen_status": qwen_status,
+        "qwen_total_keyframes": total_kf,
+        "qwen_analyzed_keyframes": analyzed_kf,
         "privacy_note": (
             "Visual frame analysis uses local/open-source providers when configured. "
             "No external vision API is required for the local pipeline."
@@ -422,8 +499,7 @@ async def upload_workflow_video(
                 is_reasoning_configured = provider_status["visual_reasoning_configured"]
                 reasoning_max_frames = provider_status["visual_reasoning_max_frames"]
                 logger.info(
-                    "[WorkflowVideo] visual_reasoning_enabled=%s "
-                    "visual_reasoning_configured=%s "
+                    "[WorkflowVideo] qwen_enabled=%s qwen_configured=%s "
                     "provider=%s max_frames=%d frames_stored=%d session=%s",
                     is_reasoning_enabled,
                     is_reasoning_configured,
@@ -542,11 +618,46 @@ async def upload_workflow_video(
                             session_id, persisted, len(summary.observations), summary.status,
                         )
                     else:
+                        # No per-frame observations produced (status may be failed/skipped/
+                        # missing_dependency). Store a sentinel on the first keyframe row
+                        # so the status endpoint can distinguish "Qwen ran but failed"
+                        # from "Qwen hasn't run yet". Without this, the UI shows "pending"
+                        # forever because _build_visual_reasoning_session_summary_from_db
+                        # finds no rows with visual_reasoning_json and returns None.
+                        _sentinel: dict[str, Any] = {
+                            "status": summary.status,
+                            "frames_analyzed": 0,
+                            "summary": summary.summary or (
+                                f"Qwen ran (provider={summary.provider}) "
+                                f"but produced no analyzed frames (status={summary.status})."
+                            ),
+                            "limitations": list(summary.limitations or []),
+                            "provider": summary.provider or "qwen_vl",
+                            "model_provider": "qwen_vl",
+                        }
                         logger.info(
                             "[WorkflowVideo] Visual reasoning not analyzed: "
-                            "session=%s status=%s limitations=%s",
+                            "session=%s status=%s limitations=%s — storing sentinel",
                             session_id, summary.status, summary.limitations,
                         )
+                        _sentinel_ids = list(frame_bytes_map.keys())
+                        if _sentinel_ids:
+                            try:
+                                db.table("workflow_visual_frame_evidence").update({
+                                    "visual_reasoning_json": _sentinel,
+                                }).eq("id", _sentinel_ids[0]).eq(
+                                    "user_id", user_id
+                                ).execute()
+                                logger.info(
+                                    "[WorkflowVideo] Qwen sentinel stored: "
+                                    "session=%s status=%s frame_id=%s",
+                                    session_id, summary.status, _sentinel_ids[0],
+                                )
+                            except Exception as _s_exc:
+                                logger.warning(
+                                    "[WorkflowVideo] Could not store Qwen sentinel "
+                                    "(non-fatal): %s", _s_exc,
+                                )
                 else:
                     logger.info(
                         "[WorkflowVideo] Visual reasoning skipped (not configured): "
@@ -558,6 +669,25 @@ async def upload_workflow_video(
                     "[WorkflowVideo] Advanced visual reasoning FAILED (non-fatal): %s",
                     exc, exc_info=True,
                 )
+                # Store a failed sentinel so the status endpoint shows "failed"
+                # rather than "pending" forever.
+                _fail_sentinel_ids = list(frame_bytes_map.keys())
+                if _fail_sentinel_ids:
+                    try:
+                        db.table("workflow_visual_frame_evidence").update({
+                            "visual_reasoning_json": {
+                                "status": "failed",
+                                "frames_analyzed": 0,
+                                "summary": "Qwen visual reasoning encountered an unexpected error during upload.",
+                                "limitations": [str(exc)[:200]],
+                                "provider": "qwen_vl",
+                                "model_provider": "qwen_vl",
+                            },
+                        }).eq("id", _fail_sentinel_ids[0]).eq(
+                            "user_id", user_id
+                        ).execute()
+                    except Exception:
+                        pass
 
     elif result.video_analysis_status in (VIDEO_STATUS_NOT_AVAILABLE, VIDEO_STATUS_FAILED):
         # ── 4b. Store a marker so the UI knows a video WAS uploaded ────────────

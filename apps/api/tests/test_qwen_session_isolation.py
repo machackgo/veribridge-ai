@@ -856,3 +856,95 @@ class TestEndToEndSimulation:
         # The low-confidence fusion note should appear
         assert "low-confidence" in summary.summary.lower() or "generic" in summary.summary.lower() \
                or summary.frames_analyzed == 1  # at minimum the frame was analyzed
+
+
+# ---------------------------------------------------------------------------
+# BUG-FIX TESTS — Qwen sentinel storage prevents "pending forever"
+# ---------------------------------------------------------------------------
+
+class TestQwenSentinelBehavior:
+    """Sentinel JSON stored on first keyframe when Qwen produces no analyzed frames.
+
+    Without the sentinel, _build_visual_reasoning_session_summary_from_db returns None
+    and the endpoint falls back to status='pending', which never changes.
+    With the sentinel, the DB has a row with visual_reasoning_json set (even if
+    status='failed'), so the function returns status='failed' instead of None.
+    """
+
+    def test_failed_sentinel_row_causes_failed_not_none(self):
+        """A row with visual_reasoning_json.status='failed' → summary returns 'failed' dict."""
+        sentinel_row = {
+            "id": "frame-1",
+            "frame_type": "video_keyframe",
+            "timestamp_ms": 1000,
+            "ocr_text": None,
+            "visual_reasoning_json": {
+                "status": "failed",
+                "frames_analyzed": 0,
+                "summary": "Qwen ran but produced no analyzed frames.",
+                "limitations": ["inference error"],
+                "provider": "qwen_vl",
+                "model_provider": "qwen_vl",
+            },
+        }
+        db = _make_db([sentinel_row])
+        result = _build_visual_reasoning_session_summary_from_db(db, "user-1", "session-1")
+        # With sentinel present, must return a dict (NOT None)
+        assert result is not None, (
+            "DB has a sentinel row — must return dict, not None (pending forever bug)"
+        )
+        assert result.get("status") in ("failed", "rejected_inconsistent"), (
+            f"Expected 'failed', got {result.get('status')}"
+        )
+        assert result.get("frames_analyzed") == 0
+
+    def test_skipped_sentinel_row_causes_failed_not_none(self):
+        """A row with visual_reasoning_json.status='skipped' → summary not None."""
+        sentinel_row = {
+            "id": "frame-2",
+            "frame_type": "video_keyframe",
+            "timestamp_ms": 2000,
+            "ocr_text": None,
+            "visual_reasoning_json": {
+                "status": "skipped",
+                "frames_analyzed": 0,
+                "summary": "Qwen skipped due to resource limit.",
+                "limitations": ["OOM"],
+                "provider": "qwen_vl",
+                "model_provider": "qwen_vl",
+            },
+        }
+        db = _make_db([sentinel_row])
+        result = _build_visual_reasoning_session_summary_from_db(db, "user-1", "session-1")
+        assert result is not None, "Skipped sentinel must prevent pending-forever"
+        assert result.get("frames_analyzed") == 0
+
+    def test_empty_db_still_returns_none(self):
+        """When there are NO rows at all, should still return None (video not uploaded yet)."""
+        db = _make_db([])
+        result = _build_visual_reasoning_session_summary_from_db(db, "user-1", "session-1")
+        assert result is None, "No rows → must return None (video not uploaded yet)"
+
+    def test_analyzed_row_still_returns_analyzed(self):
+        """Sentinel fix must not break the happy path where a frame IS analyzed."""
+        analyzed_row = {
+            "id": "frame-3",
+            "frame_type": "video_keyframe",
+            "timestamp_ms": 1500,
+            "ocr_text": None,
+            "visual_reasoning_json": {
+                "status": "analyzed",
+                "visual_summary": "TF.js model classification UI",
+                "supported_skills": ["TensorFlow.js"],
+                "detected_skills_supported": ["TensorFlow.js"],
+                "missing_or_unclear_evidence": [],
+                "confidence_score": 0.8,
+                "model_provider": "qwen_vl",
+            },
+        }
+        db = _make_db([analyzed_row])
+        result = _build_visual_reasoning_session_summary_from_db(db, "user-1", "session-1")
+        assert result is not None
+        assert result.get("status") == "analyzed"
+        assert result.get("frames_analyzed") == 1
+        assert "TensorFlow.js" in result.get("supported_signals", [])

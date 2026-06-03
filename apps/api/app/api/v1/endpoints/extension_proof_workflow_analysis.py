@@ -27,6 +27,8 @@ from app.services.extension_proof_workflow_analysis_service import (
     _build_visual_reasoning_session_summary_from_db,
 )
 from app.services.final_evidence_evaluator_service import FinalEvidenceEvaluatorService
+from app.services.visual_reasoning_service import VisualReasoningService
+from app.core.config import settings
 from pydantic import BaseModel
 from typing import Any
 
@@ -585,6 +587,39 @@ def _enrich_visual_reasoning_summary(
     # Always re-query per-frame data — never short-circuit on the stored value.
     # Stale-cache bug: if a second video was uploaded to the same session after
     # the analysis was first run, the stored summary would reflect the OLD video.
+    vr_enabled = settings.visual_reasoning_enabled
+    try:
+        vr_svc = VisualReasoningService()
+        vr_cfg = vr_svc.get_provider_status()
+        vr_enabled = vr_cfg["visual_reasoning_enabled"]
+        vr_configured = vr_cfg["visual_reasoning_configured"]
+    except Exception:
+        vr_configured = False
+
+    # Count keyframes with visual_reasoning_json for diagnostic logging.
+    frames_with_vr = 0
+    try:
+        _FRAME_TABLE = "workflow_visual_frame_evidence"
+        _kf = (
+            db.table(_FRAME_TABLE)
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("proof_session_id", session_id)
+            .eq("frame_type", "video_keyframe")
+            .not_.is_("visual_reasoning_json", "null")
+            .execute()
+        )
+        frames_with_vr = len(_kf.data or [])
+    except Exception:
+        pass
+
+    logger.info(
+        "[WorkflowAnalysis] _enrich_visual_reasoning_summary: session=%s "
+        "visual_reasoning_enabled=%s visual_reasoning_configured=%s "
+        "frames_with_visual_reasoning_json=%d",
+        session_id, vr_enabled, vr_configured, frames_with_vr,
+    )
+
     try:
         vr_summary = _build_visual_reasoning_session_summary_from_db(
             db, user_id, session_id
@@ -592,17 +627,79 @@ def _enrich_visual_reasoning_summary(
         if vr_summary:
             logger.info(
                 "[WorkflowAnalysis] visual_reasoning_summary LIVE-ENRICHED: "
-                "session=%s status=%s frames=%d supported_signals=%s",
+                "session=%s status=%s frames=%d supported_signals=%s "
+                "qwen_status_returned_to_ui=%s",
                 session_id,
                 vr_summary.get("status", "?"),
                 vr_summary.get("frames_analyzed", 0),
                 vr_summary.get("supported_signals", []),
+                vr_summary.get("status", "?"),
             )
             return {**row, "visual_reasoning_summary": vr_summary}
+
+        # No analyzed frames yet. Distinguish enabled+configured (pending),
+        # enabled+not-configured (packages missing), and disabled.
+        if vr_enabled and vr_configured:
+            # Qwen is configured but no frames were analyzed for this session.
+            # "pending" would stay forever if no video was recorded — use a terminal status.
+            skipped_summary = {
+                "status": "skipped_no_frames",
+                "provider": vr_cfg.get("local_vision_provider", "qwen_vl"),
+                "frames_analyzed": 0,
+                "summary": (
+                    "Qwen visual reasoning is enabled and configured, "
+                    "but no video keyframes were available for this session. "
+                    "Upload a screen recording to enable visual analysis."
+                ),
+                "observations": [],
+                "supported_signals": [],
+                "missing_claims": [],
+                "limitations": [
+                    "No video keyframes found for this session — Qwen analysis skipped. "
+                    "Record and upload a video to enable visual reasoning."
+                ],
+                "skill_timeline": [],
+            }
+            logger.info(
+                "[WorkflowAnalysis] visual_reasoning_summary: "
+                "qwen_enabled=True qwen_configured=True no frames analyzed yet "
+                "— returning status=skipped_no_frames for session=%s",
+                session_id,
+            )
+            return {**row, "visual_reasoning_summary": skipped_summary}
+        elif vr_enabled:
+            # Qwen enabled in config but required packages not installed.
+            # Will NEVER run until packages are installed — must not stay "pending" forever.
+            not_cfg_summary = {
+                "status": "not_configured",
+                "provider": "qwen_vl",
+                "frames_analyzed": 0,
+                "summary": (
+                    "Qwen visual reasoning is enabled (VISUAL_REASONING_ENABLED=true) "
+                    "but required packages are not installed. "
+                    "Install: pip install 'transformers>=4.45' torch pillow accelerate qwen-vl-utils"
+                ),
+                "observations": [],
+                "supported_signals": [],
+                "missing_claims": [],
+                "limitations": [
+                    "Qwen packages not installed. "
+                    "Run: pip install 'transformers>=4.45' torch pillow accelerate qwen-vl-utils"
+                ],
+                "skill_timeline": [],
+            }
+            logger.info(
+                "[WorkflowAnalysis] visual_reasoning_summary: "
+                "qwen_enabled=True qwen_configured=False (packages missing) "
+                "— returning status=not_configured for session=%s "
+                "qwen_status_returned_to_ui=not_configured",
+                session_id,
+            )
+            return {**row, "visual_reasoning_summary": not_cfg_summary}
         else:
             logger.info(
-                "[WorkflowAnalysis] visual_reasoning_summary: no per-frame data "
-                "found in DB for session=%s (reasoning disabled or not yet run)",
+                "[WorkflowAnalysis] visual_reasoning_summary: Qwen disabled — "
+                "no summary returned for session=%s qwen_status_returned_to_ui=disabled",
                 session_id,
             )
     except Exception as exc:

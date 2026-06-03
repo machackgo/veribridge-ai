@@ -821,10 +821,24 @@ function AdvancedVisualReasoningSection({
   if (!reasoning) return null
 
   const isAnalyzed  = reasoning.status === "analyzed"
+  const isPending   = reasoning.status === "pending"
   const isMissing   = reasoning.status === "missing_dependency"
   const isDisabled  = reasoning.status === "disabled" || reasoning.status === "not_configured"
   const isFailed    = reasoning.status === "failed"
   const isRejected  = reasoning.status === "rejected_inconsistent" || reasoning.status === "rejected_stale"
+
+  // Qwen enabled and configured but not yet run for this session
+  if (isPending) {
+    return (
+      <div style={{ marginTop: 6, padding: "8px 10px", background: "#fffbeb",
+        border: "1px solid #fef08a", borderRadius: 6, fontSize: 10, color: "#78350f" }}>
+        <strong>Qwen Visual Reasoning — processing</strong>
+        <div style={{ marginTop: 3, lineHeight: 1.5 }}>
+          Qwen visual reasoning is enabled and running. Refresh after analysis completes.
+        </div>
+      </div>
+    )
+  }
 
   // Minimal note when explicitly disabled (VISUAL_REASONING_ENABLED=false stored in dict)
   if (isDisabled) {
@@ -1530,6 +1544,7 @@ function ProofCompletenessChecklist({ analysis }: { analysis: WorkflowAnalysisRe
   const qwenStatus = analysis.visual_reasoning_summary?.status
   const ocrAnalyzed = analysis.visual_analysis_status === "analyzed"
   const qwenAnalyzed = qwenStatus === "analyzed"
+  const qwenPending = qwenStatus === "pending"
   const qwenNotConfigured = qwenStatus === "disabled" || qwenStatus === "not_configured"
   const qwenResourceSkipped = qwenStatus === "skipped"
   const qwenSkipped = qwenNotConfigured || qwenResourceSkipped
@@ -1568,11 +1583,13 @@ function ProofCompletenessChecklist({ analysis }: { analysis: WorkflowAnalysisRe
     },
     {
       label: qwenAnalyzed ? "Qwen: analyzed"
+        : qwenPending ? "Qwen: processing"
         : qwenResourceSkipped ? "Qwen: skipped (resource limit)"
         : qwenNotConfigured ? "Qwen: not configured"
         : "Qwen: not run",
-      status: qwenAnalyzed ? "pass" : qwenSkipped ? "partial" : "missing",
-      note: qwenNotConfigured ? "VISUAL_REASONING_ENABLED=false"
+      status: qwenAnalyzed ? "pass" : qwenPending ? "partial" : qwenSkipped ? "partial" : "missing",
+      note: qwenPending ? "Refresh after Qwen analysis completes"
+        : qwenNotConfigured ? "VISUAL_REASONING_ENABLED=false"
         : qwenResourceSkipped ? "Reduce VISUAL_REASONING_MAX_FRAMES"
         : undefined,
     },

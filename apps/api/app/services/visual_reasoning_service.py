@@ -203,10 +203,25 @@ def _build_proof_verification_prompt(
                 parts.append(f"  □ {item}")
 
     parts.append(
-        "\nReturn ONLY a valid JSON object. No markdown, no code blocks, no explanation.\n"
+        "\nCRITICAL: Distinguish between these evidence kinds:\n"
+        "  direct_workflow — user is actively demonstrating the skill: clicked controls, changed inputs,\n"
+        "    saw model/demo output, code/result is visible, training/inference in progress.\n"
+        "  contextual_page — homepage, marketing text, product landing page, feature listing,\n"
+        "    tutorial page, generic documentation without active skill demonstration.\n"
+        "  embedded_video — a video player is visible and playing (marketing video, tutorial video,\n"
+        "    product demo video). The student is NOT interacting; they are watching.\n"
+        "  unrelated — unrelated browser tab, fullscreen advertisement, social media, login screen,\n"
+        "    blank page, or content clearly unrelated to the claimed skills.\n"
+        "\n"
+        "If the frame shows an embedded/fullscreen video playing (not the student's own interaction),\n"
+        "set evidence_kind=embedded_video or unrelated. Do NOT treat this as direct skill evidence.\n"
+        "\n"
+        "Return ONLY a valid JSON object. No markdown, no code blocks, no explanation.\n"
         "\n"
         "{\n"
         '  "visual_summary": "<one sentence: what is most prominent in this frame>",\n'
+        '  "evidence_kind": "<direct_workflow|contextual_page|embedded_video|unrelated>",\n'
+        '  "skill_support_level": "<strong|partial|weak|none>",\n'
         '  "visible_ui_elements": ["<UI components: buttons, panels, controls, toolbars>"],\n'
         '  "visible_objects_or_diagrams": ["<neural network diagram, chart, plot, model architecture, code, etc>"],\n'
         '  "detected_workflow_stage": "<model_training|results_display|data_input|prediction_output|processing|navigation|browsing|idle|unknown>",\n'
@@ -215,18 +230,21 @@ def _build_proof_verification_prompt(
         '  "skill_evidence": {\n'
         '    "<skill name>": {"items_visible": ["<checklist items confirmed visible>"], "verdict": "<supported|partial|not_visible>"}\n'
         "  },\n"
-        '  "supported_skills": ["<skills with clear visible evidence>"],\n'
+        '  "supported_skills": ["<skills with clear visible DIRECT evidence — not marketing/homepage/video>"],\n'
         '  "missing_or_unclear_evidence": ["<skills or items not clearly visible>"],\n'
         '  "confidence_score": 0.7,\n'
-        '  "limitations": ["<any analysis limitations>"]\n'
+        '  "limitations": ["<any analysis limitations, especially if embedded video or marketing content is visible>"]\n'
         "}\n"
         "\n"
         "Rules:\n"
         "1. Only report what is ACTUALLY VISIBLE in the image — do not invent or assume.\n"
         "2. If the image shows a neural network, ML tool, or interactive demo, describe it specifically.\n"
-        "3. confidence_score: 0.9=very clear evidence, 0.7=clear, 0.5=partial, 0.3=unclear or generic.\n"
-        "4. If evidence is unclear, mark it unclear — do not guess or hallucinate.\n"
-        "5. Return ONLY the JSON object — no other text before or after."
+        "3. confidence_score: 0.9=very clear direct evidence, 0.7=clear, 0.5=partial, 0.3=unclear/generic, 0.1=marketing/video only.\n"
+        "4. If the frame shows a fullscreen or embedded VIDEO PLAYING (not the student's own interaction),\n"
+        "   set evidence_kind=embedded_video, skill_support_level=none, supported_skills=[], confidence_score<=0.2.\n"
+        "   Add limitation: 'Contextual evidence only — embedded video, not direct proof of student skill.'\n"
+        "5. If evidence is unclear, mark it unclear — do not guess or hallucinate.\n"
+        "6. Return ONLY the JSON object — no other text before or after."
     )
 
     return "\n".join(parts)
@@ -275,6 +293,10 @@ class VisualReasoningObservation:
 
     # Core reasoning output
     visual_summary: str = ""
+    # evidence_kind: direct_workflow | contextual_page | embedded_video | unrelated
+    evidence_kind: str = ""
+    # skill_support_level: strong | partial | weak | none
+    skill_support_level: str = ""
     visible_ui_elements: list[str] = field(default_factory=list)
     visible_objects: list[str] = field(default_factory=list)
     visible_objects_or_diagrams: list[str] = field(default_factory=list)
@@ -301,6 +323,8 @@ class VisualReasoningObservation:
             "timestamp_ms":                 self.timestamp_ms,
             "model_provider":               self.model_provider,
             "visual_summary":               self.visual_summary,
+            "evidence_kind":                self.evidence_kind,
+            "skill_support_level":          self.skill_support_level,
             "visible_ui_elements":          self.visible_ui_elements,
             "visible_objects_or_diagrams":  self.visible_objects_or_diagrams or self.visible_objects,
             "detected_workflow_stage":      self.detected_workflow_stage,
@@ -715,8 +739,17 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
         # supported_skills: prefer new field, fall back to legacy detected_skills_supported
         supported = to_str_list(parsed.get("supported_skills") or parsed.get("detected_skills_supported"))
 
+        _VALID_EV_KINDS = frozenset({"direct_workflow", "contextual_page", "embedded_video", "unrelated"})
+        _VALID_SUPPORT_LEVELS = frozenset({"strong", "partial", "weak", "none"})
+        raw_ev_kind = str(parsed.get("evidence_kind", "")).lower().strip()
+        evidence_kind = raw_ev_kind if raw_ev_kind in _VALID_EV_KINDS else ""
+        raw_support = str(parsed.get("skill_support_level", "")).lower().strip()
+        skill_support_level = raw_support if raw_support in _VALID_SUPPORT_LEVELS else ""
+
         return {
             "visual_summary":               str(parsed.get("visual_summary", ""))[:500],
+            "evidence_kind":                evidence_kind,
+            "skill_support_level":          skill_support_level,
             "visible_ui_elements":          to_str_list(parsed.get("visible_ui_elements")),
             "visible_objects":              to_str_list(parsed.get("visible_objects")),
             "visible_objects_or_diagrams":  to_str_list(parsed.get("visible_objects_or_diagrams") or parsed.get("visible_objects")),
@@ -798,6 +831,8 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
             timestamp_ms=timestamp_ms,
             model_provider=provider_label,
             visual_summary=norm["visual_summary"],
+            evidence_kind=norm["evidence_kind"],
+            skill_support_level=norm["skill_support_level"],
             visible_ui_elements=norm["visible_ui_elements"],
             visible_objects=norm["visible_objects"],
             visible_objects_or_diagrams=norm["visible_objects_or_diagrams"],
