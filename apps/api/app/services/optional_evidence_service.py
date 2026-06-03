@@ -196,6 +196,7 @@ class SkillRule:
     tool_terms: tuple[str, ...] = ()
     task_terms: tuple[str, ...] = ()
     result_terms: tuple[str, ...] = ()
+    exclude_terms: tuple[str, ...] = ()
 
 
 _GENERAL_TASK_TERMS = (
@@ -228,14 +229,18 @@ _SKILL_RULES: tuple[SkillRule, ...] = (
     SkillRule("LLM", ("llm", "large language model", "gpt", "claude", "llama", "prompt engineering"), context_terms=("prompt", "generation", "rag", "retrieval", "embedding", "model")),
     SkillRule("RAG", ("rag", "retrieval augmented generation", "retrieval-augmented generation"), context_terms=("retrieval", "embedding", "vector", "documents", "llm")),
     SkillRule("Embeddings", ("embedding", "embeddings", "vector search", "semantic search", "vector database"), context_terms=("vector", "semantic", "retrieval", "rag", "documents")),
-    SkillRule("Computer Vision", ("computer vision", "image classification", "opencv", "cnn", "object detection", "ocr"), context_terms=("image", "video", "vision", "detection", "classification", "ocr")),
+    SkillRule("Computer Vision", ("computer vision", "image recognition", "image classification", "opencv", "cnn for images", "object detection", "segmentation", "detection model", "webcam", "image processing", "visual perception", "pose detection", "ocr"), context_terms=("image", "video", "vision", "detection", "classification", "ocr", "webcam", "segmentation", "pose"), exclude_terms=("data visualization", "visualization", "visual analytics", "visual output", "svg", "chart", "charts", "graph gallery")),
     SkillRule("Object Detection", ("object detection", "yolo", "bounding box", "bounding boxes"), context_terms=("image", "vision", "detected", "model")),
     SkillRule("OCR", ("ocr", "text extraction", "optical character recognition"), context_terms=("image", "document", "text", "extraction")),
     SkillRule("Model Evaluation", ("accuracy", "f1-score", "f1 score", "roc-auc", "roc auc", "precision", "recall", "confusion matrix"), context_terms=("model", "evaluation", "evaluated", "test set", "validation")),
     SkillRule("MLOps", ("mlops", "model monitoring", "model registry", "model deployment", "experiment tracking", "drift monitoring"), context_terms=("model", "monitoring", "deployment", "tracking", "pipeline")),
     SkillRule("Data Science", ("data science", "data scientist", "data analysis", "recommendation system", "feature engineering"), context_terms=("dataset", "analysis", "model", "pandas", "visualization", "recommendation")),
     SkillRule("Data Analysis", ("data analysis", "exploratory analysis", "eda", "pandas", "numpy"), context_terms=("dataset", "analysis", "cleaning", "features")),
-    SkillRule("Data Visualization", ("data visualization", "dashboard", "chart", "plotly", "d3.js", "d3 ", "matplotlib", "seaborn"), context_terms=("dashboard", "chart", "visualization", "results", "analytics")),
+    SkillRule("Data Visualization", ("data visualization", "visual analytics", "visual output", "dashboard", "chart", "charts", "plotly", "d3.js", "d3 ", "matplotlib", "seaborn", "svg visualization"), context_terms=("dashboard", "chart", "charts", "visualization", "results", "analytics", "svg", "graph")),
+    SkillRule("D3.js", ("d3.js", "d3 ", "d3 graph", "d3 chart"), tool_terms=("d3.js", "d3 "), task_terms=("built", "implemented", "rendered", "visualized"), result_terms=("chart", "charts", "svg", "graph", "visualization", "interactive")),
+    SkillRule("Interactive Charts", ("interactive chart", "interactive charts", "chart interaction", "chart interactions", "interactive visualization", "hover tooltip", "tooltip", "brush", "zoom"), context_terms=("chart", "charts", "visualization", "svg", "d3", "interaction", "tooltip")),
+    SkillRule("SVG Visualization", ("svg visualization", "svg chart", "svg charts", "svg", "scalable vector graphics"), context_terms=("visualization", "chart", "charts", "graph", "d3", "frontend")),
+    SkillRule("Graph Analysis", ("graph analysis", "graph analytics", "graph gallery", "network graph", "graph visualization", "node-link", "nodes and edges", "nodes", "edges"), context_terms=("graph", "chart", "visualization", "network", "nodes", "edges", "analytics")),
     SkillRule("Python", ("python", "pandas", "numpy", "scikit-learn", "sklearn"), tool_terms=("python", "pandas", "numpy", "scikit-learn", "sklearn"), task_terms=("implemented", "trained", "analyzed", "processed")),
     # Backend / frontend / databases
     SkillRule("Backend API", ("rest api", "backend api", "api endpoint", "fastapi endpoint", "server endpoint"), context_terms=("api", "endpoint", "backend", "server", "request", "response")),
@@ -302,6 +307,8 @@ def _page_chunks(text: str) -> list[tuple[int | None, str]]:
 
 
 def _matched_phrases(rule: SkillRule, lower: str) -> list[str]:
+    if rule.exclude_terms and any(term in lower for term in rule.exclude_terms):
+        return []
     hits = [phrase for phrase in rule.phrases if phrase in lower]
     if not hits:
         return []

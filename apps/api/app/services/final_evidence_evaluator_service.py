@@ -1825,11 +1825,24 @@ class FinalEvidenceEvaluatorService:
                 ))
 
         # ── Document / PDF gap (project reports and technical write-ups) ──────
+        def _document_supports(skill: str) -> bool:
+            if not detected_skills:
+                return False
+            wanted = skill.lower().strip()
+            for entry in detected_skills.values():
+                name = entry.skill.lower().strip()
+                if "document" not in entry.sources:
+                    continue
+                if name == wanted or name in wanted or wanted in name:
+                    return True
+            return False
+
         doc_skills = [s for s in claimed_skills
                       if any(kw in s.lower() for kw in (
                           "research", "report", "analysis", "academic", "thesis",
                           "documentation", "technical writing",
-                      ))]
+                      ))
+                      and not _document_supports(s)]
         if doc_skills and len(actions) < 5:
             actions.append(NextBestAction(
                 action_type="upload_document",

@@ -2385,6 +2385,34 @@ def test_browser_rendering_pipeline_is_not_devops():
     assert "DevOps" not in skills
 
 
+def test_d3_report_extracts_visualization_skills_not_computer_vision():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text=(
+            "--- page 3 --- D3 Graph Gallery report: implemented D3.js JavaScript modules "
+            "for SVG visualization, interactive charts, visual analytics, visual output, "
+            "and graph analysis with nodes and edges in a frontend application."
+        ),
+        file_path="d3_graph_gallery.pdf",
+    )
+    skills = {obj["skill_name"] for obj in analysis.evidence_objects}
+    assert {
+        "Data Visualization",
+        "D3.js",
+        "Interactive Charts",
+        "SVG Visualization",
+        "Graph Analysis",
+        "Frontend Development",
+    }.issubset(skills)
+    assert "JavaScript" in skills
+    assert "Computer Vision" not in skills
+    graph_obj = next(obj for obj in analysis.evidence_objects if obj["skill_name"] == "Graph Analysis")
+    assert graph_obj["page_number"] == 3
+    assert graph_obj["snippet"]
+    assert graph_obj["reason"]
+    assert graph_obj["confidence"] in ("high", "medium")
+
+
 def test_ml_tensorflow_document_extracts_model_evaluation_skills():
     analysis = analyze_optional_evidence(
         source_type="document",
@@ -2463,6 +2491,22 @@ def test_threejs_document_feeds_grouped_skill_evidence():
         obj.evidence_type == "document_snippet"
         for obj in skills["Three.js"].evidence_objects
     )
+
+
+def test_document_supported_graph_analysis_does_not_repeat_upload_document_action():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text="D3.js SVG visualization report documents graph analysis with interactive charts, nodes, and edges.",
+    )
+    row = {"source_type": "document", "status": analysis.status, "evidence_objects": analysis.evidence_objects}
+    result = _svc(opt=[row]).evaluate("u1", "s1", claimed_skills=["Graph Analysis"])
+    actions = result.next_best_actions
+    assert "uploaded_documents" in result.evidence_sources_used
+    assert not any(
+        a["action_type"] == "upload_document" and a["target_skill"] == "Graph Analysis"
+        for a in actions
+    )
+    assert not any("uploading a document" in a["reason"].lower() for a in actions)
 
 
 def test_linkedin_profile_text_maps_to_skill_evidence():
