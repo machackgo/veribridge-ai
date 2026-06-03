@@ -2344,6 +2344,127 @@ def test_document_snippet_maps_to_skill_evidence_with_page():
     assert "CNN model" in (ml_objs[0].text_snippet or "")
 
 
+def test_threejs_document_extracts_graphics_frontend_skills():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text=(
+            "--- page 4 --- VeriBridge test plan: Three.js renders an interactive 3D object "
+            "using WebGL in the browser rendering pipeline. The frontend application uses "
+            "JavaScript modules, camera controls, materials, and geometry handling. The "
+            "geometry simplifier performs mesh simplification and geometry optimization."
+        ),
+        file_path="VeriBridge_Document_Proof_Test_Plan.pdf",
+    )
+    skills = {obj["skill_name"] for obj in analysis.evidence_objects}
+    assert {
+        "Three.js",
+        "WebGL",
+        "Interactive 3D Graphics",
+        "Computer Graphics",
+        "Geometry Optimization",
+        "3D Mesh Simplification",
+        "Frontend Development",
+    }.issubset(skills)
+    assert "DevOps" not in skills
+    three_obj = next(obj for obj in analysis.evidence_objects if obj["skill_name"] == "Three.js")
+    assert three_obj["page_number"] == 4
+    assert three_obj["snippet"]
+    assert three_obj["reason"]
+    assert three_obj["confidence"] == "high"
+
+
+def test_browser_rendering_pipeline_is_not_devops():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text="The browser rendering pipeline displays a 3D scene with camera controls, materials, and geometry handling.",
+    )
+    skills = {obj["skill_name"] for obj in analysis.evidence_objects}
+    assert "Browser Rendering" in skills
+    assert "Frontend Development" in skills
+    assert "Computer Graphics" in skills
+    assert "DevOps" not in skills
+
+
+def test_ml_tensorflow_document_extracts_model_evaluation_skills():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text=(
+            "Project report methodology: trained a TensorFlow CNN model on an image dataset "
+            "and evaluated accuracy, precision, recall, and F1-score on the validation results."
+        ),
+    )
+    skills = {obj["skill_name"] for obj in analysis.evidence_objects}
+    assert {"TensorFlow", "Machine Learning", "Deep Learning", "Model Evaluation"}.issubset(skills)
+    tf_obj = next(obj for obj in analysis.evidence_objects if obj["skill_name"] == "TensorFlow")
+    assert tf_obj["confidence"] == "high"
+    assert tf_obj["snippet"]
+    assert tf_obj["reason"]
+
+
+def test_fastapi_postgresql_document_extracts_backend_database_skills():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text=(
+            "Implemented a backend API with FastAPI endpoints that validate requests and "
+            "store records in a PostgreSQL database using SQL schema migrations."
+        ),
+    )
+    skills = {obj["skill_name"] for obj in analysis.evidence_objects}
+    assert {"Backend API", "API Development", "FastAPI", "PostgreSQL", "Database", "SQL"}.issubset(skills)
+
+
+def test_react_nextjs_document_extracts_frontend_skills():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text=(
+            "Built a React and Next.js frontend application with TypeScript components, "
+            "client routes, browser interaction, and JavaScript modules for the UI."
+        ),
+    )
+    skills = {obj["skill_name"] for obj in analysis.evidence_objects}
+    assert {"React", "Next.js", "TypeScript", "JavaScript", "Frontend Development"}.issubset(skills)
+
+
+def test_rag_llm_embeddings_document_extracts_ai_retrieval_skills():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text=(
+            "Implemented a RAG workflow for an LLM assistant using embeddings, semantic search, "
+            "and vector retrieval over project documents to generate grounded answers."
+        ),
+    )
+    skills = {obj["skill_name"] for obj in analysis.evidence_objects}
+    assert {"RAG", "LLM", "Embeddings", "NLP"}.issubset(skills)
+
+
+def test_devops_requires_infrastructure_terms():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text="The deployment pipeline uses Docker containers, GitHub Actions, nginx, monitoring, and Terraform infrastructure.",
+    )
+    skills = {obj["skill_name"] for obj in analysis.evidence_objects}
+    assert "DevOps" in skills
+    assert "Docker" in skills
+
+
+def test_threejs_document_feeds_grouped_skill_evidence():
+    analysis = analyze_optional_evidence(
+        source_type="document",
+        raw_text="Three.js renders an interactive 3D object with WebGL and mesh simplification for geometry optimization.",
+    )
+    row = {"source_type": "document", "status": analysis.status, "evidence_objects": analysis.evidence_objects}
+    result = _svc(opt=[row]).evaluate("u1", "s1", claimed_skills=[])
+    skills = {sk.skill: sk for g in result.grouped_skill_evidence for sk in g.skills}
+    assert "uploaded_documents" in result.evidence_sources_used
+    assert "Three.js" in skills
+    assert "WebGL" in skills
+    assert "3D Mesh Simplification" in skills
+    assert any(
+        obj.evidence_type == "document_snippet"
+        for obj in skills["Three.js"].evidence_objects
+    )
+
+
 def test_linkedin_profile_text_maps_to_skill_evidence():
     analysis = analyze_optional_evidence(
         source_type="linkedin_profile",

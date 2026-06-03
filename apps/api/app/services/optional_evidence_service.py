@@ -188,26 +188,77 @@ def _extract_text(file_bytes: bytes, filename: str) -> ExtractedDocument:
             error_message=f"Text extraction error: {exc}",
         )
 
-_SKILL_RULES: list[tuple[str, tuple[str, ...]]] = [
-    ("Machine Learning", ("machine learning", "model training", "supervised learning", "classification model", "cnn model")),
-    ("Deep Learning", ("deep learning", "neural network", "cnn", "convolutional", "tensorflow", "pytorch")),
-    ("TensorFlow", ("tensorflow", "tf.keras", "keras")),
-    ("Computer Vision", ("computer vision", "image classification", "opencv", "cnn", "object detection")),
-    ("Model Evaluation", ("accuracy", "f1-score", "f1 score", "roc-auc", "roc auc", "precision", "recall")),
-    ("Backend API", ("rest api", "backend api", "api endpoint", "fastapi endpoint")),
-    ("FastAPI", ("fastapi", "fast api")),
-    ("PostgreSQL", ("postgresql", "postgres", "sql database")),
-    ("API Development", ("api development", "rest api", "endpoint", "http api")),
-    ("Docker", ("docker", "container", "dockerfile")),
-    ("DevOps", ("deployment", "ci/cd", "pipeline", "kubernetes", "docker deployment")),
-    ("Data Visualization", ("data visualization", "dashboard", "chart", "plotly", "d3.js", "d3 ")),
-    ("JavaScript", ("javascript", "typescript", "d3.js", "react", "node.js")),
-    ("Dashboard Development", ("dashboard", "analytics dashboard", "interactive dashboard")),
-    ("Python", ("python", "pandas", "numpy", "scikit-learn", "sklearn")),
-    ("Data Science", ("data science", "data scientist", "data analysis", "recommendation system")),
-    ("Recommendation Systems", ("recommendation system", "recommender", "collaborative filtering")),
-    ("Technical Documentation", ("technical documentation", "project report", "methodology", "limitations")),
-]
+@dataclass(frozen=True)
+class SkillRule:
+    skill: str
+    phrases: tuple[str, ...]
+    context_terms: tuple[str, ...] = ()
+    tool_terms: tuple[str, ...] = ()
+    task_terms: tuple[str, ...] = ()
+    result_terms: tuple[str, ...] = ()
+
+
+_GENERAL_TASK_TERMS = (
+    "built", "implemented", "trained", "fine-tuned", "evaluated", "optimized",
+    "deployed", "processed", "generated", "classified", "detected", "render",
+    "renders", "rendered", "queried", "stored", "validated", "monitored",
+)
+_PROJECT_CONTEXT_TERMS = (
+    "project", "application", "app", "system", "pipeline", "workflow", "model",
+    "api", "dashboard", "frontend", "backend", "browser", "dataset", "results",
+    "accuracy", "latency", "scene", "mesh", "geometry", "report",
+)
+
+
+_SKILL_RULES: tuple[SkillRule, ...] = (
+    # 3D graphics / browser rendering
+    SkillRule("Three.js", ("three.js", "three js", "threejs"), tool_terms=("three.js", "three js", "threejs"), task_terms=("render", "renders", "rendered", "implemented", "built"), result_terms=("interactive", "3d", "webgl", "scene", "object")),
+    SkillRule("WebGL", ("webgl", "web gl"), tool_terms=("webgl", "web gl"), task_terms=("render", "renders", "rendered", "implemented"), result_terms=("browser", "3d", "graphics", "scene")),
+    SkillRule("Interactive 3D Graphics", ("3d graphics", "interactive 3d", "3d rendering", "3d scene", "3d object"), context_terms=("render", "graphics", "scene", "object", "webgl", "three.js", "browser")),
+    SkillRule("Computer Graphics", ("3d graphics", "interactive 3d", "3d rendering", "computer graphics", "geometry processing", "mesh processing", "scene", "camera", "controls", "material", "geometry"), context_terms=("3d", "webgl", "three.js", "rendering", "graphics", "mesh", "geometry", "browser")),
+    SkillRule("Geometry Optimization", ("geometry optimization", "geometry processing", "mesh processing", "mesh simplification", "geometry simplifier"), task_terms=("optimized", "optimization", "simplification", "processing", "simplifier"), result_terms=("geometry", "mesh", "performance")),
+    SkillRule("3D Mesh Simplification", ("mesh simplification", "simplifier", "geometry simplifier", "mesh processing"), context_terms=("mesh", "geometry", "3d", "graphics")),
+    SkillRule("Frontend Development", ("browser rendering", "rendering pipeline", "javascript modules", "browser interaction", "frontend application", "frontend development", "react", "next.js", "nextjs", "typescript", "javascript"), context_terms=("frontend", "browser", "ui", "client", "react", "next", "javascript", "typescript", "3d", "webgl")),
+    SkillRule("Browser Rendering", ("browser rendering", "rendering pipeline", "webgl rendering", "browser interaction"), context_terms=("browser", "webgl", "frontend", "rendering")),
+    # AI / ML / data science
+    SkillRule("Machine Learning", ("machine learning", "model training", "supervised learning", "classification model", "regression model", "cnn model"), task_terms=("trained", "evaluated", "classified", "predicted"), result_terms=("accuracy", "f1", "precision", "recall", "dataset")),
+    SkillRule("Deep Learning", ("deep learning", "neural network", "cnn", "convolutional", "transformer", "pytorch", "tensorflow"), context_terms=("model", "training", "classification", "vision", "nlp", "dataset")),
+    SkillRule("TensorFlow", ("tensorflow", "tf.keras", "keras"), tool_terms=("tensorflow", "tf.keras", "keras"), task_terms=("trained", "evaluated", "implemented"), result_terms=("model", "accuracy", "f1", "dataset")),
+    SkillRule("NLP", ("nlp", "natural language processing", "text classification", "named entity recognition", "sentiment analysis", "llm assistant"), context_terms=("text", "language", "tokens", "embedding", "llm", "rag", "retrieval", "documents")),
+    SkillRule("LLM", ("llm", "large language model", "gpt", "claude", "llama", "prompt engineering"), context_terms=("prompt", "generation", "rag", "retrieval", "embedding", "model")),
+    SkillRule("RAG", ("rag", "retrieval augmented generation", "retrieval-augmented generation"), context_terms=("retrieval", "embedding", "vector", "documents", "llm")),
+    SkillRule("Embeddings", ("embedding", "embeddings", "vector search", "semantic search", "vector database"), context_terms=("vector", "semantic", "retrieval", "rag", "documents")),
+    SkillRule("Computer Vision", ("computer vision", "image classification", "opencv", "cnn", "object detection", "ocr"), context_terms=("image", "video", "vision", "detection", "classification", "ocr")),
+    SkillRule("Object Detection", ("object detection", "yolo", "bounding box", "bounding boxes"), context_terms=("image", "vision", "detected", "model")),
+    SkillRule("OCR", ("ocr", "text extraction", "optical character recognition"), context_terms=("image", "document", "text", "extraction")),
+    SkillRule("Model Evaluation", ("accuracy", "f1-score", "f1 score", "roc-auc", "roc auc", "precision", "recall", "confusion matrix"), context_terms=("model", "evaluation", "evaluated", "test set", "validation")),
+    SkillRule("MLOps", ("mlops", "model monitoring", "model registry", "model deployment", "experiment tracking", "drift monitoring"), context_terms=("model", "monitoring", "deployment", "tracking", "pipeline")),
+    SkillRule("Data Science", ("data science", "data scientist", "data analysis", "recommendation system", "feature engineering"), context_terms=("dataset", "analysis", "model", "pandas", "visualization", "recommendation")),
+    SkillRule("Data Analysis", ("data analysis", "exploratory analysis", "eda", "pandas", "numpy"), context_terms=("dataset", "analysis", "cleaning", "features")),
+    SkillRule("Data Visualization", ("data visualization", "dashboard", "chart", "plotly", "d3.js", "d3 ", "matplotlib", "seaborn"), context_terms=("dashboard", "chart", "visualization", "results", "analytics")),
+    SkillRule("Python", ("python", "pandas", "numpy", "scikit-learn", "sklearn"), tool_terms=("python", "pandas", "numpy", "scikit-learn", "sklearn"), task_terms=("implemented", "trained", "analyzed", "processed")),
+    # Backend / frontend / databases
+    SkillRule("Backend API", ("rest api", "backend api", "api endpoint", "fastapi endpoint", "server endpoint"), context_terms=("api", "endpoint", "backend", "server", "request", "response")),
+    SkillRule("API Development", ("api development", "rest api", "endpoint", "http api", "openapi", "swagger"), context_terms=("api", "endpoint", "http", "request", "response")),
+    SkillRule("FastAPI", ("fastapi", "fast api"), tool_terms=("fastapi", "fast api"), task_terms=("implemented", "built", "served", "validated"), result_terms=("api", "endpoint", "backend")),
+    SkillRule("Flask", ("flask", "flask api"), tool_terms=("flask",), task_terms=("implemented", "built", "served"), result_terms=("api", "backend", "endpoint")),
+    SkillRule("Django", ("django", "django rest framework", "drf"), tool_terms=("django", "django rest framework", "drf"), task_terms=("implemented", "built", "served"), result_terms=("api", "backend", "endpoint")),
+    SkillRule("React", ("react", "react.js", "reactjs"), tool_terms=("react", "react.js", "reactjs"), task_terms=("built", "implemented", "rendered"), result_terms=("ui", "component", "frontend", "application")),
+    SkillRule("Next.js", ("next.js", "nextjs", "next js"), tool_terms=("next.js", "nextjs", "next js"), task_terms=("built", "implemented", "rendered"), result_terms=("frontend", "application", "route", "server")),
+    SkillRule("JavaScript", ("javascript", "javascript modules", "node.js", "d3.js", "d3 "), tool_terms=("javascript", "node.js", "d3.js"), task_terms=("implemented", "built", "rendered"), result_terms=("frontend", "browser", "module", "application")),
+    SkillRule("TypeScript", ("typescript", "tsx", "ts-node"), tool_terms=("typescript", "tsx"), task_terms=("implemented", "typed", "built"), result_terms=("frontend", "api", "application")),
+    SkillRule("Database", ("database", "sql", "nosql", "schema", "query", "queries"), context_terms=("stored", "queried", "tables", "records", "postgres", "mongodb", "supabase")),
+    SkillRule("SQL", ("sql", "sql query", "sql database"), context_terms=("query", "database", "table", "postgres", "schema")),
+    SkillRule("PostgreSQL", ("postgresql", "postgres"), tool_terms=("postgresql", "postgres"), task_terms=("queried", "stored", "joined", "indexed"), result_terms=("database", "sql", "schema")),
+    SkillRule("MongoDB", ("mongodb", "mongo db", "mongoose"), tool_terms=("mongodb", "mongo db", "mongoose"), task_terms=("queried", "stored", "modeled"), result_terms=("database", "collection", "document")),
+    SkillRule("Supabase", ("supabase", "row level security", "rls"), tool_terms=("supabase",), task_terms=("implemented", "queried", "stored"), result_terms=("database", "auth", "postgres", "storage")),
+    # Deployment / cloud. Intentionally excludes generic "pipeline".
+    SkillRule("Docker", ("docker", "container", "dockerfile"), tool_terms=("docker", "dockerfile"), task_terms=("containerized", "deployed", "built"), result_terms=("container", "image", "service")),
+    SkillRule("DevOps", ("docker", "ci/cd", "kubernetes", "deployment pipeline", "cloud deployment", "monitoring", "infrastructure", "github actions", "container", "server", "nginx", "terraform"), context_terms=("deploy", "deployment", "infrastructure", "container", "cloud", "ci/cd", "monitoring", "server", "nginx", "terraform", "github actions")),
+    SkillRule("Cloud Deployment", ("cloud deployment", "aws", "gcp", "azure", "vercel", "render.com", "railway"), context_terms=("deploy", "deployment", "cloud", "hosting", "service")),
+    SkillRule("CI/CD", ("ci/cd", "github actions", "gitlab ci", "deployment pipeline"), context_terms=("build", "test", "deploy", "workflow", "pipeline")),
+    SkillRule("Technical Documentation", ("technical documentation", "project report", "methodology", "results", "limitations"), context_terms=("report", "methodology", "results", "limitations", "documentation", "project")),
+)
 
 _ISSUER_PATTERNS = (
     r"(?:issuer|issued by|institution|university|provider)[:\s]+([A-Z][A-Za-z0-9 &.,-]{2,80})",
@@ -250,14 +301,31 @@ def _page_chunks(text: str) -> list[tuple[int | None, str]]:
     return [(p, c) for p, c in chunks if c]
 
 
-def _confidence(snippet: str, source_type: SourceType) -> str:
+def _matched_phrases(rule: SkillRule, lower: str) -> list[str]:
+    hits = [phrase for phrase in rule.phrases if phrase in lower]
+    if not hits:
+        return []
+    if rule.context_terms and not any(term in lower for term in rule.context_terms):
+        return []
+    return hits
+
+
+def _confidence(snippet: str, source_type: SourceType, rule: SkillRule | None = None) -> str:
     lower = snippet.lower()
-    detail = sum(1 for kw in ("built", "implemented", "evaluated", "deployed", "accuracy", "f1", "api", "dashboard") if kw in lower)
+    tool_terms = rule.tool_terms if rule and rule.tool_terms else rule.phrases if rule else ()
+    task_terms = rule.task_terms if rule and rule.task_terms else _GENERAL_TASK_TERMS
+    result_terms = rule.result_terms if rule and rule.result_terms else _PROJECT_CONTEXT_TERMS
+    has_tool = bool(tool_terms) and any(term in lower for term in tool_terms)
+    has_task = any(term in lower for term in task_terms)
+    has_result = any(term in lower for term in result_terms)
+    detail = sum(1 for kw in _GENERAL_TASK_TERMS + _PROJECT_CONTEXT_TERMS if kw in lower)
     if source_type == "certificate_transcript":
         return "medium"
+    if has_tool and has_task and has_result:
+        return "high"
     if detail >= 2:
         return "high"
-    if len(snippet.split()) >= 8:
+    if has_tool or len(snippet.split()) >= 8:
         return "medium"
     return "low"
 
@@ -302,15 +370,16 @@ def _analyze_chunks(
     for chunk_idx, (page_number, chunk_section, chunk_text) in enumerate(chunks):
         for sentence in _sentences(chunk_text):
             lower = sentence.lower()
-            for skill, keywords in _SKILL_RULES:
-                hits = [kw for kw in keywords if kw in lower]
+            for rule in _SKILL_RULES:
+                hits = _matched_phrases(rule, lower)
                 if not hits:
                     continue
+                skill = rule.skill
                 key = (skill, sentence[:120])
                 if key in seen:
                     continue
                 seen.add(key)
-                conf = _confidence(sentence, source_type)
+                conf = _confidence(sentence, source_type, rule)
                 lr = line_refs[chunk_idx] if line_refs and chunk_idx < len(line_refs) else (None, None)
                 evidence.append({
                     "source_type": source_type,
