@@ -107,11 +107,27 @@ class TranscriptionUnavailableError(Exception):
 # ── Result ────────────────────────────────────────────────────────────────────
 
 @dataclass
+class TranscriptSegment:
+    """One time-aligned transcript segment from the provider."""
+
+    start_time: float      # seconds
+    end_time: float        # seconds
+    text: str
+    confidence: float | None = None  # word-level avg where available
+
+
+@dataclass
 class TranscriptionResult:
     """Successful transcription output."""
 
     transcript_text: str
     provider_used: str
+    language: str | None = None
+    transcript_segments: list[TranscriptSegment] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.transcript_segments is None:
+            self.transcript_segments = []
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -338,8 +354,11 @@ def _transcribe_local_whisper(
                 device=_LOCAL_WHISPER_DEVICE,
                 compute_type=_LOCAL_WHISPER_COMPUTE_TYPE,
             )
-            segments, _info = model.transcribe(audio_path, beam_size=5)
-            raw_text = " ".join(seg.text for seg in segments).strip()
+            segments_iter, info = model.transcribe(audio_path, beam_size=5, word_timestamps=False)
+            # Materialise the generator so we can iterate twice
+            raw_segments = list(segments_iter)
+            raw_text = " ".join(seg.text for seg in raw_segments).strip()
+            detected_language: str | None = getattr(info, "language", None)
         except Exception as exc:
             logger.error("local_whisper transcription error: %s", exc)
             raise RuntimeError(
@@ -354,7 +373,22 @@ def _transcribe_local_whisper(
             "Ensure the recording contains clear speech, or paste your transcript manually."
         )
 
-    return TranscriptionResult(transcript_text=cleaned, provider_used="local_whisper")
+    timed_segments = [
+        TranscriptSegment(
+            start_time=round(seg.start, 3),
+            end_time=round(seg.end, 3),
+            text=seg.text.strip(),
+        )
+        for seg in raw_segments
+        if seg.text.strip()
+    ]
+
+    return TranscriptionResult(
+        transcript_text=cleaned,
+        provider_used="local_whisper",
+        language=detected_language,
+        transcript_segments=timed_segments,
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

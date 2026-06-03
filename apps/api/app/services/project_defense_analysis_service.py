@@ -729,6 +729,7 @@ class ProjectDefenseAnalysisService:
         *,
         transcript_text: str,
         privacy_scan_status: str = "clean",
+        transcript_segments: list[dict[str, Any]] | None = None,
         # Refinement fields — optional; populated when auto-refinement ran
         raw_transcript: str | None = None,
         refined_transcript: str | None = None,
@@ -758,6 +759,8 @@ class ProjectDefenseAnalysisService:
             "transcript_needs_review": transcript_needs_review,
         }
 
+        if transcript_segments is not None:
+            patch["transcript_segments"] = transcript_segments
         if raw_transcript is not None:
             patch["raw_transcript"] = raw_transcript
         if refined_transcript is not None:

@@ -222,6 +222,9 @@ class ProjectDefenseTranscribeResponse(BaseModel):
     configured: bool = False
     message: str = ""
 
+    # ── Timestamped segments (when local_whisper/faster-whisper produced them) ───
+    transcript_segments: list[dict[str, Any]] = Field(default_factory=list)
+
     # ── Refinement output (included when refinement ran automatically) ─────────
     raw_transcript: str | None = None
     refined_transcript: str | None = None

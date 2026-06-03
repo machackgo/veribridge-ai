@@ -54,10 +54,13 @@ logger.info(
     bool(settings.supabase_url),
     bool(settings.supabase_service_role_key.get_secret_value()),
 )
+_tx_provider = settings.transcription_provider.strip().lower()
 logger.info(
-    "Transcription provider: %r  openai_key_present=%s",
-    settings.transcription_provider or "(none)",
-    bool(settings.openai_api_key.get_secret_value()),
+    "Transcription: provider=%r  enabled=%s  local_whisper_model=%r  device=%r",
+    _tx_provider or "none",
+    _tx_provider not in ("none", ""),
+    settings.local_whisper_model_size,
+    settings.local_whisper_device,
 )
 
 
@@ -611,12 +614,19 @@ async def transcribe_defense_media(
         else tx_result.transcript_text
     )
 
+    # ── Serialise transcript segments (faster-whisper produces these) ──────────
+    segments_data: list[dict] = [
+        {"start_time": seg.start_time, "end_time": seg.end_time, "text": seg.text}
+        for seg in (tx_result.transcript_segments or [])
+    ]
+
     # ── Persist ────────────────────────────────────────────────────────────────
     service.save_transcription_result(
         user_id=user_id,
         proof_session_id=session_id,
         transcript_text=working_transcript,
         privacy_scan_status=privacy_result.status,
+        transcript_segments=segments_data if segments_data else None,
         raw_transcript=tx_result.transcript_text,
         refined_transcript=refinement.refined_transcript if refinement else None,
         transcript_correction_summary=refinement.correction_summary if refinement else [],
@@ -655,6 +665,7 @@ async def transcribe_defense_media(
             f"Transcript generated. Review and edit before analysis."
             f"{needs_review_note}{privacy_note}"
         ),
+        transcript_segments=segments_data,
         # Refinement fields
         raw_transcript=tx_result.transcript_text,
         refined_transcript=refinement.refined_transcript if refinement else None,
