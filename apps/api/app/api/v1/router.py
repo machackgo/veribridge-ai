@@ -17,6 +17,7 @@ from app.api.v1.endpoints import (
     health,
     live_website_check,
     notifications,
+    optional_evidence,
     permissions,
     project_defense_analysis,
     proof_versioning,
@@ -180,6 +181,11 @@ api_router.include_router(
     project_defense_analysis.router,
     prefix="/student/extension-proof/sessions",
     tags=["project-defense-analysis"],
+)
+api_router.include_router(
+    optional_evidence.router,
+    prefix="/student/extension-proof/sessions",
+    tags=["optional-evidence"],
 )
 api_router.include_router(
     verification_readiness.router,
