@@ -395,10 +395,10 @@ async function safeSendMessage<T = unknown>(message: unknown): Promise<T | null>
     return result
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (
-      msg.includes("Extension context invalidated") ||
-      msg.includes("Receiving end does not exist")
-    ) {
+    if (msg.includes("Extension context invalidated")) {
+      // Only permanently invalidate when the extension itself is reloaded/disabled.
+      // "Receiving end does not exist" is transient in MV3 (SW restart race) — do not
+      // invalidate; the next poll will retry once the SW is awake.
       handleContextInvalidated()
     }
     return null
@@ -761,7 +761,8 @@ function stopCapture(): void {
 chrome.runtime.onMessage.addListener((msg: { type: string }) => {
   if (msg.type === "START_CAPTURING") {
     void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
-      if (s?.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
+      if (!s?.isRecording) return
+      if (s.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
       startCapture()
       if (!targetWebsiteUrl || isOnTargetPage()) {
         showFloatingBar()
@@ -1044,6 +1045,12 @@ function shouldSkipRender(s: StateSnapshot): boolean {
 
 function fetchAndRender(): void {
   if (contextInvalidated) return
+  // If the host page removed our overlay element, re-attach it to the DOM
+  // so it becomes visible again without waiting for the next showFloatingBar call.
+  if (barHost && !document.contains(barHost)) {
+    ;(document.body ?? document.documentElement).appendChild(barHost)
+    positionBarHost()
+  }
   void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
     if (contextInvalidated || !s) return
 

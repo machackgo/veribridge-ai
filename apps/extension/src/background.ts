@@ -779,28 +779,43 @@ chrome.tabs.onCreated.addListener((tab) => {
 })
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (!state.isRecording || !state.trackedTabIds.has(tabId)) return
+  if (!state.isRecording) return
   if (changeInfo.status !== "complete") return
   const url = tab.url
-  if (!url || url.startsWith("chrome://") || url === "about:blank" || url === "about:newtab") return
+  if (!url || url.startsWith("chrome://") || url.startsWith("chrome-extension://") || url === "about:blank" || url === "about:newtab") return
 
-  // Record navigation when a tracked tab moves to a different URL.
-  const safeUrl = redactUrl(url)
-  const lastUrl = state.trackedTabUrls.get(tabId)
-  if (lastUrl !== undefined && lastUrl !== safeUrl) {
-    state.events.push({
-      type: "navigation",
-      timestamp: new Date().toISOString(),
-      page_url: safeUrl,
-      page_title: tab.title ?? "",
-    })
+  // Record navigation events for tracked tabs only.
+  if (state.trackedTabIds.has(tabId)) {
+    const safeUrl = redactUrl(url)
+    const lastUrl = state.trackedTabUrls.get(tabId)
+    if (lastUrl !== undefined && lastUrl !== safeUrl) {
+      state.events.push({
+        type: "navigation",
+        timestamp: new Date().toISOString(),
+        page_url: safeUrl,
+        page_title: tab.title ?? "",
+      })
+    }
+    state.trackedTabUrls.set(tabId, safeUrl)
   }
-  state.trackedTabUrls.set(tabId, safeUrl)
 
-  // Proactively ask the content script in this tab to start capturing.
-  // Complements the init-check in content.ts for cases where the service
-  // worker was idle when the tab first loaded.
+  // Send START_CAPTURING to ALL tabs during recording (not just tracked ones).
+  // This ensures the overlay re-appears after any page navigation in any tab,
+  // including the target website opened from the recorder tab or a new window.
   chrome.tabs.sendMessage(tabId, { type: "START_CAPTURING" }).catch(() => undefined)
+})
+
+// Re-inject overlay when the user switches to a tab during recording.
+// Handles the case where the user activates a tab that already loaded but
+// missed the initial broadcast (e.g. the recorder tab was focused at that time).
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  if (!state.isRecording) return
+  chrome.tabs.get(activeInfo.tabId, (tab) => {
+    if (chrome.runtime.lastError) return
+    const url = tab.url ?? ""
+    if (url.startsWith("chrome://") || url.startsWith("chrome-extension://") || url === "about:blank") return
+    chrome.tabs.sendMessage(activeInfo.tabId, { type: "START_CAPTURING" }).catch(() => undefined)
+  })
 })
 
 /**

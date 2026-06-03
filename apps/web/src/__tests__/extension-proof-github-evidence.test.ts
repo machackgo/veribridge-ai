@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { createElement } from "react"
 import { EvidenceObjectItem, FutureProofModulesSection, getGitHubTraceActionLabel } from "../../components/skill-proof/extension-proof-panel"
 import type { EvidenceObject } from "../lib/api"
@@ -102,7 +102,11 @@ describe("Optional evidence boosters", () => {
     expect(screen.getByText("Documents / PDF / Reports Evidence")).toBeInTheDocument()
     expect(screen.queryByText("LinkedIn / Profile Proof")).not.toBeInTheDocument()
     expect(screen.queryByText("Certificates / Transcript Proof")).not.toBeInTheDocument()
-    expect(screen.getAllByText("Optional — can strengthen your profile").length).toBe(1)
+    expect(screen.getByText("Add document proof")).toBeInTheDocument()
+    expect(screen.getByText("status: not_added")).toBeInTheDocument()
+    fireEvent.click(screen.getByText("Documents / PDF / Reports Evidence"))
+    expect(screen.getByPlaceholderText(/Paste report text/i)).toBeInTheDocument()
+    expect(screen.getByText("Analyze Document Evidence")).toBeInTheDocument()
     expect(document.body.innerHTML).not.toMatch(/failed|missing required/i)
   })
 
