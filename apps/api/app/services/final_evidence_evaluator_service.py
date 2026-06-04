@@ -658,6 +658,12 @@ _SOURCE_WEIGHTS: dict[EvidenceSourceKey, float] = {
     "certificate":            0.03,
 }
 
+_OPTIONAL_BOOSTER_KEYS: set[EvidenceSourceKey] = {
+    "uploaded_documents",
+    "linkedin_profile",
+    "certificate",
+}
+
 
 def _clamp(v: int, lo: int = 0, hi: int = 100) -> int:
     return max(lo, min(hi, v))
@@ -918,19 +924,35 @@ class FinalEvidenceEvaluatorService:
     # ── Score combination ─────────────────────────────────────────────────────
 
     def _combine_scores(self, sources: list[EvidenceSourceResult]) -> int:
-        """Weighted average over sources that were actually run."""
+        """Weighted average over core sources, with optional sources as bonus only."""
         run_sources = [s for s in sources if s.status not in ("not_run", "not_available")]
-        if not run_sources:
-            return 0
-        total_weight = sum(s.weight for s in run_sources)
+        core_sources = [s for s in run_sources if s.key not in _OPTIONAL_BOOSTER_KEYS]
+        optional_sources = [s for s in run_sources if s.key in _OPTIONAL_BOOSTER_KEYS]
+        if not core_sources:
+            if not optional_sources:
+                return 0
+            best_optional = max(s.score for s in optional_sources)
+            return _clamp(min(60, best_optional))
+        total_weight = sum(s.weight for s in core_sources)
         if total_weight == 0:
             return 0
-        weighted_sum = sum(s.score * s.weight for s in run_sources)
+        weighted_sum = sum(s.score * s.weight for s in core_sources)
         raw = weighted_sum / total_weight
         # Bonus if multiple source types agree (breadth bonus up to +5)
-        pass_count = sum(1 for s in run_sources if s.status == "pass")
+        pass_count = sum(1 for s in core_sources if s.status == "pass")
         bonus = min(5, pass_count)
-        return _clamp(int(raw + bonus))
+        base_score = _clamp(int(raw + bonus))
+
+        optional_bonus = 0
+        for s in optional_sources:
+            if s.status == "pass" and s.score >= 80:
+                optional_bonus = max(optional_bonus, 3)
+            elif s.status == "pass" and s.score >= 65:
+                optional_bonus = max(optional_bonus, 2)
+            elif s.status == "partial" and s.score >= 55:
+                optional_bonus = max(optional_bonus, 1)
+
+        return _clamp(base_score + optional_bonus)
 
     def _confidence_label(
         self,
@@ -2225,7 +2247,7 @@ class FinalEvidenceEvaluatorService:
                 "Optional: run GitHub analysis or live website check to add further depth."
             )
         elif final_score >= 60:
-            top_action = actions[0].reason if actions else "Add more evidence sources."
+            top_action = actions[0].reason if actions else "Strengthen the weakest specific proof source."
             recruiter = (
                 f"Moderate proof with a combined score of {final_score}/100. "
                 f"Skills partially covered: {skill_str}. "

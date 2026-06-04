@@ -12,6 +12,7 @@ import pytest
 from app.services.final_evidence_evaluator_service import (
     FinalEvidenceEvaluatorService,
     GroupedSkillEvidence,
+    EvidenceSourceResult,
     EvidenceObject,
     DetectedSkillEntry,
     _skill_category,
@@ -2426,6 +2427,53 @@ def test_missing_optional_proofs_do_not_reduce_score():
     assert "uploaded_documents" not in base.evidence_sources_missing
     assert "linkedin_profile" not in base.evidence_sources_missing
     assert "certificate" not in base.evidence_sources_missing
+
+
+def test_optional_document_score_90_does_not_lower_79_base_score():
+    svc = _svc()
+    core = [
+        EvidenceSourceResult("website_workflow", "pass", 78, 0.25),
+    ]
+    before = svc._combine_scores(core)
+    after = svc._combine_scores([
+        *core,
+        EvidenceSourceResult("uploaded_documents", "pass", 90, 0.04),
+    ])
+    assert before == 79
+    assert after >= 79
+
+
+def test_missing_document_remains_neutral_for_final_score():
+    svc = _svc()
+    core = [EvidenceSourceResult("website_workflow", "pass", 78, 0.25)]
+    base = svc._combine_scores(core)
+    with_missing_document = svc._combine_scores([
+        *core,
+        EvidenceSourceResult("uploaded_documents", "not_available", 0, 0.04),
+    ])
+    assert with_missing_document == base
+
+
+def test_weak_document_does_not_reduce_below_base_score():
+    svc = _svc()
+    core = [EvidenceSourceResult("website_workflow", "pass", 78, 0.25)]
+    base = svc._combine_scores(core)
+    with_weak_document = svc._combine_scores([
+        *core,
+        EvidenceSourceResult("uploaded_documents", "partial", 45, 0.04, notes="optional evidence submitted but weak"),
+    ])
+    assert with_weak_document == base
+
+
+def test_strong_document_can_boost_final_score():
+    svc = _svc()
+    core = [EvidenceSourceResult("website_workflow", "pass", 78, 0.25)]
+    base = svc._combine_scores(core)
+    with_strong_document = svc._combine_scores([
+        *core,
+        EvidenceSourceResult("uploaded_documents", "pass", 90, 0.04),
+    ])
+    assert with_strong_document > base
 
 
 def test_document_snippet_maps_to_skill_evidence_with_page():
