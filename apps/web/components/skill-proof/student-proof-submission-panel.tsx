@@ -107,6 +107,14 @@ const initialWebsiteForm = (): WebsiteFormState => ({
   notes: "",
 })
 
+const FOLLOWUP_INTENT_KEY_FE = "vb_followup_intent"
+
+function clearFollowUpProofDraft() {
+  try {
+    sessionStorage.removeItem(FOLLOWUP_INTENT_KEY_FE)
+  } catch { /* sessionStorage unavailable */ }
+}
+
 function countWords(text: string): number {
   return (text || "").trim().match(/[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?/g)?.length ?? 0
 }
@@ -476,6 +484,7 @@ export function StudentProofSubmissionPanel({
   }, [open])
 
   function closeModal() {
+    clearFollowUpProofDraft()
     setOpen(false)
     setActiveTab("github")
     setSubmissionSummary(null)
@@ -929,7 +938,7 @@ export function StudentProofSubmissionPanel({
                             </p>
                             <button
                               type="button"
-                              onClick={() => { setProofMode("extension_proof"); setSubmissionError(null); }}
+                              onClick={() => { clearFollowUpProofDraft(); setProofMode("extension_proof"); setSubmissionError(null); }}
                               style={{ border: "1px solid var(--ink)", background: "var(--ink)", color: "#fff", borderRadius: 9, padding: "7px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
                             >
                               Start Website Proof
@@ -1118,7 +1127,7 @@ export function StudentProofSubmissionPanel({
                     onFunctionalTestPlanChange={setAgentFunctionalTestPlan}
                     onSaveComplete={() => void refreshEvidence()}
                     onBack={resetAgentForm}
-                    onSwitchToExtensionProof={() => { setProofMode("extension_proof"); setSubmissionError(null); }}
+                    onSwitchToExtensionProof={() => { clearFollowUpProofDraft(); setProofMode("extension_proof"); setSubmissionError(null); }}
                   />
                 )}
 
@@ -1244,8 +1253,8 @@ export function StudentProofSubmissionPanel({
                 {/* ── Mode: extension_proof ── */}
                 {proofMode === "extension_proof" && (
                   <ExtensionProofPanel
-                    onBack={() => setProofMode("select")}
-                    onSessionComplete={() => void refreshEvidence()}
+                    onBack={() => { clearFollowUpProofDraft(); setProofMode("select") }}
+                    onSessionComplete={() => { clearFollowUpProofDraft(); void refreshEvidence() }}
                   />
                 )}
 

@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { FinalEvaluatorCard, FinalRecommendationsSection, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
+import { ExtensionProofPanel, FinalEvaluatorCard, FinalRecommendationsSection, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
 import type { FinalEvaluationResult, ProjectDefenseAnalysisResponse } from "../lib/api"
 
 const learningAction = {
@@ -221,5 +221,45 @@ describe("Final report consistency", () => {
       "utf8",
     )
     expect(source).not.toMatch(/Live Tutor|Scan Website|Guided Overlay/)
+  })
+})
+
+describe("Website Proof form state", () => {
+  it("opens normal Website Proof with blank fields", () => {
+    sessionStorage.clear()
+    render(<ExtensionProofPanel onBack={() => undefined} />)
+    expect(screen.queryByText("Follow-up Proof Recording")).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/https:\/\/your-project\.vercel\.app/i)).toHaveValue("")
+    expect(screen.getByPlaceholderText("https://github.com/username/repo")).toHaveValue("")
+    expect(screen.getByPlaceholderText("e.g. FastAPI, React, Machine Learning")).toHaveValue("")
+    expect(screen.getByPlaceholderText(/Describe what you'll walk through/i)).toHaveValue("")
+  })
+
+  it("starts follow-up Website Proof with banner and prefilled fields", async () => {
+    sessionStorage.setItem("vb_followup_intent", JSON.stringify({
+      parentSessionId: "s-parent",
+      skill: "model monitoring, production ML operations",
+      objective: "Log inference latency, input count, prediction distribution, and failed requests",
+    }))
+    render(<ExtensionProofPanel onBack={() => undefined} />)
+    expect(await screen.findByText("Follow-up Proof Recording")).toBeInTheDocument()
+    expect(screen.getByDisplayValue("model monitoring, production ML operations")).toBeInTheDocument()
+    expect(screen.getByDisplayValue("Log inference latency, input count, prediction distribution, and failed requests")).toBeInTheDocument()
+  })
+
+  it("clears follow-up draft after closing then opening normal Website Proof", async () => {
+    sessionStorage.setItem("vb_followup_intent", JSON.stringify({
+      parentSessionId: "s-parent",
+      skill: "model monitoring",
+      objective: "Log inference latency and failed requests",
+    }))
+    const { unmount } = render(<ExtensionProofPanel onBack={() => undefined} />)
+    expect(await screen.findByText("Follow-up Proof Recording")).toBeInTheDocument()
+    fireEvent.click(screen.getByText("← Back to AI Proof Builder"))
+    unmount()
+    render(<ExtensionProofPanel onBack={() => undefined} />)
+    expect(screen.queryByText("Follow-up Proof Recording")).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText("e.g. FastAPI, React, Machine Learning")).toHaveValue("")
+    expect(screen.getByPlaceholderText(/Describe what you'll walk through/i)).toHaveValue("")
   })
 })

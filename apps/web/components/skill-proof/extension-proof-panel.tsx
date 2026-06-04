@@ -74,6 +74,13 @@ type FormState = {
   proofObjective: string
 }
 
+const initialWebsiteProofForm: FormState = {
+  websiteUrl: "",
+  githubUrl: "",
+  skillName: "",
+  proofObjective: "",
+}
+
 type UrlType =
   | "live_deployed_url"
   | "localhost_url"
@@ -2217,6 +2224,12 @@ function overallSkillLabel(
 // ── Final Evidence Evaluator Card ─────────────────────────────────────────────
 
 const FOLLOWUP_INTENT_KEY_FE = "vb_followup_intent"
+
+function clearFollowUpProofDraft() {
+  try {
+    sessionStorage.removeItem(FOLLOWUP_INTENT_KEY_FE)
+  } catch { /* sessionStorage unavailable */ }
+}
 
 // ── Optional project proof boosters ───────────────────────────────────────────
 
@@ -6596,7 +6609,7 @@ export function ExtensionProofPanel({
   onSessionComplete?: () => void
 }) {
   const [step, setStep]                 = useState<PanelStep>("form")
-  const [form, setForm]                 = useState<FormState>({ websiteUrl: "", githubUrl: "", skillName: "", proofObjective: "" })
+  const [form, setForm]                 = useState<FormState>(initialWebsiteProofForm)
   const [session, setSession]           = useState<ExtensionProofSessionResponse | null>(null)
   const [error, setError]               = useState<string | null>(null)
   const [creating, setCreating]         = useState(false)
@@ -6613,20 +6626,59 @@ export function ExtensionProofPanel({
     skill: string
     objective: string
   } | null>(null)
+  const followUpMode = followupIntent !== null
+
+  function resetWebsiteProofForm() {
+    setForm(initialWebsiteProofForm)
+    setStep("form")
+    setSession(null)
+    setError(null)
+    setCreating(false)
+    setStarting(false)
+    setPoll(false)
+    setWorkflowAnalysis(null)
+    setAnalyzing(false)
+    setAnalyzeError(null)
+    setAnalyzeTimedOut(false)
+    setPrivacyAcknowledged(false)
+    setPrivacyScan(null)
+    setGithubAnalysis(null)
+    setGithubAnalyzing(false)
+    setGithubAnalyzeError(null)
+    setLiveCheck(null)
+    setLiveChecking(false)
+    setLiveCheckError(null)
+    setDefenseAnalysis(null)
+    setDefenseTranscript("")
+    setDefenseAnalyzing(false)
+    setDefenseAnalyzeError(null)
+    setFinalEval(null)
+    setFinalEvalRunning(false)
+    setDiscovery(null)
+    setDiscovering(false)
+    setDiscoveryError(null)
+  }
+
+  function resetAndBack() {
+    resetWebsiteProofForm()
+    setFollowupIntent(null)
+    clearFollowUpProofDraft()
+    onBack()
+  }
 
   // On mount, check for follow-up intent stored by the evidence card
   useEffect(() => {
     try {
-      const stored = sessionStorage.getItem("vb_followup_intent")
+      const stored = sessionStorage.getItem(FOLLOWUP_INTENT_KEY_FE)
       if (stored) {
         const intent = JSON.parse(stored) as { parentSessionId: string; skill: string; objective: string }
         setFollowupIntent(intent)
-        setForm(prev => ({
-          ...prev,
-          skillName: intent.skill || prev.skillName,
-          proofObjective: intent.objective || prev.proofObjective,
-        }))
-        sessionStorage.removeItem("vb_followup_intent")
+        setForm({
+          ...initialWebsiteProofForm,
+          skillName: intent.skill || "",
+          proofObjective: intent.objective || "",
+        })
+        clearFollowUpProofDraft()
       }
     } catch { /* sessionStorage unavailable */ }
   }, [])
@@ -7126,12 +7178,15 @@ export function ExtensionProofPanel({
           url_type:           urlType,
         },
       })
-      const sess = await createExtensionProofSession(evidence.id, followupIntent ? {
-        parent_proof_session_id: followupIntent.parentSessionId || undefined,
-        followup_target_skill:   followupIntent.skill || undefined,
-        followup_objective:      followupIntent.objective || undefined,
+      const intentForCreate = followupIntent
+      const sess = await createExtensionProofSession(evidence.id, intentForCreate ? {
+        parent_proof_session_id: intentForCreate.parentSessionId || undefined,
+        followup_target_skill:   intentForCreate.skill || undefined,
+        followup_objective:      intentForCreate.objective || undefined,
         proof_attempt_type:      "followup",
       } : undefined)
+      setFollowupIntent(null)
+      clearFollowUpProofDraft()
       setSession(sess)
       setStep("session_active")
     } catch (err) {
@@ -7199,7 +7254,7 @@ export function ExtensionProofPanel({
     return (
       <div style={{ display: "grid", gap: 18 }}>
         {/* Follow-up intent banner */}
-        {followupIntent && (
+        {followUpMode && followupIntent && (
           <div style={{ border: "1px solid #c4b5fd", borderRadius: 12, background: "#f5f3ff", padding: "12px 14px" }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "#6d28d9", marginBottom: 4 }}>
               Follow-up Proof Recording
@@ -7382,7 +7437,7 @@ export function ExtensionProofPanel({
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
           <button
             type="button"
-            onClick={onBack}
+            onClick={resetAndBack}
             disabled={creating}
             style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: creating ? "not-allowed" : "pointer" }}
           >
@@ -7497,7 +7552,7 @@ export function ExtensionProofPanel({
         {privacyScan && (
           <PrivacyScanBadge
             scan={privacyScan}
-            onReRecord={onBack}
+            onReRecord={resetAndBack}
           />
         )}
 
@@ -7835,7 +7890,7 @@ export function ExtensionProofPanel({
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <button
             type="button"
-            onClick={onBack}
+            onClick={resetAndBack}
             style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
           >
             ← Back
@@ -7855,7 +7910,7 @@ export function ExtensionProofPanel({
           {(isCompleted || isExpired) && (
             <button
               type="button"
-              onClick={onBack}
+              onClick={resetAndBack}
               style={{ border: "1px solid var(--ink)", background: "var(--ink)", color: "#fff", borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}
             >
               Done
