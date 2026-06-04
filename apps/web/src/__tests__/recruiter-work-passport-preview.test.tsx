@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { RecruiterWorkPassportPreview } from "../../components/recruiter-passport/RecruiterWorkPassportPreview"
@@ -181,5 +183,36 @@ describe("RecruiterWorkPassportPreview", () => {
     expect(html).not.toContain("proof_data")
     expect(html).not.toContain("transcript_text")
     expect(html).not.toContain("raw_risk")
+  })
+})
+
+describe("Recruiter shortlist page — demo preview card", () => {
+  const src = readFileSync(
+    join(process.cwd(), "src/app/recruiter/passport/page.tsx"),
+    "utf8",
+  )
+
+  it("renders a link to /dev/recruiter-passport-preview", () => {
+    expect(src).toContain("/dev/recruiter-passport-preview")
+  })
+
+  it("renders the 'Preview sample Work Passport' card title", () => {
+    expect(src).toContain("Preview sample Work Passport")
+  })
+
+  it("renders the 'Open preview' button label", () => {
+    expect(src).toContain("Open preview")
+  })
+
+  it("communicates demo/mock status", () => {
+    expect(src).toContain("Demo preview")
+    expect(src).toContain("mock recruiter-safe data")
+  })
+
+  it("does not remove existing tab functionality", () => {
+    expect(src).toContain("Saved Candidates")
+    expect(src).toContain("Compare Candidates")
+    expect(src).toContain("RecruiterSavedCandidatesPanel")
+    expect(src).toContain("CandidateComparisonPanel")
   })
 })
