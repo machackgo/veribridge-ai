@@ -348,9 +348,29 @@ class EvidenceObject:
     trace_action: str = ""
     action_available: bool = True
     route_url: str | None = None
+    source_url: str | None = None
+    source_host: str | None = None
+    target_match: bool = True
+    exclusion_reason: str | None = None
+    evidence_source_type: str = "target_website"
     recruiter_safe: bool = True
 
     def to_dict(self) -> dict[str, Any]:
+        source_url = self.source_url or self.route_url or self.github_url
+        source_host = self.source_host
+        if not source_host and source_url:
+            try:
+                from urllib.parse import urlparse as _urlparse
+                source_host = _urlparse(source_url).netloc or None
+            except Exception:
+                source_host = None
+        evidence_source_type = self.evidence_source_type
+        if self.evidence_type == "github_file":
+            evidence_source_type = "github_repo"
+        elif self.evidence_type in ("document", "document_snippet", "profile_snippet", "certificate_or_transcript_snippet"):
+            evidence_source_type = "document"
+        elif self.evidence_type in ("transcript", "transcript_quote"):
+            evidence_source_type = "transcript"
         return {
             "evidence_type":      self.evidence_type,
             "source_name":        self.source_name,
@@ -380,6 +400,11 @@ class EvidenceObject:
             "trace_action":       self.trace_action,
             "action_available":   self.action_available,
             "route_url":          self.route_url,
+            "source_url":         source_url,
+            "source_host":        source_host,
+            "target_match":       self.target_match,
+            "exclusion_reason":   self.exclusion_reason,
+            "evidence_source_type": evidence_source_type,
             "recruiter_safe":     self.recruiter_safe,
         }
 
@@ -823,6 +848,10 @@ class FinalEvidenceEvaluatorService:
     def _score_ocr(self, wf: dict[str, Any] | None) -> EvidenceSourceResult:
         if wf is None:
             return EvidenceSourceResult("ocr", "not_run", 0, _SOURCE_WEIGHTS["ocr"])
+        ocr_summary = wf.get("frame_ocr_evidence_summary") or {}
+        if isinstance(ocr_summary, dict) and ocr_summary.get("detected_page_context") == "filtered_non_target_frame":
+            return EvidenceSourceResult("ocr", "not_run", 0, _SOURCE_WEIGHTS["ocr"],
+                                        notes="non-target frames excluded from scoring")
         status = wf.get("visual_analysis_status", "not_configured")
         if status == "analyzed":
             return EvidenceSourceResult("ocr", "pass", 80, _SOURCE_WEIGHTS["ocr"])
@@ -848,6 +877,14 @@ class FinalEvidenceEvaluatorService:
             frames = int(vrs.get("frames_analyzed") or 0)
             score = min(90, 50 + frames * 15)
             return EvidenceSourceResult("qwen_visual_reasoning", "pass", score, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
+        if qwen_status == "filtered_non_target_frame":
+            return EvidenceSourceResult(
+                "qwen_visual_reasoning",
+                "not_run",
+                0,
+                _SOURCE_WEIGHTS["qwen_visual_reasoning"],
+                notes="non-target frames excluded from scoring",
+            )
         if qwen_status in ("pending", "skipped_no_frames"):
             # pending: Qwen configured, no frames yet (transient).
             # skipped_no_frames: no video was recorded, Qwen cannot run (terminal).
@@ -2191,6 +2228,22 @@ class FinalEvidenceEvaluatorService:
             ))
 
         if final_score < 80 and len(proof_actions) < 4:
+            wf_src = source_map.get("website_workflow")
+            if wf_src and wf_src.status in ("missing", "partial"):
+                proof_actions.append(RecommendationAction(
+                    "Record focused target-site proof",
+                    "Workflow evidence is weak for the submitted website.",
+                    "Record a focused follow-up proof on the target website only, showing the exact demo page and one clear interaction or output change.",
+                    "targeted workflow demonstration",
+                    "Show only the submitted website, interact with the feature, and avoid unrelated tabs.",
+                    "beginner",
+                    "30 min",
+                    "high",
+                    src_reason("website_workflow"),
+                    "record_followup_proof",
+                ))
+
+        if final_score < 80 and len(proof_actions) < 4:
             pd_src = source_map.get("project_defense")
             if pd_src and pd_src.status in ("not_run", "missing", "partial"):
                 proof_actions.append(RecommendationAction(
@@ -2205,6 +2258,25 @@ class FinalEvidenceEvaluatorService:
                     src_reason("project_defense"),
                     "record_presentation",
                 ))
+
+        if final_score < 80 and not proof_actions:
+            weakest = min(
+                (s for s in sources if s.key not in _OPTIONAL_BOOSTER_KEYS),
+                key=lambda s: s.score,
+                default=None,
+            )
+            proof_actions.append(RecommendationAction(
+                "Strengthen weakest proof source",
+                "Final score is below 80, so a proof-strengthening action is needed before optional learning goals.",
+                "Review the lowest-scoring source in the Final Evidence Score card and add focused proof for that source.",
+                "evidence quality improvement",
+                "Record or add evidence that directly addresses the weakest source.",
+                "beginner",
+                "30 min",
+                "high",
+                src_reason(weakest.key) if weakest else "Triggered by final score below 80.",
+                "record_followup_proof",
+            ))
 
         evidence_text = self._evidence_text(claimed_skills, detected_skills, wf, gh, pd, optional_rows)
         project_type = self._project_type(evidence_text, grouped)

@@ -98,6 +98,9 @@ describe("FinalRecommendationsSection", () => {
     expect(screen.getByText(/Evidence to record:/)).toBeInTheDocument()
     expect(screen.getByText("intermediate")).toBeInTheDocument()
     expect(screen.getByText("1–2 hr")).toBeInTheDocument()
+    expect(screen.getByText("Save as learning goal")).toBeInTheDocument()
+    expect(screen.getByText("Start follow-up proof")).toBeInTheDocument()
+    expect(screen.getByText("Copy task prompt")).toBeInTheDocument()
   })
 
   it("keeps the existing proof recommendation fallback working", () => {
@@ -179,6 +182,15 @@ describe("Final report consistency", () => {
       "utf8",
     )
     expect(source).not.toMatch(/<CombinedEvidenceSummaryCard[\s>]/)
+  })
+
+  it("includes filtered unrelated activity notice in the workflow report source", () => {
+    const source = readFileSync(
+      join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
+      "utf8",
+    )
+    expect(source).toContain("Filtered unrelated activity")
+    expect(source).toContain("were excluded from scoring")
   })
 
   it("keeps disabled final-report feature labels out of normal UI source", () => {

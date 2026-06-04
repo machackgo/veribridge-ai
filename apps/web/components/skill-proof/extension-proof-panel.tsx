@@ -2015,6 +2015,20 @@ function WorkflowAnalysisCard({
       </div>
 
       <div style={{ padding: "16px 16px", display: "grid", gap: 16 }}>
+        {(() => {
+          const filtered = analysis.filtered_unrelated_activity
+          const count = filtered?.count ?? analysis.noise_filtered_count ?? 0
+          const hosts = filtered?.hosts ?? []
+          if (count <= 0) return null
+          return (
+            <div style={{ fontSize: 11, color: "#854d0e", background: "#fffbeb",
+              border: "1px solid #fde68a", borderRadius: 8, padding: "8px 10px", lineHeight: 1.5 }}>
+              Filtered unrelated activity: {count} frame/event{count !== 1 ? "s" : ""} outside the submitted website
+              {hosts.length ? ` (${hosts.slice(0, 3).join(", ")})` : ""} were excluded from scoring.
+            </div>
+          )
+        })()}
+
         {/* Summary */}
         <AnalysisSection title="Summary">
           <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.7 }}>
@@ -3529,8 +3543,44 @@ function FinalEvaluatorCard({
 
 // ── Standalone Next Actions Section (rendered after Detected Skill Profile) ────
 
-function RecommendationCard({ action, index }: { action: FinalRecommendationAction; index: number }) {
+function RecommendationCard({
+  action,
+  index,
+  sessionId,
+}: {
+  action: FinalRecommendationAction
+  index: number
+  sessionId?: string
+}) {
+  const [saved, setSaved] = useState(false)
+  const [copied, setCopied] = useState(false)
   const pc = actionPriorityColor(action.priority)
+  const prompt = `${action.title}\n\nWhy: ${action.reason}\nBuild: ${action.action}\nSkill learned: ${action.skill_learned}\nEvidence to record: ${action.evidence_to_record}`
+
+  function saveGoal() {
+    setSaved(true)
+  }
+
+  function startFollowup() {
+    try {
+      sessionStorage.setItem(FOLLOWUP_INTENT_KEY_FE, JSON.stringify({
+        parentSessionId: sessionId ?? "",
+        skill: action.skill_learned,
+        objective: action.action,
+      }))
+    } catch { /* unavailable */ }
+    setSaved(true)
+  }
+
+  async function copyPrompt() {
+    try {
+      await navigator.clipboard?.writeText(prompt)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
+  }
+
   return (
     <details style={{ padding: "10px 12px",
       background: pc.bg, border: `1px solid ${pc.border}`,
@@ -3566,6 +3616,28 @@ function RecommendationCard({ action, index }: { action: FinalRecommendationActi
         </div>
         <div style={{ fontSize: 9, color: "#64748b", lineHeight: 1.4 }}>
           Source: {action.source_reason}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <button type="button" onClick={saveGoal}
+            style={{ fontSize: 10, fontWeight: 700, padding: "5px 10px", borderRadius: 7,
+              border: "1px solid #cbd5e1", background: "#fff", color: "#334155", cursor: "pointer" }}>
+            {saved ? "Saved to improvement plan" : "Save as learning goal"}
+          </button>
+          <button type="button" onClick={startFollowup}
+            style={{ fontSize: 10, fontWeight: 700, padding: "5px 10px", borderRadius: 7,
+              border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer" }}>
+            Start follow-up proof
+          </button>
+          <button type="button" onClick={() => void copyPrompt()}
+            style={{ fontSize: 10, fontWeight: 700, padding: "5px 10px", borderRadius: 7,
+              border: "1px solid #d1d5db", background: "#f8fafc", color: "#475569", cursor: "pointer" }}>
+            {copied ? "Copied" : "Copy task prompt"}
+          </button>
+          {saved && (
+            <span style={{ fontSize: 10, color: "#166534" }}>
+              backend persistence coming soon
+            </span>
+          )}
         </div>
       </div>
     </details>
@@ -3645,7 +3717,7 @@ export function FinalRecommendationsSection({
           Your proof is strong. These are optional next steps to improve the project and learn advanced skills.
         </div>
         {recs.learning_actions.slice(0, 5).map((action, i) => (
-          <RecommendationCard key={action.action_type + i} action={action} index={i} />
+          <RecommendationCard key={action.action_type + i} action={action} index={i} sessionId={sessionId} />
         ))}
       </div>
     )
@@ -3697,7 +3769,7 @@ export function FinalRecommendationsSection({
             Optional learning opportunities
           </div>
           {recs.learning_actions.slice(0, 3).map((action, i) => (
-            <RecommendationCard key={action.action_type + i} action={action} index={i} />
+            <RecommendationCard key={action.action_type + i} action={action} index={i} sessionId={sessionId} />
           ))}
         </>
       )}

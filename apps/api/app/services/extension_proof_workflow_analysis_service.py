@@ -83,6 +83,7 @@ _DOMAIN_TECH: dict[str, list[str]] = {
     "huggingface.co":    ["HuggingFace", "Machine Learning", "Python"],
     "github.com":        ["GitHub", "Git"],
     "github.io":         ["GitHub Pages"],
+    "threejs.org":       ["Three.js", "WebGL", "Computer Graphics", "JavaScript"],
     "supabase.io":       ["Supabase", "PostgreSQL"],
     "supabase.co":       ["Supabase", "PostgreSQL"],
     "firebase.google.com": ["Firebase"],
@@ -607,6 +608,9 @@ def _ocr_skill_signals(
 def _build_frame_ocr_evidence_summary(
     visual_frame_observations: dict[str, Any] | None,
     claimed_skills: list[str],
+    *,
+    has_target_events: bool = True,
+    noise_hosts: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a structured frame/OCR evidence summary for display.
 
@@ -632,6 +636,22 @@ def _build_frame_ocr_evidence_summary(
             "skill_signals": [],
         }
 
+    if not has_target_events:
+        return {
+            "has_ocr_evidence": False,
+            "ocr_provider": visual_frame_observations.get("provider_used", "none"),
+            "frames_analyzed": visual_frame_observations.get("visual_frame_count", 0),
+            "top_ocr_snippets": [],
+            "detected_page_context": "filtered_non_target_frame",
+            "observed_summary": (
+                "Keyframe OCR was excluded because no activity on the submitted "
+                "target website was captured."
+            ),
+            "what_was_not_observed": ["target website content in keyframes"],
+            "skill_signals": [],
+            "filtered_non_target_frames": visual_frame_observations.get("visual_frame_count", 0),
+        }
+
     vf_status = visual_frame_observations.get("visual_frame_analysis_status", "not_configured")
     if vf_status not in ("analyzed",):
         return {
@@ -654,6 +674,8 @@ def _build_frame_ocr_evidence_summary(
     frames_analyzed = visual_frame_observations.get("visual_frame_count", 0)
     provider = visual_frame_observations.get("provider_used", "local_ocr")
 
+    noise_hosts = noise_hosts or []
+
     # Extract and clean top OCR snippets
     raw_snippets = [s.strip() for s in visual_summary.split("|") if s.strip()]
     # Filter out known noisy snippets
@@ -662,6 +684,8 @@ def _build_frame_ocr_evidence_summary(
         lower_s = s.lower()
         if any(noise in lower_s for noise in _OCR_NOISE_SNIPPETS):
             continue
+        if _text_mentions_non_target_source(lower_s, noise_hosts):
+            continue
         if len(s) < 3:
             continue
         clean_snippets.append(s[:120])   # cap snippet length
@@ -669,7 +693,8 @@ def _build_frame_ocr_evidence_summary(
     top_snippets = clean_snippets[:8]
 
     # Detect page context from the combined OCR text
-    page_context = _detect_ocr_page_context(visual_summary)
+    filtered_visual_summary = " | ".join(clean_snippets)
+    page_context = _detect_ocr_page_context(filtered_visual_summary or visual_summary)
 
     # What was and wasn't observed based on context
     what_was_not_observed: list[str] = []
@@ -716,7 +741,7 @@ def _build_frame_ocr_evidence_summary(
             what_was_not_observed = ["readable text in keyframes"]
 
     # Skill signals
-    skill_signals = _ocr_skill_signals(claimed_skills, visual_summary, page_context)
+    skill_signals = _ocr_skill_signals(claimed_skills, filtered_visual_summary, page_context)
 
     return {
         "has_ocr_evidence": True,
@@ -904,11 +929,16 @@ def _promote_interactive_demo_skills(
     if not interactive_claimed:
         return result
 
-    # Extract events from proof_data for click/input counts
+    # Extract target-site events only. Full-screen recordings may include
+    # unrelated tabs; those must not promote target skill support.
     events: list[dict[str, Any]] = proof_data.get("workflow_events") or []
-    # Rough filter: count all non-noise clicks and inputs
-    all_clicks = [e for e in events if e.get("type") == "click"]
-    all_inputs = [e for e in events if e.get("type") == "input_change"]
+    target_netloc = str(result.get("target_website") or "")
+    target_events = [
+        e for e in events
+        if _classify_url(str(e.get("page_url") or e.get("url") or ""), target_netloc, None) == "target"
+    ]
+    all_clicks = [e for e in target_events if e.get("type") == "click"]
+    all_inputs = [e for e in target_events if e.get("type") == "input_change"]
 
     frame_ocr = result.get("frame_ocr_evidence_summary") or {}
     vr_summary = result.get("visual_reasoning_summary")
@@ -1114,6 +1144,62 @@ def _build_skill_timeline(
     # Sort by timestamp_ms ascending (None last)
     timeline.sort(key=lambda e: (e.get("timestamp_ms") is None, e.get("timestamp_ms") or 0))
     return timeline
+
+
+def _filter_visual_reasoning_summary_for_target(
+    summary: dict[str, Any] | None,
+    *,
+    has_target_events: bool,
+    noise_hosts: list[str] | None = None,
+) -> dict[str, Any] | None:
+    if not summary:
+        return summary
+    if not has_target_events:
+        return {
+            "status": "filtered_non_target_frame",
+            "provider": summary.get("provider", "qwen_vl"),
+            "frames_analyzed": 0,
+            "summary": (
+                "Visual reasoning frames were excluded because no activity on "
+                "the submitted target website was captured."
+            ),
+            "observations": [],
+            "supported_signals": [],
+            "missing_claims": [],
+            "skill_timeline": [],
+            "limitations": ["Non-target frames excluded from scoring."],
+        }
+
+    noise_hosts = noise_hosts or []
+    observations = list(summary.get("observations") or [])
+    kept_obs: list[dict[str, Any]] = []
+    for obs in observations:
+        obs_text = " ".join(
+            str(obs.get(k) or "")
+            for k in ("visual_summary", "description", "detected_workflow_stage")
+        ).lower()
+        if _text_mentions_non_target_source(obs_text, noise_hosts):
+            continue
+        kept_obs.append(obs)
+
+    if len(kept_obs) == len(observations):
+        return summary
+
+    kept_text = " | ".join(
+        str(o.get("visual_summary") or "") for o in kept_obs if o.get("visual_summary")
+    )
+    return {
+        **summary,
+        "frames_analyzed": len(kept_obs),
+        "summary": kept_text[:600],
+        "observations": kept_obs,
+        "supported_signals": [] if not kept_obs else summary.get("supported_signals", []),
+        "skill_timeline": [] if not kept_obs else summary.get("skill_timeline", []),
+        "limitations": [
+            *(summary.get("limitations") or []),
+            "Some non-target visual reasoning frames were filtered from scoring.",
+        ],
+    }
 
 
 def _build_visual_reasoning_session_summary_from_db(
@@ -1585,6 +1671,11 @@ class ExtensionProofWorkflowAnalysisService:
         try:
             vr_summary = _build_visual_reasoning_session_summary_from_db(
                 self._client, user_id, session_id
+            )
+            vr_summary = _filter_visual_reasoning_summary_for_target(
+                vr_summary,
+                has_target_events=bool(result.get("target_site_pages_count")),
+                noise_hosts=(result.get("filtered_unrelated_activity") or {}).get("hosts", []),
             )
             result["visual_reasoning_summary"] = vr_summary
             if vr_summary:
@@ -2593,8 +2684,9 @@ def _analyze_workflow(
     target_tab_opens   = [e for e in target_events if e.get("type") == "tab_opened"]
     target_navigations = [e for e in target_events if e.get("type") == "navigation"]
 
-    # All-event counts (for activity / duration signal)
-    all_tab_opens = [e for e in events if e.get("type") == "tab_opened"]
+    # Target-event counts for scoring. Full-screen recordings can capture
+    # unrelated tabs; those must not strengthen or weaken target proof.
+    target_event_count = len(target_events)
 
     # ── Unique target-site pages and titles ───────────────────────────────────
     target_visited_urls: list[str] = list(dict.fromkeys(
@@ -2628,7 +2720,7 @@ def _analyze_workflow(
     inferred_tech = _infer_tech_stack(
         target_visited_urls + supporting_visited_urls,
         target_visited_titles,
-        original_url,
+        original_url if target_events else "",
     )
 
     # ── Skill matching ────────────────────────────────────────────────────────
@@ -2638,11 +2730,11 @@ def _analyze_workflow(
 
     # ── Evidence strength score (uses TARGET site counts, not noise) ──────────
     score = _compute_score(
-        total_events=len(events),               # all events — activity signal
+        total_events=target_event_count,        # TARGET events only
         page_count=len(target_visited_urls),    # TARGET pages only
         click_count=len(target_clicks),         # TARGET clicks only
         input_count=len(target_inputs),         # TARGET inputs only
-        tab_opens=len(all_tab_opens),
+        tab_opens=len(target_tab_opens),
         duration_secs=duration_secs,
         url_type=url_type,
         supported_count=len(supported),
@@ -2650,7 +2742,7 @@ def _analyze_workflow(
     )
 
     # ── Confidence ────────────────────────────────────────────────────────────
-    confidence = _determine_confidence(score, url_type, len(events), duration_secs)
+    confidence = _determine_confidence(score, url_type, target_event_count, duration_secs)
 
     # ── App type + IAO pattern detection (v3/v4) ─────────────────────────────
     app_type = _detect_app_type(
@@ -2725,7 +2817,10 @@ def _analyze_workflow(
     # Summarises what OCR/visual analysis found in keyframes, per claimed skill.
     # Conservative: OCR alone never moves a skill to "supported" — only partial.
     frame_ocr_evidence_summary = _build_frame_ocr_evidence_summary(
-        visual_frame_observations, claimed_skills
+        visual_frame_observations,
+        claimed_skills,
+        has_target_events=target_event_count > 0,
+        noise_hosts=_summarize_noise_hosts(noise_events),
     )
 
     # Promote OCR-supported skills from "unsupported" to "weakly" when OCR
@@ -2762,15 +2857,15 @@ def _analyze_workflow(
 
     # ── Risk flags (uses TARGET site data) ───────────────────────────────────
     risk_flags = _determine_risk_flags(
-        duration_secs, len(events), url_type,
+        duration_secs, target_event_count, url_type,
         target_visited_urls,
         len(target_clicks), len(target_inputs),
     )
 
     # ── Narrative text ────────────────────────────────────────────────────────
     workflow_summary = _build_workflow_summary(
-        target_visited_urls, target_visited_titles, duration_secs, len(events),
-        len(all_tab_opens), url_type, proof_objective,
+        target_visited_urls, target_visited_titles, duration_secs, target_event_count,
+        len(target_tab_opens), url_type, proof_objective,
         target_website=target_netloc,
         noise_count=len(noise_urls),
     )
@@ -2784,7 +2879,7 @@ def _analyze_workflow(
         frame_ocr_evidence_summary=frame_ocr_evidence_summary,
     )
     suggestions = _build_suggestions(
-        url_type, duration_secs, len(events),
+        url_type, duration_secs, target_event_count,
         len(target_clicks), len(target_inputs),
         supported, weakly, unsupported, github_url, skill_obs,
     )
@@ -2823,7 +2918,7 @@ def _analyze_workflow(
 
         _seq_result = _seq_svc.analyze(
             keyframe_result=_kf_result,
-            dom_events=events,
+            dom_events=target_events,
             visible_observations=visible_observations,
             visual_frame_obs=visual_frame_observations,
         )
@@ -2859,6 +2954,10 @@ def _analyze_workflow(
         "target_site_pages_count":    len(target_visited_urls),
         "supporting_evidence_count":  len(supporting_visited_urls),
         "noise_filtered_count":       len(noise_urls),
+        "filtered_unrelated_activity": {
+            "count": len(noise_events),
+            "hosts": _summarize_noise_hosts(noise_events),
+        },
         # ── Precise visual workflow evidence (v3/v4/v5) ───────────────────────
         "observed_demonstration":     observed_demonstration,
         # Visual frame analysis (v5): provider-agnostic, local-first
@@ -3676,6 +3775,41 @@ def _extract_domain(url: str) -> str:
 
 def _is_chrome_internal(url: str) -> bool:
     return url.startswith(("chrome://", "chrome-extension://", "about:", "data:"))
+
+
+def _summarize_noise_hosts(events: list[dict[str, Any]]) -> list[str]:
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for event in events:
+        url = str(event.get("page_url") or event.get("url") or "")
+        if not url:
+            continue
+        if url.startswith("chrome-extension://"):
+            host = "chrome-extension"
+        elif url.startswith(("chrome://", "about:", "data:")):
+            host = url.split(":", 1)[0]
+        else:
+            host = _safe_netloc(url)
+        if host and host not in seen:
+            seen.add(host)
+            hosts.append(host)
+    return hosts[:5]
+
+
+def _text_mentions_non_target_source(text: str, noise_hosts: list[str]) -> bool:
+    lower = text.lower()
+    blocked = (
+        "supabase",
+        "chrome-extension",
+        "veribridge",
+        "localhost:3000",
+        "127.0.0.1:3000",
+        "extension recorder",
+        "storage bucket",
+    )
+    if any(token in lower for token in blocked):
+        return True
+    return any(host.lower() and host.lower() in lower for host in noise_hosts)
 
 
 def _compute_duration(started_at: str | None, stopped_at: str | None) -> float:

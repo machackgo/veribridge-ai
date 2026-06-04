@@ -475,6 +475,64 @@ class TestInternalURLNotExposed:
         )
         assert "localhost:3000/dashboard" not in result["recruiter_summary"]
 
+    def test_non_target_dom_events_excluded_from_skill_evidence(self):
+        events = [
+            {"type": "page_visit", "page_url": SUPABASE_URL, "page_title": "Supabase WebGL bucket"},
+            {"type": "click", "page_url": SUPABASE_URL, "element_text": "Three.js WebGL Mesh"},
+            {"type": "page_visit", "page_url": "chrome-extension://abc/recorder.html", "page_title": "Recorder"},
+        ]
+        result = _analyze_workflow(
+            proof_data=_make_proof_data(events),
+            claimed_skills=["Three.js", "WebGL"],
+            proof_objective="",
+            original_url="https://threejs.org/examples/#webgl_modifier_simplifier",
+            url_type="live_deployed_url",
+            github_url=None,
+        )
+        assert result["supported_skills"] == []
+        assert "Three.Js" not in result["weakly_supported_skills"]
+        assert result["filtered_unrelated_activity"]["count"] == 3
+        assert "supabase" not in result["workflow_summary"].lower()
+
+    def test_target_domain_evidence_still_supports_skills(self):
+        events = [
+            {"type": "page_visit", "page_url": "https://threejs.org/examples/#webgl_modifier_simplifier", "page_title": "Three.js WebGL modifier simplifier"},
+            {"type": "click", "page_url": "https://threejs.org/examples/#webgl_modifier_simplifier", "element_text": "Simplify"},
+        ]
+        result = _analyze_workflow(
+            proof_data=_make_proof_data(events),
+            claimed_skills=["Three.js", "WebGL"],
+            proof_objective="Show Three.js mesh simplification",
+            original_url="https://threejs.org/examples/#webgl_modifier_simplifier",
+            url_type="live_deployed_url",
+            github_url=None,
+        )
+        assert {"Three.Js", "Webgl"} & set(result["supported_skills"])
+        assert result["filtered_unrelated_activity"]["count"] == 0
+
+    def test_non_target_ocr_frames_do_not_support_target_skills(self):
+        events = [
+            {"type": "page_visit", "page_url": SUPABASE_URL, "page_title": "Supabase"},
+        ]
+        result = _analyze_workflow(
+            proof_data=_make_proof_data(events),
+            claimed_skills=["WebGL"],
+            proof_objective="Show WebGL demo",
+            original_url="https://threejs.org/examples/#webgl_modifier_simplifier",
+            url_type="live_deployed_url",
+            github_url=None,
+            visual_frame_observations={
+                "visual_frame_analysis_status": "analyzed",
+                "provider_used": "local_ocr",
+                "visual_frame_count": 2,
+                "visual_summary": "Supabase Storage bucket | WebGL Mesh Extension Recorder",
+            },
+        )
+        ocr = result["frame_ocr_evidence_summary"]
+        assert ocr["has_ocr_evidence"] is False
+        assert ocr["detected_page_context"] == "filtered_non_target_frame"
+        assert "Webgl" not in result["supported_skills"]
+
     def test_internal_url_visible_evidence_not_exposed(self, svc, mem_store):
         """Supabase URL in visible evidence is sanitized before storage."""
         session_id = "test-internal-url-001"

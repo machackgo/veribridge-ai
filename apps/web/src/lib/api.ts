@@ -1109,6 +1109,11 @@ export type EvidenceObject = {
   trace_action?: "open_github" | "view_keyframe" | "view_ocr" | "view_qwen" | "view_workflow_event" | "view_live_check" | "view_document" | "view_transcript" | ""
   action_available?: boolean
   route_url?: string | null
+  source_url?: string | null
+  source_host?: string | null
+  target_match?: boolean
+  exclusion_reason?: string | null
+  evidence_source_type?: "target_website" | "github_repo" | "document" | "transcript" | "non_target_activity" | string
   recruiter_safe: boolean
 }
 
@@ -1427,6 +1432,10 @@ export type WorkflowAnalysisResponse = {
   target_site_pages_count?: number
   supporting_evidence_count?: number
   noise_filtered_count?: number
+  filtered_unrelated_activity?: {
+    count: number
+    hosts: string[]
+  }
   // v3/v4 precise visual evidence
   observed_demonstration?: ObservedDemonstration | null
   // Visual frame analysis (v5): provider-agnostic screenshot evidence
@@ -1485,7 +1494,7 @@ export type WorkflowAnalysisResponse = {
     ocr_provider: string
     frames_analyzed: number
     top_ocr_snippets: string[]
-    detected_page_context: "homepage_marketing" | "training_ui" | "prediction_output" | "demo_content" | "unknown"
+    detected_page_context: "homepage_marketing" | "training_ui" | "prediction_output" | "demo_content" | "unknown" | "filtered_non_target_frame"
     observed_summary: string
     what_was_not_observed: string[]
     skill_signals: Array<{
@@ -1501,7 +1510,7 @@ export type WorkflowAnalysisResponse = {
    * null when VISUAL_REASONING_ENABLED=false (the default).
    */
   visual_reasoning_summary?: {
-    status: "analyzed" | "failed" | "disabled" | "missing_dependency" | "not_configured" | "rejected_inconsistent" | "rejected_stale" | "skipped" | "pending"
+    status: "analyzed" | "failed" | "disabled" | "missing_dependency" | "not_configured" | "rejected_inconsistent" | "rejected_stale" | "skipped" | "pending" | "filtered_non_target_frame"
     provider: string
     frames_analyzed: number
     summary: string
