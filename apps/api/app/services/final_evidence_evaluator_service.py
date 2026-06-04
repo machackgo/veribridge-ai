@@ -26,6 +26,7 @@ Action types (recording-based or not):
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import quote, urlparse
@@ -751,7 +752,13 @@ _PROJECT_TYPE_TERMS: dict[str, tuple[str, ...]] = {
 
 def _project_terms_in_text(text: str, project_type: str) -> set[str]:
     lower = (text or "").lower()
-    return {term for term in _PROJECT_TYPE_TERMS.get(project_type, ()) if term in lower}
+    return {term for term in _PROJECT_TYPE_TERMS.get(project_type, ()) if _contains_project_term(lower, term)}
+
+
+def _contains_project_term(lower_text: str, term: str) -> bool:
+    if " " in term or "." in term:
+        return term in lower_text
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", lower_text) is not None
 
 
 def _project_types_from_text(text: str) -> set[str]:
@@ -768,7 +775,7 @@ def _keywords_from_text(text: str) -> set[str]:
         token.strip(".,;:()[]{}'\"")
         for token in lower.replace("/", " ").replace("_", " ").replace("-", " ").split()
     }
-    project_terms = {term for terms in _PROJECT_TYPE_TERMS.values() for term in terms if term in lower}
+    project_terms = {term for terms in _PROJECT_TYPE_TERMS.values() for term in terms if _contains_project_term(lower, term)}
     return {w for w in words if len(w) >= 3} | project_terms
 
 

@@ -252,6 +252,7 @@ describe("Final report consistency", () => {
         final_score: 62,
         evidence_source_breakdown: [
           { key: "website_workflow", status: "not_run", score: 0, weight: 0.18, notes: "stale" },
+          { key: "dom_visible_evidence", status: "not_run", score: 0, weight: 0.15, notes: "stale" },
           { key: "ocr", status: "not_run", score: 0, weight: 0.08, notes: "stale" },
           { key: "qwen_visual_reasoning", status: "not_run", score: 0, weight: 0.1, notes: "stale" },
           { key: "project_defense", status: "not_run", score: 0, weight: 0.15, notes: "stale" },
@@ -260,6 +261,18 @@ describe("Final report consistency", () => {
       {
         evidence_strength_score: 29,
         workflow_confidence: "low",
+        visible_evidence_status: "not_captured",
+        dom_evidence_status: "partial",
+        demonstrated_actions: [],
+        top_result_snippets: ["Leaflet marker popup"],
+        observed_demonstration: {
+          target_app: "leafletjs.com",
+          summary: "DOM evidence partial",
+          visible_evidence_status: "partial",
+          dom_evidence_status: "partial",
+          top_result_snippets: ["Leaflet marker popup"],
+          steps: [],
+        },
         frame_ocr_evidence_summary: {
           has_ocr_evidence: true,
           top_ocr_snippets: ["Leaflet map marker"],
@@ -282,10 +295,12 @@ describe("Final report consistency", () => {
     expect(merged).not.toBeNull()
     const byKey = Object.fromEntries((merged!.evidence_source_breakdown ?? []).map((source) => [source.key, source]))
     expect(byKey.website_workflow?.score).toBe(29)
+    expect(byKey.dom_visible_evidence?.score).toBe(50)
     expect(byKey.ocr?.score).toBe(50)
     expect(byKey.qwen_visual_reasoning?.score).toBe(80)
     expect(byKey.project_defense?.score).toBe(67)
     expect(byKey.website_workflow?.status).not.toBe("not_run")
+    expect(byKey.dom_visible_evidence?.status).toBe("partial")
     expect(byKey.ocr?.status).not.toBe("not_run")
     expect(byKey.qwen_visual_reasoning?.status).not.toBe("not_run")
     expect(byKey.project_defense?.status).not.toBe("not_run")

@@ -3207,6 +3207,84 @@ def test_leaflet_proof_with_chatbot_transcript_flags_unrelated_defense_low():
     assert "unrelated" in str(pd_src.get("notes", "")).lower()
 
 
+def test_leaflet_proof_with_webgl_transcript_flags_unrelated_defense_low():
+    result = _svc(
+        wf=_leaflet_wf(),
+        pd=_pd(
+            "I built a Three.js WebGL 3D graphics project with geometry simplification, "
+            "mesh processing, scene camera controls, and renderer optimization."
+        ),
+    ).evaluate(
+        "u1",
+        "s1",
+        claimed_skills=["JavaScript", "Leaflet.js", "Interactive Maps", "Geospatial Visualization", "OpenStreetMap"],
+    )
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["score"] <= 25
+    assert "unrelated" in str(pd_src.get("notes", "")).lower()
+    grouped_skills = {sk.skill for g in result.grouped_skill_evidence for sk in g.skills}
+    assert "Three.js" not in grouped_skills
+    assert "WebGL" not in grouped_skills
+
+
+def test_threejs_proof_with_threejs_transcript_scores_relevant_defense():
+    result = _svc(
+        wf=_threejs_wf(),
+        pd=_pd("I built the Three.js WebGL mesh simplifier with geometry reduction, renderer updates, scene camera, and 3D controls."),
+    ).evaluate("u1", "s1", claimed_skills=["Three.js", "WebGL", "3D Graphics"])
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["score"] >= 60
+
+
+def test_threejs_proof_with_leaflet_transcript_flags_unrelated_defense_low():
+    result = _svc(
+        wf=_threejs_wf(),
+        pd=_pd("I built a Leaflet geospatial map using OpenStreetMap tiles, marker popups, zoom, pan, and map coordinates."),
+    ).evaluate("u1", "s1", claimed_skills=["Three.js", "WebGL", "3D Graphics"])
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["score"] <= 25
+    assert "unrelated" in str(pd_src.get("notes", "")).lower()
+
+
+def test_project_defense_relevance_checks_refined_transcript_when_transcript_text_empty():
+    pd = _pd("", score=67)
+    pd["refined_transcript"] = "Three.js WebGL mesh geometry simplification with renderer and camera controls."
+    result = _svc(wf=_leaflet_wf(), pd=pd).evaluate(
+        "u1",
+        "s1",
+        claimed_skills=["Leaflet.js", "Interactive Maps", "Geospatial Visualization"],
+    )
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["score"] <= 25
+    assert "unrelated" in str(pd_src.get("notes", "")).lower()
+
+
+def test_dom_partial_evidence_from_observed_demo_scores_partial():
+    wf = {
+        "analysis_status": "completed",
+        "evidence_strength_score": 29,
+        "workflow_confidence": "low",
+        "visible_evidence_status": "not_captured",
+        "dom_evidence_status": "not_captured",
+        "demonstrated_actions": [],
+        "target_website": "https://leafletjs.com/examples/quick-start/",
+        "workflow_summary": "Target Leaflet quick-start page loaded.",
+        "observed_demonstration": {
+            "target_app": "leafletjs.com",
+            "summary": "DOM evidence partial for Leaflet map tutorial.",
+            "visible_evidence_status": "partial",
+            "dom_evidence_status": "partial",
+            "top_result_snippets": ["Leaflet map marker popup OpenStreetMap tile"],
+            "steps": [],
+        },
+        "frame_ocr_evidence_summary": {},
+    }
+    result = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=["Leaflet.js", "Interactive Maps"])
+    dom_src = next(s for s in result.evidence_source_breakdown if s["key"] == "dom_visible_evidence")
+    assert dom_src["status"] == "partial"
+    assert dom_src["score"] > 0
+
+
 def test_unrelated_document_does_not_boost_final_score_or_group_skills():
     wf = _chatbot_wf(score=70)
     base = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=["Chatbot UI"])

@@ -718,6 +718,26 @@ function videoKeyframeSourceScore(
   return { score: count >= 3 ? 90 : 60, status: count >= 3 ? "pass" : "partial" }
 }
 
+function domSourceScore(
+  evaluation: FinalEvaluationResult | null,
+  analysis: WorkflowAnalysisResponse | null,
+): FinalSourceScore | undefined {
+  const fromEval = sourceScoreFromEvaluation(evaluation, "dom_visible_evidence")
+  if (fromEval && fromEval.status !== "not_run" && fromEval.status !== "not_available") return fromEval
+  const demo = analysis?.observed_demonstration
+  const status = demo?.dom_evidence_status ?? demo?.visible_evidence_status
+    ?? analysis?.dom_evidence_status ?? analysis?.visible_evidence_status
+  const snippets = demo?.top_result_snippets ?? analysis?.top_result_snippets ?? []
+  const actions = analysis?.demonstrated_actions ?? []
+  if (status === "available" && actions.length > 3) {
+    return { score: 80, status: "pass", notes: "DOM visible evidence available" }
+  }
+  if (status === "available" || status === "partial" || snippets.length > 0 || actions.length > 0) {
+    return { score: 50, status: "partial", notes: "DOM visible evidence partial" }
+  }
+  return fromEval
+}
+
 function ocrSourceScore(
   evaluation: FinalEvaluationResult | null,
   analysis: WorkflowAnalysisResponse | null,
@@ -779,6 +799,7 @@ export function mergeVisibleSourceScores(
   if (!evaluation) return evaluation
   const replacements: Record<string, FinalSourceScore | undefined> = {
     website_workflow: workflowSourceScore(evaluation, analysis),
+    dom_visible_evidence: domSourceScore(evaluation, analysis),
     video_keyframes: videoKeyframeSourceScore(evaluation, analysis),
     ocr: ocrSourceScore(evaluation, analysis),
     qwen_visual_reasoning: qwenSourceScore(evaluation, analysis),
@@ -1862,26 +1883,6 @@ function DemonstrationStepCard({
                     {rv.label}: {rv.value}
                     {rv.confidence !== null && <span style={{ fontWeight: 400 }}> ({Math.round(rv.confidence * 100)}%)</span>}
                   </span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Skill evidence */}
-          {step.skill_evidence.length > 0 && (
-            <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
-                Skill Evidence
-              </div>
-              <div style={{ display: "grid", gap: 4 }}>
-                {step.skill_evidence.map((se, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 7, fontSize: 12 }}>
-                    <SupportLevelChip level={se.support_level} />
-                    <div>
-                      <span style={{ fontWeight: 600, color: "#334155" }}>{se.skill}</span>
-                      <span style={{ color: "#64748b" }}> — {se.reasoning}</span>
-                    </div>
-                  </div>
                 ))}
               </div>
             </div>
@@ -7667,7 +7668,7 @@ export function ExtensionProofPanel({
           <LiveWebsiteCheckCard
             check={liveCheck}
             onRetry={() => void handleLiveCheck()}
-            sourceScore={sourceScoreFromEvaluation(finalEval, "live_website_check")}
+            sourceScore={sourceScoreFromEvaluation(finalEvalForDisplay, "live_website_check")}
           />
         )}
 
@@ -7741,7 +7742,7 @@ export function ExtensionProofPanel({
           <GitHubAnalysisCard
             analysis={githubAnalysis}
             onRerun={() => void handleGitHubAnalysis()}
-            sourceScore={sourceScoreFromEvaluation(finalEval, "github")}
+            sourceScore={sourceScoreFromEvaluation(finalEvalForDisplay, "github")}
           />
         )}
 
@@ -7754,7 +7755,7 @@ export function ExtensionProofPanel({
           defenseAnalyzeError={defenseAnalyzeError}
           defenseSimProgress={defenseSimProgress}
           defenseSimStageIdx={defenseSimStageIdx}
-          sourceScore={projectDefenseSourceScore(finalEval, defenseAnalysis)}
+          sourceScore={projectDefenseSourceScore(finalEvalForDisplay, defenseAnalysis)}
           onTranscriptChange={setDefenseTranscript}
           onAnalyze={() => void handleDefenseAnalysis()}
         />
@@ -7763,7 +7764,7 @@ export function ExtensionProofPanel({
         {isCompleted && (
           <FutureProofModulesSection
             sessionId={session.id}
-            documentScore={sourceScoreFromEvaluation(finalEval, "uploaded_documents")}
+            documentScore={sourceScoreFromEvaluation(finalEvalForDisplay, "uploaded_documents")}
             onAnalyzed={() => void handleRunFinalEval()}
           />
         )}
