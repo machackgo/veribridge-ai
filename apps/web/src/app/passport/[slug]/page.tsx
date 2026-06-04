@@ -7,14 +7,17 @@ import {
   getPublicWorkPassportStatus,
   getPublicSkillEvidenceTimeline,
   getPublicGitHubProofs,
+  getRecruiterPassportView,
   requestPassportAccess,
   savePublicPassport,
   type PublicPassportSafeResponse,
   type PublicWorkPassportStatusResponse,
   type SkillEvidenceTimelineResponse,
   type GitHubProofPublicResponse,
+  type RecruiterPassportViewResponse,
   type AccessRequestCreate,
 } from "@/lib/passport-api"
+import { RecruiterWorkPassportPreview } from "../../../../components/recruiter-passport/RecruiterWorkPassportPreview"
 import {
   Badge,
   Btn,
@@ -269,6 +272,7 @@ export default function PublicPassportPage() {
   const [status, setStatus] = useState<PublicWorkPassportStatusResponse | null>(null)
   const [timeline, setTimeline] = useState<SkillEvidenceTimelineResponse | null>(null)
   const [githubProofs, setGithubProofs] = useState<GitHubProofPublicResponse[]>([])
+  const [recruiterView, setRecruiterView] = useState<RecruiterPassportViewResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showAccessForm, setShowAccessForm] = useState(false)
@@ -284,12 +288,14 @@ export default function PublicPassportPage() {
       getPublicWorkPassportStatus(slug).catch(() => null),
       getPublicSkillEvidenceTimeline(slug).catch(() => null),
       getPublicGitHubProofs(slug).catch(() => []),
+      getRecruiterPassportView(slug).catch(() => null),
     ])
-      .then(([p, s, t, gh]) => {
+      .then(([p, s, t, gh, rv]) => {
         setPassport(p)
         setStatus(s)
         setTimeline(t)
         setGithubProofs(gh)
+        setRecruiterView(rv)
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
@@ -473,6 +479,16 @@ export default function PublicPassportPage() {
               </div>
             )}
           </Card>
+        )}
+
+        {/* ── Recruiter-enriched view (evidence score + grouped skills + decision helpers) */}
+        {recruiterView && (
+          <div style={{ marginBottom: 20 }}>
+            <RecruiterWorkPassportPreview
+              view={recruiterView}
+              onRequestAccess={() => setShowAccessForm(true)}
+            />
+          </div>
         )}
 
         {/* Skill evidence timeline (public-safe) */}

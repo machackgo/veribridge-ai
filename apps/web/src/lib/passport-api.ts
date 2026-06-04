@@ -912,3 +912,62 @@ export function updateAdminRequesterVerification(
     body: JSON.stringify(body),
   })
 }
+
+// ── Recruiter Work Passport View ──────────────────────────────────────────────
+
+export type RecruiterSkillResponse = {
+  skill: string
+  confidence: "high" | "medium" | "low"
+  status_label: string
+  source_labels: string[]
+}
+
+export type RecruiterSkillGroupResponse = {
+  group_name: string
+  category: string
+  confidence: "high" | "medium" | "low"
+  evidence_count: number
+  source_labels: string[]
+  skills: RecruiterSkillResponse[]
+}
+
+export type RecruiterProofSourceResponse = {
+  key: string
+  label: string
+  status: string
+  score: number
+  is_run: boolean
+}
+
+export type RecruiterPassportViewResponse = {
+  public_slug: string
+  student_display_name?: string | null
+  field?: string | null
+  public_title?: string | null
+  public_summary?: string | null
+  overall_score: number
+  evidence_confidence: "high" | "medium" | "low"
+  verification_status?: string | null
+  readiness_level?: string | null
+  skill_groups: RecruiterSkillGroupResponse[]
+  verified_skills: string[]
+  partially_verified_skills: string[]
+  skills_needing_review: string[]
+  proof_sources: RecruiterProofSourceResponse[]
+  why_credible: string[]
+  strongest_skills: string[]
+  areas_needing_review: string[]
+  suggested_interview_questions: string[]
+  public_project_links: { label: string; url: string }[]
+  project_type?: string | null
+  access_request_available: boolean
+  has_protected_evidence: boolean
+  disclosure_note: string
+}
+
+/** Fetch the recruiter-enriched Work Passport view for a public slug. */
+export function getRecruiterPassportView(
+  publicSlug: string,
+): Promise<RecruiterPassportViewResponse> {
+  return apiJson(`${API}/public/passports/${encodeURIComponent(publicSlug)}/recruiter-view`)
+}

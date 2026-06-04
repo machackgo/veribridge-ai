@@ -207,3 +207,80 @@ class RecruiterSessionResponse(BaseModel):
     session_token: str
     requester_email: str
     expires_in_days: int = 30
+
+
+# ── Recruiter-safe Work Passport view ─────────────────────────────────────────
+
+
+class RecruiterSkillResponse(BaseModel):
+    """A single skill entry safe for recruiter display."""
+
+    skill: str
+    confidence: Literal["high", "medium", "low"]
+    status_label: str
+    source_labels: list[str] = Field(default_factory=list)
+
+
+class RecruiterSkillGroupResponse(BaseModel):
+    """A category group of skills with source attribution."""
+
+    group_name: str
+    category: str
+    confidence: Literal["high", "medium", "low"]
+    evidence_count: int
+    source_labels: list[str] = Field(default_factory=list)
+    skills: list[RecruiterSkillResponse] = Field(default_factory=list)
+
+
+class RecruiterProofSourceResponse(BaseModel):
+    """A single evidence source status safe for recruiter display."""
+
+    key: str
+    label: str
+    status: str
+    score: int
+    is_run: bool
+
+
+class RecruiterPassportViewResponse(BaseModel):
+    """Recruiter-safe, evidence-enriched Work Passport view.
+
+    Aggregates public passport metadata, final evidence scores, grouped skill
+    evidence with source attribution, and recruiter decision helpers.
+
+    Privacy guarantees:
+    - No media_storage_path, raw transcript text, access tokens, or debug data.
+    - skill_groups only include public-safe status labels and source names.
+    - All fields are safe to render in an unauthenticated recruiter context.
+    """
+
+    public_slug: str
+    student_display_name: str | None = None
+    field: str | None = None
+    public_title: str | None = None
+    public_summary: str | None = None
+
+    overall_score: int
+    evidence_confidence: Literal["high", "medium", "low"]
+    verification_status: str | None = None
+    readiness_level: str | None = None
+
+    skill_groups: list[RecruiterSkillGroupResponse] = Field(default_factory=list)
+    verified_skills: list[str] = Field(default_factory=list)
+    partially_verified_skills: list[str] = Field(default_factory=list)
+    skills_needing_review: list[str] = Field(default_factory=list)
+
+    proof_sources: list[RecruiterProofSourceResponse] = Field(default_factory=list)
+
+    why_credible: list[str] = Field(default_factory=list)
+    strongest_skills: list[str] = Field(default_factory=list)
+    areas_needing_review: list[str] = Field(default_factory=list)
+    suggested_interview_questions: list[str] = Field(default_factory=list)
+
+    public_project_links: list[dict[str, str]] = Field(default_factory=list)
+    project_type: str | None = None
+
+    access_request_available: bool = True
+    has_protected_evidence: bool = True
+
+    disclosure_note: str

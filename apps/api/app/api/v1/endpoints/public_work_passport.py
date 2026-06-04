@@ -19,6 +19,7 @@ from app.schemas.public_work_passport import (
     PublicPassportSafeResponse,
     PublicWorkPassportCreateRequest,
     PublicWorkPassportStudentResponse,
+    RecruiterPassportViewResponse,
     RecruiterRequesterProfileResponse,
     RecruiterSessionCreate,
     RecruiterSessionResponse,
@@ -222,6 +223,29 @@ def get_public_passport(
 ) -> PublicPassportSafeResponse:
     try:
         return PublicWorkPassportService(db).get_public_passport(public_slug, _viewer_context(request))
+    except PublicWorkPassportNotFoundError as exc:
+        raise _passport_not_found(str(exc)) from exc
+
+
+@public_router.get(
+    "/passports/{public_slug}/recruiter-view",
+    response_model=RecruiterPassportViewResponse,
+    summary="Get a recruiter-safe, evidence-enriched Work Passport view",
+)
+def get_recruiter_passport_view(
+    public_slug: str,
+    db: Any = Depends(get_db),
+) -> RecruiterPassportViewResponse:
+    """Return an evidence-enriched recruiter view of a public Work Passport.
+
+    Aggregates public passport metadata with final evidence scores, grouped skill
+    evidence (with source attribution), and recruiter decision helpers (why credible,
+    suggested interview questions).
+
+    Privacy: no private media URLs, raw transcripts, access tokens, or debug data.
+    """
+    try:
+        return PublicWorkPassportService(db).get_recruiter_passport_view(public_slug)
     except PublicWorkPassportNotFoundError as exc:
         raise _passport_not_found(str(exc)) from exc
 

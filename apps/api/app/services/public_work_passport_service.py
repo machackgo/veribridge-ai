@@ -20,7 +20,11 @@ from app.schemas.public_work_passport import (
     PublicPassportSafeResponse,
     PublicWorkPassportCreateRequest,
     PublicWorkPassportStudentResponse,
+    RecruiterPassportViewResponse,
+    RecruiterProofSourceResponse,
     RecruiterRequesterProfileResponse,
+    RecruiterSkillGroupResponse,
+    RecruiterSkillResponse,
 )
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
 from app.services.notification_service import NotificationService
@@ -193,6 +197,47 @@ class PublicWorkPassportService:
             },
         )
         return response
+
+    def get_recruiter_passport_view(
+        self,
+        public_slug: str,
+    ) -> RecruiterPassportViewResponse:
+        """Return an evidence-enriched, recruiter-safe Work Passport view.
+
+        Aggregates the public passport metadata with final evidence scores,
+        grouped skill evidence (with source attribution), and recruiter
+        decision helpers (why credible, suggested interview questions).
+
+        Privacy: no media_storage_path, raw transcripts, access tokens,
+        or debug metadata are ever included.
+        """
+        from app.services.final_evidence_evaluator_service import FinalEvidenceEvaluatorService
+
+        passport = self._passport_by_slug(public_slug)
+        if not passport or not passport.get("is_public", True):
+            raise PublicWorkPassportNotFoundError(public_slug)
+
+        user_id = str(passport["user_id"])
+        session_id = str(passport["proof_session_id"])
+        session = self._get_session(user_id, session_id)
+        evidence = self._gather_evidence(user_id, session_id, session)
+
+        # Run the final evidence evaluator (read-only — does not mutate state).
+        try:
+            eval_svc = FinalEvidenceEvaluatorService(self._client)
+            claimed_skills = list(evidence.get("claimed_skills") or [])
+            github = evidence.get("github_analysis") or {}
+            github_url = str(github.get("repo_url") or "") or None
+            final_eval = eval_svc.evaluate(
+                user_id=user_id,
+                session_id=session_id,
+                claimed_skills=claimed_skills,
+                github_url=github_url,
+            )
+        except Exception:
+            final_eval = None
+
+        return _recruiter_view_response(passport, evidence, final_eval)
 
     def create_access_request(
         self,
@@ -1029,6 +1074,216 @@ def _blocked_private_key(key: str) -> bool:
     }
     blocked_fragments = ("private", "internal", "debug", "raw_risk", "raw_metadata")
     return normalized in blocked_exact or any(fragment in normalized for fragment in blocked_fragments)
+
+
+_SOURCE_LABEL_MAP: dict[str, str] = {
+    "website_workflow":      "Website Workflow",
+    "dom_visible_evidence":  "DOM Evidence",
+    "video_keyframes":       "Video Keyframes",
+    "ocr":                   "OCR",
+    "qwen_visual_reasoning": "AI Visual Analysis",
+    "github":                "GitHub",
+    "live_website_check":    "Live Website",
+    "project_defense":       "Project Defense",
+    "uploaded_documents":    "Documents",
+    "linkedin_profile":      "LinkedIn",
+    "certificate":           "Certificate",
+}
+
+
+def _recruiter_view_response(
+    passport: dict[str, Any],
+    evidence: dict[str, Any],
+    final_eval: Any | None,
+) -> RecruiterPassportViewResponse:
+    """Build a recruiter-safe, evidence-enriched view of a Work Passport.
+
+    Combines public passport metadata, readiness report, and (when available)
+    the final evidence evaluator output into a single recruiter-first payload.
+    Never exposes private fields.
+    """
+    readiness = evidence.get("readiness_report")
+    profile = evidence.get("student_profile") or {}
+
+    # Scores and confidence
+    overall_score = 0
+    evidence_confidence: str = "low"
+    if final_eval is not None:
+        overall_score = getattr(final_eval, "final_score", 0)
+        evidence_confidence = getattr(final_eval, "confidence", "low")
+    elif readiness is not None:
+        overall_score = getattr(readiness, "readiness_score", 0) or 0
+
+    # Skills from readiness (always available)
+    verified_skills = list(getattr(readiness, "strongly_supported_skills", []) if readiness else [])
+    partially_verified = list(getattr(readiness, "partially_supported_skills", []) if readiness else [])
+    needs_review = [_clean_need_more(s) for s in (getattr(readiness, "needs_more_evidence", []) if readiness else [])]
+
+    # Grouped skill evidence from final evaluator
+    skill_groups: list[RecruiterSkillGroupResponse] = []
+    if final_eval is not None:
+        for group in (getattr(final_eval, "grouped_skill_evidence", []) or []):
+            skills_out = [
+                RecruiterSkillResponse(
+                    skill=str(sk.skill),
+                    confidence=sk.confidence,
+                    status_label=str(sk.status_label or ""),
+                    source_labels=list(sk.source_labels or []),
+                )
+                for sk in (group.skills or [])
+            ]
+            skill_groups.append(RecruiterSkillGroupResponse(
+                group_name=str(group.group_name),
+                category=str(group.category),
+                confidence=group.confidence,
+                evidence_count=group.evidence_count,
+                source_labels=list(group.source_labels or []),
+                skills=skills_out,
+            ))
+
+    # Proof sources from final evaluator (exclude private/admin sources)
+    proof_sources: list[RecruiterProofSourceResponse] = []
+    if final_eval is not None:
+        _shown_keys = {
+            "website_workflow", "video_keyframes", "ocr", "qwen_visual_reasoning",
+            "github", "live_website_check", "project_defense", "uploaded_documents",
+        }
+        for src in (getattr(final_eval, "evidence_source_breakdown", []) or []):
+            src_key = src.get("key") if isinstance(src, dict) else getattr(src, "key", "")
+            if src_key not in _shown_keys:
+                continue
+            src_status = src.get("status") if isinstance(src, dict) else getattr(src, "status", "not_run")
+            src_score = src.get("score") if isinstance(src, dict) else getattr(src, "score", 0)
+            proof_sources.append(RecruiterProofSourceResponse(
+                key=str(src_key),
+                label=_SOURCE_LABEL_MAP.get(str(src_key), str(src_key).replace("_", " ").title()),
+                status=str(src_status),
+                score=int(src_score or 0),
+                is_run=str(src_status) not in ("not_run", "not_available"),
+            ))
+
+    # Recruiter decision helpers
+    why_credible = _why_credible(final_eval, verified_skills, evidence)
+    strongest = verified_skills[:5] or partially_verified[:5]
+    areas_review = needs_review[:5] or [s for s in partially_verified if s not in verified_skills][:5]
+    interview_questions = _suggested_interview_questions(
+        verified_skills=verified_skills,
+        partially_verified=partially_verified,
+        needs_review=needs_review,
+        final_eval=final_eval,
+        evidence=evidence,
+    )
+
+    # Project type from final evaluator
+    project_type: str | None = None
+    if final_eval is not None:
+        cap = getattr(final_eval, "detected_capability", None)
+        if cap:
+            project_type = getattr(cap, "role_title", None)
+
+    return RecruiterPassportViewResponse(
+        public_slug=str(passport["public_slug"]),
+        student_display_name=_public_display_name(profile),
+        field=passport.get("field") or _field(evidence),
+        public_title=passport.get("public_title"),
+        public_summary=passport.get("public_summary"),
+        overall_score=overall_score,
+        evidence_confidence=evidence_confidence,  # type: ignore[arg-type]
+        verification_status=_verification_status(evidence),
+        readiness_level=getattr(readiness, "readiness_level", None) if readiness else None,
+        skill_groups=skill_groups,
+        verified_skills=verified_skills,
+        partially_verified_skills=partially_verified,
+        skills_needing_review=needs_review,
+        proof_sources=proof_sources,
+        why_credible=why_credible,
+        strongest_skills=strongest,
+        areas_needing_review=areas_review,
+        suggested_interview_questions=interview_questions,
+        public_project_links=_public_links(evidence),
+        project_type=project_type,
+        access_request_available=True,
+        has_protected_evidence=True,
+        disclosure_note=_PUBLIC_DISCLOSURE,
+    )
+
+
+def _why_credible(
+    final_eval: Any | None,
+    verified_skills: list[str],
+    evidence: dict[str, Any],
+) -> list[str]:
+    reasons: list[str] = []
+    if final_eval is not None:
+        cap = getattr(final_eval, "detected_capability", None)
+        if cap:
+            reasons.extend(list(getattr(cap, "why_detected", []) or [])[:3])
+    if not reasons:
+        if verified_skills:
+            reasons.append(
+                f"AI evidence analysis confirms strong support for: {', '.join(verified_skills[:3])}."
+            )
+        if evidence.get("github_analysis"):
+            reasons.append("GitHub repository evidence was analyzed and supports claimed skills.")
+        if evidence.get("project_defense_analysis"):
+            reasons.append("Project defense transcript was analyzed for ownership and explanation clarity.")
+        if evidence.get("workflow_analysis"):
+            reasons.append("Website workflow recording was captured and analyzed for demonstrated skills.")
+    return reasons[:5]
+
+
+def _verification_status(evidence: dict[str, Any]) -> str | None:
+    ai_domain = evidence.get("ai_domain_review") or {}
+    return ai_domain.get("ai_domain_review_status") or None
+
+
+def _suggested_interview_questions(
+    verified_skills: list[str],
+    partially_verified: list[str],
+    needs_review: list[str],
+    final_eval: Any | None,
+    evidence: dict[str, Any],
+) -> list[str]:
+    questions: list[str] = []
+
+    # Skills with only partial evidence → probe depth
+    for skill in (partially_verified or [])[:2]:
+        questions.append(
+            f"Tell me about a specific challenge you faced while working with {skill}."
+        )
+
+    # Skills needing more evidence → verify ownership
+    for skill in (needs_review or [])[:2]:
+        questions.append(
+            f"Walk me through how you used {skill} in your project — what problem did it solve?"
+        )
+
+    # Detected capability / project type → role fit
+    if final_eval is not None:
+        cap = getattr(final_eval, "detected_capability", None)
+        if cap:
+            role = getattr(cap, "role_title", "")
+            if role:
+                questions.append(
+                    f"Based on your work, how would you approach a {role} role differently than what you've done so far?"
+                )
+
+    # Defense / transcript evidence → ownership
+    defense = evidence.get("project_defense_analysis") or {}
+    skills_explained = defense.get("skills_explained_well") or []
+    if skills_explained:
+        s = skills_explained[0]
+        questions.append(
+            f"You explained {s} in your project defense — how would you improve that aspect if starting over?"
+        )
+
+    # Generic ownership question if list is short
+    if len(questions) < 3 and verified_skills:
+        questions.append(
+            f"What was the most technically difficult part of building your {verified_skills[0]} project?"
+        )
+
+    return questions[:5]
 
 
 def _passport_student_response(row: dict[str, Any]) -> PublicWorkPassportStudentResponse:
