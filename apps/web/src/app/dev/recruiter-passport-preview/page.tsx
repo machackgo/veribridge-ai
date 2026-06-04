@@ -11,7 +11,9 @@
 
 import { useState } from "react"
 import { RecruiterWorkPassportPreview } from "../../../../components/recruiter-passport/RecruiterWorkPassportPreview"
+import { createAccessRequest } from "../../../lib/mock-evidence-access-store"
 import type { RecruiterPassportViewResponse } from "../../../lib/passport-api"
+import type { EvidenceAccessFormData } from "../../../../components/recruiter-passport/EvidenceAccessRequestModal"
 
 // ── Mock data ─────────────────────────────────────────────────────────────────
 // All fields are recruiter-safe: no media_storage_path, no access tokens,
@@ -205,6 +207,21 @@ const MOCK_VIEW: RecruiterPassportViewResponse = {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+function handleRequestCreated(data: EvidenceAccessFormData) {
+  createAccessRequest(
+    {
+      requesterName: data.requester_name,
+      requesterEmail: data.requester_email,
+      company: data.company,
+      role: data.role,
+      reason: data.reason,
+      requestedEvidenceTypes: data.requested_sections,
+      messageToStudent: data.message_to_student,
+    },
+    MOCK_VIEW.public_slug,
+  )
+}
+
 export default function DevRecruiterPassportPreviewPage() {
   const [accessRequested, setAccessRequested] = useState(false)
 
@@ -277,6 +294,7 @@ export default function DevRecruiterPassportPreviewPage() {
         <RecruiterWorkPassportPreview
           view={MOCK_VIEW}
           onRequestAccess={() => setAccessRequested(true)}
+          onRequestCreated={handleRequestCreated}
           defaultRequester={{
             name: "Stripe Early Talent",
             email: "recruiter@stripe.com",

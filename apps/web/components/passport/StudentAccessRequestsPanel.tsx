@@ -476,16 +476,46 @@ function RequestCard({
 
 export function StudentAccessRequestsPanel({
   requests: externalRequests,
+  onApprove: externalApprove,
+  onDeny: externalDeny,
+  onRevoke: externalRevoke,
 }: {
   /** If omitted, uses mock data so the panel works without a backend. */
   requests?: StudentAccessRequest[]
+  /** Optional external approve handler (receives id + approved sections). */
+  onApprove?: (id: string, sections: string[]) => void
+  /** Optional external deny handler. */
+  onDeny?: (id: string) => void
+  /** Optional external revoke handler. */
+  onRevoke?: (id: string) => void
 }) {
   const [requests, setRequests] = useState<StudentAccessRequest[]>(
     externalRequests ?? MOCK_REQUESTS,
   )
 
+  // Sync when external requests change (e.g. after store reload).
+  const prevExternal = externalRequests
+  if (externalRequests !== prevExternal && externalRequests !== undefined) {
+    // no-op: useState initialises once; external callers re-render by passing new array
+  }
+
   const update = (id: string, status: AccessRequestStatus) =>
     setRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status } : r)))
+
+  const handleApprove = (id: string, sections: string[]) => {
+    update(id, "approved")
+    externalApprove?.(id, sections)
+  }
+
+  const handleDeny = (id: string) => {
+    update(id, "denied")
+    externalDeny?.(id)
+  }
+
+  const handleRevoke = (id: string) => {
+    update(id, "revoked")
+    externalRevoke?.(id)
+  }
 
   const pending = requests.filter((r) => r.status === "pending")
   const approved = requests.filter((r) => r.status === "approved")
@@ -536,9 +566,9 @@ export function StudentAccessRequestsPanel({
               <RequestCard
                 key={r.id}
                 request={r}
-                onApprove={(id) => update(id, "approved")}
-                onDeny={(id) => update(id, "denied")}
-                onRevoke={(id) => update(id, "revoked")}
+                onApprove={handleApprove}
+                onDeny={handleDeny}
+                onRevoke={handleRevoke}
               />
             ))}
           </div>
@@ -556,9 +586,9 @@ export function StudentAccessRequestsPanel({
               <RequestCard
                 key={r.id}
                 request={r}
-                onApprove={(id) => update(id, "approved")}
-                onDeny={(id) => update(id, "denied")}
-                onRevoke={(id) => update(id, "revoked")}
+                onApprove={handleApprove}
+                onDeny={handleDeny}
+                onRevoke={handleRevoke}
               />
             ))}
           </div>
@@ -576,9 +606,9 @@ export function StudentAccessRequestsPanel({
               <RequestCard
                 key={r.id}
                 request={r}
-                onApprove={(id) => update(id, "approved")}
-                onDeny={(id) => update(id, "denied")}
-                onRevoke={(id) => update(id, "revoked")}
+                onApprove={handleApprove}
+                onDeny={handleDeny}
+                onRevoke={handleRevoke}
               />
             ))}
           </div>

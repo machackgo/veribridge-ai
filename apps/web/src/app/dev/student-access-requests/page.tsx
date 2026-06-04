@@ -1,15 +1,69 @@
 "use client"
 
 /**
- * DEV PREVIEW ONLY — mock student access requests view.
+ * DEV PREVIEW ONLY — student access requests backed by the shared mock store.
+ *
+ * Requests submitted in /dev/recruiter-passport-preview appear here because
+ * both pages read/write the same localStorage key via mock-evidence-access-store.
  *
  * URL: http://localhost:3000/dev/student-access-requests
  */
 
+import { useEffect, useState } from "react"
 import Link from "next/link"
+import {
+  listStudentAccessRequests,
+  approveAccessRequest,
+  denyAccessRequest,
+  revokeAccessRequest,
+  resetAccessRequestStore,
+} from "../../../lib/mock-evidence-access-store"
 import { StudentAccessRequestsPanel } from "../../../../components/passport/StudentAccessRequestsPanel"
+import type { StudentAccessRequest } from "../../../../components/passport/StudentAccessRequestsPanel"
+import type { EvidenceAccessRequest } from "../../../types/evidence-access"
+
+/** Map from shared EvidenceAccessRequest to the panel's StudentAccessRequest. */
+function toPanel(r: EvidenceAccessRequest): StudentAccessRequest {
+  return {
+    id: r.id,
+    requester_name: r.requesterName,
+    requester_email: r.requesterEmail,
+    requester_organization: r.company ?? null,
+    requester_role: r.role ?? null,
+    requested_sections: r.requestedEvidenceTypes,
+    request_reason: r.reason ?? null,
+    optional_message: r.message ?? null,
+    status: r.status,
+    requested_at: r.requestedAt,
+  }
+}
 
 export default function DevStudentAccessRequestsPage() {
+  const [requests, setRequests] = useState<StudentAccessRequest[]>([])
+  const [loaded, setLoaded] = useState(false)
+
+  const reload = () => {
+    setRequests(listStudentAccessRequests().map(toPanel))
+    setLoaded(true)
+  }
+
+  useEffect(() => { reload() }, [])
+
+  const handleApprove = (id: string, sections: string[]) => {
+    approveAccessRequest(id, sections)
+    reload()
+  }
+
+  const handleDeny = (id: string) => {
+    denyAccessRequest(id)
+    reload()
+  }
+
+  const handleRevoke = (id: string) => {
+    revokeAccessRequest(id)
+    reload()
+  }
+
   return (
     <div style={{
       minHeight: "100vh",
@@ -30,22 +84,35 @@ export default function DevStudentAccessRequestsPage() {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 16 }}>🛠</span>
           <span style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>
-            Development preview — mock student access requests
+            Development preview — shared mock store
           </span>
           <span style={{ fontSize: 12, color: "#b45309" }}>
-            No backend call · Local state only
+            Reads requests submitted in /dev/recruiter-passport-preview · localStorage
           </span>
         </div>
-        <Link
-          href="/dashboard/passport/access"
-          style={{
-            fontSize: 12, fontWeight: 600, color: "#92400e",
-            background: "#fde68a", border: "1px solid #f59e0b",
-            borderRadius: 6, padding: "5px 12px", textDecoration: "none",
-          }}
-        >
-          ← Back to dashboard
-        </Link>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => { resetAccessRequestStore(); reload() }}
+            style={{
+              fontSize: 11, fontWeight: 600, color: "#92400e",
+              background: "#fef3c7", border: "1px solid #f59e0b",
+              borderRadius: 6, padding: "4px 10px", cursor: "pointer",
+            }}
+          >
+            Reset to samples
+          </button>
+          <Link
+            href="/dashboard/passport/access"
+            style={{
+              fontSize: 12, fontWeight: 600, color: "#92400e",
+              background: "#fde68a", border: "1px solid #f59e0b",
+              borderRadius: 6, padding: "5px 12px", textDecoration: "none",
+            }}
+          >
+            ← Back to dashboard
+          </Link>
+        </div>
       </div>
 
       {/* Page content */}
@@ -65,7 +132,14 @@ export default function DevStudentAccessRequestsPage() {
           </p>
         </div>
 
-        <StudentAccessRequestsPanel />
+        {loaded && (
+          <StudentAccessRequestsPanel
+            requests={requests}
+            onApprove={handleApprove}
+            onDeny={handleDeny}
+            onRevoke={handleRevoke}
+          />
+        )}
       </div>
     </div>
   )

@@ -474,11 +474,15 @@ function DecisionHelpersSection({
 export function RecruiterWorkPassportPreview({
   view,
   onRequestAccess,
+  onRequestCreated,
   defaultRequester,
 }: {
   view: RecruiterPassportViewResponse
   /** Legacy callback — if provided it is called after modal submits. */
   onRequestAccess?: () => void
+  /** Called with full form data after the recruiter submits the request.
+   *  Use this to persist the request to a mock store or backend API. */
+  onRequestCreated?: (data: import("./EvidenceAccessRequestModal").EvidenceAccessFormData) => void
   /** Pre-fill recruiter fields in the modal. */
   defaultRequester?: { name?: string; email?: string; company?: string; role?: string }
 }) {
@@ -660,6 +664,7 @@ export function RecruiterWorkPassportPreview({
           defaultRequester={defaultRequester}
           onSubmit={handleModalSubmit}
           onClose={handleModalClose}
+          onRequestCreated={onRequestCreated}
         />
       )}
     </>
@@ -675,11 +680,13 @@ function ModalWrapper({
   defaultRequester,
   onSubmit,
   onClose,
+  onRequestCreated,
 }: {
   view: RecruiterPassportViewResponse
   defaultRequester?: { name?: string; email?: string; company?: string; role?: string }
   onSubmit: () => Promise<void>
   onClose: (sections?: string[]) => void
+  onRequestCreated?: (data: import("./EvidenceAccessRequestModal").EvidenceAccessFormData) => void
 }) {
   const [submittedSections, setSubmittedSections] = useState<string[] | null>(null)
 
@@ -695,6 +702,7 @@ function ModalWrapper({
       onSubmit={async (data) => {
         await onSubmit()
         setSubmittedSections(data.requested_sections)
+        onRequestCreated?.(data)
       }}
       onClose={() => onClose(submittedSections ?? undefined)}
     />
