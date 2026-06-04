@@ -3126,3 +3126,123 @@ def test_project_defense_analyzed_transcript_not_zero():
     assert pd_src["status"] in ("pass", "partial"), (
         f"Project defense status must be pass or partial, got {pd_src['status']}"
     )
+
+
+def _chatbot_wf(score: int = 70) -> dict[str, Any]:
+    return {
+        "evidence_strength_score": score,
+        "workflow_confidence": "medium",
+        "target_website": "huggingface.co",
+        "workflow_summary": "HuggingChat chatbot page loaded with message input and assistant response.",
+        "recruiter_summary": "The workflow demonstrates prompt to assistant response in a chat UI.",
+        "supported_skills": ["Chatbot UI"],
+        "weakly_supported_skills": ["Natural Language Processing", "Large Language Models"],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+
+
+def _leaflet_wf(score: int = 70) -> dict[str, Any]:
+    return {
+        "evidence_strength_score": score,
+        "workflow_confidence": "medium",
+        "target_website": "leafletjs.com",
+        "workflow_summary": "Leaflet map page loaded with markers, map tiles, zoom, pan, and popup behavior.",
+        "recruiter_summary": "The workflow demonstrates an interactive Leaflet geospatial map.",
+        "supported_skills": ["Leaflet.js", "Interactive Maps"],
+        "weakly_supported_skills": ["Geospatial"],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+
+
+def _pd(transcript: str, score: int = 67) -> dict[str, Any]:
+    return {
+        "analysis_status": "analyzed",
+        "overall_defense_score": score,
+        "transcript_text": transcript,
+        "consistency_with_evidence_score": score,
+        "explanation_clarity_score": 70,
+        "ownership_signal_score": 65,
+        "technical_depth_score": 68,
+    }
+
+
+def test_chatbot_proof_with_chatbot_transcript_scores_relevant_defense():
+    result = _svc(
+        wf=_chatbot_wf(),
+        pd=_pd("I built a HuggingChat chatbot UI with prompt handling, conversation messages, and assistant response rendering."),
+    ).evaluate("u1", "s1", claimed_skills=["Natural Language Processing", "Large Language Models", "Chatbot UI"])
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["score"] >= 60
+    assert "unrelated" not in str(pd_src.get("notes", "")).lower()
+
+
+def test_chatbot_proof_with_webgl_transcript_flags_unrelated_defense_low():
+    result = _svc(
+        wf=_chatbot_wf(),
+        pd=_pd("I built a Three.js WebGL 3D scene with mesh geometry simplification, renderer, camera, texture, and shader controls."),
+    ).evaluate("u1", "s1", claimed_skills=["Natural Language Processing", "Large Language Models", "Chatbot UI"])
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["score"] <= 25
+    assert "unrelated" in str(pd_src.get("notes", "")).lower()
+
+
+def test_leaflet_proof_with_leaflet_transcript_scores_relevant_defense():
+    result = _svc(
+        wf=_leaflet_wf(),
+        pd=_pd("I built the Leaflet interactive map with markers, popups, OpenStreetMap tiles, zoom, pan, and geospatial coordinates."),
+    ).evaluate("u1", "s1", claimed_skills=["Leaflet.js", "Interactive Maps"])
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["score"] >= 60
+
+
+def test_leaflet_proof_with_chatbot_transcript_flags_unrelated_defense_low():
+    result = _svc(
+        wf=_leaflet_wf(),
+        pd=_pd("I built a chatbot prompt interface with assistant messages, conversation history, LLM response handling, and NLP behavior."),
+    ).evaluate("u1", "s1", claimed_skills=["Leaflet.js", "Interactive Maps"])
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["score"] <= 25
+    assert "unrelated" in str(pd_src.get("notes", "")).lower()
+
+
+def test_unrelated_document_does_not_boost_final_score_or_group_skills():
+    wf = _chatbot_wf(score=70)
+    base = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=["Chatbot UI"])
+    unrelated_doc = [{
+        "source_type": "document",
+        "status": "analyzed",
+        "analysis_summary": "Three.js WebGL 3D mesh geometry simplification report.",
+        "evidence_objects": [
+            {"skill_name": "Three.js", "confidence": "high", "reason": "WebGL mesh simplification"},
+            {"skill_name": "WebGL", "confidence": "high", "reason": "3D renderer and geometry"},
+        ],
+    }]
+    result = _svc(wf=wf, opt=unrelated_doc).evaluate("u1", "s1", claimed_skills=["Chatbot UI"])
+    assert result.final_score == base.final_score
+    doc_src = next(s for s in result.evidence_source_breakdown if s["key"] == "uploaded_documents")
+    assert "unrelated" in str(doc_src.get("notes", "")).lower()
+    grouped_skills = {sk.skill for g in result.grouped_skill_evidence for sk in g.skills}
+    assert "Three.js" not in grouped_skills
+    assert "WebGL" not in grouped_skills
+
+
+def test_relevant_document_can_boost_final_score():
+    wf = _chatbot_wf(score=70)
+    base = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=["Chatbot UI"])
+    relevant_doc = [{
+        "source_type": "document",
+        "status": "analyzed",
+        "analysis_summary": "HuggingChat chatbot architecture with prompt handling, assistant response flow, and message UI.",
+        "evidence_objects": [
+            {"skill_name": "Chatbot UI", "confidence": "high", "reason": "chat interface"},
+            {"skill_name": "Natural Language Processing", "confidence": "high", "reason": "prompt processing"},
+            {"skill_name": "Large Language Models", "confidence": "high", "reason": "assistant response"},
+            {"skill_name": "AI Product Design", "confidence": "high", "reason": "conversation UX"},
+        ],
+    }]
+    result = _svc(wf=wf, opt=relevant_doc).evaluate("u1", "s1", claimed_skills=["Chatbot UI"])
+    assert result.final_score >= base.final_score
+    doc_src = next(s for s in result.evidence_source_breakdown if s["key"] == "uploaded_documents")
+    assert doc_src["score"] >= 80

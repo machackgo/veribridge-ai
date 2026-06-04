@@ -771,6 +771,34 @@ function projectDefenseSourceScore(
   return { score, status: score >= 60 ? "pass" : "partial" }
 }
 
+export function mergeVisibleSourceScores(
+  evaluation: FinalEvaluationResult | null,
+  analysis: WorkflowAnalysisResponse | null,
+  defenseAnalysis: ProjectDefenseAnalysisResponse | null,
+): FinalEvaluationResult | null {
+  if (!evaluation) return evaluation
+  const replacements: Record<string, FinalSourceScore | undefined> = {
+    website_workflow: workflowSourceScore(evaluation, analysis),
+    video_keyframes: videoKeyframeSourceScore(evaluation, analysis),
+    ocr: ocrSourceScore(evaluation, analysis),
+    qwen_visual_reasoning: qwenSourceScore(evaluation, analysis),
+    project_defense: projectDefenseSourceScore(evaluation, defenseAnalysis),
+  }
+  return {
+    ...evaluation,
+    evidence_source_breakdown: evaluation.evidence_source_breakdown.map((src) => {
+      const replacement = replacements[src.key]
+      if (!replacement) return src
+      return {
+        ...src,
+        score: replacement.score,
+        status: replacement.status as typeof src.status,
+        notes: replacement.notes ?? src.notes,
+      }
+    }),
+  }
+}
+
 function SourceScoreBadge({
   label,
   source,
@@ -1188,8 +1216,6 @@ function AdvancedVisualReasoningSection({
   }
 
   const observations = reasoning.observations ?? []
-  const signals      = reasoning.supported_signals ?? []
-  const missing      = reasoning.missing_claims ?? []
   const limitations  = reasoning.limitations ?? []
 
   return (
@@ -1324,26 +1350,6 @@ function AdvancedVisualReasoningSection({
           </div>
         </div>
       )}
-
-      {/* Evidence matched to claimed skills — collapsed; final grouped skill evidence is the single source */}
-      {signals.length > 0 && (
-        <div>
-          <div style={{ fontSize: 9, fontWeight: 700, color: "#166534",
-            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
-            Qwen-detected signals
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-            {signals.slice(0, 4).map((sig, i) => (
-              <span key={i} style={{ fontSize: 10, padding: "2px 8px",
-                background: "#dcfce7", color: "#166534", borderRadius: 12,
-                border: "1px solid #bbf7d0", fontWeight: 500 }}>
-                ✓ {sig}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
 
       {/* Confidence */}
       {observations.length > 0 && (() => {
@@ -1683,51 +1689,6 @@ function VideoKeyframeEvidenceSection({
               </div>
             )}
 
-            {/* Per-skill OCR signals */}
-            {analysis.frame_ocr_evidence_summary.skill_signals.length > 0 && (
-              <div style={{ display: "grid", gap: 3 }}>
-                <span style={{ fontSize: 9, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                  OCR evidence per skill
-                </span>
-                {analysis.frame_ocr_evidence_summary.skill_signals.map((sig, i) => (
-                  <div key={i} style={{
-                    display: "flex", alignItems: "flex-start", gap: 6, flexWrap: "wrap",
-                    padding: "4px 7px", borderRadius: 5,
-                    background: sig.ocr_support === "partial" ? "#f0fdf4" : "#fef2f2",
-                    border: `1px solid ${sig.ocr_support === "partial" ? "#bbf7d0" : "#fecaca"}`,
-                  }}>
-                    <span style={{ fontSize: 9, fontWeight: 700, minWidth: 10,
-                      color: sig.ocr_support === "partial" ? "#166534" : "#991b1b" }}>
-                      {sig.ocr_support === "partial" ? "◑" : "○"}
-                    </span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 10, fontWeight: 600, color: "#1e293b" }}>{sig.skill}</span>
-                        <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3,
-                          background: sig.ocr_support === "partial" ? "#dcfce7" : "#fee2e2",
-                          color: sig.ocr_support === "partial" ? "#166534" : "#991b1b" }}>
-                          {sig.ocr_support === "partial" ? "OCR partial" : "OCR insufficient"}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 10, color: "#64748b", marginTop: 2, lineHeight: 1.4 }}>
-                        {sig.reasoning}
-                      </div>
-                      {sig.ocr_terms_found.length > 0 && (
-                        <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 3 }}>
-                          {sig.ocr_terms_found.map((term, j) => (
-                            <span key={j} style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3,
-                              background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe",
-                              fontFamily: "monospace" }}>
-                              {term}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
 
@@ -2338,6 +2299,11 @@ export function FutureProofModulesSection({
           Not adding these does not reduce your score
         </div>
       </div>
+      {documentScore?.notes?.toLowerCase().includes("unrelated") && (
+        <div role="alert" style={{ fontSize: 11, color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 10px", lineHeight: 1.5 }}>
+          Document appears unrelated to the submitted proof. It was not used as a score booster.
+        </div>
+      )}
       {error && (
         <div role="alert" style={{ fontSize: 11, color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 10px" }}>
           {error}
@@ -2347,11 +2313,6 @@ export function FutureProofModulesSection({
         const result = results[m.sourceType]
         const isOpen = openType === m.sourceType
         const status = uiStatus(m.sourceType)
-        const detectedSkills = Array.from(new Set(
-          (result?.evidence_objects ?? [])
-            .map((ev) => String(ev.skill_name ?? "").trim())
-            .filter(Boolean)
-        ))
         const analysisJson = result?.analysis_json ?? {}
         const resultFileName = (result as any)?._fileName ?? analysisJson?.file_name as string | undefined
         const resultFileType = analysisJson?.file_type as string | undefined
@@ -2393,14 +2354,9 @@ export function FutureProofModulesSection({
                 <div style={{ fontSize: 10, color: result.evidence_objects.length > 0 ? "#166534" : "#854d0e", fontWeight: 700 }}>
                   {result.status} · {result.evidence_objects.length} extracted evidence item{result.evidence_objects.length !== 1 ? "s" : ""}
                 </div>
-                {detectedSkills.length > 0 && (
-                  <div style={{ fontSize: 10, color: "#475569", lineHeight: 1.45 }}>
-                    Extracted skills: {detectedSkills.slice(0, 8).join(", ")}
-                  </div>
-                )}
                 {result.evidence_objects.slice(0, 3).map((ev, i) => (
                   <div key={i} style={{ fontSize: 10, color: "#475569", lineHeight: 1.45, padding: "4px 6px", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 5 }}>
-                    <strong>{String(ev.skill_name ?? "Skill")}</strong>: {String(ev.snippet ?? "").slice(0, 160)}
+                    <strong>Evidence snippet</strong>: {String(ev.snippet ?? "").slice(0, 160)}
                     {ev.page_number ? ` · page ${ev.page_number}` : ""}
                     {ev.section_label ? ` · ${String(ev.section_label)}` : ""}
                     {ev.line_start ? ` · lines ${ev.line_start}–${ev.line_end ?? "?"}` : ""}
@@ -4252,56 +4208,6 @@ function GitHubAnalysisCard({
           </div>
         )}
 
-        {/* Skill matching */}
-        {(analysis.matched_claimed_skills.length > 0 || (analysis.weakly_matched_claimed_skills ?? []).length > 0 || analysis.missing_claimed_skills.length > 0) && (
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
-              Skills Assessment
-            </div>
-            <div style={{ display: "grid", gap: 8 }}>
-              {analysis.matched_claimed_skills.length > 0 && (
-                <div>
-                  <div style={{ fontSize: 11, color: "#065f46", fontWeight: 600, marginBottom: 4 }}>Evidence supports</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                    {analysis.matched_claimed_skills.map((s) => (
-                      <span key={s} style={{
-                        fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
-                        background: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0",
-                      }}>{s}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {(analysis.weakly_matched_claimed_skills ?? []).length > 0 && (
-                <div>
-                  <div style={{ fontSize: 11, color: "#854d0e", fontWeight: 600, marginBottom: 4 }}>Partial / contextual evidence</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                    {(analysis.weakly_matched_claimed_skills ?? []).map((s) => (
-                      <span key={s} style={{
-                        fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
-                        background: "#fefce8", color: "#854d0e", border: "1px solid #fef08a",
-                      }}>{s}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {analysis.missing_claimed_skills.length > 0 && (
-                <div>
-                  <div style={{ fontSize: 11, color: "#991b1b", fontWeight: 600, marginBottom: 4 }}>No GitHub code evidence found for</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                    {analysis.missing_claimed_skills.map((s) => (
-                      <span key={s} style={{
-                        fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
-                        background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca",
-                      }}>{s}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
         {/* Warnings / risk flags */}
         {analysis.warnings.length > 0 && (
           <div>
@@ -5330,6 +5236,9 @@ export function ProjectDefenseResultCard({
     redacted: { label: "Privacy: Redacted", color: "#1d4ed8", bg: "#dbeafe", border: "#bfdbfe" },
     flagged:  { label: "Privacy: Flagged",  color: "#991b1b", bg: "#fef2f2", border: "#fecaca" },
   }[analysis.privacy_scan_status] ?? { label: "Privacy: Unknown", color: "#64748b", bg: "#f8fafc", border: "#e2e8f0" }
+  const unrelatedWarning = sourceScore?.notes?.toLowerCase().includes("unrelated")
+    ? sourceScore.notes
+    : analysis.risk_flags.find((flag) => flag.toLowerCase().includes("unrelated"))
 
   return (
     <div style={{ border: `1px solid ${scoreBorder}`, borderRadius: 14, overflow: "hidden" }}>
@@ -5357,6 +5266,20 @@ export function ProjectDefenseResultCard({
       </div>
 
       <div style={{ padding: "14px 16px", display: "grid", gap: 14 }}>
+        {unrelatedWarning && (
+          <div role="alert" style={{
+            border: "1px solid #fecaca",
+            background: "#fef2f2",
+            color: "#991b1b",
+            borderRadius: 10,
+            padding: "9px 12px",
+            fontSize: 12,
+            lineHeight: 1.55,
+          }}>
+            Transcript appears unrelated to the submitted proof. It was not used as strong support for this project.
+          </div>
+        )}
+
         {/* Score breakdown — 2-col grid */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           {([
@@ -5385,34 +5308,6 @@ export function ProjectDefenseResultCard({
             </p>
           </div>
         </AnalysisSection>
-
-        {/* Skills */}
-        {analysis.skills_mentioned.length > 0 && (
-          <AnalysisSection title="Skills Mentioned in Defense">
-            <div style={{ display: "grid", gap: 8 }}>
-              {analysis.skills_explained_well.length > 0 && (
-                <div>
-                  <div style={{ fontSize: 11, color: "#065f46", fontWeight: 600, marginBottom: 4 }}>Well explained</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                    {analysis.skills_explained_well.map(s => (
-                      <SkillPill key={s} label={s} variant="supported" />
-                    ))}
-                  </div>
-                </div>
-              )}
-              {analysis.skills_missing_from_explanation.length > 0 && (
-                <div>
-                  <div style={{ fontSize: 11, color: "#9a3412", fontWeight: 600, marginBottom: 4 }}>Skill needs stronger explanation</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                    {analysis.skills_missing_from_explanation.map(s => (
-                      <SkillPill key={s} label={s} variant="unsupported" />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </AnalysisSection>
-        )}
 
         {/* Risk flags */}
         {analysis.risk_flags.length > 0 && (
@@ -6767,6 +6662,10 @@ export function ExtensionProofPanel({
   // displays stale data from the wrong session.
   const currentSessionAnalysis: WorkflowAnalysisResponse | null =
     workflowAnalysis?.proof_session_id === session?.id ? workflowAnalysis : null
+  const finalEvalForDisplay = useMemo(
+    () => mergeVisibleSourceScores(finalEval, currentSessionAnalysis, defenseAnalysis),
+    [finalEval, currentSessionAnalysis, defenseAnalysis],
+  )
 
   // ── Verification Readiness Report (computed from existing state) ──────────
   // Re-computed whenever any piece of evidence changes. No extra API call needed.
@@ -7870,9 +7769,9 @@ export function ExtensionProofPanel({
         )}
 
         {/* ── Final Evidence Score ─────────────────────────────────────────── */}
-        {finalEval && currentSessionAnalysis && (
+        {finalEvalForDisplay && currentSessionAnalysis && (
           <FinalEvaluatorCard
-            evaluation={finalEval}
+            evaluation={finalEvalForDisplay}
             sessionId={session.id}
             onRunGitHub={form.githubUrl.trim() ? () => void handleGitHubAnalysis() : undefined}
             onRunLiveCheck={!isLocal(urlType) ? () => void handleLiveCheck() : undefined}
@@ -7888,14 +7787,14 @@ export function ExtensionProofPanel({
         )}
 
         {/* ── Detected Skill Profile ───────────────────────────────────────── */}
-        {finalEval && (
-          <DetectedSkillProfileSection evaluation={finalEval} />
+        {finalEvalForDisplay && (
+          <DetectedSkillProfileSection evaluation={finalEvalForDisplay} />
         )}
 
         {/* ── Final Recommendations ──────────────────────────────────────── */}
-        {finalEval && (
+        {finalEvalForDisplay && (
           <FinalRecommendationsSection
-            evaluation={finalEval}
+            evaluation={finalEvalForDisplay}
             sessionId={session.id}
             onRunGitHub={form.githubUrl.trim() ? () => void handleGitHubAnalysis() : undefined}
             onRunLiveCheck={!isLocal(urlType) ? () => void handleLiveCheck() : undefined}

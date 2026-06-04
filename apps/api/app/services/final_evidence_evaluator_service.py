@@ -694,6 +694,80 @@ def _clamp(v: int, lo: int = 0, hi: int = 100) -> int:
     return max(lo, min(hi, v))
 
 
+_PROJECT_TYPE_TERMS: dict[str, tuple[str, ...]] = {
+    "chatbot_nlp_llm": (
+        "huggingchat", "chatbot", "chat ui", "chat interface", "prompt",
+        "assistant", "llm", "large language", "nlp", "conversation", "message",
+        "model response", "generated response",
+    ),
+    "3d_webgl_graphics": (
+        "three.js", "threejs", "webgl", "3d", "mesh", "geometry", "renderer",
+        "scene", "camera", "texture", "shader", "simplification",
+    ),
+    "maps_geospatial": (
+        "leaflet", "map", "marker", "popup", "tile", "zoom", "pan",
+        "openstreetmap", "geospatial", "gis", "coordinates",
+    ),
+    "data_visualization": (
+        "d3", "chart", "graph", "axis", "dataset", "visualization", "tooltip",
+        "plot", "dashboard",
+    ),
+    "ml_demo": (
+        "prediction", "inference", "training", "classes", "confidence",
+        "tensorflow", "pytorch", "classifier", "model evaluation",
+    ),
+}
+
+
+def _project_types_from_text(text: str) -> set[str]:
+    lower = (text or "").lower()
+    return {
+        project_type
+        for project_type, terms in _PROJECT_TYPE_TERMS.items()
+        if any(term in lower for term in terms)
+    }
+
+
+def _proof_context_text(
+    claimed_skills: list[str],
+    wf: dict[str, Any] | None,
+    gh: dict[str, Any] | None,
+) -> str:
+    parts: list[str] = list(claimed_skills or [])
+    if wf:
+        parts.extend(str(x) for x in wf.get("supported_skills") or [])
+        parts.extend(str(x) for x in wf.get("weakly_supported_skills") or [])
+        parts.append(str(wf.get("target_website") or ""))
+        parts.append(str(wf.get("workflow_summary") or ""))
+        parts.append(str(wf.get("recruiter_summary") or ""))
+        parts.append(str(wf.get("page_context_summary") or ""))
+        parts.append(str(wf.get("visual_summary") or ""))
+        parts.append(str(wf.get("frame_ocr_evidence_summary") or ""))
+        parts.append(str(wf.get("visual_reasoning_summary") or ""))
+    if gh:
+        parts.append(str(gh.get("repo_name") or ""))
+        parts.append(str(gh.get("github_url") or gh.get("repo_url") or ""))
+        parts.extend(str(x) for x in gh.get("detected_stack") or [])
+        parts.extend(str(x) for x in gh.get("matched_claimed_skills") or [])
+    return " ".join(parts)
+
+
+def _is_relevant_to_proof(
+    evidence_text: str,
+    claimed_skills: list[str],
+    wf: dict[str, Any] | None,
+    gh: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    proof_types = _project_types_from_text(_proof_context_text(claimed_skills, wf, gh))
+    evidence_types = _project_types_from_text(evidence_text)
+    if proof_types and evidence_types and proof_types.isdisjoint(evidence_types):
+        return False, (
+            "evidence appears unrelated to submitted proof "
+            f"(proof={','.join(sorted(proof_types))}; evidence={','.join(sorted(evidence_types))})"
+        )
+    return True, ""
+
+
 # ── Service ───────────────────────────────────────────────────────────────────
 
 class FinalEvidenceEvaluatorService:
@@ -1192,10 +1266,26 @@ class FinalEvidenceEvaluatorService:
             return EvidenceSourceResult("live_website_check", "pass", 90, _SOURCE_WEIGHTS["live_website_check"])
         return EvidenceSourceResult("live_website_check", "missing", 20, _SOURCE_WEIGHTS["live_website_check"])
 
-    def _score_project_defense(self, pd: dict[str, Any] | None) -> EvidenceSourceResult:
+    def _score_project_defense(
+        self,
+        pd: dict[str, Any] | None,
+        claimed_skills: list[str] | None = None,
+        wf: dict[str, Any] | None = None,
+        gh: dict[str, Any] | None = None,
+    ) -> EvidenceSourceResult:
         if pd is None:
             return EvidenceSourceResult("project_defense", "not_run", 0, _SOURCE_WEIGHTS["project_defense"])
         analysis_status = pd.get("analysis_status", "not_started")
+        transcript = str(pd.get("transcript_text") or "")
+        relevant, relevance_note = _is_relevant_to_proof(transcript, claimed_skills or [], wf, gh)
+        if transcript and not relevant:
+            return EvidenceSourceResult(
+                "project_defense",
+                "partial",
+                20,
+                _SOURCE_WEIGHTS["project_defense"],
+                notes=f"transcript appears unrelated to submitted proof; {relevance_note}",
+            )
         raw_score = pd.get("overall_score")
         if raw_score is None:
             raw_score = pd.get("overall_defense_score")
@@ -1209,7 +1299,6 @@ class FinalEvidenceEvaluatorService:
             dim_vals = [int(v) for v in dims if v is not None]
             if dim_vals:
                 raw_score = round(sum(dim_vals) / len(dim_vals))
-        transcript = str(pd.get("transcript_text") or "")
         if raw_score is None and analysis_status == "analyzed" and len(transcript) > 50:
             raw_score = 40
         if raw_score is not None:
@@ -1225,11 +1314,36 @@ class FinalEvidenceEvaluatorService:
         rows: list[dict[str, Any]],
         source_type: str,
         key: EvidenceSourceKey,
+        claimed_skills: list[str] | None = None,
+        wf: dict[str, Any] | None = None,
+        gh: dict[str, Any] | None = None,
     ) -> EvidenceSourceResult:
         matching = [r for r in rows if r.get("source_type") == source_type]
         if not matching:
             return EvidenceSourceResult(key, "not_available", 0, _SOURCE_WEIGHTS[key],
                                         notes="Optional — can strengthen your profile")
+        relevant_matching: list[dict[str, Any]] = []
+        unrelated_found = False
+        for row in matching:
+            evidence_text = " ".join([
+                str(row.get("analysis_summary") or ""),
+                str(row.get("analysis_json") or ""),
+                str(row.get("evidence_objects") or ""),
+            ])
+            relevant, _ = _is_relevant_to_proof(evidence_text, claimed_skills or [], wf, gh)
+            if relevant:
+                relevant_matching.append(row)
+            else:
+                unrelated_found = True
+        if unrelated_found and not relevant_matching:
+            return EvidenceSourceResult(
+                key,
+                "partial",
+                0,
+                _SOURCE_WEIGHTS[key],
+                notes="document appears unrelated to submitted proof; not used as score booster",
+            )
+        matching = relevant_matching or matching
         ev_count = sum(len(r.get("evidence_objects") or []) for r in matching)
         if ev_count > 0:
             return EvidenceSourceResult(key, "pass", min(90, 55 + ev_count * 8), _SOURCE_WEIGHTS[key])
@@ -1238,6 +1352,25 @@ class FinalEvidenceEvaluatorService:
                                         notes="needs stronger evidence")
         return EvidenceSourceResult(key, "partial", 45, _SOURCE_WEIGHTS[key],
                                     notes="optional evidence submitted but weak")
+
+    def _filter_relevant_optional_rows(
+        self,
+        rows: list[dict[str, Any]],
+        claimed_skills: list[str],
+        wf: dict[str, Any] | None,
+        gh: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        relevant_rows: list[dict[str, Any]] = []
+        for row in rows:
+            evidence_text = " ".join([
+                str(row.get("analysis_summary") or ""),
+                str(row.get("analysis_json") or ""),
+                str(row.get("evidence_objects") or ""),
+            ])
+            relevant, _ = _is_relevant_to_proof(evidence_text, claimed_skills, wf, gh)
+            if relevant:
+                relevant_rows.append(row)
+        return relevant_rows
 
     # ── Score combination ─────────────────────────────────────────────────────
 
@@ -2684,6 +2817,7 @@ class FinalEvidenceEvaluatorService:
         pd = self._load_project_defense(user_id, session_id)
         opt = self._load_optional_evidence(user_id, session_id)
         project_opt = [row for row in opt if row.get("source_type") == "document"]
+        relevant_project_opt = self._filter_relevant_optional_rows(project_opt, skills, wf, gh)
         kf_count = self._count_video_keyframes(user_id, session_id)
 
         sources: list[EvidenceSourceResult] = [
@@ -2694,8 +2828,8 @@ class FinalEvidenceEvaluatorService:
             self._score_qwen(wf, user_id=user_id, session_id=session_id),
             self._score_github(gh),
             self._score_live_website(lw),
-            self._score_project_defense(pd),
-            self._score_optional(project_opt, "document", "uploaded_documents"),
+            self._score_project_defense(pd, skills, wf, gh),
+            self._score_optional(project_opt, "document", "uploaded_documents", skills, wf, gh),
         ]
 
         final_score = self._combine_scores(sources)
@@ -2704,10 +2838,13 @@ class FinalEvidenceEvaluatorService:
         sources_missing: list[EvidenceSourceKey] = [s.key for s in sources if s.status in ("not_run", "missing")]
 
         confidence = self._confidence_label(final_score, sources_used)
-        per_skill = self._per_skill_scores(skills, wf, gh, project_opt)
+        per_skill = self._per_skill_scores(skills, wf, gh, relevant_project_opt)
 
         # Detected skill profile (inferred from all evidence, including beyond claimed)
-        all_skill_entries = self._collect_all_evidence_skills(skills, wf, gh, pd, project_opt)
+        relevant_pd = pd
+        if pd and not _is_relevant_to_proof(str(pd.get("transcript_text") or ""), skills, wf, gh)[0]:
+            relevant_pd = None
+        all_skill_entries = self._collect_all_evidence_skills(skills, wf, gh, relevant_pd, relevant_project_opt)
         detected_capability = self._infer_skill_profile(skills, all_skill_entries)
         detected_additional = [
             e for e in all_skill_entries.values() if e.is_inferred
@@ -2720,7 +2857,7 @@ class FinalEvidenceEvaluatorService:
         )
         recommendations = self._build_recommendations(
             final_score, sources, actions, skills, all_skill_entries,
-            grouped_skill_evidence, wf, gh, pd, project_opt,
+            grouped_skill_evidence, wf, gh, relevant_pd, relevant_project_opt,
         )
 
         recruiter_summary, student_summary = self._build_summaries(

@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { DetectedSkillProfileSection, ExtensionProofPanel, FinalEvaluatorCard, FinalRecommendationsSection, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
+import { DetectedSkillProfileSection, ExtensionProofPanel, FinalEvaluatorCard, FinalRecommendationsSection, FutureProofModulesSection, mergeVisibleSourceScores, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
 import type { FinalEvaluationResult, ProjectDefenseAnalysisResponse } from "../lib/api"
 
 const learningAction = {
@@ -244,6 +244,116 @@ describe("Final report consistency", () => {
     expect(screen.getByText(/qwen visual reasoning/i)).toBeInTheDocument()
     expect(screen.getByText(/50\/100/)).toBeInTheDocument()
     expect(screen.queryByText(/^not run$/i)).not.toBeInTheDocument()
+  })
+
+  it("merges visible source scores into stale final source cards", () => {
+    const merged = mergeVisibleSourceScores(
+      evaluation({
+        final_score: 62,
+        evidence_source_breakdown: [
+          { key: "website_workflow", status: "not_run", score: 0, weight: 0.18, notes: "stale" },
+          { key: "ocr", status: "not_run", score: 0, weight: 0.08, notes: "stale" },
+          { key: "qwen_visual_reasoning", status: "not_run", score: 0, weight: 0.1, notes: "stale" },
+          { key: "project_defense", status: "not_run", score: 0, weight: 0.15, notes: "stale" },
+        ],
+      }),
+      {
+        evidence_strength_score: 29,
+        workflow_confidence: "low",
+        frame_ocr_evidence_summary: {
+          has_ocr_evidence: true,
+          top_ocr_snippets: ["Leaflet map marker"],
+          detected_page_context: "map page",
+          skill_signals: [],
+        },
+        visual_analysis_status: "analyzed",
+        video_keyframe_count: 2,
+        visual_reasoning_summary: { status: "analyzed", frames_analyzed: 2 },
+      } as any,
+      {
+        overall_defense_score: 67,
+        consistency_with_evidence_score: 65,
+        explanation_clarity_score: 70,
+        ownership_signal_score: 60,
+        technical_depth_score: 72,
+      } as any,
+    )
+
+    expect(merged).not.toBeNull()
+    const byKey = Object.fromEntries((merged!.evidence_source_breakdown ?? []).map((source) => [source.key, source]))
+    expect(byKey.website_workflow?.score).toBe(29)
+    expect(byKey.ocr?.score).toBe(50)
+    expect(byKey.qwen_visual_reasoning?.score).toBe(80)
+    expect(byKey.project_defense?.score).toBe(67)
+    expect(byKey.website_workflow?.status).not.toBe("not_run")
+    expect(byKey.ocr?.status).not.toBe("not_run")
+    expect(byKey.qwen_visual_reasoning?.status).not.toBe("not_run")
+    expect(byKey.project_defense?.status).not.toBe("not_run")
+  })
+
+  it("keeps source-level skill diagnostics out of normal UI source", () => {
+    const source = readFileSync(
+      join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
+      "utf8",
+    )
+    expect(source).not.toMatch(/OCR evidence per skill|Qwen-detected signals|Skills Mentioned in Defense/)
+  })
+
+  it("shows unrelated Project Defense warning clearly", () => {
+    const analysis = {
+      id: "pd1",
+      user_id: "u1",
+      proof_session_id: "s1",
+      video_url: null,
+      media_url: null,
+      media_type: null,
+      media_filename: null,
+      media_storage_path: null,
+      transcription_status: "analysis_complete",
+      transcript_reviewed: true,
+      transcript_text: "This is about Three.js mesh simplification.",
+      raw_transcript: null,
+      refined_transcript: null,
+      transcript_correction_summary: [],
+      transcript_glossary_matches: [],
+      transcript_refinement_status: "not_started",
+      transcript_needs_review: false,
+      transcript_summary: "Technical but unrelated.",
+      skills_mentioned: ["Three.js"],
+      skills_explained_well: ["Three.js"],
+      skills_missing_from_explanation: [],
+      consistency_with_evidence_score: 20,
+      explanation_clarity_score: 60,
+      ownership_signal_score: 50,
+      technical_depth_score: 60,
+      overall_defense_score: 20,
+      risk_flags: ["transcript appears unrelated to submitted proof"],
+      recruiter_summary: "Transcript appears unrelated to submitted proof.",
+      recommended_improvements: [],
+      privacy_scan_status: "clean",
+      created_at: null,
+      updated_at: null,
+    } as ProjectDefenseAnalysisResponse
+
+    render(
+      <ProjectDefenseResultCard
+        analysis={analysis}
+        sourceScore={{ score: 20, status: "partial", notes: "transcript appears unrelated to submitted proof" }}
+      />,
+    )
+
+    expect(screen.getByText(/Transcript appears unrelated to the submitted proof/i)).toBeInTheDocument()
+  })
+
+  it("shows unrelated document warning clearly", () => {
+    render(
+      <FutureProofModulesSection
+        sessionId="s1"
+        documentScore={{ score: 0, status: "partial", notes: "document appears unrelated to submitted proof" }}
+      />,
+    )
+
+    expect(screen.getByText(/Document appears unrelated to the submitted proof/i)).toBeInTheDocument()
   })
 })
 
