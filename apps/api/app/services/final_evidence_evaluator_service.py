@@ -710,6 +710,16 @@ class FinalEvidenceEvaluatorService:
     # ── Data loaders ──────────────────────────────────────────────────────────
 
     def _load_workflow_analysis(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        # In-memory dict store (dev/test env override): iterate values directly.
+        if isinstance(self._db, dict):
+            store = self._db.get(_WF_TABLE, {})
+            for row in store.values():
+                if (
+                    str(row.get("proof_session_id")) == session_id
+                    and str(row.get("user_id")) == user_id
+                ):
+                    return row
+            return None
         try:
             resp = (
                 self._db.table(_WF_TABLE)
@@ -761,6 +771,9 @@ class FinalEvidenceEvaluatorService:
             return None
 
     def _load_project_defense(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        # In-memory dict store: project defense service uses proof_session_id as key.
+        if isinstance(self._db, dict):
+            return self._db.get(_PD_TABLE, {}).get(session_id)
         try:
             resp = (
                 self._db.table(_PD_TABLE)
@@ -852,13 +865,89 @@ class FinalEvidenceEvaluatorService:
         if isinstance(ocr_summary, dict) and ocr_summary.get("detected_page_context") == "filtered_non_target_frame":
             return EvidenceSourceResult("ocr", "not_run", 0, _SOURCE_WEIGHTS["ocr"],
                                         notes="non-target frames excluded from scoring")
+
         status = wf.get("visual_analysis_status", "not_configured")
         if status == "analyzed":
             return EvidenceSourceResult("ocr", "pass", 80, _SOURCE_WEIGHTS["ocr"])
+
+        # Root-cause fix: frame_ocr_evidence_summary can be populated from Qwen/video
+        # frame analysis even when the traditional OCR provider (PaddleOCR/EasyOCR/
+        # Tesseract) was not configured.  Check it before returning "not_run".
+        if isinstance(ocr_summary, dict) and (
+            ocr_summary.get("has_ocr_evidence") or
+            len(ocr_summary.get("top_ocr_snippets") or []) > 0
+        ):
+            return EvidenceSourceResult("ocr", "partial", 50, _SOURCE_WEIGHTS["ocr"],
+                                        notes="frame text evidence from video/Qwen analysis")
+
         if status in ("not_configured", "not_available"):
             return EvidenceSourceResult("ocr", "not_run", 0, _SOURCE_WEIGHTS["ocr"],
                                         notes="OCR not configured")
         return EvidenceSourceResult("ocr", "partial", 40, _SOURCE_WEIGHTS["ocr"])
+
+    def _load_visual_reasoning_from_frames(
+        self, user_id: str, session_id: str
+    ) -> dict[str, Any] | None:
+        """Re-query per-frame visual_reasoning_json from the frame evidence table.
+
+        The GET /analysis/workflow endpoint always re-derives visual_reasoning_summary
+        from per-frame data via _enrich_visual_reasoning_summary() and bypasses the
+        cached value on the workflow_analysis_results row.  The final evaluator reads
+        the raw row and may see a null/stale stored summary.  This helper performs the
+        same per-frame query so the scorer sees current data.
+
+        Returns a minimal vrs-compatible dict or None when no frames have reasoning.
+        """
+        _FRAME_TABLE = "workflow_visual_frame_evidence"
+        try:
+            if isinstance(self._db, dict):
+                rows = [
+                    row for row in self._db.get(_FRAME_TABLE, {}).values()
+                    if (
+                        str(row.get("user_id")) == user_id
+                        and str(row.get("proof_session_id")) == session_id
+                        and row.get("frame_type") == "video_keyframe"
+                        and row.get("visual_reasoning_json") is not None
+                    )
+                ]
+            else:
+                resp = (
+                    self._db.table(_FRAME_TABLE)
+                    .select("visual_reasoning_json, timestamp_ms")
+                    .eq("user_id", user_id)
+                    .eq("proof_session_id", session_id)
+                    .eq("frame_type", "video_keyframe")
+                    .not_.is_("visual_reasoning_json", "null")
+                    .order("timestamp_ms", desc=False)
+                    .limit(10)
+                    .execute()
+                )
+                rows = resp.data or []
+        except Exception:
+            return None
+
+        if not rows:
+            return None
+
+        observations: list[dict[str, Any]] = []
+        for row in rows:
+            reasoning_json = row.get("visual_reasoning_json")
+            if isinstance(reasoning_json, dict) and reasoning_json.get("status") == "analyzed":
+                observations.append(reasoning_json)
+
+        if not observations:
+            return None
+
+        return {
+            "status": "analyzed",
+            "frames_analyzed": len(observations),
+            "observations": observations,
+            "supported_signals": list(dict.fromkeys(
+                sig
+                for obs in observations
+                for sig in (obs.get("supported_skills") or [])
+            )),
+        }
 
     @staticmethod
     def _qwen_obs_chatbot_score(vrs: dict[str, Any]) -> int:
@@ -879,7 +968,12 @@ class FinalEvidenceEvaluatorService:
                 return 50  # partial evidence — target chatbot UI observed
         return 0
 
-    def _score_qwen(self, wf: dict[str, Any] | None) -> EvidenceSourceResult:
+    def _score_qwen(
+        self,
+        wf: dict[str, Any] | None,
+        user_id: str = "",
+        session_id: str = "",
+    ) -> EvidenceSourceResult:
         if wf is None:
             return EvidenceSourceResult("qwen_visual_reasoning", "not_run", 0, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
         vrs = wf.get("visual_reasoning_summary") or {}
@@ -890,8 +984,18 @@ class FinalEvidenceEvaluatorService:
             except Exception:
                 vrs = {}
         if not isinstance(vrs, dict):
-            return EvidenceSourceResult("qwen_visual_reasoning", "not_run", 0, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
+            vrs = {}
+
+        # Root-cause fix: the GET /analysis/workflow endpoint always re-queries
+        # visual_reasoning_summary from per-frame data (bypassing the stored value
+        # which may be null or stale when Qwen ran after the initial analysis).
+        # If stored summary is absent or disabled, fall back to per-frame data.
         qwen_status = vrs.get("status", "disabled")
+        if qwen_status in ("disabled", "not_configured") and user_id and session_id:
+            per_frame = self._load_visual_reasoning_from_frames(user_id, session_id)
+            if per_frame:
+                vrs = per_frame
+                qwen_status = "analyzed"
         if qwen_status == "analyzed":
             frames = int(vrs.get("frames_analyzed") or 0)
             score = min(90, 50 + frames * 15)
@@ -2451,7 +2555,7 @@ class FinalEvidenceEvaluatorService:
             self._score_dom(wf),
             self._score_video_keyframes(kf_count),
             self._score_ocr(wf),
-            self._score_qwen(wf),
+            self._score_qwen(wf, user_id=user_id, session_id=session_id),
             self._score_github(gh),
             self._score_live_website(lw),
             self._score_project_defense(pd),

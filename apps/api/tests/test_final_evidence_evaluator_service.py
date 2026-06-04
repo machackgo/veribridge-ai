@@ -2860,6 +2860,160 @@ def test_profile_and_certificate_rows_are_reserved_outside_project_proof():
 
 # ── Chatbot / Qwen target evidence tests ──────────────────────────────────────
 
+# ── Mismatch regression tests: source cards must not show "not_run" when data exists ─
+
+def test_workflow_analysis_present_source_not_run_false():
+    """If workflow analysis exists (even score=0), website_workflow must NOT be not_run."""
+    wf = {
+        "evidence_strength_score": 0,
+        "workflow_confidence": "insufficient",
+        "visible_evidence_status": "not_captured",
+        "demonstrated_actions": [],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": [],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+    svc = _svc(wf=wf)
+    result = svc.evaluate("u1", "s1", claimed_skills=["Chatbot UI"])
+    wf_src = next(s for s in result.evidence_source_breakdown if s["key"] == "website_workflow")
+    assert wf_src["status"] != "not_run", (
+        f"website_workflow must not be 'not_run' when workflow row exists; got {wf_src['status']}"
+    )
+
+
+def test_ocr_evidence_in_frame_summary_not_not_run():
+    """If frame_ocr_evidence_summary has has_ocr_evidence=True, OCR must NOT be not_run."""
+    wf = {
+        "evidence_strength_score": 45,
+        "workflow_confidence": "low",
+        "visible_evidence_status": "not_captured",
+        "demonstrated_actions": [],
+        # visual_analysis_status is 'not_configured' (no OCR provider), but OCR data exists
+        # from Qwen/video frame analysis stored in frame_ocr_evidence_summary
+        "visual_analysis_status": "not_configured",
+        "supported_skills": [],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {
+            "has_ocr_evidence": True,
+            "top_ocr_snippets": ["HuggingChat", "chat window", "hi"],
+            "detected_page_context": "chatbot_ui",
+            "skill_signals": [],
+        },
+    }
+    svc = _svc(wf=wf)
+    result = svc.evaluate("u1", "s1", claimed_skills=["Natural Language Processing"])
+    ocr_src = next(s for s in result.evidence_source_breakdown if s["key"] == "ocr")
+    assert ocr_src["status"] != "not_run", (
+        f"OCR must not be 'not_run' when frame_ocr_evidence_summary has evidence; got {ocr_src['status']}"
+    )
+    assert ocr_src["score"] > 0, (
+        f"OCR score must be > 0 when frame evidence exists; got {ocr_src['score']}"
+    )
+
+
+def test_qwen_per_frame_data_used_when_stored_summary_null():
+    """When stored visual_reasoning_summary is null but per-frame data exists, Qwen must not be not_available."""
+    from unittest.mock import MagicMock
+
+    # Simulate in-memory dict with per-frame Qwen data
+    frame_table = "workflow_visual_frame_evidence"
+    session_id = "sess-qwen-fallback"
+    user_id = "u1"
+
+    frame_row = {
+        "id": "frame-1",
+        "user_id": user_id,
+        "proof_session_id": session_id,
+        "frame_type": "video_keyframe",
+        "timestamp_ms": 3000,
+        "visual_reasoning_json": {
+            "status": "analyzed",
+            "visual_summary": "The HuggingChat interface is open with a chat window.",
+            "frames_analyzed": 1,
+            "supported_skills": ["Chatbot UI"],
+            "confidence_score": 0.75,
+        },
+    }
+
+    wf_row = {
+        "evidence_strength_score": 55,
+        "workflow_confidence": "medium",
+        "visible_evidence_status": "not_captured",
+        "demonstrated_actions": ["Target application loaded: huggingface.co/chat"],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": [],
+        "weakly_supported_skills": [],
+        # stored visual_reasoning_summary is null (common for sessions analyzed before Qwen ran)
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+
+    db = {
+        "workflow_analysis_results": {"row-1": {**wf_row, "user_id": user_id, "proof_session_id": session_id}},
+        frame_table: {"frame-1": frame_row},
+    }
+    svc = FinalEvidenceEvaluatorService(db)
+    result = svc.evaluate(user_id, session_id, claimed_skills=["Chatbot UI"])
+    qwen_src = next(s for s in result.evidence_source_breakdown if s["key"] == "qwen_visual_reasoning")
+    # Qwen per-frame fallback must have found the analyzed frame
+    assert qwen_src["status"] not in ("not_available",), (
+        f"Qwen must use per-frame fallback when stored summary is null; got {qwen_src['status']}"
+    )
+    assert qwen_src["score"] > 0, (
+        f"Qwen score must be > 0 when per-frame Qwen data exists; got {qwen_src['score']}"
+    )
+
+
+def test_project_defense_analyzed_not_not_run_with_dict_store():
+    """If project defense was analyzed and stored in dict store, source must NOT be not_run."""
+    from app.services.project_defense_analysis_service import _TABLE as _PD_TABLE
+
+    session_id = "sess-pd-test"
+    user_id = "u1"
+
+    pd_row = {
+        "user_id": user_id,
+        "proof_session_id": session_id,
+        "analysis_status": "analyzed",
+        "overall_score": 65,
+        "transcript_text": "I built the HuggingChat chatbot UI with message input and prompt handling.",
+        "consistency_with_evidence_score": 65,
+        "explanation_clarity_score": 70,
+        "ownership_signal_score": 60,
+        "technical_depth_score": 65,
+    }
+
+    wf_row = {
+        "evidence_strength_score": 50,
+        "workflow_confidence": "medium",
+        "visible_evidence_status": "not_captured",
+        "demonstrated_actions": [],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": [],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+
+    # Dict store: project defense uses proof_session_id as key (matching project_defense_analysis_service)
+    db = {
+        "workflow_analysis_results": {"row-1": {**wf_row, "user_id": user_id, "proof_session_id": session_id}},
+        _PD_TABLE: {session_id: pd_row},
+    }
+    svc = FinalEvidenceEvaluatorService(db)
+    result = svc.evaluate(user_id, session_id, claimed_skills=["Chatbot UI"])
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["status"] != "not_run", (
+        f"Project defense must not be 'not_run' when analysis row exists in dict store; got {pd_src['status']}"
+    )
+    assert pd_src["score"] > 0, (
+        f"Project defense score must be > 0 when analyzed transcript exists; got {pd_src['score']}"
+    )
+
+
 def test_qwen_chatbot_target_observation_gives_partial_score():
     """Qwen observations describing HuggingChat give non-zero score even when filtered."""
     wf = {

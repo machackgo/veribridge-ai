@@ -1234,24 +1234,6 @@ function AdvancedVisualReasoningSection({
                       ))}
                     </div>
                   )}
-                  {/* Skill evidence checklist */}
-                  {obs.skill_evidence && Object.keys(obs.skill_evidence).length > 0 && (
-                    <div style={{ marginTop: 4 }}>
-                      <span style={{ fontSize: 9, color: "#6b7280" }}>Skill evidence:</span>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 2 }}>
-                        {Object.entries(obs.skill_evidence).slice(0, 4).map(([skill, ev], j) => (
-                          <span key={j} style={{
-                            fontSize: 9, padding: "1px 6px", borderRadius: 3,
-                            background: ev.verdict === "supported" ? "#dcfce7" : ev.verdict === "partial" ? "#fef9c3" : "#f3f4f6",
-                            color: ev.verdict === "supported" ? "#166534" : ev.verdict === "partial" ? "#78350f" : "#6b7280",
-                            border: `1px solid ${ev.verdict === "supported" ? "#bbf7d0" : ev.verdict === "partial" ? "#fde68a" : "#e5e7eb"}`,
-                          }}>
-                            {ev.verdict === "supported" ? "✓" : ev.verdict === "partial" ? "~" : "—"} {skill}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
               )
             })}
@@ -1264,15 +1246,15 @@ function AdvancedVisualReasoningSection({
         </div>
       )}
 
-      {/* Evidence matched to claimed skills */}
+      {/* Evidence matched to claimed skills — collapsed; final grouped skill evidence is the single source */}
       {signals.length > 0 && (
         <div>
           <div style={{ fontSize: 9, fontWeight: 700, color: "#166534",
             textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
-            Evidence matched to claimed skills
+            Qwen-detected signals
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-            {signals.map((sig, i) => (
+            {signals.slice(0, 4).map((sig, i) => (
               <span key={i} style={{ fontSize: 10, padding: "2px 8px",
                 background: "#dcfce7", color: "#166534", borderRadius: 12,
                 border: "1px solid #bbf7d0", fontWeight: 500 }}>
@@ -1283,21 +1265,6 @@ function AdvancedVisualReasoningSection({
         </div>
       )}
 
-      {/* Missing or unclear proof */}
-      {missing.length > 0 && (
-        <div>
-          <div style={{ fontSize: 9, fontWeight: 700, color: "#92400e",
-            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
-            Missing or unclear proof
-          </div>
-          <ul style={{ margin: 0, padding: "0 0 0 14px",
-            display: "flex", flexDirection: "column", gap: 2 }}>
-            {missing.slice(0, 5).map((item, i) => (
-              <li key={i} style={{ fontSize: 10, color: "#78350f", lineHeight: 1.4 }}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
 
       {/* Confidence */}
       {observations.length > 0 && (() => {
