@@ -1053,6 +1053,25 @@ export type NextBestAction = {
   recommended_duration: string | null
 }
 
+export type FinalRecommendationAction = {
+  title: string
+  reason: string
+  action: string
+  skill_learned: string
+  evidence_to_record: string
+  difficulty: "beginner" | "intermediate" | "advanced"
+  estimated_time: "30 min" | "1–2 hr" | "1 day" | "1 week"
+  priority: "high" | "medium" | "low"
+  source_reason: string
+  action_type: string
+}
+
+export type FinalRecommendations = {
+  mode: "proof_repair" | "project_growth"
+  proof_actions: FinalRecommendationAction[]
+  learning_actions: FinalRecommendationAction[]
+}
+
 export type EvidenceSourceBreakdown = {
   key: string
   status: FinalEvidenceStatus
@@ -1137,6 +1156,7 @@ export type FinalEvaluationResult = {
   final_recruiter_summary: string
   final_student_summary: string
   next_best_actions: NextBestAction[]
+  recommendations?: FinalRecommendations
   strong_proof: boolean
   detected_capability?: DetectedCapability | null
   detected_additional_skills?: DetectedSkillEntry[]

@@ -23,6 +23,7 @@ import {
   submitOptionalEvidence,
   uploadOptionalEvidenceFile,
   type FinalEvaluationResult,
+  type FinalRecommendationAction,
   type NextBestAction,
   type DetectedCapability,
   type DetectedSkillEntry,
@@ -3448,6 +3449,182 @@ function FinalEvaluatorCard({
 }
 
 // ── Standalone Next Actions Section (rendered after Detected Skill Profile) ────
+
+function RecommendationCard({ action, index }: { action: FinalRecommendationAction; index: number }) {
+  const pc = actionPriorityColor(action.priority)
+  return (
+    <details style={{ padding: "10px 12px",
+      background: pc.bg, border: `1px solid ${pc.border}`,
+      borderRadius: 8 }}>
+      <summary style={{ cursor: "pointer", listStyle: "none" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 9, fontWeight: 700, color: pc.text,
+            background: pc.badge, border: `1px solid ${pc.border}`,
+            borderRadius: 4, padding: "2px 7px", textTransform: "uppercase",
+            letterSpacing: "0.06em" }}>
+            {action.difficulty}
+          </span>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "#1e293b" }}>
+            {index + 1}. {action.title}
+          </span>
+          <span style={{ fontSize: 9, color: "#64748b" }}>{action.estimated_time}</span>
+        </div>
+      </summary>
+      <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+        <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1.45 }}>
+          <b>Why:</b> {action.reason}
+        </div>
+        <div style={{ fontSize: 10, color: "#1e293b", lineHeight: 1.5,
+          padding: "6px 8px", background: "rgba(255,255,255,0.72)",
+          borderRadius: 5, border: `1px solid ${pc.border}` }}>
+          <b>Build:</b> {action.action}
+        </div>
+        <div style={{ fontSize: 10, color: "#475569", lineHeight: 1.45 }}>
+          <b>Skill learned:</b> {action.skill_learned}
+        </div>
+        <div style={{ fontSize: 10, color: "#475569", lineHeight: 1.45 }}>
+          <b>Evidence to record:</b> {action.evidence_to_record}
+        </div>
+        <div style={{ fontSize: 9, color: "#64748b", lineHeight: 1.4 }}>
+          Source: {action.source_reason}
+        </div>
+      </div>
+    </details>
+  )
+}
+
+export function FinalRecommendationsSection({
+  evaluation,
+  sessionId,
+  onRunGitHub,
+  onRunLiveCheck,
+}: {
+  evaluation: FinalEvaluationResult
+  sessionId: string
+  onRunGitHub?: () => void
+  onRunLiveCheck?: () => void
+}) {
+  const [savedTitle, setSavedTitle] = useState<string | null>(null)
+  const recs = evaluation.recommendations
+  if (!recs) return (
+    <StandaloneNextActionsSection
+      evaluation={evaluation}
+      sessionId={sessionId}
+      onRunGitHub={onRunGitHub}
+      onRunLiveCheck={onRunLiveCheck}
+    />
+  )
+
+  function handleRecord(action: FinalRecommendationAction) {
+    try {
+      sessionStorage.setItem(FOLLOWUP_INTENT_KEY_FE, JSON.stringify({
+        parentSessionId: sessionId,
+        skill: action.skill_learned,
+        objective: action.action,
+      }))
+    } catch { /* unavailable */ }
+    setSavedTitle(action.title)
+  }
+
+  function renderProofButton(action: FinalRecommendationAction) {
+    if (action.action_type === "run_github_analysis" && onRunGitHub) {
+      return <button type="button" onClick={onRunGitHub}
+        style={{ fontSize: 11, fontWeight: 700, padding: "6px 14px", borderRadius: 7,
+          border: "none", background: "#111827", color: "#fff", cursor: "pointer" }}>{action.title}</button>
+    }
+    if (action.action_type === "run_live_website_check" && onRunLiveCheck) {
+      return <button type="button" onClick={onRunLiveCheck}
+        style={{ fontSize: 11, fontWeight: 700, padding: "6px 14px", borderRadius: 7,
+          border: "none", background: "#1d4ed8", color: "#fff", cursor: "pointer" }}>{action.title}</button>
+    }
+    if (action.action_type.startsWith("record_")) {
+      if (savedTitle === action.title) {
+        return <span style={{ fontSize: 10, color: "#6d28d9", fontWeight: 600,
+          padding: "4px 10px", background: "#ede9fe",
+          border: "1px solid #c4b5fd", borderRadius: 6 }}>
+          ✓ Intent saved — click Start New Proof above
+        </span>
+      }
+      return <button type="button" onClick={() => handleRecord(action)}
+        style={{ fontSize: 11, fontWeight: 700, padding: "6px 14px", borderRadius: 7,
+          border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer" }}>{action.title}</button>
+    }
+    return <span style={{ fontSize: 10, color: "#94a3b8",
+      padding: "4px 10px", background: "#f8fafc",
+      border: "1px solid #e2e8f0", borderRadius: 6 }}>{action.title}</span>
+  }
+
+  if (recs.mode === "project_growth" || evaluation.final_score >= 80) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+          textTransform: "uppercase", color: "#475569" }}>
+          Personalized Project Improvement Plan
+        </div>
+        <div style={{ fontSize: 10, color: "#166534", background: "#f0fdf4",
+          border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 10px", lineHeight: 1.45 }}>
+          Your proof is strong. These are optional next steps to improve the project and learn advanced skills.
+        </div>
+        {recs.learning_actions.slice(0, 5).map((action, i) => (
+          <RecommendationCard key={action.action_type + i} action={action} index={i} />
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {recs.proof_actions.length > 0 && (
+        <>
+          <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+            textTransform: "uppercase", color: "#475569" }}>
+            Recommended Next Actions
+          </div>
+          <div style={{ fontSize: 10, color: "#64748b", marginTop: -4 }}>
+            Strengthen recruiter-ready evidence by fixing the weakest source first.
+          </div>
+          {recs.proof_actions.slice(0, 4).map((action, i) => {
+            const pc = actionPriorityColor(action.priority)
+            return (
+              <div key={action.action_type + i} style={{ padding: "10px 12px",
+                background: pc.bg, border: `1px solid ${pc.border}`,
+                borderRadius: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, color: pc.text,
+                    background: pc.badge, border: `1px solid ${pc.border}`,
+                    borderRadius: 4, padding: "2px 7px", textTransform: "uppercase",
+                    letterSpacing: "0.06em" }}>
+                    {action.priority}
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#1e293b" }}>{action.title}</span>
+                </div>
+                <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1.4 }}>{action.reason}</div>
+                <div style={{ fontSize: 10, color: "#1e293b", lineHeight: 1.5,
+                  padding: "5px 8px", background: "rgba(255,255,255,0.7)",
+                  borderRadius: 5, border: `1px solid ${pc.border}` }}>{action.action}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 9, color: "#64748b" }}>{action.source_reason}</span>
+                  {renderProofButton(action)}
+                </div>
+              </div>
+            )
+          })}
+        </>
+      )}
+      {recs.learning_actions.length > 0 && (
+        <>
+          <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+            textTransform: "uppercase", color: "#64748b", marginTop: 4 }}>
+            Optional learning opportunities
+          </div>
+          {recs.learning_actions.slice(0, 3).map((action, i) => (
+            <RecommendationCard key={action.action_type + i} action={action} index={i} />
+          ))}
+        </>
+      )}
+    </div>
+  )
+}
 
 function StandaloneNextActionsSection({
   evaluation,
@@ -7467,21 +7644,14 @@ export function ExtensionProofPanel({
           <DetectedSkillProfileSection evaluation={finalEval} />
         )}
 
-        {/* ── Recommended Next Actions (after Detected Skill Profile) ─────── */}
-        {finalEval && !finalEval.strong_proof && finalEval.final_score < 80 && (
-          <StandaloneNextActionsSection
+        {/* ── Final Recommendations ──────────────────────────────────────── */}
+        {finalEval && (
+          <FinalRecommendationsSection
             evaluation={finalEval}
             sessionId={session.id}
             onRunGitHub={form.githubUrl.trim() ? () => void handleGitHubAnalysis() : undefined}
             onRunLiveCheck={!isLocal(urlType) ? () => void handleLiveCheck() : undefined}
           />
-        )}
-        {finalEval && (finalEval.strong_proof || finalEval.final_score >= 80) && (
-          <div style={{ padding: "8px 12px", background: "#f0fdf4",
-            border: "1px solid #bbf7d0", borderRadius: 8,
-            fontSize: 11, color: "#166534", fontWeight: 600 }}>
-            Proof is strong. Optional improvements only.
-          </div>
         )}
 
         {/* ── Verification Review ────────────────────────────────────────── */}

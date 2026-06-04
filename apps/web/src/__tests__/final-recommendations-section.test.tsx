@@ -1,0 +1,123 @@
+import { fireEvent, render, screen } from "@testing-library/react"
+import { describe, expect, it } from "vitest"
+import { FinalRecommendationsSection } from "../../components/skill-proof/extension-proof-panel"
+import type { FinalEvaluationResult } from "../lib/api"
+
+const learningAction = {
+  title: "Add performance metrics",
+  reason: "Geometry optimization should show measurable improvement.",
+  action: "Display vertex count, face count, FPS, and render time.",
+  skill_learned: "performance profiling, graphics optimization",
+  evidence_to_record: "Show metrics changing when simplification is applied.",
+  difficulty: "intermediate" as const,
+  estimated_time: "1–2 hr" as const,
+  priority: "medium" as const,
+  source_reason: "Triggered by detected project type: 3d/graphics/webgl.",
+  action_type: "learning_3d_metrics",
+}
+
+const proofAction = {
+  title: "Add GitHub URL",
+  reason: "React is claimed but no GitHub repository URL was provided.",
+  action: "Add a public GitHub repository URL to enable code evidence analysis.",
+  skill_learned: "React",
+  evidence_to_record: "No recording required; run or upload the missing evidence source.",
+  difficulty: "beginner" as const,
+  estimated_time: "30 min" as const,
+  priority: "high" as const,
+  source_reason: "Triggered by github evidence: status=not_run, score=0/100.",
+  action_type: "add_github_url",
+}
+
+function evaluation(overrides: Partial<FinalEvaluationResult>): FinalEvaluationResult {
+  return {
+    proof_session_id: "s1",
+    final_score: 75,
+    confidence: "medium",
+    evidence_sources_used: [],
+    evidence_sources_missing: [],
+    per_skill_scores: {},
+    evidence_source_breakdown: [],
+    final_recruiter_summary: "",
+    final_student_summary: "",
+    next_best_actions: [],
+    strong_proof: false,
+    ...overrides,
+  }
+}
+
+describe("FinalRecommendationsSection", () => {
+  it("renders Recommended Next Actions for scores under 80", () => {
+    render(
+      <FinalRecommendationsSection
+        evaluation={evaluation({
+          final_score: 72,
+          recommendations: { mode: "proof_repair", proof_actions: [proofAction], learning_actions: [learningAction] },
+        })}
+        sessionId="s1"
+      />,
+    )
+    expect(screen.getByText("Recommended Next Actions")).toBeInTheDocument()
+    expect(screen.getAllByText("Add GitHub URL").length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText("Optional learning opportunities")).toBeInTheDocument()
+  })
+
+  it("renders Personalized Project Improvement Plan for scores 80 or higher", () => {
+    render(
+      <FinalRecommendationsSection
+        evaluation={evaluation({
+          final_score: 85,
+          strong_proof: true,
+          recommendations: { mode: "project_growth", proof_actions: [], learning_actions: [learningAction] },
+        })}
+        sessionId="s1"
+      />,
+    )
+    expect(screen.getByText("Personalized Project Improvement Plan")).toBeInTheDocument()
+    expect(screen.getByText(/Your proof is strong/)).toBeInTheDocument()
+    expect(screen.queryByText("Recommended Next Actions")).not.toBeInTheDocument()
+  })
+
+  it("shows learning card fields when expanded", () => {
+    render(
+      <FinalRecommendationsSection
+        evaluation={evaluation({
+          final_score: 88,
+          strong_proof: true,
+          recommendations: { mode: "project_growth", proof_actions: [], learning_actions: [learningAction] },
+        })}
+        sessionId="s1"
+      />,
+    )
+    fireEvent.click(screen.getByText(/Add performance metrics/))
+    expect(screen.getByText(/Why:/)).toBeInTheDocument()
+    expect(screen.getByText(/Build:/)).toBeInTheDocument()
+    expect(screen.getByText(/Skill learned:/)).toBeInTheDocument()
+    expect(screen.getByText(/Evidence to record:/)).toBeInTheDocument()
+    expect(screen.getByText("intermediate")).toBeInTheDocument()
+    expect(screen.getByText("1–2 hr")).toBeInTheDocument()
+  })
+
+  it("keeps the existing proof recommendation fallback working", () => {
+    render(
+      <FinalRecommendationsSection
+        evaluation={evaluation({
+          final_score: 70,
+          next_best_actions: [{
+            action_type: "record_followup_proof",
+            target_skill: "React",
+            reason: "React visual evidence is weak.",
+            objective: "Record a focused demo.",
+            button_label: "Record Follow-up Proof",
+            priority: "medium",
+            is_recording: true,
+            recommended_duration: "30–60 seconds",
+          }],
+        })}
+        sessionId="s1"
+      />,
+    )
+    expect(screen.getByText("Recommended Next Actions")).toBeInTheDocument()
+    expect(screen.getByText("React")).toBeInTheDocument()
+  })
+})

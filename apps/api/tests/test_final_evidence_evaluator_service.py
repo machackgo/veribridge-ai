@@ -129,6 +129,106 @@ def test_skill_category_mapping():
     assert _skill_category("DevOps Deployment") == "DEVOPS"
 
 
+def _strong_wf(skills: list[str]) -> dict[str, Any]:
+    return {
+        "evidence_strength_score": 92,
+        "workflow_confidence": "good",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["open", "click", "change", "submit", "review"],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": skills,
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": {"status": "analyzed", "summary": " ".join(skills)},
+        "frame_ocr_evidence_summary": {"skill_signals": []},
+        "video_keyframe_status": "captured",
+        "video_keyframe_count": 4,
+        "video_keyframe_timestamps_ms": [1000, 2000],
+    }
+
+
+def _strong_gh(skills: list[str], stack: list[str]) -> dict[str, Any]:
+    return {
+        "status": "success",
+        "confidence_score": 0.9,
+        "matched_claimed_skills": skills,
+        "weakly_matched_claimed_skills": [],
+        "detected_stack": stack,
+        "skill_code_evidence": [{"skill": s, "file_path": "src/app.ts"} for s in skills],
+    }
+
+
+def _strong_result(skills: list[str], stack: list[str]):
+    return _svc(
+        wf=_strong_wf(skills),
+        gh=_strong_gh(skills, stack),
+        lw={"is_reachable": True},
+        pd={"analysis_status": "analyzed", "overall_score": 90, "transcript_text": "I built and tested the core project flow."},
+        kf_count=4,
+    ).evaluate("u1", "s1", claimed_skills=skills, github_url="https://github.com/acme/project")
+
+
+def test_final_score_under_80_returns_proof_actions_as_primary():
+    wf = {
+        "evidence_strength_score": 35,
+        "workflow_confidence": "insufficient",
+        "visible_evidence_status": "not_captured",
+        "demonstrated_actions": [],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": [],
+        "weakly_supported_skills": ["React"],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+    result = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=["React"], github_url=None)
+    assert result.final_score < 80
+    assert result.recommendations.mode == "proof_repair"
+    assert result.recommendations.proof_actions
+
+
+def test_final_score_80_or_higher_returns_learning_actions_as_primary():
+    result = _strong_result(["React", "TypeScript"], ["React", "TypeScript"])
+    assert result.final_score >= 80
+    assert result.recommendations.mode == "project_growth"
+    assert result.recommendations.learning_actions
+    assert result.recommendations.proof_actions == []
+
+
+def test_threejs_webgl_evidence_returns_3d_learning_actions():
+    result = _strong_result(["Three.js", "WebGL", "mesh simplification"], ["Three.js", "WebGL"])
+    titles = " ".join(a.title.lower() for a in result.recommendations.learning_actions)
+    assert "geometry" in titles or "performance metrics" in titles
+
+
+def test_d3_data_visualization_evidence_returns_chart_learning_actions():
+    result = _strong_result(["D3", "Data Visualization", "Charts"], ["D3"])
+    titles = " ".join(a.title.lower() for a in result.recommendations.learning_actions)
+    assert "filter" in titles
+    assert "tooltip" in titles
+
+
+def test_ml_evidence_returns_model_learning_actions():
+    result = _strong_result(["Machine Learning", "Model Training"], ["PyTorch", "sklearn"])
+    titles = " ".join(a.title.lower() for a in result.recommendations.learning_actions)
+    assert "evaluation" in titles or "confusion" in titles
+
+
+def test_missing_github_suggests_github_proof_action_not_generic_learning():
+    wf = _strong_wf(["React", "TypeScript"])
+    wf["evidence_strength_score"] = 45
+    result = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=["React", "TypeScript"], github_url=None)
+    actions = result.recommendations.proof_actions
+    assert result.final_score < 80
+    assert any(a.action_type == "add_github_url" for a in actions)
+    assert result.recommendations.mode == "proof_repair"
+
+
+def test_learning_actions_do_not_reduce_final_score():
+    result = _strong_result(["Machine Learning", "Python"], ["Python", "sklearn"])
+    score_with_recommendations = result.final_score
+    assert result.recommendations.learning_actions
+    assert result.final_score == score_with_recommendations
+
+
 def test_skills_grouped_separately_by_category():
     wf = {
         "evidence_strength_score": 75,

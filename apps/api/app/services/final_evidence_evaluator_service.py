@@ -530,6 +530,48 @@ class NextBestAction:
 
 
 @dataclass
+class RecommendationAction:
+    title: str
+    reason: str
+    action: str
+    skill_learned: str
+    evidence_to_record: str
+    difficulty: Literal["beginner", "intermediate", "advanced"]
+    estimated_time: Literal["30 min", "1–2 hr", "1 day", "1 week"]
+    priority: Literal["high", "medium", "low"]
+    source_reason: str
+    action_type: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "reason": self.reason,
+            "action": self.action,
+            "skill_learned": self.skill_learned,
+            "evidence_to_record": self.evidence_to_record,
+            "difficulty": self.difficulty,
+            "estimated_time": self.estimated_time,
+            "priority": self.priority,
+            "source_reason": self.source_reason,
+            "action_type": self.action_type,
+        }
+
+
+@dataclass
+class FinalRecommendations:
+    mode: Literal["proof_repair", "project_growth"]
+    proof_actions: list[RecommendationAction]
+    learning_actions: list[RecommendationAction]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "proof_actions": [a.to_dict() for a in self.proof_actions],
+            "learning_actions": [a.to_dict() for a in self.learning_actions],
+        }
+
+
+@dataclass
 class EvidenceSourceResult:
     key: EvidenceSourceKey
     status: Literal["pass", "partial", "missing", "not_run", "not_available"]
@@ -573,6 +615,7 @@ class FinalEvaluationResult:
     final_recruiter_summary: str
     final_student_summary: str
     next_best_actions: list[dict[str, Any]]
+    recommendations: FinalRecommendations
     strong_proof: bool  # True when final_score >= 80
     detected_capability: DetectedCapability | None = None
     detected_additional_skills: list[DetectedSkillEntry] = field(default_factory=list)
@@ -590,6 +633,7 @@ class FinalEvaluationResult:
             "final_recruiter_summary": self.final_recruiter_summary,
             "final_student_summary": self.final_student_summary,
             "next_best_actions": self.next_best_actions,
+            "recommendations": self.recommendations.to_dict(),
             "strong_proof": self.strong_proof,
             "detected_capability": self.detected_capability.to_dict() if self.detected_capability else None,
             "detected_additional_skills": [s.to_dict() for s in self.detected_additional_skills],
@@ -1981,6 +2025,182 @@ class FinalEvidenceEvaluatorService:
 
         return unique[:5]
 
+    # ── Final recommendations ────────────────────────────────────────────────
+
+    def _evidence_text(
+        self,
+        claimed_skills: list[str],
+        detected_skills: dict[str, DetectedSkillEntry],
+        wf: dict[str, Any] | None,
+        gh: dict[str, Any] | None,
+        pd: dict[str, Any] | None,
+        optional_rows: list[dict[str, Any]],
+    ) -> str:
+        parts: list[str] = list(claimed_skills)
+        parts.extend(e.skill for e in detected_skills.values())
+        parts.extend(e.category or "" for e in detected_skills.values())
+        if wf:
+            parts.extend(str(x) for x in wf.get("supported_skills") or [])
+            parts.extend(str(x) for x in wf.get("weakly_supported_skills") or [])
+            parts.append(str(wf.get("recruiter_summary") or ""))
+            parts.append(str(wf.get("student_summary") or ""))
+            parts.append(str(wf.get("visual_reasoning_summary") or ""))
+            parts.append(str(wf.get("frame_ocr_evidence_summary") or ""))
+        if gh:
+            parts.extend(str(x) for x in gh.get("detected_stack") or [])
+            parts.extend(str(x) for x in gh.get("matched_claimed_skills") or [])
+            parts.extend(str(x.get("skill") or "") for x in gh.get("skill_code_evidence") or [] if isinstance(x, dict))
+        if pd:
+            parts.append(str(pd.get("transcript_text") or ""))
+            parts.append(str(pd.get("summary") or ""))
+        for row in optional_rows:
+            parts.append(str(row.get("source_type") or ""))
+            parts.append(str(row.get("analysis_summary") or ""))
+            parts.append(str(row.get("evidence_objects") or ""))
+        return " ".join(parts).lower()
+
+    def _project_type(self, evidence_text: str, grouped: list[GroupedSkillEvidence]) -> str:
+        group_text = " ".join((g.category + " " + g.group_name) for g in grouped).lower()
+        text = evidence_text + " " + group_text
+        checks: list[tuple[str, tuple[str, ...]]] = [
+            ("3d_graphics_webgl", ("three.js", "threejs", "webgl", "mesh", "geometry", "shader", "canvas 3d", "babylon")),
+            ("data_visualization", ("d3", "chart", "visualization", "tooltip", "plot", "dashboard", "graph", "data viz")),
+            ("ml_deep_learning", ("machine learning", "deep learning", "model", "neural", "classifier", "confusion matrix", "roc", "tensorflow", "pytorch", "sklearn")),
+            ("nlp_llm_rag", ("llm", "rag", "retrieval", "embedding", "vector", "prompt", "langchain", "nlp", "chatbot")),
+            ("devops_mlops", ("docker", "kubernetes", "ci/cd", "pipeline", "terraform", "monitoring", "deployment", "mlops")),
+            ("backend_api", ("api", "backend", "fastapi", "express", "django", "flask", "database", "postgres", "auth")),
+            ("frontend_fullstack", ("react", "next.js", "frontend", "full stack", "fullstack", "typescript", "javascript", "ui")),
+        ]
+        for project_type, keywords in checks:
+            if any(k in text for k in keywords):
+                return project_type
+        return "frontend_fullstack"
+
+    def _learning_templates(self, project_type: str, source_reason: str) -> list[RecommendationAction]:
+        templates: dict[str, list[RecommendationAction]] = {
+            "3d_graphics_webgl": [
+                RecommendationAction("Add interactive geometry controls", "This proves the 3D output is parameter-driven, not just static rendering.", "Add a slider or segmented control that changes simplification ratio, material, or lighting in real time.", "UI state management, Three.js geometry processing, WebGL rendering", "Show the original mesh, adjust the control, then show the changed mesh.", "intermediate", "1–2 hr", "medium", source_reason, "learning_3d_controls"),
+                RecommendationAction("Add performance metrics", "Graphics projects are stronger when optimization is measurable.", "Display vertex count, face count, FPS, and render time before and after a change.", "performance profiling, graphics optimization", "Show metrics changing as the mesh or scene complexity changes.", "intermediate", "1–2 hr", "medium", source_reason, "learning_3d_metrics"),
+                RecommendationAction("Explain the rendering pipeline", "Recruiters trust visual proof more when the student can explain the source code path.", "Open the render loop, geometry update, or simplifier function and add a short defense explanation.", "technical communication, code reading, rendering pipeline understanding", "Record a short project defense explaining the key function and rendered output.", "beginner", "30 min", "low", source_reason, "learning_code_explanation"),
+            ],
+            "data_visualization": [
+                RecommendationAction("Add interactive filters", "Filtering proves the visualization responds to user intent and data state.", "Add category, date, or range filters that update the chart without a page refresh.", "D3/data state joins, UI state management", "Show the baseline chart, change a filter, and explain how the marks update.", "intermediate", "1–2 hr", "medium", source_reason, "learning_chart_filters"),
+                RecommendationAction("Add tooltip details", "Hover details make the chart easier to inspect and prove data-to-mark mapping.", "Add accessible tooltips with exact values, labels, and the selected datum.", "D3 events, data binding, interaction design", "Hover over several marks and show the tooltip values matching the chart.", "beginner", "30 min", "medium", source_reason, "learning_chart_tooltips"),
+                RecommendationAction("Add a dynamic dataset switcher", "Changing datasets shows the visualization logic generalizes beyond one static example.", "Let users upload a CSV or switch between two bundled datasets.", "data parsing, schema validation, reusable chart rendering", "Switch datasets and show the chart redraw with updated axes and labels.", "advanced", "1 day", "low", source_reason, "learning_dataset_switcher"),
+            ],
+            "ml_deep_learning": [
+                RecommendationAction("Add an evaluation dashboard", "Model projects need measurable quality, not just a working prediction.", "Show accuracy, precision, recall, F1, and validation loss for the trained model.", "model evaluation, metric interpretation", "Run a prediction and show the evaluation metrics used to judge the model.", "intermediate", "1–2 hr", "medium", source_reason, "learning_ml_metrics"),
+                RecommendationAction("Add confusion matrix or ROC view", "Error analysis proves you understand where the model succeeds and fails.", "Render a confusion matrix for classification or ROC curve when class probabilities exist.", "diagnostic evaluation, visualization for ML", "Show the chart and explain one false positive or false negative pattern.", "intermediate", "1–2 hr", "medium", source_reason, "learning_ml_error_analysis"),
+                RecommendationAction("Add inference monitoring", "Monitoring turns the model into a more production-ready project.", "Log inference latency, input count, prediction distribution, and failed requests.", "model monitoring, production ML operations", "Show live inference metrics changing after several test predictions.", "advanced", "1 day", "low", source_reason, "learning_ml_monitoring"),
+            ],
+            "nlp_llm_rag": [
+                RecommendationAction("Add retrieval quality checks", "RAG projects need proof that answers are grounded in retrieved sources.", "Show retrieved chunks, similarity scores, and citations beside each answer.", "retrieval evaluation, grounding, citation design", "Ask a question and show the retrieved context used for the answer.", "intermediate", "1–2 hr", "medium", source_reason, "learning_rag_grounding"),
+                RecommendationAction("Add prompt/version experiments", "Comparing prompts teaches systematic LLM evaluation instead of one-off demos.", "Save two prompt variants and compare answer quality on the same test questions.", "prompt evaluation, experiment tracking", "Show both prompt outputs and explain which version performs better.", "beginner", "1–2 hr", "low", source_reason, "learning_prompt_eval"),
+                RecommendationAction("Add safety and fallback handling", "LLM apps are stronger when they handle uncertainty and bad inputs clearly.", "Add refusal/fallback behavior for missing context, irrelevant questions, or low retrieval confidence.", "LLM guardrails, UX for uncertain output", "Ask an out-of-scope question and show the fallback response.", "intermediate", "1–2 hr", "low", source_reason, "learning_llm_guardrails"),
+            ],
+            "backend_api": [
+                RecommendationAction("Add API tests and examples", "Backend proof is stronger when behavior is verified outside the UI.", "Add endpoint tests plus a small request/response example collection.", "API testing, contract validation", "Run the tests and show one request returning the expected response.", "beginner", "1–2 hr", "medium", source_reason, "learning_api_tests"),
+                RecommendationAction("Add auth and permission checks", "Real backend projects should prove protected actions cannot be misused.", "Add role-based checks or ownership checks around a sensitive endpoint.", "authentication, authorization, backend security", "Show allowed and denied requests for the same endpoint.", "intermediate", "1 day", "medium", source_reason, "learning_api_auth"),
+                RecommendationAction("Add observability", "Logs and health checks make the API easier to operate and debug.", "Add structured logs, a health endpoint, and basic error tracking for key routes.", "operability, production debugging", "Trigger one successful and one failed request and show the logged result.", "intermediate", "1–2 hr", "low", source_reason, "learning_api_observability"),
+            ],
+            "frontend_fullstack": [
+                RecommendationAction("Add polished empty and loading states", "Frontend projects feel more complete when async states are handled intentionally.", "Add loading, empty, and error states for the main workflow.", "frontend UX, async state management", "Show the page loading, an empty state, and a successful result.", "beginner", "1–2 hr", "medium", source_reason, "learning_frontend_states"),
+                RecommendationAction("Add end-to-end workflow tests", "Tests prove the core user journey still works after changes.", "Add an E2E test for the main happy path and one error path.", "E2E testing, regression prevention", "Run the test and show the browser exercising the workflow.", "intermediate", "1 day", "medium", source_reason, "learning_e2e_tests"),
+                RecommendationAction("Add accessibility improvements", "Accessible UI shows professional frontend judgment beyond visuals.", "Add semantic labels, keyboard navigation, focus states, and contrast fixes.", "accessibility, semantic HTML, UI quality", "Navigate the workflow by keyboard and show labels/focus states.", "intermediate", "1–2 hr", "low", source_reason, "learning_accessibility"),
+            ],
+            "devops_mlops": [
+                RecommendationAction("Add a CI quality gate", "Automation proves the project can be safely changed and deployed.", "Run tests, linting, or build checks in CI before deployment.", "CI/CD, release discipline", "Show a passing CI run for a code change.", "intermediate", "1–2 hr", "medium", source_reason, "learning_ci_gate"),
+                RecommendationAction("Add deployment rollback notes", "Deployment projects are stronger when failure recovery is planned.", "Document the deploy command, required env vars, health check, and rollback step.", "deployment operations, incident readiness", "Show the health check and the rollback instructions in the repo or docs.", "beginner", "30 min", "low", source_reason, "learning_deploy_runbook"),
+                RecommendationAction("Add runtime monitoring", "Monitoring shows the deployed system can be operated after launch.", "Track uptime, latency, error rate, or model drift depending on the project.", "observability, production operations", "Show a dashboard or log output changing after test traffic.", "advanced", "1 day", "low", source_reason, "learning_runtime_monitoring"),
+            ],
+        }
+        return templates.get(project_type, templates["frontend_fullstack"])
+
+    def _build_recommendations(
+        self,
+        final_score: int,
+        sources: list[EvidenceSourceResult],
+        next_actions: list[NextBestAction],
+        claimed_skills: list[str],
+        detected_skills: dict[str, DetectedSkillEntry],
+        grouped: list[GroupedSkillEvidence],
+        wf: dict[str, Any] | None,
+        gh: dict[str, Any] | None,
+        pd: dict[str, Any] | None,
+        optional_rows: list[dict[str, Any]],
+    ) -> FinalRecommendations:
+        source_map = {s.key: s for s in sources}
+
+        def src_reason(key: str) -> str:
+            s = source_map.get(key)
+            if not s:
+                return "Triggered by combined final evidence analysis."
+            label = key.replace("_", " ")
+            return f"Triggered by {label} evidence: status={s.status}, score={s.score}/100. {s.notes}".strip()
+
+        proof_actions: list[RecommendationAction] = []
+        for a in next_actions:
+            key = "website_workflow"
+            if "github" in a.action_type:
+                key = "github"
+            elif "live_website" in a.action_type:
+                key = "live_website_check"
+            elif "document" in a.action_type:
+                key = "uploaded_documents"
+            elif "presentation" in a.action_type:
+                key = "project_defense"
+            evidence_to_record = "No recording required; run or upload the missing evidence source."
+            if a.is_recording:
+                evidence_to_record = a.objective
+            proof_actions.append(RecommendationAction(
+                title=a.button_label,
+                reason=a.reason,
+                action=a.objective,
+                skill_learned=a.target_skill,
+                evidence_to_record=evidence_to_record,
+                difficulty="beginner",
+                estimated_time="30 min",
+                priority=a.priority,
+                source_reason=src_reason(key),
+                action_type=a.action_type,
+            ))
+
+        if final_score < 80 and len(proof_actions) < 4:
+            pd_src = source_map.get("project_defense")
+            if pd_src and pd_src.status in ("not_run", "missing", "partial"):
+                proof_actions.append(RecommendationAction(
+                    "Add a project defense explanation",
+                    "Ownership and explanation evidence is weak or missing.",
+                    "Record a short walkthrough explaining what you built, the key technical choices, and one hard problem you solved.",
+                    "technical communication, project ownership",
+                    "Record a 2–5 minute defense tied to the same project.",
+                    "beginner",
+                    "30 min",
+                    "medium",
+                    src_reason("project_defense"),
+                    "record_presentation",
+                ))
+
+        evidence_text = self._evidence_text(claimed_skills, detected_skills, wf, gh, pd, optional_rows)
+        project_type = self._project_type(evidence_text, grouped)
+        project_label = project_type.replace("_", "/")
+        learning = self._learning_templates(
+            project_type,
+            f"Triggered by detected project type: {project_label}; evidence came from analyzed skills and available source text.",
+        )
+
+        seen: set[str] = set()
+        unique_proof: list[RecommendationAction] = []
+        for action in proof_actions:
+            if action.action_type in seen:
+                continue
+            seen.add(action.action_type)
+            unique_proof.append(action)
+
+        if final_score < 80:
+            return FinalRecommendations("proof_repair", unique_proof[:4], learning[:2])
+        return FinalRecommendations("project_growth", [], learning[:5])
+
     # ── Summaries ─────────────────────────────────────────────────────────────
 
     def _build_summaries(
@@ -2081,6 +2301,10 @@ class FinalEvidenceEvaluatorService:
             sources, skills, github_url, final_score,
             detected_skills=all_skill_entries,
         )
+        recommendations = self._build_recommendations(
+            final_score, sources, actions, skills, all_skill_entries,
+            grouped_skill_evidence, wf, gh, pd, project_opt,
+        )
 
         recruiter_summary, student_summary = self._build_summaries(
             final_score, skills, sources, per_skill, actions
@@ -2106,6 +2330,7 @@ class FinalEvidenceEvaluatorService:
             final_recruiter_summary=recruiter_summary,
             final_student_summary=student_summary,
             next_best_actions=[a.to_dict() for a in actions],
+            recommendations=recommendations,
             strong_proof=final_score >= 80,
             detected_capability=detected_capability,
             detected_additional_skills=detected_additional,
