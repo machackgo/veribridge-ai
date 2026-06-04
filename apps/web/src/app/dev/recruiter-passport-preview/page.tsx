@@ -277,6 +277,12 @@ export default function DevRecruiterPassportPreviewPage() {
         <RecruiterWorkPassportPreview
           view={MOCK_VIEW}
           onRequestAccess={() => setAccessRequested(true)}
+          defaultRequester={{
+            name: "Stripe Early Talent",
+            email: "recruiter@stripe.com",
+            company: "Stripe",
+            role: "Early Talent / AI Intern Hiring",
+          }}
         />
       </div>
     </div>

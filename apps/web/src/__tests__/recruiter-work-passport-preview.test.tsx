@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { RecruiterWorkPassportPreview } from "../../components/recruiter-passport/RecruiterWorkPassportPreview"
+import { EvidenceAccessRequestModal } from "../../components/recruiter-passport/EvidenceAccessRequestModal"
 import type { RecruiterPassportViewResponse } from "../lib/passport-api"
 
 // ── Fixture builder ───────────────────────────────────────────────────────────
@@ -183,6 +184,144 @@ describe("RecruiterWorkPassportPreview", () => {
     expect(html).not.toContain("proof_data")
     expect(html).not.toContain("transcript_text")
     expect(html).not.toContain("raw_risk")
+  })
+})
+
+// ── EvidenceAccessRequestModal tests ─────────────────────────────────────────
+
+describe("EvidenceAccessRequestModal", () => {
+  it("renders modal with title", () => {
+    render(<EvidenceAccessRequestModal onClose={vi.fn()} />)
+    expect(screen.getByTestId("access-request-modal")).toBeInTheDocument()
+    expect(screen.getByText(/Request access to protected evidence/i)).toBeInTheDocument()
+  })
+
+  it("renders privacy and consent copy", () => {
+    render(<EvidenceAccessRequestModal onClose={vi.fn()} />)
+    const copy = screen.getByTestId("privacy-consent-copy")
+    expect(copy).toBeInTheDocument()
+    expect(copy.textContent).toMatch(/Students stay in control/i)
+    expect(copy.textContent).toMatch(/VeriBridge will notify the student/i)
+    expect(copy.textContent).toMatch(/Public skill summaries remain visible/i)
+  })
+
+  it("renders required name and email fields", () => {
+    render(<EvidenceAccessRequestModal onClose={vi.fn()} />)
+    expect(screen.getByPlaceholderText("Jane Smith")).toBeInTheDocument()
+    expect(screen.getByPlaceholderText("jane@company.com")).toBeInTheDocument()
+  })
+
+  it("renders evidence section checkboxes", () => {
+    render(<EvidenceAccessRequestModal onClose={vi.fn()} />)
+    const checkboxGroup = screen.getByTestId("evidence-checkboxes")
+    expect(checkboxGroup).toBeInTheDocument()
+    expect(checkboxGroup.textContent).toMatch(/Workflow recordings/i)
+    expect(checkboxGroup.textContent).toMatch(/Project defense/i)
+    expect(checkboxGroup.textContent).toMatch(/Uploaded documents/i)
+    expect(checkboxGroup.textContent).toMatch(/Detailed skill evidence/i)
+  })
+
+  it("submit button is disabled until name and email are filled", () => {
+    render(<EvidenceAccessRequestModal onClose={vi.fn()} />)
+    const submitBtn = screen.getByText("Submit request")
+    expect(submitBtn).toBeDisabled()
+  })
+
+  it("submit button enables when name and email are provided", () => {
+    render(<EvidenceAccessRequestModal onClose={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText("Jane Smith"), { target: { value: "Jane" } })
+    fireEvent.change(screen.getByPlaceholderText("jane@company.com"), { target: { value: "jane@co.com" } })
+    expect(screen.getByText("Submit request")).not.toBeDisabled()
+  })
+
+  it("shows success/pending state after mock submission", async () => {
+    render(
+      <EvidenceAccessRequestModal onClose={vi.fn()} />,
+    )
+    fireEvent.change(screen.getByPlaceholderText("Jane Smith"), { target: { value: "Jane" } })
+    fireEvent.change(screen.getByPlaceholderText("jane@company.com"), { target: { value: "jane@co.com" } })
+    fireEvent.click(screen.getByText("Submit request"))
+    await waitFor(() =>
+      expect(screen.getByTestId("access-request-success")).toBeInTheDocument(),
+      { timeout: 2000 },
+    )
+    expect(screen.getByText(/Access request submitted for demo review/i)).toBeInTheDocument()
+    expect(screen.getByText(/Pending student approval/i)).toBeInTheDocument()
+  })
+
+  it("pre-fills fields from defaultRequester prop", () => {
+    render(
+      <EvidenceAccessRequestModal
+        onClose={vi.fn()}
+        defaultRequester={{
+          requester_name: "Stripe Early Talent",
+          requester_email: "recruiter@stripe.com",
+          company: "Stripe",
+          role: "Early Talent / AI Intern Hiring",
+        }}
+      />,
+    )
+    expect(screen.getByDisplayValue("Stripe Early Talent")).toBeInTheDocument()
+    expect(screen.getByDisplayValue("recruiter@stripe.com")).toBeInTheDocument()
+  })
+
+  it("shows candidate name in subtitle", () => {
+    render(<EvidenceAccessRequestModal onClose={vi.fn()} candidateName="Maya Reyes" />)
+    expect(screen.getByText(/Maya Reyes/i)).toBeInTheDocument()
+  })
+
+  it("cancel button calls onClose", () => {
+    const onClose = vi.fn()
+    render(<EvidenceAccessRequestModal onClose={onClose} />)
+    fireEvent.click(screen.getByText("Cancel"))
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it("does not render private field names in UI", () => {
+    const { container } = render(<EvidenceAccessRequestModal onClose={vi.fn()} />)
+    const html = container.innerHTML
+    expect(html).not.toContain("media_storage_path")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("transcript_text")
+    expect(html).not.toContain("raw_risk")
+    expect(html).not.toContain("debug_metadata")
+    expect(html).not.toContain("admin_notes")
+  })
+})
+
+// ── RecruiterWorkPassportPreview + modal integration ──────────────────────────
+
+describe("RecruiterWorkPassportPreview — access request modal", () => {
+  it("renders Request Evidence Access button when has_protected_evidence", () => {
+    render(<RecruiterWorkPassportPreview view={makeView({ has_protected_evidence: true })} />)
+    expect(screen.getByTestId("request-access-btn")).toBeInTheDocument()
+    expect(screen.getByText(/Request Evidence Access/i)).toBeInTheDocument()
+  })
+
+  it("opens modal when button is clicked", () => {
+    render(<RecruiterWorkPassportPreview view={makeView({ has_protected_evidence: true })} />)
+    fireEvent.click(screen.getByTestId("request-access-btn"))
+    expect(screen.getByTestId("access-request-modal")).toBeInTheDocument()
+  })
+
+  it("shows pending status card after mock submission", async () => {
+    render(<RecruiterWorkPassportPreview view={makeView({ has_protected_evidence: true })} />)
+    fireEvent.click(screen.getByTestId("request-access-btn"))
+    fireEvent.change(screen.getByPlaceholderText("Jane Smith"), { target: { value: "Jane" } })
+    fireEvent.change(screen.getByPlaceholderText("jane@company.com"), { target: { value: "jane@co.com" } })
+    fireEvent.click(screen.getByText("Submit request"))
+    await waitFor(() =>
+      expect(screen.getByTestId("access-request-success")).toBeInTheDocument(),
+      { timeout: 2000 },
+    )
+    // Close modal
+    fireEvent.click(screen.getByText("Close"))
+    // Parent should show pending card
+    await waitFor(() =>
+      expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/Request pending/i)).toBeInTheDocument()
+    expect(screen.getByText(/Student approval required/i)).toBeInTheDocument()
   })
 })
 

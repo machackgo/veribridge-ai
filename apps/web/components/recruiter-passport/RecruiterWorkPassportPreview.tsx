@@ -9,7 +9,7 @@
  *  - Grouped skill evidence with source badges and confidence
  *  - Proof source status (which evidence sources were completed)
  *  - Recruiter decision helpers (why credible, interview questions)
- *  - Project links and request-access CTA
+ *  - Project links and request-access CTA with modal
  *
  * Privacy rules:
  *  - No raw transcript text, media URLs, access tokens, or debug fields.
@@ -17,6 +17,8 @@
  *  - Access to private evidence requires a separate student-approved flow.
  */
 
+import { useState } from "react"
+import { EvidenceAccessRequestModal } from "./EvidenceAccessRequestModal"
 import type {
   RecruiterPassportViewResponse,
   RecruiterSkillGroupResponse,
@@ -130,15 +132,18 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   )
 }
 
-function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+function Card({ children, style, "data-testid": testId }: { children: React.ReactNode; style?: React.CSSProperties; "data-testid"?: string }) {
   return (
-    <div style={{
-      background: C.paper,
-      border: `1px solid ${C.line}`,
-      borderRadius: 12,
-      padding: "20px 22px",
-      ...style,
-    }}>
+    <div
+      data-testid={testId}
+      style={{
+        background: C.paper,
+        border: `1px solid ${C.line}`,
+        borderRadius: 12,
+        padding: "20px 22px",
+        ...style,
+      }}
+    >
       {children}
     </div>
   )
@@ -469,121 +474,230 @@ function DecisionHelpersSection({
 export function RecruiterWorkPassportPreview({
   view,
   onRequestAccess,
+  defaultRequester,
 }: {
   view: RecruiterPassportViewResponse
+  /** Legacy callback — if provided it is called after modal submits. */
   onRequestAccess?: () => void
+  /** Pre-fill recruiter fields in the modal. */
+  defaultRequester?: { name?: string; email?: string; company?: string; role?: string }
 }) {
+  const [showModal, setShowModal] = useState(false)
+  const [accessPending, setAccessPending] = useState(false)
+  const [pendingSections, setPendingSections] = useState<string[]>([])
+
+  const handleModalSubmit = async () => {
+    // Modal handles its own internal success state; we update parent state here.
+    // Nothing to await — EvidenceAccessRequestModal resolves after mock delay.
+  }
+
+  const handleModalClose = (sections?: string[]) => {
+    setShowModal(false)
+    if (sections && sections.length > 0) {
+      setAccessPending(true)
+      setPendingSections(sections)
+      onRequestAccess?.()
+    }
+  }
+
+  const SECTION_LABELS: Record<string, string> = {
+    workflow_recordings: "Workflow recordings",
+    project_defense: "Project defense media/transcript",
+    documents: "Uploaded documents/reports",
+    detailed_skill_evidence: "Detailed skill evidence",
+  }
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* 1. Evidence score */}
-      <EvidenceScoreSection
-        score={view.overall_score}
-        confidence={view.evidence_confidence}
-        verificationStatus={view.verification_status}
-        readinessLevel={view.readiness_level}
-        proofSources={view.proof_sources}
-      />
-
-      {/* 2. Evidence-backed skills */}
-      {(view.skill_groups.length > 0 ||
-        view.verified_skills.length > 0 ||
-        view.partially_verified_skills.length > 0 ||
-        view.skills_needing_review.length > 0) && (
-        <SkillGroupsSection
-          groups={view.skill_groups}
-          verified={view.verified_skills}
-          partial={view.partially_verified_skills}
-          needsReview={view.skills_needing_review}
+    <>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* 1. Evidence score */}
+        <EvidenceScoreSection
+          score={view.overall_score}
+          confidence={view.evidence_confidence}
+          verificationStatus={view.verification_status}
+          readinessLevel={view.readiness_level}
+          proofSources={view.proof_sources}
         />
-      )}
 
-      {/* 3. Project links */}
-      {view.public_project_links.length > 0 && (
-        <Card>
-          <SectionTitle>Project Evidence</SectionTitle>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {view.public_project_links.map((link, i) => (
-              <a
-                key={i}
-                href={link.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  display: "flex", alignItems: "center", gap: 8,
-                  padding: "8px 12px",
-                  background: C.bg,
-                  border: `1px solid ${C.line}`,
-                  borderRadius: 7,
-                  textDecoration: "none",
-                }}
-              >
-                <span style={{ fontSize: 14 }}>🔗</span>
-                <span style={{ fontSize: 12, fontWeight: 600, color: C.indigo }}>
-                  {link.label || link.url}
-                </span>
-              </a>
-            ))}
-          </div>
-        </Card>
-      )}
+        {/* 2. Evidence-backed skills */}
+        {(view.skill_groups.length > 0 ||
+          view.verified_skills.length > 0 ||
+          view.partially_verified_skills.length > 0 ||
+          view.skills_needing_review.length > 0) && (
+          <SkillGroupsSection
+            groups={view.skill_groups}
+            verified={view.verified_skills}
+            partial={view.partially_verified_skills}
+            needsReview={view.skills_needing_review}
+          />
+        )}
 
-      {/* 4. Decision helpers */}
-      {(view.why_credible.length > 0 ||
-        view.areas_needing_review.length > 0 ||
-        view.suggested_interview_questions.length > 0) && (
-        <DecisionHelpersSection
-          whyCredible={view.why_credible}
-          areasNeedingReview={view.areas_needing_review}
-          suggestedQuestions={view.suggested_interview_questions}
-        />
-      )}
-
-      {/* 5. Request access CTA */}
-      {view.has_protected_evidence && (
-        <Card style={{
-          background: "linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)",
-          border: "none",
-        }}>
-          <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-            <span style={{ fontSize: 28, flexShrink: 0 }}>🔒</span>
-            <div style={{ flex: 1 }}>
-              <p style={{ fontWeight: 700, fontSize: 14, color: "#fff", margin: "0 0 4px" }}>
-                Protected Evidence Available
-              </p>
-              <p style={{ fontSize: 12, color: "#a5b4fc", margin: "0 0 10px", lineHeight: 1.5 }}>
-                Full workflow recordings, project defense analysis, and detailed skill evidence require student approval.
-              </p>
-              {onRequestAccess && (
-                <button
-                  type="button"
-                  onClick={onRequestAccess}
+        {/* 3. Project links */}
+        {view.public_project_links.length > 0 && (
+          <Card>
+            <SectionTitle>Project Evidence</SectionTitle>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {view.public_project_links.map((link, i) => (
+                <a
+                  key={i}
+                  href={link.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   style={{
-                    background: "#4f46e5", color: "#fff",
-                    border: "none", borderRadius: 7,
-                    padding: "8px 16px", fontSize: 12, fontWeight: 700,
-                    cursor: "pointer",
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "8px 12px",
+                    background: C.bg,
+                    border: `1px solid ${C.line}`,
+                    borderRadius: 7,
+                    textDecoration: "none",
                   }}
                 >
-                  Request Evidence Access
-                </button>
-              )}
+                  <span style={{ fontSize: 14 }}>🔗</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: C.indigo }}>
+                    {link.label || link.url}
+                  </span>
+                </a>
+              ))}
             </div>
-          </div>
-        </Card>
-      )}
+          </Card>
+        )}
 
-      {/* Disclosure */}
-      <div style={{
-        padding: "10px 14px",
-        background: C.bg,
-        border: `1px solid ${C.line}`,
-        borderRadius: 8,
-      }}>
-        <p style={{ fontSize: 10, color: C.muted, margin: 0, lineHeight: 1.6 }}>
-          <strong>Disclosure:</strong> {view.disclosure_note}
-        </p>
+        {/* 4. Decision helpers */}
+        {(view.why_credible.length > 0 ||
+          view.areas_needing_review.length > 0 ||
+          view.suggested_interview_questions.length > 0) && (
+          <DecisionHelpersSection
+            whyCredible={view.why_credible}
+            areasNeedingReview={view.areas_needing_review}
+            suggestedQuestions={view.suggested_interview_questions}
+          />
+        )}
+
+        {/* 5. Protected evidence CTA / pending status */}
+        {view.has_protected_evidence && (
+          accessPending ? (
+            /* Post-submission pending status card */
+            <Card
+              data-testid="access-pending-card"
+              style={{ border: "1px solid #c7d2fe", background: "#eef2ff" }}
+            >
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 22, flexShrink: 0 }}>📬</span>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontWeight: 700, fontSize: 14, color: "#3730a3", margin: "0 0 4px" }}>
+                    Request pending
+                  </p>
+                  <p style={{ fontSize: 12, color: "#4338ca", margin: "0 0 8px" }}>
+                    Student approval required
+                  </p>
+                  {pendingSections.length > 0 && (
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 11, color: "#6366f1", marginRight: 2 }}>Requested evidence:</span>
+                      {pendingSections.map((s) => (
+                        <span key={s} style={{
+                          fontSize: 10, fontWeight: 600, padding: "2px 7px",
+                          background: "#c7d2fe", color: "#3730a3", borderRadius: 4,
+                        }}>
+                          {SECTION_LABELS[s] ?? s}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Card>
+          ) : (
+            /* Request access CTA */
+            <Card style={{
+              background: "linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)",
+              border: "none",
+            }}>
+              <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+                <span style={{ fontSize: 28, flexShrink: 0 }}>🔒</span>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontWeight: 700, fontSize: 14, color: "#fff", margin: "0 0 4px" }}>
+                    Protected Evidence Available
+                  </p>
+                  <p style={{ fontSize: 12, color: "#a5b4fc", margin: "0 0 10px", lineHeight: 1.5 }}>
+                    Full workflow recordings, project defense analysis, and detailed skill evidence require student approval.
+                  </p>
+                  <button
+                    type="button"
+                    data-testid="request-access-btn"
+                    onClick={() => setShowModal(true)}
+                    style={{
+                      background: "#4f46e5", color: "#fff",
+                      border: "none", borderRadius: 7,
+                      padding: "8px 16px", fontSize: 12, fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Request Evidence Access
+                  </button>
+                </div>
+              </div>
+            </Card>
+          )
+        )}
+
+        {/* Disclosure */}
+        <div style={{
+          padding: "10px 14px",
+          background: C.bg,
+          border: `1px solid ${C.line}`,
+          borderRadius: 8,
+        }}>
+          <p style={{ fontSize: 10, color: C.muted, margin: 0, lineHeight: 1.6 }}>
+            <strong>Disclosure:</strong> {view.disclosure_note}
+          </p>
+        </div>
       </div>
-    </div>
+
+      {/* Access request modal */}
+      {showModal && (
+        <ModalWrapper
+          view={view}
+          defaultRequester={defaultRequester}
+          onSubmit={handleModalSubmit}
+          onClose={handleModalClose}
+        />
+      )}
+    </>
+  )
+}
+
+/**
+ * ModalWrapper keeps EvidenceAccessRequestModal in this file's render tree
+ * and threads section data back to the parent on close-after-submit.
+ */
+function ModalWrapper({
+  view,
+  defaultRequester,
+  onSubmit,
+  onClose,
+}: {
+  view: RecruiterPassportViewResponse
+  defaultRequester?: { name?: string; email?: string; company?: string; role?: string }
+  onSubmit: () => Promise<void>
+  onClose: (sections?: string[]) => void
+}) {
+  const [submittedSections, setSubmittedSections] = useState<string[] | null>(null)
+
+  return (
+    <EvidenceAccessRequestModal
+      candidateName={view.student_display_name}
+      defaultRequester={{
+        requester_name: defaultRequester?.name ?? "",
+        requester_email: defaultRequester?.email ?? "",
+        company: defaultRequester?.company ?? "",
+        role: defaultRequester?.role ?? "",
+      }}
+      onSubmit={async (data) => {
+        await onSubmit()
+        setSubmittedSections(data.requested_sections)
+      }}
+      onClose={() => onClose(submittedSections ?? undefined)}
+    />
   )
 }
 
