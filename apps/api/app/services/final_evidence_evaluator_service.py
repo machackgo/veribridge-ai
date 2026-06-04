@@ -785,7 +785,16 @@ class FinalEvidenceEvaluatorService:
     def _load_project_defense(self, user_id: str, session_id: str) -> dict[str, Any] | None:
         # In-memory dict store: project defense service uses proof_session_id as key.
         if isinstance(self._db, dict):
-            return self._db.get(_PD_TABLE, {}).get(session_id)
+            direct = self._db.get(_PD_TABLE, {}).get(session_id)
+            if direct:
+                return direct
+            for row in self._db.get(_PD_TABLE, {}).values():
+                if (
+                    str(row.get("proof_session_id")) == session_id
+                    and str(row.get("user_id")) == user_id
+                ):
+                    return row
+            return None
         try:
             resp = (
                 self._db.table(_PD_TABLE)
@@ -825,6 +834,98 @@ class FinalEvidenceEvaluatorService:
         except Exception:
             logger.warning("FinalEvaluator: optional evidence load failed", exc_info=True)
             return []
+
+    def _load_frame_text_summary_from_frames(self, user_id: str, session_id: str) -> str:
+        """Collect public OCR/frame text from keyframe rows for final scoring only."""
+        rows: list[dict[str, Any]] = []
+        try:
+            if isinstance(self._db, dict):
+                rows = [
+                    row for row in self._db.get(_VF_TABLE, {}).values()
+                    if (
+                        str(row.get("proof_session_id")) == session_id
+                        and str(row.get("user_id")) == user_id
+                        and row.get("frame_type") == "video_keyframe"
+                    )
+                ]
+            else:
+                resp = (
+                    self._db.table(_VF_TABLE)
+                    .select("ocr_text, visual_summary")
+                    .eq("user_id", user_id)
+                    .eq("proof_session_id", session_id)
+                    .eq("frame_type", "video_keyframe")
+                    .limit(20)
+                    .execute()
+                )
+                rows = resp.data or []
+        except Exception:
+            return ""
+
+        snippets: list[str] = []
+        for row in rows:
+            raw_ocr = row.get("ocr_text")
+            if isinstance(raw_ocr, list):
+                for item in raw_ocr:
+                    if isinstance(item, dict) and item.get("text"):
+                        snippets.append(str(item["text"]))
+                    elif isinstance(item, str):
+                        snippets.append(item)
+            elif isinstance(raw_ocr, str):
+                snippets.append(raw_ocr)
+            if row.get("visual_summary"):
+                snippets.append(str(row["visual_summary"]))
+        return " | ".join(s.strip() for s in snippets if s and s.strip())[:1200]
+
+    def _enrich_workflow_for_final(
+        self,
+        wf: dict[str, Any] | None,
+        user_id: str,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        """Mirror the workflow endpoint's live enrichment before final scoring."""
+        if wf is None:
+            return None
+        enriched = dict(wf)
+
+        frame_text = self._load_frame_text_summary_from_frames(user_id, session_id)
+        if frame_text and not enriched.get("visual_summary"):
+            enriched["visual_summary"] = frame_text
+        if frame_text and not int(enriched.get("visual_frame_count") or 0):
+            enriched["visual_frame_count"] = max(1, self._count_video_keyframes(user_id, session_id))
+        if frame_text and enriched.get("visual_analysis_status") in (None, "", "not_configured", "not_available"):
+            enriched["visual_analysis_status"] = "analyzed"
+
+        ocr_summary = enriched.get("frame_ocr_evidence_summary")
+        if not (isinstance(ocr_summary, dict) and ocr_summary):
+            try:
+                from app.services.extension_proof_workflow_analysis_service import _build_frame_ocr_evidence_summary
+                claimed = (
+                    list(enriched.get("supported_skills") or [])
+                    + list(enriched.get("weakly_supported_skills") or [])
+                    + list(enriched.get("unsupported_skills") or [])
+                )
+                enriched["frame_ocr_evidence_summary"] = _build_frame_ocr_evidence_summary({
+                    "visual_frame_analysis_status": enriched.get("visual_analysis_status", "not_configured"),
+                    "provider_used": enriched.get("visual_analysis_provider", "frame_text"),
+                    "visual_frame_count": int(enriched.get("visual_frame_count") or 0),
+                    "visual_summary": enriched.get("visual_summary", "") or frame_text,
+                }, claimed)
+            except Exception:
+                if frame_text:
+                    enriched["frame_ocr_evidence_summary"] = {
+                        "has_ocr_evidence": True,
+                        "top_ocr_snippets": [frame_text[:300]],
+                        "detected_page_context": "unknown",
+                        "skill_signals": [],
+                    }
+
+        if not enriched.get("visual_reasoning_summary"):
+            per_frame = self._load_visual_reasoning_from_frames(user_id, session_id)
+            if per_frame:
+                enriched["visual_reasoning_summary"] = per_frame
+
+        return enriched
 
     def _count_video_keyframes(self, user_id: str, session_id: str) -> int:
         # In-memory dict store: count video_keyframe rows for this session+user.
@@ -2573,7 +2674,11 @@ class FinalEvidenceEvaluatorService:
         """Run the full final evaluation and return structured results."""
         skills = claimed_skills or []
 
-        wf = self._load_workflow_analysis(user_id, session_id)
+        wf = self._enrich_workflow_for_final(
+            self._load_workflow_analysis(user_id, session_id),
+            user_id,
+            session_id,
+        )
         gh = self._load_github_analysis(user_id, session_id)
         lw = self._load_live_website_check(user_id, session_id)
         pd = self._load_project_defense(user_id, session_id)

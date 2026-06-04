@@ -692,6 +692,85 @@ function sourceScoreFromEvaluation(
   return src ? { score: src.score, status: src.status, notes: src.notes } : undefined
 }
 
+function workflowSourceScore(
+  evaluation: FinalEvaluationResult | null,
+  analysis: WorkflowAnalysisResponse | null,
+): FinalSourceScore | undefined {
+  const fromEval = sourceScoreFromEvaluation(evaluation, "website_workflow")
+  if (fromEval && fromEval.status !== "not_run") return fromEval
+  if (!analysis) return fromEval
+  const score = Math.max(1, analysis.evidence_strength_score ?? 0)
+  return {
+    score,
+    status: score >= 60 ? "pass" : score >= 30 ? "partial" : "missing",
+    notes: `workflow confidence=${analysis.workflow_confidence}`,
+  }
+}
+
+function videoKeyframeSourceScore(
+  evaluation: FinalEvaluationResult | null,
+  analysis: WorkflowAnalysisResponse | null,
+): FinalSourceScore | undefined {
+  const fromEval = sourceScoreFromEvaluation(evaluation, "video_keyframes")
+  if (fromEval && fromEval.status !== "not_run") return fromEval
+  const count = analysis?.video_keyframe_count ?? 0
+  if (count <= 0) return fromEval
+  return { score: count >= 3 ? 90 : 60, status: count >= 3 ? "pass" : "partial" }
+}
+
+function ocrSourceScore(
+  evaluation: FinalEvaluationResult | null,
+  analysis: WorkflowAnalysisResponse | null,
+): FinalSourceScore | undefined {
+  const fromEval = sourceScoreFromEvaluation(evaluation, "ocr")
+  if (fromEval && fromEval.status !== "not_run") return fromEval
+  const summary = analysis?.frame_ocr_evidence_summary
+  const snippets = summary?.top_ocr_snippets ?? []
+  if (summary?.detected_page_context === "filtered_non_target_frame") {
+    return { score: 0, status: "not_run", notes: "filtered non-target" }
+  }
+  if (summary?.has_ocr_evidence || snippets.length > 0 || analysis?.visual_analysis_status === "analyzed") {
+    return { score: snippets.length > 0 || summary?.has_ocr_evidence ? 50 : 40, status: "partial", notes: "frame text evidence present" }
+  }
+  return fromEval
+}
+
+function qwenSourceScore(
+  evaluation: FinalEvaluationResult | null,
+  analysis: WorkflowAnalysisResponse | null,
+): FinalSourceScore | undefined {
+  const fromEval = sourceScoreFromEvaluation(evaluation, "qwen_visual_reasoning")
+  if (fromEval && fromEval.status !== "not_run" && fromEval.status !== "not_available") return fromEval
+  const summary = analysis?.visual_reasoning_summary
+  if (!summary) return fromEval
+  if (summary.status === "analyzed") {
+    const frames = summary.frames_analyzed ?? 0
+    return { score: Math.min(90, 50 + frames * 15), status: "pass" }
+  }
+  if (summary.status === "filtered_non_target_frame") {
+    return { score: 0, status: "not_run", notes: "filtered non-target" }
+  }
+  return fromEval
+}
+
+function projectDefenseSourceScore(
+  evaluation: FinalEvaluationResult | null,
+  analysis: ProjectDefenseAnalysisResponse | null,
+): FinalSourceScore | undefined {
+  const fromEval = sourceScoreFromEvaluation(evaluation, "project_defense")
+  if (fromEval && fromEval.status !== "not_run" && fromEval.score > 0) return fromEval
+  if (!analysis) return fromEval
+  const score = analysis.overall_defense_score
+    ?? Math.round([
+      analysis.consistency_with_evidence_score,
+      analysis.explanation_clarity_score,
+      analysis.ownership_signal_score,
+      analysis.technical_depth_score,
+    ].filter((v): v is number => typeof v === "number").reduce((sum, v, _, arr) => sum + v / arr.length, 0))
+  if (!score) return fromEval
+  return { score, status: score >= 60 ? "pass" : "partial" }
+}
+
 function SourceScoreBadge({
   label,
   source,
@@ -1993,7 +2072,7 @@ function WorkflowAnalysisCard({
           <div style={{ fontSize: 11, color: "#3b82f6", marginTop: 2 }}>AI Reviewed · {analysisTypeLabel}</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <SourceScoreBadge label="Website Workflow Score" source={sourceScoreFromEvaluation(finalEvaluation ?? null, "website_workflow")} />
+          <SourceScoreBadge label="Website Workflow Score" source={workflowSourceScore(finalEvaluation ?? null, analysis)} />
           {/* Evidence strength score */}
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
             <span style={{ fontSize: 11, color: "#3b82f6" }}>Evidence Strength</span>
@@ -2048,9 +2127,9 @@ function WorkflowAnalysisCard({
         {/* ── Video / Keyframe Evidence section ────────────────────────────── */}
         <VideoKeyframeEvidenceSection
           analysis={analysis}
-          keyframeScore={sourceScoreFromEvaluation(finalEvaluation ?? null, "video_keyframes")}
-          ocrScore={sourceScoreFromEvaluation(finalEvaluation ?? null, "ocr")}
-          qwenScore={sourceScoreFromEvaluation(finalEvaluation ?? null, "qwen_visual_reasoning")}
+          keyframeScore={videoKeyframeSourceScore(finalEvaluation ?? null, analysis)}
+          ocrScore={ocrSourceScore(finalEvaluation ?? null, analysis)}
+          qwenScore={qwenSourceScore(finalEvaluation ?? null, analysis)}
         />
 
         {/* ── Sequence Analysis (v6 — Week 3) ──────────────────────────────── */}
@@ -7089,6 +7168,9 @@ export function ExtensionProofPanel({
         live_check_summary: liveCheck?.recruiter_summary ?? "",
       })
       setDefenseAnalysis(result)
+      if (currentSessionAnalysis) {
+        await handleRunFinalEval()
+      }
     } catch (err) {
       setDefenseAnalyzeError(err instanceof Error ? err.message : "Defense analysis failed. Please try again.")
     } finally {
@@ -7773,7 +7855,7 @@ export function ExtensionProofPanel({
           defenseAnalyzeError={defenseAnalyzeError}
           defenseSimProgress={defenseSimProgress}
           defenseSimStageIdx={defenseSimStageIdx}
-          sourceScore={sourceScoreFromEvaluation(finalEval, "project_defense")}
+          sourceScore={projectDefenseSourceScore(finalEval, defenseAnalysis)}
           onTranscriptChange={setDefenseTranscript}
           onAnalyze={() => void handleDefenseAnalysis()}
         />
