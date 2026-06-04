@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { FinalRecommendationsSection } from "../../components/skill-proof/extension-proof-panel"
-import type { FinalEvaluationResult } from "../lib/api"
+import { FinalRecommendationsSection, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
+import type { FinalEvaluationResult, ProjectDefenseAnalysisResponse } from "../lib/api"
 
 const learningAction = {
   title: "Add performance metrics",
@@ -119,5 +121,71 @@ describe("FinalRecommendationsSection", () => {
     )
     expect(screen.getByText("Recommended Next Actions")).toBeInTheDocument()
     expect(screen.getByText("React")).toBeInTheDocument()
+  })
+})
+
+describe("Final report consistency", () => {
+  it("Project Defense does not show contradictory scores", () => {
+    const analysis = {
+      id: "pd1",
+      user_id: "u1",
+      proof_session_id: "s1",
+      video_url: null,
+      media_url: null,
+      media_type: null,
+      media_filename: null,
+      media_storage_path: null,
+      transcription_status: "analysis_complete",
+      transcript_reviewed: true,
+      transcript_text: "I built the WebGL mesh simplifier.",
+      raw_transcript: null,
+      refined_transcript: null,
+      transcript_correction_summary: [],
+      transcript_glossary_matches: [],
+      transcript_refinement_status: "not_started",
+      transcript_needs_review: false,
+      transcript_summary: "Student explained the project.",
+      skills_mentioned: ["Three.js"],
+      skills_explained_well: ["Three.js"],
+      skills_missing_from_explanation: [],
+      consistency_with_evidence_score: 70,
+      explanation_clarity_score: 75,
+      ownership_signal_score: 72,
+      technical_depth_score: 74,
+      overall_defense_score: 73,
+      risk_flags: [],
+      recruiter_summary: "Clear defense.",
+      recommended_improvements: [],
+      privacy_scan_status: "clean",
+      created_at: null,
+      updated_at: null,
+    } as ProjectDefenseAnalysisResponse
+
+    render(
+      <ProjectDefenseResultCard
+        analysis={analysis}
+        sourceScore={{ score: 73, status: "pass" }}
+      />,
+    )
+
+    expect(screen.getByText("Project Defense Score: 73/100")).toBeInTheDocument()
+    expect(screen.queryByText("Defense Score")).not.toBeInTheDocument()
+    expect(screen.queryByText("40/100")).not.toBeInTheDocument()
+  })
+
+  it("does not render Cross-Evidence Skill Summary in normal student flow", () => {
+    const source = readFileSync(
+      join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
+      "utf8",
+    )
+    expect(source).not.toMatch(/<CombinedEvidenceSummaryCard[\s>]/)
+  })
+
+  it("keeps disabled final-report feature labels out of normal UI source", () => {
+    const source = readFileSync(
+      join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
+      "utf8",
+    )
+    expect(source).not.toMatch(/Live Tutor|Scan Website|Guided Overlay/)
   })
 })

@@ -65,6 +65,7 @@ import type {
 
 type PanelStep = "form" | "session_active"
 type OptionalDocumentUiStatus = "not_added" | "processing" | "analyzed" | "failed"
+type FinalSourceScore = { score: number; status: string; notes?: string }
 
 type FormState = {
   websiteUrl: string
@@ -676,6 +677,49 @@ function LiveWebsiteCheckInProgress({
   )
 }
 
+function sourceScoreFromEvaluation(
+  evaluation: FinalEvaluationResult | null,
+  key: string,
+): FinalSourceScore | undefined {
+  const src = evaluation?.evidence_source_breakdown?.find((item) => item.key === key)
+  return src ? { score: src.score, status: src.status, notes: src.notes } : undefined
+}
+
+function SourceScoreBadge({
+  label,
+  source,
+}: {
+  label: string
+  source?: FinalSourceScore
+}) {
+  if (!source) {
+    return (
+      <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+        background: "#f8fafc", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>
+        {label}: score not available
+      </span>
+    )
+  }
+  const color = source.status === "pass" ? "#166534"
+    : source.status === "partial" ? "#854d0e"
+    : source.status === "missing" ? "#991b1b"
+    : "#64748b"
+  const bg = source.status === "pass" ? "#f0fdf4"
+    : source.status === "partial" ? "#fffbeb"
+    : source.status === "missing" ? "#fef2f2"
+    : "#f8fafc"
+  const border = source.status === "pass" ? "#bbf7d0"
+    : source.status === "partial" ? "#fde68a"
+    : source.status === "missing" ? "#fecaca"
+    : "#e2e8f0"
+  return (
+    <span title={source.notes || source.status} style={{ fontSize: 9, fontWeight: 700,
+      padding: "2px 7px", borderRadius: 4, background: bg, color, border: `1px solid ${border}` }}>
+      {label}: {source.score}/100
+    </span>
+  )
+}
+
 const LIVE_CHECK_CONFIDENCE: Record<
   LiveWebsiteCheckConfidence,
   { bg: string; color: string; border: string; label: string }
@@ -689,9 +733,11 @@ const LIVE_CHECK_CONFIDENCE: Record<
 function LiveWebsiteCheckCard({
   check,
   onRetry,
+  sourceScore,
 }: {
   check: LiveWebsiteCheckResponse
   onRetry: () => void
+  sourceScore?: FinalSourceScore
 }) {
   const conf = LIVE_CHECK_CONFIDENCE[check.confidence] ?? LIVE_CHECK_CONFIDENCE.failed
   const success = check.is_reachable
@@ -713,13 +759,16 @@ function LiveWebsiteCheckCard({
             {success ? "Site is publicly reachable" : "Could not confirm public accessibility"}
           </div>
         </div>
-        <span style={{
-          fontSize: 10, fontWeight: 700, letterSpacing: "0.08em",
-          padding: "3px 9px", borderRadius: 999,
-          background: conf.bg, color: conf.color, border: `1px solid ${conf.border}`,
-        }}>
-          {conf.label} CONFIDENCE
-        </span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <SourceScoreBadge label="Live Website Score" source={sourceScore} />
+          <span style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: "0.08em",
+            padding: "3px 9px", borderRadius: 999,
+            background: conf.bg, color: conf.color, border: `1px solid ${conf.border}`,
+          }}>
+            {conf.label} CONFIDENCE
+          </span>
+        </div>
       </div>
 
       <div style={{ padding: "14px 16px", display: "grid", gap: 12 }}>
@@ -969,8 +1018,10 @@ type VisualReasoningSummary = NonNullable<WorkflowAnalysisResponse["visual_reaso
 
 function AdvancedVisualReasoningSection({
   reasoning,
+  sourceScore,
 }: {
   reasoning: VisualReasoningSummary | null | undefined
+  sourceScore?: FinalSourceScore
 }) {
   if (!reasoning) return null
 
@@ -1044,9 +1095,12 @@ function AdvancedVisualReasoningSection({
       gap: 8,
     }}>
       {/* Header */}
-      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
-        textTransform: "uppercase", color: "#6d28d9" }}>
-        Advanced Visual Reasoning
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
+          textTransform: "uppercase", color: "#6d28d9" }}>
+          Advanced Visual Reasoning
+        </div>
+        <SourceScoreBadge label="Qwen Score" source={sourceScore} />
       </div>
 
       {/* Provider + status + frame count */}
@@ -1259,8 +1313,14 @@ function AdvancedVisualReasoningSection({
  */
 function VideoKeyframeEvidenceSection({
   analysis,
+  keyframeScore,
+  ocrScore,
+  qwenScore,
 }: {
   analysis: WorkflowAnalysisResponse
+  keyframeScore?: FinalSourceScore
+  ocrScore?: FinalSourceScore
+  qwenScore?: FinalSourceScore
 }) {
   const kfStatus    = analysis.video_keyframe_status
   const kfCount     = analysis.video_keyframe_count ?? 0
@@ -1301,18 +1361,21 @@ function VideoKeyframeEvidenceSection({
         <span style={{ fontSize: 11, fontWeight: 700, color: "#334155", textTransform: "uppercase", letterSpacing: "0.06em" }}>
           Video / Keyframe Evidence
         </span>
-        {/* Upload status chip */}
-        {videoUploaded ? (
-          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
-            background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
-            ✓ Video uploaded
-          </span>
-        ) : (
-          <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
-            background: "#f1f5f9", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>
-            No video recorded
-          </span>
-        )}
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <SourceScoreBadge label="Keyframe Score" source={keyframeScore} />
+          {/* Upload status chip */}
+          {videoUploaded ? (
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+              background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+              ✓ Video uploaded
+            </span>
+          ) : (
+            <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
+              background: "#f1f5f9", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>
+              No video recorded
+            </span>
+          )}
+        </div>
       </div>
 
       <div style={{ padding: "10px 12px", display: "grid", gap: 7 }}>
@@ -1388,6 +1451,7 @@ function VideoKeyframeEvidenceSection({
         {/* OCR/Visual provider status */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>OCR/visual analysis</span>
+          <SourceScoreBadge label="OCR Score" source={ocrScore} />
           {visualStatus === "analyzed" ? (
             <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
               background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
@@ -1630,7 +1694,7 @@ function VideoKeyframeEvidenceSection({
         {/* Renders only when reasoning data is present (status in summary dict). */}
         {/* null = reasoning not run / disabled for this session → section hidden. */}
         {analysis.visual_reasoning_summary != null && (
-          <AdvancedVisualReasoningSection reasoning={analysis.visual_reasoning_summary} />
+          <AdvancedVisualReasoningSection reasoning={analysis.visual_reasoning_summary} sourceScore={qwenScore} />
         )}
       </div>
     </div>
@@ -1910,7 +1974,13 @@ function ObservedDemonstrationTimeline({
   )
 }
 
-function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse }) {
+function WorkflowAnalysisCard({
+  analysis,
+  finalEvaluation,
+}: {
+  analysis: WorkflowAnalysisResponse
+  finalEvaluation?: FinalEvaluationResult | null
+}) {
   const conf = CONFIDENCE_CONFIG[analysis.workflow_confidence] ?? CONFIDENCE_CONFIG.insufficient
   const analysisTypeLabel =
     analysis.analysis_type === "timeline_only" ? "Workflow Timeline Analysis"
@@ -1926,6 +1996,7 @@ function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse
           <div style={{ fontSize: 11, color: "#3b82f6", marginTop: 2 }}>AI Reviewed · {analysisTypeLabel}</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <SourceScoreBadge label="Website Workflow Score" source={sourceScoreFromEvaluation(finalEvaluation ?? null, "website_workflow")} />
           {/* Evidence strength score */}
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
             <span style={{ fontSize: 11, color: "#3b82f6" }}>Evidence Strength</span>
@@ -2000,7 +2071,12 @@ function WorkflowAnalysisCard({ analysis }: { analysis: WorkflowAnalysisResponse
         )}
 
         {/* ── Video / Keyframe Evidence section ────────────────────────────── */}
-        <VideoKeyframeEvidenceSection analysis={analysis} />
+        <VideoKeyframeEvidenceSection
+          analysis={analysis}
+          keyframeScore={sourceScoreFromEvaluation(finalEvaluation ?? null, "video_keyframes")}
+          ocrScore={sourceScoreFromEvaluation(finalEvaluation ?? null, "ocr")}
+          qwenScore={sourceScoreFromEvaluation(finalEvaluation ?? null, "qwen_visual_reasoning")}
+        />
 
         {/* ── Sequence Analysis (v6 — Week 3) ──────────────────────────────── */}
         {analysis.sequence_analysis && (
@@ -2140,9 +2216,11 @@ const ACCEPTED_DOC_TYPES = ".pdf,.docx,.txt,.md"
 
 export function FutureProofModulesSection({
   sessionId,
+  documentScore,
   onAnalyzed,
 }: {
   sessionId?: string
+  documentScore?: FinalSourceScore
   onAnalyzed?: () => void
 }) {
   const [openType, setOpenType] = useState<OptionalEvidenceSourceType | null>(null)
@@ -2195,6 +2273,7 @@ export function FutureProofModulesSection({
         <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.08em" }}>
           Optional Evidence Boosters
         </div>
+        <SourceScoreBadge label="Document Evidence Score" source={documentScore} />
         <div style={{ fontSize: 10, color: "#94a3b8", fontStyle: "italic" }}>
           Not adding these does not reduce your score
         </div>
@@ -3905,9 +3984,11 @@ function confidenceScoreToLabel(score: number): { label: string; bg: string; col
 function GitHubAnalysisCard({
   analysis,
   onRerun,
+  sourceScore,
 }: {
   analysis: ExtensionProofGitHubAnalysisResponse
   onRerun: () => void
+  sourceScore?: FinalSourceScore
 }) {
   const success = analysis.status === "success"
   const unavailable = analysis.status === "private_or_unavailable"
@@ -3952,6 +4033,7 @@ function GitHubAnalysisCard({
         </div>
         {success && (
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <SourceScoreBadge label="GitHub Score" source={sourceScore} />
             <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
               <span style={{ fontSize: 11, color: "#6b7280" }}>Confidence</span>
               <span style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>
@@ -4087,7 +4169,7 @@ function GitHubAnalysisCard({
               )}
               {analysis.missing_claimed_skills.length > 0 && (
                 <div>
-                  <div style={{ fontSize: 11, color: "#991b1b", fontWeight: 600, marginBottom: 4 }}>No evidence found for</div>
+                  <div style={{ fontSize: 11, color: "#991b1b", fontWeight: 600, marginBottom: 4 }}>No GitHub code evidence found for</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                     {analysis.missing_claimed_skills.map((s) => (
                       <span key={s} style={{
@@ -5101,8 +5183,14 @@ function PrivacyWarningBox({
 
 // ── Project Defense components ────────────────────────────────────────────────
 
-function ProjectDefenseResultCard({ analysis }: { analysis: ProjectDefenseAnalysisResponse }) {
-  const overallScore = analysis.overall_defense_score
+export function ProjectDefenseResultCard({
+  analysis,
+  sourceScore,
+}: {
+  analysis: ProjectDefenseAnalysisResponse
+  sourceScore?: FinalSourceScore
+}) {
+  const overallScore = sourceScore?.score ?? analysis.overall_defense_score
   const scoreColor =
     overallScore >= 70 ? "#166534" :
     overallScore >= 50 ? "#854d0e" :
@@ -5140,12 +5228,7 @@ function ProjectDefenseResultCard({ analysis }: { analysis: ProjectDefenseAnalys
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{ fontSize: 11, color: scoreColor }}>Defense Score</span>
-            <span style={{ fontSize: 16, fontWeight: 800, color: scoreColor }}>
-              {overallScore}<span style={{ fontSize: 10, fontWeight: 400 }}>/100</span>
-            </span>
-          </div>
+          <SourceScoreBadge label="Project Defense Score" source={sourceScore ?? { score: overallScore, status: overallScore >= 60 ? "pass" : "partial" }} />
           <span style={{
             fontSize: 10, fontWeight: 700, letterSpacing: "0.07em", padding: "3px 9px", borderRadius: 999,
             background: privacyCfg.bg, color: privacyCfg.color, border: `1px solid ${privacyCfg.border}`,
@@ -5289,6 +5372,7 @@ function ProjectDefenseSection({
   defenseAnalyzeError,
   defenseSimProgress,
   defenseSimStageIdx,
+  sourceScore,
   onTranscriptChange,
   onAnalyze,
 }: {
@@ -5299,6 +5383,7 @@ function ProjectDefenseSection({
   defenseAnalyzeError: string | null
   defenseSimProgress: number
   defenseSimStageIdx: number
+  sourceScore?: FinalSourceScore
   onTranscriptChange: (v: string) => void
   onAnalyze: () => void
 }) {
@@ -6285,7 +6370,7 @@ function ProjectDefenseSection({
 
       {/* ── Result card ───────────────────────────────────────────────────── */}
       {defenseAnalysis && !defenseAnalyzing && (
-        <ProjectDefenseResultCard analysis={defenseAnalysis} />
+        <ProjectDefenseResultCard analysis={defenseAnalysis} sourceScore={sourceScore} />
       )}
     </div>
   )
@@ -7437,7 +7522,7 @@ export function ExtensionProofPanel({
         {analyzing && <WorkflowAnalysisInProgress simProgress={simProgress} simStageIdx={simStageIdx} />}
 
         {/* Workflow analysis result card */}
-        {currentSessionAnalysis && <WorkflowAnalysisCard analysis={currentSessionAnalysis} />}
+        {currentSessionAnalysis && <WorkflowAnalysisCard analysis={currentSessionAnalysis} finalEvaluation={finalEval} />}
 
         {/* Dev-only: session ID linkage debug info */}
         {process.env.NODE_ENV === "development" && (
@@ -7517,7 +7602,11 @@ export function ExtensionProofPanel({
 
         {/* Live check result */}
         {liveCheck && (
-          <LiveWebsiteCheckCard check={liveCheck} onRetry={() => void handleLiveCheck()} />
+          <LiveWebsiteCheckCard
+            check={liveCheck}
+            onRetry={() => void handleLiveCheck()}
+            sourceScore={sourceScoreFromEvaluation(finalEval, "live_website_check")}
+          />
         )}
 
         {/* ── GitHub Evidence Analysis ────────────────────────────────── */}
@@ -7587,16 +7676,10 @@ export function ExtensionProofPanel({
 
         {/* GitHub analysis result */}
         {githubAnalysis && !githubAnalyzing && (
-          <GitHubAnalysisCard analysis={githubAnalysis} onRerun={() => void handleGitHubAnalysis()} />
-        )}
-
-        {/* ── Combined evidence summary — shown when both analyses exist ── */}
-        {currentSessionAnalysis && githubAnalysis && !githubAnalyzing && (
-          <CombinedEvidenceSummaryCard
-            claimedSkills={parseSkills()}
-            workflowAnalysis={currentSessionAnalysis}
-            githubAnalysis={githubAnalysis}
-            liveCheck={liveCheck}
+          <GitHubAnalysisCard
+            analysis={githubAnalysis}
+            onRerun={() => void handleGitHubAnalysis()}
+            sourceScore={sourceScoreFromEvaluation(finalEval, "github")}
           />
         )}
 
@@ -7609,6 +7692,7 @@ export function ExtensionProofPanel({
           defenseAnalyzeError={defenseAnalyzeError}
           defenseSimProgress={defenseSimProgress}
           defenseSimStageIdx={defenseSimStageIdx}
+          sourceScore={sourceScoreFromEvaluation(finalEval, "project_defense")}
           onTranscriptChange={setDefenseTranscript}
           onAnalyze={() => void handleDefenseAnalysis()}
         />
@@ -7617,6 +7701,7 @@ export function ExtensionProofPanel({
         {isCompleted && (
           <FutureProofModulesSection
             sessionId={session.id}
+            documentScore={sourceScoreFromEvaluation(finalEval, "uploaded_documents")}
             onAnalyzed={() => void handleRunFinalEval()}
           />
         )}

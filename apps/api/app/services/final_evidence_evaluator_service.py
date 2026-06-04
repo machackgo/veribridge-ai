@@ -893,8 +893,11 @@ class FinalEvidenceEvaluatorService:
         if pd is None:
             return EvidenceSourceResult("project_defense", "not_run", 0, _SOURCE_WEIGHTS["project_defense"])
         analysis_status = pd.get("analysis_status", "not_started")
-        if analysis_status == "analyzed":
-            score_val = _clamp(int(pd.get("overall_score") or 0))
+        raw_score = pd.get("overall_score")
+        if raw_score is None:
+            raw_score = pd.get("overall_defense_score")
+        if analysis_status == "analyzed" or raw_score is not None:
+            score_val = _clamp(int(raw_score or 0))
             return EvidenceSourceResult("project_defense", "pass" if score_val >= 60 else "partial",
                                         score_val, _SOURCE_WEIGHTS["project_defense"])
         transcript = str(pd.get("transcript_text") or "")

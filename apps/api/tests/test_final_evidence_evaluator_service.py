@@ -396,6 +396,67 @@ def test_project_defense_absent_does_not_penalise():
     assert pd_src["status"] == "not_run"
 
 
+def test_project_defense_source_score_uses_overall_defense_score_field():
+    pd = {
+        "transcript_text": "I built the Three.js mesh simplification and explained the WebGL rendering pipeline.",
+        "overall_defense_score": 73,
+        "consistency_with_evidence_score": 70,
+        "explanation_clarity_score": 75,
+        "ownership_signal_score": 72,
+        "technical_depth_score": 74,
+    }
+    result = _svc(pd=pd).evaluate("u1", "s1", claimed_skills=["Three.js"])
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["score"] == 73
+    assert pd_src["status"] == "pass"
+
+
+def test_source_breakdown_returns_stable_scores_for_final_report_sources():
+    wf = {
+        "evidence_strength_score": 67,
+        "workflow_confidence": "good",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["open", "click", "adjust", "review"],
+        "visual_analysis_status": "analyzed",
+        "supported_skills": ["Three.js"],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": {"status": "analyzed", "summary": "WebGL mesh", "frames_analyzed": 2, "observations": [{"confidence_score": 0.8}]},
+        "frame_ocr_evidence_summary": {"has_ocr_evidence": True, "skill_signals": []},
+        "video_keyframe_status": "extracted",
+        "video_keyframe_count": 3,
+        "video_keyframe_timestamps_ms": [1000, 2000, 3000],
+    }
+    gh = {
+        "status": "success",
+        "confidence_score": 0.55,
+        "matched_claimed_skills": ["Three.js"],
+        "weakly_matched_claimed_skills": [],
+        "detected_stack": ["Three.js", "WebGL"],
+    }
+    doc = {
+        "source_type": "document",
+        "status": "analyzed",
+        "evidence_objects": [{"skill_name": "Three.js", "confidence": "high", "snippet": "Three.js WebGL mesh"}] * 5,
+    }
+    result = _svc(
+        wf=wf,
+        gh=gh,
+        lw={"is_reachable": True},
+        pd={"transcript_text": "I built it.", "overall_defense_score": 73},
+        opt=[doc],
+        kf_count=3,
+    ).evaluate("u1", "s1", claimed_skills=["Three.js"], github_url="https://github.com/acme/repo")
+    scores = {s["key"]: s["score"] for s in result.evidence_source_breakdown}
+    assert scores["website_workflow"] == 67
+    assert scores["video_keyframes"] == 90
+    assert scores["ocr"] == 80
+    assert scores["qwen_visual_reasoning"] == 80
+    assert scores["github"] == 60
+    assert scores["live_website_check"] == 90
+    assert scores["project_defense"] == 73
+    assert scores["uploaded_documents"] == 90
+
+
 # ── 4. Detected skills avoid the word "verified" ──────────────────────────────
 
 def test_status_labels_never_use_word_verified():
