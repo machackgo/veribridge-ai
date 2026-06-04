@@ -737,6 +737,9 @@ class FinalEvidenceEvaluatorService:
             return None
 
     def _load_github_analysis(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        # In-memory dict store: GitHub analysis service keys rows by proof_session_id.
+        if isinstance(self._db, dict):
+            return self._db.get(_GH_TABLE, {}).get(session_id)
         try:
             resp = (
                 self._db.table(_GH_TABLE)
@@ -754,6 +757,15 @@ class FinalEvidenceEvaluatorService:
             return None
 
     def _load_live_website_check(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        # In-memory dict store: live-check service keys rows by row id; filter by session+user.
+        if isinstance(self._db, dict):
+            for row in self._db.get(_LW_TABLE, {}).values():
+                if (
+                    str(row.get("proof_session_id")) == session_id
+                    and str(row.get("user_id")) == user_id
+                ):
+                    return row
+            return None
         try:
             resp = (
                 self._db.table(_LW_TABLE)
@@ -791,6 +803,15 @@ class FinalEvidenceEvaluatorService:
             return None
 
     def _load_optional_evidence(self, user_id: str, session_id: str) -> list[dict[str, Any]]:
+        # In-memory dict store: collect all submissions for this session+user.
+        if isinstance(self._db, dict):
+            return [
+                row for row in self._db.get(_OPT_TABLE, {}).values()
+                if (
+                    str(row.get("proof_session_id")) == session_id
+                    and str(row.get("user_id")) == user_id
+                )
+            ]
         try:
             resp = (
                 self._db.table(_OPT_TABLE)
@@ -806,6 +827,16 @@ class FinalEvidenceEvaluatorService:
             return []
 
     def _count_video_keyframes(self, user_id: str, session_id: str) -> int:
+        # In-memory dict store: count video_keyframe rows for this session+user.
+        if isinstance(self._db, dict):
+            return sum(
+                1 for row in self._db.get(_VF_TABLE, {}).values()
+                if (
+                    str(row.get("proof_session_id")) == session_id
+                    and str(row.get("user_id")) == user_id
+                    and row.get("frame_type") == "video_keyframe"
+                )
+            )
         try:
             resp = (
                 self._db.table(_VF_TABLE)

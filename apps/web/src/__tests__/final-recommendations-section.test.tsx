@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { ExtensionProofPanel, FinalEvaluatorCard, FinalRecommendationsSection, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
+import { DetectedSkillProfileSection, ExtensionProofPanel, FinalEvaluatorCard, FinalRecommendationsSection, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
 import type { FinalEvaluationResult, ProjectDefenseAnalysisResponse } from "../lib/api"
 
 const learningAction = {
@@ -221,6 +221,66 @@ describe("Final report consistency", () => {
       "utf8",
     )
     expect(source).not.toMatch(/Live Tutor|Scan Website|Guided Overlay/)
+  })
+
+  it("shows the score for a source that has analyzed (partial) evidence", () => {
+    render(
+      <FinalEvaluatorCard
+        sessionId="s1"
+        hideActions
+        evaluation={evaluation({
+          final_score: 62,
+          evidence_source_breakdown: [{
+            key: "qwen_visual_reasoning",
+            status: "partial",
+            score: 50,
+            weight: 0.1,
+            notes: "Qwen detected chatbot target content",
+          }],
+        })}
+      />,
+    )
+    // Source with analyzed evidence must surface its score, never "not run".
+    expect(screen.getByText(/qwen visual reasoning/i)).toBeInTheDocument()
+    expect(screen.getByText(/50\/100/)).toBeInTheDocument()
+    expect(screen.queryByText(/^not run$/i)).not.toBeInTheDocument()
+  })
+})
+
+describe("Detected Skill Profile (grouped skill evidence)", () => {
+  it("renders grouped skill evidence as the single skill summary", () => {
+    render(
+      <DetectedSkillProfileSection
+        evaluation={evaluation({
+          grouped_skill_evidence: [{
+            group_name: "JavaScript / Frontend",
+            category: "FRONTEND",
+            confidence: "high",
+            evidence_count: 2,
+            sources_count: 2,
+            source_labels: ["GitHub", "Recording"],
+            skills: [{
+              skill: "Chatbot UI",
+              confidence: "high",
+              evidence_support: "Supported by GitHub repository analysis",
+              sources: ["GitHub"],
+              is_inferred: false,
+              status_label: "claimed — strongly supported",
+              keyframe_evidence: [],
+              github_evidence: [],
+              category: "FRONTEND",
+              source_labels: ["GitHub"],
+              evidence_count: 1,
+              sources_count: 1,
+              evidence_objects: [],
+            }],
+          }],
+        })}
+      />,
+    )
+    // Grouped skill evidence section renders with its group (single skill summary).
+    expect(screen.getByText(/Review grouped skill evidence/i)).toBeInTheDocument()
+    expect(screen.getByText(/JavaScript \/ Frontend/i)).toBeInTheDocument()
   })
 })
 

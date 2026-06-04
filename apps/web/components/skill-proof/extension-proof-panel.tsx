@@ -3065,7 +3065,7 @@ function GroupedSkillEvidenceCard({
 
 type FilterMode = "all" | "high" | "review"
 
-function DetectedSkillProfileSection({
+export function DetectedSkillProfileSection({
   evaluation,
 }: {
   evaluation: FinalEvaluationResult
