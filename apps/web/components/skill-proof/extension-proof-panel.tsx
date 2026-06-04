@@ -3319,7 +3319,7 @@ function actionPriorityColor(priority: "high" | "medium" | "low") {
   return { bg: "#f8fafc", border: "#e2e8f0", text: "#475569", badge: "#f1f5f9" }
 }
 
-function FinalEvaluatorCard({
+export function FinalEvaluatorCard({
   evaluation,
   sessionId,
   onRunGitHub,

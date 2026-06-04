@@ -46,6 +46,7 @@ from app.services.workflow_visible_evidence_service import (
 from app.services.extension_proof_workflow_analysis_service import (
     _analyze_workflow,
     _SESSION_TABLE,
+    _filter_visual_reasoning_summary_for_target,
 )
 
 # ---------------------------------------------------------------------------
@@ -56,6 +57,7 @@ DEMO_USER_ID = "00000000-0000-0000-0000-000000000099"
 DETECTION_URL = "https://object-detection-demo.vercel.app"
 ROUTE_URL = "https://floodrisk.vercel.app"
 CHATBOT_URL = "https://my-chatbot.vercel.app"
+HUGGINGCHAT_URL = "https://huggingface.co/chat/"
 DASHBOARD_URL = "https://analytics-dashboard.vercel.app"
 SUPABASE_URL = "https://app.supabase.io/project/abc/editor"
 VB_DASH_URL = "http://localhost:3000/dashboard/profile"
@@ -350,6 +352,150 @@ class TestChatbotVisibleEvidence:
         snap = stored_rows[0].get("input_snapshot", {})
         assert snap.get("password") != "my-secret-123", "Password must be redacted"
         assert snap.get("password") == "[REDACTED]"
+
+    def test_qwen_recorder_ui_frame_is_filtered_non_target(self):
+        summary = {
+            "status": "analyzed",
+            "provider": "qwen_vl",
+            "frames_analyzed": 1,
+            "summary": "VeriBridge Screen Recorder interface with instructions",
+            "observations": [{
+                "visual_summary": "VeriBridge Screen Recorder interface with instructions",
+                "visible_ui_elements": ["Start recording", "VeriBridge"],
+                "supported_skills": ["Frontend Development"],
+            }],
+            "supported_signals": ["Frontend Development"],
+            "skill_timeline": [{"detected_skill": "Frontend Development"}],
+        }
+        filtered = _filter_visual_reasoning_summary_for_target(
+            summary,
+            has_target_events=True,
+            noise_hosts=["chrome-extension"],
+        )
+        assert filtered["status"] == "filtered_non_target_frame"
+        assert filtered["frames_analyzed"] == 0
+        assert filtered["supported_signals"] == []
+
+    def test_qwen_target_huggingchat_frame_supports_chatbot_ui(self):
+        summary = {
+            "status": "analyzed",
+            "provider": "qwen_vl",
+            "frames_analyzed": 1,
+            "summary": "HuggingChat interface with message input and assistant response",
+            "observations": [{
+                "visual_summary": "HuggingChat interface with message input and assistant response",
+                "page_title": "HuggingChat",
+                "supported_skills": ["Chatbot UI"],
+            }],
+            "supported_signals": ["Chatbot UI"],
+        }
+        filtered = _filter_visual_reasoning_summary_for_target(
+            summary,
+            has_target_events=True,
+            noise_hosts=["supabase.com"],
+        )
+        assert filtered["status"] == "analyzed"
+        assert filtered["frames_analyzed"] == 1
+        assert "Chatbot UI" in filtered["supported_signals"]
+
+    def test_huggingchat_page_loaded_and_input_visible_scores_above_zero(self, svc, mem_store):
+        session_id = "test-session-huggingchat-001"
+        request = VisibleEvidenceBatchRequest(events=[
+            _make_visible_event(
+                "dom_snapshot",
+                url=HUGGINGCHAT_URL,
+                page_title="HuggingChat",
+                visible_text_blocks=["HuggingChat", "Message input", "Ask anything"],
+            ),
+        ])
+        svc.ingest(DEMO_USER_ID, session_id, request)
+        obs = svc.get_extracted_observations(DEMO_USER_ID, session_id)
+        result = _analyze_workflow(
+            proof_data=_make_proof_data([
+                {"type": "page_visit", "page_url": HUGGINGCHAT_URL, "page_title": "HuggingChat"},
+            ]),
+            claimed_skills=["Natural Language Processing", "Large Language Models", "Chatbot UI"],
+            proof_objective="demonstrate HuggingChat chatbot UI",
+            original_url=HUGGINGCHAT_URL,
+            url_type="live_deployed_url",
+            github_url="https://github.com/huggingface/chat-ui",
+            visible_observations=obs,
+        )
+        assert result["evidence_strength_score"] > 0
+        assert result["target_site_pages_count"] == 1
+
+    def test_huggingchat_prompt_and_assistant_response_scores_strong(self, svc, mem_store):
+        session_id = "test-session-huggingchat-002"
+        request = VisibleEvidenceBatchRequest(events=[
+            _make_visible_event(
+                "input_change",
+                url=HUGGINGCHAT_URL,
+                page_title="HuggingChat",
+                action_snapshot={"element_id": "message-input"},
+                input_snapshot={"message": "Explain mesh simplification"},
+            ),
+            _make_visible_event(
+                "dom_snapshot",
+                url=HUGGINGCHAT_URL,
+                page_title="HuggingChat",
+                visible_text_blocks=["Assistant response", "Generated response", "Conversation history"],
+                result_like_blocks=["assistant response: Mesh simplification reduces geometry complexity"],
+            ),
+        ])
+        svc.ingest(DEMO_USER_ID, session_id, request)
+        obs = svc.get_extracted_observations(DEMO_USER_ID, session_id)
+        result = _analyze_workflow(
+            proof_data=_make_proof_data([
+                {"type": "page_visit", "page_url": HUGGINGCHAT_URL, "page_title": "HuggingChat"},
+                {"type": "input_change", "page_url": HUGGINGCHAT_URL, "element_id": "message-input"},
+                {"type": "click", "page_url": HUGGINGCHAT_URL, "element_text": "Send"},
+            ]),
+            claimed_skills=["Natural Language Processing", "Large Language Models", "Chatbot UI", "AI Product Design"],
+            proof_objective="demonstrate prompt response in an LLM chatbot",
+            original_url=HUGGINGCHAT_URL,
+            url_type="live_deployed_url",
+            github_url="https://github.com/huggingface/chat-ui",
+            visible_observations=obs,
+        )
+        assert result["evidence_strength_score"] >= 75
+        assert "Chatbot UI" in result["weakly_supported_skills"] or "Chatbot UI" in result["supported_skills"]
+
+    def test_non_target_activity_does_not_reduce_huggingchat_score(self, svc, mem_store):
+        session_id = "test-session-huggingchat-003"
+        request = VisibleEvidenceBatchRequest(events=[
+            _make_visible_event(
+                "dom_snapshot",
+                url=HUGGINGCHAT_URL,
+                page_title="HuggingChat",
+                visible_text_blocks=["HuggingChat", "Message input", "Assistant response"],
+                result_like_blocks=["assistant response: Hello"],
+            ),
+        ])
+        svc.ingest(DEMO_USER_ID, session_id, request)
+        obs = svc.get_extracted_observations(DEMO_USER_ID, session_id)
+        target_events = [
+            {"type": "page_visit", "page_url": HUGGINGCHAT_URL, "page_title": "HuggingChat"},
+            {"type": "input_change", "page_url": HUGGINGCHAT_URL, "element_id": "message-input"},
+            {"type": "click", "page_url": HUGGINGCHAT_URL, "element_text": "Send"},
+        ]
+        kwargs = dict(
+            claimed_skills=["Chatbot UI"],
+            proof_objective="chatbot prompt response",
+            original_url=HUGGINGCHAT_URL,
+            url_type="live_deployed_url",
+            github_url=None,
+            visible_observations=obs,
+        )
+        clean = _analyze_workflow(proof_data=_make_proof_data(target_events), **kwargs)
+        noisy = _analyze_workflow(
+            proof_data=_make_proof_data(target_events + [
+                {"type": "page_visit", "page_url": SUPABASE_URL, "page_title": "Supabase bucket"},
+                {"type": "page_visit", "page_url": VB_DASH_URL, "page_title": "VeriBridge dashboard"},
+            ]),
+            **kwargs,
+        )
+        assert noisy["evidence_strength_score"] >= clean["evidence_strength_score"]
+        assert noisy["filtered_unrelated_activity"]["count"] == 2
 
 
 # ---------------------------------------------------------------------------

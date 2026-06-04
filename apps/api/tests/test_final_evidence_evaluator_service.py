@@ -213,6 +213,77 @@ def test_ml_evidence_returns_model_learning_actions():
     assert "evaluation" in titles or "confusion" in titles
 
 
+def test_project_defense_dimensions_contribute_nonzero_without_overall_score():
+    wf = _strong_wf(["React"])
+    pd = {
+        "analysis_status": "analyzed",
+        "transcript_text": "I built the chatbot interface and explain the message flow.",
+        "consistency_with_evidence_score": 60,
+        "explanation_clarity_score": 65,
+        "ownership_signal_score": 10,
+        "technical_depth_score": 60,
+    }
+    result = _svc(wf=wf, pd=pd).evaluate("u1", "s1", claimed_skills=["React"])
+    defense = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert defense["score"] >= 45
+    assert defense["status"] == "partial"
+
+
+def test_llm_chatbot_transcript_maps_to_chatbot_skills():
+    pd = {
+        "analysis_status": "analyzed",
+        "overall_defense_score": 68,
+        "transcript_text": (
+            "I built the HuggingChat chatbot UI with a message input, prompt handling, "
+            "large language model response flow, NLP text processing, assistant response, "
+            "and AI product user experience decisions."
+        ),
+    }
+    result = _svc(pd=pd).evaluate(
+        "u1",
+        "s1",
+        claimed_skills=[
+            "Natural Language Processing",
+            "Large Language Models",
+            "Chatbot UI",
+            "AI Product Design",
+        ],
+    )
+    skills = {
+        skill.skill
+        for group in result.grouped_skill_evidence
+        for skill in group.skills
+    }
+    assert "Natural Language Processing" in skills
+    assert "Large Language Models" in skills
+    assert "Chatbot UI" in skills
+    assert "AI Product Design" in skills
+
+
+def test_chatbot_under_80_recommends_prompt_response_recording():
+    wf = {
+        "evidence_strength_score": 45,
+        "workflow_confidence": "low",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["Opened HuggingChat"],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": [],
+        "weakly_supported_skills": ["Chatbot UI"],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+        "recruiter_summary": "HuggingChat chatbot page loaded, but no prompt response was shown.",
+    }
+    result = _svc(wf=wf).evaluate(
+        "u1",
+        "s1",
+        claimed_skills=["Natural Language Processing", "Large Language Models", "Chatbot UI"],
+        github_url=None,
+    )
+    assert result.final_score < 80
+    titles = [a.title for a in result.recommendations.proof_actions]
+    assert "Record prompt and response proof" in titles
+
+
 def test_missing_github_suggests_github_proof_action_not_generic_learning():
     wf = _strong_wf(["React", "TypeScript"])
     wf["evidence_strength_score"] = 45

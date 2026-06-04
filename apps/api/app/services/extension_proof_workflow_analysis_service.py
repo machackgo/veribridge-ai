@@ -80,7 +80,7 @@ _DOMAIN_TECH: dict[str, list[str]] = {
     "fly.dev":           ["Fly.io"],
     "herokuapp.com":     ["Heroku"],
     "streamlit.app":     ["Streamlit", "Python"],
-    "huggingface.co":    ["HuggingFace", "Machine Learning", "Python"],
+    "huggingface.co":    ["HuggingFace", "Machine Learning", "Natural Language Processing", "Large Language Models", "Chatbot UI"],
     "github.com":        ["GitHub", "Git"],
     "github.io":         ["GitHub Pages"],
     "threejs.org":       ["Three.js", "WebGL", "Computer Graphics", "JavaScript"],
@@ -127,6 +127,13 @@ _TITLE_TECH: dict[str, str] = {
     "storybook":     "Storybook",
     "prisma":        "Prisma",
     "supabase":      "Supabase",
+    "huggingchat":   "Chatbot UI",
+    "chatbot":       "Chatbot UI",
+    "chat":          "Chatbot UI",
+    "assistant":     "Chatbot UI",
+    "llm":           "Large Language Models",
+    "large language model": "Large Language Models",
+    "nlp":           "Natural Language Processing",
 }
 
 _SKILL_ALIASES: dict[str, str] = {
@@ -192,6 +199,15 @@ _SKILL_ALIASES: dict[str, str] = {
     "computer vision": "Computer Vision",
     "object detection": "Object Detection",
     "natural language processing": "Natural Language Processing",
+    "nlp": "Natural Language Processing",
+    "large language models": "Large Language Models",
+    "large language model": "Large Language Models",
+    "llm": "Large Language Models",
+    "llms": "Large Language Models",
+    "chatbot ui": "Chatbot UI",
+    "chatbot development": "Chatbot UI",
+    "llm integration": "Large Language Models",
+    "ai product design": "AI Product Design",
     "deep learning": "Deep Learning",
     "reinforcement learning": "Reinforcement Learning",
 }
@@ -235,7 +251,7 @@ _ACTION_TRIGGER_TEXTS: tuple[str, ...] = (
     "predict", "analyze", "analyse", "detect", "run", "classify",
     "submit", "search", "generate", "compute", "calculate", "process",
     "check", "scan", "start", "execute", "infer", "translate",
-    "summarize", "evaluate", "test",
+    "summarize", "evaluate", "test", "send", "ask",
 )
 
 # Upload triggers: clicking/interacting with these implies a file/image was provided
@@ -1174,16 +1190,42 @@ def _filter_visual_reasoning_summary_for_target(
     observations = list(summary.get("observations") or [])
     kept_obs: list[dict[str, Any]] = []
     for obs in observations:
-        obs_text = " ".join(
-            str(obs.get(k) or "")
-            for k in ("visual_summary", "description", "detected_workflow_stage")
-        ).lower()
+        obs_parts: list[str] = []
+        for k in (
+            "visual_summary", "description", "detected_workflow_stage",
+            "page_title", "source_url", "source_host", "visible_ui_elements",
+            "visible_objects", "supported_skills", "missing_claims",
+        ):
+            val = obs.get(k)
+            if isinstance(val, (list, tuple, set)):
+                obs_parts.extend(str(v) for v in val)
+            elif isinstance(val, dict):
+                obs_parts.extend(str(v) for v in val.values())
+            elif val is not None:
+                obs_parts.append(str(val))
+        obs_text = " ".join(obs_parts).lower()
         if _text_mentions_non_target_source(obs_text, noise_hosts):
             continue
         kept_obs.append(obs)
 
     if len(kept_obs) == len(observations):
         return summary
+
+    if observations and not kept_obs:
+        return {
+            "status": "filtered_non_target_frame",
+            "provider": summary.get("provider", "qwen_vl"),
+            "frames_analyzed": 0,
+            "summary": "Visual reasoning frames were excluded because they showed non-target activity.",
+            "observations": [],
+            "supported_signals": [],
+            "missing_claims": [],
+            "skill_timeline": [],
+            "limitations": [
+                *(summary.get("limitations") or []),
+                "Non-target visual reasoning frames were filtered from scoring.",
+            ],
+        }
 
     kept_text = " | ".join(
         str(o.get("visual_summary") or "") for o in kept_obs if o.get("visual_summary")
@@ -1963,10 +2005,10 @@ def _detect_app_type(
     def _match(signals: tuple[str, ...]) -> bool:
         return any(s in text for s in signals)
 
-    if _match(_ML_APP_SIGNALS):
-        return "ml_app"
     if _match(_CHATBOT_SIGNALS):
         return "chatbot"
+    if _match(_ML_APP_SIGNALS):
+        return "ml_app"
     if _match(_ROUTE_MAP_SIGNALS):
         return "route_map"
     if _match(_DASHBOARD_SIGNALS):
@@ -2847,6 +2889,49 @@ def _analyze_workflow(
                 _newly_weakly,
             )
 
+    # Chatbot/LLM applications are proven by prompt/input/response text flows,
+    # not by rendered graphics. Score them from target-domain chat signals only.
+    _workflow_signal_text = " ".join([
+        str(page_context_summary or ""),
+        " ".join(top_result_snippets),
+        str(_visual_summary or ""),
+        str(frame_ocr_evidence_summary.get("detected_page_context") or ""),
+        " ".join(
+            str(s.get("reasoning") or "")
+            for s in (frame_ocr_evidence_summary.get("skill_signals") or [])
+            if isinstance(s, dict)
+        ),
+    ])
+    if app_type == "chatbot":
+        score = _adjust_chatbot_workflow_score(
+            score,
+            page_count=len(target_visited_urls),
+            input_count=len(target_inputs),
+            click_count=len(target_clicks),
+            target_titles=target_visited_titles,
+            evidence_text=_workflow_signal_text,
+            iao_patterns=iao_patterns,
+        )
+
+        _chat_text = " ".join(target_visited_titles).lower() + " " + _workflow_signal_text.lower()
+        _chat_skill_support = {
+            "chatbot ui": "chatbot" in _chat_text or "chat" in _chat_text or "message" in _chat_text,
+            "natural language processing": "natural language" in _chat_text or "nlp" in _chat_text or "prompt" in _chat_text,
+            "large language models": "large language" in _chat_text or "llm" in _chat_text or "model response" in _chat_text or "assistant response" in _chat_text,
+            "ai product design": "chat" in _chat_text and ("assistant" in _chat_text or "response" in _chat_text),
+        }
+        _remaining_unsupported_chat: list[str] = []
+        for skill in unsupported:
+            if _chat_skill_support.get(skill.lower()):
+                if skill not in weakly:
+                    weakly.append(skill)
+                skill_obs[skill] = "from_target_chatbot_evidence"
+            else:
+                _remaining_unsupported_chat.append(skill)
+        unsupported = _remaining_unsupported_chat
+
+    confidence = _determine_confidence(score, url_type, target_event_count, duration_secs)
+
     # ── Missing evidence ──────────────────────────────────────────────────────
     missing_evidence = _determine_missing_evidence(
         claimed_skills, supported, weakly, url_type, github_url,
@@ -3189,6 +3274,52 @@ def _compute_score(
     score += int(ratio * 5)
 
     return min(80, max(0, score))
+
+
+def _adjust_chatbot_workflow_score(
+    score: int,
+    *,
+    page_count: int,
+    input_count: int,
+    click_count: int,
+    target_titles: list[str],
+    evidence_text: str,
+    iao_patterns: list[dict[str, Any]],
+) -> int:
+    """Chatbot/LLM demos are text workflows, not visual-rendering demos."""
+    if page_count <= 0:
+        return score
+
+    text = " ".join(target_titles).lower() + " " + evidence_text.lower()
+    has_chat_ui = any(
+        term in text
+        for term in (
+            "huggingchat", "chat", "chatbot", "assistant", "message",
+            "conversation", "prompt", "input", "ask anything",
+        )
+    )
+    has_response = any(
+        term in text
+        for term in (
+            "assistant response", "ai response", "generated response",
+            "model response", "response:", "answer:", "assistant message",
+            "conversation history",
+        )
+    )
+    has_prompt_flow = any(
+        p.get("pattern_type") == "prompt_to_response" for p in iao_patterns
+    ) or input_count > 0
+
+    adjusted = max(score, 40)
+    if has_chat_ui:
+        adjusted = max(adjusted, 60)
+    if has_prompt_flow or click_count > 0:
+        adjusted = max(adjusted, 70)
+    if has_response and has_prompt_flow:
+        adjusted = max(adjusted, 78)
+    if has_response and has_prompt_flow and (input_count + click_count) >= 2:
+        adjusted = max(adjusted, 85)
+    return min(95, adjusted)
 
 
 # ── Confidence determination ──────────────────────────────────────────────────
@@ -3805,6 +3936,8 @@ def _text_mentions_non_target_source(text: str, noise_hosts: list[str]) -> bool:
         "localhost:3000",
         "127.0.0.1:3000",
         "extension recorder",
+        "screen recorder",
+        "recorder interface",
         "storage bucket",
     )
     if any(token in lower for token in blocked):

@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { FinalRecommendationsSection, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
+import { FinalEvaluatorCard, FinalRecommendationsSection, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
 import type { FinalEvaluationResult, ProjectDefenseAnalysisResponse } from "../lib/api"
 
 const learningAction = {
@@ -191,6 +191,28 @@ describe("Final report consistency", () => {
     )
     expect(source).toContain("Filtered unrelated activity")
     expect(source).toContain("were excluded from scoring")
+  })
+
+  it("shows Qwen filtered source as neutral instead of 0/100", () => {
+    render(
+      <FinalEvaluatorCard
+        sessionId="s1"
+        hideActions
+        evaluation={evaluation({
+          final_score: 79,
+          evidence_source_breakdown: [{
+            key: "qwen_visual_reasoning",
+            status: "not_run",
+            score: 0,
+            weight: 0.1,
+            notes: "non-target frames excluded from scoring",
+          }],
+        })}
+      />,
+    )
+    expect(screen.getByText(/qwen visual reasoning/i)).toBeInTheDocument()
+    expect(screen.getByText(/non-target frames excluded from scoring/)).toBeInTheDocument()
+    expect(screen.queryByText("0/100")).not.toBeInTheDocument()
   })
 
   it("keeps disabled final-report feature labels out of normal UI source", () => {

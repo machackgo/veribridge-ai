@@ -933,11 +933,23 @@ class FinalEvidenceEvaluatorService:
         raw_score = pd.get("overall_score")
         if raw_score is None:
             raw_score = pd.get("overall_defense_score")
-        if analysis_status == "analyzed" or raw_score is not None:
+        if raw_score is None:
+            dims = [
+                pd.get("consistency_with_evidence_score"),
+                pd.get("explanation_clarity_score"),
+                pd.get("ownership_signal_score"),
+                pd.get("technical_depth_score"),
+            ]
+            dim_vals = [int(v) for v in dims if v is not None]
+            if dim_vals:
+                raw_score = round(sum(dim_vals) / len(dim_vals))
+        transcript = str(pd.get("transcript_text") or "")
+        if raw_score is None and analysis_status == "analyzed" and len(transcript) > 50:
+            raw_score = 40
+        if raw_score is not None:
             score_val = _clamp(int(raw_score or 0))
             return EvidenceSourceResult("project_defense", "pass" if score_val >= 60 else "partial",
                                         score_val, _SOURCE_WEIGHTS["project_defense"])
-        transcript = str(pd.get("transcript_text") or "")
         if len(transcript) > 50:
             return EvidenceSourceResult("project_defense", "partial", 40, _SOURCE_WEIGHTS["project_defense"])
         return EvidenceSourceResult("project_defense", "not_run", 0, _SOURCE_WEIGHTS["project_defense"])
@@ -1196,6 +1208,20 @@ class FinalEvidenceEvaluatorService:
                 if src_type == "certificate_transcript" and confidence == "high":
                     confidence = "medium"
                 _add(skill, confidence, support[:140], source_label)
+
+        # ── Project Defense transcript skill inference ───────────────────────
+        if pd:
+            pd_text_for_skills = str(pd.get("transcript_text") or "").lower()
+            if pd_text_for_skills:
+                transcript_skill_terms = [
+                    ("Natural Language Processing", ("natural language processing", "nlp", "text processing")),
+                    ("Large Language Models", ("large language model", "large language models", "llm", "llms", "model response")),
+                    ("Chatbot UI", ("chatbot", "chat ui", "chat interface", "message input", "conversation")),
+                    ("AI Product Design", ("ai product", "prompt", "assistant response", "user experience", "chat workflow")),
+                ]
+                for skill_name, terms in transcript_skill_terms:
+                    if any(term in pd_text_for_skills for term in terms):
+                        _add(skill_name, "medium", "Partially supported by project defense transcript", "transcript")
 
         # ── Post-process: proof references, status labels, category, evidence_objects ──
         kf_status = (wf or {}).get("video_keyframe_status")
@@ -2127,8 +2153,8 @@ class FinalEvidenceEvaluatorService:
         checks: list[tuple[str, tuple[str, ...]]] = [
             ("3d_graphics_webgl", ("three.js", "threejs", "webgl", "mesh", "geometry", "shader", "canvas 3d", "babylon")),
             ("data_visualization", ("d3", "chart", "visualization", "tooltip", "plot", "dashboard", "graph", "data viz")),
-            ("ml_deep_learning", ("machine learning", "deep learning", "model", "neural", "classifier", "confusion matrix", "roc", "tensorflow", "pytorch", "sklearn")),
             ("nlp_llm_rag", ("llm", "rag", "retrieval", "embedding", "vector", "prompt", "langchain", "nlp", "chatbot")),
+            ("ml_deep_learning", ("machine learning", "deep learning", "model", "neural", "classifier", "confusion matrix", "roc", "tensorflow", "pytorch", "sklearn")),
             ("devops_mlops", ("docker", "kubernetes", "ci/cd", "pipeline", "terraform", "monitoring", "deployment", "mlops")),
             ("backend_api", ("api", "backend", "fastapi", "express", "django", "flask", "database", "postgres", "auth")),
             ("frontend_fullstack", ("react", "next.js", "frontend", "full stack", "fullstack", "typescript", "javascript", "ui")),
@@ -2192,6 +2218,8 @@ class FinalEvidenceEvaluatorService:
         optional_rows: list[dict[str, Any]],
     ) -> FinalRecommendations:
         source_map = {s.key: s for s in sources}
+        evidence_text = self._evidence_text(claimed_skills, detected_skills, wf, gh, pd, optional_rows)
+        project_type = self._project_type(evidence_text, grouped)
 
         def src_reason(key: str) -> str:
             s = source_map.get(key)
@@ -2226,6 +2254,22 @@ class FinalEvidenceEvaluatorService:
                 source_reason=src_reason(key),
                 action_type=a.action_type,
             ))
+
+        if final_score < 80 and project_type == "nlp_llm_rag" and len(proof_actions) < 4:
+            wf_src = source_map.get("website_workflow")
+            if wf_src and wf_src.status in ("missing", "partial"):
+                proof_actions.append(RecommendationAction(
+                    "Record prompt and response proof",
+                    "Chatbot evidence is strongest when the target site shows a prompt being submitted and an assistant response returning.",
+                    "Record a focused follow-up on the submitted chatbot URL: type one prompt, send it, show the generated response, then briefly explain the prompt-to-response flow.",
+                    "Natural Language Processing, Large Language Models, Chatbot UI",
+                    "Show the target chatbot page, entered prompt, assistant response, and message history. Avoid unrelated tabs.",
+                    "beginner",
+                    "30 min",
+                    "high",
+                    src_reason("website_workflow"),
+                    "record_followup_proof",
+                ))
 
         if final_score < 80 and len(proof_actions) < 4:
             wf_src = source_map.get("website_workflow")
@@ -2278,13 +2322,19 @@ class FinalEvidenceEvaluatorService:
                 "record_followup_proof",
             ))
 
-        evidence_text = self._evidence_text(claimed_skills, detected_skills, wf, gh, pd, optional_rows)
-        project_type = self._project_type(evidence_text, grouped)
         project_label = project_type.replace("_", "/")
         learning = self._learning_templates(
             project_type,
             f"Triggered by detected project type: {project_label}; evidence came from analyzed skills and available source text.",
         )
+
+        if final_score < 80 and project_type == "nlp_llm_rag":
+            chatbot_actions = [a for a in proof_actions if a.title == "Record prompt and response proof"]
+            if chatbot_actions:
+                proof_actions = [
+                    a for a in proof_actions
+                    if a.action_type != "record_followup_proof" or a.title == "Record prompt and response proof"
+                ]
 
         seen: set[str] = set()
         unique_proof: list[RecommendationAction] = []
