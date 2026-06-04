@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -606,6 +606,27 @@ class EvidenceSourceResult:
 
 
 @dataclass
+class ProjectContext:
+    project_type: str
+    project_types: set[str] = field(default_factory=set)
+    target_keywords: set[str] = field(default_factory=set)
+    claimed_skill_keywords: set[str] = field(default_factory=set)
+    allowed_domains: set[str] = field(default_factory=set)
+    negative_mismatch_keywords: set[str] = field(default_factory=set)
+    context_summary: str = ""
+
+
+@dataclass
+class EvidenceRelevanceResult:
+    relevance_score: int
+    is_relevant: bool
+    mismatch_detected: bool
+    matched_project_terms: list[str] = field(default_factory=list)
+    conflicting_project_terms: list[str] = field(default_factory=list)
+    explanation: str = ""
+
+
+@dataclass
 class GroupedSkillEvidence:
     """One category group of skills for the grouped skill evidence UI."""
     group_name: str
@@ -695,18 +716,19 @@ def _clamp(v: int, lo: int = 0, hi: int = 100) -> int:
 
 
 _PROJECT_TYPE_TERMS: dict[str, tuple[str, ...]] = {
-    "chatbot_nlp_llm": (
+    "chatbot_nlp": (
         "huggingchat", "chatbot", "chat ui", "chat interface", "prompt",
         "assistant", "llm", "large language", "nlp", "conversation", "message",
-        "model response", "generated response",
+        "model response", "generated response", "chatgpt",
     ),
-    "3d_webgl_graphics": (
+    "webgl_3d": (
         "three.js", "threejs", "webgl", "3d", "mesh", "geometry", "renderer",
         "scene", "camera", "texture", "shader", "simplification",
     ),
-    "maps_geospatial": (
-        "leaflet", "map", "marker", "popup", "tile", "zoom", "pan",
-        "openstreetmap", "geospatial", "gis", "coordinates",
+    "geospatial_map": (
+        "leaflet", "map", "maps", "marker", "popup", "tile", "zoom", "pan",
+        "openstreetmap", "geospatial", "gis", "coordinates", "web mapping",
+        "interactive maps",
     ),
     "data_visualization": (
         "d3", "chart", "graph", "axis", "dataset", "visualization", "tooltip",
@@ -716,16 +738,46 @@ _PROJECT_TYPE_TERMS: dict[str, tuple[str, ...]] = {
         "prediction", "inference", "training", "classes", "confidence",
         "tensorflow", "pytorch", "classifier", "model evaluation",
     ),
+    "backend_api": (
+        "api", "endpoint", "request", "response", "fastapi", "express",
+        "backend", "server", "database", "auth", "rest", "graphql",
+    ),
+    "frontend_web": (
+        "react", "typescript", "javascript", "frontend", "ui", "component",
+        "browser", "css", "html",
+    ),
 }
 
 
-def _project_types_from_text(text: str) -> set[str]:
+def _project_terms_in_text(text: str, project_type: str) -> set[str]:
     lower = (text or "").lower()
+    return {term for term in _PROJECT_TYPE_TERMS.get(project_type, ()) if term in lower}
+
+
+def _project_types_from_text(text: str) -> set[str]:
     return {
         project_type
-        for project_type, terms in _PROJECT_TYPE_TERMS.items()
-        if any(term in lower for term in terms)
+        for project_type in _PROJECT_TYPE_TERMS
+        if _project_terms_in_text(text, project_type)
     }
+
+
+def _keywords_from_text(text: str) -> set[str]:
+    lower = (text or "").lower()
+    words = {
+        token.strip(".,;:()[]{}'\"")
+        for token in lower.replace("/", " ").replace("_", " ").replace("-", " ").split()
+    }
+    project_terms = {term for terms in _PROJECT_TYPE_TERMS.values() for term in terms if term in lower}
+    return {w for w in words if len(w) >= 3} | project_terms
+
+
+def _host_from_url(value: str) -> str:
+    try:
+        parsed = urlparse(value if "://" in value else f"https://{value}")
+        return (parsed.netloc or "").lower().removeprefix("www.")
+    except Exception:
+        return ""
 
 
 def _proof_context_text(
@@ -752,20 +804,141 @@ def _proof_context_text(
     return " ".join(parts)
 
 
+def extract_project_context(
+    claimed_skills: list[str],
+    wf: dict[str, Any] | None,
+    gh: dict[str, Any] | None,
+) -> ProjectContext:
+    text = _proof_context_text(claimed_skills, wf, gh)
+    project_types = _project_types_from_text(text)
+    # Generic frontend should not dominate a specific project family.
+    specific_types = {t for t in project_types if t != "frontend_web"}
+    primary = sorted(specific_types or project_types or {"unknown"})[0]
+    claimed_text = " ".join(claimed_skills or [])
+    domains = {
+        h for h in [
+            _host_from_url(str(wf.get("target_website") or "")) if wf else "",
+            _host_from_url(str(gh.get("github_url") or gh.get("repo_url") or "")) if gh else "",
+        ] if h
+    }
+    target_terms: set[str] = set()
+    for project_type in project_types:
+        target_terms |= _project_terms_in_text(text, project_type)
+    if wf:
+        target_terms |= _keywords_from_text(str(wf.get("target_website") or ""))
+    return ProjectContext(
+        project_type=primary,
+        project_types=project_types,
+        target_keywords=target_terms,
+        claimed_skill_keywords=_keywords_from_text(claimed_text),
+        allowed_domains=domains,
+        negative_mismatch_keywords={
+            term
+            for project_type, terms in _PROJECT_TYPE_TERMS.items()
+            if project_type not in project_types
+            for term in terms
+        },
+        context_summary=text[:500],
+    )
+
+
+def _evidence_text_from_mapping(data: dict[str, Any] | None, fields: tuple[str, ...]) -> str:
+    if not data:
+        return ""
+    values: list[str] = []
+    for field in fields:
+        value = data.get(field)
+        if value is None:
+            continue
+        values.append(str(value))
+    return " ".join(values)
+
+
+def _workflow_source_text(wf: dict[str, Any] | None) -> str:
+    return _evidence_text_from_mapping(wf, (
+        "target_website", "workflow_summary", "recruiter_summary",
+        "page_context_summary", "visual_summary", "observed_demonstration",
+        "demonstrated_actions", "top_result_snippets", "frame_ocr_evidence_summary",
+        "visual_reasoning_summary", "supported_skills", "weakly_supported_skills",
+    ))
+
+
+def _project_defense_text(pd: dict[str, Any] | None) -> str:
+    return _evidence_text_from_mapping(pd, (
+        "transcript_text", "refined_transcript", "raw_transcript",
+        "transcript_summary", "recruiter_summary", "skills_mentioned",
+        "skills_explained_well", "recommended_improvements",
+    ))
+
+
+def validate_evidence_relevance(
+    context: ProjectContext,
+    evidence_source_type: str,
+    evidence_text: str,
+) -> EvidenceRelevanceResult:
+    text = evidence_text or ""
+    if len(text.strip()) < 20:
+        return EvidenceRelevanceResult(
+            0, False, False, explanation=f"{evidence_source_type} has insufficient text for relevance validation",
+        )
+
+    evidence_types = _project_types_from_text(text)
+    evidence_terms = _keywords_from_text(text)
+    specific_context_types = {t for t in context.project_types if t != "frontend_web"}
+    specific_evidence_types = {t for t in evidence_types if t != "frontend_web"}
+    matched_terms = sorted((context.target_keywords | context.claimed_skill_keywords) & evidence_terms)
+    conflicting_types = sorted(specific_evidence_types - specific_context_types)
+    conflicting_terms = sorted({
+        term
+        for project_type in conflicting_types
+        for term in _project_terms_in_text(text, project_type)
+    })
+
+    mismatch = bool(specific_context_types and specific_evidence_types and specific_context_types.isdisjoint(specific_evidence_types))
+    if mismatch:
+        return EvidenceRelevanceResult(
+            15,
+            False,
+            True,
+            matched_project_terms=matched_terms,
+            conflicting_project_terms=conflicting_terms,
+            explanation=(
+                f"{evidence_source_type} appears unrelated to submitted proof "
+                f"(proof={','.join(sorted(specific_context_types))}; "
+                f"evidence={','.join(sorted(specific_evidence_types))})"
+            ),
+        )
+
+    if evidence_types & context.project_types:
+        score = 80 if matched_terms else 65
+    elif matched_terms:
+        score = 60
+    elif not context.project_types or context.project_type == "unknown":
+        score = 50
+    else:
+        score = 25
+    return EvidenceRelevanceResult(
+        score,
+        score >= 45,
+        False,
+        matched_project_terms=matched_terms,
+        conflicting_project_terms=conflicting_terms,
+        explanation=f"{evidence_source_type} relevance score={score}",
+    )
+
+
 def _is_relevant_to_proof(
     evidence_text: str,
     claimed_skills: list[str],
     wf: dict[str, Any] | None,
     gh: dict[str, Any] | None,
 ) -> tuple[bool, str]:
-    proof_types = _project_types_from_text(_proof_context_text(claimed_skills, wf, gh))
-    evidence_types = _project_types_from_text(evidence_text)
-    if proof_types and evidence_types and proof_types.isdisjoint(evidence_types):
-        return False, (
-            "evidence appears unrelated to submitted proof "
-            f"(proof={','.join(sorted(proof_types))}; evidence={','.join(sorted(evidence_types))})"
-        )
-    return True, ""
+    result = validate_evidence_relevance(
+        extract_project_context(claimed_skills, wf, gh),
+        "evidence",
+        evidence_text,
+    )
+    return result.is_relevant, result.explanation
 
 
 # ── Service ───────────────────────────────────────────────────────────────────
@@ -1029,9 +1202,20 @@ class FinalEvidenceEvaluatorService:
 
     # ── Score individual sources ──────────────────────────────────────────────
 
-    def _score_workflow(self, wf: dict[str, Any] | None) -> EvidenceSourceResult:
+    def _score_workflow(
+        self,
+        wf: dict[str, Any] | None,
+        context: ProjectContext | None = None,
+    ) -> EvidenceSourceResult:
         if wf is None:
             return EvidenceSourceResult("website_workflow", "not_run", 0, _SOURCE_WEIGHTS["website_workflow"])
+        if context:
+            rel = validate_evidence_relevance(context, "website workflow", _workflow_source_text(wf))
+            if rel.mismatch_detected:
+                return EvidenceSourceResult(
+                    "website_workflow", "missing", 15, _SOURCE_WEIGHTS["website_workflow"],
+                    notes=rel.explanation,
+                )
         raw_score = wf.get("evidence_strength_score") or 0
         score = _clamp(int(raw_score))
         conf = wf.get("workflow_confidence", "insufficient")
@@ -1046,14 +1230,37 @@ class FinalEvidenceEvaluatorService:
             notes=f"workflow confidence={conf}",
         )
 
-    def _score_dom(self, wf: dict[str, Any] | None) -> EvidenceSourceResult:
+    def _score_dom(
+        self,
+        wf: dict[str, Any] | None,
+        context: ProjectContext | None = None,
+    ) -> EvidenceSourceResult:
         if wf is None:
             return EvidenceSourceResult("dom_visible_evidence", "not_run", 0, _SOURCE_WEIGHTS["dom_visible_evidence"])
-        vis = wf.get("visible_evidence_status", "not_captured")
+        vis = wf.get("dom_evidence_status") or wf.get("visible_evidence_status") or "not_captured"
+        observed = wf.get("observed_demonstration") or {}
+        if isinstance(observed, dict):
+            vis = observed.get("dom_evidence_status") or observed.get("visible_evidence_status") or vis
+        top_snippets = wf.get("top_result_snippets") or []
+        if isinstance(observed, dict):
+            top_snippets = top_snippets or observed.get("top_result_snippets") or []
         actions = len(wf.get("demonstrated_actions") or [])
+        dom_text = " ".join([
+            str(wf.get("page_context_summary") or ""),
+            str(wf.get("demonstrated_actions") or ""),
+            str(top_snippets or ""),
+            str(observed or ""),
+        ])
+        if context and dom_text.strip():
+            rel = validate_evidence_relevance(context, "DOM visible evidence", dom_text)
+            if rel.mismatch_detected:
+                return EvidenceSourceResult(
+                    "dom_visible_evidence", "missing", 10, _SOURCE_WEIGHTS["dom_visible_evidence"],
+                    notes=rel.explanation,
+                )
         if vis == "available" and actions > 3:
             return EvidenceSourceResult("dom_visible_evidence", "pass", 80, _SOURCE_WEIGHTS["dom_visible_evidence"])
-        if vis in ("available", "partial") or actions > 0:
+        if vis in ("available", "partial") or actions > 0 or top_snippets:
             return EvidenceSourceResult("dom_visible_evidence", "partial", 50, _SOURCE_WEIGHTS["dom_visible_evidence"])
         return EvidenceSourceResult("dom_visible_evidence", "missing", 10, _SOURCE_WEIGHTS["dom_visible_evidence"])
 
@@ -1064,13 +1271,23 @@ class FinalEvidenceEvaluatorService:
             return EvidenceSourceResult("video_keyframes", "partial", 60, _SOURCE_WEIGHTS["video_keyframes"])
         return EvidenceSourceResult("video_keyframes", "not_run", 0, _SOURCE_WEIGHTS["video_keyframes"])
 
-    def _score_ocr(self, wf: dict[str, Any] | None) -> EvidenceSourceResult:
+    def _score_ocr(
+        self,
+        wf: dict[str, Any] | None,
+        context: ProjectContext | None = None,
+    ) -> EvidenceSourceResult:
         if wf is None:
             return EvidenceSourceResult("ocr", "not_run", 0, _SOURCE_WEIGHTS["ocr"])
         ocr_summary = wf.get("frame_ocr_evidence_summary") or {}
         if isinstance(ocr_summary, dict) and ocr_summary.get("detected_page_context") == "filtered_non_target_frame":
             return EvidenceSourceResult("ocr", "not_run", 0, _SOURCE_WEIGHTS["ocr"],
                                         notes="non-target frames excluded from scoring")
+
+        ocr_text = str(ocr_summary)
+        if context and ocr_text.strip() and ocr_text != "{}":
+            rel = validate_evidence_relevance(context, "OCR text", ocr_text)
+            if rel.mismatch_detected:
+                return EvidenceSourceResult("ocr", "missing", 10, _SOURCE_WEIGHTS["ocr"], notes=rel.explanation)
 
         status = wf.get("visual_analysis_status", "not_configured")
         if status == "analyzed":
@@ -1179,6 +1396,7 @@ class FinalEvidenceEvaluatorService:
         wf: dict[str, Any] | None,
         user_id: str = "",
         session_id: str = "",
+        context: ProjectContext | None = None,
     ) -> EvidenceSourceResult:
         if wf is None:
             return EvidenceSourceResult("qwen_visual_reasoning", "not_run", 0, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
@@ -1203,6 +1421,16 @@ class FinalEvidenceEvaluatorService:
                 vrs = per_frame
                 qwen_status = "analyzed"
         if qwen_status == "analyzed":
+            if context:
+                rel = validate_evidence_relevance(context, "Qwen visual reasoning", str(vrs))
+                if rel.mismatch_detected:
+                    return EvidenceSourceResult(
+                        "qwen_visual_reasoning",
+                        "missing",
+                        20,
+                        _SOURCE_WEIGHTS["qwen_visual_reasoning"],
+                        notes=rel.explanation,
+                    )
             frames = int(vrs.get("frames_analyzed") or 0)
             score = min(90, 50 + frames * 15)
             return EvidenceSourceResult("qwen_visual_reasoning", "pass", score, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
@@ -1272,19 +1500,24 @@ class FinalEvidenceEvaluatorService:
         claimed_skills: list[str] | None = None,
         wf: dict[str, Any] | None = None,
         gh: dict[str, Any] | None = None,
+        context: ProjectContext | None = None,
     ) -> EvidenceSourceResult:
         if pd is None:
             return EvidenceSourceResult("project_defense", "not_run", 0, _SOURCE_WEIGHTS["project_defense"])
         analysis_status = pd.get("analysis_status", "not_started")
-        transcript = str(pd.get("transcript_text") or "")
-        relevant, relevance_note = _is_relevant_to_proof(transcript, claimed_skills or [], wf, gh)
-        if transcript and not relevant:
+        transcript = _project_defense_text(pd)
+        rel = validate_evidence_relevance(
+            context or extract_project_context(claimed_skills or [], wf, gh),
+            "project defense transcript",
+            transcript,
+        )
+        if transcript and rel.mismatch_detected:
             return EvidenceSourceResult(
                 "project_defense",
                 "partial",
-                20,
+                min(20, rel.relevance_score),
                 _SOURCE_WEIGHTS["project_defense"],
-                notes=f"transcript appears unrelated to submitted proof; {relevance_note}",
+                notes=f"transcript appears unrelated to submitted proof; {rel.explanation}",
             )
         raw_score = pd.get("overall_score")
         if raw_score is None:
@@ -1317,6 +1550,7 @@ class FinalEvidenceEvaluatorService:
         claimed_skills: list[str] | None = None,
         wf: dict[str, Any] | None = None,
         gh: dict[str, Any] | None = None,
+        context: ProjectContext | None = None,
     ) -> EvidenceSourceResult:
         matching = [r for r in rows if r.get("source_type") == source_type]
         if not matching:
@@ -1330,8 +1564,12 @@ class FinalEvidenceEvaluatorService:
                 str(row.get("analysis_json") or ""),
                 str(row.get("evidence_objects") or ""),
             ])
-            relevant, _ = _is_relevant_to_proof(evidence_text, claimed_skills or [], wf, gh)
-            if relevant:
+            rel = validate_evidence_relevance(
+                context or extract_project_context(claimed_skills or [], wf, gh),
+                source_type,
+                evidence_text,
+            )
+            if rel.is_relevant and not rel.mismatch_detected:
                 relevant_matching.append(row)
             else:
                 unrelated_found = True
@@ -1359,7 +1597,9 @@ class FinalEvidenceEvaluatorService:
         claimed_skills: list[str],
         wf: dict[str, Any] | None,
         gh: dict[str, Any] | None,
+        context: ProjectContext | None = None,
     ) -> list[dict[str, Any]]:
+        ctx = context or extract_project_context(claimed_skills, wf, gh)
         relevant_rows: list[dict[str, Any]] = []
         for row in rows:
             evidence_text = " ".join([
@@ -1367,8 +1607,8 @@ class FinalEvidenceEvaluatorService:
                 str(row.get("analysis_json") or ""),
                 str(row.get("evidence_objects") or ""),
             ])
-            relevant, _ = _is_relevant_to_proof(evidence_text, claimed_skills, wf, gh)
-            if relevant:
+            rel = validate_evidence_relevance(ctx, str(row.get("source_type") or "document"), evidence_text)
+            if rel.is_relevant and not rel.mismatch_detected:
                 relevant_rows.append(row)
         return relevant_rows
 
@@ -2817,19 +3057,20 @@ class FinalEvidenceEvaluatorService:
         pd = self._load_project_defense(user_id, session_id)
         opt = self._load_optional_evidence(user_id, session_id)
         project_opt = [row for row in opt if row.get("source_type") == "document"]
-        relevant_project_opt = self._filter_relevant_optional_rows(project_opt, skills, wf, gh)
+        project_context = extract_project_context(skills, wf, gh)
+        relevant_project_opt = self._filter_relevant_optional_rows(project_opt, skills, wf, gh, project_context)
         kf_count = self._count_video_keyframes(user_id, session_id)
 
         sources: list[EvidenceSourceResult] = [
-            self._score_workflow(wf),
-            self._score_dom(wf),
+            self._score_workflow(wf, project_context),
+            self._score_dom(wf, project_context),
             self._score_video_keyframes(kf_count),
-            self._score_ocr(wf),
-            self._score_qwen(wf, user_id=user_id, session_id=session_id),
+            self._score_ocr(wf, project_context),
+            self._score_qwen(wf, user_id=user_id, session_id=session_id, context=project_context),
             self._score_github(gh),
             self._score_live_website(lw),
-            self._score_project_defense(pd, skills, wf, gh),
-            self._score_optional(project_opt, "document", "uploaded_documents", skills, wf, gh),
+            self._score_project_defense(pd, skills, wf, gh, project_context),
+            self._score_optional(project_opt, "document", "uploaded_documents", skills, wf, gh, project_context),
         ]
 
         final_score = self._combine_scores(sources)
@@ -2842,8 +3083,10 @@ class FinalEvidenceEvaluatorService:
 
         # Detected skill profile (inferred from all evidence, including beyond claimed)
         relevant_pd = pd
-        if pd and not _is_relevant_to_proof(str(pd.get("transcript_text") or ""), skills, wf, gh)[0]:
-            relevant_pd = None
+        if pd:
+            pd_rel = validate_evidence_relevance(project_context, "project defense transcript", _project_defense_text(pd))
+            if pd_rel.mismatch_detected:
+                relevant_pd = None
         all_skill_entries = self._collect_all_evidence_skills(skills, wf, gh, relevant_pd, relevant_project_opt)
         detected_capability = self._infer_skill_profile(skills, all_skill_entries)
         detected_additional = [
