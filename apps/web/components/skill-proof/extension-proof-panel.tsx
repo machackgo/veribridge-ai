@@ -703,10 +703,27 @@ function SourceScoreBadge({
     return (
       <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4,
         background: "#f8fafc", color: "#94a3b8", border: "1px dashed #cbd5e1" }}>
-        {label}: score not available
+        {label}: not run
       </span>
     )
   }
+
+  const isNotRun = source.status === "not_run"
+  const isNotAvailable = source.status === "not_available"
+
+  // Show a neutral text status for sources that were not run or not configured.
+  // Do not show "0/100" — that implies a graded failure, which is misleading.
+  if (isNotRun || isNotAvailable) {
+    const text = isNotAvailable ? "not configured" : "not run"
+    return (
+      <span title={source.notes || source.status} style={{ fontSize: 9, fontWeight: 600,
+        padding: "2px 7px", borderRadius: 4, background: "#f8fafc", color: "#94a3b8",
+        border: "1px dashed #cbd5e1" }}>
+        {label}: {text}
+      </span>
+    )
+  }
+
   const color = source.status === "pass" ? "#166534"
     : source.status === "partial" ? "#854d0e"
     : source.status === "missing" ? "#991b1b"
@@ -719,10 +736,16 @@ function SourceScoreBadge({
     : source.status === "partial" ? "#fde68a"
     : source.status === "missing" ? "#fecaca"
     : "#e2e8f0"
+
+  // Show "partial evidence" label for partial status to match task intent
+  const scoreLabel = source.status === "partial"
+    ? `partial — ${source.score}/100`
+    : `${source.score}/100`
+
   return (
     <span title={source.notes || source.status} style={{ fontSize: 9, fontWeight: 700,
       padding: "2px 7px", borderRadius: 4, background: bg, color, border: `1px solid ${border}` }}>
-      {label}: {source.score}/100
+      {label}: {scoreLabel}
     </span>
   )
 }
@@ -2041,42 +2064,6 @@ function WorkflowAnalysisCard({
           <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.7 }}>
             {analysis.workflow_summary}
           </p>
-        </AnalysisSection>
-
-        {/* Skills */}
-        <AnalysisSection title="Skills Assessment">
-          <div style={{ display: "grid", gap: 8 }}>
-            {(analysis.supported_skills.length > 0 || analysis.weakly_supported_skills.length > 0 || analysis.unsupported_skills.length > 0) ? (
-              <>
-                {analysis.supported_skills.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 11, color: "#065f46", fontWeight: 600, marginBottom: 4 }}>Evidence supports</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                      {analysis.supported_skills.map((s) => <SkillPill key={s} label={s} variant="supported" />)}
-                    </div>
-                  </div>
-                )}
-                {analysis.weakly_supported_skills.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 11, color: "#854d0e", fontWeight: 600, marginBottom: 4 }}>Partially supported</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                      {analysis.weakly_supported_skills.map((s) => <SkillPill key={s} label={s} variant="weak" />)}
-                    </div>
-                  </div>
-                )}
-                {analysis.unsupported_skills.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 11, color: "#991b1b", fontWeight: 600, marginBottom: 4 }}>No observable evidence</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                      {analysis.unsupported_skills.map((s) => <SkillPill key={s} label={s} variant="unsupported" />)}
-                    </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>No skills were claimed for this session</span>
-            )}
-          </div>
         </AnalysisSection>
 
         {/* Demonstrated actions */}

@@ -860,6 +860,25 @@ class FinalEvidenceEvaluatorService:
                                         notes="OCR not configured")
         return EvidenceSourceResult("ocr", "partial", 40, _SOURCE_WEIGHTS["ocr"])
 
+    @staticmethod
+    def _qwen_obs_chatbot_score(vrs: dict[str, Any]) -> int:
+        """Return partial score if Qwen observations describe chatbot/chat-UI content."""
+        _CHATBOT_TERMS: frozenset[str] = frozenset({
+            "huggingchat", "chat window", "chat ui", "chat interface", "input field",
+            "chatbot", "assistant", "conversation", "typed", "message input",
+            "prompt", "ai response", "model response", "generated response",
+        })
+        observations = vrs.get("observations") or []
+        for obs in observations:
+            text = " ".join([
+                str(obs.get("visual_summary", "")),
+                " ".join(str(x) for x in (obs.get("visible_ui_elements") or [])),
+                str(obs.get("detected_user_action", "")),
+            ]).lower()
+            if sum(1 for t in _CHATBOT_TERMS if t in text) >= 1:
+                return 50  # partial evidence — target chatbot UI observed
+        return 0
+
     def _score_qwen(self, wf: dict[str, Any] | None) -> EvidenceSourceResult:
         if wf is None:
             return EvidenceSourceResult("qwen_visual_reasoning", "not_run", 0, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
@@ -878,6 +897,17 @@ class FinalEvidenceEvaluatorService:
             score = min(90, 50 + frames * 15)
             return EvidenceSourceResult("qwen_visual_reasoning", "pass", score, _SOURCE_WEIGHTS["qwen_visual_reasoning"])
         if qwen_status == "filtered_non_target_frame":
+            # Still check whether observations describe target chatbot content.
+            # Filtering may have been too aggressive if Qwen saw HuggingChat / chat UI.
+            chatbot_score = self._qwen_obs_chatbot_score(vrs)
+            if chatbot_score > 0:
+                return EvidenceSourceResult(
+                    "qwen_visual_reasoning",
+                    "partial",
+                    chatbot_score,
+                    _SOURCE_WEIGHTS["qwen_visual_reasoning"],
+                    notes="Qwen detected chatbot target content; extension events were limited",
+                )
             return EvidenceSourceResult(
                 "qwen_visual_reasoning",
                 "not_run",

@@ -2856,3 +2856,119 @@ def test_profile_and_certificate_rows_are_reserved_outside_project_proof():
     skills = {sk.skill for g in result.grouped_skill_evidence for sk in g.skills}
     assert "Data Science" not in skills
     assert "Machine Learning" not in skills
+
+
+# ── Chatbot / Qwen target evidence tests ──────────────────────────────────────
+
+def test_qwen_chatbot_target_observation_gives_partial_score():
+    """Qwen observations describing HuggingChat give non-zero score even when filtered."""
+    wf = {
+        "evidence_strength_score": 40,
+        "workflow_confidence": "low",
+        "supported_skills": [],
+        "weakly_supported_skills": ["Chatbot UI"],
+        "visual_reasoning_summary": {
+            "status": "filtered_non_target_frame",
+            "frames_analyzed": 0,
+            "observations": [
+                {
+                    "visual_summary": "The HuggingChat interface is open on a web browser, showing a chat window with a loading message.",
+                    "visible_ui_elements": ["chat window", "input field", "send button"],
+                    "detected_user_action": "user opened HuggingChat",
+                    "confidence_score": 0.7,
+                },
+                {
+                    "visual_summary": "The HuggingChat interface is open, showing a chat window with the word 'hi' typed in.",
+                    "visible_ui_elements": ["message input", "send button"],
+                    "detected_user_action": "user typed 'hi' in chat input",
+                    "confidence_score": 0.75,
+                },
+            ],
+        },
+        "video_keyframe_status": "extracted",
+        "video_keyframe_count": 2,
+        "video_keyframe_timestamps_ms": [2000, 8000],
+    }
+    svc = _svc(wf=wf)
+    result = svc.evaluate("u1", "s1", claimed_skills=["Chatbot UI", "Natural Language Processing"])
+    qwen = next(s for s in result.evidence_source_breakdown if s["key"] == "qwen_visual_reasoning")
+    assert qwen["score"] > 0, (
+        f"Qwen score must be > 0 when observations contain chatbot target content, got {qwen['score']}"
+    )
+    assert qwen["status"] in ("partial", "pass"), (
+        f"Qwen status must be partial or pass, got {qwen['status']}"
+    )
+
+
+def test_qwen_non_target_observation_stays_zero():
+    """Qwen observations with no chatbot content keep score=0 when filtered."""
+    wf = {
+        "evidence_strength_score": 20,
+        "workflow_confidence": "insufficient",
+        "supported_skills": [],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": {
+            "status": "filtered_non_target_frame",
+            "frames_analyzed": 0,
+            "observations": [
+                {
+                    "visual_summary": "A person is sitting at a desk looking at their phone.",
+                    "visible_ui_elements": [],
+                    "detected_user_action": "person is idle",
+                    "confidence_score": 0.3,
+                },
+            ],
+        },
+        "video_keyframe_status": "extracted",
+        "video_keyframe_count": 1,
+        "video_keyframe_timestamps_ms": [3000],
+    }
+    svc = _svc(wf=wf)
+    result = svc.evaluate("u1", "s1", claimed_skills=["Chatbot UI"])
+    qwen = next(s for s in result.evidence_source_breakdown if s["key"] == "qwen_visual_reasoning")
+    assert qwen["score"] == 0, (
+        f"Non-chatbot Qwen observation must score 0, got {qwen['score']}"
+    )
+
+
+def test_chatbot_workflow_partial_score_with_page_load():
+    """Chatbot workflow score must be > 0 when target page loaded even with no clicks."""
+    wf = {
+        "evidence_strength_score": 55,
+        "workflow_confidence": "medium",
+        "supported_skills": [],
+        "weakly_supported_skills": ["Chatbot UI"],
+        "target_site_pages_count": 1,
+        "visual_reasoning_summary": None,
+    }
+    svc = _svc(wf=wf)
+    result = svc.evaluate(
+        "u1", "s1",
+        claimed_skills=["Natural Language Processing", "Chatbot UI", "Large Language Models"],
+    )
+    wf_src = next(s for s in result.evidence_source_breakdown if s["key"] == "website_workflow")
+    assert wf_src["score"] > 0, (
+        f"Website workflow score must be > 0 when chatbot page loaded, got {wf_src['score']}"
+    )
+
+
+def test_project_defense_analyzed_transcript_not_zero():
+    """Project defense with analyzed transcript must not show 0/100."""
+    pd = {
+        "analysis_status": "analyzed",
+        "overall_score": 65,
+        "transcript_text": "I built the HuggingChat chatbot UI with message input, prompt handling, and response display.",
+        "consistency_with_evidence_score": 65,
+        "explanation_clarity_score": 70,
+        "ownership_signal_score": 60,
+        "technical_depth_score": 65,
+    }
+    svc = _svc(pd=pd)
+    result = svc.evaluate("u1", "s1", claimed_skills=["Chatbot UI", "Natural Language Processing"])
+    pd_src = next(s for s in result.evidence_source_breakdown if s["key"] == "project_defense")
+    assert pd_src["score"] > 0, (
+        f"Project defense with analyzed transcript must not show 0/100, got {pd_src['score']}"
+    )
+    assert pd_src["status"] in ("pass", "partial"), (
+        f"Project defense status must be pass or partial, got {pd_src['status']}"
+    )

@@ -671,3 +671,189 @@ class TestLocalhostTargetFiltering:
         summary = result["recruiter_summary"]
         assert "dashboard/profile" not in summary
         assert "supabase" not in summary.lower()
+
+
+# ── Chatbot / HuggingChat scoring tests ──────────────────────────────────────
+
+HUGGINGCHAT_URL = "https://huggingface.co/chat/"
+
+
+def _make_huggingchat_proof(duration_secs: int = 120, include_input: bool = False) -> dict:
+    """Build minimal proof_data for a HuggingChat workflow."""
+    from datetime import datetime, timezone, timedelta
+
+    start = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    stop = start + timedelta(seconds=duration_secs)
+
+    events: list[dict] = [
+        {
+            "type": "page_visit",
+            "page_url": HUGGINGCHAT_URL,
+            "page_title": "HuggingChat",
+        },
+    ]
+    if include_input:
+        events.append({
+            "type": "input_change",
+            "page_url": HUGGINGCHAT_URL,
+            "element_id": "message-input",
+        })
+        events.append({
+            "type": "click",
+            "page_url": HUGGINGCHAT_URL,
+            "element_text": "Send",
+        })
+
+    return {
+        "workflow_events": events,
+        "started_at": start.isoformat(),
+        "stopped_at": stop.isoformat(),
+    }
+
+
+def _run_chatbot_analysis(proof_data: dict, include_input: bool = False) -> dict:
+    return _analyze_workflow(
+        proof_data=proof_data,
+        claimed_skills=["Natural Language Processing", "Chatbot UI", "Large Language Models", "React", "TypeScript"],
+        proof_objective="Demonstrate HuggingChat chatbot UI",
+        original_url=HUGGINGCHAT_URL,
+        url_type="live_deployed_url",
+        github_url=None,
+    )
+
+
+class TestChatbotWorkflowScoring:
+    """Chatbot/LLM proof: page-load + chat UI visible must produce partial score."""
+
+    def test_chatbot_page_load_gives_nonzero_score(self):
+        """Target chatbot page loaded → evidence_strength_score > 0."""
+        proof = _make_huggingchat_proof(duration_secs=120)
+        result = _run_chatbot_analysis(proof)
+        assert result["evidence_strength_score"] > 0, (
+            f"Chatbot page load must give > 0 score, got {result['evidence_strength_score']}"
+        )
+
+    def test_chatbot_page_load_gives_partial_workflow(self):
+        """Target chatbot page loaded → evidence_strength_score >= 40."""
+        proof = _make_huggingchat_proof(duration_secs=120)
+        result = _run_chatbot_analysis(proof)
+        assert result["evidence_strength_score"] >= 40, (
+            f"Chatbot page load must give >= 40 score, got {result['evidence_strength_score']}"
+        )
+
+    def test_chatbot_page_load_plus_input_gives_higher_score(self):
+        """Target chatbot page + input interaction → score >= page-load-only score."""
+        proof_page = _make_huggingchat_proof(duration_secs=120, include_input=False)
+        proof_input = _make_huggingchat_proof(duration_secs=120, include_input=True)
+        score_page = _run_chatbot_analysis(proof_page)["evidence_strength_score"]
+        score_input = _run_chatbot_analysis(proof_input)["evidence_strength_score"]
+        assert score_input >= score_page, (
+            f"Input interaction must not lower score: page={score_page} input={score_input}"
+        )
+
+    def test_chatbot_target_events_classified_correctly(self):
+        proof = _make_huggingchat_proof()
+        result = _run_chatbot_analysis(proof)
+        assert result["target_site_pages_count"] >= 1, "HuggingChat page_visit must be classified as target"
+
+    def test_chatbot_adjust_runs_when_title_has_huggingchat(self):
+        """_adjust_chatbot_workflow_score must fire when HuggingChat is in title."""
+        from app.services.extension_proof_workflow_analysis_service import _adjust_chatbot_workflow_score
+        score = _adjust_chatbot_workflow_score(
+            20,
+            page_count=1,
+            input_count=0,
+            click_count=0,
+            target_titles=["HuggingChat"],
+            evidence_text="",
+            iao_patterns=[],
+        )
+        assert score >= 55, f"Chatbot title must boost score to >= 55, got {score}"
+
+    def test_chatbot_adjust_runs_without_page_events_if_chat_in_text(self):
+        """_adjust_chatbot_workflow_score must not bail when page_count=0 but chat content in text."""
+        from app.services.extension_proof_workflow_analysis_service import _adjust_chatbot_workflow_score
+        score = _adjust_chatbot_workflow_score(
+            15,
+            page_count=0,
+            input_count=0,
+            click_count=0,
+            target_titles=[],
+            evidence_text="huggingchat chat window visible with input field",
+            iao_patterns=[],
+        )
+        assert score >= 35, f"Chat content in evidence text must give >= 35, got {score}"
+
+    def test_chatbot_adjust_skips_when_no_chat_signals_and_no_page(self):
+        """_adjust_chatbot_workflow_score must skip adjustment when no chat signals and page_count=0."""
+        from app.services.extension_proof_workflow_analysis_service import _adjust_chatbot_workflow_score
+        score = _adjust_chatbot_workflow_score(
+            15,
+            page_count=0,
+            input_count=0,
+            click_count=0,
+            target_titles=[],
+            evidence_text="some unrelated text here",
+            iao_patterns=[],
+        )
+        assert score == 15, f"No chat signals + no page events must return original score 15, got {score}"
+
+
+class TestQwenChatbotFiltering:
+    """Qwen observations showing chatbot UI must not be blanket-filtered."""
+
+    def test_qwen_chatbot_observations_not_filtered_when_no_dom_events(self):
+        """HuggingChat Qwen obs must survive filter even when has_target_events=False."""
+        from app.services.extension_proof_workflow_analysis_service import (
+            _filter_visual_reasoning_summary_for_target,
+        )
+        summary = {
+            "status": "analyzed",
+            "frames_analyzed": 2,
+            "observations": [
+                {
+                    "visual_summary": "The HuggingChat interface is open, showing a chat window with 'hi' typed.",
+                    "visible_ui_elements": ["chat window", "input field"],
+                    "detected_user_action": "user typed 'hi' in message input",
+                    "confidence_score": 0.75,
+                },
+            ],
+            "supported_signals": ["Chatbot UI"],
+        }
+        filtered = _filter_visual_reasoning_summary_for_target(
+            summary,
+            has_target_events=False,
+            noise_hosts=[],
+        )
+        assert filtered is not None
+        assert filtered.get("status") != "filtered_non_target_frame", (
+            "HuggingChat chatbot observations must survive filter even without DOM events"
+        )
+        assert len(filtered.get("observations") or []) > 0, "Observations must be preserved"
+
+    def test_non_chatbot_qwen_obs_filtered_when_no_dom_events(self):
+        """Person/irrelevant Qwen obs must still be filtered when has_target_events=False."""
+        from app.services.extension_proof_workflow_analysis_service import (
+            _filter_visual_reasoning_summary_for_target,
+        )
+        summary = {
+            "status": "analyzed",
+            "frames_analyzed": 1,
+            "observations": [
+                {
+                    "visual_summary": "A person is sitting at a desk looking at their phone.",
+                    "visible_ui_elements": [],
+                    "detected_user_action": "person is idle",
+                    "confidence_score": 0.3,
+                },
+            ],
+        }
+        filtered = _filter_visual_reasoning_summary_for_target(
+            summary,
+            has_target_events=False,
+            noise_hosts=[],
+        )
+        assert filtered is not None
+        assert filtered.get("status") == "filtered_non_target_frame", (
+            "Non-chatbot Qwen observation must be filtered when no DOM events"
+        )

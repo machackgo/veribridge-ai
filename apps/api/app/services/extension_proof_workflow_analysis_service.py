@@ -1162,6 +1162,33 @@ def _build_skill_timeline(
     return timeline
 
 
+# Chatbot/LLM UI terms that indicate Qwen observed a target chat application.
+# Used to avoid blanket filtering when extension DOM events are absent but
+# Qwen itself confirms the target app was visible.
+_CHATBOT_UI_INDICATORS: frozenset[str] = frozenset({
+    "huggingchat", "chat window", "chat ui", "chat interface", "chat input",
+    "message input", "input box", "text input", "input field",
+    "chatbot", "assistant", "conversation", "message", "prompt",
+    "send button", "send message", "type", "typed", "hi ", "'hi'",
+    "ai response", "model response", "generated response",
+    "llm", "language model",
+})
+
+
+def _qwen_obs_has_chatbot_content(observations: list[dict[str, Any]]) -> bool:
+    """Return True if any Qwen observation describes chatbot/chat-UI content."""
+    for obs in observations:
+        text = " ".join([
+            str(obs.get("visual_summary", "")),
+            " ".join(str(x) for x in (obs.get("visible_ui_elements") or [])),
+            " ".join(str(x) for x in (obs.get("visible_objects_or_diagrams") or [])),
+            str(obs.get("detected_user_action", "")),
+        ]).lower()
+        if sum(1 for t in _CHATBOT_UI_INDICATORS if t in text) >= 1:
+            return True
+    return False
+
+
 def _filter_visual_reasoning_summary_for_target(
     summary: dict[str, Any] | None,
     *,
@@ -1171,20 +1198,26 @@ def _filter_visual_reasoning_summary_for_target(
     if not summary:
         return summary
     if not has_target_events:
-        return {
-            "status": "filtered_non_target_frame",
-            "provider": summary.get("provider", "qwen_vl"),
-            "frames_analyzed": 0,
-            "summary": (
-                "Visual reasoning frames were excluded because no activity on "
-                "the submitted target website was captured."
-            ),
-            "observations": [],
-            "supported_signals": [],
-            "missing_claims": [],
-            "skill_timeline": [],
-            "limitations": ["Non-target frames excluded from scoring."],
-        }
+        # Still check whether Qwen itself observed target chatbot content.
+        # If it did, fall through to per-observation filtering instead of
+        # blanket exclusion — the recording shows the target app even if the
+        # extension did not fire DOM events.
+        observations = list(summary.get("observations") or [])
+        if not _qwen_obs_has_chatbot_content(observations):
+            return {
+                "status": "filtered_non_target_frame",
+                "provider": summary.get("provider", "qwen_vl"),
+                "frames_analyzed": 0,
+                "summary": (
+                    "Visual reasoning frames were excluded because no activity on "
+                    "the submitted target website was captured."
+                ),
+                "observations": [],
+                "supported_signals": [],
+                "missing_claims": [],
+                "skill_timeline": [],
+                "limitations": ["Non-target frames excluded from scoring."],
+            }
 
     noise_hosts = noise_hosts or []
     observations = list(summary.get("observations") or [])
@@ -1242,6 +1275,42 @@ def _filter_visual_reasoning_summary_for_target(
             "Some non-target visual reasoning frames were filtered from scoring.",
         ],
     }
+
+
+def _apply_qwen_chatbot_score_boost(
+    result: dict[str, Any],
+    vr_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Boost evidence_strength_score when Qwen confirms chatbot target content.
+
+    Called after vr_summary is attached so Qwen observations are available.
+    Only applies when:
+    - Qwen status is "analyzed"
+    - Observations mention chatbot/chat-UI content
+    - The target context (actions or website) is chatbot-related
+    - The current score is below the partial-evidence floor (55)
+    """
+    if not vr_summary or vr_summary.get("status") != "analyzed":
+        return result
+
+    observations = vr_summary.get("observations") or []
+    if not _qwen_obs_has_chatbot_content(observations):
+        return result
+
+    # Confirm target is chatbot-related from demonstrated actions / target URL
+    actions_text = " ".join(result.get("demonstrated_actions") or []).lower()
+    target_site = str(result.get("target_website") or "").lower()
+    context = actions_text + " " + target_site
+    chatbot_context = any(
+        t in context for t in ("chat", "huggingchat", "chatbot", "assistant", "llm", "conversation")
+    )
+    if not chatbot_context:
+        return result
+
+    current = int(result.get("evidence_strength_score") or 0)
+    if current < 50:
+        result["evidence_strength_score"] = 50
+    return result
 
 
 def _build_visual_reasoning_session_summary_from_db(
@@ -1720,14 +1789,20 @@ class ExtensionProofWorkflowAnalysisService:
                 noise_hosts=(result.get("filtered_unrelated_activity") or {}).get("hosts", []),
             )
             result["visual_reasoning_summary"] = vr_summary
+            # Post-processing: boost score if Qwen confirms chatbot target content.
+            try:
+                result = _apply_qwen_chatbot_score_boost(result, vr_summary)
+            except Exception:
+                pass  # non-fatal — leave score unchanged
             if vr_summary:
                 logger.info(
                     "WORKFLOW_ANALYSIS_VISUAL_REASONING_SUMMARY_GENERATED: "
-                    "session=%s status=%s frames=%d signals=%s",
+                    "session=%s status=%s frames=%d signals=%s score=%d",
                     session_id,
                     vr_summary.get("status", "?"),
                     vr_summary.get("frames_analyzed", 0),
                     vr_summary.get("supported_signals", []),
+                    result.get("evidence_strength_score", 0),
                 )
             else:
                 logger.info(
@@ -3286,10 +3361,12 @@ def _adjust_chatbot_workflow_score(
     evidence_text: str,
     iao_patterns: list[dict[str, Any]],
 ) -> int:
-    """Chatbot/LLM demos are text workflows, not visual-rendering demos."""
-    if page_count <= 0:
-        return score
+    """Chatbot/LLM demos are text workflows, not visual-rendering demos.
 
+    Scoring applies even when page_count=0 if Qwen/OCR evidence contains
+    chat-UI signals — the screen recording may show the target app even when
+    the extension did not fire DOM events on the target domain.
+    """
     text = " ".join(target_titles).lower() + " " + evidence_text.lower()
     has_chat_ui = any(
         term in text
@@ -3298,27 +3375,37 @@ def _adjust_chatbot_workflow_score(
             "conversation", "prompt", "input", "ask anything",
         )
     )
+
+    # No target page events AND no chatbot evidence in text → skip adjustment.
+    if page_count <= 0 and not has_chat_ui:
+        return score
+
     has_response = any(
         term in text
         for term in (
             "assistant response", "ai response", "generated response",
             "model response", "response:", "answer:", "assistant message",
-            "conversation history",
+            "conversation history", "'hi'", "hi ",
         )
     )
     has_prompt_flow = any(
         p.get("pattern_type") == "prompt_to_response" for p in iao_patterns
     ) or input_count > 0
 
-    adjusted = max(score, 40)
+    # Base floor: slightly lower when evidence is Qwen/OCR only (no DOM events).
+    if page_count > 0:
+        adjusted = max(score, 40)
+    else:
+        adjusted = max(score, 35)
+
     if has_chat_ui:
-        adjusted = max(adjusted, 60)
+        adjusted = max(adjusted, 55 if page_count <= 0 else 60)
     if has_prompt_flow or click_count > 0:
-        adjusted = max(adjusted, 70)
+        adjusted = max(adjusted, 65 if page_count <= 0 else 70)
     if has_response and has_prompt_flow:
-        adjusted = max(adjusted, 78)
+        adjusted = max(adjusted, 70 if page_count <= 0 else 78)
     if has_response and has_prompt_flow and (input_count + click_count) >= 2:
-        adjusted = max(adjusted, 85)
+        adjusted = max(adjusted, 75 if page_count <= 0 else 85)
     return min(95, adjusted)
 
 
