@@ -17,6 +17,7 @@ import {
   mergeVisibleSourceScores,
   saveActiveExtensionProofSession,
   shouldShowWorkflowAnalysisProgress,
+  websiteProofProgressReducer,
 } from "../../components/skill-proof/extension-proof-panel"
 import type { FinalEvaluationResult, LiveWebsiteCheckResponse, ProjectDefenseAnalysisResponse } from "../lib/api"
 
@@ -560,63 +561,75 @@ describe("Detected Skill Profile (grouped skill evidence)", () => {
 describe("Workflow Evidence Analysis progress card", () => {
   it("is hidden during recording", () => {
     expect(shouldShowWorkflowAnalysisProgress({
-      sessionStatus: "recording",
-      workflowAnalysisComplete: false,
+      lifecycle: "recording",
     })).toBe(false)
+    expect(buildWorkflowAnalysisProgress({ lifecycle: "recording" }).stages).toHaveLength(0)
   })
 
   it("appears immediately when upload starts after Stop & Send Proof", () => {
-    expect(shouldShowWorkflowAnalysisProgress({
-      sessionStatus: "recording",
-      workflowAnalysisComplete: false,
-      uploadStatus: "uploading",
-    })).toBe(true)
+    const lifecycle = websiteProofProgressReducer("recording", { type: "stop_send_clicked" })
+    expect(lifecycle).toBe("upload_starting")
+    expect(shouldShowWorkflowAnalysisProgress({ lifecycle })).toBe(true)
     const model = buildWorkflowAnalysisProgress({
-      sessionStatus: "recording",
-      workflowAnalysisComplete: false,
-      workflowAnalysisRunning: false,
-      uploadStatus: "uploading",
+      lifecycle,
     })
-    expect(model.title).toBe("Uploading and analyzing workflow proof")
+    expect(model.title).toBe("Uploading workflow proof")
     expect(model.percent).toBeGreaterThanOrEqual(5)
-    expect(model.stages.find((stage) => stage.key === "uploading")).toMatchObject({
-      status: "active",
-      label: "Uploading proof recording",
-    })
+    expect(model.stages).toEqual([{ key: "uploading", label: "Uploading proof recording", status: "active" }])
     expect(model.currentMessage).toBe("Uploading proof recording — keep this tab open.")
   })
 
-  it("continues after proof upload and before the workflow report exists", () => {
-    expect(shouldShowWorkflowAnalysisProgress({
-      sessionStatus: "uploaded_pending_analysis",
-      workflowAnalysisComplete: false,
-    })).toBe(true)
+  it("uploading state does not show analysis stages", () => {
     const model = buildWorkflowAnalysisProgress({
-      sessionStatus: "uploaded_pending_analysis",
-      workflowAnalysisComplete: false,
-      workflowAnalysisRunning: false,
+      lifecycle: "uploading",
     })
-    expect(model.percent).toBeGreaterThan(0)
-    expect(model.stages.find((stage) => stage.key === "uploading")?.status).toBe("complete")
-    expect(model.stages.find((stage) => stage.key === "preparing")?.status).toBe("active")
-    expect(model.currentMessage).toContain("preparing workflow evidence")
+    const labels = model.stages.map((stage) => stage.label).join(" ")
+    expect(labels).toContain("Uploading proof recording")
+    expect(labels).not.toMatch(/Extracting keyframes|OCR|Qwen|timeline|report/i)
+  })
+
+  it("upload success with manual analysis required shows upload complete and no static analysis checklist", () => {
+    const lifecycle = websiteProofProgressReducer("uploading", { type: "upload_succeeded" })
+    expect(lifecycle).toBe("upload_complete_manual_analysis_required")
+    expect(shouldShowWorkflowAnalysisProgress({ lifecycle })).toBe(true)
+    const model = buildWorkflowAnalysisProgress({ lifecycle })
+    expect(model.title).toBe("Uploading workflow proof")
+    expect(model.currentMessage).toBe("Proof uploaded. Click Analyze Workflow Evidence to start workflow analysis.")
+    expect(model.stages).toEqual([{ key: "uploading", label: "Uploading proof recording", status: "complete" }])
+    expect(model.stages.map((stage) => stage.label).join(" ")).not.toMatch(/OCR|Qwen|timeline|report/i)
   })
 
   it("is hidden when the Workflow Evidence Analysis report exists", () => {
-    expect(shouldShowWorkflowAnalysisProgress({
-      sessionStatus: "completed",
-      workflowAnalysisComplete: true,
-    })).toBe(false)
+    const lifecycle = websiteProofProgressReducer("generating_workflow_report", { type: "workflow_report_exists" })
+    expect(lifecycle).toBe("workflow_report_ready")
+    expect(shouldShowWorkflowAnalysisProgress({ lifecycle })).toBe(false)
+    expect(buildWorkflowAnalysisProgress({ lifecycle }).stages).toHaveLength(0)
   })
 
-  it("contains workflow-only stages", () => {
-    const model = buildWorkflowAnalysisProgress({
-      sessionStatus: "analyzing",
-      workflowAnalysisComplete: false,
-      workflowAnalysisRunning: true,
-      simProgress: 52,
-      simStageIdx: 3,
-    })
+  it("clicking Analyze Workflow Evidence immediately starts analysis progress", () => {
+    const lifecycle = websiteProofProgressReducer("upload_complete_manual_analysis_required", { type: "analyze_clicked" })
+    const model = buildWorkflowAnalysisProgress({ lifecycle })
+    expect(lifecycle).toBe("analysis_starting")
+    expect(model.title).toBe("Workflow Evidence Analysis in Progress")
+    expect(model.currentMessage).toContain("Starting workflow evidence analysis")
+    expect(model.stages).toEqual([{ key: "extracting_keyframes", label: "Extracting keyframes", status: "active" }])
+  })
+
+  it("advances analysis stages stage-by-stage instead of showing all pending rows", () => {
+    const thirtySeconds = websiteProofProgressReducer("analysis_starting", { type: "analysis_polling_result", elapsedMs: 30_000 })
+    expect(thirtySeconds).toBe("running_qwen_visual")
+    const model = buildWorkflowAnalysisProgress({ lifecycle: thirtySeconds, activeElapsedMs: 30_000 })
+    expect(model.stages.map((stage) => stage.label)).toEqual([
+      "Extracting keyframes",
+      "Running OCR / visual evidence checks",
+      "Running Qwen visual reasoning",
+    ])
+    expect(model.stages.map((stage) => stage.status)).toEqual(["complete", "complete", "active"])
+    expect(model.stages.map((stage) => stage.label).join(" ")).not.toContain("Generating recruiter-safe workflow report")
+  })
+
+  it("contains workflow-only analysis stages", () => {
+    const model = buildWorkflowAnalysisProgress({ lifecycle: "generating_workflow_report", activeElapsedMs: 61_000 })
     const labels = model.stages.map((stage) => stage.label).join(" ")
     expect(labels).toContain("Extracting keyframes")
     expect(labels).toContain("Running OCR / visual evidence checks")
@@ -628,36 +641,27 @@ describe("Workflow Evidence Analysis progress card", () => {
 
   it("shows failed workflow analysis as retryable in the compact card model", () => {
     const model = buildWorkflowAnalysisProgress({
-      sessionStatus: "uploaded_pending_analysis",
-      workflowAnalysisComplete: false,
-      workflowAnalysisRunning: false,
-      analyzeError: "Analysis failed",
+      lifecycle: "analysis_failed",
     })
     expect(model.failed).toBe(true)
     expect(model.stages.some((stage) => stage.status === "failed")).toBe(true)
-    expect(model.currentMessage).toContain("Retry")
+    expect(model.currentMessage).toContain("failed")
   })
 
   it("shows failed upload state without activating analysis stages", () => {
     const model = buildWorkflowAnalysisProgress({
-      sessionStatus: "recording",
-      workflowAnalysisComplete: false,
-      workflowAnalysisRunning: false,
-      uploadStatus: "upload_failed",
+      lifecycle: "upload_failed",
       uploadError: "Network error",
     })
     expect(model.failed).toBe(true)
     expect(model.currentMessage).toBe("Proof upload failed. Please retry.")
     expect(model.stages.find((stage) => stage.key === "uploading")?.status).toBe("failed")
-    expect(model.stages.find((stage) => stage.key === "keyframes")?.status).toBe("pending")
+    expect(model.stages.map((stage) => stage.label).join(" ")).not.toMatch(/OCR|Qwen|timeline|report/i)
   })
 
   it("shows a friendly still-uploading note for long uploads", () => {
     const model = buildWorkflowAnalysisProgress({
-      sessionStatus: "recording",
-      workflowAnalysisComplete: false,
-      workflowAnalysisRunning: false,
-      uploadStatus: "uploading",
+      lifecycle: "uploading",
       activeElapsedMs: 61_000,
     })
     expect(model.showSlowWarning).toBe(true)
@@ -666,13 +670,19 @@ describe("Workflow Evidence Analysis progress card", () => {
 
   it("shows a friendly still-working note for long-running workflow analysis", () => {
     const model = buildWorkflowAnalysisProgress({
-      sessionStatus: "analyzing",
-      workflowAnalysisComplete: false,
-      workflowAnalysisRunning: true,
+      lifecycle: "generating_workflow_report",
       activeElapsedMs: 91_000,
     })
     expect(model.showSlowWarning).toBe(true)
     expect(model.slowWarningMessage).toContain("Still analyzing")
+  })
+
+  it("regression: upload progress is visible before any proofUploaded result arrives", () => {
+    const lifecycle = websiteProofProgressReducer("recording", { type: "upload_started" })
+    const model = buildWorkflowAnalysisProgress({ lifecycle, activeElapsedMs: 45_000 })
+    expect(shouldShowWorkflowAnalysisProgress({ lifecycle })).toBe(true)
+    expect(model.title).toBe("Uploading workflow proof")
+    expect(model.currentMessage).toBe("Uploading proof recording — keep this tab open.")
   })
 
   it("is placed after Verification Checklist and before the workflow report source", () => {

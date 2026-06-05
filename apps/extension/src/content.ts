@@ -1045,6 +1045,13 @@ async function onBarStopAndSend(): Promise<void> {
     await onBarStop()
     await new Promise<void>((r) => setTimeout(r, 200))
   }
+  try {
+    window.postMessage({
+      source: "veribridge-extension",
+      type: "VERIBRIDGE_PROOF_UPLOAD_STARTED",
+      payload: { sessionId: lastState?.sessionId ?? "" },
+    }, window.location.origin)
+  } catch { /* Page bridge is best-effort. */ }
   publishExtensionState({
     isRecording: false,
     eventCount: lastState?.eventCount ?? 0,

@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useEffect, useMemo, useRef, useState } from "react"
+import React, { useEffect, useMemo, useReducer, useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   createExtensionProofSession,
@@ -360,7 +360,7 @@ function SessionStepper({ status }: { status: ExtensionProofSessionStatus }) {
   )
 }
 
-// ── Workflow analysis progress ───────────────────────────────────────────────
+// ── Website Proof progress lifecycle ─────────────────────────────────────────
 
 export type WorkflowAnalysisProgressStatus = "pending" | "active" | "complete" | "failed"
 
@@ -380,54 +380,155 @@ export type WorkflowAnalysisProgressModel = {
   failed: boolean
 }
 
-const WORKFLOW_PROGRESS_SLOW_WARNING_MS = 90_000
-const WORKFLOW_UPLOAD_SLOW_WARNING_MS = 60_000
+export type WebsiteProofProgressLifecycle =
+  | "idle"
+  | "recording"
+  | "upload_starting"
+  | "uploading"
+  | "upload_complete_manual_analysis_required"
+  | "analysis_starting"
+  | "extracting_keyframes"
+  | "running_ocr_visual"
+  | "running_qwen_visual"
+  | "matching_workflow_timeline"
+  | "generating_workflow_report"
+  | "workflow_report_ready"
+  | "upload_failed"
+  | "analysis_failed"
 
-const WORKFLOW_ANALYSIS_PROGRESS_STAGES: Array<{ key: string; label: string }> = [
+export type WebsiteProofProgressEvent =
+  | { type: "session_created" }
+  | { type: "recording_started" }
+  | { type: "stop_send_clicked" }
+  | { type: "upload_started" }
+  | { type: "upload_succeeded" }
+  | { type: "upload_failed" }
+  | { type: "analyze_clicked" }
+  | { type: "analysis_request_started" }
+  | { type: "analysis_polling_result"; elapsedMs: number }
+  | { type: "workflow_report_exists" }
+  | { type: "analysis_failed" }
+  | { type: "reset" }
+
+const WORKFLOW_ANALYSIS_SLOW_WARNING_MS = 90_000
+const WORKFLOW_UPLOAD_SLOW_WARNING_MS = 60_000
+const ANALYSIS_STAGE_MS = 15_000
+
+const WORKFLOW_UPLOAD_PROGRESS_STAGES: Array<{ key: string; label: string }> = [
   { key: "uploading", label: "Uploading proof recording" },
-  { key: "preparing", label: "Preparing uploaded proof" },
-  { key: "keyframes", label: "Extracting keyframes" },
-  { key: "ocr", label: "Running OCR / visual evidence checks" },
-  { key: "qwen", label: "Running Qwen visual reasoning" },
-  { key: "timeline", label: "Matching browser workflow timeline to claimed skills" },
-  { key: "report", label: "Generating recruiter-safe workflow report" },
 ]
 
+const WORKFLOW_ANALYSIS_PROGRESS_STAGES: Array<{ key: WebsiteProofProgressLifecycle; label: string }> = [
+  { key: "extracting_keyframes", label: "Extracting keyframes" },
+  { key: "running_ocr_visual", label: "Running OCR / visual evidence checks" },
+  { key: "running_qwen_visual", label: "Running Qwen visual reasoning" },
+  { key: "matching_workflow_timeline", label: "Matching browser workflow timeline to claimed skills" },
+  { key: "generating_workflow_report", label: "Generating recruiter-safe workflow report" },
+]
+
+const ANALYSIS_LIFECYCLE_ORDER: WebsiteProofProgressLifecycle[] = [
+  "extracting_keyframes",
+  "running_ocr_visual",
+  "running_qwen_visual",
+  "matching_workflow_timeline",
+  "generating_workflow_report",
+]
+
+function analysisLifecycleFromElapsed(elapsedMs: number): WebsiteProofProgressLifecycle {
+  const index = Math.max(0, Math.min(Math.floor(elapsedMs / ANALYSIS_STAGE_MS), ANALYSIS_LIFECYCLE_ORDER.length - 1))
+  return ANALYSIS_LIFECYCLE_ORDER[index]
+}
+
+export function websiteProofProgressReducer(
+  state: WebsiteProofProgressLifecycle,
+  event: WebsiteProofProgressEvent,
+): WebsiteProofProgressLifecycle {
+  // Website Proof progress is intentionally event-driven. Future edits should
+  // dispatch lifecycle events from user actions / extension upload messages /
+  // analysis responses instead of inferring this UI from report existence alone.
+  switch (event.type) {
+    case "reset":
+      return "idle"
+    case "session_created":
+      return "idle"
+    case "recording_started":
+      return "recording"
+    case "stop_send_clicked":
+      return "upload_starting"
+    case "upload_started":
+      return "uploading"
+    case "upload_succeeded":
+      return state === "workflow_report_ready" ? state : "upload_complete_manual_analysis_required"
+    case "upload_failed":
+      return "upload_failed"
+    case "analyze_clicked":
+    case "analysis_request_started":
+      return "analysis_starting"
+    case "analysis_polling_result":
+      if (state === "workflow_report_ready") return state
+      return analysisLifecycleFromElapsed(event.elapsedMs)
+    case "workflow_report_exists":
+      return "workflow_report_ready"
+    case "analysis_failed":
+      return "analysis_failed"
+    default:
+      return state
+  }
+}
+
+function isWorkflowProgressVisible(lifecycle: WebsiteProofProgressLifecycle): boolean {
+  return !["idle", "recording", "workflow_report_ready"].includes(lifecycle)
+}
+
+function isWorkflowAnalysisLifecycle(lifecycle: WebsiteProofProgressLifecycle): boolean {
+  return lifecycle === "analysis_starting" || ANALYSIS_LIFECYCLE_ORDER.includes(lifecycle)
+}
+
 export function shouldShowWorkflowAnalysisProgress(params: {
-  sessionStatus: ExtensionProofSessionStatus
-  workflowAnalysisComplete: boolean
+  lifecycle?: WebsiteProofProgressLifecycle
+  sessionStatus?: ExtensionProofSessionStatus
+  workflowAnalysisComplete?: boolean
   uploadStatus?: string | null
   analyzeError?: string | null
 }): boolean {
+  if (params.lifecycle) return isWorkflowProgressVisible(params.lifecycle)
   if (params.workflowAnalysisComplete) return false
   if (params.uploadStatus === "uploading" || params.uploadStatus === "upload_failed" || params.uploadStatus === "uploaded") return true
-  const workflowEligible = params.sessionStatus === "uploaded_pending_analysis" || params.sessionStatus === "analyzing"
-  if (!workflowEligible) return false
   if (params.analyzeError) return true
-  return workflowEligible
+  return params.sessionStatus === "analyzing"
 }
 
 export function buildWorkflowAnalysisProgress(params: {
-  sessionStatus: ExtensionProofSessionStatus
-  workflowAnalysisComplete: boolean
-  workflowAnalysisRunning: boolean
+  lifecycle?: WebsiteProofProgressLifecycle
+  sessionStatus?: ExtensionProofSessionStatus
+  workflowAnalysisComplete?: boolean
+  workflowAnalysisRunning?: boolean
   uploadStatus?: string | null
   uploadError?: string | null
   analyzeError?: string | null
-  simProgress?: number
-  simStageIdx?: number
   activeElapsedMs?: number
 }): WorkflowAnalysisProgressModel {
-  const failed = Boolean(params.analyzeError && !params.workflowAnalysisComplete)
-  const uploadFailed = params.uploadStatus === "upload_failed"
-  const uploading = params.uploadStatus === "uploading"
-  const uploadJustCompleted = params.uploadStatus === "uploaded"
-  const shouldShow = shouldShowWorkflowAnalysisProgress(params)
-  if (!shouldShow) {
+  const lifecycle = params.lifecycle ?? (
+    params.workflowAnalysisComplete
+      ? "workflow_report_ready"
+      : params.uploadStatus === "upload_failed"
+        ? "upload_failed"
+        : params.uploadStatus === "uploading"
+          ? "uploading"
+          : params.uploadStatus === "uploaded"
+            ? "upload_complete_manual_analysis_required"
+            : params.analyzeError
+              ? "analysis_failed"
+              : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
+                ? analysisLifecycleFromElapsed(params.activeElapsedMs ?? 0)
+                : "idle"
+  )
+
+  if (!isWorkflowProgressVisible(lifecycle)) {
     return {
-      stages: WORKFLOW_ANALYSIS_PROGRESS_STAGES.map((stage) => ({ ...stage, status: "pending" })),
+      stages: [],
       percent: 0,
-      title: "Uploading and analyzing workflow proof",
+      title: "Workflow proof ready",
       currentMessage: "Workflow evidence analysis has not started.",
       showSlowWarning: false,
       slowWarningMessage: "",
@@ -435,65 +536,58 @@ export function buildWorkflowAnalysisProgress(params: {
     }
   }
 
-  const activeIdx = uploadFailed || uploading
-    ? 0
-    : uploadJustCompleted
-    ? 1
-    : failed
-    ? Math.max(0, Math.min(params.simStageIdx ?? 4, WORKFLOW_ANALYSIS_PROGRESS_STAGES.length - 1))
-    : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
-      ? Math.max(2, Math.min((params.simStageIdx ?? 1) + 2, WORKFLOW_ANALYSIS_PROGRESS_STAGES.length - 1))
-      : 1
+  const elapsedMs = params.activeElapsedMs ?? 0
+  const uploadStageStatus: WorkflowAnalysisProgressStatus =
+    lifecycle === "upload_failed" ? "failed" : lifecycle === "upload_complete_manual_analysis_required" ? "complete" : "active"
 
-  const stages = WORKFLOW_ANALYSIS_PROGRESS_STAGES.map((stage, index): WorkflowAnalysisProgressStage => ({
-    ...stage,
-    status: (failed || uploadFailed) && index === activeIdx
-      ? "failed"
-      : index < activeIdx
-        ? "complete"
-        : index === activeIdx
-          ? "active"
-          : "pending",
+  if (["upload_starting", "uploading", "upload_complete_manual_analysis_required", "upload_failed"].includes(lifecycle)) {
+    const failed = lifecycle === "upload_failed"
+    const complete = lifecycle === "upload_complete_manual_analysis_required"
+    return {
+      stages: WORKFLOW_UPLOAD_PROGRESS_STAGES.map((stage) => ({ ...stage, status: uploadStageStatus })),
+      percent: failed ? 8 : complete ? 100 : 12,
+      title: "Uploading workflow proof",
+      currentMessage: failed
+        ? "Proof upload failed. Please retry."
+        : complete
+        ? "Proof uploaded. Click Analyze Workflow Evidence to start workflow analysis."
+        : "Uploading proof recording — keep this tab open.",
+      showSlowWarning: !failed && !complete && elapsedMs >= WORKFLOW_UPLOAD_SLOW_WARNING_MS,
+      slowWarningMessage: "Still uploading — large recordings can take longer. Do not close this tab.",
+      failed,
+    }
+  }
+
+  const failed = lifecycle === "analysis_failed"
+  const activeLifecycle = failed
+    ? "generating_workflow_report"
+    : lifecycle === "analysis_starting"
+    ? "extracting_keyframes"
+    : lifecycle
+  const activeIdx = Math.max(0, ANALYSIS_LIFECYCLE_ORDER.indexOf(activeLifecycle))
+  const visibleStages = WORKFLOW_ANALYSIS_PROGRESS_STAGES.slice(0, activeIdx + 1)
+  const stages = visibleStages.map((stage, index): WorkflowAnalysisProgressStage => ({
+    key: stage.key,
+    label: stage.label,
+    status: failed && index === activeIdx ? "failed" : index < activeIdx ? "complete" : "active",
   }))
-
-  const percent = uploadFailed
-    ? 8
-    : uploading
-    ? 8
-    : uploadJustCompleted && !params.workflowAnalysisRunning && params.sessionStatus !== "analyzing"
-    ? 18
-    : failed
-    ? Math.max(10, Math.min(params.simProgress ?? 45, 95))
-    : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
-      ? Math.max(15, Math.min(params.simProgress ?? 35, 95))
-      : 18
-
-  const currentMessage = uploadFailed
-    ? "Proof upload failed. Please retry."
-    : uploading
-    ? "Uploading proof recording — keep this tab open."
-    : uploadJustCompleted && !params.workflowAnalysisRunning && params.sessionStatus !== "analyzing"
-    ? "Proof uploaded — preparing workflow evidence."
-    : failed
-    ? "Workflow evidence analysis hit an issue. Retry the analysis when ready."
-    : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
-      ? `${WORKFLOW_ANALYSIS_PROGRESS_STAGES[activeIdx]?.label ?? "Analyzing workflow"} is in progress.`
-      : "Proof uploaded — preparing workflow evidence."
-
-  const showSlowWarning = uploading
-    ? Boolean((params.activeElapsedMs ?? 0) >= WORKFLOW_UPLOAD_SLOW_WARNING_MS)
-    : !failed && !uploadFailed && Boolean((params.activeElapsedMs ?? 0) >= WORKFLOW_PROGRESS_SLOW_WARNING_MS)
+  const percent = failed
+    ? 92
+    : Math.min(95, Math.max(15, 15 + activeIdx * 18 + Math.min(17, Math.floor((elapsedMs % ANALYSIS_STAGE_MS) / 900))))
+  const activeLabel = WORKFLOW_ANALYSIS_PROGRESS_STAGES[activeIdx]?.label ?? "Analyzing workflow evidence"
 
   return {
     stages,
     percent,
-    title: "Uploading and analyzing workflow proof",
-    currentMessage,
-    showSlowWarning,
-    slowWarningMessage: uploading
-      ? "Still uploading — large recordings can take longer. Do not close this tab."
-      : "Still analyzing — OCR and visual reasoning can take longer. Do not close this tab.",
-    failed: failed || uploadFailed,
+    title: "Workflow Evidence Analysis in Progress",
+    currentMessage: failed
+      ? "Workflow evidence analysis failed. Please retry."
+      : lifecycle === "analysis_starting"
+      ? "Starting workflow evidence analysis — keep this tab open."
+      : `${activeLabel} is in progress.`,
+    showSlowWarning: !failed && elapsedMs >= WORKFLOW_ANALYSIS_SLOW_WARNING_MS,
+    slowWarningMessage: "Still analyzing — OCR and visual reasoning can take longer. Do not close this tab.",
+    failed,
   }
 }
 
@@ -550,9 +644,11 @@ function WorkflowAnalysisProgressCard({
             }}
           />
         </div>
-        <p style={{ margin: 0, fontSize: 12, color: "#334155", lineHeight: 1.55 }}>
-          VeriBridge is analyzing your workflow recording. This usually takes 30–90 seconds.
-        </p>
+        {model.title === "Workflow Evidence Analysis in Progress" && (
+          <p style={{ margin: 0, fontSize: 12, color: "#334155", lineHeight: 1.55 }}>
+            VeriBridge is analyzing your workflow recording. This usually takes 30–90 seconds.
+          </p>
+        )}
         <p style={{ margin: 0, fontSize: 11, color: "#64748b", lineHeight: 1.55 }}>
           {model.currentMessage}
         </p>
@@ -6873,6 +6969,13 @@ export function ExtensionProofPanel({
   const [analyzing, setAnalyzing]       = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
   const [analyzeTimedOut, setAnalyzeTimedOut] = useState(false)
+  const [websiteProofProgressLifecycle, dispatchWebsiteProofProgress] = useReducer(
+    websiteProofProgressReducer,
+    "idle" as WebsiteProofProgressLifecycle,
+  )
+  const [workflowProgressNowMs, setWorkflowProgressNowMs] = useState(() => Date.now())
+  const workflowProgressLifecycleStartedAtRef = useRef(Date.now())
+  const previousWorkflowProgressLifecycleRef = useRef<WebsiteProofProgressLifecycle>("idle")
 
   // Follow-up recording intent (from sessionStorage, set by Record Follow-up button)
   const [followupIntent, setFollowupIntent] = useState<{
@@ -6896,6 +6999,7 @@ export function ExtensionProofPanel({
     setAnalyzing(false)
     setAnalyzeError(null)
     setAnalyzeTimedOut(false)
+    dispatchWebsiteProofProgress({ type: "reset" })
     setPrivacyAcknowledged(false)
     setPrivacyScan(null)
     setGithubAnalysis(null)
@@ -6942,8 +7046,6 @@ export function ExtensionProofPanel({
   // Privacy Guard state
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false)
   const [privacyScan, setPrivacyScan] = useState<WorkflowPrivacyScanResponse | null>(null)
-  const [simProgress, setSimProgress]   = useState(0)
-  const [simStageIdx, setSimStageIdx]   = useState(-1)
   const analyzeTimeoutRef               = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // GitHub evidence analysis state
@@ -6997,6 +7099,15 @@ export function ExtensionProofPanel({
       .then((restored) => {
         if (cancelled) return
         setSession(restored)
+        if (restored.status === "recording") {
+          dispatchWebsiteProofProgress({ type: "recording_started" })
+        } else if (restored.status === "uploaded_pending_analysis") {
+          dispatchWebsiteProofProgress({ type: "upload_succeeded" })
+        } else if (restored.status === "analyzing") {
+          dispatchWebsiteProofProgress({ type: "analysis_request_started" })
+        } else if (restored.status === "completed") {
+          dispatchWebsiteProofProgress({ type: "workflow_report_exists" })
+        }
         if (POLLING_STATUSES.includes(restored.status)) {
           setPoll(true)
         }
@@ -7033,9 +7144,14 @@ export function ExtensionProofPanel({
     function handleExtensionStateMessage(event: MessageEvent) {
       if (event.source !== window) return
       const data = event.data as { source?: string; type?: string; payload?: Partial<ExtensionUploadBridgeState> } | null
-      if (!data || data.source !== "veribridge-extension" || data.type !== "VERIBRIDGE_EXTENSION_STATE") return
+      if (!data || data.source !== "veribridge-extension") return
       const payload = data.payload
       if (!payload?.sessionId || payload.sessionId !== activeSessionId) return
+      if (data.type === "VERIBRIDGE_PROOF_UPLOAD_STARTED") {
+        dispatchWebsiteProofProgress({ type: "stop_send_clicked" })
+        return
+      }
+      if (data.type !== "VERIBRIDGE_EXTENSION_STATE") return
       if (!payload.status) return
       setExtensionUploadState({
         sessionId: payload.sessionId,
@@ -7044,6 +7160,13 @@ export function ExtensionProofPanel({
         lastUploadError: payload.lastUploadError ?? null,
         isRecording: payload.isRecording,
       })
+      if (payload.status === "uploading") {
+        dispatchWebsiteProofProgress({ type: "upload_started" })
+      } else if (payload.status === "uploaded") {
+        dispatchWebsiteProofProgress({ type: "upload_succeeded" })
+      } else if (payload.status === "upload_failed") {
+        dispatchWebsiteProofProgress({ type: "upload_failed" })
+      }
     }
     window.addEventListener("message", handleExtensionStateMessage)
     return () => window.removeEventListener("message", handleExtensionStateMessage)
@@ -7058,6 +7181,13 @@ export function ExtensionProofPanel({
         return { ...current, status: "uploaded", statusMessage: "Proof uploaded successfully" }
       })
     }
+    if (session.status === "recording") {
+      dispatchWebsiteProofProgress({ type: "recording_started" })
+    } else if (session.status === "uploaded_pending_analysis") {
+      dispatchWebsiteProofProgress({ type: "upload_succeeded" })
+    } else if (session.status === "analyzing") {
+      dispatchWebsiteProofProgress({ type: "analysis_request_started" })
+    }
   }, [session?.id, session?.status])
 
   // ── Session-scoped analysis ───────────────────────────────────────────────
@@ -7071,6 +7201,12 @@ export function ExtensionProofPanel({
     () => mergeVisibleSourceScores(finalEval, currentSessionAnalysis, defenseAnalysis),
     [finalEval, currentSessionAnalysis, defenseAnalysis],
   )
+
+  useEffect(() => {
+    if (currentSessionAnalysis) {
+      dispatchWebsiteProofProgress({ type: "workflow_report_exists" })
+    }
+  }, [currentSessionAnalysis?.id])
 
   // ── Verification Readiness Report (computed from existing state) ──────────
   // Re-computed whenever any piece of evidence changes. No extra API call needed.
@@ -7106,71 +7242,44 @@ export function ExtensionProofPanel({
     defenseAnalysis?.privacy_scan_status,
   ])
 
-  const workflowProgressPreview = useMemo(() => {
-    if (!session) return null
-    const uploadStatus = extensionUploadState?.sessionId === session.id ? extensionUploadState.status : null
-    return buildWorkflowAnalysisProgress({
-      sessionStatus: session.status,
-      workflowAnalysisComplete: Boolean(currentSessionAnalysis),
-      workflowAnalysisRunning: analyzing,
-      uploadStatus,
-      uploadError: extensionUploadState?.sessionId === session.id ? extensionUploadState.lastUploadError : null,
-      analyzeError,
-      simProgress,
-      simStageIdx,
-    })
-  }, [session?.id, session?.status, currentSessionAnalysis, analyzing, analyzeError, simProgress, simStageIdx, extensionUploadState])
-  const workflowProgressActive = Boolean(
-    session && shouldShowWorkflowAnalysisProgress({
-      sessionStatus: session.status,
-      workflowAnalysisComplete: Boolean(currentSessionAnalysis),
-      uploadStatus: extensionUploadState?.sessionId === session.id ? extensionUploadState.status : null,
-      analyzeError,
-    })
-  )
-  const activeProgressKey = workflowProgressActive
-    ? `${session?.status}:${session && extensionUploadState?.sessionId === session.id ? extensionUploadState.status : "no-upload"}:${analyzing ? "running" : "pending"}:${analyzeError ? "failed" : "ok"}:${workflowProgressPreview?.stages.find((stage) => stage.status === "active" || stage.status === "failed")?.key ?? "none"}`
-    : null
-  const [activeProgressStartedAt, setActiveProgressStartedAt] = useState(() => Date.now())
-  const [progressNowMs, setProgressNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const previousLifecycle = previousWorkflowProgressLifecycleRef.current
+    previousWorkflowProgressLifecycleRef.current = websiteProofProgressLifecycle
+    const continuingAnalysis =
+      isWorkflowAnalysisLifecycle(previousLifecycle) &&
+      isWorkflowAnalysisLifecycle(websiteProofProgressLifecycle)
+    if (!continuingAnalysis) {
+      workflowProgressLifecycleStartedAtRef.current = Date.now()
+      setWorkflowProgressNowMs(Date.now())
+    }
+  }, [websiteProofProgressLifecycle])
 
   useEffect(() => {
-    setActiveProgressStartedAt(Date.now())
-    setProgressNowMs(Date.now())
-  }, [activeProgressKey])
-
-  useEffect(() => {
-    if (!activeProgressKey) return
-    const timer = setInterval(() => setProgressNowMs(Date.now()), 15_000)
+    if (!shouldShowWorkflowAnalysisProgress({ lifecycle: websiteProofProgressLifecycle })) return
+    const timer = setInterval(() => {
+      const elapsedMs = Date.now() - workflowProgressLifecycleStartedAtRef.current
+      setWorkflowProgressNowMs(Date.now())
+      if (analyzing) {
+        dispatchWebsiteProofProgress({ type: "analysis_polling_result", elapsedMs })
+      }
+    }, 1000)
     return () => clearInterval(timer)
-  }, [activeProgressKey])
+  }, [websiteProofProgressLifecycle, analyzing])
 
   const workflowAnalysisProgress = useMemo(() => {
     if (!session) return null
-    if (!workflowProgressActive) return null
-    const uploadStatus = extensionUploadState?.sessionId === session.id ? extensionUploadState.status : null
+    if (!shouldShowWorkflowAnalysisProgress({ lifecycle: websiteProofProgressLifecycle })) return null
     return buildWorkflowAnalysisProgress({
-      sessionStatus: session.status,
-      workflowAnalysisComplete: Boolean(currentSessionAnalysis),
-      workflowAnalysisRunning: analyzing,
-      uploadStatus,
+      lifecycle: websiteProofProgressLifecycle,
       uploadError: extensionUploadState?.sessionId === session.id ? extensionUploadState.lastUploadError : null,
       analyzeError,
-      simProgress,
-      simStageIdx,
-      activeElapsedMs: activeProgressKey ? progressNowMs - activeProgressStartedAt : 0,
+      activeElapsedMs: workflowProgressNowMs - workflowProgressLifecycleStartedAtRef.current,
     })
   }, [
-    session?.status,
-    currentSessionAnalysis,
-    analyzing,
+    session?.id,
+    websiteProofProgressLifecycle,
+    workflowProgressNowMs,
     analyzeError,
-    simProgress,
-    simStageIdx,
-    workflowProgressActive,
-    activeProgressKey,
-    progressNowMs,
-    activeProgressStartedAt,
     extensionUploadState,
   ])
 
@@ -7328,31 +7437,6 @@ export function ExtensionProofPanel({
     return () => timers.forEach(clearTimeout)
   }, [githubAnalyzing])
 
-  // ── Simulated progress during analysis ────────────────────────────────────
-  useEffect(() => {
-    if (!analyzing) {
-      setSimProgress(0)
-      setSimStageIdx(-1)
-      return
-    }
-    const schedule: Array<{ delay: number; stageIdx: number; progress: number }> = [
-      { delay: 300,  stageIdx: 0, progress: 8  },
-      { delay: 900,  stageIdx: 1, progress: 20 },
-      { delay: 1600, stageIdx: 2, progress: 35 },
-      { delay: 2500, stageIdx: 3, progress: 50 },
-      { delay: 3600, stageIdx: 4, progress: 65 },
-      { delay: 4800, stageIdx: 5, progress: 78 },
-      { delay: 6200, stageIdx: 5, progress: 90 },
-    ]
-    const timers = schedule.map(({ delay, stageIdx, progress }) =>
-      setTimeout(() => {
-        setSimStageIdx(stageIdx)
-        setSimProgress(progress)
-      }, delay)
-    )
-    return () => timers.forEach(clearTimeout)
-  }, [analyzing])
-
   // ── Simulated progress for defense analysis ────────────────────────────────
   useEffect(() => {
     if (!defenseAnalyzing) {
@@ -7388,6 +7472,7 @@ export function ExtensionProofPanel({
 
   async function handleAnalyze() {
     if (!session) return
+    dispatchWebsiteProofProgress({ type: "analyze_clicked" })
     setAnalyzing(true)
     setAnalyzeError(null)
     setAnalyzeTimedOut(false)
@@ -7398,6 +7483,7 @@ export function ExtensionProofPanel({
       setAnalyzeTimedOut(true)
       setAnalyzing(false)
       setAnalyzeError("Analysis timed out after 90 seconds. Please retry.")
+      dispatchWebsiteProofProgress({ type: "analysis_failed" })
     }, 90_000)
     analyzeTimeoutRef.current = timeoutId
 
@@ -7413,6 +7499,7 @@ export function ExtensionProofPanel({
       clearTimeout(timeoutId)
       analyzeTimeoutRef.current = null
       setWorkflowAnalysis(result)
+      dispatchWebsiteProofProgress({ type: "workflow_report_exists" })
       setPoll(false)
       const updated = await getExtensionProofSession(session.id)
       if (!cancelled) setSession(updated)
@@ -7421,6 +7508,7 @@ export function ExtensionProofPanel({
       clearTimeout(timeoutId)
       analyzeTimeoutRef.current = null
       setAnalyzeError(err instanceof Error ? err.message : "Analysis failed. Please try again.")
+      dispatchWebsiteProofProgress({ type: "analysis_failed" })
     } finally {
       if (!cancelled) setAnalyzing(false)
     }
@@ -7596,6 +7684,7 @@ export function ExtensionProofPanel({
       setFollowupIntent(null)
       clearFollowUpProofDraft()
       setSession(sess)
+      dispatchWebsiteProofProgress({ type: "session_created" })
       setStep("session_active")
       saveActiveExtensionProofSession({
         sessionId: sess.id,
@@ -7636,6 +7725,7 @@ export function ExtensionProofPanel({
     try {
       const updated = await startExtensionProofSession(session.id)
       setSession(updated)
+      dispatchWebsiteProofProgress({ type: "recording_started" })
 
       const targetUrl = form.websiteUrl.trim()
       const targetWindowFeatures = local ? undefined : "noopener,noreferrer"
@@ -7971,7 +8061,7 @@ export function ExtensionProofPanel({
         {workflowAnalysisProgress && (
           <WorkflowAnalysisProgressCard
             model={workflowAnalysisProgress}
-            onRetry={() => void handleAnalyze()}
+            onRetry={websiteProofProgressLifecycle === "analysis_failed" ? () => void handleAnalyze() : undefined}
           />
         )}
 
