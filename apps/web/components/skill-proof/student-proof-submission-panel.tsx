@@ -28,7 +28,11 @@ import {
 import { GitHubPortfolioScanPanel } from "./github-portfolio-scan-panel"
 import { SkillProofCenter } from "./skill-proof-center"
 import { WebsiteAIAnalyzerPanel } from "./website-ai-analyzer-panel"
-import { ExtensionProofPanel } from "./extension-proof-panel"
+import {
+  ExtensionProofPanel,
+  clearActiveExtensionProofSession,
+  hasActiveExtensionProofSession,
+} from "./extension-proof-panel"
 import {
   MultiSourceProofForm,
   SourceTypeSelector,
@@ -465,12 +469,29 @@ export function StudentProofSubmissionPanel({
   }, [refreshEvidence])
 
   useEffect(() => {
+    if (open) return
+    if (hasActiveExtensionProofSession()) {
+      setOpen(true)
+      setProofMode("extension_proof")
+      setSubmissionError(null)
+    }
+  }, [open])
+
+  useEffect(() => {
     if (!open) {
       setSubmissionSummary(null)
       setSubmissionError(null)
       setSubmitting(false)
     }
   }, [open])
+
+  useEffect(() => {
+    if (!open || proofMode !== "select") return
+    if (hasActiveExtensionProofSession()) {
+      setProofMode("extension_proof")
+      setSubmissionError(null)
+    }
+  }, [open, proofMode])
 
   // Lock body scroll while modal is open; scroll modal content to top on each open
   useEffect(() => {
@@ -485,6 +506,7 @@ export function StudentProofSubmissionPanel({
 
   function closeModal() {
     clearFollowUpProofDraft()
+    clearActiveExtensionProofSession()
     setOpen(false)
     setActiveTab("github")
     setSubmissionSummary(null)

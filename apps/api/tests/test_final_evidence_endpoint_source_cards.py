@@ -250,6 +250,25 @@ def test_live_website_check_source_card_consistent(client, mem_store):
     assert lw["score"] > 0
 
 
+def test_local_private_live_website_source_card_not_applicable(client, mem_store):
+    session_id = _make_session(mem_store)
+    _seed_workflow_row(
+        mem_store,
+        session_id,
+        target_website="http://127.0.0.1:5173",
+        workflow_summary="Local Vite app workflow with visible UI interactions.",
+        evidence_strength_score=58,
+        supported_skills=["JavaScript"],
+    )
+    payload = _evaluate(client, session_id, ["JavaScript"])
+    lw = _src(payload, "live_website_check")
+    assert lw["status"] == "not_applicable"
+    assert lw["score"] is None
+    assert "public live website check is not applicable" in lw["notes"].lower()
+    assert "live_website_check" not in payload["evidence_sources_used"]
+    assert "live_website_check" not in payload["evidence_sources_missing"]
+
+
 # ── 6. Document evidence is additive — never lowers score ─────────────────────
 
 def test_document_evidence_additive_never_lowers_score(client, mem_store):

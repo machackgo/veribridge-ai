@@ -67,7 +67,7 @@ type PanelStep = "form" | "session_active"
 type OptionalDocumentUiStatus = "not_added" | "processing" | "analyzed" | "failed"
 type FinalSourceScore = { score: number | null; status: string; notes?: string }
 
-type FormState = {
+export type FormState = {
   websiteUrl: string
   githubUrl: string
   skillName: string
@@ -79,6 +79,61 @@ const initialWebsiteProofForm: FormState = {
   githubUrl: "",
   skillName: "",
   proofObjective: "",
+}
+
+const ACTIVE_EXTENSION_PROOF_SESSION_KEY = "vb_active_extension_proof_session"
+
+export type ActiveExtensionProofSessionDraft = {
+  sessionId: string
+  form: FormState
+  savedAt: string
+}
+
+function normalizeActiveExtensionProofDraft(value: unknown): ActiveExtensionProofSessionDraft | null {
+  if (!value || typeof value !== "object") return null
+  const candidate = value as Partial<ActiveExtensionProofSessionDraft>
+  if (!candidate.sessionId || typeof candidate.sessionId !== "string") return null
+  const form = candidate.form
+  if (!form || typeof form !== "object") return null
+  return {
+    sessionId: candidate.sessionId,
+    form: {
+      websiteUrl: typeof form.websiteUrl === "string" ? form.websiteUrl : "",
+      githubUrl: typeof form.githubUrl === "string" ? form.githubUrl : "",
+      skillName: typeof form.skillName === "string" ? form.skillName : "",
+      proofObjective: typeof form.proofObjective === "string" ? form.proofObjective : "",
+    },
+    savedAt: typeof candidate.savedAt === "string" ? candidate.savedAt : new Date().toISOString(),
+  }
+}
+
+export function saveActiveExtensionProofSession(draft: ActiveExtensionProofSessionDraft): void {
+  try {
+    if (typeof window === "undefined") return
+    localStorage.setItem(ACTIVE_EXTENSION_PROOF_SESSION_KEY, JSON.stringify(draft))
+  } catch { /* localStorage unavailable */ }
+}
+
+export function loadActiveExtensionProofSession(): ActiveExtensionProofSessionDraft | null {
+  try {
+    if (typeof window === "undefined") return null
+    const raw = localStorage.getItem(ACTIVE_EXTENSION_PROOF_SESSION_KEY)
+    if (!raw) return null
+    return normalizeActiveExtensionProofDraft(JSON.parse(raw))
+  } catch {
+    return null
+  }
+}
+
+export function hasActiveExtensionProofSession(): boolean {
+  return loadActiveExtensionProofSession() !== null
+}
+
+export function clearActiveExtensionProofSession(): void {
+  try {
+    if (typeof window === "undefined") return
+    localStorage.removeItem(ACTIVE_EXTENSION_PROOF_SESSION_KEY)
+  } catch { /* localStorage unavailable */ }
 }
 
 type UrlType =
@@ -6580,6 +6635,7 @@ export function ExtensionProofPanel({
   const followUpMode = followupIntent !== null
 
   function resetWebsiteProofForm() {
+    clearActiveExtensionProofSession()
     setForm(initialWebsiteProofForm)
     setStep("form")
     setSession(null)
@@ -6677,6 +6733,50 @@ export function ExtensionProofPanel({
   // Derived from form.websiteUrl — available in both form and session_active steps.
   const urlType = classifyUrl(form.websiteUrl)
   const local = isLocal(urlType)
+
+  useEffect(() => {
+    if (followUpMode) return
+    try {
+      if (sessionStorage.getItem(FOLLOWUP_INTENT_KEY_FE)) return
+    } catch { /* sessionStorage unavailable */ }
+    const draft = loadActiveExtensionProofSession()
+    if (!draft) return
+    let cancelled = false
+    setForm({ ...initialWebsiteProofForm, ...draft.form })
+    setStep("session_active")
+    void getExtensionProofSession(draft.sessionId)
+      .then((restored) => {
+        if (cancelled) return
+        setSession(restored)
+        if (POLLING_STATUSES.includes(restored.status)) {
+          setPoll(true)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          clearActiveExtensionProofSession()
+          setSession(null)
+          setStep("form")
+        }
+      })
+    return () => { cancelled = true }
+  }, [followUpMode])
+
+  useEffect(() => {
+    if (!session) return
+    saveActiveExtensionProofSession({
+      sessionId: session.id,
+      form,
+      savedAt: new Date().toISOString(),
+    })
+  }, [
+    session?.id,
+    session?.status,
+    form.websiteUrl,
+    form.githubUrl,
+    form.skillName,
+    form.proofObjective,
+  ])
 
   // ── Session-scoped analysis ───────────────────────────────────────────────
   // workflowAnalysis state may hold a result from a previous session (if the user
@@ -7147,6 +7247,11 @@ export function ExtensionProofPanel({
       clearFollowUpProofDraft()
       setSession(sess)
       setStep("session_active")
+      saveActiveExtensionProofSession({
+        sessionId: sess.id,
+        form,
+        savedAt: new Date().toISOString(),
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create proof session.")
     } finally {
@@ -7183,17 +7288,23 @@ export function ExtensionProofPanel({
       setSession(updated)
 
       const targetUrl = form.websiteUrl.trim()
+      const targetWindowFeatures = local ? undefined : "noopener,noreferrer"
       try {
         const url = new URL(targetUrl)
         url.searchParams.set("veribridge_session_id", session.id)
-        window.open(url.toString(), "_blank", "noopener,noreferrer")
+        if (targetWindowFeatures) {
+          window.open(url.toString(), "_blank", targetWindowFeatures)
+        } else {
+          window.open(url.toString(), "_blank")
+        }
       } catch {
         const sep = targetUrl.includes("?") ? "&" : "?"
-        window.open(
-          `${targetUrl}${sep}veribridge_session_id=${encodeURIComponent(session.id)}`,
-          "_blank",
-          "noopener,noreferrer"
-        )
+        const url = `${targetUrl}${sep}veribridge_session_id=${encodeURIComponent(session.id)}`
+        if (targetWindowFeatures) {
+          window.open(url, "_blank", targetWindowFeatures)
+        } else {
+          window.open(url, "_blank")
+        }
       }
 
       setPoll(true)

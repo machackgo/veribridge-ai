@@ -1392,6 +1392,79 @@ def test_live_website_check_is_not_run_when_absent():
     assert lw_src["score"] == 0
 
 
+def test_local_private_live_website_check_is_not_applicable_and_neutral():
+    wf = {
+        "evidence_strength_score": 70,
+        "workflow_confidence": "good",
+        "target_website": "http://localhost:3000",
+        "workflow_summary": "Local React app workflow with visible UI interactions.",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["open", "click", "review"],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": ["React"],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+        "video_keyframe_status": None,
+        "video_keyframe_count": 0,
+        "video_keyframe_timestamps_ms": [],
+    }
+    local_result = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=["React"])
+    public_result = _svc(wf={**wf, "target_website": "https://example.com"}).evaluate(
+        "u1", "s1", claimed_skills=["React"]
+    )
+    lw_src = next(s for s in local_result.evidence_source_breakdown if s["key"] == "live_website_check")
+    assert lw_src["status"] == "not_applicable"
+    assert lw_src["score"] is None
+    assert "public live website check is not applicable" in lw_src["notes"].lower()
+    assert local_result.final_score == public_result.final_score
+
+
+def test_private_lan_live_website_check_is_not_applicable_in_final_breakdown():
+    wf = {
+        "evidence_strength_score": 65,
+        "workflow_confidence": "good",
+        "target_website": "http://192.168.1.42:5173",
+        "workflow_summary": "Local network app workflow with visible UI interactions.",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["open", "click"],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": ["JavaScript"],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+    result = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=["JavaScript"])
+    lw_src = next(s for s in result.evidence_source_breakdown if s["key"] == "live_website_check")
+    assert lw_src["status"] == "not_applicable"
+    assert lw_src["score"] is None
+    assert "live_website_check" not in result.evidence_sources_used
+    assert "live_website_check" not in result.evidence_sources_missing
+
+
+def test_public_live_website_check_still_contributes_when_reachable():
+    wf = {
+        "evidence_strength_score": 65,
+        "workflow_confidence": "good",
+        "target_website": "https://open-meteo.com/",
+        "workflow_summary": "Public weather API website workflow.",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["open", "review"],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": ["API"],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+    result = _svc(wf=wf, lw={"is_reachable": True, "website_url": "https://open-meteo.com/"}).evaluate(
+        "u1", "s1", claimed_skills=["API"]
+    )
+    lw_src = next(s for s in result.evidence_source_breakdown if s["key"] == "live_website_check")
+    assert lw_src["status"] == "pass"
+    assert lw_src["score"] == 90
+    assert "live_website_check" in result.evidence_sources_used
+
+
 def test_grouped_skill_confidence_uses_evidence_strength():
     """Group confidence should reflect evidence strength — strong GitHub + direct workflow = high."""
     wf = {

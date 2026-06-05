@@ -111,6 +111,7 @@ interface InternalState {
   trackedTabIds: Set<number>
   originalTabId: number | null
   trackedTabUrls: Map<number, string>  // last known URL per tracked tab (for navigation detection)
+  proofBuilderTabId: number | null
   // Recorder tab — auto-opened on START_RECORDING.
   // Tracks the tab so we can focus it if it already exists.
   recorderTabId: number | null
@@ -153,6 +154,7 @@ const state: InternalState = {
   trackedTabIds: new Set(),
   originalTabId: null,
   trackedTabUrls: new Map(),
+  proofBuilderTabId: null,
   recorderTabId: null,
   videoUploadStatus: "none",
   videoUploadError: null,
@@ -174,6 +176,8 @@ interface PersistedRecordingState {
   apiUrl: string
   authToken: string
   startedAt: string
+  originalTabId?: number | null
+  proofBuilderTabId?: number | null
 }
 
 /**
@@ -188,6 +192,8 @@ function persistRecordingState(): void {
     apiUrl: state.apiUrl,
     authToken: state.authToken,
     startedAt: state.startedAt ?? new Date().toISOString(),
+    originalTabId: state.originalTabId,
+    proofBuilderTabId: state.proofBuilderTabId,
   }
   void chrome.storage.local.set({ [_SW_STATE_KEY]: payload })
   dbgVE("persistRecordingState: saved session", state.sessionId)
@@ -211,6 +217,10 @@ void chrome.storage.local.get(_SW_STATE_KEY).then((data) => {
   state.authToken    = rs.authToken || ""
   state.isRecording  = true
   state.startedAt    = rs.startedAt
+  state.originalTabId = rs.originalTabId ?? null
+  state.proofBuilderTabId = rs.proofBuilderTabId ?? null
+  state.trackedTabIds = new Set()
+  if (state.originalTabId !== null) state.trackedTabIds.add(state.originalTabId)
   state.status       = "recording"
   state.statusMessage = "Recording resumed after extension restart…"
   // Re-broadcast START_CAPTURING so any content scripts that missed the original
@@ -378,6 +388,33 @@ async function broadcastToAllTabs(message: unknown): Promise<void> {
   }
 }
 
+async function rememberProofBuilderTab(): Promise<void> {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
+    const activeTab = tabs[0]
+    if (activeTab?.id === undefined) return
+    state.proofBuilderTabId =
+      activeTab.openerTabId ?? state.proofBuilderTabId ?? activeTab.id
+    persistRecordingState()
+  } catch {
+    // Best-effort only; upload should still proceed if Chrome cannot report the tab.
+  }
+}
+
+async function focusProofBuilderTab(): Promise<void> {
+  const tabId = state.proofBuilderTabId
+  if (tabId === null) return
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    await chrome.tabs.update(tabId, { active: true })
+    if (tab.windowId !== undefined) {
+      await chrome.windows.update(tab.windowId, { focused: true })
+    }
+  } catch {
+    // The user may have closed the proof-builder tab; nothing to restore.
+  }
+}
+
 function publicState(): ExtensionState {
   return {
     sessionId: state.sessionId,
@@ -447,6 +484,7 @@ chrome.runtime.onMessage.addListener(
         }
         // Persist recording state so a service-worker restart can restore it.
         persistRecordingState()
+        void rememberProofBuilderTab()
         void broadcastToAllTabs({ type: "START_CAPTURING" })
         // Auto-open the recorder tab so the user can start screen capture immediately.
         // If the recorder tab is already open (recorderTabId set), focus it instead.
@@ -521,6 +559,9 @@ chrome.runtime.onMessage.addListener(
         // trackedTabIds when recording starts.
         if (sender.tab?.id !== undefined) {
           state.originalTabId = sender.tab.id
+          if (sender.tab.openerTabId !== undefined) {
+            state.proofBuilderTabId = sender.tab.openerTabId
+          }
         }
         void chrome.storage.local.set({ currentSessionId: session_id })
         if (!state.isRecording) {
@@ -997,6 +1038,11 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     // Proof uploaded — clear persisted recording state so a future SW restart
     // doesn't incorrectly resume a completed recording.
     clearPersistedRecordingState()
+    void chrome.storage.local.set({
+      currentSessionId: state.sessionId,
+      lastUploadedSessionId: state.sessionId,
+    })
+    void focusProofBuilderTab()
     return { ok: true }
 
   } catch (err) {

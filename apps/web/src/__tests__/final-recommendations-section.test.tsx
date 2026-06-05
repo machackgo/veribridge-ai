@@ -1,9 +1,27 @@
 import { fireEvent, render, screen } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { describe, expect, it } from "vitest"
-import { DetectedSkillProfileSection, ExtensionProofPanel, FinalEvaluatorCard, FinalRecommendationsSection, FutureProofModulesSection, LiveWebsiteCheckCard, mergeVisibleSourceScores, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
+import { beforeEach, describe, expect, it } from "vitest"
+import {
+  DetectedSkillProfileSection,
+  ExtensionProofPanel,
+  FinalEvaluatorCard,
+  FinalRecommendationsSection,
+  FutureProofModulesSection,
+  LiveWebsiteCheckCard,
+  ProjectDefenseResultCard,
+  clearActiveExtensionProofSession,
+  hasActiveExtensionProofSession,
+  loadActiveExtensionProofSession,
+  mergeVisibleSourceScores,
+  saveActiveExtensionProofSession,
+} from "../../components/skill-proof/extension-proof-panel"
 import type { FinalEvaluationResult, LiveWebsiteCheckResponse, ProjectDefenseAnalysisResponse } from "../lib/api"
+
+beforeEach(() => {
+  sessionStorage.clear()
+  localStorage.clear()
+})
 
 const learningAction = {
   title: "Add performance metrics",
@@ -516,7 +534,6 @@ describe("Detected Skill Profile (grouped skill evidence)", () => {
 
 describe("Website Proof form state", () => {
   it("opens normal Website Proof with blank fields", () => {
-    sessionStorage.clear()
     render(<ExtensionProofPanel onBack={() => undefined} />)
     expect(screen.queryByText("Follow-up Proof Recording")).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText(/https:\/\/your-project\.vercel\.app/i)).toHaveValue("")
@@ -551,5 +568,41 @@ describe("Website Proof form state", () => {
     expect(screen.queryByText("Follow-up Proof Recording")).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText("e.g. FastAPI, React, Machine Learning")).toHaveValue("")
     expect(screen.getByPlaceholderText(/Describe what you'll walk through/i)).toHaveValue("")
+  })
+
+  it("persists and clears the active Website Proof session for return restoration", () => {
+    saveActiveExtensionProofSession({
+      sessionId: "s-localhost-3000",
+      form: {
+        websiteUrl: "http://localhost:3000",
+        githubUrl: "https://github.com/machackgo/veribridge-ai",
+        skillName: "Next.js, React",
+        proofObjective: "Demonstrate local app navigation stays attached to this proof session",
+      },
+      savedAt: "2026-06-05T12:00:00.000Z",
+    })
+
+    expect(hasActiveExtensionProofSession()).toBe(true)
+    expect(loadActiveExtensionProofSession()).toMatchObject({
+      sessionId: "s-localhost-3000",
+      form: {
+        websiteUrl: "http://localhost:3000",
+        githubUrl: "https://github.com/machackgo/veribridge-ai",
+        skillName: "Next.js, React",
+      },
+    })
+
+    clearActiveExtensionProofSession()
+    expect(hasActiveExtensionProofSession()).toBe(false)
+  })
+
+  it("parent proof modal can auto-restore directly into Website Proof mode", () => {
+    const source = readFileSync(
+      join(process.cwd(), "components/skill-proof/student-proof-submission-panel.tsx"),
+      "utf8",
+    )
+    expect(source).toContain("hasActiveExtensionProofSession()")
+    expect(source).toContain('setProofMode("extension_proof")')
+    expect(source).toContain("setOpen(true)")
   })
 })

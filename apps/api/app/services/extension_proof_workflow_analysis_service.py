@@ -1594,13 +1594,20 @@ def _classify_url(
     if _is_chrome_internal(url):
         return "noise"
 
-    # VeriBridge internal dashboard routes → always noise
-    if _is_veribridge_internal(url):
-        return "noise"
-
     try:
         parsed = urlparse(url)
         netloc = parsed.netloc.lower()
+
+        # Target site match (exact netloc). This must run before VeriBridge
+        # internal filtering so testing VeriBridge itself on localhost:3000
+        # keeps same-origin route changes attached to the proof session.
+        if target_netloc and netloc == target_netloc:
+            return "target"
+
+        # VeriBridge internal dashboard routes are noise only when they are not
+        # the submitted target app.
+        if _is_veribridge_internal(url):
+            return "noise"
 
         # Known noise netlocs
         if netloc in _NOISE_NETLOCS:
@@ -1608,10 +1615,6 @@ def _classify_url(
         for suffix in _NOISE_NETLOC_SUFFIXES:
             if netloc.endswith(suffix):
                 return "noise"
-
-        # Target site match (exact netloc)
-        if target_netloc and netloc == target_netloc:
-            return "target"
 
         # GitHub supporting evidence (only when github_url is configured)
         if github_netloc:

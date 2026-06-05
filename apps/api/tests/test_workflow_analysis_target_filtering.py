@@ -40,6 +40,7 @@ VB_DASH_URL     = "http://localhost:3000/dashboard/profile"
 VB_PASSPORT_URL = "http://localhost:3000/dashboard/passport/skills"
 STACKOVERFLOW   = "https://stackoverflow.com/questions/123456"
 LOCALHOST_APP   = "http://localhost:8501"
+LOCAL_VERIBRIDGE_APP = "http://localhost:3000"
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -210,6 +211,18 @@ class TestClassifyUrl:
     def test_localhost_veribridge_port_classified_as_noise(self):
         assert _classify_url(VB_DASH_URL, "localhost:8501", None) == "noise"
 
+    def test_submitted_veribridge_localhost_hash_route_classified_as_target(self):
+        target_netloc = _safe_netloc(LOCAL_VERIBRIDGE_APP)
+        assert _classify_url(f"{LOCAL_VERIBRIDGE_APP}/#platform", target_netloc, None) == "target"
+
+    def test_submitted_veribridge_localhost_path_classified_as_target(self):
+        target_netloc = _safe_netloc(LOCAL_VERIBRIDGE_APP)
+        assert _classify_url(f"{LOCAL_VERIBRIDGE_APP}/students", target_netloc, None) == "target"
+
+    def test_submitted_veribridge_localhost_dashboard_classified_as_target(self):
+        target_netloc = _safe_netloc(LOCAL_VERIBRIDGE_APP)
+        assert _classify_url(VB_DASH_URL, target_netloc, None) == "target"
+
     def test_unrelated_tab_classified_as_noise(self):
         assert _classify_url(STACKOVERFLOW, _safe_netloc(TARGET_URL), None) == "noise"
 
@@ -301,6 +314,40 @@ class TestAnalyzeWorkflowTargetFiltering:
         data = _mixed_proof_data()
         result = self._run(data)
         assert result["target_site_pages_count"] >= 2  # at least / and /results
+
+    def test_localhost_same_origin_hash_and_paths_preserved(self):
+        """Internal navigation under submitted localhost origin stays target evidence."""
+        from datetime import datetime, timezone, timedelta
+        start = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        stop = start + timedelta(seconds=150)
+        proof_data = {
+            "workflow_events": [
+                {"type": "page_visit", "page_url": LOCAL_VERIBRIDGE_APP, "page_title": "VeriBridge"},
+                {"type": "page_visit", "page_url": f"{LOCAL_VERIBRIDGE_APP}/#platform", "page_title": "VeriBridge — Platform"},
+                {"type": "page_visit", "page_url": f"{LOCAL_VERIBRIDGE_APP}/students", "page_title": "VeriBridge — Students"},
+                {"type": "page_visit", "page_url": f"{LOCAL_VERIBRIDGE_APP}/dashboard/profile", "page_title": "VeriBridge — Profile"},
+                {"type": "click", "page_url": f"{LOCAL_VERIBRIDGE_APP}/students", "element_text": "Students"},
+                {"type": "page_visit", "page_url": "https://google.com/search?q=veribridge", "page_title": "Google"},
+            ],
+            "started_at": start.isoformat(),
+            "stopped_at": stop.isoformat(),
+        }
+
+        result = self._run(
+            proof_data,
+            target_url=LOCAL_VERIBRIDGE_APP,
+            github_url=None,
+            claimed_skills=["Next.js", "React"],
+            proof_objective="Demonstrate local VeriBridge navigation and workflow recording",
+            url_type="localhost_url",
+        )
+
+        assert result["target_site_pages_count"] == 4
+        assert result["noise_filtered_count"] == 1
+        summary = result["recruiter_summary"].lower()
+        assert "google" not in summary
+        actions_text = " ".join(result["demonstrated_actions"]).lower()
+        assert "google" not in actions_text
 
     def test_github_classified_as_supporting(self):
         """GitHub events must be supporting evidence, not target and not noise."""
