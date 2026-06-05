@@ -149,6 +149,8 @@ def test_ocr_snippets_exist_source_card_not_not_run(client, mem_store):
     ocr = _src(payload, "ocr")
     assert ocr["status"] != "not_run", f"OCR snippets exist but card says not_run: {ocr}"
     assert ocr["score"] > 0
+    assert "ocr" in payload["evidence_sources_used"]
+    assert _src(payload, "website_workflow")["score"] > 0
 
 
 # ── 3. Qwen target observations exist → Qwen card not not_run ─────────────────
@@ -172,6 +174,39 @@ def test_qwen_target_observation_source_card_not_not_run(client, mem_store):
         f"Qwen observations exist but card says {qwen['status']}: {qwen}"
     )
     assert qwen["score"] > 0
+    assert "qwen_visual_reasoning" in payload["evidence_sources_used"]
+    assert _src(payload, "website_workflow")["score"] > 0
+
+
+# ── 3b. DOM partial evidence → DOM card partial, not not_run ─────────────────
+
+def test_dom_partial_evidence_source_card_is_partial_not_not_run(client, mem_store):
+    session_id = _make_session(mem_store)
+    _seed_workflow_row(
+        mem_store,
+        session_id,
+        evidence_strength_score=32,
+        workflow_confidence="low",
+        visible_evidence_status="not_captured",
+        dom_evidence_status="not_captured",
+        demonstrated_actions=[],
+        target_website="https://leafletjs.com/examples/quick-start/",
+        workflow_summary="Leaflet quick-start map page loaded.",
+        observed_demonstration={
+            "target_app": "leafletjs.com",
+            "summary": "DOM evidence partial for a Leaflet map tutorial.",
+            "visible_evidence_status": "partial",
+            "dom_evidence_status": "partial",
+            "top_result_snippets": ["Leaflet map marker popup OpenStreetMap tile"],
+            "steps": [],
+        },
+    )
+    payload = _evaluate(client, session_id, ["Leaflet.js", "Interactive Maps"])
+    dom = _src(payload, "dom_visible_evidence")
+    assert dom["status"] == "partial", f"DOM partial evidence must render as partial: {dom}"
+    assert dom["score"] > 0
+    assert dom["status"] != "not_run"
+    assert "not detected" not in str(dom.get("notes") or "").lower()
 
 
 # ── 4. Project Defense analyzed → PD card not 0/not_run ───────────────────────

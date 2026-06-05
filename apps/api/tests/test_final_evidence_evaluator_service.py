@@ -60,6 +60,73 @@ def _svc(wf=None, gh=None, lw=None, pd=None, opt=None, kf_count=0):
     return FinalEvidenceEvaluatorService(_make_db(wf, gh, lw, pd, opt, kf_count))
 
 
+def _source(result, key: str) -> dict[str, Any]:
+    return next(s for s in result.to_dict()["evidence_source_breakdown"] if s["key"] == key)
+
+
+def _grouped_skill_names(result) -> set[str]:
+    payload = result.to_dict()
+    return {
+        skill["skill"]
+        for group in payload["grouped_skill_evidence"]
+        for skill in group["skills"]
+    }
+
+
+def _leaflet_relevance_wf(**overrides) -> dict[str, Any]:
+    wf = {
+        "evidence_strength_score": 72,
+        "workflow_confidence": "good",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": [
+            "Opened Leaflet map",
+            "Zoomed map",
+            "Clicked marker popup",
+            "Panned OpenStreetMap tiles",
+        ],
+        "target_website": "https://example.com/leaflet-map",
+        "workflow_summary": "Leaflet geospatial map with markers, popups, zoom and pan controls.",
+        "page_context_summary": "Interactive web mapping demo using Leaflet and OpenStreetMap tiles.",
+        "visual_analysis_status": "not_configured",
+        "supported_skills": ["Leaflet", "Geospatial Mapping"],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+        "video_keyframe_status": None,
+        "video_keyframe_count": 0,
+        "video_keyframe_timestamps_ms": [],
+    }
+    wf.update(overrides)
+    return wf
+
+
+def _chatbot_relevance_wf(**overrides) -> dict[str, Any]:
+    wf = {
+        "evidence_strength_score": 70,
+        "workflow_confidence": "good",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": [
+            "Opened HuggingChat",
+            "Typed prompt into message input",
+            "Sent prompt",
+            "Reviewed assistant response",
+        ],
+        "target_website": "https://huggingface.co/chat/",
+        "workflow_summary": "HuggingChat chatbot workflow with prompt entry and assistant response.",
+        "page_context_summary": "Chatbot UI for LLM and NLP text processing.",
+        "visual_analysis_status": "not_configured",
+        "supported_skills": ["Chatbot UI", "Natural Language Processing"],
+        "weakly_supported_skills": ["Large Language Models"],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+        "video_keyframe_status": None,
+        "video_keyframe_count": 0,
+        "video_keyframe_timestamps_ms": [],
+    }
+    wf.update(overrides)
+    return wf
+
+
 # ── 1. grouped_skill_evidence is returned ──────────────────────────────────────
 
 def test_grouped_skill_evidence_present_in_result():
@@ -258,6 +325,180 @@ def test_llm_chatbot_transcript_maps_to_chatbot_skills():
     assert "Large Language Models" in skills
     assert "Chatbot UI" in skills
     assert "AI Product Design" in skills
+
+
+def test_leaflet_project_defense_transcript_relevant_and_contributes_normally():
+    pd = {
+        "analysis_status": "analyzed",
+        "overall_defense_score": 78,
+        "transcript_text": (
+            "I built this Leaflet web mapping project with OpenStreetMap tiles, map markers, "
+            "popup details, zoom controls, pan behavior, and geospatial coordinate handling."
+        ),
+    }
+    result = _svc(wf=_leaflet_relevance_wf(), pd=pd).evaluate(
+        "u1",
+        "s1",
+        claimed_skills=["Leaflet", "Geospatial Mapping", "OpenStreetMap"],
+    )
+    pd_src = _source(result, "project_defense")
+    assert pd_src["status"] == "pass"
+    assert pd_src["score"] == 78
+    assert "unrelated" not in str(pd_src.get("notes") or "").lower()
+    assert "transcript appears unrelated" not in result.to_dict()["final_recruiter_summary"].lower()
+
+
+def test_leaflet_proof_rejects_unrelated_threejs_project_defense_skills():
+    pd = {
+        "analysis_status": "analyzed",
+        "overall_defense_score": 92,
+        "transcript_text": (
+            "I built a Three.js WebGL renderer with a 3D mesh, geometry simplification, "
+            "camera controls, shaders, texture handling, and an animated scene."
+        ),
+    }
+    result = _svc(wf=_leaflet_relevance_wf(), pd=pd).evaluate(
+        "u1",
+        "s1",
+        claimed_skills=["Leaflet", "Geospatial Mapping"],
+    )
+    payload = result.to_dict()
+    pd_src = _source(result, "project_defense")
+    assert pd_src["status"] == "partial"
+    assert pd_src["score"] <= 20
+    assert "unrelated" in str(pd_src.get("notes") or "").lower()
+    assert "transcript appears unrelated" in payload["final_recruiter_summary"].lower()
+    grouped = _grouped_skill_names(result)
+    assert "Leaflet" in grouped
+    assert "Three.js" not in grouped
+    assert "WebGL" not in grouped
+    assert "Computer Graphics" not in grouped
+
+
+def test_huggingchat_chatbot_project_defense_relevant_supports_nlp_skills():
+    pd = {
+        "analysis_status": "analyzed",
+        "overall_defense_score": 76,
+        "transcript_text": (
+            "I built the HuggingChat chatbot flow with a message input, prompt handling, "
+            "large language model response, NLP text processing, and assistant conversation UX."
+        ),
+    }
+    result = _svc(wf=_chatbot_relevance_wf(), pd=pd).evaluate(
+        "u1",
+        "s1",
+        claimed_skills=[
+            "Natural Language Processing",
+            "Large Language Models",
+            "Chatbot UI",
+        ],
+    )
+    pd_src = _source(result, "project_defense")
+    grouped = _grouped_skill_names(result)
+    assert pd_src["status"] == "pass"
+    assert pd_src["score"] == 76
+    assert "unrelated" not in str(pd_src.get("notes") or "").lower()
+    assert "Natural Language Processing" in grouped
+    assert "Large Language Models" in grouped
+    assert "Chatbot UI" in grouped
+
+
+def test_huggingchat_proof_rejects_unrelated_threejs_project_defense_boost():
+    pd = {
+        "analysis_status": "analyzed",
+        "overall_defense_score": 95,
+        "transcript_text": (
+            "The project is a Three.js WebGL canvas with 3D mesh geometry, renderer setup, "
+            "camera orbit controls, shaders, textures, and scene animation."
+        ),
+    }
+    result = _svc(wf=_chatbot_relevance_wf(), pd=pd).evaluate(
+        "u1",
+        "s1",
+        claimed_skills=["Natural Language Processing", "Large Language Models", "Chatbot UI"],
+    )
+    pd_src = _source(result, "project_defense")
+    assert pd_src["status"] == "partial"
+    assert pd_src["score"] <= 20
+    assert "unrelated" in str(pd_src.get("notes") or "").lower()
+    assert "transcript appears unrelated" in result.to_dict()["final_recruiter_summary"].lower()
+
+
+def test_relevant_document_boosts_but_unrelated_document_is_neutral_and_filtered():
+    claimed = ["Leaflet", "Geospatial Mapping"]
+    wf = _leaflet_relevance_wf(evidence_strength_score=62)
+    baseline = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=claimed)
+
+    relevant_doc = {
+        "source_type": "document",
+        "status": "analyzed",
+        "analysis_summary": "Leaflet geospatial map report with marker popups and OpenStreetMap tiles.",
+        "evidence_objects": [
+            {
+                "skill_name": "Leaflet",
+                "confidence": "high",
+                "snippet": "Leaflet marker popup implementation for the web mapping project.",
+                "reason": "Document describes Leaflet map markers and popups.",
+            },
+            {
+                "skill_name": "Geospatial Mapping",
+                "confidence": "high",
+                "snippet": "OpenStreetMap tile layer, coordinates, zoom and pan controls.",
+                "reason": "Document describes geospatial map behavior.",
+            },
+        ],
+    }
+    unrelated_doc = {
+        "source_type": "document",
+        "status": "analyzed",
+        "analysis_summary": "Three.js WebGL renderer report with shaders, 3D mesh geometry, and textures.",
+        "evidence_objects": [
+            {
+                "skill_name": "Three.js",
+                "confidence": "high",
+                "snippet": "Three.js WebGL renderer with mesh geometry and shader texture pipeline.",
+                "reason": "Document describes unrelated 3D graphics work.",
+            },
+            {
+                "skill_name": "WebGL",
+                "confidence": "high",
+                "snippet": "WebGL shader and renderer setup.",
+                "reason": "Document describes unrelated WebGL implementation.",
+            },
+        ],
+    }
+
+    with_relevant = _svc(wf=wf, opt=[relevant_doc]).evaluate("u1", "s1", claimed_skills=claimed)
+    with_unrelated = _svc(wf=wf, opt=[unrelated_doc]).evaluate("u1", "s1", claimed_skills=claimed)
+
+    relevant_src = _source(with_relevant, "uploaded_documents")
+    unrelated_src = _source(with_unrelated, "uploaded_documents")
+    assert relevant_src["status"] == "pass"
+    assert with_relevant.final_score >= baseline.final_score
+    assert unrelated_src["score"] == 0
+    assert "unrelated" in str(unrelated_src.get("notes") or "").lower()
+    assert with_unrelated.final_score == baseline.final_score
+    grouped = _grouped_skill_names(with_unrelated)
+    assert "Leaflet" in grouped
+    assert "Three.js" not in grouped
+    assert "WebGL" not in grouped
+
+
+def test_optional_unrelated_evidence_never_lowers_or_boosts_base_score():
+    claimed = ["Natural Language Processing", "Chatbot UI"]
+    wf = _chatbot_relevance_wf(evidence_strength_score=64)
+    baseline = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=claimed)
+    unrelated_doc = {
+        "source_type": "document",
+        "status": "analyzed",
+        "analysis_summary": "Leaflet geospatial map report with markers, popups, tiles and coordinate zoom controls.",
+        "evidence_objects": [
+            {"skill_name": "Leaflet", "confidence": "high", "snippet": "Leaflet web mapping markers and tiles."}
+        ],
+    }
+    with_unrelated = _svc(wf=wf, opt=[unrelated_doc]).evaluate("u1", "s1", claimed_skills=claimed)
+    assert _source(with_unrelated, "uploaded_documents")["score"] == 0
+    assert with_unrelated.final_score == baseline.final_score
 
 
 def test_chatbot_under_80_recommends_prompt_response_recording():

@@ -3006,13 +3006,23 @@ class FinalEvidenceEvaluatorService:
     ) -> tuple[str, str]:
         skill_str = ", ".join(claimed_skills[:4]) if claimed_skills else "claimed skills"
         source_count = sum(1 for s in sources if s.status not in ("not_run", "not_available"))
+        has_unrelated_evidence = any(s.notes and "unrelated" in s.notes.lower() for s in sources)
+        has_unrelated_transcript = any(
+            s.key == "project_defense" and s.notes and "unrelated" in s.notes.lower()
+            for s in sources
+        )
+        mismatch_warning = ""
+        if has_unrelated_transcript:
+            mismatch_warning = " Warning: transcript appears unrelated to the submitted proof and was not used as a booster."
+        elif has_unrelated_evidence:
+            mismatch_warning = " Warning: unrelated evidence was detected and was not used as a booster."
 
         if final_score >= 80:
             recruiter = (
                 f"Strong proof with a combined evidence score of {final_score}/100 across "
                 f"{source_count} evidence source(s). Skills covered: {skill_str}. "
                 "Evidence is consistent across workflow recording and supplementary sources."
-            )
+            ) + mismatch_warning
             student = (
                 f"Your proof scores {final_score}/100. This is strong evidence — good job. "
                 "Optional: run GitHub analysis or live website check to add further depth."
@@ -3023,7 +3033,7 @@ class FinalEvidenceEvaluatorService:
                 f"Moderate proof with a combined score of {final_score}/100. "
                 f"Skills partially covered: {skill_str}. "
                 f"Additional evidence recommended: {top_action}"
-            )
+            ) + mismatch_warning
             student = (
                 f"Your proof scores {final_score}/100. It is partially strong but has gaps. "
                 f"Recommended: {top_action}"
@@ -3034,7 +3044,7 @@ class FinalEvidenceEvaluatorService:
                 f"Weak proof with a combined score of {final_score}/100. "
                 f"Skills: {skill_str}. Evidence sources run: {source_count}. "
                 f"Significant gaps: {top_action}"
-            )
+            ) + mismatch_warning
             student = (
                 f"Your proof scores {final_score}/100. Evidence is insufficient. "
                 f"Most important next step: {top_action}"
