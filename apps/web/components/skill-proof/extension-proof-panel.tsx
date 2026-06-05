@@ -3667,12 +3667,12 @@ export function FinalEvaluatorCard({
         </button>
       )
     }
-    // Non-recording, no handler wired → coming soon label
+    // Non-recording, no handler wired: show neutral context, not a disabled CTA.
     return (
       <span style={{ fontSize: 10, color: "#94a3b8",
         padding: "4px 10px", background: "#f8fafc",
         border: "1px solid #e2e8f0", borderRadius: 6 }}>
-        {action.button_label} — coming soon
+        {action.button_label}
       </span>
     )
   }
@@ -4136,7 +4136,7 @@ function StandaloneNextActionsSection({
       <span style={{ fontSize: 10, color: "#94a3b8",
         padding: "4px 10px", background: "#f8fafc",
         border: "1px solid #e2e8f0", borderRadius: 6 }}>
-        {action.button_label} — coming soon
+        {action.button_label}
       </span>
     )
   }

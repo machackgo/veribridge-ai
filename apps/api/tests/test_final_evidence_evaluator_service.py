@@ -64,6 +64,14 @@ def _source(result, key: str) -> dict[str, Any]:
     return next(s for s in result.to_dict()["evidence_source_breakdown"] if s["key"] == key)
 
 
+def _proof_action_titles(result) -> list[str]:
+    return [a["title"] for a in result.to_dict()["recommendations"]["proof_actions"]]
+
+
+def _next_action_labels(result) -> list[str]:
+    return [a["button_label"] for a in result.to_dict()["next_best_actions"]]
+
+
 def _grouped_skill_names(result) -> set[str]:
     payload = result.to_dict()
     return {
@@ -1463,6 +1471,154 @@ def test_public_live_website_check_still_contributes_when_reachable():
     assert lw_src["status"] == "pass"
     assert lw_src["score"] == 90
     assert "live_website_check" in result.evidence_sources_used
+
+
+def test_local_private_proof_recommends_deploy_setup_not_live_check():
+    wf = {
+        "evidence_strength_score": 64,
+        "workflow_confidence": "good",
+        "target_website": "http://localhost:3000",
+        "workflow_summary": "Local React app workflow with visible UI interactions.",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["open", "click", "review"],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": ["React", "Full Stack"],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+    result = _svc(wf=wf).evaluate("u1", "s1", claimed_skills=["React", "Full Stack"])
+    labels = _next_action_labels(result)
+    titles = _proof_action_titles(result)
+    assert "Run Live Website Check" not in labels
+    assert "Run Live Website Check" not in titles
+    assert "Add deployment/setup evidence" in titles
+    deploy_action = next(a for a in result.to_dict()["recommendations"]["proof_actions"] if a["title"] == "Add deployment/setup evidence")
+    assert "local/private" in deploy_action["source_reason"].lower()
+    assert "not applicable" in deploy_action["source_reason"].lower()
+
+
+def test_public_url_without_live_check_recommends_run_live_check():
+    wf = {
+        "evidence_strength_score": 64,
+        "workflow_confidence": "good",
+        "target_website": "https://example.com",
+        "workflow_summary": "Public full stack website workflow.",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["open", "click"],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": ["Full Stack"],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+    result = _svc(wf=wf, gh=_strong_gh(["Full Stack"], ["React"])).evaluate(
+        "u1", "s1", claimed_skills=["Full Stack"], github_url="https://github.com/user/repo"
+    )
+    assert "Run Live Website Check" in _next_action_labels(result)
+    assert "Run Live Website Check" in _proof_action_titles(result)
+
+
+def test_public_url_with_passed_live_check_does_not_recommend_live_check():
+    wf = {
+        "evidence_strength_score": 64,
+        "workflow_confidence": "good",
+        "target_website": "https://example.com",
+        "workflow_summary": "Public full stack website workflow.",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["open", "click"],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": ["Full Stack"],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+    result = _svc(
+        wf=wf,
+        gh=_strong_gh(["Full Stack"], ["React"]),
+        lw={"status": "complete", "is_reachable": True, "website_url": "https://example.com"},
+    ).evaluate("u1", "s1", claimed_skills=["Full Stack"], github_url="https://github.com/user/repo")
+    assert "Run Live Website Check" not in _next_action_labels(result)
+    assert "Run Live Website Check" not in _proof_action_titles(result)
+
+
+def test_public_url_with_failed_live_check_recommends_retry():
+    wf = {
+        "evidence_strength_score": 64,
+        "workflow_confidence": "good",
+        "target_website": "https://example.com",
+        "workflow_summary": "Public full stack website workflow.",
+        "visible_evidence_status": "available",
+        "demonstrated_actions": ["open", "click"],
+        "visual_analysis_status": "not_configured",
+        "supported_skills": ["Full Stack"],
+        "weakly_supported_skills": [],
+        "visual_reasoning_summary": None,
+        "frame_ocr_evidence_summary": {},
+    }
+    result = _svc(
+        wf=wf,
+        gh=_strong_gh(["Full Stack"], ["React"]),
+        lw={"status": "failed", "is_reachable": False, "website_url": "https://example.com"},
+    ).evaluate("u1", "s1", claimed_skills=["Full Stack"], github_url="https://github.com/user/repo")
+    assert "Retry Live Website Check" in _next_action_labels(result)
+    assert "Retry Live Website Check" in _proof_action_titles(result)
+
+
+def test_github_not_analyzed_with_repo_url_recommends_run_analysis():
+    wf = _strong_wf(["React"])
+    result = _svc(wf=wf).evaluate(
+        "u1", "s1", claimed_skills=["React"], github_url="https://github.com/user/repo"
+    )
+    assert "Run GitHub Evidence Analysis" in _next_action_labels(result)
+
+
+def test_github_passed_does_not_recommend_github_analysis():
+    wf = _strong_wf(["React"])
+    result = _svc(wf=wf, gh=_strong_gh(["React"], ["React"])).evaluate(
+        "u1", "s1", claimed_skills=["React"], github_url="https://github.com/user/repo"
+    )
+    labels = _next_action_labels(result)
+    assert "Run GitHub Evidence Analysis" not in labels
+    assert "Add GitHub URL" not in labels
+
+
+def test_strong_uploaded_document_does_not_recommend_upload_document():
+    wf = _chatbot_wf(score=70)
+    relevant_doc = [{
+        "source_type": "document",
+        "status": "analyzed",
+        "analysis_summary": "HuggingChat chatbot architecture and prompt response flow.",
+        "evidence_objects": [{"skill_name": "Chatbot UI", "confidence": "high"}],
+    }]
+    result = _svc(wf=wf, opt=relevant_doc).evaluate("u1", "s1", claimed_skills=["Chatbot UI"])
+    assert "Upload Document" not in _next_action_labels(result)
+    assert "Upload relevant document" not in _next_action_labels(result)
+
+
+def test_irrelevant_document_recommends_upload_relevant_document():
+    wf = _chatbot_wf(score=70)
+    unrelated_doc = [{
+        "source_type": "document",
+        "status": "analyzed",
+        "analysis_summary": "Three.js WebGL geometry simplification report.",
+        "evidence_objects": [{"skill_name": "WebGL", "confidence": "high"}],
+    }]
+    result = _svc(wf=wf, opt=unrelated_doc).evaluate("u1", "s1", claimed_skills=["Chatbot UI"])
+    assert "Upload relevant document" in _next_action_labels(result)
+
+
+def test_low_project_defense_recommends_improvement():
+    wf = _strong_wf(["React"])
+    pd = {
+        "status": "success",
+        "overall_defense_score": 35,
+        "transcript_text": "I used the app and it works.",
+        "skills_mentioned": ["React"],
+        "privacy_scan_status": "clean",
+    }
+    result = _svc(wf=wf, pd=pd).evaluate("u1", "s1", claimed_skills=["React"])
+    assert "Improve Project Defense" in _next_action_labels(result)
 
 
 def test_grouped_skill_confidence_uses_evidence_strength():

@@ -169,6 +169,29 @@ describe("FinalRecommendationsSection", () => {
     expect(screen.getByText("Recommended Next Actions")).toBeInTheDocument()
     expect(screen.getByText("React")).toBeInTheDocument()
   })
+
+  it("does not render disabled coming-soon labels for unsupported recommendation buttons", () => {
+    render(
+      <FinalRecommendationsSection
+        evaluation={evaluation({
+          final_score: 70,
+          next_best_actions: [{
+            action_type: "upload_document",
+            target_skill: "Deployment evidence",
+            reason: "Local/private URL detected; live website check is not applicable.",
+            objective: "Add setup instructions or deployment evidence.",
+            button_label: "Add deployment/setup evidence",
+            priority: "medium",
+            is_recording: false,
+            recommended_duration: null,
+          }],
+        })}
+        sessionId="s1"
+      />,
+    )
+    expect(screen.getByText("Add deployment/setup evidence")).toBeInTheDocument()
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument()
+  })
 })
 
 describe("Final report consistency", () => {

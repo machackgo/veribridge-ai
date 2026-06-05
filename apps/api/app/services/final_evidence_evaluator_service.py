@@ -2560,6 +2560,17 @@ class FinalEvidenceEvaluatorService:
         actions: list[NextBestAction] = []
         source_map = {s.key: s for s in sources}
 
+        def _dedupe_key(action: NextBestAction) -> str:
+            if action.action_type == "upload_document":
+                return f"{action.action_type}:{action.button_label}"
+            return action.action_type
+
+        def _add_once(action: NextBestAction) -> None:
+            action_key = _dedupe_key(action)
+            if any(_dedupe_key(existing) == action_key for existing in actions):
+                return
+            actions.append(action)
+
         # ── GitHub gap ────────────────────────────────────────────────────────
         gh = source_map.get("github")
         code_skills = [s for s in claimed_skills
@@ -2568,13 +2579,14 @@ class FinalEvidenceEvaluatorService:
                                                           "react", "vue", "angular", "node", "java",
                                                           "c++", "rust", "go", "swift"))]
 
-        if gh and gh.status in ("not_run", "missing") and code_skills:
+        if gh and gh.status in ("not_run", "missing") and gh.status != "pass":
+            target = code_skills[0] if code_skills else (claimed_skills[0] if claimed_skills else "GitHub evidence")
             if github_url:
-                actions.append(NextBestAction(
+                _add_once(NextBestAction(
                     action_type="run_github_analysis",
-                    target_skill=code_skills[0],
+                    target_skill=target,
                     reason=(
-                        f"{code_skills[0]} evidence is weak because the repository "
+                        f"{target} evidence is weak because the repository "
                         "has not been analyzed yet."
                     ),
                     objective="Analyze the GitHub repository to extract code evidence for claimed skills.",
@@ -2583,11 +2595,11 @@ class FinalEvidenceEvaluatorService:
                     is_recording=False,
                 ))
             else:
-                actions.append(NextBestAction(
+                _add_once(NextBestAction(
                     action_type="add_github_url",
-                    target_skill=code_skills[0],
+                    target_skill=target,
                     reason=(
-                        f"{code_skills[0]} is claimed but no GitHub repository URL was provided."
+                        f"{target} is claimed but no GitHub repository URL was provided."
                     ),
                     objective="Add a public GitHub repository URL to enable code evidence analysis.",
                     button_label="Add GitHub URL",
@@ -2601,9 +2613,23 @@ class FinalEvidenceEvaluatorService:
                          if any(kw in s.lower() for kw in ("deploy", "hosting", "live", "production",
                                                             "web dev", "website", "web application",
                                                             "full stack", "fullstack", "saas"))]
-        if lw and lw.status in ("not_run",) and (deploy_skills or len(actions) == 0):
+        if lw and lw.status == "not_applicable":
+            target = deploy_skills[0] if deploy_skills else (claimed_skills[0] if claimed_skills else "Website Proof")
+            _add_once(NextBestAction(
+                action_type="upload_document",
+                target_skill=target,
+                reason="This is a local/private URL, so public live website verification is not applicable.",
+                objective=(
+                    "For stronger recruiter confidence, deploy the app publicly or add setup "
+                    "instructions/screenshots showing how to run it."
+                ),
+                button_label="Add deployment/setup evidence",
+                priority="medium",
+                is_recording=False,
+            ))
+        elif lw and lw.status == "not_run" and (deploy_skills or len(actions) == 0):
             target = deploy_skills[0] if deploy_skills else (claimed_skills[0] if claimed_skills else "Website")
-            actions.append(NextBestAction(
+            _add_once(NextBestAction(
                 action_type="run_live_website_check",
                 target_skill=target,
                 reason="Live website accessibility has not been verified.",
@@ -2612,28 +2638,44 @@ class FinalEvidenceEvaluatorService:
                 priority="medium",
                 is_recording=False,
             ))
+        elif lw and lw.status == "missing":
+            target = deploy_skills[0] if deploy_skills else (claimed_skills[0] if claimed_skills else "Website")
+            _add_once(NextBestAction(
+                action_type="run_live_website_check",
+                target_skill=target,
+                reason="Live website accessibility check failed or could not reach the public site.",
+                objective="Retry the live website check after confirming the deployed app is running and publicly reachable.",
+                button_label="Retry Live Website Check",
+                priority="high",
+                is_recording=False,
+            ))
 
         # ── Project defense / transcript gap ──────────────────────────────────
         pd = source_map.get("project_defense")
         if pd and pd.status == "not_run" and len(actions) < 5:
-            defense_skills = [s for s in claimed_skills
-                              if any(kw in s.lower() for kw in (
-                                  "civil", "mechanical", "structural", "design",
-                                  "cad", "simulation", "presentation", "defense",
-                                  "explanation", "communication",
-                              ))]
-            target = defense_skills[0] if defense_skills else None
-            if target:
-                actions.append(NextBestAction(
-                    action_type="record_presentation",
-                    target_skill=target,
-                    reason=f"{target} evidence is stronger with a project defense or verbal explanation.",
-                    objective="Record a short verbal walkthrough of your project or skill demonstration.",
-                    button_label="Add Project Defense",
-                    priority="medium",
-                    is_recording=True,
-                    recommended_duration="2–5 minutes",
-                ))
+            target = claimed_skills[0] if claimed_skills else "Project Defense"
+            _add_once(NextBestAction(
+                action_type="record_presentation",
+                target_skill=target,
+                reason="Project defense explanation is missing.",
+                objective="Record a short walkthrough explaining what you built, your role, tools used, and the technical decisions you made.",
+                button_label="Add Project Defense",
+                priority="medium",
+                is_recording=True,
+                recommended_duration="2–5 minutes",
+            ))
+        elif pd and pd.status in ("partial", "missing") and len(actions) < 5:
+            target = claimed_skills[0] if claimed_skills else "Project Defense"
+            _add_once(NextBestAction(
+                action_type="record_presentation",
+                target_skill=target,
+                reason="Project defense evidence needs stronger ownership or technical depth.",
+                objective="Improve the explanation with first-person ownership, architecture decisions, implementation details, and one hard technical tradeoff.",
+                button_label="Improve Project Defense",
+                priority="medium",
+                is_recording=True,
+                recommended_duration="2–5 minutes",
+            ))
 
         # ── Document / PDF gap (project reports and technical write-ups) ──────
         def _document_supports(skill: str) -> bool:
@@ -2648,14 +2690,36 @@ class FinalEvidenceEvaluatorService:
                     return True
             return False
 
+        doc_src = source_map.get("uploaded_documents")
+        if doc_src and doc_src.status == "partial" and doc_src.notes and "unrelated" in doc_src.notes.lower() and len(actions) < 5:
+            _add_once(NextBestAction(
+                action_type="upload_document",
+                target_skill=claimed_skills[0] if claimed_skills else "Document evidence",
+                reason="Uploaded document evidence appears unrelated to the submitted proof.",
+                objective="Upload a relevant project report, setup guide, architecture note, or screenshot set tied to this exact website proof.",
+                button_label="Upload relevant document",
+                priority="medium",
+                is_recording=False,
+            ))
+        elif doc_src and doc_src.status == "not_available" and len(actions) < 5:
+            _add_once(NextBestAction(
+                action_type="upload_document",
+                target_skill=claimed_skills[0] if claimed_skills else "Document evidence",
+                reason="Optional document evidence has not been added.",
+                objective="Upload a project report, setup guide, architecture note, or screenshots if you want extra supporting evidence.",
+                button_label="Upload Document",
+                priority="medium",
+                is_recording=False,
+            ))
+
         doc_skills = [s for s in claimed_skills
                       if any(kw in s.lower() for kw in (
                           "research", "report", "analysis", "academic", "thesis",
                           "documentation", "technical writing",
                       ))
                       and not _document_supports(s)]
-        if doc_skills and len(actions) < 5:
-            actions.append(NextBestAction(
+        if doc_skills and len(actions) < 5 and not any(a.action_type == "upload_document" for a in actions):
+            _add_once(NextBestAction(
                 action_type="upload_document",
                 target_skill=doc_skills[0],
                 reason=f"{doc_skills[0]} is better supported by uploading a document or report.",
@@ -2786,8 +2850,9 @@ class FinalEvidenceEvaluatorService:
         seen: set[str] = set()
         unique: list[NextBestAction] = []
         for a in actions:
-            if a.action_type not in seen:
-                seen.add(a.action_type)
+            key = _dedupe_key(a)
+            if key not in seen:
+                seen.add(key)
                 unique.append(a)
 
         return unique[:5]
@@ -2917,6 +2982,8 @@ class FinalEvidenceEvaluatorService:
                 key = "live_website_check"
             elif "document" in a.action_type:
                 key = "uploaded_documents"
+            if a.action_type == "upload_document" and "deployment/setup" in a.button_label.lower():
+                key = "live_website_check"
             elif "presentation" in a.action_type:
                 key = "project_defense"
             evidence_to_record = "No recording required; run or upload the missing evidence source."
@@ -2938,7 +3005,22 @@ class FinalEvidenceEvaluatorService:
         if final_score < 80 and project_type == "nlp_llm_rag" and len(proof_actions) < 4:
             wf_src = source_map.get("website_workflow")
             if wf_src and wf_src.status in ("missing", "partial"):
-                proof_actions.append(RecommendationAction(
+                proof_actions.insert(0, RecommendationAction(
+                    "Record prompt and response proof",
+                    "Chatbot evidence is strongest when the target site shows a prompt being submitted and an assistant response returning.",
+                    "Record a focused follow-up on the submitted chatbot URL: type one prompt, send it, show the generated response, then briefly explain the prompt-to-response flow.",
+                    "Natural Language Processing, Large Language Models, Chatbot UI",
+                    "Show the target chatbot page, entered prompt, assistant response, and message history. Avoid unrelated tabs.",
+                    "beginner",
+                    "30 min",
+                    "high",
+                    src_reason("website_workflow"),
+                    "record_followup_proof",
+                ))
+        elif final_score < 80 and project_type == "nlp_llm_rag":
+            wf_src = source_map.get("website_workflow")
+            if wf_src and wf_src.status in ("missing", "partial") and not any(a.title == "Record prompt and response proof" for a in proof_actions):
+                proof_actions.insert(0, RecommendationAction(
                     "Record prompt and response proof",
                     "Chatbot evidence is strongest when the target site shows a prompt being submitted and an assistant response returning.",
                     "Record a focused follow-up on the submitted chatbot URL: type one prompt, send it, show the generated response, then briefly explain the prompt-to-response flow.",
@@ -3019,9 +3101,10 @@ class FinalEvidenceEvaluatorService:
         seen: set[str] = set()
         unique_proof: list[RecommendationAction] = []
         for action in proof_actions:
-            if action.action_type in seen:
+            dedupe_key = f"{action.action_type}:{action.title}" if action.action_type == "upload_document" else action.action_type
+            if dedupe_key in seen:
                 continue
-            seen.add(action.action_type)
+            seen.add(dedupe_key)
             unique_proof.append(action)
 
         if final_score < 80:
