@@ -851,9 +851,23 @@ export function RecruiterWorkPassportPreview({
                   <p style={{ fontWeight: 700, fontSize: 14, color: "#065f46", margin: "0 0 4px" }}>
                     Access approved
                   </p>
-                  <p style={{ fontSize: 12, color: "#059669", margin: 0 }}>
+                  <p style={{ fontSize: 12, color: "#059669", margin: onReset ? "0 0 10px" : 0 }}>
                     Protected evidence available
                   </p>
+                  {onReset && (
+                    <button
+                      type="button"
+                      data-testid="approved-reset-btn"
+                      onClick={handleResetRequested}
+                      style={{
+                        fontSize: 11, fontWeight: 600, color: "#065f46",
+                        background: "transparent", border: "1px solid #86efac",
+                        borderRadius: 5, padding: "3px 9px", cursor: "pointer",
+                      }}
+                    >
+                      Reset mock access requests
+                    </button>
+                  )}
                 </div>
               </div>
             </Card>
@@ -1006,19 +1020,35 @@ export function RecruiterWorkPassportPreview({
                   <p style={{ fontSize: 12, color: "#a5b4fc", margin: "0 0 10px", lineHeight: 1.5 }}>
                     Full workflow recordings, project defense analysis, and detailed skill evidence require student approval.
                   </p>
-                  <button
-                    type="button"
-                    data-testid="request-access-btn"
-                    onClick={() => setShowModal(true)}
-                    style={{
-                      background: "#4f46e5", color: "#fff",
-                      border: "none", borderRadius: 7,
-                      padding: "8px 16px", fontSize: 12, fontWeight: 700,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Request Evidence Access
-                  </button>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <button
+                      type="button"
+                      data-testid="request-access-btn"
+                      onClick={() => setShowModal(true)}
+                      style={{
+                        background: "#4f46e5", color: "#fff",
+                        border: "none", borderRadius: 7,
+                        padding: "8px 16px", fontSize: 12, fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Request Evidence Access
+                    </button>
+                    {onReset && (
+                      <button
+                        type="button"
+                        data-testid="cta-reset-btn"
+                        onClick={handleResetRequested}
+                        style={{
+                          fontSize: 11, fontWeight: 600, color: "#a5b4fc",
+                          background: "transparent", border: "1px solid #4f46e5",
+                          borderRadius: 5, padding: "7px 11px", cursor: "pointer",
+                        }}
+                      >
+                        Reset mock access requests
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             </Card>

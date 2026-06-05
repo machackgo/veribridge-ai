@@ -1105,4 +1105,101 @@ describe("RecruiterWorkPassportPreview — unlocked evidence sections", () => {
     // Badge shows count from the provided links
     expect(screen.getByText("2 available")).toBeInTheDocument()
   })
+
+  // ── Reset button in approved state ──────────────────────────────────────────
+
+  it("approved state renders reset button when onReset prop is provided", async () => {
+    seedApproved(["workflow_recordings"])
+    const onReset = vi.fn(() => { clearMockEvidenceAccessRequests() })
+
+    await act(async () => {
+      render(
+        <RecruiterWorkPassportPreview
+          view={makeRecruiterView(UNLOCK_SLUG)}
+          onReset={onReset}
+        />,
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-approved-card")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("approved-reset-btn")).toBeInTheDocument()
+    expect(screen.getByTestId("approved-reset-btn").textContent).toMatch(
+      /Reset mock access requests/i,
+    )
+  })
+
+  it("approved state does NOT render reset button when onReset prop is omitted", async () => {
+    seedApproved(["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-approved-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("approved-reset-btn")).not.toBeInTheDocument()
+  })
+
+  it("clicking reset from approved state immediately hides unlocked evidence and shows Request Evidence Access", async () => {
+    seedApproved(["workflow_recordings", "project_defense_media"])
+    const onReset = vi.fn(() => { clearMockEvidenceAccessRequests() })
+
+    await act(async () => {
+      render(
+        <RecruiterWorkPassportPreview
+          view={makeRecruiterView(UNLOCK_SLUG)}
+          onReset={onReset}
+        />,
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-evidence-section")).toBeInTheDocument(),
+    )
+    // Both approved card and unlocked section are visible
+    expect(screen.getByTestId("access-approved-card")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("approved-reset-btn"))
+
+    // Component state clears immediately — CTA shown
+    await waitFor(() =>
+      expect(screen.getByTestId("request-access-btn")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("access-approved-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("unlocked-evidence-section")).not.toBeInTheDocument()
+    expect(onReset).toHaveBeenCalledTimes(1)
+    // Store is cleared — no pending sample data will re-load
+    expect(listStudentAccessRequests()).toHaveLength(0)
+  })
+
+  it("CTA state renders reset button when onReset prop is provided", async () => {
+    // No request in store — CTA shown
+    await act(async () => {
+      render(
+        <RecruiterWorkPassportPreview
+          view={makeRecruiterView(UNLOCK_SLUG)}
+          onReset={vi.fn()}
+        />,
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("request-access-btn")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("cta-reset-btn")).toBeInTheDocument()
+  })
+
+  it("CTA state does NOT render reset button when onReset prop is omitted", async () => {
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("request-access-btn")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("cta-reset-btn")).not.toBeInTheDocument()
+  })
 })
