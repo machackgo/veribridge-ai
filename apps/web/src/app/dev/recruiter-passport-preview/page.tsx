@@ -266,6 +266,7 @@ export default function DevRecruiterPassportPreviewPage() {
         </div>
         <button
           type="button"
+          data-testid="banner-reset-btn"
           onClick={handleReset}
           style={{
             fontSize: 11, fontWeight: 600, color: "#92400e",
@@ -273,7 +274,7 @@ export default function DevRecruiterPassportPreviewPage() {
             borderRadius: 6, padding: "4px 10px", cursor: "pointer",
           }}
         >
-          Reset mock requests
+          Reset mock access requests
         </button>
       </div>
 
@@ -322,6 +323,7 @@ export default function DevRecruiterPassportPreviewPage() {
           view={MOCK_VIEW}
           onRequestAccess={() => setAccessRequested(true)}
           onRequestCreated={handleRequestCreated}
+          onReset={handleReset}
           defaultRequester={{
             name: "Stripe Early Talent",
             email: "recruiter@stripe.com",

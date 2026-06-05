@@ -13,6 +13,7 @@ import {
   revokeAccessRequest,
   clearAccessRequestStore,
   resetAccessRequestStore,
+  clearMockEvidenceAccessRequests,
   DEMO_PASSPORT_SLUG,
 } from "../lib/mock-evidence-access-store"
 import {
@@ -198,7 +199,7 @@ describe("mock-evidence-access-store — canonical slug and upsert", () => {
     expect(forSlug).toHaveLength(1)
   })
 
-  it("upsert over an approved request resets it to pending", () => {
+  it("upsert does NOT override an approved request — returns existing approved unchanged", () => {
     const req = createAccessRequest(
       {
         requesterName: "R",
@@ -216,7 +217,7 @@ describe("mock-evidence-access-store — canonical slug and upsert", () => {
       listStudentAccessRequests().find((r) => r.id === req.id)?.status,
     ).toBe("approved")
 
-    // Re-submit same recruiter
+    // Re-submit same recruiter — should NOT reset approved status
     const req2 = createAccessRequest(
       {
         requesterName: "R",
@@ -229,10 +230,12 @@ describe("mock-evidence-access-store — canonical slug and upsert", () => {
       },
       "upsert-test-slug-2",
     )
+    // Existing approved request is returned as-is
     expect(req2.id).toBe(req.id)
-    expect(req2.status).toBe("pending")
-    expect(req2.approvedEvidenceTypes).toBeUndefined()
-    expect(req2.requestedEvidenceTypes).toEqual(["detailed_skill_evidence"])
+    expect(req2.status).toBe("approved")
+    expect(req2.approvedEvidenceTypes).toEqual(["workflow_recordings"])
+    // requestedEvidenceTypes is unchanged from the approved entry
+    expect(req2.requestedEvidenceTypes).toEqual(["workflow_recordings"])
   })
 
   it("different recruiter emails for the same slug create separate entries (no upsert)", () => {
@@ -585,5 +588,233 @@ describe("End-to-end: recruiter submit → student approve → recruiter reload"
     await waitFor(() =>
       expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
     )
+  })
+})
+
+// ── 7. Dev reset controls and safe duplicate handling ─────────────────────────
+
+describe("clearMockEvidenceAccessRequests — named export", () => {
+  it("is exported and clears the store so sample data is returned on next read", () => {
+    createAccessRequest(
+      { requesterName: "X", requesterEmail: "x@y.com", company: "", role: "", reason: "", requestedEvidenceTypes: [], messageToStudent: "" },
+      "some-slug",
+    )
+    clearMockEvidenceAccessRequests()
+    // After clear, load() falls back to SAMPLE_REQUESTS
+    const restored = listStudentAccessRequests()
+    expect(restored.some((r) => r.requesterName === "Stripe Early Talent")).toBe(true)
+  })
+
+  it("clearMockEvidenceAccessRequests and clearAccessRequestStore produce the same result", () => {
+    createAccessRequest(
+      { requesterName: "A", requesterEmail: "a@b.com", company: "", role: "", reason: "", requestedEvidenceTypes: [], messageToStudent: "" },
+      "slug-a",
+    )
+    clearMockEvidenceAccessRequests()
+    const afterClear = listStudentAccessRequests().map((r) => r.id)
+
+    createAccessRequest(
+      { requesterName: "B", requesterEmail: "b@c.com", company: "", role: "", reason: "", requestedEvidenceTypes: [], messageToStudent: "" },
+      "slug-b",
+    )
+    clearAccessRequestStore()
+    const afterClearStore = listStudentAccessRequests().map((r) => r.id)
+
+    expect(afterClear).toEqual(afterClearStore)
+  })
+})
+
+describe("RecruiterWorkPassportPreview — reset and request-again controls", () => {
+  const CTRL_SLUG = "ctrl-test-slug"
+
+  beforeEach(() => { clearAccessRequestStore() })
+
+  it("pending card shows reset button when onReset prop is provided", async () => {
+    createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    const onReset = vi.fn()
+
+    await act(async () => {
+      render(
+        <RecruiterWorkPassportPreview
+          view={makeRecruiterView(CTRL_SLUG)}
+          onReset={onReset}
+        />,
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
+    )
+    const resetBtn = screen.getByTestId("pending-reset-btn")
+    expect(resetBtn).toBeInTheDocument()
+    expect(resetBtn.textContent).toMatch(/Reset mock access requests/i)
+    fireEvent.click(resetBtn)
+    expect(onReset).toHaveBeenCalledTimes(1)
+  })
+
+  it("pending card does NOT show reset button when onReset prop is omitted", async () => {
+    createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(CTRL_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("pending-reset-btn")).not.toBeInTheDocument()
+  })
+
+  it("after clearMockEvidenceAccessRequests, component shows Request Evidence Access CTA (slug not in sample data)", async () => {
+    createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    clearMockEvidenceAccessRequests()
+
+    await act(async () => {
+      render(
+        <RecruiterWorkPassportPreview
+          view={makeRecruiterView(CTRL_SLUG)}
+        />,
+      )
+    })
+
+    // CTRL_SLUG is not in sample data so no request found — CTA shown
+    await waitFor(() =>
+      expect(screen.getByTestId("request-access-btn")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("access-pending-card")).not.toBeInTheDocument()
+  })
+
+  it("denied card shows Send another request button", async () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    denyAccessRequest(req.id)
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(CTRL_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-denied-card")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("request-again-btn")).toBeInTheDocument()
+  })
+
+  it("clicking Send another request on denied card shows Request Evidence Access CTA", async () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    denyAccessRequest(req.id)
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(CTRL_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-denied-card")).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId("request-again-btn"))
+    await waitFor(() =>
+      expect(screen.getByTestId("request-access-btn")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("access-denied-card")).not.toBeInTheDocument()
+  })
+
+  it("revoked card shows Send another request button", async () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    approveAccessRequest(req.id, ["workflow_recordings"])
+    revokeAccessRequest(req.id)
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(CTRL_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-revoked-card")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("request-again-btn")).toBeInTheDocument()
+    // Reset button should NOT appear when onReset is omitted
+    expect(screen.queryByTestId("revoked-reset-btn")).not.toBeInTheDocument()
+  })
+
+  it("denied card shows dev reset button only when onReset prop is provided", async () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    denyAccessRequest(req.id)
+    const onReset = vi.fn()
+
+    await act(async () => {
+      render(
+        <RecruiterWorkPassportPreview
+          view={makeRecruiterView(CTRL_SLUG)}
+          onReset={onReset}
+        />,
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-denied-card")).toBeInTheDocument(),
+    )
+    const resetBtn = screen.getByTestId("denied-reset-btn")
+    expect(resetBtn).toBeInTheDocument()
+    fireEvent.click(resetBtn)
+    expect(onReset).toHaveBeenCalledTimes(1)
+  })
+
+  it("approved request is not overridden when recruiter resubmits — stays approved", () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    approveAccessRequest(req.id, ["workflow_recordings"])
+
+    // Attempt resubmit
+    const req2 = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["detailed_skill_evidence"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    // Should return the existing approved entry unchanged
+    expect(req2.id).toBe(req.id)
+    expect(req2.status).toBe("approved")
+    expect(req2.approvedEvidenceTypes).toEqual(["workflow_recordings"])
+    // Only one entry for this recruiter+slug
+    const entries = listStudentAccessRequests().filter(
+      (r) => r.passportSlug === CTRL_SLUG && r.requesterEmail === "r@co.com",
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0].status).toBe("approved")
+  })
+
+  it("pending over denied is allowed — resubmit after denial works", () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    denyAccessRequest(req.id)
+
+    // Re-submit after denial — should upsert to pending
+    const req2 = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["detailed_skill_evidence"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    expect(req2.id).toBe(req.id)
+    expect(req2.status).toBe("pending")
+    expect(req2.requestedEvidenceTypes).toEqual(["detailed_skill_evidence"])
   })
 })

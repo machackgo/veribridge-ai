@@ -507,6 +507,7 @@ export function RecruiterWorkPassportPreview({
   onRequestAccess,
   onRequestCreated,
   defaultRequester,
+  onReset,
 }: {
   view: RecruiterPassportViewResponse
   /** Legacy callback — if provided it is called after modal submits. */
@@ -516,6 +517,9 @@ export function RecruiterWorkPassportPreview({
   onRequestCreated?: (data: import("./EvidenceAccessRequestModal").EvidenceAccessFormData) => void
   /** Pre-fill recruiter fields in the modal. */
   defaultRequester?: { name?: string; email?: string; company?: string; role?: string }
+  /** Dev-only reset handler. When provided, a reset button is shown inside
+   *  the pending card so stale mock state can be cleared without DevTools. */
+  onReset?: () => void
 }) {
   const [showModal, setShowModal] = useState(false)
   const [accessRequest, setAccessRequest] = useState<EvidenceAccessRequest | null>(null)
@@ -552,6 +556,10 @@ export function RecruiterWorkPassportPreview({
       onRequestAccess?.()
     }
   }
+
+  // Clears local access-request state so the recruiter can send a new request
+  // after a denial or revocation without needing a full page reset.
+  const handleRequestAgain = () => setAccessRequest(null)
 
   const SECTION_LABELS: Record<string, string> = {
     workflow_recordings: "Workflow recordings",
@@ -662,7 +670,7 @@ export function RecruiterWorkPassportPreview({
                     Student approval required
                   </p>
                   {accessRequest.requestedEvidenceTypes.length > 0 && (
-                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: onReset ? 10 : 0 }}>
                       <span style={{ fontSize: 11, color: "#6366f1", marginRight: 2 }}>Requested evidence:</span>
                       {accessRequest.requestedEvidenceTypes.map((s) => (
                         <span key={s} style={{
@@ -673,6 +681,20 @@ export function RecruiterWorkPassportPreview({
                         </span>
                       ))}
                     </div>
+                  )}
+                  {onReset && (
+                    <button
+                      type="button"
+                      data-testid="pending-reset-btn"
+                      onClick={onReset}
+                      style={{
+                        fontSize: 11, fontWeight: 600, color: "#6366f1",
+                        background: "transparent", border: "1px solid #a5b4fc",
+                        borderRadius: 5, padding: "3px 9px", cursor: "pointer",
+                      }}
+                    >
+                      Reset mock access requests
+                    </button>
                   )}
                 </div>
               </div>
@@ -688,9 +710,37 @@ export function RecruiterWorkPassportPreview({
                   <p style={{ fontWeight: 700, fontSize: 14, color: "#9f1239", margin: "0 0 4px" }}>
                     Access denied
                   </p>
-                  <p style={{ fontSize: 12, color: "#e11d48", margin: 0 }}>
+                  <p style={{ fontSize: 12, color: "#e11d48", margin: "0 0 10px" }}>
                     The student has declined this evidence access request.
                   </p>
+                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      data-testid="request-again-btn"
+                      onClick={handleRequestAgain}
+                      style={{
+                        fontSize: 11, fontWeight: 600, color: "#9f1239",
+                        background: "#fff1f2", border: "1px solid #fca5a5",
+                        borderRadius: 5, padding: "4px 10px", cursor: "pointer",
+                      }}
+                    >
+                      Send another request
+                    </button>
+                    {onReset && (
+                      <button
+                        type="button"
+                        data-testid="denied-reset-btn"
+                        onClick={onReset}
+                        style={{
+                          fontSize: 11, fontWeight: 600, color: "#92400e",
+                          background: "transparent", border: "1px solid #fbbf24",
+                          borderRadius: 5, padding: "4px 10px", cursor: "pointer",
+                        }}
+                      >
+                        Reset mock access requests
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             </Card>
@@ -705,9 +755,37 @@ export function RecruiterWorkPassportPreview({
                   <p style={{ fontWeight: 700, fontSize: 14, color: "#334155", margin: "0 0 4px" }}>
                     Access revoked
                   </p>
-                  <p style={{ fontSize: 12, color: "#64748b", margin: 0 }}>
+                  <p style={{ fontSize: 12, color: "#64748b", margin: "0 0 10px" }}>
                     The student has revoked previously granted access.
                   </p>
+                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      data-testid="request-again-btn"
+                      onClick={handleRequestAgain}
+                      style={{
+                        fontSize: 11, fontWeight: 600, color: "#334155",
+                        background: "#f8fafc", border: `1px solid #cbd5e1`,
+                        borderRadius: 5, padding: "4px 10px", cursor: "pointer",
+                      }}
+                    >
+                      Send another request
+                    </button>
+                    {onReset && (
+                      <button
+                        type="button"
+                        data-testid="revoked-reset-btn"
+                        onClick={onReset}
+                        style={{
+                          fontSize: 11, fontWeight: 600, color: "#92400e",
+                          background: "transparent", border: "1px solid #fbbf24",
+                          borderRadius: 5, padding: "4px 10px", cursor: "pointer",
+                        }}
+                      >
+                        Reset mock access requests
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             </Card>

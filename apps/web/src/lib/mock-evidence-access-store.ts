@@ -111,8 +111,14 @@ export function createAccessRequest(
       : -1
 
   if (existingIdx !== -1) {
+    const existing = requests[existingIdx]
+    // Never silently override an approved grant — recruiter must reset explicitly.
+    if (existing.status === "approved") {
+      return existing
+    }
+    // For pending / denied / revoked: update to fresh pending.
     const updated: EvidenceAccessRequest = {
-      id: requests[existingIdx].id,
+      id: existing.id,
       passportSlug: slug,
       requesterName: input.requesterName,
       requesterEmail: input.requesterEmail,
@@ -202,4 +208,13 @@ export function resetAccessRequestStore(): void {
 export function clearAccessRequestStore(): void {
   if (typeof window === "undefined") return
   try { window.localStorage.removeItem(STORE_KEY) } catch { /* ignore */ }
+}
+
+/**
+ * Clear all mock evidence access requests from the canonical localStorage key.
+ * Named alias for clearAccessRequestStore — use in dev UX reset controls and tests.
+ * After clearing, listStudentAccessRequests() falls back to sample data.
+ */
+export function clearMockEvidenceAccessRequests(): void {
+  clearAccessRequestStore()
 }

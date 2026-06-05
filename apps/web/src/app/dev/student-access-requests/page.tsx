@@ -93,6 +93,7 @@ export default function DevStudentAccessRequestsPage() {
         <div style={{ display: "flex", gap: 8 }}>
           <button
             type="button"
+            data-testid="student-dev-reset-btn"
             onClick={() => { resetAccessRequestStore(); reload() }}
             style={{
               fontSize: 11, fontWeight: 600, color: "#92400e",
@@ -100,7 +101,7 @@ export default function DevStudentAccessRequestsPage() {
               borderRadius: 6, padding: "4px 10px", cursor: "pointer",
             }}
           >
-            Reset to samples
+            Reset mock access requests
           </button>
           <Link
             href="/dashboard/passport/access"

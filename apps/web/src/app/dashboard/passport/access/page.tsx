@@ -135,6 +135,7 @@ export default function AccessRequestsPage() {
             </span>
             <button
               type="button"
+              data-testid="dashboard-reset-btn"
               onClick={handleReset}
               style={{
                 fontSize: 11, fontWeight: 600, color: "#92400e",
@@ -142,7 +143,7 @@ export default function AccessRequestsPage() {
                 borderRadius: 5, padding: "3px 8px", cursor: "pointer",
               }}
             >
-              Reset to samples
+              Reset mock access requests
             </button>
           </div>
 
