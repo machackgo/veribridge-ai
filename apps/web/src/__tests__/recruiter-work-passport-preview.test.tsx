@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
-import { RecruiterWorkPassportPreview } from "../../components/recruiter-passport/RecruiterWorkPassportPreview"
+import {
+  RecruiterWorkPassportPreview,
+  SkillEvidenceDetailModal,
+} from "../../components/recruiter-passport/RecruiterWorkPassportPreview"
 import { EvidenceAccessRequestModal } from "../../components/recruiter-passport/EvidenceAccessRequestModal"
 import type { RecruiterPassportViewResponse } from "../lib/passport-api"
 
@@ -322,6 +325,348 @@ describe("RecruiterWorkPassportPreview — access request modal", () => {
     )
     expect(screen.getByText(/Request pending/i)).toBeInTheDocument()
     expect(screen.getByText(/Student approval required/i)).toBeInTheDocument()
+  })
+})
+
+// ── Skill-first evidence: SkillGroupCard "View skill evidence" button ─────────
+
+describe("RecruiterWorkPassportPreview — skill-first evidence", () => {
+  function makeGroupedView(overrides: Partial<RecruiterPassportViewResponse> = {}): RecruiterPassportViewResponse {
+    return makeView({
+      skill_groups: [
+        {
+          group_name: "AI / Machine Learning",
+          category: "AI/ML",
+          confidence: "high",
+          evidence_count: 4,
+          source_labels: ["GitHub", "Website Workflow", "Documents"],
+          skills: [
+            { skill: "Machine Learning", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] },
+            { skill: "TensorFlow.js",    confidence: "high", status_label: "strongly supported", source_labels: ["GitHub", "Website Workflow"] },
+          ],
+        },
+        {
+          group_name: "JavaScript / Frontend",
+          category: "Frontend",
+          confidence: "high",
+          evidence_count: 3,
+          source_labels: ["GitHub", "Website Workflow"],
+          skills: [
+            { skill: "React", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] },
+          ],
+        },
+        {
+          group_name: "DevOps / Deployment",
+          category: "DevOps",
+          confidence: "low",
+          evidence_count: 1,
+          source_labels: ["Documents"],
+          skills: [
+            { skill: "CI/CD", confidence: "low", status_label: "needs review", source_labels: ["Documents"] },
+          ],
+        },
+      ],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+      ...overrides,
+    })
+  }
+
+  it("evidence-backed skill card has View skill evidence action", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    const btns = screen.getAllByTestId("view-skill-evidence-btn")
+    expect(btns.length).toBeGreaterThan(0)
+    expect(btns[0]).toHaveTextContent("View skill evidence")
+  })
+
+  it("clicking AI / Machine Learning opens skill evidence detail modal", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    const btns = screen.getAllByTestId("view-skill-evidence-btn")
+    fireEvent.click(btns[0])
+    expect(screen.getByTestId("skill-evidence-detail-modal")).toBeInTheDocument()
+    expect(screen.getAllByText(/AI \/ Machine Learning/i).length).toBeGreaterThan(0)
+  })
+
+  it("skill modal shows source coverage summary", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
+    expect(screen.getByTestId("skill-evidence-source-coverage")).toBeInTheDocument()
+  })
+
+  it("skill modal aggregates workflow, visual, GitHub, transcript, and document proof sections", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
+    expect(screen.getByTestId("skill-evidence-visual-proof")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-evidence-github")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-evidence-transcript")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-evidence-interview-questions")).toBeInTheDocument()
+  })
+
+  it("GitHub code evidence shows safe file paths and reasons", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
+    const github = screen.getByTestId("skill-evidence-github")
+    expect(github.textContent).toMatch(/final_evidence_evaluator_service\.py/i)
+    expect(github.textContent).toMatch(/combines workflow.*GitHub.*signals/i)
+  })
+
+  it("visual evidence cards are skill-specific not generic for AI/ML", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
+    const visual = screen.getByTestId("skill-evidence-visual-proof")
+    expect(visual.textContent).toMatch(/Model inference UI visible/i)
+  })
+
+  it("without approval, protected frames in AI/ML show locked request-access state", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView({ has_protected_evidence: true })} />)
+    fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
+    const locks = screen.getAllByTestId("skill-evidence-protected-lock")
+    expect(locks.length).toBeGreaterThan(0)
+    expect(locks[0].textContent).toMatch(/Protected evidence available/i)
+  })
+
+  it("public-safe proof visible without approval", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView({ has_protected_evidence: true })} />)
+    fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
+    const visual = screen.getByTestId("skill-evidence-visual-proof")
+    expect(visual.textContent).toMatch(/Model inference UI visible/i)
+  })
+
+  it("interview questions render per skill", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
+    const questions = screen.getByTestId("skill-evidence-interview-questions")
+    expect(questions.textContent).toMatch(/evidence scoring model/i)
+  })
+
+  it("JavaScript/Frontend skill opens different evidence than AI/ML", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    const btns = screen.getAllByTestId("view-skill-evidence-btn")
+    fireEvent.click(btns[1])
+    expect(screen.getByTestId("skill-evidence-detail-modal")).toBeInTheDocument()
+    const visual = screen.getByTestId("skill-evidence-visual-proof")
+    expect(visual.textContent).toMatch(/React UI interaction/i)
+    expect(visual.textContent).not.toMatch(/Model inference UI visible/i)
+  })
+
+  it("DevOps/Deployment shows needs-review state with document-only coverage", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    const btns = screen.getAllByTestId("view-skill-evidence-btn")
+    fireEvent.click(btns[2])
+    expect(screen.getByTestId("skill-evidence-detail-modal")).toBeInTheDocument()
+    expect(screen.getAllByText(/needs review/i).length).toBeGreaterThan(0)
+    const visual = screen.getByTestId("skill-evidence-visual-proof")
+    expect(visual.textContent).toMatch(/No visual\/keyframe evidence/i)
+    const github = screen.getByTestId("skill-evidence-github")
+    expect(github.textContent).toMatch(/No GitHub code evidence/i)
+  })
+})
+
+// ── SkillEvidenceDetailModal direct tests ─────────────────────────────────────
+
+describe("SkillEvidenceDetailModal", () => {
+  it("renders skill name, confidence badge, and support status in header", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(screen.getByTestId("skill-evidence-detail-modal")).toBeInTheDocument()
+    expect(screen.getByText("AI / Machine Learning")).toBeInTheDocument()
+    expect(screen.getByText(/strongly supported/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/high confidence/i).length).toBeGreaterThan(0)
+  })
+
+  it("shows source coverage with all 6 sources for AI/ML", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    const coverage = screen.getByTestId("skill-evidence-source-coverage")
+    expect(coverage.textContent).toMatch(/Workflow recording/i)
+    expect(coverage.textContent).toMatch(/GitHub code/i)
+    expect(coverage.textContent).toMatch(/Documents/i)
+    expect(coverage.textContent).toMatch(/Project defense/i)
+  })
+
+  it("shows skill-specific visual evidence label for AI/ML without approval", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    const visual = screen.getByTestId("skill-evidence-visual-proof")
+    expect(visual.textContent).toMatch(/Model inference UI visible/i)
+  })
+
+  it("shows protected locks for AI/ML protected frames when not approved", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    const locks = screen.getAllByTestId("skill-evidence-protected-lock")
+    expect(locks.length).toBeGreaterThan(0)
+    expect(locks[0].textContent).toMatch(/Protected evidence available/i)
+  })
+
+  it("shows all protected visual frames when access is approved", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={true}
+        onClose={vi.fn()}
+      />,
+    )
+    const visual = screen.getByTestId("skill-evidence-visual-proof")
+    expect(visual.textContent).toMatch(/Prediction\/demo workflow observed/i)
+    expect(visual.textContent).toMatch(/AI proof builder/i)
+  })
+
+  it("transcript is locked when not approved", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    const transcript = screen.getByTestId("skill-evidence-transcript")
+    const lock = transcript.querySelector('[data-testid="skill-evidence-protected-lock"]')
+    expect(lock).not.toBeNull()
+  })
+
+  it("transcript excerpt visible when approved", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={true}
+        onClose={vi.fn()}
+      />,
+    )
+    const transcript = screen.getByTestId("skill-evidence-transcript")
+    expect(transcript.textContent).toMatch(/TensorFlow\.js/i)
+    expect(transcript.textContent).toMatch(/inference/i)
+  })
+
+  it("GitHub code evidence shows safe file paths and reasons", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    const github = screen.getByTestId("skill-evidence-github")
+    expect(github.textContent).toMatch(/final_evidence_evaluator_service\.py/i)
+    expect(github.textContent).toMatch(/extension_proof_workflow_analysis_service\.py/i)
+  })
+
+  it("interview questions render for AI/ML", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    const qs = screen.getByTestId("skill-evidence-interview-questions")
+    expect(qs.textContent).toMatch(/evidence scoring model/i)
+    expect(qs.textContent).toMatch(/rule-based versus model-based/i)
+  })
+
+  it("JavaScript/Frontend shows different visual evidence than AI/ML", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="JavaScript / Frontend"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    const visual = screen.getByTestId("skill-evidence-visual-proof")
+    expect(visual.textContent).toMatch(/React UI interaction/i)
+    expect(visual.textContent).not.toMatch(/Model inference UI visible/i)
+  })
+
+  it("JavaScript/Frontend GitHub files differ from AI/ML", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="JavaScript / Frontend"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    const github = screen.getByTestId("skill-evidence-github")
+    expect(github.textContent).toMatch(/RecruiterWorkPassportPreview\.tsx/i)
+    expect(github.textContent).not.toMatch(/final_evidence_evaluator_service\.py/i)
+  })
+
+  it("DevOps/Deployment shows needs-review with no visual or GitHub evidence", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="DevOps / Deployment"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(screen.getAllByText(/needs review/i).length).toBeGreaterThan(0)
+    const visual = screen.getByTestId("skill-evidence-visual-proof")
+    expect(visual.textContent).toMatch(/No visual\/keyframe evidence/i)
+    const github = screen.getByTestId("skill-evidence-github")
+    expect(github.textContent).toMatch(/No GitHub code evidence/i)
+  })
+
+  it("DevOps/Deployment document-only evidence visible without approval", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="DevOps / Deployment"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    const transcript = screen.getByTestId("skill-evidence-transcript")
+    expect(transcript.textContent).toMatch(/containerizing/i)
+  })
+
+  it("skill evidence modal does not render unsafe strings", () => {
+    const { container } = render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={true}
+        onClose={vi.fn()}
+      />,
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain("localhost")
+    expect(html).not.toContain("127.0.0.1")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("session_id")
+    expect(html).not.toContain("storage_path")
+    expect(html).not.toContain("raw_url")
+    expect(html).not.toContain("supabase")
+  })
+
+  it("close button calls onClose", () => {
+    const onClose = vi.fn()
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={false}
+        onClose={onClose}
+      />,
+    )
+    fireEvent.click(screen.getByTestId("close-skill-evidence-modal-btn"))
+    expect(onClose).toHaveBeenCalled()
   })
 })
 

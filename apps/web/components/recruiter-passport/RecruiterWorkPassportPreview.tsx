@@ -255,7 +255,13 @@ function EvidenceScoreSection({
 
 // ── Section: Evidence-Backed Skills ──────────────────────────────────────────
 
-function SkillGroupCard({ group }: { group: RecruiterSkillGroupResponse }) {
+function SkillGroupCard({
+  group,
+  onViewEvidence,
+}: {
+  group: RecruiterSkillGroupResponse
+  onViewEvidence?: () => void
+}) {
   return (
     <div style={{
       border: `1px solid ${confidenceBorder(group.confidence)}`,
@@ -277,10 +283,24 @@ function SkillGroupCard({ group }: { group: RecruiterSkillGroupResponse }) {
           <span style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{group.group_name}</span>
           <ConfidenceBadge level={group.confidence} />
         </div>
-        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
           {group.source_labels.map((lbl) => (
             <SourceBadge key={lbl} label={lbl} />
           ))}
+          {onViewEvidence && (
+            <button
+              type="button"
+              data-testid="view-skill-evidence-btn"
+              onClick={onViewEvidence}
+              style={{
+                fontSize: 11, fontWeight: 600, color: C.indigo,
+                background: C.indigoSoft, border: "1px solid #c7d2fe",
+                borderRadius: 5, padding: "3px 9px", cursor: "pointer", flexShrink: 0,
+              }}
+            >
+              View skill evidence
+            </button>
+          )}
         </div>
       </div>
 
@@ -317,11 +337,18 @@ function SkillGroupCard({ group }: { group: RecruiterSkillGroupResponse }) {
   )
 }
 
-function SkillGroupsSection({ groups, verified, partial, needsReview }: {
+function SkillGroupsSection({
+  groups,
+  verified,
+  partial,
+  needsReview,
+  onViewSkill,
+}: {
   groups: RecruiterSkillGroupResponse[]
   verified: string[]
   partial: string[]
   needsReview: string[]
+  onViewSkill?: (skillName: string) => void
 }) {
   // Prefer grouped evidence if available; fall back to flat skill lists
   const hasGroups = groups.length > 0
@@ -330,7 +357,13 @@ function SkillGroupsSection({ groups, verified, partial, needsReview }: {
       <SectionTitle>Evidence-Backed Skills</SectionTitle>
       {hasGroups ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {groups.map((g) => <SkillGroupCard key={g.group_name} group={g} />)}
+          {groups.map((g) => (
+            <SkillGroupCard
+              key={g.group_name}
+              group={g}
+              onViewEvidence={onViewSkill ? () => onViewSkill(g.group_name) : undefined}
+            />
+          ))}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -577,6 +610,355 @@ const SKILL_SOURCE_DRILL: Record<string, Array<{ source: string; status: "suppor
     { source: "OCR",              status: "partial"   },
     { source: "Documents",        status: "supported" },
   ],
+}
+
+// ── Skill-centric evidence data model ────────────────────────────────────────
+
+type SkillSourceEvidence = {
+  key: string
+  label: string
+  status: "supported" | "partial" | "missing" | "protected"
+  score?: number
+  reason: string
+}
+
+type SkillVisualFrame = {
+  timestamp: string
+  label: string
+  observation: string
+  ocr: string
+  whyItSupports: string
+  confidence: "high" | "medium" | "low"
+  isProtected: boolean
+}
+
+type SkillGithubFile = {
+  path: string
+  reason: string
+  skills: string[]
+  confidence: "high" | "medium" | "low"
+  isPublic: boolean
+}
+
+type SkillTranscriptExcerpt = {
+  excerpt: string
+  relevance: string
+  ownershipSignal?: string
+  technicalDepth?: string
+  isProtected: boolean
+}
+
+type SkillDocumentSnippet = {
+  title: string
+  snippet: string
+  relevance: string
+  isProtected: boolean
+}
+
+export type SkillEvidenceBundle = {
+  skillName: string
+  confidence: "high" | "medium" | "low"
+  supportStatus: "strongly supported" | "partially supported" | "needs review"
+  explanation: string
+  sources: SkillSourceEvidence[]
+  visualEvidence: SkillVisualFrame[]
+  githubEvidence: SkillGithubFile[]
+  transcriptEvidence: SkillTranscriptExcerpt[]
+  documentEvidence: SkillDocumentSnippet[]
+  interviewQuestions: string[]
+  protectedEvidenceFlags: string[]
+}
+
+const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
+  "AI / Machine Learning": {
+    skillName: "AI / Machine Learning",
+    confidence: "high",
+    supportStatus: "strongly supported",
+    explanation:
+      "VeriBridge found this skill across workflow recording, GitHub, visual/OCR, transcript, and documents.",
+    sources: [
+      { key: "workflow",  label: "Workflow recording",     status: "supported", score: 88, reason: "Live model inference workflow observed in 3 recordings"              },
+      { key: "keyframes", label: "Keyframes / screenshots", status: "partial",  score: 72, reason: "AI-related UI visible in 2 of 3 keyframe sets — raw frames protected" },
+      { key: "ocr",       label: "OCR / visual reasoning",  status: "partial",  score: 65, reason: "Inference output text extracted; some frames inconclusive"           },
+      { key: "github",    label: "GitHub code",             status: "supported", score: 91, reason: "ML pipeline, evaluator service, and proof engine files confirmed"   },
+      { key: "defense",   label: "Project defense",         status: "supported", score: 84, reason: "Candidate explained model selection, training, and evaluation"      },
+      { key: "documents", label: "Documents",               status: "supported", score: 79, reason: "Project report covers ML methodology and experimental results"      },
+    ],
+    visualEvidence: [
+      {
+        timestamp: "0:22",
+        label: "Model inference UI visible",
+        observation: "Live prediction interface with input and inference output visible in viewport",
+        ocr: "Overall Score: 87 · High confidence · Evidence reviewed",
+        whyItSupports: "Confirms hands-on interaction with an AI inference system",
+        confidence: "high",
+        isProtected: false,
+      },
+      {
+        timestamp: "1:18",
+        label: "Prediction/demo workflow observed",
+        observation: "Full model prediction workflow captured — input submission and real-time output rendered",
+        ocr: "Prediction: 94.2% confidence · model loaded",
+        whyItSupports: "Shows end-to-end ML workflow, not just a static UI",
+        confidence: "high",
+        isProtected: true,
+      },
+      {
+        timestamp: "2:05",
+        label: "AI proof builder / evidence scoring visible",
+        observation: "Evidence scoring interface for AI skill signals observed",
+        ocr: "AI evidence score · Workflow: supported · GitHub: supported",
+        whyItSupports: "Demonstrates working knowledge of AI evidence aggregation",
+        confidence: "medium",
+        isProtected: true,
+      },
+    ],
+    githubEvidence: [
+      {
+        path: "apps/api/app/services/final_evidence_evaluator_service.py",
+        reason: "Combines workflow, GitHub, OCR, transcript, and document signals into a final skill confidence score",
+        skills: ["Python", "Machine Learning", "Evidence Aggregation"],
+        confidence: "high",
+        isPublic: false,
+      },
+      {
+        path: "apps/api/app/services/extension_proof_workflow_analysis_service.py",
+        reason: "Analyzes browser workflow signals to extract skill evidence from recorded sessions",
+        skills: ["Python", "ML Signal Processing", "Workflow Analysis"],
+        confidence: "high",
+        isPublic: false,
+      },
+      {
+        path: "apps/web/components/skill-proof/extension-proof-panel.tsx",
+        reason: "Frontend component that displays proof workflow state and evidence source cards for skill validation",
+        skills: ["TypeScript", "React", "Evidence UI"],
+        confidence: "medium",
+        isPublic: false,
+      },
+    ],
+    transcriptEvidence: [
+      {
+        excerpt:
+          "The main goal was to demonstrate machine learning in a browser environment. I chose TensorFlow.js because it allowed real-time inference without a backend server, which simplified deployment and made it easier to capture as evidence.",
+        relevance: "Explains model choice and deployment rationale — ownership signal",
+        ownershipSignal: "Candidate references specific design decisions with justification",
+        technicalDepth: "Discusses inference architecture and deployment trade-offs",
+        isProtected: true,
+      },
+    ],
+    documentEvidence: [
+      {
+        title: "AI Engineering Project Report",
+        snippet:
+          "The model was trained on a custom dataset and evaluated using cross-validation. Training accuracy reached 94% on held-out test data.",
+        relevance: "Confirms quantitative ML evaluation — matches GitHub evidence",
+        isProtected: true,
+      },
+    ],
+    interviewQuestions: [
+      "Walk me through how the evidence scoring model combines workflow, GitHub, OCR, and transcript signals.",
+      "Which parts of your AI pipeline are rule-based versus model-based, and why?",
+      "How would you reduce false positives in your evidence scoring system?",
+      "Describe your model evaluation methodology and how you chose your validation approach.",
+      "How would you improve prediction accuracy given access to a larger training dataset?",
+    ],
+    protectedEvidenceFlags: ["keyframes", "transcript", "documents"],
+  },
+
+  "JavaScript / Frontend": {
+    skillName: "JavaScript / Frontend",
+    confidence: "high",
+    supportStatus: "strongly supported",
+    explanation:
+      "VeriBridge found this skill confirmed in GitHub code and workflow recording.",
+    sources: [
+      { key: "github",    label: "GitHub code",             status: "supported", score: 88, reason: "React components and TypeScript modules confirmed across multiple files"      },
+      { key: "workflow",  label: "Workflow recording",     status: "supported", score: 75, reason: "Live frontend UI interaction captured in workflow recordings"                 },
+      { key: "ocr",       label: "OCR / visual reasoning",  status: "partial",  score: 60, reason: "UI text extracted from keyframes; component boundaries partially identified" },
+      { key: "keyframes", label: "Keyframes / screenshots", status: "partial",  score: 58, reason: "UI interaction captured; some frames protected"                              },
+      { key: "defense",   label: "Project defense",         status: "partial",  score: 65, reason: "Architecture discussed at high level; limited implementation depth"          },
+      { key: "documents", label: "Documents",               status: "missing",        reason: "No frontend-specific documentation uploaded"                                     },
+    ],
+    visualEvidence: [
+      {
+        timestamp: "0:14",
+        label: "React UI interaction observed",
+        observation: "Dashboard component with interactive evidence cards visible; state changes captured",
+        ocr: "Evidence Backed Skills · High confidence · Dashboard / Proof Builder",
+        whyItSupports: "Confirms hands-on interaction with a React-based interface",
+        confidence: "high",
+        isProtected: false,
+      },
+      {
+        timestamp: "1:32",
+        label: "Dashboard/proof builder state changed",
+        observation: "Proof builder component state update captured — evidence panel opened and closed",
+        ocr: "Website Proof · Session active · Evidence being captured",
+        whyItSupports: "Shows working knowledge of component state management in a live app",
+        confidence: "high",
+        isProtected: true,
+      },
+    ],
+    githubEvidence: [
+      {
+        path: "apps/web/components/recruiter-passport/RecruiterWorkPassportPreview.tsx",
+        reason: "Complex React component implementing evidence gating, modal state, and recruiter-safe rendering",
+        skills: ["TypeScript", "React", "UI Architecture"],
+        confidence: "high",
+        isPublic: false,
+      },
+      {
+        path: "apps/web/components/skill-proof/extension-proof-panel.tsx",
+        reason: "Extension-based proof panel with workflow recording state and evidence source card rendering",
+        skills: ["TypeScript", "React", "UI State"],
+        confidence: "high",
+        isPublic: false,
+      },
+      {
+        path: "apps/web/src/app/recruiter/passport/page.tsx",
+        reason: "Recruiter passport page with tab navigation, saved candidates, and comparison panel integration",
+        skills: ["TypeScript", "Next.js", "React"],
+        confidence: "medium",
+        isPublic: false,
+      },
+    ],
+    transcriptEvidence: [
+      {
+        excerpt:
+          "I structured the React component tree to separate the recruiter and student views cleanly, so neither side has access to the other's data paths.",
+        relevance: "Shows deliberate component architecture decision — ownership signal",
+        ownershipSignal: "Candidate describes intentional structural choices",
+        technicalDepth: "Covers component separation and data access patterns",
+        isProtected: true,
+      },
+    ],
+    documentEvidence: [],
+    interviewQuestions: [
+      "Walk me through the component architecture of your most complex UI and why you structured it that way.",
+      "How do you handle state management across deeply nested React components?",
+      "How would you improve the error handling and testing coverage in this project?",
+      "Describe how you approach accessibility and performance in frontend work.",
+    ],
+    protectedEvidenceFlags: ["keyframes", "transcript"],
+  },
+
+  "Data & Visualization": {
+    skillName: "Data & Visualization",
+    confidence: "medium",
+    supportStatus: "partially supported",
+    explanation:
+      "VeriBridge found this skill in workflow and OCR evidence. GitHub and transcript coverage is partial.",
+    sources: [
+      { key: "workflow",  label: "Workflow recording",     status: "supported", score: 72, reason: "Chart and dashboard interaction observed in workflow recordings"   },
+      { key: "ocr",       label: "OCR / visual reasoning",  status: "partial",  score: 55, reason: "Chart/table text partially extracted from keyframes"              },
+      { key: "documents", label: "Documents",               status: "partial",  score: 60, reason: "Data visualization mentioned in project report — not primary focus" },
+      { key: "github",    label: "GitHub code",             status: "partial",  score: 50, reason: "D3 imports found; no dedicated data pipeline module detected"     },
+      { key: "keyframes", label: "Keyframes / screenshots", status: "partial",  score: 48, reason: "Charts partially visible in protected keyframe set"               },
+      { key: "defense",   label: "Project defense",         status: "missing",        reason: "Data visualization was not a focus of the defense discussion"         },
+    ],
+    visualEvidence: [
+      {
+        timestamp: "2:11",
+        label: "Chart/table/dashboard output visible",
+        observation: "Data visualization panel with chart output captured in viewport",
+        ocr: "Chart · Data output · Dashboard view",
+        whyItSupports: "Confirms live interaction with a data visualization interface",
+        confidence: "medium",
+        isProtected: false,
+      },
+    ],
+    githubEvidence: [
+      {
+        path: "apps/web/components/recruiter-passport/CandidateComparison.tsx",
+        reason: "Candidate comparison panel rendering tabular data and comparative skill metrics",
+        skills: ["TypeScript", "React", "Data Display"],
+        confidence: "medium",
+        isPublic: false,
+      },
+    ],
+    transcriptEvidence: [
+      {
+        excerpt:
+          "Data visualization was part of the project but not the primary focus — I used D3 for the chart layer.",
+        relevance: "Acknowledges limited depth in visualization work — honest self-assessment",
+        isProtected: true,
+      },
+    ],
+    documentEvidence: [
+      {
+        title: "AI Engineering Project Report",
+        snippet:
+          "Three.js WebGL rendering pipeline was designed for real-time performance, targeting 60fps on standard hardware.",
+        relevance: "Partial match — visual rendering is related but not core data visualization",
+        isProtected: false,
+      },
+    ],
+    interviewQuestions: [
+      "Explain how data flows from your source through to the visualization layer.",
+      "What data pipeline libraries or tools have you used and why did you choose them?",
+      "How would you handle large datasets that exceed browser memory limits in your visualization?",
+    ],
+    protectedEvidenceFlags: ["keyframes", "transcript"],
+  },
+
+  "DevOps / Deployment": {
+    skillName: "DevOps / Deployment",
+    confidence: "low",
+    supportStatus: "needs review",
+    explanation:
+      "VeriBridge found limited evidence of deployment skills. Coverage is document-only — no workflow or GitHub activity observed.",
+    sources: [
+      { key: "workflow",  label: "Workflow recording",     status: "missing", reason: "No deployment or CI/CD workflow captured in recordings"                   },
+      { key: "github",    label: "GitHub code",             status: "missing", reason: "No deployment configuration, Dockerfiles, or CI pipelines detected"       },
+      { key: "ocr",       label: "OCR / visual reasoning",  status: "missing", reason: "No deployment-related UI or terminal output observed"                    },
+      { key: "keyframes", label: "Keyframes / screenshots", status: "missing", reason: "No deployment evidence in captured keyframes"                             },
+      { key: "defense",   label: "Project defense",         status: "missing", reason: "Deployment not discussed in defense"                                      },
+      { key: "documents", label: "Documents",               status: "partial",  score: 35, reason: "Deployment mentioned briefly in project report — no technical detail" },
+    ],
+    visualEvidence: [],
+    githubEvidence: [],
+    transcriptEvidence: [],
+    documentEvidence: [
+      {
+        title: "AI Engineering Project Report",
+        snippet: "Future work includes containerizing the application for deployment.",
+        relevance: "Aspirational mention only — no implemented deployment evidence",
+        isProtected: false,
+      },
+    ],
+    interviewQuestions: [
+      "Describe your experience with containerization tools such as Docker or Podman.",
+      "How would you set up a CI/CD pipeline for this project?",
+      "What deployment approach would you use and why, given the project constraints?",
+    ],
+    protectedEvidenceFlags: [],
+  },
+}
+
+function getSkillBundle(skillName: string): SkillEvidenceBundle {
+  return SKILL_EVIDENCE_BUNDLES[skillName] ?? {
+    skillName,
+    confidence: "medium",
+    supportStatus: "partially supported",
+    explanation: `VeriBridge analyzed evidence for ${skillName} across available sources.`,
+    sources: [
+      { key: "workflow",  label: "Workflow recording",     status: "partial", reason: "Workflow evidence reviewed"        },
+      { key: "github",    label: "GitHub code",             status: "partial", reason: "GitHub evidence reviewed"         },
+      { key: "ocr",       label: "OCR / visual reasoning",  status: "partial", reason: "Visual evidence reviewed"         },
+      { key: "keyframes", label: "Keyframes / screenshots", status: "partial", reason: "Keyframe evidence reviewed"       },
+      { key: "defense",   label: "Project defense",         status: "missing", reason: "Defense evidence not available"   },
+      { key: "documents", label: "Documents",               status: "missing", reason: "Document evidence not available"  },
+    ],
+    visualEvidence: [],
+    githubEvidence: [],
+    transcriptEvidence: [],
+    documentEvidence: [],
+    interviewQuestions: [
+      `Describe a concrete challenge you solved using ${skillName}.`,
+      `How would you improve your ${skillName} skills going forward?`,
+    ],
+    protectedEvidenceFlags: [],
+  }
 }
 
 // Safe transcript excerpt — not a raw dump, no private content.
@@ -1748,6 +2130,368 @@ function EvidenceViewerModal({
   )
 }
 
+// ── Skill Evidence Detail Modal ───────────────────────────────────────────────
+// Opens when a recruiter clicks "View skill evidence" on a SkillGroupCard.
+// Aggregates all proof for one skill: workflow, keyframes, GitHub, transcript, documents.
+// Public-safe evidence is always visible; protected evidence shows a locked card
+// until the recruiter has approved access.
+
+function SkillSourceCoverageCard({ source }: { source: SkillSourceEvidence }) {
+  const statusColor: Record<string, string> = {
+    supported: C.emerald, partial: C.amber, missing: C.muted, protected: C.indigo,
+  }
+  const statusBg: Record<string, string> = {
+    supported: C.emeraldSoft, partial: C.amberSoft, missing: C.bg, protected: C.indigoSoft,
+  }
+  const statusLabel: Record<string, string> = {
+    supported: "Supported", partial: "Partial", missing: "Missing", protected: "Protected",
+  }
+  const color = statusColor[source.status] ?? C.muted
+  return (
+    <div style={{
+      padding: "10px 12px",
+      background: statusBg[source.status] ?? C.bg,
+      border: `1px solid ${color}33`,
+      borderRadius: 8,
+      display: "flex", flexDirection: "column", gap: 4,
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: C.ink }}>{source.label}</span>
+        <span style={{
+          fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 999,
+          background: color + "22", color, border: `1px solid ${color}44`,
+          flexShrink: 0,
+        }}>
+          {statusLabel[source.status] ?? source.status}
+        </span>
+      </div>
+      {source.score !== undefined && (
+        <span style={{ fontSize: 10, color, fontWeight: 600 }}>{source.score}/100</span>
+      )}
+      <p style={{ fontSize: 10, color: C.inkSoft, margin: 0, lineHeight: 1.4 }}>{source.reason}</p>
+    </div>
+  )
+}
+
+function SkillKeyframeCard({ frame }: { frame: SkillVisualFrame }) {
+  return (
+    <div style={{
+      background: "#1e293b", borderRadius: 8, padding: "12px 14px",
+      border: "1px solid #334155",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>{frame.timestamp}</span>
+        <span style={{
+          fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 999,
+          background: frame.confidence === "high" ? "#166534" : frame.confidence === "medium" ? "#92400e" : "#334155",
+          color: "#fff",
+        }}>
+          {frame.confidence}
+        </span>
+      </div>
+      <p style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", margin: "0 0 4px" }}>{frame.label}</p>
+      <p style={{ fontSize: 11, color: "#94a3b8", margin: "0 0 4px", lineHeight: 1.4 }}>{frame.observation}</p>
+      {frame.ocr && (
+        <p style={{ fontSize: 10, color: "#64748b", margin: "0 0 4px", fontStyle: "italic" }}>
+          OCR: {frame.ocr}
+        </p>
+      )}
+      <div style={{ marginTop: 6, padding: "6px 8px", background: "#0f172a", borderRadius: 4 }}>
+        <p style={{ fontSize: 10, fontWeight: 600, color: "#7c3aed", margin: "0 0 2px" }}>Why this supports the skill</p>
+        <p style={{ fontSize: 10, color: "#a78bfa", margin: 0, lineHeight: 1.4 }}>{frame.whyItSupports}</p>
+      </div>
+    </div>
+  )
+}
+
+function SkillGithubFileCard({ file }: { file: SkillGithubFile }) {
+  return (
+    <div style={{ border: `1px solid ${C.line}`, borderRadius: 7, overflow: "hidden" }}>
+      <div style={{
+        padding: "7px 12px", background: C.bg,
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+      }}>
+        <code style={{ fontSize: 10, color: C.indigo, fontFamily: "monospace", wordBreak: "break-all" as const }}>
+          {file.path}
+        </code>
+        <span style={{
+          fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 999, flexShrink: 0,
+          background: file.confidence === "high" ? C.emeraldSoft : C.amberSoft,
+          color: file.confidence === "high" ? C.emerald : C.amber,
+          border: `1px solid ${file.confidence === "high" ? "#bbf7d0" : "#fde68a"}`,
+        }}>
+          {file.confidence} confidence
+        </span>
+      </div>
+      <div style={{ padding: "8px 12px", borderTop: `1px solid ${C.line}` }}>
+        <p style={{ fontSize: 11, color: C.inkSoft, margin: "0 0 6px", lineHeight: 1.5 }}>{file.reason}</p>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {file.skills.map((sk) => (
+            <span key={sk} style={{
+              fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 4,
+              background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe",
+            }}>
+              {sk}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SkillProtectedLock({ label }: { label: string }) {
+  return (
+    <div
+      data-testid="skill-evidence-protected-lock"
+      style={{
+        padding: "12px 14px", background: "#1e1b4b",
+        border: "1px solid #4f46e5", borderRadius: 8,
+        display: "flex", alignItems: "center", gap: 10,
+      }}
+    >
+      <span style={{ fontSize: 16, flexShrink: 0 }}>🔒</span>
+      <div>
+        <p style={{ fontSize: 12, fontWeight: 600, color: "#a5b4fc", margin: "0 0 2px" }}>
+          Protected evidence available — request access
+        </p>
+        <p style={{ fontSize: 11, color: "#818cf8", margin: 0 }}>
+          {label} — student approval required to view
+        </p>
+      </div>
+    </div>
+  )
+}
+
+export function SkillEvidenceDetailModal({
+  skillName,
+  accessApproved,
+  onClose,
+}: {
+  skillName: string
+  accessApproved: boolean
+  onClose: () => void
+}) {
+  const bundle = getSkillBundle(skillName)
+
+  const supportStatusColor =
+    bundle.supportStatus === "strongly supported" ? C.emerald
+    : bundle.supportStatus === "partially supported" ? C.amber
+    : C.muted
+  const supportStatusBg =
+    bundle.supportStatus === "strongly supported" ? C.emeraldSoft
+    : bundle.supportStatus === "partially supported" ? C.amberSoft
+    : C.bg
+
+  return (
+    <div
+      data-testid="skill-evidence-detail-modal"
+      style={{
+        position: "fixed", inset: 0,
+        background: "rgba(0,0,0,0.65)",
+        display: "flex", alignItems: "flex-start", justifyContent: "center",
+        zIndex: 1100, padding: "40px 20px", overflowY: "auto",
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div style={{
+        background: C.paper, borderRadius: 14,
+        width: "100%", maxWidth: 900,
+        boxShadow: "0 24px 60px rgba(0,0,0,0.35)",
+        display: "flex", flexDirection: "column",
+      }}>
+        {/* Header */}
+        <div style={{ padding: "20px 24px 16px", borderBottom: `1px solid ${C.line}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
+                <span style={{ fontSize: 18 }}>📊</span>
+                <h2 style={{ fontSize: 17, fontWeight: 800, color: C.ink, margin: 0 }}>
+                  {bundle.skillName}
+                </h2>
+                <ConfidenceBadge level={bundle.confidence} />
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                  background: supportStatusBg, color: supportStatusColor,
+                  border: `1px solid ${supportStatusColor}44`,
+                }}>
+                  {bundle.supportStatus}
+                </span>
+              </div>
+              <p style={{ fontSize: 12, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                {bundle.explanation}
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="close-skill-evidence-modal-btn"
+              onClick={onClose}
+              aria-label="Close skill evidence detail"
+              style={{
+                fontSize: 22, cursor: "pointer", background: "none", border: "none",
+                color: C.muted, padding: "0 4px", lineHeight: 1, flexShrink: 0,
+              }}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 24, overflowY: "auto" }}>
+
+          {/* 1. Source coverage summary */}
+          <div data-testid="skill-evidence-source-coverage">
+            <SectionTitle>Source coverage</SectionTitle>
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+              gap: 8,
+            }}>
+              {bundle.sources.map((source) => (
+                <SkillSourceCoverageCard key={source.key} source={source} />
+              ))}
+            </div>
+          </div>
+
+          {/* 2. Visual / keyframe proof */}
+          <div data-testid="skill-evidence-visual-proof">
+            <SectionTitle>Precise visual proof</SectionTitle>
+            {bundle.visualEvidence.length === 0 ? (
+              <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+                <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>
+                  No visual/keyframe evidence captured for this skill — deployment or document-only coverage.
+                </p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {bundle.visualEvidence.map((frame, i) =>
+                  frame.isProtected && !accessApproved ? (
+                    <SkillProtectedLock key={i} label="Keyframe / screenshot evidence" />
+                  ) : (
+                    <SkillKeyframeCard key={i} frame={frame} />
+                  )
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 3. GitHub code evidence */}
+          <div data-testid="skill-evidence-github">
+            <SectionTitle>GitHub code evidence</SectionTitle>
+            {bundle.githubEvidence.length === 0 ? (
+              <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+                <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>
+                  No GitHub code evidence detected for this skill.
+                </p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {bundle.githubEvidence.map((file) => (
+                  <SkillGithubFileCard key={file.path} file={file} />
+                ))}
+                <p style={{ fontSize: 10, color: C.muted, margin: 0, fontStyle: "italic" }}>
+                  Safe file paths shown. Raw source code access requires student approval.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* 4. Transcript & document evidence */}
+          <div data-testid="skill-evidence-transcript">
+            <SectionTitle>Transcript &amp; document evidence</SectionTitle>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {bundle.transcriptEvidence.length === 0 && bundle.documentEvidence.length === 0 && (
+                <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+                  <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>
+                    No transcript or document evidence for this skill.
+                  </p>
+                </div>
+              )}
+              {bundle.transcriptEvidence.map((t, i) =>
+                t.isProtected && !accessApproved ? (
+                  <SkillProtectedLock key={`tr-${i}`} label="Transcript excerpt" />
+                ) : (
+                  <div key={`tr-${i}`} style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+                    <blockquote style={{
+                      fontSize: 12, color: C.inkSoft, lineHeight: 1.7,
+                      margin: "0 0 8px", padding: "0 0 0 12px",
+                      borderLeft: `3px solid ${C.indigo}`, fontStyle: "italic",
+                    }}>
+                      &ldquo;{t.excerpt}&rdquo;
+                    </blockquote>
+                    <p style={{ fontSize: 10, color: C.muted, margin: "0 0 3px" }}>
+                      <strong>Relevance:</strong> {t.relevance}
+                    </p>
+                    {t.ownershipSignal && (
+                      <p style={{ fontSize: 10, color: C.emerald, margin: "0 0 2px" }}>
+                        Ownership signal: {t.ownershipSignal}
+                      </p>
+                    )}
+                    {t.technicalDepth && (
+                      <p style={{ fontSize: 10, color: C.indigo, margin: 0 }}>
+                        Technical depth: {t.technicalDepth}
+                      </p>
+                    )}
+                  </div>
+                )
+              )}
+              {bundle.documentEvidence.map((d, i) =>
+                d.isProtected && !accessApproved ? (
+                  <SkillProtectedLock key={`doc-${i}`} label="Document evidence" />
+                ) : (
+                  <div key={`doc-${i}`} style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+                    <p style={{ fontSize: 11, fontWeight: 700, color: C.ink, margin: "0 0 4px" }}>{d.title}</p>
+                    <p style={{ fontSize: 11, color: C.inkSoft, margin: "0 0 4px", fontStyle: "italic", lineHeight: 1.5 }}>
+                      &ldquo;{d.snippet}&rdquo;
+                    </p>
+                    <p style={{ fontSize: 10, color: C.muted, margin: 0 }}>
+                      <strong>Relevance:</strong> {d.relevance}
+                    </p>
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+
+          {/* 5. Interview questions */}
+          <div data-testid="skill-evidence-interview-questions">
+            <SectionTitle>Suggested interview questions</SectionTitle>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {bundle.interviewQuestions.map((q, i) => (
+                <div key={i} style={{
+                  padding: "8px 12px", background: C.bg,
+                  border: `1px solid ${C.line}`, borderRadius: 7,
+                  fontSize: 12, color: C.inkSoft, lineHeight: 1.5,
+                }}>
+                  <span style={{ color: C.muted, marginRight: 6, fontWeight: 700 }}>{i + 1}.</span>
+                  {q}
+                </div>
+              ))}
+            </div>
+            <p style={{ fontSize: 10, color: C.muted, margin: "8px 0 0", fontStyle: "italic" }}>
+              Questions focus on areas with partial or weak evidence — adapt as needed.
+            </p>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          padding: "12px 24px", borderTop: `1px solid ${C.line}`,
+          background: C.bg, borderRadius: "0 0 14px 14px",
+        }}>
+          <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>
+            VeriBridge aggregates evidence from workflow, GitHub, visual/OCR, transcript, and documents for each skill.
+          </p>
+          <p style={{ fontSize: 11, color: C.muted, margin: "2px 0 0", fontStyle: "italic" }}>
+            Raw files and sensitive metadata remain under student control. Protected evidence requires explicit student approval.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ProtectedEvidenceUnlockedSection({
   approvedTypes,
   view,
@@ -1878,6 +2622,7 @@ export function RecruiterWorkPassportPreview({
 }) {
   const [showModal, setShowModal] = useState(false)
   const [accessRequest, setAccessRequest] = useState<EvidenceAccessRequest | null>(null)
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(null)
 
   // Load the best access request for this passport from the mock store on mount.
   // Scoped to the recruiter's own email when known so their status is shown.
@@ -1957,6 +2702,7 @@ export function RecruiterWorkPassportPreview({
             verified={view.verified_skills}
             partial={view.partially_verified_skills}
             needsReview={view.skills_needing_review}
+            onViewSkill={setSelectedSkill}
           />
         )}
 
@@ -2238,6 +2984,15 @@ export function RecruiterWorkPassportPreview({
           </p>
         </div>
       </div>
+
+      {/* Skill evidence detail modal */}
+      {selectedSkill && (
+        <SkillEvidenceDetailModal
+          skillName={selectedSkill}
+          accessApproved={accessRequest?.status === "approved"}
+          onClose={() => setSelectedSkill(null)}
+        />
+      )}
 
       {/* Access request modal */}
       {showModal && (
