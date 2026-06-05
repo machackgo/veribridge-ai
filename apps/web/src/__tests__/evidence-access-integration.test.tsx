@@ -1455,16 +1455,12 @@ describe("RecruiterWorkPassportPreview — evidence viewer modal", () => {
     approveAccessRequest(req.id, types)
   }
 
+  // ── open / close basics ────────────────────────────────────────────────────
+
   it("approved access shows Open evidence viewer button", async () => {
     seedApprovedTypes(["workflow_recordings"])
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
     expect(screen.getByTestId("open-evidence-viewer-btn").textContent).toBe("Open evidence viewer")
   })
 
@@ -1473,14 +1469,8 @@ describe("RecruiterWorkPassportPreview — evidence viewer modal", () => {
       { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
       EV_SLUG,
     )
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("access-pending-card")).toBeInTheDocument())
     expect(screen.queryByTestId("open-evidence-viewer-btn")).not.toBeInTheDocument()
   })
 
@@ -1490,14 +1480,8 @@ describe("RecruiterWorkPassportPreview — evidence viewer modal", () => {
       EV_SLUG,
     )
     denyAccessRequest(req.id)
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("access-denied-card")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("access-denied-card")).toBeInTheDocument())
     expect(screen.queryByTestId("open-evidence-viewer-btn")).not.toBeInTheDocument()
   })
 
@@ -1508,49 +1492,31 @@ describe("RecruiterWorkPassportPreview — evidence viewer modal", () => {
     )
     approveAccessRequest(req.id, ["workflow_recordings"])
     revokeAccessRequest(req.id)
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("access-revoked-card")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("access-revoked-card")).toBeInTheDocument())
     expect(screen.queryByTestId("open-evidence-viewer-btn")).not.toBeInTheDocument()
   })
 
-  it("clicking Open evidence viewer shows the modal with Recruiter-safe evidence viewer heading", async () => {
+  it("clicking Open evidence viewer shows the modal with Approved evidence inspection heading", async () => {
     seedApprovedTypes(["workflow_recordings"])
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
     expect(screen.queryByTestId("evidence-viewer-modal")).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
 
     const modal = screen.getByTestId("evidence-viewer-modal")
     expect(modal).toBeInTheDocument()
-    expect(modal.textContent).toMatch(/Evidence Viewer/i)
-    expect(modal.textContent).toMatch(/Recruiter-safe evidence viewer/i)
-    expect(modal.textContent).toMatch(/Only evidence types approved by the student are shown/i)
+    expect(modal.textContent).toMatch(/Approved evidence inspection/i)
+    expect(modal.textContent).toMatch(/Recruiter-safe/i)
+    expect(modal.textContent).toMatch(/You are viewing evidence types approved by the student/i)
     expect(modal.textContent).toMatch(/Use this evidence to validate VeriBridge/i)
   })
 
   it("closing viewer with × button removes the modal", async () => {
     seedApprovedTypes(["workflow_recordings"])
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
 
     fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
     expect(screen.getByTestId("evidence-viewer-modal")).toBeInTheDocument()
@@ -1559,143 +1525,214 @@ describe("RecruiterWorkPassportPreview — evidence viewer modal", () => {
     expect(screen.queryByTestId("evidence-viewer-modal")).not.toBeInTheDocument()
   })
 
-  it("workflow recordings tab appears when workflow_recordings is approved", async () => {
+  // ── tab gating ─────────────────────────────────────────────────────────────
+
+  it("workflow_recordings approved → shows Workflow and Visual/OCR tabs", async () => {
     seedApprovedTypes(["workflow_recordings"])
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
 
-    await waitFor(() =>
-      expect(screen.getByTestId("viewer-workflow-tab")).toBeInTheDocument(),
-    )
-    expect(screen.getByTestId("viewer-workflow-tab").textContent).toMatch(/Keyframe/i)
-    // Tab button only appears when multiple tabs; single tab renders content directly
-    // No project defense or documents tab button
-    expect(screen.queryByTestId("evidence-tab-project_defense_media")).not.toBeInTheDocument()
-    expect(screen.queryByTestId("evidence-tab-uploaded_documents")).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId("viewer-workflow-tab")).toBeInTheDocument())
+    expect(screen.getByTestId("evidence-tab-workflow")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-tab-visual-ocr")).toBeInTheDocument()
+    // Defense, documents, skill-map not shown
+    expect(screen.queryByTestId("evidence-tab-defense")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-tab-documents")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-tab-skill-map")).not.toBeInTheDocument()
   })
 
-  it("project defense tab appears only when project_defense_media is approved", async () => {
+  it("project_defense_media approved → shows Project Defense tab only", async () => {
     seedApprovedTypes(["project_defense_media"])
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
 
-    await waitFor(() =>
-      expect(screen.getByTestId("viewer-defense-tab")).toBeInTheDocument(),
-    )
-    expect(screen.getByTestId("viewer-defense-tab").textContent).toMatch(/Transcript excerpt/i)
-    expect(screen.getByTestId("viewer-defense-tab").textContent).toMatch(/Ownership signals/i)
+    await waitFor(() => expect(screen.getByTestId("viewer-defense-tab")).toBeInTheDocument())
+    expect(screen.getByTestId("evidence-tab-defense")).toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-tab-workflow")).not.toBeInTheDocument()
     expect(screen.queryByTestId("viewer-workflow-tab")).not.toBeInTheDocument()
   })
 
-  it("skill evidence tab appears only when detailed_skill_evidence is approved", async () => {
+  it("detailed_skill_evidence approved → shows GitHub and Skill Map tabs", async () => {
     seedApprovedTypes(["detailed_skill_evidence"])
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
 
-    await waitFor(() =>
-      expect(screen.getByTestId("viewer-skill-tab")).toBeInTheDocument(),
-    )
-    // Source drill-down shown
-    expect(screen.getByTestId("viewer-skill-tab").textContent).toMatch(/Evidence source breakdown/i)
-    expect(screen.getByTestId("viewer-skill-tab").textContent).toMatch(/Supported/i)
-    expect(screen.queryByTestId("viewer-workflow-tab")).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId("viewer-github-tab")).toBeInTheDocument())
+    expect(screen.getByTestId("evidence-tab-github")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-tab-skill-map")).toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-tab-workflow")).not.toBeInTheDocument()
   })
 
-  it("documents tab appears only when uploaded_documents is approved", async () => {
+  it("uploaded_documents approved → shows Documents tab", async () => {
     seedApprovedTypes(["uploaded_documents"])
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
 
-    await waitFor(() =>
-      expect(screen.getByTestId("viewer-documents-tab")).toBeInTheDocument(),
-    )
-    expect(screen.getByTestId("viewer-documents-tab").textContent).toMatch(/Document summary/i)
-    expect(screen.getByTestId("viewer-documents-tab").textContent).toMatch(/AI Engineering Project Report/i)
-    expect(screen.getByTestId("viewer-documents-tab").textContent).toMatch(/Raw document file is not exposed/i)
-    expect(screen.queryByTestId("viewer-workflow-tab")).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId("viewer-documents-tab")).toBeInTheDocument())
+    expect(screen.getByTestId("evidence-tab-documents")).toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-tab-workflow")).not.toBeInTheDocument()
   })
 
-  it("all four tabs appear when all four types are approved", async () => {
-    seedApprovedTypes([
-      "workflow_recordings", "project_defense_media",
-      "detailed_skill_evidence", "uploaded_documents",
-    ])
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
+  it("all four approved types → shows all 6 tabs", async () => {
+    seedApprovedTypes(["workflow_recordings", "project_defense_media", "detailed_skill_evidence", "uploaded_documents"])
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
 
-    await waitFor(() =>
-      expect(screen.getByTestId("evidence-viewer-modal")).toBeInTheDocument(),
-    )
-    expect(screen.getByTestId("evidence-tab-workflow_recordings")).toBeInTheDocument()
-    expect(screen.getByTestId("evidence-tab-project_defense_media")).toBeInTheDocument()
-    expect(screen.getByTestId("evidence-tab-detailed_skill_evidence")).toBeInTheDocument()
-    expect(screen.getByTestId("evidence-tab-uploaded_documents")).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId("evidence-viewer-modal")).toBeInTheDocument())
+    expect(screen.getByTestId("evidence-tab-workflow")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-tab-visual-ocr")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-tab-github")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-tab-defense")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-tab-documents")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-tab-skill-map")).toBeInTheDocument()
   })
 
-  it("clicking a tab in the viewer switches content", async () => {
+  // ── tab switching ──────────────────────────────────────────────────────────
+
+  it("tab switching: clicking a tab replaces content", async () => {
     seedApprovedTypes(["workflow_recordings", "project_defense_media"])
-
-    await act(async () => {
-      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
-    })
-
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
 
-    // Workflow is default active tab
-    await waitFor(() =>
-      expect(screen.getByTestId("viewer-workflow-tab")).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.getByTestId("viewer-workflow-tab")).toBeInTheDocument())
     expect(screen.queryByTestId("viewer-defense-tab")).not.toBeInTheDocument()
 
-    // Switch to project defense tab
-    fireEvent.click(screen.getByTestId("evidence-tab-project_defense_media"))
+    fireEvent.click(screen.getByTestId("evidence-tab-defense"))
     expect(screen.getByTestId("viewer-defense-tab")).toBeInTheDocument()
     expect(screen.queryByTestId("viewer-workflow-tab")).not.toBeInTheDocument()
   })
 
-  it("viewer does not render unsafe private strings when all tabs are open", async () => {
-    seedApprovedTypes([
-      "workflow_recordings", "project_defense_media",
-      "detailed_skill_evidence", "uploaded_documents",
-    ])
+  it("tab switching: visual/ocr tab shows after clicking its tab button", async () => {
+    seedApprovedTypes(["workflow_recordings"])
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() => expect(screen.getByTestId("viewer-workflow-tab")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("evidence-tab-visual-ocr"))
+
+    expect(screen.getByTestId("viewer-visual-ocr-tab")).toBeInTheDocument()
+    expect(screen.queryByTestId("viewer-workflow-tab")).not.toBeInTheDocument()
+  })
+
+  it("tab switching: skill map tab shows after clicking its tab button", async () => {
+    seedApprovedTypes(["detailed_skill_evidence"])
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() => expect(screen.getByTestId("viewer-github-tab")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("evidence-tab-skill-map"))
+    expect(screen.getByTestId("viewer-skill-map-tab")).toBeInTheDocument()
+  })
+
+  // ── tab content ────────────────────────────────────────────────────────────
+
+  it("workflow tab shows keyframe cards with timestamps and OCR snippets", async () => {
+    seedApprovedTypes(["workflow_recordings"])
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() => expect(screen.getByTestId("viewer-workflow-tab")).toBeInTheDocument())
+    const tab = screen.getByTestId("viewer-workflow-tab")
+    expect(tab.textContent).toMatch(/Keyframe snapshots/i)
+    expect(tab.textContent).toMatch(/0:14/i)            // keyframe timestamp
+    expect(tab.textContent).toMatch(/Dashboard/i)       // keyframe label
+    expect(tab.textContent).toMatch(/OCR:/i)            // OCR snippet prefix
+    expect(tab.textContent).toMatch(/Workflow timeline/i)
+    expect(tab.textContent).toMatch(/Evidence Sources/i) // timeline header col
+  })
+
+  it("visual/OCR tab shows observation rows with type badges and confidence", async () => {
+    seedApprovedTypes(["workflow_recordings"])
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+    await waitFor(() => expect(screen.getByTestId("viewer-workflow-tab")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByTestId("evidence-tab-visual-ocr"))
+    const tab = screen.getByTestId("viewer-visual-ocr-tab")
+    expect(tab.textContent).toMatch(/Visual analysis/i)
+    expect(tab.textContent).toMatch(/OCR/i)
+    expect(tab.textContent).toMatch(/Visual/i)
+    expect(tab.textContent).toMatch(/Safety/i)
+    expect(tab.textContent).toMatch(/No sensitive data/i)
+    expect(tab.textContent).toMatch(/high/i)
+  })
+
+  it("GitHub tab shows file paths, summaries, and code signals", async () => {
+    seedApprovedTypes(["detailed_skill_evidence"])
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() => expect(screen.getByTestId("viewer-github-tab")).toBeInTheDocument())
+    const tab = screen.getByTestId("viewer-github-tab")
+    expect(tab.textContent).toMatch(/Evidence files/i)
+    expect(tab.textContent).toMatch(/RecruiterWorkPassportPreview\.tsx/i)
+    expect(tab.textContent).toMatch(/final_evidence_evaluator_service\.py/i)
+    expect(tab.textContent).toMatch(/Code signals/i)
+    expect(tab.textContent).toMatch(/Risk flags/i)
+  })
+
+  it("project defense tab shows transcript excerpt, ownership signals, and consistency check", async () => {
+    seedApprovedTypes(["project_defense_media"])
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() => expect(screen.getByTestId("viewer-defense-tab")).toBeInTheDocument())
+    const tab = screen.getByTestId("viewer-defense-tab")
+    expect(tab.textContent).toMatch(/Transcript excerpt/i)
+    expect(tab.textContent).toMatch(/Ownership signals/i)
+    expect(tab.textContent).toMatch(/Technical depth/i)
+    expect(tab.textContent).toMatch(/Consistency checks/i)
+    expect(tab.textContent).toMatch(/Suggested recruiter questions/i)
+  })
+
+  it("documents tab shows document summary, skills, and mismatch check", async () => {
+    seedApprovedTypes(["uploaded_documents"])
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() => expect(screen.getByTestId("viewer-documents-tab")).toBeInTheDocument())
+    const tab = screen.getByTestId("viewer-documents-tab")
+    expect(tab.textContent).toMatch(/Document summary/i)
+    expect(tab.textContent).toMatch(/AI Engineering Project Report/i)
+    expect(tab.textContent).toMatch(/Mismatch check/i)
+    expect(tab.textContent).toMatch(/Raw document file is not exposed/i)
+  })
+
+  it("skill map tab shows evidence source matrix with skill rows and status cells", async () => {
+    seedApprovedTypes(["detailed_skill_evidence"])
+    await act(async () => { render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />) })
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() => expect(screen.getByTestId("viewer-github-tab")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("evidence-tab-skill-map"))
+
+    await waitFor(() => expect(screen.getByTestId("viewer-skill-map-tab")).toBeInTheDocument())
+    const tab = screen.getByTestId("viewer-skill-map-tab")
+    expect(tab.textContent).toMatch(/Machine Learning/i)
+    expect(tab.textContent).toMatch(/Workflow/i)
+    expect(tab.textContent).toMatch(/GitHub/i)
+    expect(tab.textContent).toMatch(/supported/i)
+    expect(tab.textContent).toMatch(/partial/i)
+  })
+
+  // ── privacy ────────────────────────────────────────────────────────────────
+
+  it("viewer does not render unsafe private strings across all tabs", async () => {
+    seedApprovedTypes(["workflow_recordings", "project_defense_media", "detailed_skill_evidence", "uploaded_documents"])
 
     let container!: HTMLElement
     await act(async () => {
@@ -1703,31 +1740,22 @@ describe("RecruiterWorkPassportPreview — evidence viewer modal", () => {
       container = r.container
     })
 
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+    await waitFor(() => expect(screen.getByTestId("evidence-viewer-modal")).toBeInTheDocument())
 
-    await waitFor(() =>
-      expect(screen.getByTestId("evidence-viewer-modal")).toBeInTheDocument(),
-    )
-
-    // Check all tabs
-    const tabs = [
-      "evidence-tab-workflow_recordings",
-      "evidence-tab-project_defense_media",
-      "evidence-tab-detailed_skill_evidence",
-      "evidence-tab-uploaded_documents",
-    ]
-    for (const tabId of tabs) {
-      const tabBtn = screen.queryByTestId(tabId)
-      if (tabBtn) fireEvent.click(tabBtn)
+    // Click through all tabs to render their content
+    for (const tabId of ["evidence-tab-workflow", "evidence-tab-visual-ocr", "evidence-tab-github",
+                          "evidence-tab-defense", "evidence-tab-documents", "evidence-tab-skill-map"]) {
+      const btn = screen.queryByTestId(tabId)
+      if (btn) fireEvent.click(btn)
     }
 
     const html = container.innerHTML
     expect(html).not.toContain("localhost")
     expect(html).not.toContain("127.0.0.1")
     expect(html).not.toContain("access_token")
+    expect(html).not.toContain("token=")
     expect(html).not.toContain("session_id")
     expect(html).not.toContain("storage_path")
     expect(html).not.toContain("media_storage_path")
@@ -1738,32 +1766,24 @@ describe("RecruiterWorkPassportPreview — evidence viewer modal", () => {
     expect(html).not.toContain("transcript_text")
     expect(html).not.toContain("supabase")
     expect(html).not.toContain("private_url")
+    expect(html).not.toContain("env.")
+    expect(html).not.toContain("SECRET")
   })
 
-  it("reset mock access requests hides evidence viewer button", async () => {
+  // ── reset behavior ─────────────────────────────────────────────────────────
+
+  it("reset mock access requests hides evidence viewer button and closes modal", async () => {
     seedApprovedTypes(["workflow_recordings"])
     const onReset = vi.fn(() => { clearMockEvidenceAccessRequests() })
 
     await act(async () => {
-      render(
-        <RecruiterWorkPassportPreview
-          view={makeRecruiterView(EV_SLUG)}
-          onReset={onReset}
-        />,
-      )
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} onReset={onReset} />)
     })
 
-    await waitFor(() =>
-      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
-    )
-
-    // Reset via the approved card reset button
+    await waitFor(() => expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("approved-reset-btn"))
 
-    // After reset, approved state is cleared → unlocked section removed → button gone
-    await waitFor(() =>
-      expect(screen.getByTestId("request-access-btn")).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.getByTestId("request-access-btn")).toBeInTheDocument())
     expect(screen.queryByTestId("open-evidence-viewer-btn")).not.toBeInTheDocument()
     expect(screen.queryByTestId("evidence-viewer-modal")).not.toBeInTheDocument()
   })
