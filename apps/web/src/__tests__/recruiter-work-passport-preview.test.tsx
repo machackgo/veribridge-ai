@@ -829,3 +829,193 @@ describe("RecruiterWorkPassportPreview — inline skill evidence cards", () => {
     expect(html).not.toContain("token=")
   })
 })
+
+// ── SkillEvidenceDetailModal — direct proof links ─────────────────────────────
+
+describe("SkillEvidenceDetailModal — direct proof links", () => {
+  function renderModal(skillName: string, accessApproved: boolean) {
+    render(
+      <SkillEvidenceDetailModal
+        skillName={skillName}
+        accessApproved={accessApproved}
+        onClose={() => {}}
+      />,
+    )
+  }
+
+  it("renders direct proof links section in the modal", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("skill-direct-proof-links")).toBeInTheDocument()
+    expect(screen.getByText(/direct proof links/i)).toBeInTheDocument()
+  })
+
+  it("GitHub section renders locked state for private repos before approval", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("skill-direct-github")).toBeInTheDocument()
+    // AI/ML github files are all private → locked banners not open-source-file links
+    expect(screen.getByTestId("locked-github-file-0")).toBeInTheDocument()
+    expect(screen.queryByTestId("open-source-file-0")).not.toBeInTheDocument()
+  })
+
+  it("GitHub section renders locked state for private repo files (all bundles use private repos)", () => {
+    renderModal("JavaScript / Frontend", false)
+    // All github evidence is private in mock data — all should show locked banners
+    expect(screen.getByTestId("locked-github-file-0")).toBeInTheDocument()
+    expect(screen.queryByTestId("open-source-file-0")).not.toBeInTheDocument()
+  })
+
+  it("keyframe section shows view-keyframe-btn for public frames and locked for protected frames", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("skill-direct-keyframes")).toBeInTheDocument()
+    // Frame 0 is public → view-keyframe-btn visible
+    expect(screen.getAllByTestId("view-keyframe-btn").length).toBeGreaterThan(0)
+    // Frames 1 and 2 are protected and not approved → locked banners
+    expect(screen.getAllByTestId("locked-keyframe-btn").length).toBeGreaterThan(0)
+  })
+
+  it("keyframe section shows all frames openable after approval", () => {
+    renderModal("AI / Machine Learning", true)
+    // All frames should have view-keyframe-btn (no locked banners)
+    expect(screen.getAllByTestId("view-keyframe-btn").length).toBeGreaterThan(0)
+    expect(screen.queryByTestId("locked-keyframe-btn")).not.toBeInTheDocument()
+    // At least one frame has OCR → ocr details btn visible
+    expect(screen.getAllByTestId("view-ocr-details-btn").length).toBeGreaterThan(0)
+    // All frames approved → open-recording-segment-btn visible
+    expect(screen.getAllByTestId("open-recording-segment-btn").length).toBeGreaterThan(0)
+  })
+
+  it("transcript section shows locked state before approval", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("skill-direct-transcript")).toBeInTheDocument()
+    expect(screen.getByTestId("locked-transcript-btn")).toBeInTheDocument()
+    expect(screen.queryByTestId("view-transcript-excerpt-btn")).not.toBeInTheDocument()
+  })
+
+  it("transcript section shows view + full transcript after approval", () => {
+    renderModal("AI / Machine Learning", true)
+    expect(screen.getByTestId("view-transcript-excerpt-btn")).toBeInTheDocument()
+    expect(screen.getByTestId("view-full-transcript-btn")).toBeInTheDocument()
+  })
+
+  it("document section shows locked state before approval for protected docs", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("skill-direct-documents")).toBeInTheDocument()
+    expect(screen.getByTestId("locked-document-btn")).toBeInTheDocument()
+  })
+
+  it("document section shows open-approved-document-btn after approval", () => {
+    renderModal("AI / Machine Learning", true)
+    expect(screen.getByTestId("view-document-summary-btn")).toBeInTheDocument()
+    expect(screen.getByTestId("open-approved-document-btn")).toBeInTheDocument()
+  })
+
+  it("live app section shows open-live-app-btn for public app (JS/Frontend)", () => {
+    renderModal("JavaScript / Frontend", false)
+    expect(screen.getByTestId("skill-direct-live-app")).toBeInTheDocument()
+    expect(screen.getByTestId("open-live-app-btn")).toBeInTheDocument()
+    expect(screen.queryByTestId("local-private-app-notice")).not.toBeInTheDocument()
+  })
+
+  it("live app section shows local-private-app-notice for private/local apps", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("skill-direct-live-app")).toBeInTheDocument()
+    expect(screen.getByTestId("local-private-app-notice")).toBeInTheDocument()
+    expect(screen.queryByTestId("open-live-app-btn")).not.toBeInTheDocument()
+  })
+
+  it("keyframe expand/collapse panel works (frame 0 is public)", async () => {
+    // Frame 0 is public — can expand without approval
+    renderModal("AI / Machine Learning", false)
+    const btns = screen.getAllByTestId("view-keyframe-btn")
+    fireEvent.click(btns[0])
+    await waitFor(() => expect(screen.getByTestId("keyframe-detail-panel-0")).toBeInTheDocument())
+    fireEvent.click(screen.getAllByTestId("view-keyframe-btn")[0])
+    await waitFor(() => expect(screen.queryByTestId("keyframe-detail-panel-0")).not.toBeInTheDocument())
+  })
+
+  it("transcript expand/collapse panel works after approval", async () => {
+    renderModal("AI / Machine Learning", true)
+    fireEvent.click(screen.getByTestId("view-transcript-excerpt-btn"))
+    await waitFor(() => expect(screen.getByTestId("transcript-detail-panel-0")).toBeInTheDocument())
+  })
+
+  it("document expand/collapse panel works after approval", async () => {
+    renderModal("AI / Machine Learning", true)
+    fireEvent.click(screen.getByTestId("view-document-summary-btn"))
+    await waitFor(() => expect(screen.getByTestId("document-detail-panel-0")).toBeInTheDocument())
+  })
+
+  it("direct proof links modal html contains no private unsafe strings", () => {
+    const { container } = render(
+      <SkillEvidenceDetailModal skillName="AI / Machine Learning" accessApproved={true} onClose={() => {}} />,
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain("localhost")
+    expect(html).not.toContain("127.0.0.1")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("session_id")
+    expect(html).not.toContain("storage_path")
+    expect(html).not.toContain("raw_url")
+    expect(html).not.toContain("supabase")
+    expect(html).not.toContain("token=")
+  })
+})
+
+// ── Skill card compact actions ────────────────────────────────────────────────
+
+describe("RecruiterWorkPassportPreview — skill card compact actions", () => {
+  function makeGroupedView(overrides: Partial<RecruiterPassportViewResponse> = {}): RecruiterPassportViewResponse {
+    return makeView({
+      skill_groups: [
+        {
+          group_name: "AI / Machine Learning",
+          category: "AI/ML",
+          confidence: "high",
+          evidence_count: 4,
+          source_labels: ["GitHub", "Website Workflow", "Documents"],
+          skills: [
+            { skill: "Machine Learning", confidence: "high", status_label: "Verified", source_labels: ["GitHub"] },
+            { skill: "TensorFlow.js", confidence: "high", status_label: "Verified", source_labels: ["GitHub"] },
+          ],
+        },
+        {
+          group_name: "JavaScript / Frontend",
+          category: "Frontend",
+          confidence: "high",
+          evidence_count: 3,
+          source_labels: ["GitHub", "Website Workflow"],
+          skills: [
+            { skill: "React", confidence: "high", status_label: "Verified", source_labels: ["GitHub"] },
+          ],
+        },
+      ],
+      verified_skills: ["Machine Learning", "React"],
+      partially_verified_skills: ["TensorFlow.js"],
+      skills_needing_review: [],
+      ...overrides,
+    })
+  }
+
+  it("compact action row is rendered on each skill card", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    const rows = screen.getAllByTestId("skill-card-compact-actions")
+    expect(rows.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it("GitHub proof chip is rendered when bundle has github evidence", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    const chips = screen.getAllByTestId("skill-card-github-proof-action")
+    expect(chips.length).toBeGreaterThan(0)
+  })
+
+  it("keyframe chip visible for skill with public keyframe", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    // AI/ML visual evidence frame 0 is public — keyframe chip should appear on that card
+    expect(screen.getAllByTestId("skill-card-keyframe-action").length).toBeGreaterThan(0)
+  })
+
+  it("live app chip visible for JS/Frontend (public app)", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    expect(screen.getByTestId("skill-card-live-app-action")).toBeInTheDocument()
+  })
+})

@@ -481,10 +481,57 @@ function SkillGroupCard({
             </div>
           </div>
 
-          {/* Footer */}
-          <div style={{
+          {/* Footer — row 1: compact action chips */}
+          <div data-testid="skill-card-compact-actions" style={{
             paddingTop: 10,
             borderTop: `1px solid ${confidenceBorder(group.confidence)}`,
+            display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8,
+          }}>
+            {bundle.githubEvidence.length > 0 && (
+              <button
+                type="button"
+                data-testid="skill-card-github-proof-action"
+                onClick={onViewEvidence}
+                style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.emerald, background: C.emeraldSoft, border: "1px solid #bbf7d0" }}
+              >
+                ↗ GitHub proof
+              </button>
+            )}
+            {bundle.visualEvidence.length > 0 && (bundle.visualEvidence[0].isProtected ? accessApproved : true) && (
+              <button
+                type="button"
+                data-testid="skill-card-keyframe-action"
+                onClick={onViewEvidence}
+                style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.violet, background: C.violetSoft, border: "1px solid #ddd6fe" }}
+              >
+                View keyframe
+              </button>
+            )}
+            {bundle.transcriptEvidence.length > 0 && (bundle.transcriptEvidence[0].isProtected ? accessApproved : true) && (
+              <button
+                type="button"
+                data-testid="skill-card-transcript-action"
+                onClick={onViewEvidence}
+                style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.sky, background: C.skySoft, border: "1px solid #bae6fd" }}
+              >
+                View transcript
+              </button>
+            )}
+            {bundle.liveApp?.isPublic && (
+              <a
+                href={bundle.liveApp.publicUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="skill-card-live-app-action"
+                style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.emerald, background: C.emeraldSoft, border: "1px solid #bbf7d0", textDecoration: "none" }}
+              >
+                ↗ Live app
+              </a>
+            )}
+          </div>
+
+          {/* Footer — row 2: approval status + view button */}
+          <div style={{
             display: "flex", alignItems: "center", justifyContent: "space-between",
             gap: 8, flexWrap: "wrap",
           }}>
@@ -853,6 +900,7 @@ export type SkillEvidenceBundle = {
   documentEvidence: SkillDocumentSnippet[]
   interviewQuestions: string[]
   protectedEvidenceFlags: string[]
+  liveApp?: { label: string; isPublic: boolean; publicUrl?: string }
 }
 
 const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
@@ -949,6 +997,7 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
       "How would you improve prediction accuracy given access to a larger training dataset?",
     ],
     protectedEvidenceFlags: ["keyframes", "transcript", "documents"],
+    liveApp: { label: "AI proof builder app (local dev only)", isPublic: false },
   },
 
   "JavaScript / Frontend": {
@@ -1026,6 +1075,7 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
       "Describe how you approach accessibility and performance in frontend work.",
     ],
     protectedEvidenceFlags: ["keyframes", "transcript"],
+    liveApp: { label: "Frontend portfolio demo", isPublic: true, publicUrl: "https://example.com/frontend-demo" },
   },
 
   "Data & Visualization": {
@@ -1085,6 +1135,7 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
       "How would you handle large datasets that exceed browser memory limits in your visualization?",
     ],
     protectedEvidenceFlags: ["keyframes", "transcript"],
+    liveApp: { label: "Evidence dashboard (local dev only)", isPublic: false },
   },
 
   "DevOps / Deployment": {
@@ -2449,6 +2500,309 @@ function SkillProtectedLock({ label }: { label: string }) {
   )
 }
 
+// ── Direct Proof Links Section ────────────────────────────────────────────────
+// Direct inspection actions for each evidence artifact in a skill bundle.
+// Public evidence is actionable inline; protected evidence requires student approval.
+// Privacy: no raw storage URLs, tokens, localhost, or private media paths exposed.
+
+function DirectProofLinksSection({
+  bundle,
+  accessApproved,
+}: {
+  bundle: SkillEvidenceBundle
+  accessApproved: boolean
+}) {
+  const [expandedFrame, setExpandedFrame] = useState<number | null>(null)
+  const [expandedTranscript, setExpandedTranscript] = useState<number | null>(null)
+  const [expandedDoc, setExpandedDoc] = useState<number | null>(null)
+
+  const hasGithub = bundle.githubEvidence.length > 0
+  const hasVisual = bundle.visualEvidence.length > 0
+  const hasTranscript = bundle.transcriptEvidence.length > 0
+  const hasDocs = bundle.documentEvidence.length > 0
+  const hasLiveApp = !!bundle.liveApp
+
+  if (!hasGithub && !hasVisual && !hasTranscript && !hasDocs && !hasLiveApp) return null
+
+  const sourcePill = (label: string, color: string, bg: string, border: string) => (
+    <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4, color, background: bg, border: `1px solid ${border}`, flexShrink: 0 }}>
+      {label}
+    </span>
+  )
+  const visibilityPill = (isPublic: boolean) => (
+    <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4, color: isPublic ? C.emerald : C.indigo, background: isPublic ? C.emeraldSoft : C.indigoSoft, border: `1px solid ${isPublic ? "#bbf7d0" : "#c7d2fe"}`, flexShrink: 0 }}>
+      {isPublic ? "Public" : "Protected"}
+    </span>
+  )
+  const statusLabel = (openable: boolean) => (
+    <span style={{ fontSize: 9, fontWeight: 600, color: openable ? C.emerald : C.muted }}>
+      {openable ? "Openable" : "Locked"}
+    </span>
+  )
+  const actionBtn = (label: string, onClick: () => void, variant: "primary" | "secondary", testId: string) => (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={onClick}
+      style={{ fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 5, cursor: "pointer", color: variant === "primary" ? C.indigo : C.muted, background: variant === "primary" ? C.indigoSoft : C.bg, border: `1px solid ${variant === "primary" ? "#c7d2fe" : C.line}` }}
+    >
+      {label}
+    </button>
+  )
+  const lockedBanner = (reason: string, testId: string) => (
+    <div data-testid={testId} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderRadius: 5, background: "#1e1b4b", border: "1px solid #4f46e5" }}>
+      <span style={{ fontSize: 12, flexShrink: 0 }}>🔒</span>
+      <span style={{ fontSize: 10, color: "#a5b4fc" }}>{reason}</span>
+    </div>
+  )
+  const groupLabel = (text: string) => (
+    <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: C.muted, marginBottom: 6 }}>{text}</div>
+  )
+  const rowBox = (children: React.ReactNode, rounded: string) => (
+    <div style={{ padding: "9px 11px", borderRadius: rounded, background: C.bg, border: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 5 }}>
+      {children}
+    </div>
+  )
+
+  return (
+    <div data-testid="skill-direct-proof-links">
+      <SectionTitle>Direct proof links</SectionTitle>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+        {/* GitHub code */}
+        {hasGithub && (
+          <div data-testid="skill-direct-github">
+            {groupLabel("GitHub code")}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {bundle.githubEvidence.map((file, i) => (
+                <div key={`gh-${i}`}>
+                  {rowBox(
+                    <>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        {sourcePill("GitHub", C.emerald, C.emeraldSoft, "#bbf7d0")}
+                        {visibilityPill(file.isPublic)}
+                        {statusLabel(file.isPublic)}
+                      </div>
+                      <code style={{ fontSize: 10, color: C.indigo, fontFamily: "monospace" as const, wordBreak: "break-all" as const }}>{file.path}</code>
+                      <p style={{ fontSize: 10, color: C.inkSoft, margin: 0, lineHeight: 1.4 }}>{file.reason}</p>
+                      {file.isPublic ? (
+                        <a
+                          href={`https://github.com/candidate-repo/blob/main/${file.path}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          data-testid={`open-source-file-${i}`}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 5, color: C.emerald, background: C.emeraldSoft, border: "1px solid #bbf7d0", textDecoration: "none", width: "fit-content" as const }}
+                        >
+                          ↗ Open source file
+                        </a>
+                      ) : lockedBanner(
+                        "Source file access requires student approval or public repository access.",
+                        `locked-github-file-${i}`,
+                      )}
+                    </>,
+                    "7px",
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Workflow recording / keyframes */}
+        {hasVisual && (
+          <div data-testid="skill-direct-keyframes">
+            {groupLabel("Workflow recording / keyframes")}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {bundle.visualEvidence.map((frame, i) => {
+                const canOpen = !frame.isProtected || accessApproved
+                const isExpanded = expandedFrame === i
+                return (
+                  <div key={`kf-${i}`} style={{ display: "flex", flexDirection: "column" }}>
+                    {rowBox(
+                      <>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          {sourcePill("Keyframe", C.violet, C.violetSoft, "#ddd6fe")}
+                          {visibilityPill(!frame.isProtected)}
+                          {statusLabel(canOpen)}
+                          <span style={{ fontSize: 9, color: C.muted }}>{frame.timestamp}</span>
+                        </div>
+                        <p style={{ fontSize: 11, fontWeight: 600, color: C.ink, margin: 0 }}>{frame.label}</p>
+                        <p style={{ fontSize: 10, color: C.inkSoft, margin: 0, lineHeight: 1.4 }}>{frame.observation}</p>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {canOpen ? (
+                            <>
+                              {actionBtn(isExpanded ? "Hide keyframe" : "View keyframe", () => setExpandedFrame(isExpanded ? null : i), "primary", "view-keyframe-btn")}
+                              {frame.ocr && actionBtn("View OCR details", () => setExpandedFrame(isExpanded ? null : i), "secondary", "view-ocr-details-btn")}
+                              {accessApproved && actionBtn("Open recording segment", () => setExpandedFrame(isExpanded ? null : i), "secondary", "open-recording-segment-btn")}
+                            </>
+                          ) : lockedBanner("Keyframe and recording access requires student approval.", "locked-keyframe-btn")}
+                        </div>
+                      </>,
+                      isExpanded ? "7px 7px 0 0" : "7px",
+                    )}
+                    {isExpanded && canOpen && (
+                      <div
+                        data-testid={`keyframe-detail-panel-${i}`}
+                        style={{ padding: "10px 12px", background: "#1e293b", border: "1px solid #334155", borderTop: "none", borderRadius: "0 0 7px 7px" }}
+                      >
+                        <p style={{ fontSize: 10, fontWeight: 600, color: "#e2e8f0", margin: "0 0 4px" }}>{frame.label}</p>
+                        {frame.ocr && (
+                          <p style={{ fontSize: 10, color: "#64748b", margin: "0 0 5px", fontStyle: "italic" }}>
+                            OCR: {frame.ocr}
+                          </p>
+                        )}
+                        <div style={{ padding: "6px 8px", background: "#0f172a", borderRadius: 4 }}>
+                          <p style={{ fontSize: 10, fontWeight: 600, color: "#7c3aed", margin: "0 0 2px" }}>Why this supports the skill</p>
+                          <p style={{ fontSize: 10, color: "#a78bfa", margin: 0, lineHeight: 1.4 }}>{frame.whyItSupports}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Transcript */}
+        {hasTranscript && (
+          <div data-testid="skill-direct-transcript">
+            {groupLabel("Transcript")}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {bundle.transcriptEvidence.map((t, i) => {
+                const canOpen = !t.isProtected || accessApproved
+                const isExpanded = expandedTranscript === i
+                return (
+                  <div key={`tr-${i}`} style={{ display: "flex", flexDirection: "column" }}>
+                    {rowBox(
+                      <>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          {sourcePill("Transcript", C.sky, C.skySoft, "#bae6fd")}
+                          {visibilityPill(!t.isProtected)}
+                          {statusLabel(canOpen)}
+                        </div>
+                        <p style={{ fontSize: 10, color: C.inkSoft, margin: 0, lineHeight: 1.4 }}>{t.relevance}</p>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {canOpen ? (
+                            <>
+                              {actionBtn(isExpanded ? "Hide excerpt" : "View approved excerpt", () => setExpandedTranscript(isExpanded ? null : i), "primary", "view-transcript-excerpt-btn")}
+                              {accessApproved && actionBtn("View full transcript", () => setExpandedTranscript(isExpanded ? null : i), "secondary", "view-full-transcript-btn")}
+                            </>
+                          ) : lockedBanner("Full transcript requires student approval.", "locked-transcript-btn")}
+                        </div>
+                      </>,
+                      isExpanded ? "7px 7px 0 0" : "7px",
+                    )}
+                    {isExpanded && canOpen && (
+                      <div
+                        data-testid={`transcript-detail-panel-${i}`}
+                        style={{ padding: "10px 12px", background: C.bg, border: `1px solid ${C.line}`, borderTop: "none", borderRadius: "0 0 7px 7px" }}
+                      >
+                        <blockquote style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.7, margin: 0, padding: "0 0 0 12px", borderLeft: `3px solid ${C.indigo}`, fontStyle: "italic" }}>
+                          &ldquo;{t.excerpt}&rdquo;
+                        </blockquote>
+                        {t.ownershipSignal && (
+                          <p style={{ fontSize: 10, color: C.emerald, margin: "6px 0 0" }}>Ownership signal: {t.ownershipSignal}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Documents */}
+        {hasDocs && (
+          <div data-testid="skill-direct-documents">
+            {groupLabel("Documents")}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {bundle.documentEvidence.map((doc, i) => {
+                const canOpen = !doc.isProtected || accessApproved
+                const isExpanded = expandedDoc === i
+                return (
+                  <div key={`doc-${i}`} style={{ display: "flex", flexDirection: "column" }}>
+                    {rowBox(
+                      <>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          {sourcePill("Document", C.amber, C.amberSoft, "#fde68a")}
+                          {visibilityPill(!doc.isProtected)}
+                          {statusLabel(canOpen)}
+                        </div>
+                        <p style={{ fontSize: 11, fontWeight: 600, color: C.ink, margin: 0 }}>{doc.title}</p>
+                        <p style={{ fontSize: 10, color: C.inkSoft, margin: 0, lineHeight: 1.4 }}>{doc.relevance}</p>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {canOpen ? (
+                            <>
+                              {actionBtn(isExpanded ? "Hide summary" : "View document summary", () => setExpandedDoc(isExpanded ? null : i), "primary", "view-document-summary-btn")}
+                              {accessApproved && actionBtn("Open approved document", () => setExpandedDoc(isExpanded ? null : i), "secondary", "open-approved-document-btn")}
+                            </>
+                          ) : lockedBanner("Document access requires student approval.", "locked-document-btn")}
+                        </div>
+                      </>,
+                      isExpanded ? "7px 7px 0 0" : "7px",
+                    )}
+                    {isExpanded && canOpen && (
+                      <div
+                        data-testid={`document-detail-panel-${i}`}
+                        style={{ padding: "10px 12px", background: C.bg, border: `1px solid ${C.line}`, borderTop: "none", borderRadius: "0 0 7px 7px" }}
+                      >
+                        <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, fontStyle: "italic", lineHeight: 1.5 }}>
+                          &ldquo;{doc.snippet}&rdquo;
+                        </p>
+                        <p style={{ fontSize: 10, color: C.muted, margin: "6px 0 0" }}>Relevance: {doc.relevance}</p>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Live app */}
+        {hasLiveApp && bundle.liveApp && (
+          <div data-testid="skill-direct-live-app">
+            {groupLabel("Live app")}
+            {bundle.liveApp.isPublic && bundle.liveApp.publicUrl ? (
+              <div style={{ padding: "9px 11px", borderRadius: 7, background: C.emeraldSoft, border: "1px solid #bbf7d0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <div>
+                  <p style={{ fontSize: 11, fontWeight: 600, color: "#065f46", margin: "0 0 2px" }}>{bundle.liveApp.label}</p>
+                  <p style={{ fontSize: 10, color: C.emerald, margin: 0 }}>Public — directly openable</p>
+                </div>
+                <a
+                  href={bundle.liveApp.publicUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid="open-live-app-btn"
+                  style={{ fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 5, color: C.emerald, background: "#fff", border: "1px solid #bbf7d0", textDecoration: "none", flexShrink: 0 }}
+                >
+                  ↗ Open live app
+                </a>
+              </div>
+            ) : (
+              <div
+                data-testid="local-private-app-notice"
+                style={{ padding: "9px 11px", borderRadius: 7, background: C.bg, border: `1px solid ${C.line}`, display: "flex", alignItems: "center", gap: 8 }}
+              >
+                <span style={{ fontSize: 14, flexShrink: 0 }}>🔒</span>
+                <div>
+                  <p style={{ fontSize: 11, fontWeight: 600, color: C.ink, margin: "0 0 2px" }}>{bundle.liveApp.label}</p>
+                  <p style={{ fontSize: 10, color: C.muted, margin: 0 }}>
+                    Local/private app — not publicly openable. Review GitHub or setup evidence instead.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+      </div>
+    </div>
+  )
+}
+
 export function SkillEvidenceDetailModal({
   skillName,
   accessApproved,
@@ -2640,7 +2994,10 @@ export function SkillEvidenceDetailModal({
             </div>
           </div>
 
-          {/* 5. Interview questions */}
+          {/* 5. Direct proof links */}
+          <DirectProofLinksSection bundle={bundle} accessApproved={accessApproved} />
+
+          {/* 6. Interview questions */}
           <div data-testid="skill-evidence-interview-questions">
             <SectionTitle>Suggested interview questions</SectionTitle>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
