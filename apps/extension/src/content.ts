@@ -282,6 +282,24 @@ function publishExtensionState(s: StateSnapshot): void {
   }
 }
 
+function publishProofUploadStarted(payload: Partial<StateSnapshot>): void {
+  try {
+    window.postMessage({
+      source: "veribridge-extension",
+      type: "VERIBRIDGE_PROOF_UPLOAD_STARTED",
+      payload: {
+        sessionId: payload.sessionId,
+        status: "uploading",
+        statusMessage: payload.statusMessage ?? "Uploading proof…",
+        lastUploadError: null,
+        isRecording: payload.isRecording ?? false,
+      },
+    }, window.location.origin)
+  } catch {
+    // Page bridge is best-effort; background state updates still continue.
+  }
+}
+
 // ── Module-level state ────────────────────────────────────────────────────────
 
 let capturing = false
@@ -777,7 +795,7 @@ function stopCapture(): void {
   if (mutObs) { mutObs.disconnect(); mutObs = null }
 }
 
-chrome.runtime.onMessage.addListener((msg: { type: string }) => {
+chrome.runtime.onMessage.addListener((msg: { type: string; payload?: Partial<StateSnapshot> }) => {
   if (msg.type === "START_CAPTURING") {
     void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
       if (!s?.isRecording) return
@@ -794,6 +812,8 @@ chrome.runtime.onMessage.addListener((msg: { type: string }) => {
   } else if (msg.type === "STOP_CAPTURING") {
     stopCapture()
     refreshBar()
+  } else if (msg.type === "PROOF_UPLOAD_STARTED") {
+    publishProofUploadStarted(msg.payload ?? {})
   } else if (msg.type === "EXTENSION_STATE_UPDATED") {
     void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
       if (s) publishExtensionState(s)
@@ -1045,13 +1065,11 @@ async function onBarStopAndSend(): Promise<void> {
     await onBarStop()
     await new Promise<void>((r) => setTimeout(r, 200))
   }
-  try {
-    window.postMessage({
-      source: "veribridge-extension",
-      type: "VERIBRIDGE_PROOF_UPLOAD_STARTED",
-      payload: { sessionId: lastState?.sessionId ?? "" },
-    }, window.location.origin)
-  } catch { /* Page bridge is best-effort. */ }
+  publishProofUploadStarted({
+    sessionId: lastState?.sessionId ?? "",
+    statusMessage: "Uploading proof…",
+    isRecording: false,
+  })
   publishExtensionState({
     isRecording: false,
     eventCount: lastState?.eventCount ?? 0,

@@ -442,6 +442,19 @@ function broadcastStateUpdate(): void {
   void broadcastToAllTabs({ type: "EXTENSION_STATE_UPDATED" })
 }
 
+function broadcastProofUploadStarted(): void {
+  void broadcastToAllTabs({
+    type: "PROOF_UPLOAD_STARTED",
+    payload: {
+      sessionId: state.sessionId,
+      status: "uploading",
+      statusMessage: "Uploading proof…",
+      lastUploadError: null,
+      isRecording: state.isRecording,
+    },
+  })
+}
+
 chrome.runtime.onMessage.addListener(
   (msg: { type: string; payload?: unknown }, sender: chrome.runtime.MessageSender, sendResponse) => {
     switch (msg.type) {
@@ -965,6 +978,7 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
   state.status = "uploading"
   state.statusMessage = "Uploading proof…"
   state.lastUploadError = null
+  broadcastProofUploadStarted()
   broadcastStateUpdate()
 
   // Capture a final recording-end frame before uploading (best-effort).

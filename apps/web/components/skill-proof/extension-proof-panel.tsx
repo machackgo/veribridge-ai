@@ -7148,7 +7148,17 @@ export function ExtensionProofPanel({
       const payload = data.payload
       if (!payload?.sessionId || payload.sessionId !== activeSessionId) return
       if (data.type === "VERIBRIDGE_PROOF_UPLOAD_STARTED") {
-        dispatchWebsiteProofProgress({ type: "stop_send_clicked" })
+        if (process.env.NODE_ENV === "development") {
+          console.info("[WebsiteProofProgress] upload started event received")
+        }
+        setExtensionUploadState({
+          sessionId: payload.sessionId,
+          status: "uploading",
+          statusMessage: payload.statusMessage ?? "Uploading proof…",
+          lastUploadError: null,
+          isRecording: payload.isRecording,
+        })
+        dispatchWebsiteProofProgress({ type: "upload_started" })
         return
       }
       if (data.type !== "VERIBRIDGE_EXTENSION_STATE") return
@@ -7161,8 +7171,14 @@ export function ExtensionProofPanel({
         isRecording: payload.isRecording,
       })
       if (payload.status === "uploading") {
+        if (process.env.NODE_ENV === "development") {
+          console.info("[WebsiteProofProgress] upload started event received")
+        }
         dispatchWebsiteProofProgress({ type: "upload_started" })
       } else if (payload.status === "uploaded") {
+        if (process.env.NODE_ENV === "development") {
+          console.info("[WebsiteProofProgress] upload success event received")
+        }
         dispatchWebsiteProofProgress({ type: "upload_succeeded" })
       } else if (payload.status === "upload_failed") {
         dispatchWebsiteProofProgress({ type: "upload_failed" })
@@ -7472,6 +7488,9 @@ export function ExtensionProofPanel({
 
   async function handleAnalyze() {
     if (!session) return
+    if (process.env.NODE_ENV === "development") {
+      console.info("[WebsiteProofProgress] analysis started")
+    }
     dispatchWebsiteProofProgress({ type: "analyze_clicked" })
     setAnalyzing(true)
     setAnalyzeError(null)

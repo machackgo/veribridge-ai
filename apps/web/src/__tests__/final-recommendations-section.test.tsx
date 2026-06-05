@@ -685,6 +685,63 @@ describe("Workflow Evidence Analysis progress card", () => {
     expect(model.currentMessage).toBe("Uploading proof recording — keep this tab open.")
   })
 
+  it("does not jump directly to upload 100 without first rendering upload-start state", () => {
+    const started = websiteProofProgressReducer("recording", { type: "upload_started" })
+    const startedModel = buildWorkflowAnalysisProgress({ lifecycle: started })
+    expect(started).toBe("uploading")
+    expect(startedModel.percent).toBeLessThan(100)
+    expect(startedModel.currentMessage).toBe("Uploading proof recording — keep this tab open.")
+
+    const completed = websiteProofProgressReducer(started, { type: "upload_succeeded" })
+    const completedModel = buildWorkflowAnalysisProgress({ lifecycle: completed })
+    expect(completed).toBe("upload_complete_manual_analysis_required")
+    expect(completedModel.percent).toBe(100)
+  })
+
+  it("extension emits upload-start before async upload success can occur", () => {
+    const source = readFileSync(
+      join(process.cwd(), "../extension/src/background.ts"),
+      "utf8",
+    )
+    const sendProofIndex = source.indexOf("async function sendProof")
+    const uploadingIndex = source.indexOf('state.status = "uploading"', sendProofIndex)
+    const startedIndex = source.indexOf("broadcastProofUploadStarted()", sendProofIndex)
+    const fetchIndex = source.indexOf("await fetch(", sendProofIndex)
+    const successIndex = source.indexOf('state.status = "uploaded"', sendProofIndex)
+    expect(sendProofIndex).toBeGreaterThan(-1)
+    expect(uploadingIndex).toBeGreaterThan(sendProofIndex)
+    expect(startedIndex).toBeGreaterThan(uploadingIndex)
+    expect(fetchIndex).toBeGreaterThan(startedIndex)
+    expect(successIndex).toBeGreaterThan(fetchIndex)
+    expect(source).toContain('type: "PROOF_UPLOAD_STARTED"')
+  })
+
+  it("content script forwards upload-started to the page before relying on upload success", () => {
+    const source = readFileSync(
+      join(process.cwd(), "../extension/src/content.ts"),
+      "utf8",
+    )
+    expect(source).toContain('msg.type === "PROOF_UPLOAD_STARTED"')
+    expect(source).toContain('type: "VERIBRIDGE_PROOF_UPLOAD_STARTED"')
+    const forwardIndex = source.indexOf('type: "VERIBRIDGE_PROOF_UPLOAD_STARTED"')
+    const sendProofIndex = source.indexOf('type: "SEND_PROOF"')
+    expect(forwardIndex).toBeGreaterThan(-1)
+    expect(sendProofIndex).toBeGreaterThan(-1)
+  })
+
+  it("web listener handles upload-started event directly", () => {
+    const source = readFileSync(
+      join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
+      "utf8",
+    )
+    const eventIndex = source.indexOf('data.type === "VERIBRIDGE_PROOF_UPLOAD_STARTED"')
+    const stateIndex = source.indexOf('status: "uploading"', eventIndex)
+    const reducerIndex = source.indexOf('dispatchWebsiteProofProgress({ type: "upload_started" })', eventIndex)
+    expect(eventIndex).toBeGreaterThan(-1)
+    expect(stateIndex).toBeGreaterThan(eventIndex)
+    expect(reducerIndex).toBeGreaterThan(stateIndex)
+  })
+
   it("is placed after Verification Checklist and before the workflow report source", () => {
     const source = readFileSync(
       join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
