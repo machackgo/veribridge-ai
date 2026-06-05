@@ -17,8 +17,10 @@
  *  - Access to private evidence requires a separate student-approved flow.
  */
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { EvidenceAccessRequestModal } from "./EvidenceAccessRequestModal"
+import { listStudentAccessRequests } from "../../src/lib/mock-evidence-access-store"
+import type { EvidenceAccessRequest } from "../../src/types/evidence-access"
 import type {
   RecruiterPassportViewResponse,
   RecruiterSkillGroupResponse,
@@ -487,19 +489,50 @@ export function RecruiterWorkPassportPreview({
   defaultRequester?: { name?: string; email?: string; company?: string; role?: string }
 }) {
   const [showModal, setShowModal] = useState(false)
-  const [accessPending, setAccessPending] = useState(false)
-  const [pendingSections, setPendingSections] = useState<string[]>([])
+  const [accessRequest, setAccessRequest] = useState<EvidenceAccessRequest | null>(null)
+
+  // Load the latest access request for this passport from the mock store on mount.
+  useEffect(() => {
+    const slug = view.public_slug
+    if (!slug) return
+    const all = listStudentAccessRequests()
+    const matching = all.filter((r) => r.passportSlug === slug)
+    if (matching.length === 0) return
+    const newest = [...matching].sort(
+      (a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime(),
+    )[0]
+    setAccessRequest(newest)
+  }, [view.public_slug])
 
   const handleModalSubmit = async () => {
     // Modal handles its own internal success state; we update parent state here.
-    // Nothing to await — EvidenceAccessRequestModal resolves after mock delay.
   }
 
   const handleModalClose = (sections?: string[]) => {
     setShowModal(false)
     if (sections && sections.length > 0) {
-      setAccessPending(true)
-      setPendingSections(sections)
+      // Re-read store to pick up the just-created request.
+      const slug = view.public_slug
+      let found: EvidenceAccessRequest | null = null
+      if (slug) {
+        const all = listStudentAccessRequests()
+        const matching = all.filter((r) => r.passportSlug === slug)
+        if (matching.length > 0) {
+          found = [...matching].sort(
+            (a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime(),
+          )[0]
+        }
+      }
+      // Fallback to synthetic pending object when store is unavailable (e.g. tests).
+      setAccessRequest(found ?? {
+        id: `local-${Date.now()}`,
+        passportSlug: slug ?? null,
+        requesterName: "",
+        requesterEmail: "",
+        requestedEvidenceTypes: sections,
+        status: "pending",
+        requestedAt: new Date().toISOString(),
+      })
       onRequestAccess?.()
     }
   }
@@ -507,7 +540,9 @@ export function RecruiterWorkPassportPreview({
   const SECTION_LABELS: Record<string, string> = {
     workflow_recordings: "Workflow recordings",
     project_defense: "Project defense media/transcript",
+    project_defense_media: "Project defense media/transcript",
     documents: "Uploaded documents/reports",
+    uploaded_documents: "Uploaded documents/reports",
     detailed_skill_evidence: "Detailed skill evidence",
   }
 
@@ -577,10 +612,26 @@ export function RecruiterWorkPassportPreview({
           />
         )}
 
-        {/* 5. Protected evidence CTA / pending status */}
+        {/* 5. Protected evidence CTA / status */}
         {view.has_protected_evidence && (
-          accessPending ? (
-            /* Post-submission pending status card */
+          accessRequest?.status === "approved" ? (
+            <Card
+              data-testid="access-approved-card"
+              style={{ border: "1px solid #bbf7d0", background: "#f0fdf4" }}
+            >
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 22, flexShrink: 0 }}>✅</span>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontWeight: 700, fontSize: 14, color: "#065f46", margin: "0 0 4px" }}>
+                    Access approved
+                  </p>
+                  <p style={{ fontSize: 12, color: "#059669", margin: 0 }}>
+                    Protected evidence available
+                  </p>
+                </div>
+              </div>
+            </Card>
+          ) : accessRequest?.status === "pending" ? (
             <Card
               data-testid="access-pending-card"
               style={{ border: "1px solid #c7d2fe", background: "#eef2ff" }}
@@ -594,10 +645,10 @@ export function RecruiterWorkPassportPreview({
                   <p style={{ fontSize: 12, color: "#4338ca", margin: "0 0 8px" }}>
                     Student approval required
                   </p>
-                  {pendingSections.length > 0 && (
+                  {accessRequest.requestedEvidenceTypes.length > 0 && (
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                       <span style={{ fontSize: 11, color: "#6366f1", marginRight: 2 }}>Requested evidence:</span>
-                      {pendingSections.map((s) => (
+                      {accessRequest.requestedEvidenceTypes.map((s) => (
                         <span key={s} style={{
                           fontSize: 10, fontWeight: 600, padding: "2px 7px",
                           background: "#c7d2fe", color: "#3730a3", borderRadius: 4,
@@ -610,8 +661,42 @@ export function RecruiterWorkPassportPreview({
                 </div>
               </div>
             </Card>
+          ) : accessRequest?.status === "denied" ? (
+            <Card
+              data-testid="access-denied-card"
+              style={{ border: "1px solid #fecaca", background: "#fff1f2" }}
+            >
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 22, flexShrink: 0 }}>🚫</span>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontWeight: 700, fontSize: 14, color: "#9f1239", margin: "0 0 4px" }}>
+                    Access denied
+                  </p>
+                  <p style={{ fontSize: 12, color: "#e11d48", margin: 0 }}>
+                    The student has declined this evidence access request.
+                  </p>
+                </div>
+              </div>
+            </Card>
+          ) : accessRequest?.status === "revoked" ? (
+            <Card
+              data-testid="access-revoked-card"
+              style={{ border: "1px solid #e2e8f0", background: "#f8fafc" }}
+            >
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 22, flexShrink: 0 }}>🔓</span>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontWeight: 700, fontSize: 14, color: "#334155", margin: "0 0 4px" }}>
+                    Access revoked
+                  </p>
+                  <p style={{ fontSize: 12, color: "#64748b", margin: 0 }}>
+                    The student has revoked previously granted access.
+                  </p>
+                </div>
+              </div>
+            </Card>
           ) : (
-            /* Request access CTA */
+            /* No request yet — show CTA */
             <Card style={{
               background: "linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)",
               border: "none",

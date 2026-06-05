@@ -3,7 +3,7 @@
  * recruiter→student flow (all via local state / localStorage mock store).
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   createAccessRequest,
@@ -22,7 +22,9 @@ import {
 } from "../types/evidence-access"
 import { EvidenceAccessRequestModal } from "../../components/recruiter-passport/EvidenceAccessRequestModal"
 import { StudentAccessRequestsPanel } from "../../components/passport/StudentAccessRequestsPanel"
+import { RecruiterWorkPassportPreview } from "../../components/recruiter-passport/RecruiterWorkPassportPreview"
 import type { StudentAccessRequest } from "../../components/passport/StudentAccessRequestsPanel"
+import type { RecruiterPassportViewResponse } from "../lib/passport-api"
 
 // ── 1. Shared type correctness ─────────────────────────────────────────────────
 
@@ -234,5 +236,225 @@ describe("Privacy — no private field names in rendered output", () => {
     render(<StudentAccessRequestsPanel requests={[]} />)
     expect(screen.getByTestId("privacy-callout")).toBeInTheDocument()
     expect(screen.getByText(/You control who sees your protected evidence/i)).toBeInTheDocument()
+  })
+})
+
+// ── 6. End-to-end recruiter→student→recruiter flow ────────────────────────────
+
+function makeRecruiterView(slug: string): RecruiterPassportViewResponse {
+  return {
+    public_slug: slug,
+    student_display_name: "Test Candidate",
+    field: "AI",
+    public_title: "AI Engineer",
+    public_summary: "Test summary",
+    overall_score: 75,
+    evidence_confidence: "medium",
+    verification_status: null,
+    readiness_level: null,
+    skill_groups: [],
+    verified_skills: [],
+    partially_verified_skills: [],
+    skills_needing_review: [],
+    proof_sources: [],
+    why_credible: [],
+    strongest_skills: [],
+    areas_needing_review: [],
+    suggested_interview_questions: [],
+    public_project_links: [],
+    project_type: "AI",
+    access_request_available: true,
+    has_protected_evidence: true,
+    disclosure_note: "Test disclosure",
+  }
+}
+
+describe("End-to-end: recruiter submit → student approve → recruiter reload", () => {
+  const TEST_SLUG = "e2e-test-passport-slug"
+
+  beforeEach(() => { clearAccessRequestStore() })
+
+  it("recruiter submit creates a pending request in the mock store", () => {
+    const req = createAccessRequest(
+      {
+        requesterName: "E2E Recruiter",
+        requesterEmail: "e2e@co.com",
+        company: "E2E Corp",
+        role: "Hiring Manager",
+        reason: "Integration test",
+        requestedEvidenceTypes: ["workflow_recordings", "detailed_skill_evidence"],
+        messageToStudent: "Hi from E2E",
+      },
+      TEST_SLUG,
+    )
+    expect(req.status).toBe("pending")
+    expect(req.passportSlug).toBe(TEST_SLUG)
+    const stored = listStudentAccessRequests()
+    const found = stored.find((r) => r.id === req.id)
+    expect(found).toBeTruthy()
+    expect(found?.status).toBe("pending")
+  })
+
+  it("student approval updates the stored request to approved", () => {
+    const req = createAccessRequest(
+      {
+        requesterName: "E2E Recruiter",
+        requesterEmail: "e2e@co.com",
+        company: "E2E Corp",
+        role: "Hiring Manager",
+        reason: "Integration test",
+        requestedEvidenceTypes: ["workflow_recordings"],
+        messageToStudent: "",
+      },
+      TEST_SLUG,
+    )
+    approveAccessRequest(req.id, ["workflow_recordings"])
+    const stored = listStudentAccessRequests()
+    const updated = stored.find((r) => r.id === req.id)
+    expect(updated?.status).toBe("approved")
+    expect(updated?.approvedEvidenceTypes).toEqual(["workflow_recordings"])
+  })
+
+  it("recruiter preview reads approved request and shows Access approved card", async () => {
+    const req = createAccessRequest(
+      {
+        requesterName: "E2E Recruiter",
+        requesterEmail: "e2e@co.com",
+        company: "",
+        role: "",
+        reason: "",
+        requestedEvidenceTypes: ["workflow_recordings"],
+        messageToStudent: "",
+      },
+      TEST_SLUG,
+    )
+    approveAccessRequest(req.id, ["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(TEST_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-approved-card")).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/Access approved/i)).toBeInTheDocument()
+    expect(screen.getByText(/Protected evidence available/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Request Evidence Access/i)).not.toBeInTheDocument()
+  })
+
+  it("recruiter preview shows pending card when request is pending", async () => {
+    createAccessRequest(
+      {
+        requesterName: "E2E Recruiter",
+        requesterEmail: "e2e@co.com",
+        company: "",
+        role: "",
+        reason: "",
+        requestedEvidenceTypes: ["workflow_recordings"],
+        messageToStudent: "",
+      },
+      TEST_SLUG,
+    )
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(TEST_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/Request pending/i)).toBeInTheDocument()
+    expect(screen.getByText(/Student approval required/i)).toBeInTheDocument()
+  })
+
+  it("recruiter preview shows denied card when request is denied", async () => {
+    const req = createAccessRequest(
+      {
+        requesterName: "E2E Recruiter",
+        requesterEmail: "e2e@co.com",
+        company: "",
+        role: "",
+        reason: "",
+        requestedEvidenceTypes: ["workflow_recordings"],
+        messageToStudent: "",
+      },
+      TEST_SLUG,
+    )
+    denyAccessRequest(req.id)
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(TEST_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-denied-card")).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/Access denied/i)).toBeInTheDocument()
+  })
+
+  it("recruiter preview shows revoked card when access was revoked", async () => {
+    const req = createAccessRequest(
+      {
+        requesterName: "E2E Recruiter",
+        requesterEmail: "e2e@co.com",
+        company: "",
+        role: "",
+        reason: "",
+        requestedEvidenceTypes: ["workflow_recordings"],
+        messageToStudent: "",
+      },
+      TEST_SLUG,
+    )
+    approveAccessRequest(req.id, ["workflow_recordings"])
+    revokeAccessRequest(req.id)
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(TEST_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-revoked-card")).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/Access revoked/i)).toBeInTheDocument()
+  })
+
+  it("recruiter preview uses most recent request when multiple exist", async () => {
+    // Older denied request
+    const old = createAccessRequest(
+      {
+        requesterName: "E2E Recruiter",
+        requesterEmail: "e2e@co.com",
+        company: "",
+        role: "",
+        reason: "",
+        requestedEvidenceTypes: ["workflow_recordings"],
+        messageToStudent: "",
+      },
+      TEST_SLUG,
+    )
+    denyAccessRequest(old.id)
+
+    // Newer pending request (store prepends, so this will sort as newest)
+    createAccessRequest(
+      {
+        requesterName: "E2E Recruiter 2",
+        requesterEmail: "e2e2@co.com",
+        company: "",
+        role: "",
+        reason: "",
+        requestedEvidenceTypes: ["detailed_skill_evidence"],
+        messageToStudent: "",
+      },
+      TEST_SLUG,
+    )
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(TEST_SLUG)} />)
+    })
+
+    // Newest is pending, not denied
+    await waitFor(() =>
+      expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
+    )
   })
 })
