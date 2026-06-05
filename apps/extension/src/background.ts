@@ -438,6 +438,10 @@ function publicState(): ExtensionState {
   }
 }
 
+function broadcastStateUpdate(): void {
+  void broadcastToAllTabs({ type: "EXTENSION_STATE_UPDATED" })
+}
+
 chrome.runtime.onMessage.addListener(
   (msg: { type: string; payload?: unknown }, sender: chrome.runtime.MessageSender, sendResponse) => {
     switch (msg.type) {
@@ -961,6 +965,7 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
   state.status = "uploading"
   state.statusMessage = "Uploading proof…"
   state.lastUploadError = null
+  broadcastStateUpdate()
 
   // Capture a final recording-end frame before uploading (best-effort).
   // Only fires when still recording (i.e. "Stop & Send" without a prior STOP_RECORDING).
@@ -1029,12 +1034,14 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
       state.status = "upload_failed"
       state.statusMessage = `Upload failed: ${errorMsg}`
       state.lastUploadError = errorMsg
+      broadcastStateUpdate()
       return { ok: false, error: errorMsg }
     }
 
     state.status = "uploaded"
     state.statusMessage = "Proof uploaded successfully ✓"
     state.lastUploadError = null
+    broadcastStateUpdate()
     // Proof uploaded — clear persisted recording state so a future SW restart
     // doesn't incorrectly resume a completed recording.
     clearPersistedRecordingState()
@@ -1050,6 +1057,7 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     state.status = "upload_failed"
     state.statusMessage = `Upload failed: ${errorMsg}`
     state.lastUploadError = errorMsg
+    broadcastStateUpdate()
     return { ok: false, error: errorMsg }
   }
 }

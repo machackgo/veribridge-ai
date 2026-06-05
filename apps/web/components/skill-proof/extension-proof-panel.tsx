@@ -141,6 +141,14 @@ export type UrlType =
   | "local_network_url"
   | "invalid_url"
 
+type ExtensionUploadBridgeState = {
+  sessionId: string
+  status: string
+  statusMessage?: string
+  lastUploadError?: string | null
+  isRecording?: boolean
+}
+
 // ── URL classification ────────────────────────────────────────────────────────
 
 function classifyUrl(raw: string): UrlType {
@@ -365,15 +373,19 @@ export type WorkflowAnalysisProgressStage = {
 export type WorkflowAnalysisProgressModel = {
   stages: WorkflowAnalysisProgressStage[]
   percent: number
+  title: string
   currentMessage: string
   showSlowWarning: boolean
+  slowWarningMessage: string
   failed: boolean
 }
 
 const WORKFLOW_PROGRESS_SLOW_WARNING_MS = 90_000
+const WORKFLOW_UPLOAD_SLOW_WARNING_MS = 60_000
 
 const WORKFLOW_ANALYSIS_PROGRESS_STAGES: Array<{ key: string; label: string }> = [
-  { key: "receiving", label: "Receiving recording" },
+  { key: "uploading", label: "Uploading proof recording" },
+  { key: "preparing", label: "Preparing uploaded proof" },
   { key: "keyframes", label: "Extracting keyframes" },
   { key: "ocr", label: "Running OCR / visual evidence checks" },
   { key: "qwen", label: "Running Qwen visual reasoning" },
@@ -384,9 +396,11 @@ const WORKFLOW_ANALYSIS_PROGRESS_STAGES: Array<{ key: string; label: string }> =
 export function shouldShowWorkflowAnalysisProgress(params: {
   sessionStatus: ExtensionProofSessionStatus
   workflowAnalysisComplete: boolean
+  uploadStatus?: string | null
   analyzeError?: string | null
 }): boolean {
   if (params.workflowAnalysisComplete) return false
+  if (params.uploadStatus === "uploading" || params.uploadStatus === "upload_failed" || params.uploadStatus === "uploaded") return true
   const workflowEligible = params.sessionStatus === "uploaded_pending_analysis" || params.sessionStatus === "analyzing"
   if (!workflowEligible) return false
   if (params.analyzeError) return true
@@ -397,32 +411,43 @@ export function buildWorkflowAnalysisProgress(params: {
   sessionStatus: ExtensionProofSessionStatus
   workflowAnalysisComplete: boolean
   workflowAnalysisRunning: boolean
+  uploadStatus?: string | null
+  uploadError?: string | null
   analyzeError?: string | null
   simProgress?: number
   simStageIdx?: number
   activeElapsedMs?: number
 }): WorkflowAnalysisProgressModel {
   const failed = Boolean(params.analyzeError && !params.workflowAnalysisComplete)
+  const uploadFailed = params.uploadStatus === "upload_failed"
+  const uploading = params.uploadStatus === "uploading"
+  const uploadJustCompleted = params.uploadStatus === "uploaded"
   const shouldShow = shouldShowWorkflowAnalysisProgress(params)
   if (!shouldShow) {
     return {
       stages: WORKFLOW_ANALYSIS_PROGRESS_STAGES.map((stage) => ({ ...stage, status: "pending" })),
       percent: 0,
+      title: "Uploading and analyzing workflow proof",
       currentMessage: "Workflow evidence analysis has not started.",
       showSlowWarning: false,
+      slowWarningMessage: "",
       failed: false,
     }
   }
 
-  const activeIdx = failed
+  const activeIdx = uploadFailed || uploading
+    ? 0
+    : uploadJustCompleted
+    ? 1
+    : failed
     ? Math.max(0, Math.min(params.simStageIdx ?? 4, WORKFLOW_ANALYSIS_PROGRESS_STAGES.length - 1))
     : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
-      ? Math.max(0, Math.min(params.simStageIdx ?? 1, WORKFLOW_ANALYSIS_PROGRESS_STAGES.length - 1))
+      ? Math.max(2, Math.min((params.simStageIdx ?? 1) + 2, WORKFLOW_ANALYSIS_PROGRESS_STAGES.length - 1))
       : 1
 
   const stages = WORKFLOW_ANALYSIS_PROGRESS_STAGES.map((stage, index): WorkflowAnalysisProgressStage => ({
     ...stage,
-    status: failed && index === activeIdx
+    status: (failed || uploadFailed) && index === activeIdx
       ? "failed"
       : index < activeIdx
         ? "complete"
@@ -431,24 +456,44 @@ export function buildWorkflowAnalysisProgress(params: {
           : "pending",
   }))
 
-  const percent = failed
+  const percent = uploadFailed
+    ? 8
+    : uploading
+    ? 8
+    : uploadJustCompleted && !params.workflowAnalysisRunning && params.sessionStatus !== "analyzing"
+    ? 18
+    : failed
     ? Math.max(10, Math.min(params.simProgress ?? 45, 95))
     : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
       ? Math.max(15, Math.min(params.simProgress ?? 35, 95))
       : 18
 
-  const currentMessage = failed
+  const currentMessage = uploadFailed
+    ? "Proof upload failed. Please retry."
+    : uploading
+    ? "Uploading proof recording — keep this tab open."
+    : uploadJustCompleted && !params.workflowAnalysisRunning && params.sessionStatus !== "analyzing"
+    ? "Proof uploaded — preparing workflow evidence."
+    : failed
     ? "Workflow evidence analysis hit an issue. Retry the analysis when ready."
     : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
       ? `${WORKFLOW_ANALYSIS_PROGRESS_STAGES[activeIdx]?.label ?? "Analyzing workflow"} is in progress.`
-      : "VeriBridge is preparing your uploaded recording for workflow analysis."
+      : "Proof uploaded — preparing workflow evidence."
+
+  const showSlowWarning = uploading
+    ? Boolean((params.activeElapsedMs ?? 0) >= WORKFLOW_UPLOAD_SLOW_WARNING_MS)
+    : !failed && !uploadFailed && Boolean((params.activeElapsedMs ?? 0) >= WORKFLOW_PROGRESS_SLOW_WARNING_MS)
 
   return {
     stages,
     percent,
+    title: "Uploading and analyzing workflow proof",
     currentMessage,
-    showSlowWarning: !failed && Boolean((params.activeElapsedMs ?? 0) >= WORKFLOW_PROGRESS_SLOW_WARNING_MS),
-    failed,
+    showSlowWarning,
+    slowWarningMessage: uploading
+      ? "Still uploading — large recordings can take longer. Do not close this tab."
+      : "Still analyzing — OCR and visual reasoning can take longer. Do not close this tab.",
+    failed: failed || uploadFailed,
   }
 }
 
@@ -488,7 +533,7 @@ function WorkflowAnalysisProgressCard({
       <div style={{ display: "grid", gap: 5 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
           <span style={{ fontSize: 13, fontWeight: 800, color: "#1e40af" }}>
-            Workflow Evidence Analysis in Progress
+            {model.title}
           </span>
           <span style={{ fontSize: 12, fontWeight: 800, color: "#1d4ed8", fontVariantNumeric: "tabular-nums" }}>
             {model.percent}%
@@ -513,7 +558,7 @@ function WorkflowAnalysisProgressCard({
         </p>
         {model.showSlowWarning && (
           <div role="status" style={{ border: "1px solid #fde68a", borderRadius: 10, background: "#fffbeb", color: "#92400e", padding: "8px 10px", fontSize: 11, lineHeight: 1.55 }}>
-            Still working — OCR and visual reasoning can take longer. Do not close this tab.
+            {model.slowWarningMessage}
           </div>
         )}
         {model.failed && onRetry && (
@@ -6823,6 +6868,7 @@ export function ExtensionProofPanel({
   const [creating, setCreating]         = useState(false)
   const [starting, setStarting]         = useState(false)
   const [pollingActive, setPoll]        = useState(false)
+  const [extensionUploadState, setExtensionUploadState] = useState<ExtensionUploadBridgeState | null>(null)
   const [workflowAnalysis, setWorkflowAnalysis] = useState<WorkflowAnalysisResponse | null>(null)
   const [analyzing, setAnalyzing]       = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
@@ -6845,6 +6891,7 @@ export function ExtensionProofPanel({
     setCreating(false)
     setStarting(false)
     setPoll(false)
+    setExtensionUploadState(null)
     setWorkflowAnalysis(null)
     setAnalyzing(false)
     setAnalyzeError(null)
@@ -6980,6 +7027,39 @@ export function ExtensionProofPanel({
     form.proofObjective,
   ])
 
+  useEffect(() => {
+    if (!session) return
+    const activeSessionId = session.id
+    function handleExtensionStateMessage(event: MessageEvent) {
+      if (event.source !== window) return
+      const data = event.data as { source?: string; type?: string; payload?: Partial<ExtensionUploadBridgeState> } | null
+      if (!data || data.source !== "veribridge-extension" || data.type !== "VERIBRIDGE_EXTENSION_STATE") return
+      const payload = data.payload
+      if (!payload?.sessionId || payload.sessionId !== activeSessionId) return
+      if (!payload.status) return
+      setExtensionUploadState({
+        sessionId: payload.sessionId,
+        status: payload.status,
+        statusMessage: payload.statusMessage,
+        lastUploadError: payload.lastUploadError ?? null,
+        isRecording: payload.isRecording,
+      })
+    }
+    window.addEventListener("message", handleExtensionStateMessage)
+    return () => window.removeEventListener("message", handleExtensionStateMessage)
+  }, [session?.id])
+
+  useEffect(() => {
+    if (!session) return
+    if ((["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status)) {
+      setExtensionUploadState((current) => {
+        if (!current || current.sessionId !== session.id) return current
+        if (current.status !== "uploading") return current
+        return { ...current, status: "uploaded", statusMessage: "Proof uploaded successfully" }
+      })
+    }
+  }, [session?.id, session?.status])
+
   // ── Session-scoped analysis ───────────────────────────────────────────────
   // workflowAnalysis state may hold a result from a previous session (if the user
   // created a new session without unmounting the panel).  Treat any analysis whose
@@ -7028,24 +7108,28 @@ export function ExtensionProofPanel({
 
   const workflowProgressPreview = useMemo(() => {
     if (!session) return null
+    const uploadStatus = extensionUploadState?.sessionId === session.id ? extensionUploadState.status : null
     return buildWorkflowAnalysisProgress({
       sessionStatus: session.status,
       workflowAnalysisComplete: Boolean(currentSessionAnalysis),
       workflowAnalysisRunning: analyzing,
+      uploadStatus,
+      uploadError: extensionUploadState?.sessionId === session.id ? extensionUploadState.lastUploadError : null,
       analyzeError,
       simProgress,
       simStageIdx,
     })
-  }, [session?.status, currentSessionAnalysis, analyzing, analyzeError, simProgress, simStageIdx])
+  }, [session?.id, session?.status, currentSessionAnalysis, analyzing, analyzeError, simProgress, simStageIdx, extensionUploadState])
   const workflowProgressActive = Boolean(
     session && shouldShowWorkflowAnalysisProgress({
       sessionStatus: session.status,
       workflowAnalysisComplete: Boolean(currentSessionAnalysis),
+      uploadStatus: extensionUploadState?.sessionId === session.id ? extensionUploadState.status : null,
       analyzeError,
     })
   )
   const activeProgressKey = workflowProgressActive
-    ? `${session?.status}:${analyzing ? "running" : "pending"}:${analyzeError ? "failed" : "ok"}:${workflowProgressPreview?.stages.find((stage) => stage.status === "active" || stage.status === "failed")?.key ?? "none"}`
+    ? `${session?.status}:${session && extensionUploadState?.sessionId === session.id ? extensionUploadState.status : "no-upload"}:${analyzing ? "running" : "pending"}:${analyzeError ? "failed" : "ok"}:${workflowProgressPreview?.stages.find((stage) => stage.status === "active" || stage.status === "failed")?.key ?? "none"}`
     : null
   const [activeProgressStartedAt, setActiveProgressStartedAt] = useState(() => Date.now())
   const [progressNowMs, setProgressNowMs] = useState(() => Date.now())
@@ -7064,10 +7148,13 @@ export function ExtensionProofPanel({
   const workflowAnalysisProgress = useMemo(() => {
     if (!session) return null
     if (!workflowProgressActive) return null
+    const uploadStatus = extensionUploadState?.sessionId === session.id ? extensionUploadState.status : null
     return buildWorkflowAnalysisProgress({
       sessionStatus: session.status,
       workflowAnalysisComplete: Boolean(currentSessionAnalysis),
       workflowAnalysisRunning: analyzing,
+      uploadStatus,
+      uploadError: extensionUploadState?.sessionId === session.id ? extensionUploadState.lastUploadError : null,
       analyzeError,
       simProgress,
       simStageIdx,
@@ -7084,6 +7171,7 @@ export function ExtensionProofPanel({
     activeProgressKey,
     progressNowMs,
     activeProgressStartedAt,
+    extensionUploadState,
   ])
 
   // ── Polling ───────────────────────────────────────────────────────────────

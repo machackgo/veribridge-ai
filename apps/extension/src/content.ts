@@ -253,6 +253,7 @@ interface StateSnapshot {
   startedAt: string | null
   stoppedAt: string | null
   status: string
+  statusMessage?: string
   lastUploadError: string | null
   sessionId: string
   dismissedForSessionId: string
@@ -261,6 +262,24 @@ interface StateSnapshot {
   /** Target website URL for website proof sessions. */
   targetWebsiteUrl?: string | null
   liveCoach?: LiveCoachState | null
+}
+
+function publishExtensionState(s: StateSnapshot): void {
+  try {
+    window.postMessage({
+      source: "veribridge-extension",
+      type: "VERIBRIDGE_EXTENSION_STATE",
+      payload: {
+        sessionId: s.sessionId,
+        status: s.status,
+        statusMessage: s.statusMessage,
+        lastUploadError: s.lastUploadError,
+        isRecording: s.isRecording,
+      },
+    }, window.location.origin)
+  } catch {
+    // Page bridge is best-effort; recording/upload flow must not depend on it.
+  }
 }
 
 // ── Module-level state ────────────────────────────────────────────────────────
@@ -775,6 +794,10 @@ chrome.runtime.onMessage.addListener((msg: { type: string }) => {
   } else if (msg.type === "STOP_CAPTURING") {
     stopCapture()
     refreshBar()
+  } else if (msg.type === "EXTENSION_STATE_UPDATED") {
+    void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
+      if (s) publishExtensionState(s)
+    })
   }
 })
 
@@ -1022,9 +1045,26 @@ async function onBarStopAndSend(): Promise<void> {
     await onBarStop()
     await new Promise<void>((r) => setTimeout(r, 200))
   }
+  publishExtensionState({
+    isRecording: false,
+    eventCount: lastState?.eventCount ?? 0,
+    startedAt: lastState?.startedAt ?? null,
+    stoppedAt: new Date().toISOString(),
+    status: "uploading",
+    statusMessage: "Uploading proof…",
+    lastUploadError: null,
+    sessionId: lastState?.sessionId ?? "",
+    dismissedForSessionId: lastState?.dismissedForSessionId ?? "",
+    recorderTabStreamActive: lastState?.recorderTabStreamActive,
+    targetWebsiteUrl,
+    liveCoach: lastState?.liveCoach ?? null,
+  })
   await safeSendMessage({ type: "SEND_PROOF", payload: { finalNote: null } })
   const s = await safeSendMessage<StateSnapshot>({ type: "GET_STATE" })
-  if (s) renderBar(s)
+  if (s) {
+    publishExtensionState(s)
+    renderBar(s)
+  }
 }
 
 function shouldSkipRender(s: StateSnapshot): boolean {
@@ -1053,6 +1093,7 @@ function fetchAndRender(): void {
   }
   void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
     if (contextInvalidated || !s) return
+    publishExtensionState(s)
 
     // Keep targetWebsiteUrl in sync with background state
     if (s.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null

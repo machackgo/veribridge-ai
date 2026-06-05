@@ -565,7 +565,28 @@ describe("Workflow Evidence Analysis progress card", () => {
     })).toBe(false)
   })
 
-  it("appears after proof upload and before the workflow report exists", () => {
+  it("appears immediately when upload starts after Stop & Send Proof", () => {
+    expect(shouldShowWorkflowAnalysisProgress({
+      sessionStatus: "recording",
+      workflowAnalysisComplete: false,
+      uploadStatus: "uploading",
+    })).toBe(true)
+    const model = buildWorkflowAnalysisProgress({
+      sessionStatus: "recording",
+      workflowAnalysisComplete: false,
+      workflowAnalysisRunning: false,
+      uploadStatus: "uploading",
+    })
+    expect(model.title).toBe("Uploading and analyzing workflow proof")
+    expect(model.percent).toBeGreaterThanOrEqual(5)
+    expect(model.stages.find((stage) => stage.key === "uploading")).toMatchObject({
+      status: "active",
+      label: "Uploading proof recording",
+    })
+    expect(model.currentMessage).toBe("Uploading proof recording — keep this tab open.")
+  })
+
+  it("continues after proof upload and before the workflow report exists", () => {
     expect(shouldShowWorkflowAnalysisProgress({
       sessionStatus: "uploaded_pending_analysis",
       workflowAnalysisComplete: false,
@@ -576,7 +597,9 @@ describe("Workflow Evidence Analysis progress card", () => {
       workflowAnalysisRunning: false,
     })
     expect(model.percent).toBeGreaterThan(0)
-    expect(model.currentMessage).toContain("preparing your uploaded recording")
+    expect(model.stages.find((stage) => stage.key === "uploading")?.status).toBe("complete")
+    expect(model.stages.find((stage) => stage.key === "preparing")?.status).toBe("active")
+    expect(model.currentMessage).toContain("preparing workflow evidence")
   })
 
   it("is hidden when the Workflow Evidence Analysis report exists", () => {
@@ -615,6 +638,32 @@ describe("Workflow Evidence Analysis progress card", () => {
     expect(model.currentMessage).toContain("Retry")
   })
 
+  it("shows failed upload state without activating analysis stages", () => {
+    const model = buildWorkflowAnalysisProgress({
+      sessionStatus: "recording",
+      workflowAnalysisComplete: false,
+      workflowAnalysisRunning: false,
+      uploadStatus: "upload_failed",
+      uploadError: "Network error",
+    })
+    expect(model.failed).toBe(true)
+    expect(model.currentMessage).toBe("Proof upload failed. Please retry.")
+    expect(model.stages.find((stage) => stage.key === "uploading")?.status).toBe("failed")
+    expect(model.stages.find((stage) => stage.key === "keyframes")?.status).toBe("pending")
+  })
+
+  it("shows a friendly still-uploading note for long uploads", () => {
+    const model = buildWorkflowAnalysisProgress({
+      sessionStatus: "recording",
+      workflowAnalysisComplete: false,
+      workflowAnalysisRunning: false,
+      uploadStatus: "uploading",
+      activeElapsedMs: 61_000,
+    })
+    expect(model.showSlowWarning).toBe(true)
+    expect(model.slowWarningMessage).toContain("Still uploading")
+  })
+
   it("shows a friendly still-working note for long-running workflow analysis", () => {
     const model = buildWorkflowAnalysisProgress({
       sessionStatus: "analyzing",
@@ -623,6 +672,7 @@ describe("Workflow Evidence Analysis progress card", () => {
       activeElapsedMs: 91_000,
     })
     expect(model.showSlowWarning).toBe(true)
+    expect(model.slowWarningMessage).toContain("Still analyzing")
   })
 
   it("is placed after Verification Checklist and before the workflow report source", () => {
