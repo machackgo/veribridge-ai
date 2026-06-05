@@ -860,3 +860,249 @@ describe("RecruiterWorkPassportPreview — reset and request-again controls", ()
     expect(req2.requestedEvidenceTypes).toEqual(["detailed_skill_evidence"])
   })
 })
+
+// ── 8. Protected evidence unlocked sections ───────────────────────────────────
+
+describe("RecruiterWorkPassportPreview — unlocked evidence sections", () => {
+  const UNLOCK_SLUG = "unlock-test-slug"
+
+  beforeEach(() => { clearMockEvidenceAccessRequests() })
+
+  function seedApproved(approvedTypes: string[]) {
+    const req = createAccessRequest(
+      {
+        requesterName: "R",
+        requesterEmail: "r@co.com",
+        company: "",
+        role: "",
+        reason: "",
+        requestedEvidenceTypes: approvedTypes,
+        messageToStudent: "",
+      },
+      UNLOCK_SLUG,
+    )
+    approveAccessRequest(req.id, approvedTypes)
+  }
+
+  it("shows workflow recordings section when workflow_recordings is approved", async () => {
+    seedApproved(["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-evidence-section")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("unlocked-workflow-recordings")).toBeInTheDocument()
+    // Count badge shows 3 available (from fallback titles)
+    expect(screen.getByText("3 available")).toBeInTheDocument()
+    // Fallback recording titles rendered
+    expect(screen.getByText(/Browser ML Demo/i)).toBeInTheDocument()
+    expect(screen.getByText(/Three\.js WebGL/i)).toBeInTheDocument()
+    expect(screen.getByText(/HuggingChat/i)).toBeInTheDocument()
+    // Other sections absent
+    expect(screen.queryByTestId("unlocked-project-defense")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("unlocked-detailed-skill-evidence")).not.toBeInTheDocument()
+  })
+
+  it("shows project defense summary section when project_defense_media is approved", async () => {
+    seedApproved(["project_defense_media"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-project-defense")).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/Project defense transcript available/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/Candidate explained project goal, implementation approach/i),
+    ).toBeInTheDocument()
+    // Other sections absent
+    expect(screen.queryByTestId("unlocked-workflow-recordings")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("unlocked-detailed-skill-evidence")).not.toBeInTheDocument()
+  })
+
+  it("shows skill evidence breakdown section when detailed_skill_evidence is approved", async () => {
+    seedApproved(["detailed_skill_evidence"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-detailed-skill-evidence")).toBeInTheDocument(),
+    )
+    // Fallback skill rows rendered
+    expect(screen.getByText("AI / Machine Learning")).toBeInTheDocument()
+    expect(screen.getByText("JavaScript / Frontend")).toBeInTheDocument()
+    expect(screen.getByText("Data & Visualization")).toBeInTheDocument()
+    // Other sections absent
+    expect(screen.queryByTestId("unlocked-workflow-recordings")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("unlocked-project-defense")).not.toBeInTheDocument()
+  })
+
+  it("shows all three sections when all three evidence types are approved", async () => {
+    seedApproved(["workflow_recordings", "project_defense_media", "detailed_skill_evidence"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-evidence-section")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("unlocked-workflow-recordings")).toBeInTheDocument()
+    expect(screen.getByTestId("unlocked-project-defense")).toBeInTheDocument()
+    expect(screen.getByTestId("unlocked-detailed-skill-evidence")).toBeInTheDocument()
+    // Section heading and privacy notice
+    expect(screen.getByText(/Protected evidence unlocked/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/Only evidence types approved by the student are visible/i),
+    ).toBeInTheDocument()
+  })
+
+  it("unlocked_documents only does NOT render any unlocked section (no matching handler)", async () => {
+    seedApproved(["uploaded_documents"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    // approved card still shown but no unlocked section (uploaded_documents has no rich view)
+    await waitFor(() =>
+      expect(screen.getByTestId("access-approved-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("unlocked-evidence-section")).not.toBeInTheDocument()
+  })
+
+  it("pending state does not show unlocked evidence section", async () => {
+    createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      UNLOCK_SLUG,
+    )
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("unlocked-evidence-section")).not.toBeInTheDocument()
+  })
+
+  it("denied state does not show unlocked evidence section", async () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      UNLOCK_SLUG,
+    )
+    denyAccessRequest(req.id)
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-denied-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("unlocked-evidence-section")).not.toBeInTheDocument()
+  })
+
+  it("revoked state does not show unlocked evidence section", async () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      UNLOCK_SLUG,
+    )
+    approveAccessRequest(req.id, ["workflow_recordings"])
+    revokeAccessRequest(req.id)
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-revoked-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("unlocked-evidence-section")).not.toBeInTheDocument()
+  })
+
+  it("after reset, re-mounted component shows Request Evidence Access CTA (not unlocked section)", async () => {
+    seedApproved(["workflow_recordings", "detailed_skill_evidence"])
+
+    const { unmount } = render(
+      <RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />,
+    )
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-evidence-section")).toBeInTheDocument(),
+    )
+
+    // Simulate the banner reset: clear store then unmount+remount (key change in page)
+    clearMockEvidenceAccessRequests()
+    unmount()
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    // Store is empty for UNLOCK_SLUG → no request → CTA shown
+    await waitFor(() =>
+      expect(screen.getByTestId("request-access-btn")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("unlocked-evidence-section")).not.toBeInTheDocument()
+  })
+
+  it("no private URLs, tokens, or debug metadata in approved unlocked section", async () => {
+    seedApproved(["workflow_recordings", "project_defense_media", "detailed_skill_evidence"])
+
+    let container!: HTMLElement
+    await act(async () => {
+      const result = render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+      container = result.container
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-evidence-section")).toBeInTheDocument(),
+    )
+
+    const html = container.innerHTML
+    expect(html).not.toContain("media_storage_path")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("transcript_text")
+    expect(html).not.toContain("private_url")
+    expect(html).not.toContain("raw_risk")
+    expect(html).not.toContain("debug_metadata")
+    expect(html).not.toContain("admin_notes")
+    // Actual recording titles are label-only, no URL tokens
+    expect(html).not.toContain("blob:")
+    expect(html).not.toContain("storage.googleapis.com")
+  })
+
+  it("uses public_project_links labels as recording titles when provided in the view", async () => {
+    seedApproved(["workflow_recordings"])
+
+    const viewWithLinks = {
+      ...makeRecruiterView(UNLOCK_SLUG),
+      public_project_links: [
+        { label: "Custom Project Alpha", url: "https://example.com/alpha" },
+        { label: "Custom Project Beta",  url: "https://example.com/beta" },
+      ],
+    }
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={viewWithLinks} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-workflow-recordings")).toBeInTheDocument(),
+    )
+    // titles appear both in project-links section and workflow section — at least one match is enough
+    expect(screen.getAllByText("Custom Project Alpha").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Custom Project Beta").length).toBeGreaterThan(0)
+    // Badge shows count from the provided links
+    expect(screen.getByText("2 available")).toBeInTheDocument()
+  })
+})

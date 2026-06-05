@@ -20,7 +20,7 @@
 import { useState, useEffect } from "react"
 import { EvidenceAccessRequestModal } from "./EvidenceAccessRequestModal"
 import { listStudentAccessRequests } from "../../src/lib/mock-evidence-access-store"
-import type { EvidenceAccessRequest } from "../../src/types/evidence-access"
+import { normaliseEvidenceKey, type EvidenceAccessRequest } from "../../src/types/evidence-access"
 import type {
   RecruiterPassportViewResponse,
   RecruiterSkillGroupResponse,
@@ -471,6 +471,198 @@ function DecisionHelpersSection({
   )
 }
 
+// ── Section: Protected Evidence Unlocked ─────────────────────────────────────
+// Shown only when the student has approved access.  All content is mock /
+// recruiter-safe: no private storage URLs, access tokens, raw transcripts,
+// media_storage_path, debug metadata, or admin notes.
+
+const RECORDING_META = [
+  { duration: "4:32", date: "May 28, 2026" },
+  { duration: "6:18", date: "May 26, 2026" },
+  { duration: "2:47", date: "May 22, 2026" },
+]
+
+function MockRecordingCard({ title, index }: { title: string; index: number }) {
+  const m = RECORDING_META[index] ?? { duration: "3:00", date: "May 2026" }
+  return (
+    <div style={{
+      padding: "9px 12px",
+      background: C.bg,
+      border: `1px solid ${C.line}`,
+      borderRadius: 7,
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+    }}>
+      <span style={{ fontSize: 16, flexShrink: 0 }}>🎬</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <p style={{
+          fontSize: 12, fontWeight: 600, color: C.ink,
+          margin: "0 0 2px",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          {title}
+        </p>
+        <p style={{ fontSize: 10, color: C.muted, margin: 0 }}>
+          {m.duration} · Recorded {m.date}
+        </p>
+      </div>
+      <span style={{
+        fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 999,
+        background: C.emeraldSoft, color: C.emerald, border: "1px solid #bbf7d0",
+        flexShrink: 0,
+      }}>
+        Available
+      </span>
+    </div>
+  )
+}
+
+function UnlockedWorkflowSection({ links }: { links: Array<{ label: string; url: string }> }) {
+  const titles = links.length > 0
+    ? links.map((l) => l.label)
+    : [
+        "Browser ML Demo — Teachable Machine",
+        "Three.js WebGL Geometry Demo",
+        "HuggingChat LLM Interface",
+      ]
+  return (
+    <div data-testid="unlocked-workflow-recordings">
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <span style={{
+          fontSize: 11, fontWeight: 800, letterSpacing: "0.1em",
+          textTransform: "uppercase", color: C.muted,
+        }}>
+          Workflow recordings
+        </span>
+        <span style={{
+          fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 999,
+          background: C.emeraldSoft, color: C.emerald, border: "1px solid #bbf7d0",
+        }}>
+          {titles.length} available
+        </span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {titles.map((title, i) => (
+          <MockRecordingCard key={i} title={title} index={i} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function UnlockedProjectDefenseSection() {
+  return (
+    <div data-testid="unlocked-project-defense">
+      <div style={{
+        fontSize: 11, fontWeight: 800, letterSpacing: "0.1em",
+        textTransform: "uppercase", color: C.muted, marginBottom: 10,
+      }}>
+        Project defense media / transcript
+      </div>
+      <div style={{
+        padding: "12px 14px",
+        background: C.bg,
+        border: `1px solid ${C.line}`,
+        borderRadius: 8,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <span style={{ fontSize: 16, flexShrink: 0 }}>📋</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>
+            Project defense transcript available
+          </span>
+        </div>
+        <p style={{ fontSize: 12, color: C.inkSoft, margin: 0, lineHeight: 1.6 }}>
+          Candidate explained project goal, implementation approach, evidence sources, and limitations.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function UnlockedSkillEvidenceSection({ groups }: { groups: RecruiterSkillGroupResponse[] }) {
+  type Row = { name: string; sources: string[] }
+  const rows: Row[] = groups.length > 0
+    ? groups.map((g) => ({ name: g.group_name, sources: g.source_labels }))
+    : [
+        { name: "AI / Machine Learning",  sources: ["Website Workflow", "GitHub", "AI Visual Analysis", "Documents"] },
+        { name: "JavaScript / Frontend",  sources: ["GitHub", "Website Workflow", "OCR"] },
+        { name: "Data & Visualization",   sources: ["Website Workflow", "OCR", "Documents"] },
+      ]
+  return (
+    <div data-testid="unlocked-detailed-skill-evidence">
+      <div style={{
+        fontSize: 11, fontWeight: 800, letterSpacing: "0.1em",
+        textTransform: "uppercase", color: C.muted, marginBottom: 10,
+      }}>
+        Detailed skill evidence
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {rows.map((row) => (
+          <div key={row.name} style={{
+            padding: "8px 12px",
+            background: C.bg,
+            border: `1px solid ${C.line}`,
+            borderRadius: 7,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+          }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: C.ink, flex: "0 0 auto", minWidth: 160 }}>
+              {row.name}
+            </span>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {row.sources.map((src) => (
+                <span key={src} style={{
+                  fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 4,
+                  background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe",
+                }}>
+                  {src}
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ProtectedEvidenceUnlockedSection({
+  approvedTypes,
+  view,
+}: {
+  approvedTypes: string[]
+  view: RecruiterPassportViewResponse
+}) {
+  const normed = approvedTypes.map((k) => normaliseEvidenceKey(k))
+  const hasWorkflow = normed.includes("workflow_recordings")
+  const hasDefense  = normed.includes("project_defense_media")
+  const hasSkills   = normed.includes("detailed_skill_evidence")
+
+  if (!hasWorkflow && !hasDefense && !hasSkills) return null
+
+  return (
+    <Card data-testid="unlocked-evidence-section" style={{ border: `1px solid ${C.line}` }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+        <span style={{ fontSize: 16, flexShrink: 0 }}>🔓</span>
+        <p style={{ fontWeight: 800, fontSize: 14, color: C.ink, margin: 0 }}>
+          Protected evidence unlocked
+        </p>
+      </div>
+      <p style={{ fontSize: 11, color: C.muted, margin: "0 0 18px", fontStyle: "italic" }}>
+        Only evidence types approved by the student are visible.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+        {hasWorkflow && <UnlockedWorkflowSection links={view.public_project_links} />}
+        {hasDefense  && <UnlockedProjectDefenseSection />}
+        {hasSkills   && <UnlockedSkillEvidenceSection groups={view.skill_groups} />}
+      </div>
+    </Card>
+  )
+}
+
 // ── Store lookup helper ───────────────────────────────────────────────────────
 // Reads the mock store and returns the most-relevant access request for a given
 // passport slug.  When the recruiter's email is known, their own request is
@@ -831,6 +1023,14 @@ export function RecruiterWorkPassportPreview({
               </div>
             </Card>
           )
+        )}
+
+        {/* 6. Unlocked evidence sections — only when access is approved */}
+        {view.has_protected_evidence && accessRequest?.status === "approved" && (
+          <ProtectedEvidenceUnlockedSection
+            approvedTypes={accessRequest.approvedEvidenceTypes ?? []}
+            view={view}
+          />
         )}
 
         {/* Disclosure */}
