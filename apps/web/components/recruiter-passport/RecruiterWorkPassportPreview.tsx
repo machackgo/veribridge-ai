@@ -257,82 +257,266 @@ function EvidenceScoreSection({
 
 function SkillGroupCard({
   group,
+  accessApproved,
   onViewEvidence,
 }: {
   group: RecruiterSkillGroupResponse
+  accessApproved: boolean
   onViewEvidence?: () => void
 }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const bundle = getSkillBundle(group.group_name)
+
+  const supportColor =
+    bundle.supportStatus === "strongly supported" ? C.emerald
+    : bundle.supportStatus === "partially supported" ? C.amber
+    : C.muted
+  const supportBg =
+    bundle.supportStatus === "strongly supported" ? C.emeraldSoft
+    : bundle.supportStatus === "partially supported" ? C.amberSoft
+    : C.bg
+  const supportBorder =
+    bundle.supportStatus === "strongly supported" ? "#bbf7d0"
+    : bundle.supportStatus === "partially supported" ? "#fde68a"
+    : C.line
+
+  // Build inline proof snippets: visual → github → transcript/doc
+  type InlineSnippet = { type: string; text: string; isProtected: boolean; lockLabel?: string }
+  const snippets: InlineSnippet[] = []
+
+  const publicVisual = bundle.visualEvidence.find((f) => !f.isProtected)
+  const firstProtectedVisual = bundle.visualEvidence.find((f) => f.isProtected)
+  if (bundle.visualEvidence.length > 0) {
+    if (publicVisual) {
+      snippets.push({ type: "Visual", text: `${publicVisual.label}. ${publicVisual.observation}`, isProtected: false })
+    } else if (firstProtectedVisual) {
+      if (accessApproved) {
+        snippets.push({ type: "Visual", text: `${firstProtectedVisual.label}. ${firstProtectedVisual.observation}`, isProtected: false })
+      } else {
+        snippets.push({ type: "Visual", text: "", isProtected: true, lockLabel: "Keyframe evidence" })
+      }
+    }
+  }
+
+  if (bundle.githubEvidence.length > 0) {
+    const f = bundle.githubEvidence[0]
+    const filename = f.path.split("/").pop() ?? f.path
+    snippets.push({ type: "GitHub", text: `${filename} — ${f.reason}`, isProtected: false })
+  }
+
+  if (snippets.length < 3) {
+    const firstT = bundle.transcriptEvidence[0]
+    const firstDoc = bundle.documentEvidence.find((d) => !d.isProtected) ?? bundle.documentEvidence[0]
+    if (firstT) {
+      if (firstT.isProtected && !accessApproved) {
+        snippets.push({ type: "Transcript", text: "", isProtected: true, lockLabel: "Transcript excerpt" })
+      } else {
+        const t = firstT.excerpt.length > 130 ? `${firstT.excerpt.substring(0, 130)}...` : firstT.excerpt
+        snippets.push({ type: "Transcript", text: `"${t}"`, isProtected: false })
+      }
+    } else if (firstDoc) {
+      if (firstDoc.isProtected && !accessApproved) {
+        snippets.push({ type: "Document", text: "", isProtected: true, lockLabel: "Document evidence" })
+      } else {
+        const t = firstDoc.snippet.length > 130 ? `${firstDoc.snippet.substring(0, 130)}...` : firstDoc.snippet
+        snippets.push({ type: "Document", text: `${firstDoc.title}: "${t}"`, isProtected: false })
+      }
+    }
+  }
+
+  const typeColors: Record<string, string> = {
+    Visual: C.violet, GitHub: C.emerald, Transcript: C.sky, Document: C.amber,
+  }
+  const typeBgs: Record<string, string> = {
+    Visual: C.violetSoft, GitHub: C.emeraldSoft, Transcript: C.skySoft, Document: C.amberSoft,
+  }
+
+  const hasProtectedEvidence = bundle.protectedEvidenceFlags.length > 0
+
   return (
-    <div style={{
-      border: `1px solid ${confidenceBorder(group.confidence)}`,
-      borderRadius: 10,
-      overflow: "hidden",
-    }}>
-      {/* Group header */}
+    <div
+      data-testid={`skill-group-card-${group.group_name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+      style={{
+        border: `1px solid ${confidenceBorder(group.confidence)}`,
+        borderRadius: 10,
+        overflow: "hidden",
+      }}
+    >
+      {/* Header */}
       <div style={{
-        padding: "10px 14px",
+        padding: "12px 14px",
         background: confidenceBg(group.confidence),
-        borderBottom: `1px solid ${confidenceBorder(group.confidence)}`,
+        borderBottom: collapsed ? "none" : `1px solid ${confidenceBorder(group.confidence)}`,
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         justifyContent: "space-between",
         gap: 8,
-        flexWrap: "wrap",
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{group.group_name}</span>
-          <ConfidenceBadge level={group.confidence} />
-        </div>
-        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-          {group.source_labels.map((lbl) => (
-            <SourceBadge key={lbl} label={lbl} />
-          ))}
-          {onViewEvidence && (
-            <button
-              type="button"
-              data-testid="view-skill-evidence-btn"
-              onClick={onViewEvidence}
-              style={{
-                fontSize: 11, fontWeight: 600, color: C.indigo,
-                background: C.indigoSoft, border: "1px solid #c7d2fe",
-                borderRadius: 5, padding: "3px 9px", cursor: "pointer", flexShrink: 0,
-              }}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{group.group_name}</span>
+            <ConfidenceBadge level={group.confidence} />
+            <span style={{
+              fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+              background: supportBg, color: supportColor,
+              border: `1px solid ${supportBorder}`,
+              whiteSpace: "nowrap",
+            }}>
+              {bundle.supportStatus}
+            </span>
+          </div>
+          {!collapsed && (
+            <p
+              data-testid="skill-group-evidence-summary"
+              style={{ fontSize: 11, color: C.inkSoft, margin: "6px 0 0", lineHeight: 1.5 }}
             >
-              View skill evidence
-            </button>
+              {bundle.explanation}
+            </p>
           )}
         </div>
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          aria-label={collapsed ? "Expand skill evidence" : "Collapse skill evidence"}
+          style={{
+            fontSize: 10, fontWeight: 600, color: C.muted,
+            background: "none", border: "none", cursor: "pointer",
+            padding: "2px 6px", flexShrink: 0,
+          }}
+        >
+          {collapsed ? "▼" : "▲"}
+        </button>
       </div>
 
-      {/* Skills list */}
-      <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
-        {group.skills.map((skill) => (
-          <div key={skill.skill} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{
-              fontSize: 12, fontWeight: 600, color: C.ink, minWidth: 0,
+      {/* Expanded body */}
+      {!collapsed && (
+        <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
+
+          {/* Source coverage */}
+          <div data-testid="skill-group-source-coverage">
+            <div style={{
+              fontSize: 9, fontWeight: 800, letterSpacing: "0.08em",
+              textTransform: "uppercase" as const, color: C.muted, marginBottom: 6,
             }}>
-              {skill.skill}
-            </span>
-            <span style={{
-              fontSize: 10, color: confidenceColor(skill.confidence),
-              fontStyle: "italic",
+              Source coverage
+            </div>
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(155px, 1fr))",
+              gap: 6,
             }}>
-              {skill.status_label}
-            </span>
-            <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
-              {skill.source_labels.map((lbl) => (
-                <span key={lbl} style={{
-                  fontSize: 9, padding: "1px 5px", borderRadius: 4,
-                  background: C.indigoSoft, color: C.indigo,
-                  border: "1px solid #c7d2fe",
-                }}>
-                  {lbl}
-                </span>
+              {bundle.sources.map((source) => (
+                <SkillSourceCoverageCard key={source.key} source={source} />
               ))}
             </div>
           </div>
-        ))}
-      </div>
+
+          {/* Inline proof snippets */}
+          {snippets.length > 0 && (
+            <div data-testid="skill-group-inline-snippets">
+              <div style={{
+                fontSize: 9, fontWeight: 800, letterSpacing: "0.08em",
+                textTransform: "uppercase" as const, color: C.muted, marginBottom: 6,
+              }}>
+                Proof snippets
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {snippets.map((snippet, i) =>
+                  snippet.isProtected ? (
+                    <div
+                      key={i}
+                      data-testid="skill-group-protected-lock"
+                      style={{
+                        padding: "7px 10px", borderRadius: 7,
+                        background: C.indigoSoft, border: "1px solid #c7d2fe",
+                        display: "flex", alignItems: "center", gap: 7,
+                      }}
+                    >
+                      <span style={{ fontSize: 12, flexShrink: 0 }}>🔒</span>
+                      <span style={{ fontSize: 11, color: C.indigo }}>
+                        {snippet.lockLabel} — Protected evidence available. Request student approval to view.
+                      </span>
+                    </div>
+                  ) : (
+                    <div key={i} style={{
+                      padding: "7px 10px", borderRadius: 7,
+                      background: C.bg, border: `1px solid ${C.line}`,
+                      display: "flex", alignItems: "flex-start", gap: 8,
+                    }}>
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+                        background: typeBgs[snippet.type] ?? C.bg,
+                        color: typeColors[snippet.type] ?? C.muted,
+                        flexShrink: 0, marginTop: 1,
+                      }}>
+                        {snippet.type}
+                      </span>
+                      <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                        {snippet.text}
+                      </p>
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Skills list */}
+          <div>
+            <div style={{
+              fontSize: 9, fontWeight: 800, letterSpacing: "0.08em",
+              textTransform: "uppercase" as const, color: C.muted, marginBottom: 5,
+            }}>
+              Skills in group
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {group.skills.map((skill) => (
+                <div key={skill.skill} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{skill.skill}</span>
+                  <span style={{ fontSize: 10, color: confidenceColor(skill.confidence), fontStyle: "italic" }}>
+                    {skill.status_label}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div style={{
+            paddingTop: 10,
+            borderTop: `1px solid ${confidenceBorder(group.confidence)}`,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: 8, flexWrap: "wrap",
+          }}>
+            <div>
+              {hasProtectedEvidence && !accessApproved && (
+                <span style={{ fontSize: 10, color: C.indigo, fontStyle: "italic" }}>
+                  Protected evidence available — request student approval
+                </span>
+              )}
+              {hasProtectedEvidence && accessApproved && (
+                <span style={{ fontSize: 10, color: C.emerald, fontWeight: 600 }}>
+                  Protected evidence approved
+                </span>
+              )}
+            </div>
+            {onViewEvidence && (
+              <button
+                type="button"
+                data-testid="view-skill-evidence-btn"
+                onClick={onViewEvidence}
+                style={{
+                  fontSize: 11, fontWeight: 600, color: C.indigo,
+                  background: C.indigoSoft, border: "1px solid #c7d2fe",
+                  borderRadius: 5, padding: "3px 9px", cursor: "pointer", flexShrink: 0,
+                }}
+              >
+                View skill evidence
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -343,24 +527,26 @@ function SkillGroupsSection({
   partial,
   needsReview,
   onViewSkill,
+  accessApproved,
 }: {
   groups: RecruiterSkillGroupResponse[]
   verified: string[]
   partial: string[]
   needsReview: string[]
   onViewSkill?: (skillName: string) => void
+  accessApproved: boolean
 }) {
-  // Prefer grouped evidence if available; fall back to flat skill lists
   const hasGroups = groups.length > 0
   return (
-    <Card>
+    <Card data-testid="evidence-backed-skills-section">
       <SectionTitle>Evidence-Backed Skills</SectionTitle>
       {hasGroups ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {groups.map((g) => (
             <SkillGroupCard
               key={g.group_name}
               group={g}
+              accessApproved={accessApproved}
               onViewEvidence={onViewSkill ? () => onViewSkill(g.group_name) : undefined}
             />
           ))}
@@ -2703,6 +2889,7 @@ export function RecruiterWorkPassportPreview({
             partial={view.partially_verified_skills}
             needsReview={view.skills_needing_review}
             onViewSkill={setSelectedSkill}
+            accessApproved={accessRequest?.status === "approved"}
           />
         )}
 

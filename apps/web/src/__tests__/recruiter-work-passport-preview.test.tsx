@@ -700,3 +700,132 @@ describe("Recruiter shortlist page — demo preview card", () => {
     expect(src).toContain("CandidateComparisonPanel")
   })
 })
+
+// ── Inline skill evidence cards ───────────────────────────────────────────────
+
+describe("RecruiterWorkPassportPreview — inline skill evidence cards", () => {
+  function makeGroupedView(overrides: Partial<RecruiterPassportViewResponse> = {}): RecruiterPassportViewResponse {
+    return makeView({
+      skill_groups: [
+        {
+          group_name: "AI / Machine Learning",
+          category: "AI/ML",
+          confidence: "high",
+          evidence_count: 4,
+          source_labels: ["GitHub", "Website Workflow", "Documents"],
+          skills: [
+            { skill: "Machine Learning", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] },
+            { skill: "TensorFlow.js",    confidence: "high", status_label: "strongly supported", source_labels: ["GitHub", "Website Workflow"] },
+          ],
+        },
+        {
+          group_name: "JavaScript / Frontend",
+          category: "Frontend",
+          confidence: "high",
+          evidence_count: 3,
+          source_labels: ["GitHub", "Website Workflow"],
+          skills: [
+            { skill: "React", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] },
+          ],
+        },
+        {
+          group_name: "DevOps / Deployment",
+          category: "DevOps",
+          confidence: "low",
+          evidence_count: 1,
+          source_labels: ["Documents"],
+          skills: [
+            { skill: "CI/CD", confidence: "low", status_label: "needs review", source_labels: ["Documents"] },
+          ],
+        },
+      ],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+      ...overrides,
+    })
+  }
+
+  it("Evidence-Backed Skills renders expanded inline evidence summaries without opening modal", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    expect(screen.getAllByTestId("skill-group-source-coverage").length).toBeGreaterThan(0)
+    expect(screen.getAllByTestId("skill-group-inline-snippets").length).toBeGreaterThan(0)
+  })
+
+  it("AI/ML card shows source coverage inline: workflow, visual/OCR, GitHub, defense, documents", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    const coverage = screen.getAllByTestId("skill-group-source-coverage")[0]
+    expect(coverage.textContent).toMatch(/Workflow recording/i)
+    expect(coverage.textContent).toMatch(/GitHub code/i)
+    expect(coverage.textContent).toMatch(/Documents/i)
+    expect(coverage.textContent).toMatch(/Project defense/i)
+    expect(coverage.textContent).toMatch(/OCR/i)
+  })
+
+  it("AI/ML card shows skill-specific inline snippets, not generic fallback text", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    const snippets = screen.getAllByTestId("skill-group-inline-snippets")[0]
+    expect(snippets.textContent).toMatch(/Model inference UI visible/i)
+    expect(snippets.textContent).not.toMatch(/Workflow evidence reviewed/i)
+  })
+
+  it("JavaScript/Frontend card shows different inline evidence than AI/ML", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    const allSnippets = screen.getAllByTestId("skill-group-inline-snippets")
+    expect(allSnippets[0].textContent).toMatch(/Model inference UI visible/i)
+    expect(allSnippets[1].textContent).toMatch(/React UI interaction/i)
+    expect(allSnippets[1].textContent).not.toMatch(/Model inference UI visible/i)
+  })
+
+  it("DevOps/Deployment card shows needs-review explanation inline", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    expect(screen.getByText(/limited evidence of deployment skills/i)).toBeInTheDocument()
+  })
+
+  it("DevOps/Deployment source coverage shows Missing for workflow and GitHub sources", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    const coverage = screen.getAllByTestId("skill-group-source-coverage")[2]
+    expect(coverage.textContent).toMatch(/Missing/i)
+    expect(coverage.textContent).not.toMatch(/Supported/i)
+  })
+
+  it("public-safe evidence is visible on card before approval", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView({ has_protected_evidence: true })} />)
+    const snippets = screen.getAllByTestId("skill-group-inline-snippets")[0]
+    expect(snippets.textContent).toMatch(/Model inference UI visible/i)
+  })
+
+  it("protected evidence shows inline lock on card before approval", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView({ has_protected_evidence: true })} />)
+    const locks = screen.getAllByTestId("skill-group-protected-lock")
+    expect(locks.length).toBeGreaterThan(0)
+    expect(locks[0].textContent).toMatch(/Protected evidence available/i)
+  })
+
+  it("View skill evidence button still opens the skill evidence detail modal", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
+    expect(screen.getByTestId("skill-evidence-detail-modal")).toBeInTheDocument()
+  })
+
+  it("each card shows support status (strongly supported / partially supported / needs review)", () => {
+    render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
+    expect(screen.getAllByText(/strongly supported/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/needs review/i).length).toBeGreaterThan(0)
+  })
+
+  it("inline rendered html does not contain unsafe private strings", () => {
+    const { container } = render(
+      <RecruiterWorkPassportPreview view={makeGroupedView({ has_protected_evidence: true })} />,
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain("localhost")
+    expect(html).not.toContain("127.0.0.1")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("session_id")
+    expect(html).not.toContain("storage_path")
+    expect(html).not.toContain("raw_url")
+    expect(html).not.toContain("supabase")
+    expect(html).not.toContain("token=")
+  })
+})
