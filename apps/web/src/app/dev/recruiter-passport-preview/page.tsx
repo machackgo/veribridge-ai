@@ -11,7 +11,11 @@
 
 import { useState } from "react"
 import { RecruiterWorkPassportPreview } from "../../../../components/recruiter-passport/RecruiterWorkPassportPreview"
-import { createAccessRequest } from "../../../lib/mock-evidence-access-store"
+import {
+  createAccessRequest,
+  resetAccessRequestStore,
+  DEMO_PASSPORT_SLUG,
+} from "../../../lib/mock-evidence-access-store"
 import type { RecruiterPassportViewResponse } from "../../../lib/passport-api"
 import type { EvidenceAccessFormData } from "../../../../components/recruiter-passport/EvidenceAccessRequestModal"
 
@@ -20,7 +24,7 @@ import type { EvidenceAccessFormData } from "../../../../components/recruiter-pa
 // no raw transcripts, no admin notes, no private URLs, no debug metadata.
 
 const MOCK_VIEW: RecruiterPassportViewResponse = {
-  public_slug: "maya-reyes-ai-wpi-preview",
+  public_slug: DEMO_PASSPORT_SLUG,
   student_display_name: "Maya Reyes",
   field: "Artificial Intelligence / Data Science",
   public_title: "AI Engineer Intern — WPI",
@@ -224,6 +228,15 @@ function handleRequestCreated(data: EvidenceAccessFormData) {
 
 export default function DevRecruiterPassportPreviewPage() {
   const [accessRequested, setAccessRequested] = useState(false)
+  // Incrementing resetKey remounts RecruiterWorkPassportPreview so its useEffect
+  // re-reads the store after a reset.
+  const [resetKey, setResetKey] = useState(0)
+
+  const handleReset = () => {
+    resetAccessRequestStore()
+    setAccessRequested(false)
+    setResetKey((k) => k + 1)
+  }
 
   return (
     <div style={{
@@ -238,17 +251,30 @@ export default function DevRecruiterPassportPreviewPage() {
         padding: "10px 20px",
         display: "flex",
         alignItems: "center",
+        justifyContent: "space-between",
         gap: 10,
+        flexWrap: "wrap",
       }}>
-        <span style={{ fontSize: 16 }}>🛠</span>
-        <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 16 }}>🛠</span>
           <span style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>
             Development preview — mock recruiter-safe data
           </span>
-          <span style={{ fontSize: 12, color: "#b45309", marginLeft: 12 }}>
+          <span style={{ fontSize: 12, color: "#b45309" }}>
             No backend call · No private fields · Not linked in production
           </span>
         </div>
+        <button
+          type="button"
+          onClick={handleReset}
+          style={{
+            fontSize: 11, fontWeight: 600, color: "#92400e",
+            background: "#fef3c7", border: "1px solid #f59e0b",
+            borderRadius: 6, padding: "4px 10px", cursor: "pointer",
+          }}
+        >
+          Reset mock requests
+        </button>
       </div>
 
       {/* Candidate header */}
@@ -292,6 +318,7 @@ export default function DevRecruiterPassportPreviewPage() {
       {/* Preview content */}
       <div style={{ maxWidth: 860, margin: "0 auto", padding: "28px 20px 48px" }}>
         <RecruiterWorkPassportPreview
+          key={resetKey}
           view={MOCK_VIEW}
           onRequestAccess={() => setAccessRequested(true)}
           onRequestCreated={handleRequestCreated}

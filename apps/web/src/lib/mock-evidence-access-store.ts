@@ -4,8 +4,9 @@
  * Provides a localStorage-backed store so that:
  *  - A recruiter submitting a request in /dev/recruiter-passport-preview
  *    persists the request locally.
- *  - The student dev page (/dev/student-access-requests) reads the same
- *    localStorage key and shows the pending request.
+ *  - The student dev page (/dev/student-access-requests) and the dashboard
+ *    access page (/dashboard/passport/access) read the same localStorage key
+ *    and show the pending request.
  *
  * Key: "vb_dev_access_requests"
  *
@@ -15,12 +16,18 @@
 
 import type { EvidenceAccessRequest, EvidenceAccessStatus, EvidenceAccessFormInput } from "../types/evidence-access"
 
+// ── Canonical demo passport slug ──────────────────────────────────────────────
+// All dev/mock pages must use this constant so recruiter, student dev, and
+// student dashboard all operate on the same requests.
+
+export const DEMO_PASSPORT_SLUG = "maya-reyes-ai-wpi-preview"
+
 // ── Default sample requests (shown when store is empty) ───────────────────────
 
 const SAMPLE_REQUESTS: EvidenceAccessRequest[] = [
   {
     id: "sample-stripe-001",
-    passportSlug: "maya-reyes-ai-wpi-preview",
+    passportSlug: DEMO_PASSPORT_SLUG,
     requesterName: "Stripe Early Talent",
     requesterEmail: "recruiter@stripe.com",
     company: "Stripe",
@@ -33,7 +40,7 @@ const SAMPLE_REQUESTS: EvidenceAccessRequest[] = [
   },
   {
     id: "sample-wpi-002",
-    passportSlug: "maya-reyes-ai-wpi-preview",
+    passportSlug: DEMO_PASSPORT_SLUG,
     requesterName: "WPI Faculty Reviewer",
     requesterEmail: "faculty@wpi.edu",
     company: "Worcester Polytechnic Institute",
@@ -80,17 +87,52 @@ export function listStudentAccessRequests(): EvidenceAccessRequest[] {
 }
 
 /**
- * Create a new access request (called from recruiter modal on submit).
- * Stores the request so the student dev page can read it.
+ * Create or update an access request (upsert by requesterEmail + passportSlug).
+ *
+ * If a request from the same recruiter email for the same passport already
+ * exists, it is updated to a fresh pending state rather than creating a
+ * duplicate entry.  This prevents stale duplicate pending requests accumulating
+ * in the store across multiple test submissions.
  */
 export function createAccessRequest(
   input: EvidenceAccessFormInput,
   passportSlug?: string,
 ): EvidenceAccessRequest {
   const requests = load()
+  const slug = passportSlug ?? null
+  const now = new Date().toISOString()
+
+  // Upsert: find existing request from same recruiter for same passport
+  const existingIdx =
+    slug && input.requesterEmail
+      ? requests.findIndex(
+          (r) => r.passportSlug === slug && r.requesterEmail === input.requesterEmail,
+        )
+      : -1
+
+  if (existingIdx !== -1) {
+    const updated: EvidenceAccessRequest = {
+      id: requests[existingIdx].id,
+      passportSlug: slug,
+      requesterName: input.requesterName,
+      requesterEmail: input.requesterEmail,
+      company: input.company || null,
+      role: input.role || null,
+      reason: input.reason || null,
+      message: input.messageToStudent || null,
+      requestedEvidenceTypes: input.requestedEvidenceTypes,
+      status: "pending",
+      requestedAt: now,
+      decidedAt: null,
+    }
+    const rest = requests.filter((_, i) => i !== existingIdx)
+    save([updated, ...rest])
+    return updated
+  }
+
   const request: EvidenceAccessRequest = {
     id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    passportSlug: passportSlug ?? null,
+    passportSlug: slug,
     requesterName: input.requesterName,
     requesterEmail: input.requesterEmail,
     company: input.company || null,
@@ -99,7 +141,7 @@ export function createAccessRequest(
     message: input.messageToStudent || null,
     requestedEvidenceTypes: input.requestedEvidenceTypes,
     status: "pending",
-    requestedAt: new Date().toISOString(),
+    requestedAt: now,
   }
   save([request, ...requests])
   return request

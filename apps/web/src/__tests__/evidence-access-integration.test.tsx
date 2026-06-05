@@ -13,6 +13,7 @@ import {
   revokeAccessRequest,
   clearAccessRequestStore,
   resetAccessRequestStore,
+  DEMO_PASSPORT_SLUG,
 } from "../lib/mock-evidence-access-store"
 import {
   evidenceLabel,
@@ -145,6 +146,134 @@ describe("mock-evidence-access-store", () => {
     resetAccessRequestStore()
     const restored = listStudentAccessRequests()
     expect(restored.some((r) => r.requesterName === "Stripe Early Talent")).toBe(true)
+  })
+})
+
+// ── 2b. Canonical slug + upsert behaviour ─────────────────────────────────────
+
+describe("mock-evidence-access-store — canonical slug and upsert", () => {
+  beforeEach(() => { clearAccessRequestStore() })
+
+  it("DEMO_PASSPORT_SLUG is exported and sample data uses it", () => {
+    expect(typeof DEMO_PASSPORT_SLUG).toBe("string")
+    expect(DEMO_PASSPORT_SLUG.length).toBeGreaterThan(0)
+    const samples = listStudentAccessRequests()
+    expect(samples.every((r) => r.passportSlug === DEMO_PASSPORT_SLUG)).toBe(true)
+  })
+
+  it("createAccessRequest upserts when same recruiterEmail+passportSlug already exists", () => {
+    const req1 = createAccessRequest(
+      {
+        requesterName: "R First",
+        requesterEmail: "upsert@co.com",
+        company: "Co",
+        role: "Recruiter",
+        reason: "First submit",
+        requestedEvidenceTypes: ["workflow_recordings"],
+        messageToStudent: "",
+      },
+      "upsert-test-slug",
+    )
+    const req2 = createAccessRequest(
+      {
+        requesterName: "R Updated",
+        requesterEmail: "upsert@co.com",
+        company: "Co",
+        role: "Recruiter",
+        reason: "Re-submit",
+        requestedEvidenceTypes: ["detailed_skill_evidence"],
+        messageToStudent: "Hi again",
+      },
+      "upsert-test-slug",
+    )
+    // Same ID — updated, not duplicated
+    expect(req2.id).toBe(req1.id)
+    expect(req2.requesterName).toBe("R Updated")
+    expect(req2.requestedEvidenceTypes).toEqual(["detailed_skill_evidence"])
+    expect(req2.status).toBe("pending")
+    // Only one entry for this email+slug in the store
+    const forSlug = listStudentAccessRequests().filter(
+      (r) => r.passportSlug === "upsert-test-slug" && r.requesterEmail === "upsert@co.com",
+    )
+    expect(forSlug).toHaveLength(1)
+  })
+
+  it("upsert over an approved request resets it to pending", () => {
+    const req = createAccessRequest(
+      {
+        requesterName: "R",
+        requesterEmail: "upsert2@co.com",
+        company: "",
+        role: "",
+        reason: "",
+        requestedEvidenceTypes: ["workflow_recordings"],
+        messageToStudent: "",
+      },
+      "upsert-test-slug-2",
+    )
+    approveAccessRequest(req.id, ["workflow_recordings"])
+    expect(
+      listStudentAccessRequests().find((r) => r.id === req.id)?.status,
+    ).toBe("approved")
+
+    // Re-submit same recruiter
+    const req2 = createAccessRequest(
+      {
+        requesterName: "R",
+        requesterEmail: "upsert2@co.com",
+        company: "",
+        role: "",
+        reason: "",
+        requestedEvidenceTypes: ["detailed_skill_evidence"],
+        messageToStudent: "",
+      },
+      "upsert-test-slug-2",
+    )
+    expect(req2.id).toBe(req.id)
+    expect(req2.status).toBe("pending")
+    expect(req2.approvedEvidenceTypes).toBeUndefined()
+    expect(req2.requestedEvidenceTypes).toEqual(["detailed_skill_evidence"])
+  })
+
+  it("different recruiter emails for the same slug create separate entries (no upsert)", () => {
+    createAccessRequest(
+      { requesterName: "R1", requesterEmail: "r1@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      "multi-recruiter-slug",
+    )
+    createAccessRequest(
+      { requesterName: "R2", requesterEmail: "r2@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      "multi-recruiter-slug",
+    )
+    const forSlug = listStudentAccessRequests().filter(
+      (r) => r.passportSlug === "multi-recruiter-slug",
+    )
+    expect(forSlug).toHaveLength(2)
+  })
+
+  it("recruiter submit with DEMO_PASSPORT_SLUG upserts over the sample-stripe entry", () => {
+    // After clearAccessRequestStore, load() returns SAMPLE_REQUESTS which has
+    // sample-stripe-001 with requesterEmail "recruiter@stripe.com" and DEMO_PASSPORT_SLUG.
+    const req = createAccessRequest(
+      {
+        requesterName: "Stripe Recruiter Updated",
+        requesterEmail: "recruiter@stripe.com",
+        company: "Stripe",
+        role: "Hiring",
+        reason: "Re-submitting",
+        requestedEvidenceTypes: ["workflow_recordings"],
+        messageToStudent: "",
+      },
+      DEMO_PASSPORT_SLUG,
+    )
+    // Should reuse the sample-stripe-001 ID
+    expect(req.id).toBe("sample-stripe-001")
+    expect(req.status).toBe("pending")
+    // Store should have exactly one entry from "recruiter@stripe.com" for DEMO_PASSPORT_SLUG
+    const entries = listStudentAccessRequests().filter(
+      (r) => r.passportSlug === DEMO_PASSPORT_SLUG && r.requesterEmail === "recruiter@stripe.com",
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0].requesterName).toBe("Stripe Recruiter Updated")
   })
 })
 

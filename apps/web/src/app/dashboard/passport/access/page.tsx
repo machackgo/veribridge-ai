@@ -10,6 +10,7 @@ import {
   approveAccessRequest,
   denyAccessRequest,
   revokeAccessRequest,
+  resetAccessRequestStore,
 } from "../../../../lib/mock-evidence-access-store"
 import type { EvidenceAccessRequest } from "../../../../types/evidence-access"
 
@@ -36,24 +37,33 @@ export default function AccessRequestsPage() {
   const [sessionId, setSessionId] = useState(DEMO_SESSION_ID)
   const [manualSessionId, setManualSessionId] = useState("")
   const [mockRequests, setMockRequests] = useState<StudentAccessRequest[]>([])
+  const [mockLoaded, setMockLoaded] = useState(false)
 
-  useEffect(() => {
+  const reloadMock = () => {
     setMockRequests(listStudentAccessRequests().map(toStudentRequest))
-  }, [])
+    setMockLoaded(true)
+  }
+
+  useEffect(() => { reloadMock() }, [])
 
   const handleApprove = (id: string, sections: string[]) => {
     approveAccessRequest(id, sections)
-    setMockRequests(listStudentAccessRequests().map(toStudentRequest))
+    reloadMock()
   }
 
   const handleDeny = (id: string) => {
     denyAccessRequest(id)
-    setMockRequests(listStudentAccessRequests().map(toStudentRequest))
+    reloadMock()
   }
 
   const handleRevoke = (id: string) => {
     revokeAccessRequest(id)
-    setMockRequests(listStudentAccessRequests().map(toStudentRequest))
+    reloadMock()
+  }
+
+  const handleReset = () => {
+    resetAccessRequestStore()
+    reloadMock()
   }
 
   return (
@@ -103,13 +113,46 @@ export default function AccessRequestsPage() {
       {sessionId && <AccessRequestManagerPanel sessionId={sessionId} />}
 
       {/* Mock preview panel — reads from shared mock store */}
-      {!sessionId && (
-        <StudentAccessRequestsPanel
-          requests={mockRequests}
-          onApprove={handleApprove}
-          onDeny={handleDeny}
-          onRevoke={handleRevoke}
-        />
+      {!sessionId && mockLoaded && (
+        <>
+          {/* Dev/demo label */}
+          <div
+            data-testid="mock-requests-banner"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              marginBottom: 12,
+              padding: "8px 12px",
+              background: "#fef3c7",
+              border: "1px solid #fbbf24",
+              borderRadius: 8,
+            }}
+          >
+            <span style={{ fontSize: 12, color: "#92400e", fontWeight: 600 }}>
+              🛠 Development preview — showing mock local access requests
+            </span>
+            <button
+              type="button"
+              onClick={handleReset}
+              style={{
+                fontSize: 11, fontWeight: 600, color: "#92400e",
+                background: "transparent", border: "1px solid #f59e0b",
+                borderRadius: 5, padding: "3px 8px", cursor: "pointer",
+              }}
+            >
+              Reset to samples
+            </button>
+          </div>
+
+          <StudentAccessRequestsPanel
+            requests={mockRequests}
+            onApprove={handleApprove}
+            onDeny={handleDeny}
+            onRevoke={handleRevoke}
+          />
+        </>
       )}
     </div>
   )

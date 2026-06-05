@@ -471,6 +471,35 @@ function DecisionHelpersSection({
   )
 }
 
+// ── Store lookup helper ───────────────────────────────────────────────────────
+// Reads the mock store and returns the most-relevant access request for a given
+// passport slug.  When the recruiter's email is known, their own request is
+// preferred; otherwise all requests for the slug are considered.
+// Approved status is always preferred over pending/denied/revoked to avoid
+// showing stale pending requests when approval already exists.
+
+function loadBestRequest(
+  passportSlug: string,
+  recruiterEmail?: string,
+): EvidenceAccessRequest | null {
+  const all = listStudentAccessRequests()
+  const bySlug = all.filter((r) => r.passportSlug === passportSlug)
+  if (bySlug.length === 0) return null
+
+  // Narrow to recruiter's own requests when email is known; fall back to all.
+  const byEmail = recruiterEmail
+    ? bySlug.filter((r) => r.requesterEmail === recruiterEmail)
+    : []
+  const pool = byEmail.length > 0 ? byEmail : bySlug
+
+  return [...pool].sort((a, b) => {
+    // Approved bubbles to the top regardless of timestamp
+    if (a.status === "approved" && b.status !== "approved") return -1
+    if (b.status === "approved" && a.status !== "approved") return 1
+    return new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime()
+  })[0] ?? null
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function RecruiterWorkPassportPreview({
@@ -491,18 +520,14 @@ export function RecruiterWorkPassportPreview({
   const [showModal, setShowModal] = useState(false)
   const [accessRequest, setAccessRequest] = useState<EvidenceAccessRequest | null>(null)
 
-  // Load the latest access request for this passport from the mock store on mount.
+  // Load the best access request for this passport from the mock store on mount.
+  // Scoped to the recruiter's own email when known so their status is shown.
   useEffect(() => {
     const slug = view.public_slug
     if (!slug) return
-    const all = listStudentAccessRequests()
-    const matching = all.filter((r) => r.passportSlug === slug)
-    if (matching.length === 0) return
-    const newest = [...matching].sort(
-      (a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime(),
-    )[0]
-    setAccessRequest(newest)
-  }, [view.public_slug])
+    const best = loadBestRequest(slug, defaultRequester?.email)
+    if (best) setAccessRequest(best)
+  }, [view.public_slug, defaultRequester?.email])
 
   const handleModalSubmit = async () => {
     // Modal handles its own internal success state; we update parent state here.
@@ -511,24 +536,15 @@ export function RecruiterWorkPassportPreview({
   const handleModalClose = (sections?: string[]) => {
     setShowModal(false)
     if (sections && sections.length > 0) {
-      // Re-read store to pick up the just-created request.
       const slug = view.public_slug
-      let found: EvidenceAccessRequest | null = null
-      if (slug) {
-        const all = listStudentAccessRequests()
-        const matching = all.filter((r) => r.passportSlug === slug)
-        if (matching.length > 0) {
-          found = [...matching].sort(
-            (a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime(),
-          )[0]
-        }
-      }
-      // Fallback to synthetic pending object when store is unavailable (e.g. tests).
+      // Re-read store to pick up the just-created/upserted request.
+      const found = slug ? loadBestRequest(slug, defaultRequester?.email) : null
+      // Fallback to synthetic pending when store is unavailable (e.g. tests without onRequestCreated).
       setAccessRequest(found ?? {
         id: `local-${Date.now()}`,
         passportSlug: slug ?? null,
-        requesterName: "",
-        requesterEmail: "",
+        requesterName: defaultRequester?.name ?? "",
+        requesterEmail: defaultRequester?.email ?? "",
         requestedEvidenceTypes: sections,
         status: "pending",
         requestedAt: new Date().toISOString(),

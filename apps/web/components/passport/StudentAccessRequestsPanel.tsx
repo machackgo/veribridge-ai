@@ -16,7 +16,7 @@
  *  - Displayed text is always student-safe / recruiter-safe.
  */
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -493,11 +493,13 @@ export function StudentAccessRequestsPanel({
     externalRequests ?? MOCK_REQUESTS,
   )
 
-  // Sync when external requests change (e.g. after store reload).
-  const prevExternal = externalRequests
-  if (externalRequests !== prevExternal && externalRequests !== undefined) {
-    // no-op: useState initialises once; external callers re-render by passing new array
-  }
+  // Sync internal state when external requests prop changes (e.g. after store reload
+  // or after approve/deny/revoke callbacks update the parent's state).
+  useEffect(() => {
+    if (externalRequests !== undefined) {
+      setRequests(externalRequests)
+    }
+  }, [externalRequests])
 
   const update = (id: string, status: AccessRequestStatus) =>
     setRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status } : r)))
