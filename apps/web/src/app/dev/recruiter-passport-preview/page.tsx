@@ -13,7 +13,7 @@ import { useState } from "react"
 import { RecruiterWorkPassportPreview } from "../../../../components/recruiter-passport/RecruiterWorkPassportPreview"
 import {
   createAccessRequest,
-  resetAccessRequestStore,
+  clearMockEvidenceAccessRequests,
   DEMO_PASSPORT_SLUG,
 } from "../../../lib/mock-evidence-access-store"
 import type { RecruiterPassportViewResponse } from "../../../lib/passport-api"
@@ -233,7 +233,7 @@ export default function DevRecruiterPassportPreviewPage() {
   const [resetKey, setResetKey] = useState(0)
 
   const handleReset = () => {
-    resetAccessRequestStore()
+    clearMockEvidenceAccessRequests()   // writes [] so sample-data pending never re-loads
     setAccessRequested(false)
     setResetKey((k) => k + 1)
   }

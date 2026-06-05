@@ -561,6 +561,16 @@ export function RecruiterWorkPassportPreview({
   // after a denial or revocation without needing a full page reset.
   const handleRequestAgain = () => setAccessRequest(null)
 
+  // Dev-only reset: clears component state immediately so the CTA shows at once,
+  // then calls the parent's onReset so the store is cleared and the component
+  // is remounted (via key change in the page).  State is cleared here too so
+  // there is no flash of the pending card while the remount is pending.
+  const handleResetRequested = () => {
+    setAccessRequest(null)
+    setShowModal(false)
+    onReset?.()
+  }
+
   const SECTION_LABELS: Record<string, string> = {
     workflow_recordings: "Workflow recordings",
     project_defense: "Project defense media/transcript",
@@ -686,7 +696,7 @@ export function RecruiterWorkPassportPreview({
                     <button
                       type="button"
                       data-testid="pending-reset-btn"
-                      onClick={onReset}
+                      onClick={handleResetRequested}
                       style={{
                         fontSize: 11, fontWeight: 600, color: "#6366f1",
                         background: "transparent", border: "1px solid #a5b4fc",
@@ -730,7 +740,7 @@ export function RecruiterWorkPassportPreview({
                       <button
                         type="button"
                         data-testid="denied-reset-btn"
-                        onClick={onReset}
+                        onClick={handleResetRequested}
                         style={{
                           fontSize: 11, fontWeight: 600, color: "#92400e",
                           background: "transparent", border: "1px solid #fbbf24",
@@ -775,7 +785,7 @@ export function RecruiterWorkPassportPreview({
                       <button
                         type="button"
                         data-testid="revoked-reset-btn"
-                        onClick={onReset}
+                        onClick={handleResetRequested}
                         style={{
                           fontSize: 11, fontWeight: 600, color: "#92400e",
                           background: "transparent", border: "1px solid #fbbf24",

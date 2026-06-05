@@ -211,10 +211,18 @@ export function clearAccessRequestStore(): void {
 }
 
 /**
- * Clear all mock evidence access requests from the canonical localStorage key.
- * Named alias for clearAccessRequestStore — use in dev UX reset controls and tests.
- * After clearing, listStudentAccessRequests() falls back to sample data.
+ * Clear all mock evidence access requests for dev/test reset controls.
+ *
+ * Unlike clearAccessRequestStore() (which removes the key, causing load() to
+ * fall back to SAMPLE_REQUESTS), this writes an explicit empty array so that
+ * load() returns [] and no sample-data pending requests are re-loaded.
+ *
+ * Use this in dev reset buttons and in tests that need a genuinely empty store.
+ * Use resetAccessRequestStore() when you specifically want sample data back.
  */
 export function clearMockEvidenceAccessRequests(): void {
-  clearAccessRequestStore()
+  save([])
+  if (typeof window !== "undefined") {
+    console.debug("[VeriBridge dev] Mock evidence access requests reset")
+  }
 }

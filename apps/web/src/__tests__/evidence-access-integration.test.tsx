@@ -594,33 +594,36 @@ describe("End-to-end: recruiter submit → student approve → recruiter reload"
 // ── 7. Dev reset controls and safe duplicate handling ─────────────────────────
 
 describe("clearMockEvidenceAccessRequests — named export", () => {
-  it("is exported and clears the store so sample data is returned on next read", () => {
+  it("writes an explicit [] so load() returns empty — does NOT fall back to sample data", () => {
     createAccessRequest(
       { requesterName: "X", requesterEmail: "x@y.com", company: "", role: "", reason: "", requestedEvidenceTypes: [], messageToStudent: "" },
       "some-slug",
     )
     clearMockEvidenceAccessRequests()
-    // After clear, load() falls back to SAMPLE_REQUESTS
-    const restored = listStudentAccessRequests()
-    expect(restored.some((r) => r.requesterName === "Stripe Early Talent")).toBe(true)
+    // Explicit [] written — no fallback to SAMPLE_REQUESTS
+    expect(listStudentAccessRequests()).toHaveLength(0)
   })
 
-  it("clearMockEvidenceAccessRequests and clearAccessRequestStore produce the same result", () => {
+  it("differs from clearAccessRequestStore: clearMock prevents sample fallback; clearStore allows it", () => {
+    // clearMockEvidenceAccessRequests writes [] → empty, no sample fallback
+    clearMockEvidenceAccessRequests()
+    expect(listStudentAccessRequests()).toHaveLength(0)
+
+    // clearAccessRequestStore removes the key → load() falls back to SAMPLE_REQUESTS
+    clearAccessRequestStore()
+    expect(listStudentAccessRequests().length).toBeGreaterThan(0)
+    expect(listStudentAccessRequests().some((r) => r.requesterName === "Stripe Early Talent")).toBe(true)
+  })
+
+  it("even DEMO_PASSPORT_SLUG requests return empty after clearMockEvidenceAccessRequests", () => {
     createAccessRequest(
-      { requesterName: "A", requesterEmail: "a@b.com", company: "", role: "", reason: "", requestedEvidenceTypes: [], messageToStudent: "" },
-      "slug-a",
+      { requesterName: "Stripe", requesterEmail: "recruiter@stripe.com", company: "Stripe", role: "Hiring", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      DEMO_PASSPORT_SLUG,
     )
     clearMockEvidenceAccessRequests()
-    const afterClear = listStudentAccessRequests().map((r) => r.id)
-
-    createAccessRequest(
-      { requesterName: "B", requesterEmail: "b@c.com", company: "", role: "", reason: "", requestedEvidenceTypes: [], messageToStudent: "" },
-      "slug-b",
-    )
-    clearAccessRequestStore()
-    const afterClearStore = listStudentAccessRequests().map((r) => r.id)
-
-    expect(afterClear).toEqual(afterClearStore)
+    const forDemo = listStudentAccessRequests().filter((r) => r.passportSlug === DEMO_PASSPORT_SLUG)
+    // No sample fallback — the pending sample-stripe-001 entry is NOT returned
+    expect(forDemo).toHaveLength(0)
   })
 })
 
@@ -655,6 +658,44 @@ describe("RecruiterWorkPassportPreview — reset and request-again controls", ()
     expect(onReset).toHaveBeenCalledTimes(1)
   })
 
+  it("clicking pending-reset-btn immediately shows Request Evidence Access CTA and clears the store", async () => {
+    createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      CTRL_SLUG,
+    )
+    // onReset simulates what the dev page does: clear the store
+    const onReset = vi.fn(() => { clearMockEvidenceAccessRequests() })
+
+    await act(async () => {
+      render(
+        <RecruiterWorkPassportPreview
+          view={makeRecruiterView(CTRL_SLUG)}
+          onReset={onReset}
+        />,
+      )
+    })
+
+    // Pending card must be visible first
+    await waitFor(() =>
+      expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
+    )
+
+    // Click the reset button inside the pending card
+    fireEvent.click(screen.getByTestId("pending-reset-btn"))
+
+    // CTA must appear immediately (component clears local state before parent remount)
+    await waitFor(() =>
+      expect(screen.getByTestId("request-access-btn")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("access-pending-card")).not.toBeInTheDocument()
+
+    // Parent callback was called
+    expect(onReset).toHaveBeenCalledTimes(1)
+
+    // Store is truly empty — no sample-data pending will be re-loaded on next mount
+    expect(listStudentAccessRequests()).toHaveLength(0)
+  })
+
   it("pending card does NOT show reset button when onReset prop is omitted", async () => {
     createAccessRequest(
       { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
@@ -671,11 +712,12 @@ describe("RecruiterWorkPassportPreview — reset and request-again controls", ()
     expect(screen.queryByTestId("pending-reset-btn")).not.toBeInTheDocument()
   })
 
-  it("after clearMockEvidenceAccessRequests, component shows Request Evidence Access CTA (slug not in sample data)", async () => {
+  it("after clearMockEvidenceAccessRequests, component shows Request Evidence Access CTA (store is truly empty, no sample fallback)", async () => {
     createAccessRequest(
       { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
       CTRL_SLUG,
     )
+    // clearMockEvidenceAccessRequests writes [] so even slugs in SAMPLE_REQUESTS return null
     clearMockEvidenceAccessRequests()
 
     await act(async () => {
@@ -686,7 +728,7 @@ describe("RecruiterWorkPassportPreview — reset and request-again controls", ()
       )
     })
 
-    // CTRL_SLUG is not in sample data so no request found — CTA shown
+    // Store is empty — no matching request found — CTA shown
     await waitFor(() =>
       expect(screen.getByTestId("request-access-btn")).toBeInTheDocument(),
     )
