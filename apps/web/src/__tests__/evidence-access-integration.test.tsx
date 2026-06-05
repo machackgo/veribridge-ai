@@ -964,18 +964,23 @@ describe("RecruiterWorkPassportPreview — unlocked evidence sections", () => {
     ).toBeInTheDocument()
   })
 
-  it("unlocked_documents only does NOT render any unlocked section (no matching handler)", async () => {
+  it("uploaded_documents alone renders the unlocked section card with viewer button but no inline sub-sections", async () => {
     seedApproved(["uploaded_documents"])
 
     await act(async () => {
       render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
     })
 
-    // approved card still shown but no unlocked section (uploaded_documents has no rich view)
+    // Unlocked section card is shown (hasDocs = true)
     await waitFor(() =>
-      expect(screen.getByTestId("access-approved-card")).toBeInTheDocument(),
+      expect(screen.getByTestId("unlocked-evidence-section")).toBeInTheDocument(),
     )
-    expect(screen.queryByTestId("unlocked-evidence-section")).not.toBeInTheDocument()
+    // Evidence viewer button shown (documents are accessible via the viewer)
+    expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument()
+    // No workflow / defense / skill inline sub-sections
+    expect(screen.queryByTestId("unlocked-workflow-recordings")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("unlocked-project-defense")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("unlocked-detailed-skill-evidence")).not.toBeInTheDocument()
   })
 
   it("pending state does not show unlocked evidence section", async () => {
@@ -1432,5 +1437,334 @@ describe("RecruiterWorkPassportPreview — unlocked evidence sections", () => {
     expect(screen.queryByTestId("view-recording-btn")).not.toBeInTheDocument()
     expect(screen.queryByTestId("view-transcript-btn")).not.toBeInTheDocument()
     expect(screen.queryByTestId("view-skill-evidence-btn")).not.toBeInTheDocument()
+  })
+})
+
+// ── 9. Evidence viewer modal ──────────────────────────────────────────────────
+
+describe("RecruiterWorkPassportPreview — evidence viewer modal", () => {
+  const EV_SLUG = "ev-test-slug"
+
+  beforeEach(() => { clearMockEvidenceAccessRequests() })
+
+  function seedApprovedTypes(types: string[]) {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: types, messageToStudent: "" },
+      EV_SLUG,
+    )
+    approveAccessRequest(req.id, types)
+  }
+
+  it("approved access shows Open evidence viewer button", async () => {
+    seedApprovedTypes(["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("open-evidence-viewer-btn").textContent).toBe("Open evidence viewer")
+  })
+
+  it("pending state does not show Open evidence viewer button", async () => {
+    createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      EV_SLUG,
+    )
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("open-evidence-viewer-btn")).not.toBeInTheDocument()
+  })
+
+  it("denied state does not show Open evidence viewer button", async () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      EV_SLUG,
+    )
+    denyAccessRequest(req.id)
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-denied-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("open-evidence-viewer-btn")).not.toBeInTheDocument()
+  })
+
+  it("revoked state does not show Open evidence viewer button", async () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      EV_SLUG,
+    )
+    approveAccessRequest(req.id, ["workflow_recordings"])
+    revokeAccessRequest(req.id)
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-revoked-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("open-evidence-viewer-btn")).not.toBeInTheDocument()
+  })
+
+  it("clicking Open evidence viewer shows the modal with Recruiter-safe evidence viewer heading", async () => {
+    seedApprovedTypes(["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("evidence-viewer-modal")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    const modal = screen.getByTestId("evidence-viewer-modal")
+    expect(modal).toBeInTheDocument()
+    expect(modal.textContent).toMatch(/Evidence Viewer/i)
+    expect(modal.textContent).toMatch(/Recruiter-safe evidence viewer/i)
+    expect(modal.textContent).toMatch(/Only evidence types approved by the student are shown/i)
+    expect(modal.textContent).toMatch(/Use this evidence to validate VeriBridge/i)
+  })
+
+  it("closing viewer with × button removes the modal", async () => {
+    seedApprovedTypes(["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+    expect(screen.getByTestId("evidence-viewer-modal")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("close-evidence-viewer-btn"))
+    expect(screen.queryByTestId("evidence-viewer-modal")).not.toBeInTheDocument()
+  })
+
+  it("workflow recordings tab appears when workflow_recordings is approved", async () => {
+    seedApprovedTypes(["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() =>
+      expect(screen.getByTestId("viewer-workflow-tab")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("viewer-workflow-tab").textContent).toMatch(/Keyframe/i)
+    // Tab button only appears when multiple tabs; single tab renders content directly
+    // No project defense or documents tab button
+    expect(screen.queryByTestId("evidence-tab-project_defense_media")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-tab-uploaded_documents")).not.toBeInTheDocument()
+  })
+
+  it("project defense tab appears only when project_defense_media is approved", async () => {
+    seedApprovedTypes(["project_defense_media"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() =>
+      expect(screen.getByTestId("viewer-defense-tab")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("viewer-defense-tab").textContent).toMatch(/Transcript excerpt/i)
+    expect(screen.getByTestId("viewer-defense-tab").textContent).toMatch(/Ownership signals/i)
+    expect(screen.queryByTestId("viewer-workflow-tab")).not.toBeInTheDocument()
+  })
+
+  it("skill evidence tab appears only when detailed_skill_evidence is approved", async () => {
+    seedApprovedTypes(["detailed_skill_evidence"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() =>
+      expect(screen.getByTestId("viewer-skill-tab")).toBeInTheDocument(),
+    )
+    // Source drill-down shown
+    expect(screen.getByTestId("viewer-skill-tab").textContent).toMatch(/Evidence source breakdown/i)
+    expect(screen.getByTestId("viewer-skill-tab").textContent).toMatch(/Supported/i)
+    expect(screen.queryByTestId("viewer-workflow-tab")).not.toBeInTheDocument()
+  })
+
+  it("documents tab appears only when uploaded_documents is approved", async () => {
+    seedApprovedTypes(["uploaded_documents"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() =>
+      expect(screen.getByTestId("viewer-documents-tab")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("viewer-documents-tab").textContent).toMatch(/Document summary/i)
+    expect(screen.getByTestId("viewer-documents-tab").textContent).toMatch(/AI Engineering Project Report/i)
+    expect(screen.getByTestId("viewer-documents-tab").textContent).toMatch(/Raw document file is not exposed/i)
+    expect(screen.queryByTestId("viewer-workflow-tab")).not.toBeInTheDocument()
+  })
+
+  it("all four tabs appear when all four types are approved", async () => {
+    seedApprovedTypes([
+      "workflow_recordings", "project_defense_media",
+      "detailed_skill_evidence", "uploaded_documents",
+    ])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() =>
+      expect(screen.getByTestId("evidence-viewer-modal")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("evidence-tab-workflow_recordings")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-tab-project_defense_media")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-tab-detailed_skill_evidence")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-tab-uploaded_documents")).toBeInTheDocument()
+  })
+
+  it("clicking a tab in the viewer switches content", async () => {
+    seedApprovedTypes(["workflow_recordings", "project_defense_media"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    // Workflow is default active tab
+    await waitFor(() =>
+      expect(screen.getByTestId("viewer-workflow-tab")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("viewer-defense-tab")).not.toBeInTheDocument()
+
+    // Switch to project defense tab
+    fireEvent.click(screen.getByTestId("evidence-tab-project_defense_media"))
+    expect(screen.getByTestId("viewer-defense-tab")).toBeInTheDocument()
+    expect(screen.queryByTestId("viewer-workflow-tab")).not.toBeInTheDocument()
+  })
+
+  it("viewer does not render unsafe private strings when all tabs are open", async () => {
+    seedApprovedTypes([
+      "workflow_recordings", "project_defense_media",
+      "detailed_skill_evidence", "uploaded_documents",
+    ])
+
+    let container!: HTMLElement
+    await act(async () => {
+      const r = render(<RecruiterWorkPassportPreview view={makeRecruiterView(EV_SLUG)} />)
+      container = r.container
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId("open-evidence-viewer-btn"))
+
+    await waitFor(() =>
+      expect(screen.getByTestId("evidence-viewer-modal")).toBeInTheDocument(),
+    )
+
+    // Check all tabs
+    const tabs = [
+      "evidence-tab-workflow_recordings",
+      "evidence-tab-project_defense_media",
+      "evidence-tab-detailed_skill_evidence",
+      "evidence-tab-uploaded_documents",
+    ]
+    for (const tabId of tabs) {
+      const tabBtn = screen.queryByTestId(tabId)
+      if (tabBtn) fireEvent.click(tabBtn)
+    }
+
+    const html = container.innerHTML
+    expect(html).not.toContain("localhost")
+    expect(html).not.toContain("127.0.0.1")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("session_id")
+    expect(html).not.toContain("storage_path")
+    expect(html).not.toContain("media_storage_path")
+    expect(html).not.toContain("raw_url")
+    expect(html).not.toContain("debug_metadata")
+    expect(html).not.toContain("admin_notes")
+    expect(html).not.toContain("blob:")
+    expect(html).not.toContain("transcript_text")
+    expect(html).not.toContain("supabase")
+    expect(html).not.toContain("private_url")
+  })
+
+  it("reset mock access requests hides evidence viewer button", async () => {
+    seedApprovedTypes(["workflow_recordings"])
+    const onReset = vi.fn(() => { clearMockEvidenceAccessRequests() })
+
+    await act(async () => {
+      render(
+        <RecruiterWorkPassportPreview
+          view={makeRecruiterView(EV_SLUG)}
+          onReset={onReset}
+        />,
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-evidence-viewer-btn")).toBeInTheDocument(),
+    )
+
+    // Reset via the approved card reset button
+    fireEvent.click(screen.getByTestId("approved-reset-btn"))
+
+    // After reset, approved state is cleared → unlocked section removed → button gone
+    await waitFor(() =>
+      expect(screen.getByTestId("request-access-btn")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("open-evidence-viewer-btn")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-viewer-modal")).not.toBeInTheDocument()
   })
 })

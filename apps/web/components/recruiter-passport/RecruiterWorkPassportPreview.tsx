@@ -559,6 +559,44 @@ const DEFENSE_DETAIL = {
   limitationsNoted: "Acknowledged partial coverage of backend deployment; identified concrete areas for further evidence collection.",
 }
 
+// Source-level evidence drill-down for skill evidence viewer tab.
+const SKILL_SOURCE_DRILL: Record<string, Array<{ source: string; status: "supported" | "partial" }>> = {
+  "AI / Machine Learning": [
+    { source: "Website Workflow",   status: "supported" },
+    { source: "GitHub",             status: "supported" },
+    { source: "AI Visual Analysis", status: "partial"   },
+    { source: "Documents",          status: "supported" },
+  ],
+  "JavaScript / Frontend": [
+    { source: "GitHub",           status: "supported" },
+    { source: "Website Workflow", status: "supported" },
+    { source: "OCR",              status: "partial"   },
+  ],
+  "Data & Visualization": [
+    { source: "Website Workflow", status: "supported" },
+    { source: "OCR",              status: "partial"   },
+    { source: "Documents",        status: "supported" },
+  ],
+}
+
+// Safe transcript excerpt — not a raw dump, no private content.
+const DEFENSE_TRANSCRIPT_EXCERPT =
+  "The main goal was to demonstrate machine learning in a browser environment. " +
+  "I chose TensorFlow.js because it allowed real-time inference without a backend server, " +
+  "which simplified the deployment and made it easier to capture as evidence..."
+
+// Document summary — metadata only, no storage path or raw file access.
+const DOCUMENT_MOCK = {
+  title: "AI Engineering Project Report",
+  pages: 24,
+  updatedDate: "May 2026",
+  summary:
+    "Comprehensive project documentation covering the design, implementation, and evaluation " +
+    "of a browser-based machine learning system. Includes methodology rationale, experimental " +
+    "results, and technical architecture overview.",
+  supportedSkills: ["Machine Learning", "TensorFlow.js", "Data Visualization", "Technical Documentation"],
+}
+
 // ── Shared notice footer ──────────────────────────────────────────────────────
 
 function EvidencePreviewNotice() {
@@ -950,6 +988,460 @@ function UnlockedSkillEvidenceSection({ groups }: { groups: RecruiterSkillGroupR
   )
 }
 
+// ── Evidence Viewer Modal ─────────────────────────────────────────────────────
+// Full-screen recruiter-safe evidence inspector.
+// Privacy: no raw URLs, localhost, tokens, storage_path, session_id, or debug fields.
+
+function ViewerWorkflowTab({ links }: { links: Array<{ label: string; url: string }> }) {
+  const titles = links.length > 0
+    ? links.map((l) => l.label)
+    : [
+        "Browser ML Demo — Teachable Machine",
+        "Three.js WebGL Geometry Demo",
+        "HuggingChat LLM Interface",
+      ]
+  return (
+    <div data-testid="viewer-workflow-tab">
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {titles.map((title, i) => {
+          const m = RECORDING_META[i] ?? { duration: "3:00", date: "May 2026" }
+          const detail: RecordingDetail = RECORDING_DETAILS[i] ?? {
+            summary: "Candidate demonstrated a browser workflow and evidence-backed project interaction.",
+            highlights: ["Workflow interaction captured"],
+            skillsObserved: [],
+          }
+          return (
+            <div key={i} style={{ border: `1px solid ${C.line}`, borderRadius: 8, overflow: "hidden" }}>
+              {/* Header row */}
+              <div style={{
+                padding: "10px 14px", background: C.bg,
+                display: "flex", alignItems: "center", gap: 10,
+              }}>
+                <span style={{ fontSize: 16, flexShrink: 0 }}>🎬</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: C.ink, margin: 0 }}>{title}</p>
+                  <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>{m.duration} · Recorded {m.date}</p>
+                </div>
+                <span style={{
+                  fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 999,
+                  background: C.emeraldSoft, color: C.emerald, border: "1px solid #bbf7d0",
+                }}>
+                  Analyzed
+                </span>
+              </div>
+
+              {/* Keyframe placeholder strip */}
+              <div style={{ display: "flex", gap: 4, padding: "8px 14px", background: "#1e293b" }}>
+                {[0, 1, 2].map((k) => (
+                  <div key={k} style={{
+                    flex: 1, height: 56, background: "#334155", borderRadius: 4,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    <span style={{ fontSize: 18, opacity: 0.4 }}>🖼️</span>
+                  </div>
+                ))}
+              </div>
+              <p style={{
+                fontSize: 10, color: C.muted, margin: 0,
+                padding: "4px 14px 10px", fontStyle: "italic",
+              }}>
+                Keyframe placeholders — raw recording available through approved evidence access
+              </p>
+
+              {/* Summary + highlights */}
+              <div style={{ padding: "0 14px 14px" }}>
+                <p style={{ fontSize: 12, color: C.inkSoft, margin: "0 0 8px", lineHeight: 1.6 }}>
+                  {detail.summary}
+                </p>
+                {detail.highlights.length > 0 && (
+                  <ul style={{ margin: 0, padding: "0 0 0 14px" }}>
+                    {detail.highlights.map((h, j) => (
+                      <li key={j} style={{ fontSize: 11, color: C.inkSoft, lineHeight: 1.5 }}>{h}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function ViewerProjectDefenseTab() {
+  return (
+    <div data-testid="viewer-defense-tab">
+      {/* Safe excerpt */}
+      <div style={{
+        padding: "12px 14px", background: C.bg,
+        border: `1px solid ${C.line}`, borderRadius: 8, marginBottom: 16,
+      }}>
+        <p style={{
+          fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const,
+          letterSpacing: "0.07em", margin: "0 0 6px",
+        }}>
+          Transcript excerpt
+        </p>
+        <blockquote style={{
+          fontSize: 12, color: C.inkSoft, lineHeight: 1.7,
+          margin: 0, padding: "0 0 0 12px",
+          borderLeft: `3px solid ${C.indigo}`,
+          fontStyle: "italic",
+        }}>
+          &ldquo;{DEFENSE_TRANSCRIPT_EXCERPT}&rdquo;
+        </blockquote>
+        <p style={{ fontSize: 10, color: C.muted, margin: "8px 0 0", fontStyle: "italic" }}>
+          Safe excerpt — full unedited transcript is not exposed here.
+        </p>
+      </div>
+
+      {/* Structured detail */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div>
+          <p style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "0 0 4px" }}>Project goal</p>
+          <p style={{ fontSize: 12, color: C.inkSoft, margin: 0, lineHeight: 1.6 }}>
+            {DEFENSE_DETAIL.projectGoal}
+          </p>
+        </div>
+        <div>
+          <p style={{
+            fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 4px",
+          }}>
+            Ownership signals
+          </p>
+          <ul style={{ margin: 0, padding: "0 0 0 14px" }}>
+            {DEFENSE_DETAIL.ownershipSignals.map((s, i) => (
+              <li key={i} style={{ fontSize: 11, color: C.inkSoft, lineHeight: 1.5 }}>{s}</li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <p style={{
+            fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 4px",
+          }}>
+            Technical depth
+          </p>
+          <ul style={{ margin: 0, padding: "0 0 0 14px" }}>
+            {DEFENSE_DETAIL.technicalDepthSignals.map((s, i) => (
+              <li key={i} style={{ fontSize: 11, color: C.inkSoft, lineHeight: 1.5 }}>{s}</li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <p style={{
+            fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 4px",
+          }}>
+            Limitations noted
+          </p>
+          <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
+            {DEFENSE_DETAIL.limitationsNoted}
+          </p>
+        </div>
+        {/* Interview questions from existing SKILL_DETAILS for completeness */}
+        <div>
+          <p style={{
+            fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 4px",
+          }}>
+            Suggested recruiter question
+          </p>
+          <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, fontStyle: "italic" }}>
+            &ldquo;Walk through the most technically challenging part of this project and how you solved it.&rdquo;
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ViewerSkillDrillTab({ groups }: { groups: RecruiterSkillGroupResponse[] }) {
+  type Row = { name: string; sources: string[] }
+  const rows: Row[] = groups.length > 0
+    ? groups.map((g) => ({ name: g.group_name, sources: g.source_labels }))
+    : [
+        { name: "AI / Machine Learning",  sources: ["Website Workflow", "GitHub", "AI Visual Analysis", "Documents"] },
+        { name: "JavaScript / Frontend",  sources: ["GitHub", "Website Workflow", "OCR"] },
+        { name: "Data & Visualization",   sources: ["Website Workflow", "OCR", "Documents"] },
+      ]
+  return (
+    <div data-testid="viewer-skill-tab">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {rows.map((row) => {
+          const drill = SKILL_SOURCE_DRILL[row.name] ?? row.sources.map((s) => ({ source: s, status: "supported" as const }))
+          const detail: SkillDetail = SKILL_DETAILS[row.name] ?? {
+            support: `Evidence from ${row.sources.join(", ")} supports this skill claim.`,
+            reviewNote: "Ask the candidate to walk through a specific implementation example.",
+            interviewQ: `Describe a concrete challenge you solved using ${row.name}.`,
+          }
+          return (
+            <div key={row.name} style={{ border: `1px solid ${C.line}`, borderRadius: 8, overflow: "hidden" }}>
+              {/* Skill header */}
+              <div style={{
+                padding: "8px 14px", background: C.bg,
+                display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+              }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.ink, flex: "0 0 auto" }}>
+                  {row.name}
+                </span>
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  {row.sources.map((src) => (
+                    <span key={src} style={{
+                      fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 4,
+                      background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe",
+                    }}>
+                      {src}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Source drill-down */}
+              <div style={{ padding: "10px 14px", borderTop: `1px solid ${C.line}` }}>
+                <p style={{
+                  fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const,
+                  margin: "0 0 6px",
+                }}>
+                  Evidence source breakdown
+                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {drill.map((d) => (
+                    <div key={d.source} style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                    }}>
+                      <span style={{
+                        width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                        background: d.status === "supported" ? C.emerald : C.amber,
+                      }} />
+                      <span style={{ fontSize: 11, color: C.inkSoft, flex: 1 }}>{d.source}</span>
+                      <span style={{
+                        fontSize: 9, fontWeight: 700,
+                        color: d.status === "supported" ? C.emerald : C.amber,
+                      }}>
+                        {d.status === "supported" ? "Supported" : "Partial"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Support + review + interview Q */}
+              <div style={{ padding: "10px 14px", borderTop: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div>
+                  <p style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 2px" }}>
+                    What supports this claim
+                  </p>
+                  <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>{detail.support}</p>
+                </div>
+                <div>
+                  <p style={{ fontSize: 10, fontWeight: 700, color: C.amber, textTransform: "uppercase" as const, margin: "0 0 2px" }}>
+                    What needs review
+                  </p>
+                  <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>{detail.reviewNote}</p>
+                </div>
+                <div>
+                  <p style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 2px" }}>
+                    Suggested interview question
+                  </p>
+                  <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, fontStyle: "italic" }}>
+                    &ldquo;{detail.interviewQ}&rdquo;
+                  </p>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function ViewerDocumentsTab() {
+  return (
+    <div data-testid="viewer-documents-tab">
+      <div style={{ border: `1px solid ${C.line}`, borderRadius: 8, overflow: "hidden" }}>
+        {/* Document card header */}
+        <div style={{
+          padding: "10px 14px", background: C.bg,
+          display: "flex", alignItems: "center", gap: 10,
+        }}>
+          <span style={{ fontSize: 16, flexShrink: 0 }}>📄</span>
+          <div style={{ flex: 1 }}>
+            <p style={{ fontSize: 13, fontWeight: 600, color: C.ink, margin: 0 }}>
+              {DOCUMENT_MOCK.title}
+            </p>
+            <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>
+              {DOCUMENT_MOCK.pages} pages · Updated {DOCUMENT_MOCK.updatedDate}
+            </p>
+          </div>
+          <span style={{
+            fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 999,
+            background: C.emeraldSoft, color: C.emerald, border: "1px solid #bbf7d0",
+          }}>
+            Approved
+          </span>
+        </div>
+
+        {/* Summary + skills */}
+        <div style={{ padding: "12px 14px", borderTop: `1px solid ${C.line}` }}>
+          <p style={{
+            fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 4px",
+          }}>
+            Document summary
+          </p>
+          <p style={{ fontSize: 12, color: C.inkSoft, margin: "0 0 12px", lineHeight: 1.6 }}>
+            {DOCUMENT_MOCK.summary}
+          </p>
+
+          <p style={{
+            fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 6px",
+          }}>
+            Skills supported
+          </p>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {DOCUMENT_MOCK.supportedSkills.map((s) => (
+              <span key={s} style={{
+                fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 4,
+                background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe",
+              }}>
+                {s}
+              </span>
+            ))}
+          </div>
+          <p style={{ fontSize: 10, color: C.muted, margin: "10px 0 0", fontStyle: "italic" }}>
+            Raw document file is not exposed here. Summary derived from approved evidence.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+type ViewerTabKey = "workflow_recordings" | "project_defense_media" | "detailed_skill_evidence" | "uploaded_documents"
+
+function EvidenceViewerModal({
+  approvedTypes,
+  view,
+  onClose,
+}: {
+  approvedTypes: string[]
+  view: RecruiterPassportViewResponse
+  onClose: () => void
+}) {
+  const normed = approvedTypes.map((k) => normaliseEvidenceKey(k))
+  const TAB_CONFIG: Array<{ key: ViewerTabKey; label: string; icon: string; testId: string }> = [
+    { key: "workflow_recordings",    label: "Workflow",       icon: "🎬", testId: "evidence-tab-workflow_recordings"    },
+    { key: "project_defense_media",  label: "Project Defense", icon: "📋", testId: "evidence-tab-project_defense_media"  },
+    { key: "detailed_skill_evidence", label: "Skill Evidence", icon: "🔍", testId: "evidence-tab-detailed_skill_evidence" },
+    { key: "uploaded_documents",     label: "Documents",      icon: "📄", testId: "evidence-tab-uploaded_documents"     },
+  ]
+  const tabs = TAB_CONFIG.filter((t) => normed.includes(t.key))
+  const [activeTab, setActiveTab] = useState<ViewerTabKey>(tabs[0]?.key ?? "workflow_recordings")
+
+  return (
+    <div
+      data-testid="evidence-viewer-modal"
+      style={{
+        position: "fixed", inset: 0,
+        background: "rgba(0,0,0,0.6)",
+        display: "flex", alignItems: "flex-start", justifyContent: "center",
+        zIndex: 1000, padding: "40px 20px",
+        overflowY: "auto",
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div style={{
+        background: C.paper, borderRadius: 14,
+        width: "100%", maxWidth: 760,
+        boxShadow: "0 24px 60px rgba(0,0,0,0.3)",
+        display: "flex", flexDirection: "column",
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: "18px 22px 14px", borderBottom: `1px solid ${C.line}`,
+          display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+        }}>
+          <div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+              <span style={{ fontSize: 18 }}>🔬</span>
+              <h2 style={{ fontSize: 16, fontWeight: 800, color: C.ink, margin: 0 }}>
+                Evidence Viewer
+              </h2>
+            </div>
+            <p style={{ fontSize: 12, color: C.muted, margin: 0 }}>
+              Recruiter-safe evidence viewer
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="close-evidence-viewer-btn"
+            onClick={onClose}
+            aria-label="Close evidence viewer"
+            style={{
+              fontSize: 22, cursor: "pointer", background: "none", border: "none",
+              color: C.muted, padding: "0 4px", lineHeight: 1, flexShrink: 0,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Tabs */}
+        {tabs.length > 1 && (
+          <div style={{
+            display: "flex", gap: 0,
+            borderBottom: `1px solid ${C.line}`,
+            padding: "0 22px",
+            overflowX: "auto",
+          }}>
+            {tabs.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                data-testid={tab.testId}
+                onClick={() => setActiveTab(tab.key)}
+                style={{
+                  padding: "10px 16px",
+                  background: "none", border: "none",
+                  borderBottom: activeTab === tab.key ? `2px solid ${C.indigo}` : "2px solid transparent",
+                  color: activeTab === tab.key ? C.indigo : C.muted,
+                  fontWeight: activeTab === tab.key ? 700 : 500,
+                  fontSize: 12, cursor: "pointer",
+                  display: "flex", alignItems: "center", gap: 5,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <span>{tab.icon}</span>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Tab content */}
+        <div style={{ padding: "20px 22px" }}>
+          {activeTab === "workflow_recordings"    && <ViewerWorkflowTab   links={view.public_project_links} />}
+          {activeTab === "project_defense_media"  && <ViewerProjectDefenseTab />}
+          {activeTab === "detailed_skill_evidence" && <ViewerSkillDrillTab groups={view.skill_groups} />}
+          {activeTab === "uploaded_documents"     && <ViewerDocumentsTab />}
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          padding: "12px 22px", borderTop: `1px solid ${C.line}`,
+          background: C.bg, borderRadius: "0 0 14px 14px",
+        }}>
+          <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>
+            Only evidence types approved by the student are shown. Raw files, private URLs, and debug metadata are hidden.
+          </p>
+          <p style={{ fontSize: 11, color: C.muted, margin: "3px 0 0", fontStyle: "italic" }}>
+            Use this evidence to validate VeriBridge&rsquo;s summary and prepare follow-up interview questions.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ProtectedEvidenceUnlockedSection({
   approvedTypes,
   view,
@@ -957,30 +1449,74 @@ function ProtectedEvidenceUnlockedSection({
   approvedTypes: string[]
   view: RecruiterPassportViewResponse
 }) {
+  const [showViewer, setShowViewer] = useState(false)
+
   const normed = approvedTypes.map((k) => normaliseEvidenceKey(k))
   const hasWorkflow = normed.includes("workflow_recordings")
   const hasDefense  = normed.includes("project_defense_media")
   const hasSkills   = normed.includes("detailed_skill_evidence")
+  const hasDocs     = normed.includes("uploaded_documents")
 
-  if (!hasWorkflow && !hasDefense && !hasSkills) return null
+  if (!hasWorkflow && !hasDefense && !hasSkills && !hasDocs) return null
 
   return (
-    <Card data-testid="unlocked-evidence-section" style={{ border: `1px solid ${C.line}` }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
-        <span style={{ fontSize: 16, flexShrink: 0 }}>🔓</span>
-        <p style={{ fontWeight: 800, fontSize: 14, color: C.ink, margin: 0 }}>
-          Protected evidence unlocked
+    <>
+      <Card data-testid="unlocked-evidence-section" style={{ border: `1px solid ${C.line}` }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+          <span style={{ fontSize: 16, flexShrink: 0 }}>🔓</span>
+          <p style={{ fontWeight: 800, fontSize: 14, color: C.ink, margin: 0 }}>
+            Protected evidence unlocked
+          </p>
+        </div>
+        <p style={{ fontSize: 11, color: C.muted, margin: "0 0 18px", fontStyle: "italic" }}>
+          Only evidence types approved by the student are visible.
         </p>
-      </div>
-      <p style={{ fontSize: 11, color: C.muted, margin: "0 0 18px", fontStyle: "italic" }}>
-        Only evidence types approved by the student are visible.
-      </p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-        {hasWorkflow && <UnlockedWorkflowSection links={view.public_project_links} />}
-        {hasDefense  && <UnlockedProjectDefenseSection />}
-        {hasSkills   && <UnlockedSkillEvidenceSection groups={view.skill_groups} />}
-      </div>
-    </Card>
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          {hasWorkflow && <UnlockedWorkflowSection links={view.public_project_links} />}
+          {hasDefense  && <UnlockedProjectDefenseSection />}
+          {hasSkills   && <UnlockedSkillEvidenceSection groups={view.skill_groups} />}
+        </div>
+
+        {/* Open evidence viewer CTA */}
+        <div style={{
+          marginTop: 18, paddingTop: 16,
+          borderTop: `1px solid ${C.line}`,
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          gap: 12, flexWrap: "wrap",
+        }}>
+          <div>
+            <p style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "0 0 2px" }}>
+              Inspect the approved evidence directly
+            </p>
+            <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>
+              View recruiter-safe evidence in detail — no raw URLs or private data.
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="open-evidence-viewer-btn"
+            onClick={() => setShowViewer(true)}
+            style={{
+              background: C.indigo, color: "#fff",
+              border: "none", borderRadius: 7,
+              padding: "8px 16px", fontSize: 12, fontWeight: 700,
+              cursor: "pointer", flexShrink: 0,
+            }}
+          >
+            Open evidence viewer
+          </button>
+        </div>
+      </Card>
+
+      {/* Full-screen evidence viewer modal */}
+      {showViewer && (
+        <EvidenceViewerModal
+          approvedTypes={approvedTypes}
+          view={view}
+          onClose={() => setShowViewer(false)}
+        />
+      )}
+    </>
   )
 }
 
