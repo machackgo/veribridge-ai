@@ -480,6 +480,22 @@ function isWorkflowProgressVisible(lifecycle: WebsiteProofProgressLifecycle): bo
   return !["idle", "recording", "workflow_report_ready"].includes(lifecycle)
 }
 
+export function doesWorkflowProgressOverrideRecordingUi(lifecycle: WebsiteProofProgressLifecycle): boolean {
+  return [
+    "upload_starting",
+    "uploading",
+    "upload_complete_manual_analysis_required",
+    "upload_failed",
+    "analysis_starting",
+    "extracting_keyframes",
+    "running_ocr_visual",
+    "running_qwen_visual",
+    "matching_workflow_timeline",
+    "generating_workflow_report",
+    "analysis_failed",
+  ].includes(lifecycle)
+}
+
 function isWorkflowAnalysisLifecycle(lifecycle: WebsiteProofProgressLifecycle): boolean {
   return lifecycle === "analysis_starting" || ANALYSIS_LIFECYCLE_ORDER.includes(lifecycle)
 }
@@ -6974,8 +6990,14 @@ export function ExtensionProofPanel({
     "idle" as WebsiteProofProgressLifecycle,
   )
   const [workflowProgressNowMs, setWorkflowProgressNowMs] = useState(() => Date.now())
+  const [websiteProofProgressLastEvent, setWebsiteProofProgressLastEvent] = useState("init")
   const workflowProgressLifecycleStartedAtRef = useRef(Date.now())
   const previousWorkflowProgressLifecycleRef = useRef<WebsiteProofProgressLifecycle>("idle")
+
+  function transitionWebsiteProofProgress(event: WebsiteProofProgressEvent): void {
+    setWebsiteProofProgressLastEvent(event.type)
+    dispatchWebsiteProofProgress(event)
+  }
 
   // Follow-up recording intent (from sessionStorage, set by Record Follow-up button)
   const [followupIntent, setFollowupIntent] = useState<{
@@ -6999,7 +7021,7 @@ export function ExtensionProofPanel({
     setAnalyzing(false)
     setAnalyzeError(null)
     setAnalyzeTimedOut(false)
-    dispatchWebsiteProofProgress({ type: "reset" })
+    transitionWebsiteProofProgress({ type: "reset" })
     setPrivacyAcknowledged(false)
     setPrivacyScan(null)
     setGithubAnalysis(null)
@@ -7100,13 +7122,13 @@ export function ExtensionProofPanel({
         if (cancelled) return
         setSession(restored)
         if (restored.status === "recording") {
-          dispatchWebsiteProofProgress({ type: "recording_started" })
+          transitionWebsiteProofProgress({ type: "recording_started" })
         } else if (restored.status === "uploaded_pending_analysis") {
-          dispatchWebsiteProofProgress({ type: "upload_succeeded" })
+          transitionWebsiteProofProgress({ type: "upload_succeeded" })
         } else if (restored.status === "analyzing") {
-          dispatchWebsiteProofProgress({ type: "analysis_request_started" })
+          transitionWebsiteProofProgress({ type: "analysis_request_started" })
         } else if (restored.status === "completed") {
-          dispatchWebsiteProofProgress({ type: "workflow_report_exists" })
+          transitionWebsiteProofProgress({ type: "workflow_report_exists" })
         }
         if (POLLING_STATUSES.includes(restored.status)) {
           setPoll(true)
@@ -7143,9 +7165,18 @@ export function ExtensionProofPanel({
     const activeSessionId = session.id
     function handleExtensionStateMessage(event: MessageEvent) {
       if (event.source !== window) return
-      const data = event.data as { source?: string; type?: string; payload?: Partial<ExtensionUploadBridgeState> } | null
+      const data = event.data as {
+        source?: string
+        type?: string
+        sessionId?: string
+        proofSessionId?: string
+        payload?: Partial<ExtensionUploadBridgeState> & { proofSessionId?: string }
+      } | null
       if (!data || data.source !== "veribridge-extension") return
-      const payload = data.payload
+      const payload = {
+        ...(data.payload ?? {}),
+        sessionId: data.payload?.sessionId ?? data.sessionId ?? data.proofSessionId,
+      }
       if (!payload?.sessionId || payload.sessionId !== activeSessionId) return
       if (data.type === "VERIBRIDGE_PROOF_UPLOAD_STARTED") {
         if (process.env.NODE_ENV === "development") {
@@ -7158,7 +7189,7 @@ export function ExtensionProofPanel({
           lastUploadError: null,
           isRecording: payload.isRecording,
         })
-        dispatchWebsiteProofProgress({ type: "upload_started" })
+        transitionWebsiteProofProgress({ type: "upload_started" })
         return
       }
       if (data.type !== "VERIBRIDGE_EXTENSION_STATE") return
@@ -7174,14 +7205,14 @@ export function ExtensionProofPanel({
         if (process.env.NODE_ENV === "development") {
           console.info("[WebsiteProofProgress] upload started event received")
         }
-        dispatchWebsiteProofProgress({ type: "upload_started" })
+        transitionWebsiteProofProgress({ type: "upload_started" })
       } else if (payload.status === "uploaded") {
         if (process.env.NODE_ENV === "development") {
           console.info("[WebsiteProofProgress] upload success event received")
         }
-        dispatchWebsiteProofProgress({ type: "upload_succeeded" })
+        transitionWebsiteProofProgress({ type: "upload_succeeded" })
       } else if (payload.status === "upload_failed") {
-        dispatchWebsiteProofProgress({ type: "upload_failed" })
+        transitionWebsiteProofProgress({ type: "upload_failed" })
       }
     }
     window.addEventListener("message", handleExtensionStateMessage)
@@ -7198,11 +7229,11 @@ export function ExtensionProofPanel({
       })
     }
     if (session.status === "recording") {
-      dispatchWebsiteProofProgress({ type: "recording_started" })
+      transitionWebsiteProofProgress({ type: "recording_started" })
     } else if (session.status === "uploaded_pending_analysis") {
-      dispatchWebsiteProofProgress({ type: "upload_succeeded" })
+      transitionWebsiteProofProgress({ type: "upload_succeeded" })
     } else if (session.status === "analyzing") {
-      dispatchWebsiteProofProgress({ type: "analysis_request_started" })
+      transitionWebsiteProofProgress({ type: "analysis_request_started" })
     }
   }, [session?.id, session?.status])
 
@@ -7220,7 +7251,7 @@ export function ExtensionProofPanel({
 
   useEffect(() => {
     if (currentSessionAnalysis) {
-      dispatchWebsiteProofProgress({ type: "workflow_report_exists" })
+      transitionWebsiteProofProgress({ type: "workflow_report_exists" })
     }
   }, [currentSessionAnalysis?.id])
 
@@ -7276,7 +7307,7 @@ export function ExtensionProofPanel({
       const elapsedMs = Date.now() - workflowProgressLifecycleStartedAtRef.current
       setWorkflowProgressNowMs(Date.now())
       if (analyzing) {
-        dispatchWebsiteProofProgress({ type: "analysis_polling_result", elapsedMs })
+        transitionWebsiteProofProgress({ type: "analysis_polling_result", elapsedMs })
       }
     }, 1000)
     return () => clearInterval(timer)
@@ -7491,7 +7522,7 @@ export function ExtensionProofPanel({
     if (process.env.NODE_ENV === "development") {
       console.info("[WebsiteProofProgress] analysis started")
     }
-    dispatchWebsiteProofProgress({ type: "analyze_clicked" })
+    transitionWebsiteProofProgress({ type: "analyze_clicked" })
     setAnalyzing(true)
     setAnalyzeError(null)
     setAnalyzeTimedOut(false)
@@ -7502,7 +7533,7 @@ export function ExtensionProofPanel({
       setAnalyzeTimedOut(true)
       setAnalyzing(false)
       setAnalyzeError("Analysis timed out after 90 seconds. Please retry.")
-      dispatchWebsiteProofProgress({ type: "analysis_failed" })
+      transitionWebsiteProofProgress({ type: "analysis_failed" })
     }, 90_000)
     analyzeTimeoutRef.current = timeoutId
 
@@ -7518,7 +7549,7 @@ export function ExtensionProofPanel({
       clearTimeout(timeoutId)
       analyzeTimeoutRef.current = null
       setWorkflowAnalysis(result)
-      dispatchWebsiteProofProgress({ type: "workflow_report_exists" })
+      transitionWebsiteProofProgress({ type: "workflow_report_exists" })
       setPoll(false)
       const updated = await getExtensionProofSession(session.id)
       if (!cancelled) setSession(updated)
@@ -7527,7 +7558,7 @@ export function ExtensionProofPanel({
       clearTimeout(timeoutId)
       analyzeTimeoutRef.current = null
       setAnalyzeError(err instanceof Error ? err.message : "Analysis failed. Please try again.")
-      dispatchWebsiteProofProgress({ type: "analysis_failed" })
+      transitionWebsiteProofProgress({ type: "analysis_failed" })
     } finally {
       if (!cancelled) setAnalyzing(false)
     }
@@ -7703,7 +7734,7 @@ export function ExtensionProofPanel({
       setFollowupIntent(null)
       clearFollowUpProofDraft()
       setSession(sess)
-      dispatchWebsiteProofProgress({ type: "session_created" })
+      transitionWebsiteProofProgress({ type: "session_created" })
       setStep("session_active")
       saveActiveExtensionProofSession({
         sessionId: sess.id,
@@ -7744,7 +7775,7 @@ export function ExtensionProofPanel({
     try {
       const updated = await startExtensionProofSession(session.id)
       setSession(updated)
-      dispatchWebsiteProofProgress({ type: "recording_started" })
+      transitionWebsiteProofProgress({ type: "recording_started" })
 
       const targetUrl = form.websiteUrl.trim()
       const targetWindowFeatures = local ? undefined : "noopener,noreferrer"
@@ -8007,6 +8038,7 @@ export function ExtensionProofPanel({
     const hasStarted = (["recording", "uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status)
     const isCompleted = session.status === "completed"
     const isExpired   = session.status === "expired"
+    const workflowProgressOverridesRecordingUi = doesWorkflowProgressOverrideRecordingUi(websiteProofProgressLifecycle)
 
     const sectionTitle = local ? "Local Workflow Evidence" : "Website Workflow Evidence"
     const sectionSubtitle = local
@@ -8084,6 +8116,23 @@ export function ExtensionProofPanel({
           />
         )}
 
+        {process.env.NODE_ENV === "development" && (
+          <div
+            data-testid="website-proof-progress-debug"
+            style={{
+              border: "1px dashed #cbd5e1",
+              borderRadius: 8,
+              background: "#f8fafc",
+              color: "#475569",
+              padding: "6px 10px",
+              fontSize: 10,
+              fontFamily: "monospace",
+            }}
+          >
+            Progress lifecycle: {websiteProofProgressLifecycle}; Last event: {websiteProofProgressLastEvent}
+          </div>
+        )}
+
         {/* Privacy scan badge — shown once proof is uploaded */}
         {privacyScan && (
           <PrivacyScanBadge
@@ -8099,7 +8148,7 @@ export function ExtensionProofPanel({
         )}
 
         {/* Status-aware message card */}
-        {!isExpired && (
+        {!isExpired && !workflowProgressOverridesRecordingUi && (
           <StatusMessage
             status={session.status}
             pollingActive={pollingActive}

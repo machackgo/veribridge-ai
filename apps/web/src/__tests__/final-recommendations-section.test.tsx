@@ -12,6 +12,7 @@ import {
   ProjectDefenseResultCard,
   buildWorkflowAnalysisProgress,
   clearActiveExtensionProofSession,
+  doesWorkflowProgressOverrideRecordingUi,
   hasActiveExtensionProofSession,
   loadActiveExtensionProofSession,
   mergeVisibleSourceScores,
@@ -685,6 +686,26 @@ describe("Workflow Evidence Analysis progress card", () => {
     expect(model.currentMessage).toBe("Uploading proof recording — keep this tab open.")
   })
 
+  it("uploading state has priority over recording UI", () => {
+    expect(doesWorkflowProgressOverrideRecordingUi("recording")).toBe(false)
+    expect(doesWorkflowProgressOverrideRecordingUi("upload_starting")).toBe(true)
+    expect(doesWorkflowProgressOverrideRecordingUi("uploading")).toBe(true)
+    expect(doesWorkflowProgressOverrideRecordingUi("upload_complete_manual_analysis_required")).toBe(true)
+  })
+
+  it("regression: recording card is not rendered while lifecycle is uploading", () => {
+    const source = readFileSync(
+      join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
+      "utf8",
+    )
+    const overrideIndex = source.indexOf("const workflowProgressOverridesRecordingUi")
+    const statusIndex = source.indexOf("!workflowProgressOverridesRecordingUi &&", overrideIndex)
+    const recordingTextIndex = source.indexOf("VeriBridge Extension is recording")
+    expect(overrideIndex).toBeGreaterThan(-1)
+    expect(statusIndex).toBeGreaterThan(overrideIndex)
+    expect(recordingTextIndex).toBeGreaterThan(-1)
+  })
+
   it("does not jump directly to upload 100 without first rendering upload-start state", () => {
     const started = websiteProofProgressReducer("recording", { type: "upload_started" })
     const startedModel = buildWorkflowAnalysisProgress({ lifecycle: started })
@@ -723,6 +744,8 @@ describe("Workflow Evidence Analysis progress card", () => {
     )
     expect(source).toContain('msg.type === "PROOF_UPLOAD_STARTED"')
     expect(source).toContain('type: "VERIBRIDGE_PROOF_UPLOAD_STARTED"')
+    expect(source).toContain("proofSessionId")
+    expect(source).toContain('}, "*")')
     const forwardIndex = source.indexOf('type: "VERIBRIDGE_PROOF_UPLOAD_STARTED"')
     const sendProofIndex = source.indexOf('type: "SEND_PROOF"')
     expect(forwardIndex).toBeGreaterThan(-1)
@@ -736,7 +759,7 @@ describe("Workflow Evidence Analysis progress card", () => {
     )
     const eventIndex = source.indexOf('data.type === "VERIBRIDGE_PROOF_UPLOAD_STARTED"')
     const stateIndex = source.indexOf('status: "uploading"', eventIndex)
-    const reducerIndex = source.indexOf('dispatchWebsiteProofProgress({ type: "upload_started" })', eventIndex)
+    const reducerIndex = source.indexOf('transitionWebsiteProofProgress({ type: "upload_started" })', eventIndex)
     expect(eventIndex).toBeGreaterThan(-1)
     expect(stateIndex).toBeGreaterThan(eventIndex)
     expect(reducerIndex).toBeGreaterThan(stateIndex)

@@ -284,17 +284,22 @@ function publishExtensionState(s: StateSnapshot): void {
 
 function publishProofUploadStarted(payload: Partial<StateSnapshot>): void {
   try {
+    const sessionId = payload.sessionId ?? ""
     window.postMessage({
       source: "veribridge-extension",
       type: "VERIBRIDGE_PROOF_UPLOAD_STARTED",
+      sessionId,
+      proofSessionId: sessionId,
+      timestamp: new Date().toISOString(),
       payload: {
-        sessionId: payload.sessionId,
+        sessionId,
+        proofSessionId: sessionId,
         status: "uploading",
         statusMessage: payload.statusMessage ?? "Uploading proof…",
         lastUploadError: null,
         isRecording: payload.isRecording ?? false,
       },
-    }, window.location.origin)
+    }, "*")
   } catch {
     // Page bridge is best-effort; background state updates still continue.
   }
