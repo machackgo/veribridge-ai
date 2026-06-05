@@ -1202,4 +1202,235 @@ describe("RecruiterWorkPassportPreview — unlocked evidence sections", () => {
     )
     expect(screen.queryByTestId("cta-reset-btn")).not.toBeInTheDocument()
   })
+
+  // ── View-detail interaction tests ────────────────────────────────────────────
+
+  it("approved workflow_recordings shows View summary button on each recording card", async () => {
+    seedApproved(["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-workflow-recordings")).toBeInTheDocument(),
+    )
+    // Three fallback recording cards each have a View summary button
+    const btns = screen.getAllByTestId("view-recording-btn")
+    expect(btns.length).toBeGreaterThanOrEqual(1)
+    expect(btns[0].textContent).toBe("View summary")
+  })
+
+  it("clicking View summary opens recording detail panel with recruiter-safe content", async () => {
+    seedApproved(["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId("view-recording-btn").length).toBeGreaterThan(0),
+    )
+    // No panel yet
+    expect(screen.queryByTestId("recording-detail-panel")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByTestId("view-recording-btn")[0])
+
+    // Panel appears
+    const panel = screen.getByTestId("recording-detail-panel")
+    expect(panel).toBeInTheDocument()
+    expect(panel.textContent).toMatch(/Recruiter-safe evidence preview/i)
+    expect(panel.textContent).toMatch(/Observed highlights/i)
+    expect(panel.textContent).toMatch(/Detailed raw evidence remains controlled by the student/i)
+    // Button toggles to "Hide summary"
+    expect(screen.getAllByTestId("view-recording-btn")[0].textContent).toBe("Hide summary")
+  })
+
+  it("approved project_defense_media shows View transcript summary button", async () => {
+    seedApproved(["project_defense_media"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-project-defense")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("view-transcript-btn")).toBeInTheDocument()
+    expect(screen.getByTestId("view-transcript-btn").textContent).toBe("View transcript summary")
+    // Detail panel is not yet visible
+    expect(screen.queryByTestId("defense-detail-panel")).not.toBeInTheDocument()
+  })
+
+  it("clicking View transcript summary opens defense detail panel with recruiter-safe content", async () => {
+    seedApproved(["project_defense_media"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("view-transcript-btn")).toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByTestId("view-transcript-btn"))
+
+    const panel = screen.getByTestId("defense-detail-panel")
+    expect(panel).toBeInTheDocument()
+    expect(panel.textContent).toMatch(/Recruiter-safe evidence preview/i)
+    expect(panel.textContent).toMatch(/Ownership signals/i)
+    expect(panel.textContent).toMatch(/Technical depth/i)
+    expect(panel.textContent).toMatch(/Limitations noted/i)
+    expect(panel.textContent).toMatch(/Detailed raw evidence remains controlled by the student/i)
+    expect(screen.getByTestId("view-transcript-btn").textContent).toBe("Hide summary")
+  })
+
+  it("approved detailed_skill_evidence shows View evidence button on each skill row", async () => {
+    seedApproved(["detailed_skill_evidence"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-detailed-skill-evidence")).toBeInTheDocument(),
+    )
+    const btns = screen.getAllByTestId("view-skill-evidence-btn")
+    expect(btns.length).toBeGreaterThanOrEqual(1)
+    expect(btns[0].textContent).toBe("View evidence")
+  })
+
+  it("clicking View evidence expands skill detail panel with support and interview question", async () => {
+    seedApproved(["detailed_skill_evidence"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId("view-skill-evidence-btn").length).toBeGreaterThan(0),
+    )
+    // No panels yet
+    expect(screen.queryByTestId("skill-detail-panel")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
+
+    const panel = screen.getByTestId("skill-detail-panel")
+    expect(panel).toBeInTheDocument()
+    expect(panel.textContent).toMatch(/Recruiter-safe evidence preview/i)
+    expect(panel.textContent).toMatch(/What supports this claim/i)
+    expect(panel.textContent).toMatch(/What needs review/i)
+    expect(panel.textContent).toMatch(/Suggested interview question/i)
+    expect(panel.textContent).toMatch(/Detailed raw evidence remains controlled by the student/i)
+    // Button toggles
+    expect(screen.getAllByTestId("view-skill-evidence-btn")[0].textContent).toBe("Hide evidence")
+  })
+
+  it("clicking a detail button again collapses the panel", async () => {
+    seedApproved(["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId("view-recording-btn").length).toBeGreaterThan(0),
+    )
+
+    const btn = screen.getAllByTestId("view-recording-btn")[0]
+    fireEvent.click(btn)
+    expect(screen.getByTestId("recording-detail-panel")).toBeInTheDocument()
+
+    fireEvent.click(btn)
+    expect(screen.queryByTestId("recording-detail-panel")).not.toBeInTheDocument()
+  })
+
+  it("detail panels do not expose private fields, localhost, tokens, or storage paths", async () => {
+    seedApproved(["workflow_recordings", "project_defense_media", "detailed_skill_evidence"])
+
+    let container!: HTMLElement
+    await act(async () => {
+      const r = render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+      container = r.container
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-evidence-section")).toBeInTheDocument(),
+    )
+
+    // Open all detail panels
+    for (const btn of screen.getAllByTestId("view-recording-btn")) {
+      fireEvent.click(btn)
+    }
+    fireEvent.click(screen.getByTestId("view-transcript-btn"))
+    for (const btn of screen.getAllByTestId("view-skill-evidence-btn")) {
+      fireEvent.click(btn)
+    }
+
+    const html = container.innerHTML
+    expect(html).not.toContain("localhost")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("session_id")
+    expect(html).not.toContain("storage_path")
+    expect(html).not.toContain("media_storage_path")
+    expect(html).not.toContain("raw_url")
+    expect(html).not.toContain("debug_metadata")
+    expect(html).not.toContain("admin_notes")
+    expect(html).not.toContain("blob:")
+    expect(html).not.toContain("transcript_text")
+  })
+
+  it("unapproved evidence type does not render its detail buttons", async () => {
+    // Only workflow_recordings approved — project_defense and skill_evidence not approved
+    seedApproved(["workflow_recordings"])
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("unlocked-workflow-recordings")).toBeInTheDocument(),
+    )
+    // Workflow detail buttons present
+    expect(screen.getAllByTestId("view-recording-btn").length).toBeGreaterThan(0)
+    // No project defense or skill evidence sections
+    expect(screen.queryByTestId("view-transcript-btn")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("view-skill-evidence-btn")).not.toBeInTheDocument()
+  })
+
+  it("pending state shows no View summary or View evidence buttons", async () => {
+    createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings", "detailed_skill_evidence"], messageToStudent: "" },
+      UNLOCK_SLUG,
+    )
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-pending-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("view-recording-btn")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("view-skill-evidence-btn")).not.toBeInTheDocument()
+  })
+
+  it("denied state shows no detail action buttons", async () => {
+    const req = createAccessRequest(
+      { requesterName: "R", requesterEmail: "r@co.com", company: "", role: "", reason: "", requestedEvidenceTypes: ["workflow_recordings"], messageToStudent: "" },
+      UNLOCK_SLUG,
+    )
+    denyAccessRequest(req.id)
+
+    await act(async () => {
+      render(<RecruiterWorkPassportPreview view={makeRecruiterView(UNLOCK_SLUG)} />)
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("access-denied-card")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("view-recording-btn")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("view-transcript-btn")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("view-skill-evidence-btn")).not.toBeInTheDocument()
+  })
 })

@@ -474,7 +474,9 @@ function DecisionHelpersSection({
 // ── Section: Protected Evidence Unlocked ─────────────────────────────────────
 // Shown only when the student has approved access.  All content is mock /
 // recruiter-safe: no private storage URLs, access tokens, raw transcripts,
-// media_storage_path, debug metadata, or admin notes.
+// media_storage_path, debug metadata, admin notes, or localhost paths.
+
+// ── Mock detail data (recruiter-safe, no raw URLs or tokens) ─────────────────
 
 const RECORDING_META = [
   { duration: "4:32", date: "May 28, 2026" },
@@ -482,38 +484,201 @@ const RECORDING_META = [
   { duration: "2:47", date: "May 22, 2026" },
 ]
 
-function MockRecordingCard({ title, index }: { title: string; index: number }) {
-  const m = RECORDING_META[index] ?? { duration: "3:00", date: "May 2026" }
+type RecordingDetail = {
+  summary: string
+  highlights: string[]
+  skillsObserved: string[]
+}
+
+const RECORDING_DETAILS: RecordingDetail[] = [
+  {
+    summary: "Candidate demonstrated a browser workflow with evidence-backed machine learning interaction. Full raw recording remains protected and can be provided only through approved evidence access.",
+    highlights: [
+      "Live model prediction interface observed",
+      "Input gesture and real-time inference output captured",
+      "TensorFlow.js model loading confirmed in workflow",
+    ],
+    skillsObserved: ["TensorFlow.js", "Machine Learning", "React UI"],
+  },
+  {
+    summary: "Candidate demonstrated interactive 3D rendering using WebGL, showing controlled geometry creation and real-time rendering pipeline.",
+    highlights: [
+      "Interactive 3D scene manipulation observed",
+      "Shader loading and geometry rendering captured",
+      "WebGL canvas interaction confirmed",
+    ],
+    skillsObserved: ["Three.js", "WebGL", "JavaScript"],
+  },
+  {
+    summary: "Candidate interacted with an LLM chat interface showing evidence of prompt-aware UI integration and response handling.",
+    highlights: [
+      "Prompt submission and response chain observed",
+      "Conversational UI interaction confirmed",
+      "LLM integration workflow captured",
+    ],
+    skillsObserved: ["LLM Interfaces", "JavaScript", "Conversational UI"],
+  },
+]
+
+type SkillDetail = {
+  support: string
+  reviewNote: string
+  interviewQ: string
+}
+
+const SKILL_DETAILS: Record<string, SkillDetail> = {
+  "AI / Machine Learning": {
+    support: "Candidate demonstrated AI workflow and machine learning inference pipeline with live model interaction captured in workflow recordings.",
+    reviewNote: "Ask about model selection, training approach, and evaluation methodology.",
+    interviewQ: "Walk me through how your model inference works from input to output prediction.",
+  },
+  "JavaScript / Frontend": {
+    support: "GitHub repository confirms JavaScript implementation; website workflow shows live frontend interaction with interactive elements.",
+    reviewNote: "Limited evidence of production deployment or testing infrastructure.",
+    interviewQ: "How would you improve the error handling and testing coverage in this project?",
+  },
+  "Data & Visualization": {
+    support: "Website workflow and OCR evidence show data display and interaction patterns in a live environment.",
+    reviewNote: "No dedicated data pipeline evidence beyond the UI layer — ask about data sources.",
+    interviewQ: "Explain how data flows from your source through to the visualization layer.",
+  },
+}
+
+const DEFENSE_DETAIL = {
+  projectGoal: "Build an AI-backed portfolio system demonstrating skill evidence across multiple sources.",
+  ownershipSignals: [
+    "Described design decisions and iterative implementation changes",
+    "Explained debugging process and specific obstacles overcome",
+    "Referenced personal choices in model selection and data pipeline",
+  ],
+  technicalDepthSignals: [
+    "Discussed training pipeline and data preprocessing rationale",
+    "Explained model evaluation methodology and performance trade-offs",
+    "Addressed system architecture and integration approach",
+  ],
+  limitationsNoted: "Acknowledged partial coverage of backend deployment; identified concrete areas for further evidence collection.",
+}
+
+// ── Shared notice footer ──────────────────────────────────────────────────────
+
+function EvidencePreviewNotice() {
   return (
-    <div style={{
-      padding: "9px 12px",
-      background: C.bg,
-      border: `1px solid ${C.line}`,
-      borderRadius: 7,
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-    }}>
-      <span style={{ fontSize: 16, flexShrink: 0 }}>🎬</span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={{
-          fontSize: 12, fontWeight: 600, color: C.ink,
-          margin: "0 0 2px",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>
-          {title}
-        </p>
-        <p style={{ fontSize: 10, color: C.muted, margin: 0 }}>
-          {m.duration} · Recorded {m.date}
-        </p>
-      </div>
-      <span style={{
-        fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 999,
-        background: C.emeraldSoft, color: C.emerald, border: "1px solid #bbf7d0",
-        flexShrink: 0,
+    <p style={{ fontSize: 10, color: C.muted, margin: "8px 0 0", fontStyle: "italic" }}>
+      Detailed raw evidence remains controlled by the student.
+    </p>
+  )
+}
+
+// ── Recording card with inline "View summary" expander ────────────────────────
+
+function MockRecordingCard({ title, index }: { title: string; index: number }) {
+  const [open, setOpen] = useState(false)
+  const m = RECORDING_META[index] ?? { duration: "3:00", date: "May 2026" }
+  const detail: RecordingDetail = RECORDING_DETAILS[index] ?? {
+    summary: "Candidate demonstrated a browser workflow and evidence-backed project interaction. Full raw recording remains protected and can be provided only through approved evidence access.",
+    highlights: ["Workflow interaction captured", "Evidence-backed skill demonstration observed"],
+    skillsObserved: [],
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      {/* Card row */}
+      <div style={{
+        padding: "9px 12px",
+        background: C.bg,
+        border: `1px solid ${C.line}`,
+        borderRadius: open ? "7px 7px 0 0" : 7,
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
       }}>
-        Available
-      </span>
+        <span style={{ fontSize: 16, flexShrink: 0 }}>🎬</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{
+            fontSize: 12, fontWeight: 600, color: C.ink,
+            margin: "0 0 2px",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>
+            {title}
+          </p>
+          <p style={{ fontSize: 10, color: C.muted, margin: 0 }}>
+            {m.duration} · Recorded {m.date}
+          </p>
+        </div>
+        <span style={{
+          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 999,
+          background: C.emeraldSoft, color: C.emerald, border: "1px solid #bbf7d0",
+          flexShrink: 0,
+        }}>
+          Available
+        </span>
+        <button
+          type="button"
+          data-testid="view-recording-btn"
+          onClick={() => setOpen((o) => !o)}
+          style={{
+            fontSize: 11, fontWeight: 600, color: C.indigo,
+            background: C.indigoSoft, border: "1px solid #c7d2fe",
+            borderRadius: 5, padding: "3px 9px", cursor: "pointer", flexShrink: 0,
+          }}
+        >
+          {open ? "Hide summary" : "View summary"}
+        </button>
+      </div>
+
+      {/* Inline detail panel */}
+      {open && (
+        <div
+          data-testid="recording-detail-panel"
+          style={{
+            padding: "12px 14px",
+            background: C.indigoSoft,
+            border: "1px solid #c7d2fe",
+            borderTop: "none",
+            borderRadius: "0 0 7px 7px",
+          }}
+        >
+          <p style={{
+            fontSize: 11, fontWeight: 700, color: C.indigo, margin: "0 0 6px",
+            textTransform: "uppercase" as const, letterSpacing: "0.07em",
+          }}>
+            Recruiter-safe evidence preview
+          </p>
+          <p style={{ fontSize: 12, color: C.inkSoft, margin: "0 0 10px", lineHeight: 1.6 }}>
+            {detail.summary}
+          </p>
+          {detail.highlights.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <p style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 4px" }}>
+                Observed highlights
+              </p>
+              <ul style={{ margin: 0, padding: "0 0 0 14px" }}>
+                {detail.highlights.map((h, i) => (
+                  <li key={i} style={{ fontSize: 11, color: C.inkSoft, lineHeight: 1.5 }}>{h}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {detail.skillsObserved.length > 0 && (
+            <div style={{ marginBottom: 4 }}>
+              <p style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 4px" }}>
+                Skills observed
+              </p>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {detail.skillsObserved.map((s) => (
+                  <span key={s} style={{
+                    fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 4,
+                    background: C.paper, color: C.indigo, border: "1px solid #c7d2fe",
+                  }}>
+                    {s}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          <EvidencePreviewNotice />
+        </div>
+      )}
     </div>
   )
 }
@@ -531,7 +696,7 @@ function UnlockedWorkflowSection({ links }: { links: Array<{ label: string; url:
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         <span style={{
           fontSize: 11, fontWeight: 800, letterSpacing: "0.1em",
-          textTransform: "uppercase", color: C.muted,
+          textTransform: "uppercase" as const, color: C.muted,
         }}>
           Workflow recordings
         </span>
@@ -551,31 +716,210 @@ function UnlockedWorkflowSection({ links }: { links: Array<{ label: string; url:
   )
 }
 
+// ── Project defense section with "View transcript summary" expander ───────────
+
 function UnlockedProjectDefenseSection() {
+  const [open, setOpen] = useState(false)
   return (
     <div data-testid="unlocked-project-defense">
       <div style={{
         fontSize: 11, fontWeight: 800, letterSpacing: "0.1em",
-        textTransform: "uppercase", color: C.muted, marginBottom: 10,
+        textTransform: "uppercase" as const, color: C.muted, marginBottom: 10,
       }}>
         Project defense media / transcript
       </div>
       <div style={{
-        padding: "12px 14px",
         background: C.bg,
         border: `1px solid ${C.line}`,
         borderRadius: 8,
+        overflow: "hidden",
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-          <span style={{ fontSize: 16, flexShrink: 0 }}>📋</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>
-            Project defense transcript available
-          </span>
+        {/* Summary row */}
+        <div style={{
+          padding: "12px 14px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 16, flexShrink: 0 }}>📋</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>
+              Project defense transcript available
+            </span>
+          </div>
+          <button
+            type="button"
+            data-testid="view-transcript-btn"
+            onClick={() => setOpen((o) => !o)}
+            style={{
+              fontSize: 11, fontWeight: 600, color: C.indigo,
+              background: C.indigoSoft, border: "1px solid #c7d2fe",
+              borderRadius: 5, padding: "3px 9px", cursor: "pointer", flexShrink: 0,
+            }}
+          >
+            {open ? "Hide summary" : "View transcript summary"}
+          </button>
         </div>
-        <p style={{ fontSize: 12, color: C.inkSoft, margin: 0, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 12, color: C.inkSoft, margin: 0, padding: "0 14px 12px", lineHeight: 1.6 }}>
           Candidate explained project goal, implementation approach, evidence sources, and limitations.
         </p>
+
+        {/* Inline detail panel */}
+        {open && (
+          <div
+            data-testid="defense-detail-panel"
+            style={{
+              padding: "14px",
+              background: C.indigoSoft,
+              borderTop: "1px solid #c7d2fe",
+            }}
+          >
+            <p style={{
+              fontSize: 11, fontWeight: 700, color: C.indigo, margin: "0 0 10px",
+              textTransform: "uppercase" as const, letterSpacing: "0.07em",
+            }}>
+              Recruiter-safe evidence preview
+            </p>
+
+            <p style={{ fontSize: 12, fontWeight: 600, color: C.ink, margin: "0 0 4px" }}>
+              Project goal
+            </p>
+            <p style={{ fontSize: 12, color: C.inkSoft, margin: "0 0 12px", lineHeight: 1.6 }}>
+              {DEFENSE_DETAIL.projectGoal}
+            </p>
+
+            <p style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 4px" }}>
+              Ownership signals
+            </p>
+            <ul style={{ margin: "0 0 10px", padding: "0 0 0 14px" }}>
+              {DEFENSE_DETAIL.ownershipSignals.map((s, i) => (
+                <li key={i} style={{ fontSize: 11, color: C.inkSoft, lineHeight: 1.5 }}>{s}</li>
+              ))}
+            </ul>
+
+            <p style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 4px" }}>
+              Technical depth
+            </p>
+            <ul style={{ margin: "0 0 10px", padding: "0 0 0 14px" }}>
+              {DEFENSE_DETAIL.technicalDepthSignals.map((s, i) => (
+                <li key={i} style={{ fontSize: 11, color: C.inkSoft, lineHeight: 1.5 }}>{s}</li>
+              ))}
+            </ul>
+
+            <p style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 4px" }}>
+              Limitations noted
+            </p>
+            <p style={{ fontSize: 11, color: C.inkSoft, margin: "0 0 4px", lineHeight: 1.5 }}>
+              {DEFENSE_DETAIL.limitationsNoted}
+            </p>
+            <EvidencePreviewNotice />
+          </div>
+        )}
       </div>
+    </div>
+  )
+}
+
+// ── Skill evidence rows with per-row "View evidence" expander ─────────────────
+
+function SkillEvidenceRow({ name, sources }: { name: string; sources: string[] }) {
+  const [open, setOpen] = useState(false)
+  const detail: SkillDetail = SKILL_DETAILS[name] ?? {
+    support: `Evidence from ${sources.join(", ")} supports this skill claim.`,
+    reviewNote: "Ask the candidate to walk through a specific implementation example.",
+    interviewQ: `Describe a concrete challenge you solved using ${name}.`,
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      {/* Row */}
+      <div style={{
+        padding: "8px 12px",
+        background: C.bg,
+        border: `1px solid ${C.line}`,
+        borderRadius: open ? "7px 7px 0 0" : 7,
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        flexWrap: "wrap",
+      }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: C.ink, flex: "0 0 auto", minWidth: 160 }}>
+          {name}
+        </span>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", flex: 1 }}>
+          {sources.map((src) => (
+            <span key={src} style={{
+              fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 4,
+              background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe",
+            }}>
+              {src}
+            </span>
+          ))}
+        </div>
+        <button
+          type="button"
+          data-testid="view-skill-evidence-btn"
+          onClick={() => setOpen((o) => !o)}
+          style={{
+            fontSize: 11, fontWeight: 600, color: C.indigo,
+            background: C.indigoSoft, border: "1px solid #c7d2fe",
+            borderRadius: 5, padding: "3px 9px", cursor: "pointer", flexShrink: 0,
+          }}
+        >
+          {open ? "Hide evidence" : "View evidence"}
+        </button>
+      </div>
+
+      {/* Inline detail panel */}
+      {open && (
+        <div
+          data-testid="skill-detail-panel"
+          style={{
+            padding: "12px 14px",
+            background: C.indigoSoft,
+            border: "1px solid #c7d2fe",
+            borderTop: "none",
+            borderRadius: "0 0 7px 7px",
+          }}
+        >
+          <p style={{
+            fontSize: 11, fontWeight: 700, color: C.indigo, margin: "0 0 8px",
+            textTransform: "uppercase" as const, letterSpacing: "0.07em",
+          }}>
+            Recruiter-safe evidence preview
+          </p>
+
+          <div style={{ marginBottom: 8 }}>
+            <p style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 3px" }}>
+              What supports this claim
+            </p>
+            <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
+              {detail.support}
+            </p>
+          </div>
+
+          <div style={{ marginBottom: 8 }}>
+            <p style={{ fontSize: 10, fontWeight: 700, color: C.amber, textTransform: "uppercase" as const, margin: "0 0 3px" }}>
+              What needs review
+            </p>
+            <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
+              {detail.reviewNote}
+            </p>
+          </div>
+
+          <div>
+            <p style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" as const, margin: "0 0 3px" }}>
+              Suggested interview question
+            </p>
+            <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5, fontStyle: "italic" }}>
+              &ldquo;{detail.interviewQ}&rdquo;
+            </p>
+          </div>
+          <EvidencePreviewNotice />
+        </div>
+      )}
     </div>
   )
 }
@@ -593,36 +937,13 @@ function UnlockedSkillEvidenceSection({ groups }: { groups: RecruiterSkillGroupR
     <div data-testid="unlocked-detailed-skill-evidence">
       <div style={{
         fontSize: 11, fontWeight: 800, letterSpacing: "0.1em",
-        textTransform: "uppercase", color: C.muted, marginBottom: 10,
+        textTransform: "uppercase" as const, color: C.muted, marginBottom: 10,
       }}>
         Detailed skill evidence
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {rows.map((row) => (
-          <div key={row.name} style={{
-            padding: "8px 12px",
-            background: C.bg,
-            border: `1px solid ${C.line}`,
-            borderRadius: 7,
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            flexWrap: "wrap",
-          }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: C.ink, flex: "0 0 auto", minWidth: 160 }}>
-              {row.name}
-            </span>
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-              {row.sources.map((src) => (
-                <span key={src} style={{
-                  fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 4,
-                  background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe",
-                }}>
-                  {src}
-                </span>
-              ))}
-            </div>
-          </div>
+          <SkillEvidenceRow key={row.name} name={row.name} sources={row.sources} />
         ))}
       </div>
     </div>
