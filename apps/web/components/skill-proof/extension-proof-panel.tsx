@@ -54,7 +54,6 @@ import {
   type DiscoveredEvidenceType,
 } from "@/lib/api"
 import { VerificationReviewSection } from "./verification-review-section"
-import { EvidenceAnalysisProgress } from "./EvidenceAnalysisProgress"
 import { SequenceAnalysisPanel } from "./sequence-analysis-panel"
 import type {
   ObservedDemonstration,
@@ -182,21 +181,6 @@ const LIVE_CHECK_STAGES: Array<{ key: string; label: string }> = [
   { key: "following_redirects", label: "Following redirects" },
   { key: "reading_metadata",    label: "Reading page metadata" },
   { key: "saving_result",       label: "Saving result" },
-]
-
-// Updated to match the 9-stage precise workflow evidence system (v3).
-// Consumed by WorkflowAnalysisInProgress for stage simulation.
-const ANALYSIS_STAGES: Array<{ key: string; label: string; comingSoon?: boolean }> = [
-  { key: "preparing_recording",  label: "Preparing recording" },
-  { key: "filtering_tabs",       label: "Filtering background tabs" },
-  { key: "identifying_target",   label: "Identifying target website" },
-  { key: "extracting_events",    label: "Extracting relevant workflow events" },
-  { key: "reading_outputs",      label: "Reading visible text and outputs" },
-  { key: "detecting_iao_flow",   label: "Detecting input → action → output flow" },
-  { key: "mapping_skills",       label: "Mapping demonstration to skills" },
-  { key: "generating_summary",   label: "Generating recruiter-safe summary" },
-  { key: "finalizing",           label: "Finalizing Work Passport evidence" },
-  { key: "video_frame_analysis", label: "Video frame analysis",              comingSoon: true },
 ]
 
 const GITHUB_STAGES: Array<{ key: string; label: string }> = [
@@ -368,290 +352,143 @@ function SessionStepper({ status }: { status: ExtensionProofSessionStatus }) {
   )
 }
 
-// ── Website proof progress ────────────────────────────────────────────────────
+// ── Workflow analysis progress ───────────────────────────────────────────────
 
-export type WebsiteProofProgressStatus =
-  | "pending"
-  | "active"
-  | "complete"
-  | "skipped"
-  | "failed"
-  | "not_applicable"
+export type WorkflowAnalysisProgressStatus = "pending" | "active" | "complete" | "failed"
 
-export type WebsiteProofProgressStage = {
+export type WorkflowAnalysisProgressStage = {
   key: string
   label: string
-  status: WebsiteProofProgressStatus
-  detail: string
+  status: WorkflowAnalysisProgressStatus
 }
 
-export type WebsiteProofProgressModel = {
-  stages: WebsiteProofProgressStage[]
+export type WorkflowAnalysisProgressModel = {
+  stages: WorkflowAnalysisProgressStage[]
   percent: number
-  activeStage: WebsiteProofProgressStage | null
   currentMessage: string
   showSlowWarning: boolean
+  failed: boolean
 }
 
-const SLOW_PROGRESS_WARNING_MS = 90_000
+const WORKFLOW_PROGRESS_SLOW_WARNING_MS = 90_000
 
-function sessionAtOrAfter(
-  status: ExtensionProofSessionStatus,
-  milestones: ExtensionProofSessionStatus[],
-): boolean {
-  return milestones.includes(status)
-}
+const WORKFLOW_ANALYSIS_PROGRESS_STAGES: Array<{ key: string; label: string }> = [
+  { key: "receiving", label: "Receiving recording" },
+  { key: "keyframes", label: "Extracting keyframes" },
+  { key: "ocr", label: "Running OCR / visual evidence checks" },
+  { key: "qwen", label: "Running Qwen visual reasoning" },
+  { key: "timeline", label: "Matching browser workflow timeline to claimed skills" },
+  { key: "report", label: "Generating recruiter-safe workflow report" },
+]
 
-function finalSourceAnalyzed(evaluation: FinalEvaluationResult | null, keys: string[]): boolean {
-  return Boolean(
-    evaluation?.evidence_source_breakdown?.some((source) => (
-      keys.includes(source.key) &&
-      source.status !== "not_run" &&
-      source.status !== "not_applicable"
-    )),
-  )
-}
-
-export function buildWebsiteProofProgress(params: {
+export function shouldShowWorkflowAnalysisProgress(params: {
   sessionStatus: ExtensionProofSessionStatus
-  urlType: UrlType
-  hasGithubUrl: boolean
+  workflowAnalysisComplete: boolean
+  analyzeError?: string | null
+}): boolean {
+  if (params.workflowAnalysisComplete) return false
+  const workflowEligible = params.sessionStatus === "uploaded_pending_analysis" || params.sessionStatus === "analyzing"
+  if (!workflowEligible) return false
+  if (params.analyzeError) return true
+  return workflowEligible
+}
+
+export function buildWorkflowAnalysisProgress(params: {
+  sessionStatus: ExtensionProofSessionStatus
   workflowAnalysisComplete: boolean
   workflowAnalysisRunning: boolean
-  liveCheckPresent: boolean
-  liveCheckRunning: boolean
-  liveCheckFailed: boolean
-  githubAnalysisComplete: boolean
-  githubAnalysisRunning: boolean
-  githubAnalysisFailed: boolean
-  defenseEvidencePresent: boolean
-  defenseAnalysisRunning: boolean
-  documentEvidencePresent: boolean
-  finalEvaluationPresent: boolean
-  finalEvaluationRunning: boolean
-  visualEvidenceComplete?: boolean
+  analyzeError?: string | null
+  simProgress?: number
+  simStageIdx?: number
   activeElapsedMs?: number
-}): WebsiteProofProgressModel {
-  const uploadedOrLater = sessionAtOrAfter(params.sessionStatus, ["uploaded_pending_analysis", "analyzing", "completed"])
-  const completedSession = params.sessionStatus === "completed"
-  const local = isLocal(params.urlType)
-  const liveCheckStage: WebsiteProofProgressStage = local
-    ? {
-        key: "live_check",
-        label: "Live website check",
-        status: "not_applicable",
-        detail: "Not applicable for local/private URL",
-      }
-    : params.liveCheckRunning
-      ? {
-          key: "live_check",
-          label: "Live website check",
-          status: "active",
-          detail: "Checking public reachability",
-        }
-      : params.liveCheckPresent && params.liveCheckFailed
-        ? {
-            key: "live_check",
-            label: "Live website check",
-            status: "failed",
-            detail: "Retryable public reachability warning",
-          }
-        : params.liveCheckPresent
-          ? {
-              key: "live_check",
-              label: "Live website check",
-              status: "complete",
-              detail: "Public website reachable",
-            }
-          : {
-              key: "live_check",
-              label: "Live website check",
-              status: "pending",
-              detail: "Waiting to run public website check",
-            }
+}): WorkflowAnalysisProgressModel {
+  const failed = Boolean(params.analyzeError && !params.workflowAnalysisComplete)
+  const shouldShow = shouldShowWorkflowAnalysisProgress(params)
+  if (!shouldShow) {
+    return {
+      stages: WORKFLOW_ANALYSIS_PROGRESS_STAGES.map((stage) => ({ ...stage, status: "pending" })),
+      percent: 0,
+      currentMessage: "Workflow evidence analysis has not started.",
+      showSlowWarning: false,
+      failed: false,
+    }
+  }
 
-  const stages: WebsiteProofProgressStage[] = [
-    {
-      key: "session_created",
-      label: "Session created",
-      status: "complete",
-      detail: "Proof session is ready",
-    },
-    ...(local ? [] : [liveCheckStage]),
-    {
-      key: "recording",
-      label: "Recording in progress",
-      status: params.sessionStatus === "recording" ? "active" : uploadedOrLater ? "complete" : "pending",
-      detail: params.sessionStatus === "recording"
-        ? "Complete your demo, then click Stop & Send Proof"
-        : uploadedOrLater
-          ? "Recording received"
-          : "Waiting for recording to start",
-    },
-    {
-      key: "proof_uploaded",
-      label: "Proof uploaded",
-      status: uploadedOrLater ? "complete" : params.sessionStatus === "recording" ? "pending" : "pending",
-      detail: uploadedOrLater ? "Workflow proof uploaded" : "Waiting for proof upload",
-    },
-    {
-      key: "keyframes",
-      label: "Keyframes extracted",
-      status: params.workflowAnalysisComplete || completedSession
-        ? "complete"
-        : uploadedOrLater || params.workflowAnalysisRunning
-          ? "active"
-          : "pending",
-      detail: params.workflowAnalysisComplete || completedSession
-        ? "Keyframes and timeline are prepared"
-        : uploadedOrLater || params.workflowAnalysisRunning
-          ? "Extracting keyframes and preparing visual evidence"
-          : "Waiting for proof upload",
-    },
-    {
-      key: "visual_reasoning",
-      label: local ? "OCR / visual evidence analysis" : "OCR / Qwen visual reasoning",
-      status: params.visualEvidenceComplete || params.workflowAnalysisComplete
-        ? "complete"
-        : uploadedOrLater || params.workflowAnalysisRunning
-          ? "active"
-          : "pending",
-      detail: params.visualEvidenceComplete || params.workflowAnalysisComplete
-        ? "Visible evidence reviewed"
-        : uploadedOrLater || params.workflowAnalysisRunning
-          ? local
-            ? "Reading DOM, OCR, and visual evidence"
-            : "Running OCR and Qwen visual reasoning"
-          : "Waiting for proof upload",
-    },
-    {
-      key: "workflow_analysis",
-      label: "Workflow analysis",
-      status: params.workflowAnalysisComplete
-        ? "complete"
-        : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
-          ? "active"
-          : uploadedOrLater
-            ? "pending"
-            : "pending",
-      detail: params.workflowAnalysisComplete
-        ? "Browser events matched to claimed skills"
-        : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
-          ? "Matching browser events to claimed skills"
-          : uploadedOrLater
-            ? "Ready to analyze workflow evidence"
-            : "Waiting for proof upload",
-    },
-    {
-      key: "github",
-      label: "GitHub analysis",
-      status: params.hasGithubUrl
-        ? params.githubAnalysisRunning
-          ? "active"
-          : params.githubAnalysisComplete
-            ? "complete"
-            : params.githubAnalysisFailed
-              ? "failed"
-              : "pending"
-        : "skipped",
-      detail: params.hasGithubUrl
-        ? params.githubAnalysisRunning
-          ? "Repository evidence is being checked"
-          : params.githubAnalysisComplete
-            ? "Repository evidence reviewed"
-            : params.githubAnalysisFailed
-              ? "Retryable repository analysis warning"
-              : uploadedOrLater
-                ? "Repository evidence will be checked next"
-                : "Waiting for proof upload"
-        : "Not added",
-    },
-    {
-      key: "optional_evidence",
-      label: "Project defense / document evidence",
-      status: params.defenseAnalysisRunning
-        ? "active"
-        : params.defenseEvidencePresent || params.documentEvidencePresent
-          ? "complete"
-          : "skipped",
-      detail: params.defenseAnalysisRunning
-        ? "Analyzing optional evidence"
-        : params.defenseEvidencePresent || params.documentEvidencePresent
-          ? "Optional evidence reviewed"
-          : "Not added",
-    },
-    {
-      key: "final_score",
-      label: "Final evidence score generated",
-      status: params.finalEvaluationRunning
-        ? "active"
-        : params.finalEvaluationPresent
-          ? "complete"
-          : "pending",
-      detail: params.finalEvaluationRunning
-        ? "Computing final evidence score"
-        : params.finalEvaluationPresent
-          ? "Final evidence score generated"
-          : "Final verification pending — waiting for required evidence steps",
-    },
-    ...(local ? [liveCheckStage] : []),
-  ]
+  const activeIdx = failed
+    ? Math.max(0, Math.min(params.simStageIdx ?? 4, WORKFLOW_ANALYSIS_PROGRESS_STAGES.length - 1))
+    : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
+      ? Math.max(0, Math.min(params.simStageIdx ?? 1, WORKFLOW_ANALYSIS_PROGRESS_STAGES.length - 1))
+      : 1
 
-  const completeWeight = stages.reduce((sum, stage) => {
-    if (stage.status === "complete" || stage.status === "skipped" || stage.status === "not_applicable") return sum + 1
-    if (stage.status === "active") return sum + 0.5
-    return sum
-  }, 0)
-  const percent = Math.round((completeWeight / Math.max(stages.length, 1)) * 100)
-  const activeStage = stages.find((stage) => stage.status === "active") ?? null
-  const currentMessage = activeStage
-    ? `${activeStage.label} — ${activeStage.detail}.`
-    : params.finalEvaluationPresent
-      ? "Final evidence score generated."
-      : "Final verification pending — waiting for required evidence steps."
+  const stages = WORKFLOW_ANALYSIS_PROGRESS_STAGES.map((stage, index): WorkflowAnalysisProgressStage => ({
+    ...stage,
+    status: failed && index === activeIdx
+      ? "failed"
+      : index < activeIdx
+        ? "complete"
+        : index === activeIdx
+          ? "active"
+          : "pending",
+  }))
+
+  const percent = failed
+    ? Math.max(10, Math.min(params.simProgress ?? 45, 95))
+    : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
+      ? Math.max(15, Math.min(params.simProgress ?? 35, 95))
+      : 18
+
+  const currentMessage = failed
+    ? "Workflow evidence analysis hit an issue. Retry the analysis when ready."
+    : params.workflowAnalysisRunning || params.sessionStatus === "analyzing"
+      ? `${WORKFLOW_ANALYSIS_PROGRESS_STAGES[activeIdx]?.label ?? "Analyzing workflow"} is in progress.`
+      : "VeriBridge is preparing your uploaded recording for workflow analysis."
 
   return {
     stages,
     percent,
-    activeStage,
     currentMessage,
-    showSlowWarning: Boolean(activeStage && (params.activeElapsedMs ?? 0) >= SLOW_PROGRESS_WARNING_MS),
+    showSlowWarning: !failed && Boolean((params.activeElapsedMs ?? 0) >= WORKFLOW_PROGRESS_SLOW_WARNING_MS),
+    failed,
   }
 }
 
-function progressStatusStyle(status: WebsiteProofProgressStatus): CSSProperties {
+function workflowProgressStatusStyle(status: WorkflowAnalysisProgressStatus): CSSProperties {
   if (status === "complete") return { color: "#065f46", background: "#f0fdf4", border: "1px solid #d1fae5" }
   if (status === "active") return { color: "#1d4ed8", background: "#eff6ff", border: "1px solid #bfdbfe" }
   if (status === "failed") return { color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca" }
-  if (status === "skipped" || status === "not_applicable") return { color: "#475569", background: "#f8fafc", border: "1px solid #e2e8f0" }
   return { color: "#64748b", background: "#f8fafc", border: "1px solid #e2e8f0" }
 }
 
-function progressStatusIcon(status: WebsiteProofProgressStatus): string {
+function workflowProgressStatusIcon(status: WorkflowAnalysisProgressStatus): string {
   if (status === "complete") return "✓"
   if (status === "active") return "…"
   if (status === "failed") return "!"
-  if (status === "skipped" || status === "not_applicable") return "—"
   return "○"
 }
 
-function progressStatusLabel(status: WebsiteProofProgressStatus, detail: string): string {
-  if (detail === "Not added") return "Not added"
-  if (status === "not_applicable") return "Not applicable"
-  if (status === "skipped") return "Skipped"
+function workflowProgressStatusLabel(status: WorkflowAnalysisProgressStatus): string {
   if (status === "active") return "Active"
   if (status === "complete") return "Complete"
   if (status === "failed") return "Retry"
-  return detail.startsWith("Waiting") ? "Waiting" : "Pending"
+  return "Pending"
 }
 
-function WebsiteProofProgressTracker({ model }: { model: WebsiteProofProgressModel }) {
+function WorkflowAnalysisProgressCard({
+  model,
+  onRetry,
+}: {
+  model: WorkflowAnalysisProgressModel
+  onRetry?: () => void
+}) {
   return (
-    <div style={{ border: "1px solid var(--line)", borderRadius: 12, background: "#fff", padding: "14px 16px", display: "grid", gap: 12 }}>
+    <div
+      data-testid="workflow-analysis-progress-card"
+      style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 12 }}
+    >
       <div style={{ display: "grid", gap: 5 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
-          <span style={{ fontSize: 12, fontWeight: 800, color: "var(--ink)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-            Verification Progress
+          <span style={{ fontSize: 13, fontWeight: 800, color: "#1e40af" }}>
+            Workflow Evidence Analysis in Progress
           </span>
           <span style={{ fontSize: 12, fontWeight: 800, color: "#1d4ed8", fontVariantNumeric: "tabular-nums" }}>
             {model.percent}%
@@ -663,27 +500,47 @@ function WebsiteProofProgressTracker({ model }: { model: WebsiteProofProgressMod
               height: "100%",
               width: `${model.percent}%`,
               borderRadius: 999,
-              background: model.percent >= 100 ? "#16a34a" : "#2563eb",
+              background: model.failed ? "#dc2626" : "#2563eb",
               transition: "width 0.35s ease",
             }}
           />
         </div>
         <p style={{ margin: 0, fontSize: 12, color: "#334155", lineHeight: 1.55 }}>
-          {model.currentMessage}
+          VeriBridge is analyzing your workflow recording. This usually takes 30–90 seconds.
         </p>
         <p style={{ margin: 0, fontSize: 11, color: "#64748b", lineHeight: 1.55 }}>
-          This can take 30–90 seconds depending on OCR/Qwen/GitHub analysis.
+          {model.currentMessage}
         </p>
         {model.showSlowWarning && (
           <div role="status" style={{ border: "1px solid #fde68a", borderRadius: 10, background: "#fffbeb", color: "#92400e", padding: "8px 10px", fontSize: 11, lineHeight: 1.55 }}>
-            Still working — large videos, OCR, and visual reasoning can take longer. Do not close this tab.
+            Still working — OCR and visual reasoning can take longer. Do not close this tab.
+          </div>
+        )}
+        {model.failed && onRetry && (
+          <div>
+            <button
+              type="button"
+              onClick={onRetry}
+              style={{
+                border: "1px solid #dc2626",
+                background: "transparent",
+                color: "#991b1b",
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontWeight: 700,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              Retry Workflow Analysis
+            </button>
           </div>
         )}
       </div>
 
       <div style={{ display: "grid", gap: 7 }}>
         {model.stages.map((stage) => {
-          const style = progressStatusStyle(stage.status)
+          const style = workflowProgressStatusStyle(stage.status)
           return (
             <div
               key={stage.key}
@@ -699,19 +556,16 @@ function WebsiteProofProgressTracker({ model }: { model: WebsiteProofProgressMod
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                 <span style={{ width: 16, textAlign: "center", fontSize: 12, fontWeight: 800, flexShrink: 0 }}>
-                  {progressStatusIcon(stage.status)}
+                  {workflowProgressStatusIcon(stage.status)}
                 </span>
                 <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
                   <span style={{ fontSize: 12, fontWeight: stage.status === "active" || stage.status === "complete" ? 700 : 600 }}>
                     {stage.label}
                   </span>
-                  <span style={{ fontSize: 11, opacity: 0.9, lineHeight: 1.35 }}>
-                    {stage.detail}
-                  </span>
                 </div>
               </div>
               <span style={{ fontSize: 11, fontWeight: 800, whiteSpace: "nowrap" }}>
-                {progressStatusLabel(stage.status, stage.detail)}
+                {workflowProgressStatusLabel(stage.status)}
               </span>
             </div>
           )
@@ -1037,26 +891,6 @@ function StatusMessage({
   }
 
   return null
-}
-
-// ── Workflow Analysis In-Progress ─────────────────────────────────────────────
-// Now delegates to the reusable EvidenceAnalysisProgress component.
-
-function WorkflowAnalysisInProgress({
-  simProgress,
-  simStageIdx,
-}: {
-  simProgress: number
-  simStageIdx: number
-}) {
-  return (
-    <EvidenceAnalysisProgress
-      featureType="website_workflow"
-      simProgress={simProgress}
-      simStageIdx={simStageIdx}
-      visualAnalysisStatus="not_available"
-    />
-  )
 }
 
 // ── Live Website Check components ────────────────────────────────────────────
@@ -7192,55 +7026,27 @@ export function ExtensionProofPanel({
     defenseAnalysis?.privacy_scan_status,
   ])
 
-  const progressPreview = useMemo(() => {
+  const workflowProgressPreview = useMemo(() => {
     if (!session) return null
-    const visualEvidenceComplete = Boolean(
-      currentSessionAnalysis && (
-        currentSessionAnalysis.visual_analysis_status === "analyzed" ||
-        currentSessionAnalysis.visible_evidence_status === "available" ||
-        currentSessionAnalysis.visible_evidence_status === "partial" ||
-        currentSessionAnalysis.dom_evidence_status === "available" ||
-        currentSessionAnalysis.dom_evidence_status === "partial" ||
-        currentSessionAnalysis.frame_ocr_evidence_summary?.has_ocr_evidence ||
-        currentSessionAnalysis.visual_reasoning_summary ||
-        finalSourceAnalyzed(finalEvalForDisplay, ["ocr", "qwen_visual_reasoning"])
-      )
-    )
-    return buildWebsiteProofProgress({
+    return buildWorkflowAnalysisProgress({
       sessionStatus: session.status,
-      urlType,
-      hasGithubUrl: Boolean(form.githubUrl.trim()),
       workflowAnalysisComplete: Boolean(currentSessionAnalysis),
       workflowAnalysisRunning: analyzing,
-      liveCheckPresent: Boolean(liveCheck),
-      liveCheckRunning: liveChecking,
-      liveCheckFailed: Boolean(liveCheck && liveCheck.status !== "not_applicable" && !liveCheck.is_reachable),
-      githubAnalysisComplete: Boolean(githubAnalysis && githubAnalysis.status === "success"),
-      githubAnalysisRunning: githubAnalyzing,
-      githubAnalysisFailed: Boolean(githubAnalysis && githubAnalysis.status !== "success"),
-      defenseEvidencePresent: Boolean(defenseAnalysis),
-      defenseAnalysisRunning: defenseAnalyzing,
-      documentEvidencePresent: finalSourceAnalyzed(finalEvalForDisplay, ["uploaded_documents"]),
-      finalEvaluationPresent: Boolean(finalEvalForDisplay),
-      finalEvaluationRunning: finalEvalRunning,
-      visualEvidenceComplete,
+      analyzeError,
+      simProgress,
+      simStageIdx,
     })
-  }, [
-    session?.status,
-    urlType,
-    form.githubUrl,
-    currentSessionAnalysis,
-    analyzing,
-    liveCheck,
-    liveChecking,
-    githubAnalysis,
-    githubAnalyzing,
-    defenseAnalysis,
-    defenseAnalyzing,
-    finalEvalForDisplay,
-    finalEvalRunning,
-  ])
-  const activeProgressKey = progressPreview?.activeStage?.key ?? null
+  }, [session?.status, currentSessionAnalysis, analyzing, analyzeError, simProgress, simStageIdx])
+  const workflowProgressActive = Boolean(
+    session && shouldShowWorkflowAnalysisProgress({
+      sessionStatus: session.status,
+      workflowAnalysisComplete: Boolean(currentSessionAnalysis),
+      analyzeError,
+    })
+  )
+  const activeProgressKey = workflowProgressActive
+    ? `${session?.status}:${analyzing ? "running" : "pending"}:${analyzeError ? "failed" : "ok"}:${workflowProgressPreview?.stages.find((stage) => stage.status === "active" || stage.status === "failed")?.key ?? "none"}`
+    : null
   const [activeProgressStartedAt, setActiveProgressStartedAt] = useState(() => Date.now())
   const [progressNowMs, setProgressNowMs] = useState(() => Date.now())
 
@@ -7255,54 +7061,26 @@ export function ExtensionProofPanel({
     return () => clearInterval(timer)
   }, [activeProgressKey])
 
-  const websiteProofProgress = useMemo(() => {
+  const workflowAnalysisProgress = useMemo(() => {
     if (!session) return null
-    const visualEvidenceComplete = Boolean(
-      currentSessionAnalysis && (
-        currentSessionAnalysis.visual_analysis_status === "analyzed" ||
-        currentSessionAnalysis.visible_evidence_status === "available" ||
-        currentSessionAnalysis.visible_evidence_status === "partial" ||
-        currentSessionAnalysis.dom_evidence_status === "available" ||
-        currentSessionAnalysis.dom_evidence_status === "partial" ||
-        currentSessionAnalysis.frame_ocr_evidence_summary?.has_ocr_evidence ||
-        currentSessionAnalysis.visual_reasoning_summary ||
-        finalSourceAnalyzed(finalEvalForDisplay, ["ocr", "qwen_visual_reasoning"])
-      )
-    )
-    return buildWebsiteProofProgress({
+    if (!workflowProgressActive) return null
+    return buildWorkflowAnalysisProgress({
       sessionStatus: session.status,
-      urlType,
-      hasGithubUrl: Boolean(form.githubUrl.trim()),
       workflowAnalysisComplete: Boolean(currentSessionAnalysis),
       workflowAnalysisRunning: analyzing,
-      liveCheckPresent: Boolean(liveCheck),
-      liveCheckRunning: liveChecking,
-      liveCheckFailed: Boolean(liveCheck && liveCheck.status !== "not_applicable" && !liveCheck.is_reachable),
-      githubAnalysisComplete: Boolean(githubAnalysis && githubAnalysis.status === "success"),
-      githubAnalysisRunning: githubAnalyzing,
-      githubAnalysisFailed: Boolean(githubAnalysis && githubAnalysis.status !== "success"),
-      defenseEvidencePresent: Boolean(defenseAnalysis),
-      defenseAnalysisRunning: defenseAnalyzing,
-      documentEvidencePresent: finalSourceAnalyzed(finalEvalForDisplay, ["uploaded_documents"]),
-      finalEvaluationPresent: Boolean(finalEvalForDisplay),
-      finalEvaluationRunning: finalEvalRunning,
-      visualEvidenceComplete,
+      analyzeError,
+      simProgress,
+      simStageIdx,
       activeElapsedMs: activeProgressKey ? progressNowMs - activeProgressStartedAt : 0,
     })
   }, [
     session?.status,
-    urlType,
-    form.githubUrl,
     currentSessionAnalysis,
     analyzing,
-    liveCheck,
-    liveChecking,
-    githubAnalysis,
-    githubAnalyzing,
-    defenseAnalysis,
-    defenseAnalyzing,
-    finalEvalForDisplay,
-    finalEvalRunning,
+    analyzeError,
+    simProgress,
+    simStageIdx,
+    workflowProgressActive,
     activeProgressKey,
     progressNowMs,
     activeProgressStartedAt,
@@ -8086,10 +7864,6 @@ export function ExtensionProofPanel({
         {/* Session stepper */}
         <SessionStepper status={session.status} />
 
-        {websiteProofProgress && (
-          <WebsiteProofProgressTracker model={websiteProofProgress} />
-        )}
-
         {/* Live Proof Coach removed — live feedback runs locally in extension only */}
 
         {/* Evidence checklist */}
@@ -8105,6 +7879,13 @@ export function ExtensionProofPanel({
           finalEvaluationPresent={Boolean(finalEvalForDisplay)}
           finalVerificationReady={readinessReport?.final_verification_status === "ready_for_review"}
         />
+
+        {workflowAnalysisProgress && (
+          <WorkflowAnalysisProgressCard
+            model={workflowAnalysisProgress}
+            onRetry={() => void handleAnalyze()}
+          />
+        )}
 
         {/* Privacy scan badge — shown once proof is uploaded */}
         {privacyScan && (
@@ -8159,52 +7940,6 @@ export function ExtensionProofPanel({
             </div>
           </div>
         )}
-
-        {/* Error display — always visible, outside any conditional container */}
-        {analyzeError && !currentSessionAnalysis && (
-          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 10, padding: "10px 14px", display: "grid", gap: 8 }}>
-            <div style={{ color: "#991b1b", fontSize: 12 }}>{analyzeError}</div>
-            {!analyzing && (
-              <div>
-                <button
-                  type="button"
-                  onClick={() => void handleAnalyze()}
-                  style={{
-                    border: "1px solid #dc2626", background: "transparent", color: "#991b1b",
-                    borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer",
-                  }}
-                >
-                  Retry Analysis
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Stuck analyzing state — session is analyzing but no active request and no error */}
-        {session.status === "analyzing" && !currentSessionAnalysis && !analyzing && !analyzeError && (
-          <div style={{ border: "1px solid #ddd6fe", borderRadius: 12, background: "#faf5ff", padding: "14px 16px", display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#5b21b6" }}>Analysis in progress</div>
-            <p style={{ margin: 0, fontSize: 12, color: "#4c1d95", lineHeight: 1.65 }}>
-              Workflow analysis was started in a previous attempt. Click Retry to re-run the analysis.
-            </p>
-            <div>
-              <button
-                type="button"
-                onClick={() => void handleAnalyze()}
-                style={{
-                  border: "1px solid transparent", background: "#6d28d9", color: "#fff",
-                  borderRadius: 10, padding: "8px 18px", fontWeight: 700, fontSize: 13, cursor: "pointer",
-                }}
-              >
-                Retry Analysis
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* In-progress analysis with simulated progress stages */}
-        {analyzing && <WorkflowAnalysisInProgress simProgress={simProgress} simStageIdx={simStageIdx} />}
 
         {/* Workflow analysis result card */}
         {currentSessionAnalysis && <WorkflowAnalysisCard analysis={currentSessionAnalysis} finalEvaluation={finalEval} />}

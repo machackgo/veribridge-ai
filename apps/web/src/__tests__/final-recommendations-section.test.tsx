@@ -10,12 +10,13 @@ import {
   FutureProofModulesSection,
   LiveWebsiteCheckCard,
   ProjectDefenseResultCard,
-  buildWebsiteProofProgress,
+  buildWorkflowAnalysisProgress,
   clearActiveExtensionProofSession,
   hasActiveExtensionProofSession,
   loadActiveExtensionProofSession,
   mergeVisibleSourceScores,
   saveActiveExtensionProofSession,
+  shouldShowWorkflowAnalysisProgress,
 } from "../../components/skill-proof/extension-proof-panel"
 import type { FinalEvaluationResult, LiveWebsiteCheckResponse, ProjectDefenseAnalysisResponse } from "../lib/api"
 
@@ -533,105 +534,86 @@ describe("Detected Skill Profile (grouped skill evidence)", () => {
   })
 })
 
-describe("Website Proof progress model", () => {
-  const baseProgress = {
-    sessionStatus: "created" as const,
-    urlType: "localhost_url" as const,
-    hasGithubUrl: false,
-    workflowAnalysisComplete: false,
-    workflowAnalysisRunning: false,
-    liveCheckPresent: false,
-    liveCheckRunning: false,
-    liveCheckFailed: false,
-    githubAnalysisComplete: false,
-    githubAnalysisRunning: false,
-    githubAnalysisFailed: false,
-    defenseEvidencePresent: false,
-    defenseAnalysisRunning: false,
-    documentEvidencePresent: false,
-    finalEvaluationPresent: false,
-    finalEvaluationRunning: false,
-  }
-
-  it("marks local/private live check as not applicable instead of failed or pending", () => {
-    const model = buildWebsiteProofProgress(baseProgress)
-    expect(model.stages.find((stage) => stage.key === "live_check")).toMatchObject({
-      status: "not_applicable",
-      detail: "Not applicable for local/private URL",
-    })
-  })
-
-  it("shows active local recording and upload progress", () => {
-    const model = buildWebsiteProofProgress({
-      ...baseProgress,
+describe("Workflow Evidence Analysis progress card", () => {
+  it("is hidden during recording", () => {
+    expect(shouldShowWorkflowAnalysisProgress({
       sessionStatus: "recording",
-    })
-    expect(model.activeStage).toMatchObject({
-      key: "recording",
-      status: "active",
-    })
-    expect(model.currentMessage.toLowerCase()).toContain("complete your demo")
+      workflowAnalysisComplete: false,
+    })).toBe(false)
   })
 
-  it("includes public live website check stage for public proofs", () => {
-    const model = buildWebsiteProofProgress({
-      ...baseProgress,
-      urlType: "live_deployed_url",
-      liveCheckRunning: true,
-    })
-    expect(model.stages.find((stage) => stage.key === "live_check")).toMatchObject({
-      status: "active",
-      detail: "Checking public reachability",
-    })
-  })
-
-  it("renders completed visual, workflow, and GitHub statuses as complete", () => {
-    const model = buildWebsiteProofProgress({
-      ...baseProgress,
-      sessionStatus: "completed",
-      hasGithubUrl: true,
-      workflowAnalysisComplete: true,
-      visualEvidenceComplete: true,
-      githubAnalysisComplete: true,
-    })
-    expect(model.stages.find((stage) => stage.key === "visual_reasoning")?.status).toBe("complete")
-    expect(model.stages.find((stage) => stage.key === "workflow_analysis")?.status).toBe("complete")
-    expect(model.stages.find((stage) => stage.key === "github")?.status).toBe("complete")
-  })
-
-  it("labels missing document and project defense evidence as not added", () => {
-    const model = buildWebsiteProofProgress({
-      ...baseProgress,
-      sessionStatus: "completed",
-      workflowAnalysisComplete: true,
-    })
-    expect(model.stages.find((stage) => stage.key === "optional_evidence")).toMatchObject({
-      status: "skipped",
-      detail: "Not added",
-    })
-  })
-
-  it("shows a friendly warning when an active stage runs long", () => {
-    const model = buildWebsiteProofProgress({
-      ...baseProgress,
+  it("appears after proof upload and before the workflow report exists", () => {
+    expect(shouldShowWorkflowAnalysisProgress({
       sessionStatus: "uploaded_pending_analysis",
+      workflowAnalysisComplete: false,
+    })).toBe(true)
+    const model = buildWorkflowAnalysisProgress({
+      sessionStatus: "uploaded_pending_analysis",
+      workflowAnalysisComplete: false,
+      workflowAnalysisRunning: false,
+    })
+    expect(model.percent).toBeGreaterThan(0)
+    expect(model.currentMessage).toContain("preparing your uploaded recording")
+  })
+
+  it("is hidden when the Workflow Evidence Analysis report exists", () => {
+    expect(shouldShowWorkflowAnalysisProgress({
+      sessionStatus: "completed",
+      workflowAnalysisComplete: true,
+    })).toBe(false)
+  })
+
+  it("contains workflow-only stages", () => {
+    const model = buildWorkflowAnalysisProgress({
+      sessionStatus: "analyzing",
+      workflowAnalysisComplete: false,
+      workflowAnalysisRunning: true,
+      simProgress: 52,
+      simStageIdx: 3,
+    })
+    const labels = model.stages.map((stage) => stage.label).join(" ")
+    expect(labels).toContain("Extracting keyframes")
+    expect(labels).toContain("Running OCR / visual evidence checks")
+    expect(labels).toContain("Running Qwen visual reasoning")
+    expect(labels).toContain("Matching browser workflow timeline to claimed skills")
+    expect(labels).toContain("Generating recruiter-safe workflow report")
+    expect(labels).not.toMatch(/GitHub|Project Defense|Documents|Final Evidence Score|Live Website Check/i)
+  })
+
+  it("shows failed workflow analysis as retryable in the compact card model", () => {
+    const model = buildWorkflowAnalysisProgress({
+      sessionStatus: "uploaded_pending_analysis",
+      workflowAnalysisComplete: false,
+      workflowAnalysisRunning: false,
+      analyzeError: "Analysis failed",
+    })
+    expect(model.failed).toBe(true)
+    expect(model.stages.some((stage) => stage.status === "failed")).toBe(true)
+    expect(model.currentMessage).toContain("Retry")
+  })
+
+  it("shows a friendly still-working note for long-running workflow analysis", () => {
+    const model = buildWorkflowAnalysisProgress({
+      sessionStatus: "analyzing",
+      workflowAnalysisComplete: false,
+      workflowAnalysisRunning: true,
       activeElapsedMs: 91_000,
     })
-    expect(model.activeStage?.key).toBe("keyframes")
     expect(model.showSlowWarning).toBe(true)
   })
 
-  it("marks final score stage complete when final evidence is generated", () => {
-    const model = buildWebsiteProofProgress({
-      ...baseProgress,
-      sessionStatus: "completed",
-      workflowAnalysisComplete: true,
-      finalEvaluationPresent: true,
-    })
-    expect(model.stages.find((stage) => stage.key === "final_score")).toMatchObject({
-      status: "complete",
-      detail: "Final evidence score generated",
-    })
+  it("is placed after Verification Checklist and before the workflow report source", () => {
+    const source = readFileSync(
+      join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
+      "utf8",
+    )
+    const checklistIndex = source.indexOf("<EvidenceChecklist")
+    const progressIndex = source.indexOf("<WorkflowAnalysisProgressCard")
+    const reportIndex = source.indexOf("<WorkflowAnalysisCard")
+    expect(checklistIndex).toBeGreaterThan(-1)
+    expect(progressIndex).toBeGreaterThan(checklistIndex)
+    expect(reportIndex).toBeGreaterThan(progressIndex)
+    expect(source).not.toContain("Verification Progress")
   })
 })
 
