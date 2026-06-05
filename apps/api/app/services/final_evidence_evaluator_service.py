@@ -31,6 +31,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import quote, urlparse
 
+from app.services.url_classification_service import (
+    classify_website_url,
+    local_private_live_check_note,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -600,8 +605,8 @@ class FinalRecommendations:
 @dataclass
 class EvidenceSourceResult:
     key: EvidenceSourceKey
-    status: Literal["pass", "partial", "missing", "not_run", "not_available"]
-    score: int  # 0–100 contribution
+    status: Literal["pass", "partial", "missing", "not_run", "not_available", "not_applicable"]
+    score: int | None  # 0–100 contribution; None when a source is not applicable
     weight: float
     notes: str = ""
 
@@ -1495,11 +1500,39 @@ class FinalEvidenceEvaluatorService:
         return EvidenceSourceResult("github", "missing", 10, _SOURCE_WEIGHTS["github"])
 
     def _score_live_website(self, lw: dict[str, Any] | None) -> EvidenceSourceResult:
+        if lw and str(lw.get("status") or "") == "not_applicable":
+            return EvidenceSourceResult(
+                "live_website_check",
+                "not_applicable",
+                None,
+                _SOURCE_WEIGHTS["live_website_check"],
+                notes=str(lw.get("recruiter_summary") or local_private_live_check_note()),
+            )
         if lw is None:
             return EvidenceSourceResult("live_website_check", "not_run", 0, _SOURCE_WEIGHTS["live_website_check"])
         if lw.get("is_reachable"):
             return EvidenceSourceResult("live_website_check", "pass", 90, _SOURCE_WEIGHTS["live_website_check"])
         return EvidenceSourceResult("live_website_check", "missing", 20, _SOURCE_WEIGHTS["live_website_check"])
+
+    def _score_live_website_for_workflow(
+        self,
+        lw: dict[str, Any] | None,
+        wf: dict[str, Any] | None,
+    ) -> EvidenceSourceResult:
+        scored = self._score_live_website(lw)
+        if lw is not None or scored.status != "not_run":
+            return scored
+        target_url = str((wf or {}).get("target_website") or (wf or {}).get("original_url") or "")
+        classification = classify_website_url(target_url)
+        if target_url and classification.is_local_or_private:
+            return EvidenceSourceResult(
+                "live_website_check",
+                "not_applicable",
+                None,
+                _SOURCE_WEIGHTS["live_website_check"],
+                notes=local_private_live_check_note(),
+            )
+        return scored
 
     def _score_project_defense(
         self,
@@ -1623,18 +1656,18 @@ class FinalEvidenceEvaluatorService:
 
     def _combine_scores(self, sources: list[EvidenceSourceResult]) -> int:
         """Weighted average over core sources, with optional sources as bonus only."""
-        run_sources = [s for s in sources if s.status not in ("not_run", "not_available")]
+        run_sources = [s for s in sources if s.status not in ("not_run", "not_available", "not_applicable")]
         core_sources = [s for s in run_sources if s.key not in _OPTIONAL_BOOSTER_KEYS]
         optional_sources = [s for s in run_sources if s.key in _OPTIONAL_BOOSTER_KEYS]
         if not core_sources:
             if not optional_sources:
                 return 0
-            best_optional = max(s.score for s in optional_sources)
+            best_optional = max(s.score or 0 for s in optional_sources)
             return _clamp(min(60, best_optional))
         total_weight = sum(s.weight for s in core_sources)
         if total_weight == 0:
             return 0
-        weighted_sum = sum(s.score * s.weight for s in core_sources)
+        weighted_sum = sum((s.score or 0) * s.weight for s in core_sources)
         raw = weighted_sum / total_weight
         # Bonus if multiple source types agree (breadth bonus up to +5)
         pass_count = sum(1 for s in core_sources if s.status == "pass")
@@ -1643,11 +1676,11 @@ class FinalEvidenceEvaluatorService:
 
         optional_bonus = 0
         for s in optional_sources:
-            if s.status == "pass" and s.score >= 80:
+            if s.status == "pass" and (s.score or 0) >= 80:
                 optional_bonus = max(optional_bonus, 3)
-            elif s.status == "pass" and s.score >= 65:
+            elif s.status == "pass" and (s.score or 0) >= 65:
                 optional_bonus = max(optional_bonus, 2)
-            elif s.status == "partial" and s.score >= 55:
+            elif s.status == "partial" and (s.score or 0) >= 55:
                 optional_bonus = max(optional_bonus, 1)
 
         return _clamp(base_score + optional_bonus)
@@ -2872,7 +2905,8 @@ class FinalEvidenceEvaluatorService:
             if not s:
                 return "Triggered by combined final evidence analysis."
             label = key.replace("_", " ")
-            return f"Triggered by {label} evidence: status={s.status}, score={s.score}/100. {s.notes}".strip()
+            score_text = "not applicable" if s.score is None else f"{s.score}/100"
+            return f"Triggered by {label} evidence: status={s.status}, score={score_text}. {s.notes}".strip()
 
         proof_actions: list[RecommendationAction] = []
         for a in next_actions:
@@ -2952,7 +2986,7 @@ class FinalEvidenceEvaluatorService:
         if final_score < 80 and not proof_actions:
             weakest = min(
                 (s for s in sources if s.key not in _OPTIONAL_BOOSTER_KEYS),
-                key=lambda s: s.score,
+                key=lambda s: s.score if s.score is not None else 100,
                 default=None,
             )
             proof_actions.append(RecommendationAction(
@@ -3085,14 +3119,14 @@ class FinalEvidenceEvaluatorService:
             self._score_ocr(wf, project_context),
             self._score_qwen(wf, user_id=user_id, session_id=session_id, context=project_context),
             self._score_github(gh),
-            self._score_live_website(lw),
+            self._score_live_website_for_workflow(lw, wf),
             self._score_project_defense(pd, skills, wf, gh, project_context),
             self._score_optional(project_opt, "document", "uploaded_documents", skills, wf, gh, project_context),
         ]
 
         final_score = self._combine_scores(sources)
 
-        sources_used:    list[EvidenceSourceKey] = [s.key for s in sources if s.status not in ("not_run", "not_available")]
+        sources_used:    list[EvidenceSourceKey] = [s.key for s in sources if s.status not in ("not_run", "not_available", "not_applicable")]
         sources_missing: list[EvidenceSourceKey] = [s.key for s in sources if s.status in ("not_run", "missing")]
 
         confidence = self._confidence_label(final_score, sources_used)

@@ -2,8 +2,8 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { DetectedSkillProfileSection, ExtensionProofPanel, FinalEvaluatorCard, FinalRecommendationsSection, FutureProofModulesSection, mergeVisibleSourceScores, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
-import type { FinalEvaluationResult, ProjectDefenseAnalysisResponse } from "../lib/api"
+import { DetectedSkillProfileSection, ExtensionProofPanel, FinalEvaluatorCard, FinalRecommendationsSection, FutureProofModulesSection, LiveWebsiteCheckCard, mergeVisibleSourceScores, ProjectDefenseResultCard } from "../../components/skill-proof/extension-proof-panel"
+import type { FinalEvaluationResult, LiveWebsiteCheckResponse, ProjectDefenseAnalysisResponse } from "../lib/api"
 
 const learningAction = {
   title: "Add performance metrics",
@@ -29,6 +29,30 @@ const proofAction = {
   priority: "high" as const,
   source_reason: "Triggered by github evidence: status=not_run, score=0/100.",
   action_type: "add_github_url",
+}
+
+function liveCheck(overrides: Partial<LiveWebsiteCheckResponse>): LiveWebsiteCheckResponse {
+  return {
+    id: "live1",
+    proof_session_id: "s1",
+    status: "complete",
+    website_url: "https://open-meteo.com/",
+    final_url: null,
+    status_code: 200,
+    response_time_ms: 120,
+    content_type: "text/html",
+    page_title: "Open-Meteo",
+    is_reachable: true,
+    confidence: "high",
+    risk_flags: [],
+    recruiter_summary: "Website is reachable and returned HTTP 200.",
+    error_message: null,
+    checked_at: "2026-06-05T00:00:00Z",
+    progress: 100,
+    current_stage: "Complete",
+    stages: [{ key: "saving_result", label: "Saving result", status: "complete" }],
+    ...overrides,
+  }
 }
 
 function evaluation(overrides: Partial<FinalEvaluationResult>): FinalEvaluationResult {
@@ -128,6 +152,87 @@ describe("FinalRecommendationsSection", () => {
 })
 
 describe("Final report consistency", () => {
+  it("renders public live website check complete as the green success card", () => {
+    render(
+      <LiveWebsiteCheckCard
+        check={liveCheck({})}
+        onRetry={() => undefined}
+        sourceScore={{ score: 90, status: "pass" }}
+      />,
+    )
+    expect(screen.getByText("Live Website Check — Complete")).toBeInTheDocument()
+    expect(screen.getByText("Site is publicly reachable")).toBeInTheDocument()
+    expect(screen.getByText("Live Website Score: 90/100")).toBeInTheDocument()
+  })
+
+  it("renders local private live website check as a neutral not-applicable card", () => {
+    render(
+      <LiveWebsiteCheckCard
+        check={liveCheck({
+          status: "not_applicable",
+          website_url: "http://localhost:3000",
+          status_code: null,
+          response_time_ms: null,
+          is_reachable: false,
+          confidence: "not_applicable",
+          recruiter_summary: "Local/private website detected — public live website check is not applicable.",
+          current_stage: "Not applicable",
+        })}
+        onRetry={() => undefined}
+        sourceScore={{ score: null, status: "not_applicable", notes: "Local/private website detected" }}
+      />,
+    )
+    expect(screen.getByText("Live Website Check — Not applicable")).toBeInTheDocument()
+    expect(screen.getByText("Public live check is not applicable for this URL")).toBeInTheDocument()
+    expect(screen.getByText("Live Website Score: not applicable")).toBeInTheDocument()
+    expect(screen.queryByText("Re-run Check")).not.toBeInTheDocument()
+  })
+
+  it("shows final live website source as not applicable without a 0 score", () => {
+    render(
+      <FinalEvaluatorCard
+        sessionId="s1"
+        hideActions
+        evaluation={evaluation({
+          final_score: 64,
+          evidence_source_breakdown: [{
+            key: "live_website_check",
+            status: "not_applicable",
+            score: null,
+            weight: 0.05,
+            notes: "Local/private website detected — public live website check is not applicable.",
+          }],
+        })}
+      />,
+    )
+    expect(screen.getAllByText(/live website check/i).length).toBeGreaterThan(0)
+    expect(screen.getByText(/not applicable/i)).toBeInTheDocument()
+    expect(screen.queryByText("0/100")).not.toBeInTheDocument()
+  })
+
+  it("keeps local private proof source sections visible alongside not-applicable live check", () => {
+    render(
+      <FinalEvaluatorCard
+        sessionId="s1"
+        hideActions
+        evaluation={evaluation({
+          final_score: 72,
+          evidence_source_breakdown: [
+            { key: "website_workflow", status: "pass", score: 72, weight: 0.25, notes: "workflow confidence=good" },
+            { key: "github", status: "pass", score: 80, weight: 0.15, notes: "" },
+            { key: "project_defense", status: "partial", score: 55, weight: 0.1, notes: "" },
+            { key: "live_website_check", status: "not_applicable", score: null, weight: 0.05, notes: "Local/private website detected" },
+          ],
+        })}
+      />,
+    )
+    expect(screen.getByText(/website workflow/i)).toBeInTheDocument()
+    expect(screen.getByText(/github/i)).toBeInTheDocument()
+    expect(screen.getByText(/project defense/i)).toBeInTheDocument()
+    expect(screen.getByText(/live website check/i)).toBeInTheDocument()
+    expect(screen.getByText(/not applicable/i)).toBeInTheDocument()
+  })
+
   it("Project Defense does not show contradictory scores", () => {
     const analysis = {
       id: "pd1",

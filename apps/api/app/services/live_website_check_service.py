@@ -19,10 +19,14 @@ import logging
 import time
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
+
+from app.services.url_classification_service import (
+    classify_website_url,
+    local_private_live_check_note,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +36,6 @@ _CHECKER_VERSION = "live-check-v1"
 
 _TIMEOUT_SECONDS = 20.0
 _MAX_HTML_BYTES = 200_000
-
-_PRIVATE_PREFIXES = (
-    "localhost", "127.", "10.", "192.168.", "172.16.", "172.17.",
-    "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.",
-    "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
-    "172.30.", "172.31.", "0.",
-)
-
 
 class LiveWebsiteCheckService:
     def __init__(self, client: Any) -> None:
@@ -54,11 +50,14 @@ class LiveWebsiteCheckService:
         """
         logger.info("LIVE_WEBSITE_CHECK_START session=%s url=%r", session_id, website_url[:80])
 
-        # Guard: reject non-public URLs
-        err = _validate_public_url(website_url)
-        if err:
-            result = _failed_result(website_url, err)
-            logger.info("LIVE_WEBSITE_CHECK_REJECTED session=%s reason=%r", session_id, err)
+        classification = classify_website_url(website_url)
+        if not classification.is_public_live_url:
+            result = _not_applicable_result(website_url, classification.reason)
+            logger.info(
+                "LIVE_WEBSITE_CHECK_NOT_APPLICABLE session=%s reason=%r",
+                session_id,
+                classification.reason,
+            )
             return self._persist(user_id, session_id, result)
 
         result = _perform_check(website_url)
@@ -258,25 +257,10 @@ class LiveWebsiteCheckService:
 
 def _validate_public_url(url: str) -> str | None:
     """Return an error string if the URL is not a checkable public URL, else None."""
-    url = url.strip()
-    if not url:
-        return "URL is empty."
-    if not url.startswith(("http://", "https://")):
-        return "URL must start with http:// or https://."
-    try:
-        parsed = urlparse(url)
-        host = parsed.hostname or ""
-    except Exception:
-        return "URL could not be parsed."
-    if not host:
-        return "URL has no hostname."
-    host_lower = host.lower()
-    for prefix in _PRIVATE_PREFIXES:
-        if host_lower == prefix.rstrip(".") or host_lower.startswith(prefix):
-            return f"URL points to a private or local address ({host}) — only public deployed URLs are checked."
-    if host_lower.endswith(".local") or host_lower.endswith(".internal"):
-        return f"URL points to a local network address ({host}) — only public deployed URLs are checked."
-    return None
+    classification = classify_website_url(url)
+    if classification.is_public_live_url:
+        return None
+    return f"{classification.reason} Only public deployed URLs are checked."
 
 
 # ── HTTP check ────────────────────────────────────────────────────────────────
@@ -336,6 +320,7 @@ def _perform_check(url: str) -> dict[str, Any]:
         )
 
         return {
+            "status": "complete" if is_reachable else "failed",
             "website_url": url,
             "final_url": final_url if final_url != url else None,
             "status_code": status_code,
@@ -364,6 +349,7 @@ def _perform_check(url: str) -> dict[str, Any]:
 
 def _failed_result(url: str, error: str, now: str | None = None) -> dict[str, Any]:
     return {
+        "status": "failed",
         "website_url": url,
         "final_url": None,
         "status_code": None,
@@ -375,6 +361,25 @@ def _failed_result(url: str, error: str, now: str | None = None) -> dict[str, An
         "risk_flags": [error],
         "recruiter_summary": f"Live website check could not complete: {error} Check whether the deployed app is running, public, and not behind authentication.",
         "error_message": error,
+        "checked_at": now or _now(),
+    }
+
+
+def _not_applicable_result(url: str, reason: str, now: str | None = None) -> dict[str, Any]:
+    note = local_private_live_check_note()
+    return {
+        "status": "not_applicable",
+        "website_url": url,
+        "final_url": None,
+        "status_code": None,
+        "response_time_ms": None,
+        "content_type": None,
+        "page_title": None,
+        "is_reachable": False,
+        "confidence": "not_applicable",
+        "risk_flags": [reason],
+        "recruiter_summary": note,
+        "error_message": None,
         "checked_at": now or _now(),
     }
 
@@ -430,7 +435,13 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def build_completed_stages(is_reachable: bool) -> list[dict[str, Any]]:
+def build_completed_stages(is_reachable: bool, status: str = "") -> list[dict[str, Any]]:
+    if status == "not_applicable":
+        return [
+            {"key": "validating_url",      "label": "Validating URL",              "status": "complete"},
+            {"key": "checking_access",     "label": "Checking public accessibility","status": "complete"},
+            {"key": "saving_result",       "label": "Saving not-applicable result", "status": "complete"},
+        ]
     return [
         {"key": "validating_url",      "label": "Validating URL",              "status": "complete"},
         {"key": "checking_access",     "label": "Checking public accessibility","status": "complete"},

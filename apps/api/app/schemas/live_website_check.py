@@ -6,7 +6,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-LiveWebsiteCheckConfidence = Literal["high", "medium", "low", "failed"]
+LiveWebsiteCheckConfidence = Literal["high", "medium", "low", "failed", "not_applicable"]
+
+LiveWebsiteCheckStatus = Literal["complete", "failed", "not_applicable"]
 
 LiveCheckStageStatus = Literal["pending", "in_progress", "complete", "failed"]
 
@@ -24,6 +26,7 @@ class LiveWebsiteCheckRequest(BaseModel):
 class LiveWebsiteCheckResponse(BaseModel):
     id: str
     proof_session_id: str
+    status: LiveWebsiteCheckStatus = "complete"
     website_url: str
     final_url: str | None = None
     status_code: int | None = None

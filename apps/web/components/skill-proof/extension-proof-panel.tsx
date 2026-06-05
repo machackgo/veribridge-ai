@@ -65,7 +65,7 @@ import type {
 
 type PanelStep = "form" | "session_active"
 type OptionalDocumentUiStatus = "not_added" | "processing" | "analyzed" | "failed"
-type FinalSourceScore = { score: number; status: string; notes?: string }
+type FinalSourceScore = { score: number | null; status: string; notes?: string }
 
 type FormState = {
   websiteUrl: string
@@ -94,10 +94,12 @@ function classifyUrl(raw: string): UrlType {
   if (!t.startsWith("http://") && !t.startsWith("https://")) return "invalid_url"
   try {
     const { hostname } = new URL(t)
-    if (hostname === "localhost" || hostname === "127.0.0.1") return "localhost_url"
-    if (/^10\./.test(hostname)) return "local_network_url"
-    if (/^192\.168\./.test(hostname)) return "local_network_url"
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return "local_network_url"
+    const host = hostname.toLowerCase()
+    if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1") return "localhost_url"
+    if (host.endsWith(".local") || host.endsWith(".internal")) return "local_network_url"
+    if (/^10\./.test(host)) return "local_network_url"
+    if (/^192\.168\./.test(host)) return "local_network_url"
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return "local_network_url"
     return "live_deployed_url"
   } catch {
     return "invalid_url"
@@ -106,6 +108,10 @@ function classifyUrl(raw: string): UrlType {
 
 function isLocal(t: UrlType): boolean {
   return t === "localhost_url" || t === "local_network_url"
+}
+
+function isLiveCheckApplicable(t: UrlType): boolean {
+  return t === "live_deployed_url"
 }
 
 // ── Constants & helpers ───────────────────────────────────────────────────────
@@ -355,9 +361,10 @@ function liveCheckStatus(
   liveCheck: LiveWebsiteCheckResponse | null,
   liveChecking: boolean,
 ): EvidenceItemStatus {
-  if (isLocal(urlType)) return "unavailable"
+  if (!isLiveCheckApplicable(urlType)) return "unavailable"
   if (liveChecking) return "uploading"
   if (!liveCheck) return "pending"
+  if (liveCheck.status === "not_applicable") return "unavailable"
   if (liveCheck.is_reachable) return "complete"
   return "failed"
 }
@@ -778,7 +785,7 @@ function projectDefenseSourceScore(
   analysis: ProjectDefenseAnalysisResponse | null,
 ): FinalSourceScore | undefined {
   const fromEval = sourceScoreFromEvaluation(evaluation, "project_defense")
-  if (fromEval && fromEval.status !== "not_run" && fromEval.score > 0) return fromEval
+  if (fromEval && fromEval.status !== "not_run" && (fromEval.score ?? 0) > 0) return fromEval
   if (!analysis) return fromEval
   const score = analysis.overall_defense_score
     ?? Math.round([
@@ -838,15 +845,18 @@ function SourceScoreBadge({
 
   const isNotRun = source.status === "not_run"
   const isNotAvailable = source.status === "not_available"
+  const isNotApplicable = source.status === "not_applicable"
 
   // Show a neutral text status for sources that were not run or not configured.
   // Do not show "0/100" — that implies a graded failure, which is misleading.
-  if (isNotRun || isNotAvailable) {
-    const text = isNotAvailable ? "not configured" : "not run"
+  if (isNotRun || isNotAvailable || isNotApplicable) {
+    const text = isNotApplicable ? "not applicable" : isNotAvailable ? "not configured" : "not run"
     return (
       <span title={source.notes || source.status} style={{ fontSize: 9, fontWeight: 600,
-        padding: "2px 7px", borderRadius: 4, background: "#f8fafc", color: "#94a3b8",
-        border: "1px dashed #cbd5e1" }}>
+        padding: "2px 7px", borderRadius: 4,
+        background: isNotApplicable ? "#eff6ff" : "#f8fafc",
+        color: isNotApplicable ? "#1e40af" : "#94a3b8",
+        border: `1px dashed ${isNotApplicable ? "#bfdbfe" : "#cbd5e1"}` }}>
         {label}: {text}
       </span>
     )
@@ -886,9 +896,10 @@ const LIVE_CHECK_CONFIDENCE: Record<
   medium: { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "MEDIUM" },
   low:    { bg: "#fef9c3", color: "#854d0e", border: "#fef08a", label: "LOW" },
   failed: { bg: "#fef2f2", color: "#991b1b", border: "#fecaca", label: "FAILED" },
+  not_applicable: { bg: "#eff6ff", color: "#1e40af", border: "#bfdbfe", label: "N/A" },
 }
 
-function LiveWebsiteCheckCard({
+export function LiveWebsiteCheckCard({
   check,
   onRetry,
   sourceScore,
@@ -898,23 +909,28 @@ function LiveWebsiteCheckCard({
   sourceScore?: FinalSourceScore
 }) {
   const conf = LIVE_CHECK_CONFIDENCE[check.confidence] ?? LIVE_CHECK_CONFIDENCE.failed
+  const notApplicable = check.status === "not_applicable" || check.confidence === "not_applicable"
   const success = check.is_reachable
+  const borderColor = notApplicable ? "#bfdbfe" : success ? "#bbf7d0" : "#fecaca"
+  const panelBg = notApplicable ? "#eff6ff" : success ? "#f0fdf4" : "#fef2f2"
+  const headerColor = notApplicable ? "#1e40af" : success ? "#065f46" : "#991b1b"
+  const bodyColor = notApplicable ? "#1e3a8a" : success ? "#064e3b" : "#991b1b"
 
   return (
-    <div style={{ border: `1px solid ${success ? "#bbf7d0" : "#fecaca"}`, borderRadius: 14, overflow: "hidden" }}>
+    <div style={{ border: `1px solid ${borderColor}`, borderRadius: 14, overflow: "hidden" }}>
       {/* Header */}
       <div style={{
-        background: success ? "#f0fdf4" : "#fef2f2",
-        borderBottom: `1px solid ${success ? "#d1fae5" : "#fecaca"}`,
+        background: panelBg,
+        borderBottom: `1px solid ${borderColor}`,
         padding: "12px 16px",
         display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap",
       }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: success ? "#065f46" : "#991b1b" }}>
-            Live Website Check — {success ? "Complete" : "Failed"}
+          <div style={{ fontSize: 13, fontWeight: 700, color: headerColor }}>
+            Live Website Check — {notApplicable ? "Not applicable" : success ? "Complete" : "Failed"}
           </div>
-          <div style={{ fontSize: 11, color: success ? "#16a34a" : "#dc2626", marginTop: 2 }}>
-            {success ? "Site is publicly reachable" : "Could not confirm public accessibility"}
+          <div style={{ fontSize: 11, color: bodyColor, marginTop: 2 }}>
+            {notApplicable ? "Public live check is not applicable for this URL" : success ? "Site is publicly reachable" : "Could not confirm public accessibility"}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -932,11 +948,11 @@ function LiveWebsiteCheckCard({
       <div style={{ padding: "14px 16px", display: "grid", gap: 12 }}>
         {/* Recruiter summary */}
         <div style={{
-          background: success ? "#f0fdf4" : "#fef2f2",
-          border: `1px solid ${success ? "#bbf7d0" : "#fecaca"}`,
+          background: panelBg,
+          border: `1px solid ${borderColor}`,
           borderRadius: 10, padding: "10px 12px",
         }}>
-          <p style={{ margin: 0, fontSize: 12, color: success ? "#064e3b" : "#991b1b", lineHeight: 1.7, fontStyle: "italic" }}>
+          <p style={{ margin: 0, fontSize: 12, color: bodyColor, lineHeight: 1.7, fontStyle: "italic" }}>
             {check.recruiter_summary}
           </p>
         </div>
@@ -975,7 +991,7 @@ function LiveWebsiteCheckCard({
         )}
 
         {/* Failure: retry recommendation */}
-        {!success && (
+        {!success && !notApplicable && (
           <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "8px 12px" }}>
             <p style={{ margin: 0, fontSize: 11, color: "#9a3412", lineHeight: 1.6 }}>
               Check whether the deployed app is running, public, and not behind authentication. Then retry.
@@ -1002,19 +1018,21 @@ function LiveWebsiteCheckCard({
         </div>
 
         {/* Footer actions */}
-        <div style={{ display: "flex", gap: 8, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
-          <button
-            type="button"
-            onClick={onRetry}
-            style={{
-              fontSize: 11, fontWeight: 600, padding: "6px 14px", borderRadius: 8,
-              border: "1px solid var(--line-2)", background: "transparent",
-              color: "var(--ink-2)", cursor: "pointer",
-            }}
-          >
-            Re-run Check
-          </button>
-        </div>
+        {!notApplicable && (
+          <div style={{ display: "flex", gap: 8, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+            <button
+              type="button"
+              onClick={onRetry}
+              style={{
+                fontSize: 11, fontWeight: 600, padding: "6px 14px", borderRadius: 8,
+                border: "1px solid var(--line-2)", background: "transparent",
+                color: "var(--ink-2)", cursor: "pointer",
+              }}
+            >
+              Re-run Check
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -3445,20 +3463,24 @@ export function FinalEvaluatorCard({
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
               {evidence_source_breakdown.map((src) => {
-                const isRun = src.status !== "not_run" && src.status !== "not_available"
+                const isRun = src.status !== "not_run" && src.status !== "not_available" && src.status !== "not_applicable"
                 const statusColor = src.status === "pass" ? "#166534"
                   : src.status === "partial" ? "#854d0e"
+                  : src.status === "not_applicable" ? "#1e40af"
                   : src.status === "not_run" ? "#94a3b8"
                   : "#991b1b"
                 const statusBg = src.status === "pass" ? "#f0fdf4"
                   : src.status === "partial" ? "#fffbeb"
+                  : src.status === "not_applicable" ? "#eff6ff"
                   : "#f8fafc"
                 const statusBorder = src.status === "pass" ? "#bbf7d0"
                   : src.status === "partial" ? "#fde68a"
+                  : src.status === "not_applicable" ? "#bfdbfe"
                   : "#e2e8f0"
                 const label = src.key.replace(/_/g, " ")
                 const statusLabel = src.status === "not_run" ? "not run"
                   : src.status === "not_available" ? "not configured"
+                  : src.status === "not_applicable" ? "not applicable"
                   : src.status
                 return (
                   <div key={src.key} style={{ display: "flex", alignItems: "flex-start", gap: 5,
@@ -6745,7 +6767,7 @@ export function ExtensionProofPanel({
     if (!session) return
     if (session.status !== "completed") return
     if (liveCheck) return
-    if (isLocal(urlType)) return
+    if (!isLiveCheckApplicable(urlType)) return
     void getLiveWebsiteCheck(session.id).then((r) => {
       if (r) setLiveCheck(r)
     }).catch(() => undefined)
@@ -7603,17 +7625,17 @@ export function ExtensionProofPanel({
 
         {/* Not available note for local projects */}
         {isLocal(urlType) && isCompleted && (
-          <div style={{ border: "1px solid #e2e8f0", borderRadius: 12, background: "#f8fafc", padding: "12px 14px", display: "grid", gap: 4 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>Live Website Check: Not Available</div>
-            <p style={{ margin: 0, fontSize: 11, color: "#64748b", lineHeight: 1.6 }}>
-              Localhost projects cannot be accessed by recruiters or VeriBridge after the recording session.
-              Add GitHub / setup instructions or deploy the app for stronger verification.
+          <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "12px 14px", display: "grid", gap: 4 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#1e40af" }}>Local/private website detected</div>
+            <p style={{ margin: 0, fontSize: 11, color: "#1e3a8a", lineHeight: 1.6 }}>
+              Public live check is not applicable for local development URLs. Verification will rely on workflow
+              recording, DOM/visual evidence, GitHub, transcript, and optional documents.
             </p>
           </div>
         )}
 
         {/* Run button for live deployed URLs — shown once workflow analysis is done and check not yet run */}
-        {!isLocal(urlType) && isCompleted && !liveCheck && !liveChecking && (
+        {isLiveCheckApplicable(urlType) && isCompleted && !liveCheck && !liveChecking && (
           <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 10 }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>Run Live Website Check</div>
@@ -7775,7 +7797,7 @@ export function ExtensionProofPanel({
             evaluation={finalEvalForDisplay}
             sessionId={session.id}
             onRunGitHub={form.githubUrl.trim() ? () => void handleGitHubAnalysis() : undefined}
-            onRunLiveCheck={!isLocal(urlType) ? () => void handleLiveCheck() : undefined}
+            onRunLiveCheck={isLiveCheckApplicable(urlType) ? () => void handleLiveCheck() : undefined}
             hideActions
           />
         )}
@@ -7798,7 +7820,7 @@ export function ExtensionProofPanel({
             evaluation={finalEvalForDisplay}
             sessionId={session.id}
             onRunGitHub={form.githubUrl.trim() ? () => void handleGitHubAnalysis() : undefined}
-            onRunLiveCheck={!isLocal(urlType) ? () => void handleLiveCheck() : undefined}
+            onRunLiveCheck={isLiveCheckApplicable(urlType) ? () => void handleLiveCheck() : undefined}
           />
         )}
 

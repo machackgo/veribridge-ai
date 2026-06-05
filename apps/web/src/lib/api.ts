@@ -1029,7 +1029,7 @@ export async function getExtensionProofGitHubAnalysis(
 
 // ── Final Evidence Evaluator ──────────────────────────────────────────────────
 
-export type FinalEvidenceStatus = "pass" | "partial" | "missing" | "not_run" | "not_available"
+export type FinalEvidenceStatus = "pass" | "partial" | "missing" | "not_run" | "not_available" | "not_applicable"
 
 export type NextBestActionType =
   | "run_github_analysis"
@@ -1075,7 +1075,7 @@ export type FinalRecommendations = {
 export type EvidenceSourceBreakdown = {
   key: string
   status: FinalEvidenceStatus
-  score: number
+  score: number | null
   weight: number
   notes: string
 }
@@ -1736,7 +1736,9 @@ export async function getVisibleEvidenceSummary(
 
 // ── Live Website Check ────────────────────────────────────────────────────────
 
-export type LiveWebsiteCheckConfidence = "high" | "medium" | "low" | "failed"
+export type LiveWebsiteCheckConfidence = "high" | "medium" | "low" | "failed" | "not_applicable"
+
+export type LiveWebsiteCheckStatus = "complete" | "failed" | "not_applicable"
 
 export type LiveCheckStageStatus = "pending" | "in_progress" | "complete" | "failed"
 
@@ -1749,6 +1751,7 @@ export type LiveWebsiteCheckStage = {
 export type LiveWebsiteCheckResponse = {
   id: string
   proof_session_id: string
+  status: LiveWebsiteCheckStatus
   website_url: string
   final_url: string | null
   status_code: number | null

@@ -84,12 +84,14 @@ def get_live_website_check(
 
 def _to_response(row: dict[str, Any]) -> LiveWebsiteCheckResponse:
     is_reachable = bool(row.get("is_reachable", False))
-    stages = [LiveWebsiteCheckStage(**s) for s in build_completed_stages(is_reachable)]
+    check_status = str(row.get("status") or ("complete" if is_reachable else "failed"))
+    stages = [LiveWebsiteCheckStage(**s) for s in build_completed_stages(is_reachable, check_status)]
     confidence = row.get("confidence", "failed")
-    current_stage = "Complete" if is_reachable else "Failed"
+    current_stage = "Not applicable" if check_status == "not_applicable" else "Complete" if is_reachable else "Failed"
     return LiveWebsiteCheckResponse(
         id=str(row.get("id", "")),
         proof_session_id=str(row.get("proof_session_id", "")),
+        status=check_status,
         website_url=str(row.get("website_url", "")),
         final_url=row.get("final_url"),
         status_code=row.get("status_code"),
