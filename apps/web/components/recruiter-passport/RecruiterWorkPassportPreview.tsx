@@ -877,6 +877,10 @@ type SkillGithubFile = {
   isPublic: boolean
   repoUrl?: string
   branch?: string
+  startLine?: number
+  endLine?: number
+  symbolName?: string
+  codeBlockSummary?: string
 }
 
 type SkillTranscriptExcerpt = {
@@ -1087,6 +1091,10 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
         isPublic: true,
         repoUrl: VERIBRIDGE_REPO,
         branch: VERIBRIDGE_BRANCH,
+        startLine: 40,
+        endLine: 140,
+        symbolName: "FinalEvidenceEvaluatorService",
+        codeBlockSummary: "Combines workflow, GitHub, OCR, transcript, and document signals into final skill confidence using weighted aggregation logic.",
       },
       {
         path: "apps/api/app/services/extension_proof_workflow_analysis_service.py",
@@ -1097,6 +1105,10 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
         isPublic: true,
         repoUrl: VERIBRIDGE_REPO,
         branch: VERIBRIDGE_BRANCH,
+        startLine: 80,
+        endLine: 180,
+        symbolName: "WorkflowAnalysisService",
+        codeBlockSummary: "Analyzes browser workflow events and maps them to claimed skills for evidence extraction.",
       },
       {
         path: "apps/api/app/services/verification_review_service.py",
@@ -1107,6 +1119,10 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
         isPublic: true,
         repoUrl: VERIBRIDGE_REPO,
         branch: VERIBRIDGE_BRANCH,
+        startLine: 30,
+        endLine: 120,
+        symbolName: "VerificationReviewService",
+        codeBlockSummary: "Applies AI review decision logic for evidence completeness and approval threshold checks.",
       },
     ],
     transcriptEvidence: [
@@ -1298,6 +1314,24 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
         isPublic: true,
         repoUrl: VERIBRIDGE_REPO,
         branch: VERIBRIDGE_BRANCH,
+        startLine: 300,
+        endLine: 520,
+        symbolName: "RecruiterWorkPassportPreview",
+        codeBlockSummary: "Renders recruiter skill evidence hub and protected/public artifact UI with access gating logic.",
+      },
+      {
+        path: "apps/web/components/skill-proof/extension-proof-panel.tsx",
+        reason: "Manages proof lifecycle state and evidence UI for browser extension recording sessions",
+        skills: ["TypeScript", "React", "State Management"],
+        stackTags: ["TypeScript", "React", "Extension", "Proof Lifecycle"],
+        confidence: "high",
+        isPublic: true,
+        repoUrl: VERIBRIDGE_REPO,
+        branch: VERIBRIDGE_BRANCH,
+        startLine: 120,
+        endLine: 260,
+        symbolName: "ExtensionProofPanel",
+        codeBlockSummary: "Manages proof lifecycle state and evidence UI for browser extension recording sessions.",
       },
       {
         path: "apps/web/src/app/recruiter/passport/page.tsx",
@@ -1308,6 +1342,10 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
         isPublic: true,
         repoUrl: VERIBRIDGE_REPO,
         branch: VERIBRIDGE_BRANCH,
+        startLine: 20,
+        endLine: 110,
+        symbolName: "RecruiterPassportPage",
+        codeBlockSummary: "Integrates Next.js route-level recruiter passport view with tab navigation and candidate data.",
       },
     ],
     transcriptEvidence: [
@@ -1440,14 +1478,40 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
     ],
     githubEvidence: [
       {
-        path: "apps/web/components/recruiter-passport/CandidateComparison.tsx",
-        reason: "Candidate comparison panel rendering tabular skill metrics — data display component with sorting and comparison logic",
+        path: "apps/web/components/recruiter-passport/RecruiterWorkPassportPreview.tsx",
+        reason: "Displays source coverage, scores, and confidence breakdowns in the evidence visualization grid",
         skills: ["TypeScript", "React", "Data Display"],
-        stackTags: ["TypeScript", "React", "Table", "Comparison UI"],
+        stackTags: ["TypeScript", "React", "Data Grid", "Coverage Visualization"],
         confidence: "medium",
         isPublic: true,
         repoUrl: VERIBRIDGE_REPO,
         branch: VERIBRIDGE_BRANCH,
+        startLine: 520,
+        endLine: 700,
+        symbolName: "EvidenceCoverageGrid",
+        codeBlockSummary: "Displays source coverage, scores, and confidence breakdowns in the evidence visualization grid.",
+      },
+      {
+        path: "apps/api/app/services/final_evidence_evaluator_service.py",
+        reason: "Calculates per-source scores and final evidence score using weighted confidence aggregation",
+        skills: ["Python", "Evidence Scoring", "Data Aggregation"],
+        stackTags: ["Python", "FastAPI", "Scoring", "Aggregation"],
+        confidence: "medium",
+        isPublic: true,
+        repoUrl: VERIBRIDGE_REPO,
+        branch: VERIBRIDGE_BRANCH,
+        startLine: 140,
+        endLine: 220,
+        symbolName: "evidence_scoring_aggregation",
+        codeBlockSummary: "Calculates per-source scores and final evidence score using weighted confidence aggregation.",
+      },
+      {
+        path: "apps/api/app/services/internal_analytics_service.py",
+        reason: "Internal analytics aggregation — private repository, no public access",
+        skills: ["Python", "Analytics"],
+        stackTags: ["Python", "Analytics"],
+        confidence: "low",
+        isPublic: false,
       },
     ],
     transcriptEvidence: [
@@ -3332,41 +3396,92 @@ function GithubArtifactSection({ files, accessApproved }: { files: SkillGithubFi
       <ArtifactSectionHeader title="GitHub Code" count={files.length} color={C.emerald} />
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {files.map((file, i) => {
-          const blobUrl = file.isPublic && file.repoUrl && file.branch
+          const hasLineRange = file.startLine != null && file.endLine != null
+          const exactCodeUrl = file.isPublic && file.repoUrl && file.branch && hasLineRange
+            ? `${file.repoUrl}/blob/${file.branch}/${file.path}#L${file.startLine}-L${file.endLine}`
+            : null
+          const fullFileUrl = file.isPublic && file.repoUrl && file.branch
             ? `${file.repoUrl}/blob/${file.branch}/${file.path}`
             : null
           const repoUrl = file.isPublic && file.repoUrl ? file.repoUrl : null
           return (
             <div key={i} data-testid={`github-artifact-${i}`} style={{ border: `1px solid ${file.isPublic ? "#bbf7d0" : C.line}`, borderRadius: 8, overflow: "hidden" }}>
-              <div style={{ padding: "8px 14px", background: file.isPublic ? C.emeraldSoft : C.bg, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                <code style={{ fontSize: 11, color: file.isPublic ? "#065f46" : C.indigo, fontFamily: "monospace", wordBreak: "break-all" as const, flex: 1 }}>
-                  {file.path}
-                </code>
-                <div style={{ display: "flex", gap: 5 }}>
+              {/* Header: path + symbol + line range + badges */}
+              <div style={{ padding: "8px 14px", background: file.isPublic ? C.emeraldSoft : C.bg, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <code style={{ fontSize: 11, color: file.isPublic ? "#065f46" : C.indigo, fontFamily: "monospace", wordBreak: "break-all" as const, display: "block", marginBottom: 4 }}>
+                    {file.path}
+                  </code>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    {file.symbolName && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: C.ink }}>
+                        {file.symbolName}
+                      </span>
+                    )}
+                    {hasLineRange && (
+                      <span
+                        data-testid={`github-line-range-${i}`}
+                        style={{
+                          fontSize: 10, fontWeight: 700, fontFamily: "monospace",
+                          padding: "1px 7px", borderRadius: 4,
+                          background: "#f0fdf4", color: "#065f46", border: "1px solid #bbf7d0",
+                        }}
+                      >
+                        L{file.startLine}–L{file.endLine}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
                   <ArtifactBadge label={file.isPublic ? "Public repo" : "Private repo"} color={file.isPublic ? C.emerald : C.indigo} bg={file.isPublic ? "#fff" : C.indigoSoft} border={file.isPublic ? "#bbf7d0" : "#c7d2fe"} />
-                  <ArtifactBadge label={`${file.confidence} confidence`} color={file.confidence === "high" ? C.emerald : C.amber} bg={file.confidence === "high" ? C.emeraldSoft : C.amberSoft} border={file.confidence === "high" ? "#bbf7d0" : "#fde68a"} />
+                  <ArtifactBadge label={`${file.confidence} confidence`} color={file.confidence === "high" ? C.emerald : file.confidence === "medium" ? C.amber : C.muted} bg={file.confidence === "high" ? C.emeraldSoft : file.confidence === "medium" ? C.amberSoft : C.bg} border={file.confidence === "high" ? "#bbf7d0" : file.confidence === "medium" ? "#fde68a" : C.line} />
                 </div>
               </div>
+              {/* Body: summaries, tags, buttons */}
               <div style={{ padding: "10px 14px", background: C.paper }}>
+                {file.codeBlockSummary && (
+                  <p style={{ fontSize: 11, color: C.ink, fontWeight: 600, margin: "0 0 4px", lineHeight: 1.5 }}>{file.codeBlockSummary}</p>
+                )}
                 <p style={{ fontSize: 11, color: C.inkSoft, margin: "0 0 8px", lineHeight: 1.5 }}>{file.reason}</p>
-                {file.stackTags && (
-                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 8 }}>
+                {file.stackTags && file.stackTags.length > 0 && (
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10 }}>
                     {file.stackTags.map(tag => (
                       <span key={tag} style={{ fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 4, background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe" }}>{tag}</span>
                     ))}
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {blobUrl ? (
+                  {fullFileUrl ? (
                     <>
+                      {exactCodeUrl ? (
+                        <a
+                          href={exactCodeUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          data-testid={`github-open-exact-${i}`}
+                          style={{ fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 5, color: "#065f46", background: "#f0fdf4", border: "1px solid #bbf7d0", textDecoration: "none" }}
+                        >
+                          ↗ Open exact code block
+                        </a>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled
+                          title="Exact code block not mapped yet."
+                          data-testid={`github-open-exact-${i}`}
+                          style={{ fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 5, color: C.muted, background: C.bg, border: `1px solid ${C.line}`, cursor: "not-allowed", opacity: 0.6 }}
+                        >
+                          Open exact code block
+                        </button>
+                      )}
                       <a
-                        href={blobUrl}
+                        href={fullFileUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         data-testid={`github-open-file-${i}`}
                         style={{ fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 5, color: C.emerald, background: C.emeraldSoft, border: "1px solid #bbf7d0", textDecoration: "none" }}
                       >
-                        ↗ Open GitHub file
+                        ↗ Open full file
                       </a>
                       {repoUrl && (
                         <a
@@ -3836,7 +3951,7 @@ function _DirectProofLinksSection_REMOVED({
                       <p style={{ fontSize: 10, color: C.inkSoft, margin: 0, lineHeight: 1.4 }}>{file.reason}</p>
                       {file.isPublic ? (
                         <a
-                          href={`https://github.com/candidate-repo/blob/main/${file.path}`}
+                          href={`${file.repoUrl ?? VERIBRIDGE_REPO}/blob/${file.branch ?? VERIBRIDGE_BRANCH}/${file.path}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           data-testid={`open-source-file-${i}`}

@@ -1385,3 +1385,198 @@ describe("SkillEvidenceDetailModal — transcript download actions", () => {
     expect(screen.getByTestId("skill-artifact-final-analysis")).toBeInTheDocument()
   })
 })
+
+// ── GitHub line-level proof links ─────────────────────────────────────────────
+
+describe("SkillEvidenceDetailModal — GitHub line-level proof links", () => {
+  function renderModal(skillName: string, accessApproved = false) {
+    render(
+      <SkillEvidenceDetailModal
+        skillName={skillName}
+        accessApproved={accessApproved}
+        onClose={() => {}}
+      />,
+    )
+  }
+
+  it("AI/ML GitHub evidence renders line range badge L40–L140 for first file", () => {
+    renderModal("AI / Machine Learning")
+    const badge = screen.getByTestId("github-line-range-0")
+    expect(badge).toBeInTheDocument()
+    expect(badge.textContent).toMatch(/L40/)
+    expect(badge.textContent).toMatch(/L140/)
+  })
+
+  it("AI/ML GitHub evidence shows symbol name FinalEvidenceEvaluatorService", () => {
+    renderModal("AI / Machine Learning")
+    const github = screen.getByTestId("skill-artifact-github")
+    expect(github.textContent).toMatch(/FinalEvidenceEvaluatorService/i)
+  })
+
+  it("AI/ML GitHub evidence shows code block summary for first file", () => {
+    renderModal("AI / Machine Learning")
+    const github = screen.getByTestId("skill-artifact-github")
+    expect(github.textContent).toMatch(/weighted aggregation logic/i)
+  })
+
+  it("Open exact code block button is present for AI/ML first file", () => {
+    renderModal("AI / Machine Learning")
+    expect(screen.getByTestId("github-open-exact-0")).toBeInTheDocument()
+  })
+
+  it("Open exact code block href includes /blob/main/ for AI/ML", () => {
+    renderModal("AI / Machine Learning")
+    const link = screen.getByTestId("github-open-exact-0") as HTMLAnchorElement
+    expect(link.href).toContain("github.com/machackgo/veribridge-ai/blob/main/")
+  })
+
+  it("Open exact code block href includes #L40-L140 anchor for AI/ML first file", () => {
+    renderModal("AI / Machine Learning")
+    const link = screen.getByTestId("github-open-exact-0") as HTMLAnchorElement
+    expect(link.href).toContain("#L40-L140")
+  })
+
+  it("Open exact code block href includes file path for AI/ML first file", () => {
+    renderModal("AI / Machine Learning")
+    const link = screen.getByTestId("github-open-exact-0") as HTMLAnchorElement
+    expect(link.href).toContain("final_evidence_evaluator_service.py")
+  })
+
+  it("Open full file href does not include line anchor for AI/ML", () => {
+    renderModal("AI / Machine Learning")
+    const link = screen.getByTestId("github-open-file-0") as HTMLAnchorElement
+    expect(link.href).not.toContain("#L")
+    expect(link.href).toContain("/blob/main/")
+  })
+
+  it("Open full file still points to /blob/main/ path for AI/ML", () => {
+    renderModal("AI / Machine Learning")
+    const link = screen.getByTestId("github-open-file-0") as HTMLAnchorElement
+    expect(link.href).toContain("github.com/machackgo/veribridge-ai/blob/main/")
+    expect(link.href).toContain("final_evidence_evaluator_service.py")
+  })
+
+  it("Open repository button still present for AI/ML", () => {
+    renderModal("AI / Machine Learning")
+    const link = screen.getByTestId("github-open-repo-0") as HTMLAnchorElement
+    expect(link.href).toContain("github.com/machackgo/veribridge-ai")
+    expect(link.href).not.toContain("/blob/")
+  })
+
+  it("AI/ML second file (extension_proof_workflow_analysis_service.py) has L80–L180 badge", () => {
+    renderModal("AI / Machine Learning")
+    const badge = screen.getByTestId("github-line-range-1")
+    expect(badge.textContent).toMatch(/L80/)
+    expect(badge.textContent).toMatch(/L180/)
+  })
+
+  it("AI/ML third file (verification_review_service.py) has L30–L120 badge", () => {
+    renderModal("AI / Machine Learning")
+    const badge = screen.getByTestId("github-line-range-2")
+    expect(badge.textContent).toMatch(/L30/)
+    expect(badge.textContent).toMatch(/L120/)
+  })
+
+  it("AI/ML exact code links are different from JavaScript/Frontend exact code links", () => {
+    renderModal("AI / Machine Learning")
+    const aiLink = screen.getByTestId("github-open-exact-0") as HTMLAnchorElement
+    const aiHref = aiLink.href
+
+    render(
+      <SkillEvidenceDetailModal
+        skillName="JavaScript / Frontend"
+        accessApproved={false}
+        onClose={() => {}}
+      />,
+    )
+    const jsLink = screen.getAllByTestId("github-open-exact-0")[1] as HTMLAnchorElement
+    expect(aiHref).not.toBe(jsLink.href)
+    expect(aiHref).toContain("final_evidence_evaluator_service")
+    expect(jsLink.href).toContain("RecruiterWorkPassportPreview")
+  })
+
+  it("JavaScript/Frontend first file has L300–L520 badge", () => {
+    renderModal("JavaScript / Frontend")
+    const badge = screen.getByTestId("github-line-range-0")
+    expect(badge.textContent).toMatch(/L300/)
+    expect(badge.textContent).toMatch(/L520/)
+  })
+
+  it("JavaScript/Frontend exact code link includes #L300-L520 anchor", () => {
+    renderModal("JavaScript / Frontend")
+    const link = screen.getByTestId("github-open-exact-0") as HTMLAnchorElement
+    expect(link.href).toContain("#L300-L520")
+    expect(link.href).toContain("RecruiterWorkPassportPreview.tsx")
+  })
+
+  it("JavaScript/Frontend second file (extension-proof-panel.tsx) has L120–L260 badge", () => {
+    renderModal("JavaScript / Frontend")
+    const badge = screen.getByTestId("github-line-range-1")
+    expect(badge.textContent).toMatch(/L120/)
+    expect(badge.textContent).toMatch(/L260/)
+  })
+
+  it("JavaScript/Frontend exact code link for extension-proof-panel includes #L120-L260", () => {
+    renderModal("JavaScript / Frontend")
+    const link = screen.getByTestId("github-open-exact-1") as HTMLAnchorElement
+    expect(link.href).toContain("#L120-L260")
+    expect(link.href).toContain("extension-proof-panel")
+  })
+
+  it("JavaScript/Frontend third file (recruiter/passport/page.tsx) has L20–L110 badge", () => {
+    renderModal("JavaScript / Frontend")
+    const badge = screen.getByTestId("github-line-range-2")
+    expect(badge.textContent).toMatch(/L20/)
+    expect(badge.textContent).toMatch(/L110/)
+  })
+
+  it("Data/Visualization first file has L520–L700 badge for EvidenceCoverageGrid", () => {
+    renderModal("Data & Visualization")
+    const badge = screen.getByTestId("github-line-range-0")
+    expect(badge.textContent).toMatch(/L520/)
+    expect(badge.textContent).toMatch(/L700/)
+  })
+
+  it("Data/Visualization shows EvidenceCoverageGrid symbol name", () => {
+    renderModal("Data & Visualization")
+    const github = screen.getByTestId("skill-artifact-github")
+    expect(github.textContent).toMatch(/EvidenceCoverageGrid/i)
+  })
+
+  it("protected/private GitHub evidence shows locked state without exact code link", () => {
+    renderModal("Data & Visualization")
+    // Third file is private (isPublic: false) — should show locked state
+    const locked = screen.getByTestId("github-locked-2")
+    expect(locked).toBeInTheDocument()
+    expect(locked.textContent).toMatch(/student approval/i)
+    // Exact code link must not appear for private file
+    expect(screen.queryByTestId("github-open-exact-2")).not.toBeInTheDocument()
+  })
+
+  it("private file does not render Open full file link", () => {
+    renderModal("Data & Visualization")
+    // index 2 is private — no full file link
+    expect(screen.queryByTestId("github-open-file-2")).not.toBeInTheDocument()
+  })
+
+  it("GitHub artifact html does not contain unsafe private strings", () => {
+    const { container } = render(
+      <SkillEvidenceDetailModal skillName="AI / Machine Learning" accessApproved={true} onClose={() => {}} />,
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain("token")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("storage_path")
+    expect(html).not.toContain("supabase")
+    expect(html).not.toContain("localhost")
+    expect(html).not.toContain("raw_url")
+    expect(html).not.toContain("127.0.0.1")
+  })
+
+  it("GitHub artifact html does not contain candidate-repo fake placeholder URL", () => {
+    const { container } = render(
+      <SkillEvidenceDetailModal skillName="AI / Machine Learning" accessApproved={false} onClose={() => {}} />,
+    )
+    expect(container.innerHTML).not.toContain("candidate-repo")
+  })
+})
