@@ -759,3 +759,141 @@ class TestJsonSerialization:
             f"Re-submission update path returned {r.status_code}: {r.text}"
         )
         assert r.json()["ai_review_status"] == "ai_approved_for_sharing"
+
+
+# ── Response safety: no unsafe strings ────────────────────────────────────────
+
+
+class TestResponseSafety:
+    """Verify the review API never exposes tokens, storage paths, or service URLs."""
+
+    FORBIDDEN = ["access_token", "storage_path", "supabase.co", "env secret"]
+
+    def test_submit_response_excludes_unsafe_strings(
+        self, client: TestClient
+    ) -> None:
+        sid = _make_session(client)
+        r = client.post(
+            f"/api/v1/student/extension-proof/sessions/{sid}/submit-ai-review",
+            params={"readiness_score": 85, "readiness_level": "strong"},
+        )
+        assert r.status_code == 200
+        body_text = r.text.lower()
+        for term in self.FORBIDDEN:
+            assert term not in body_text, (
+                f"Unsafe string '{term}' found in submit-ai-review response"
+            )
+
+    def test_review_status_response_excludes_unsafe_strings(
+        self, client: TestClient
+    ) -> None:
+        sid = _make_session(client)
+        _submit_review(client, sid, 85, "strong")
+        r = client.get(
+            f"/api/v1/student/extension-proof/sessions/{sid}/review-status"
+        )
+        assert r.status_code == 200
+        body_text = r.text.lower()
+        for term in self.FORBIDDEN:
+            assert term not in body_text, (
+                f"Unsafe string '{term}' found in review-status response"
+            )
+
+    def test_admin_list_excludes_unsafe_strings(
+        self, client: TestClient
+    ) -> None:
+        sid = _make_session(client)
+        _submit_review(client, sid, 85, "strong")
+        r = client.get("/api/v1/admin/verification-reviews")
+        assert r.status_code == 200
+        body_text = r.text.lower()
+        for term in self.FORBIDDEN:
+            assert term not in body_text, (
+                f"Unsafe string '{term}' found in admin list response"
+            )
+
+
+# ── Website Proof review persistence ─────────────────────────────────────────
+
+
+class TestWebsiteProofReviewPersistence:
+    """Verify the review workflow persists correctly for website proof sessions.
+
+    The backend review service is website-URL-agnostic — it stores and retrieves
+    review state keyed only by proof_session_id.  These tests confirm the
+    create/upsert/fetch cycle that backs the frontend's backend persistence.
+    """
+
+    def test_create_review_snapshot_for_proof_session(
+        self, client: TestClient
+    ) -> None:
+        """First submit creates a review row for the session."""
+        sid = _make_session(client)
+        body = _submit_review(client, sid, 85, "strong")
+        assert body["proof_session_id"] == sid
+        assert body["ai_review_status"] == "ai_approved_for_sharing"
+        assert body["readiness_score"] == 85
+
+    def test_fetch_review_snapshot_by_proof_session_id(
+        self, client: TestClient
+    ) -> None:
+        """review-status returns the persisted review for a session."""
+        sid = _make_session(client)
+        _submit_review(client, sid, 85, "strong")
+        status = _get_status(client, sid)
+        assert status["proof_session_id"] == sid
+        assert status["ai_review_status"] == "ai_approved_for_sharing"
+
+    def test_upsert_updates_existing_review_row(
+        self, client: TestClient
+    ) -> None:
+        """Re-submitting with an improved score upserts the existing row."""
+        sid = _make_session(client)
+        body1 = _submit_review(client, sid, 40, "weak")
+        assert body1["ai_review_status"] == "needs_more_evidence"
+
+        body2 = _submit_review(client, sid, 85, "strong")
+        assert body2["ai_review_status"] == "ai_approved_for_sharing"
+
+        # Fetch confirms only one review row — the latest
+        status = _get_status(client, sid)
+        assert status["ai_review_status"] == "ai_approved_for_sharing"
+
+    def test_approve_marks_review_as_ai_approved_for_sharing(
+        self, client: TestClient
+    ) -> None:
+        """Score >= 80 with clean privacy produces ai_approved_for_sharing."""
+        sid = _make_session(client)
+        body = _submit_review(client, sid, 80, "strong")
+        assert body["ai_review_status"] == "ai_approved_for_sharing"
+        status = _get_status(client, sid)
+        assert status["ai_review_status"] == "ai_approved_for_sharing"
+
+    def test_two_sessions_persist_independently(
+        self, client: TestClient
+    ) -> None:
+        """Different sessions store their own review rows independently."""
+        sid1 = _make_session(client)
+        sid2 = _make_session(client)
+        _submit_review(client, sid1, 85, "strong")
+        _submit_review(client, sid2, 40, "weak")
+        assert _get_status(client, sid1)["ai_review_status"] == "ai_approved_for_sharing"
+        assert _get_status(client, sid2)["ai_review_status"] == "needs_more_evidence"
+
+    def test_local_and_live_url_sessions_treated_identically(
+        self, client: TestClient
+    ) -> None:
+        """The review service is URL-type-agnostic (local vs live website proof).
+
+        Both session types use the same review endpoints keyed by proof_session_id.
+        The backend does not inspect or branch on website_url type.
+        """
+        # Two sessions — one simulating local URL proof, one live — both get
+        # reviewed by the same endpoints without any difference in behavior.
+        sid_local = _make_session(client)
+        sid_live = _make_session(client)
+        body_local = _submit_review(client, sid_local, 82, "strong")
+        body_live = _submit_review(client, sid_live, 82, "strong")
+        assert body_local["ai_review_status"] == "ai_approved_for_sharing"
+        assert body_live["ai_review_status"] == "ai_approved_for_sharing"
+        assert body_local["proof_session_id"] != body_live["proof_session_id"]

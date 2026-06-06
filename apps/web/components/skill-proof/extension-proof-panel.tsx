@@ -4313,13 +4313,9 @@ export function FinalRecommendationsSection({
   if (recs.mode === "project_growth" || evaluation.final_score >= 80) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
-          textTransform: "uppercase", color: "#475569" }}>
-          Personalized Project Improvement Plan
-        </div>
         <div style={{ fontSize: 10, color: "#166534", background: "#f0fdf4",
           border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 10px", lineHeight: 1.45 }}>
-          Your proof is strong. These are optional next steps to improve the project and learn advanced skills.
+          Proof is strong. These are optional skill improvements — not required for recruiter sharing.
         </div>
         {recs.learning_actions.slice(0, 5).map((action, i) => (
           <RecommendationCard key={action.action_type + i} action={action} index={i} sessionId={sessionId} />

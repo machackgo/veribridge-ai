@@ -8,6 +8,7 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react"
+import { getReviewStatus, submitForAiReview } from "@/lib/api"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -121,6 +122,10 @@ function saveStoredReview(sessionId: string, review: StoredMvpReview): void {
   }
 }
 
+function backendStatusToLocal(status: string): MvpAiReviewStatus {
+  return status === "ai_approved_for_sharing" ? "approved" : "in_progress"
+}
+
 function approveReview(review: StoredMvpReview, approvedAt = new Date().toISOString()): StoredMvpReview {
   return {
     ...review,
@@ -146,6 +151,8 @@ function stageFromElapsed(elapsedSeconds: number): string {
 
 export function VerificationReviewSection({
   sessionId,
+  readinessScore,
+  readinessLevel,
   readinessReady,
   snapshot,
 }: Props) {
@@ -153,21 +160,49 @@ export function VerificationReviewSection({
   const [nowMs, setNowMs] = useState(() => Date.now())
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const snapshotHash = useMemo(() => hashReviewSnapshot(snapshot), [snapshot])
+  const snapshotRef = useRef(snapshot)
+  useEffect(() => { snapshotRef.current = snapshot }, [snapshot])
 
   useEffect(() => {
     if (!sessionId || !readinessReady) return
+
+    // Fast path: localStorage hit
     const existing = loadStoredReview(sessionId)
-    if (!existing) {
-      setReview(null)
+    if (existing) {
+      const elapsedSeconds = Math.floor((Date.now() - new Date(existing.submittedAt).getTime()) / 1000)
+      const normalized =
+        existing.status === "in_progress" && elapsedSeconds >= MVP_AI_REVIEW_SECONDS
+          ? approveReview(existing)
+          : existing
+      if (normalized !== existing) saveStoredReview(sessionId, normalized)
+      setReview(normalized)
       return
     }
-    const elapsedSeconds = Math.floor((Date.now() - new Date(existing.submittedAt).getTime()) / 1000)
-    const normalized =
-      existing.status === "in_progress" && elapsedSeconds >= MVP_AI_REVIEW_SECONDS
-        ? approveReview(existing)
-        : existing
-    if (normalized !== existing) saveStoredReview(sessionId, normalized)
-    setReview(normalized)
+
+    // No localStorage record — reset immediately then check backend for persisted review
+    setReview(null)
+    getReviewStatus(sessionId)
+      .then((backendReview) => {
+        if (!backendReview) return
+        const localStatus = backendStatusToLocal(backendReview.ai_review_status)
+        const now = new Date().toISOString()
+        const snap = snapshotRef.current
+        const sanitized = sanitizeReviewSnapshot({ ...snap, timestamp: now })
+        const restored: StoredMvpReview = {
+          status: localStatus,
+          decision: localStatus === "approved" ? "Approved" : null,
+          snapshot: sanitized,
+          snapshotHash: hashReviewSnapshot(sanitized),
+          submittedAt: backendReview.submitted_at ?? now,
+          approvedAt: localStatus === "approved" ? (backendReview.ai_review_completed_at ?? now) : null,
+        }
+        saveStoredReview(sessionId, restored)
+        setReview(restored)
+      })
+      .catch(() => {
+        console.warn("Using local review fallback because backend review API unavailable.")
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, readinessReady])
 
   useEffect(() => {
@@ -220,6 +255,11 @@ export function VerificationReviewSection({
     saveStoredReview(sessionId, next)
     setNowMs(Date.now())
     setReview(next)
+
+    // Persist review submission to backend (non-blocking; localStorage is fallback)
+    submitForAiReview(sessionId, readinessScore, readinessLevel).catch((err: unknown) => {
+      console.warn("Using local review fallback because backend review API unavailable.", err)
+    })
   }
 
   return (

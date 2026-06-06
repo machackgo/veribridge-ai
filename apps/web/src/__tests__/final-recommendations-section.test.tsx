@@ -1,7 +1,32 @@
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+// ── Mock @/lib/api so backend calls do not hit the network in tests ───────────
+// getReviewStatus returns null by default (no persisted review).
+// submitForAiReview resolves successfully by default.
+// Individual tests override these with mockResolvedValueOnce / mockRejectedValueOnce.
+vi.mock("@/lib/api", () => ({
+  getReviewStatus: vi.fn().mockResolvedValue(null),
+  submitForAiReview: vi.fn().mockResolvedValue({
+    id: "mock-review-id",
+    proof_session_id: "s1",
+    user_id: "u1",
+    ai_review_status: "ai_approved_for_sharing",
+    ai_review_started_at: null,
+    ai_review_completed_at: "2026-06-06T00:01:00.000Z",
+    ai_decision_summary: "Mock: evidence package approved",
+    human_review_status: "human_review_not_requested",
+    human_review_requested_at: null,
+    readiness_score: 82,
+    readiness_level: "strong",
+    submitted_at: "2026-06-06T00:00:00.000Z",
+    created_at: "2026-06-06T00:00:00.000Z",
+    updated_at: "2026-06-06T00:01:00.000Z",
+    assignments: [],
+  }),
+}))
 import {
   DetectedSkillProfileSection,
   ExtensionProofPanel,
@@ -27,15 +52,40 @@ import {
   type WebsiteProofReviewSnapshot,
 } from "../../components/skill-proof/verification-review-section"
 import type { WebsiteProofProgressLifecycle } from "../../components/skill-proof/extension-proof-panel"
-import type { FinalEvaluationResult, LiveWebsiteCheckResponse, ProjectDefenseAnalysisResponse } from "../lib/api"
+import type { FinalEvaluationResult, LiveWebsiteCheckResponse, ProjectDefenseAnalysisResponse, VerificationReviewResponse } from "../lib/api"
+import { getReviewStatus, submitForAiReview } from "@/lib/api"
+
+function mockApprovedReview(overrides: Partial<VerificationReviewResponse> = {}): VerificationReviewResponse {
+  return {
+    id: "mock-review-id",
+    proof_session_id: "s1",
+    user_id: "u1",
+    ai_review_status: "ai_approved_for_sharing",
+    ai_review_started_at: null,
+    ai_review_completed_at: "2026-06-06T00:01:00.000Z",
+    ai_decision_summary: "Mock: evidence package approved",
+    human_review_status: "human_review_not_requested",
+    human_review_requested_at: null,
+    readiness_score: 82,
+    readiness_level: "strong",
+    submitted_at: "2026-06-06T00:00:00.000Z",
+    created_at: "2026-06-06T00:00:00.000Z",
+    updated_at: "2026-06-06T00:01:00.000Z",
+    assignments: [],
+    ...overrides,
+  }
+}
 
 beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
+  vi.mocked(getReviewStatus).mockResolvedValue(null)
+  vi.mocked(submitForAiReview).mockResolvedValue(mockApprovedReview())
 })
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.clearAllMocks()
 })
 
 const learningAction = {
@@ -223,7 +273,7 @@ describe("FinalRecommendationsSection", () => {
     expect(screen.getByText("Optional learning opportunities")).toBeInTheDocument()
   })
 
-  it("renders Personalized Project Improvement Plan for scores 80 or higher", () => {
+  it("renders optional improvements (not improvement plan title) for scores 80 or higher", () => {
     render(
       <FinalRecommendationsSection
         evaluation={evaluation({
@@ -234,8 +284,8 @@ describe("FinalRecommendationsSection", () => {
         sessionId="s1"
       />,
     )
-    expect(screen.getByText("Personalized Project Improvement Plan")).toBeInTheDocument()
-    expect(screen.getByText(/Your proof is strong/)).toBeInTheDocument()
+    expect(screen.queryByText("Personalized Project Improvement Plan")).not.toBeInTheDocument()
+    expect(screen.getByText(/Proof is strong/)).toBeInTheDocument()
     expect(screen.queryByText("Recommended Next Actions")).not.toBeInTheDocument()
   })
 
@@ -851,6 +901,154 @@ describe("VeriBridge AI Review MVP flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
     const stored = localStorage.getItem("vb_mvp_ai_review:s1") ?? ""
     expect(stored).not.toMatch(/access_token|storage_path|supabase\.co|env secrets/i)
+  })
+})
+
+describe("VeriBridge AI Review — backend persistence wiring", () => {
+  it("loads approved state from backend when localStorage is empty", async () => {
+    vi.mocked(getReviewStatus).mockResolvedValueOnce(mockApprovedReview())
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText(/Status: Approved/i)).toBeInTheDocument()
+    })
+    expect(screen.getByText("VeriBridge AI Reviewed")).toBeInTheDocument()
+  })
+
+  it("submit button calls backend submitForAiReview with sessionId and score", async () => {
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    await waitFor(() => {
+      expect(vi.mocked(submitForAiReview)).toHaveBeenCalledWith("s1", 82, "strong")
+    })
+  })
+
+  it("backend unavailable on submit — localStorage timer still approves after 60s", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-06-06T00:00:00.000Z"))
+    vi.mocked(submitForAiReview).mockRejectedValue(new Error("network error"))
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    act(() => { vi.advanceTimersByTime(MVP_AI_REVIEW_SECONDS * 1000) })
+    expect(screen.getByText(/Status: Approved/i)).toBeInTheDocument()
+  })
+
+  it("localStorage fallback warning is logged when backend submit fails", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    vi.mocked(submitForAiReview).mockRejectedValue(new Error("network error"))
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    await waitFor(() => {
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Using local review fallback"),
+        expect.any(Error),
+      )
+    })
+    warnSpy.mockRestore()
+  })
+
+  it("fallback warning is logged when getReviewStatus fails on mount", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    vi.mocked(getReviewStatus).mockRejectedValue(new Error("network error"))
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+    await waitFor(() => {
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Using local review fallback"),
+      )
+    })
+    expect(screen.getByText(/Status: Not submitted/i)).toBeInTheDocument()
+    warnSpy.mockRestore()
+  })
+
+  it("no fallback warning is logged when backend is healthy", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    await waitFor(() => { expect(vi.mocked(submitForAiReview)).toHaveBeenCalled() })
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("Using local review fallback"),
+      expect.anything(),
+    )
+    warnSpy.mockRestore()
+  })
+
+  it("backend-restored approved review is also saved to localStorage", async () => {
+    vi.mocked(getReviewStatus).mockResolvedValueOnce(mockApprovedReview())
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+    await waitFor(() => {
+      expect(localStorage.getItem("vb_mvp_ai_review:s1")).not.toBeNull()
+    })
+    const stored = JSON.parse(localStorage.getItem("vb_mvp_ai_review:s1")!)
+    expect(stored.status).toBe("approved")
+  })
+
+  it("no unsafe strings rendered in review section HTML", () => {
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+    const html = document.body.innerHTML
+    expect(html).not.toMatch(/access_token|storage_path|supabase\.co|env secrets/i)
   })
 })
 
