@@ -694,6 +694,12 @@ describe("Workflow Evidence Analysis progress card", () => {
     expect(doesWorkflowProgressOverrideRecordingUi("upload_complete_manual_analysis_required")).toBe(true)
   })
 
+  it("upload_started wins even when backend session status is still recording", () => {
+    const uploading = websiteProofProgressReducer("recording", { type: "upload_started" })
+    expect(uploading).toBe("uploading")
+    expect(websiteProofProgressReducer(uploading, { type: "recording_started" })).toBe("uploading")
+  })
+
   it("regression: recording card is not rendered while lifecycle is uploading", () => {
     const source = readFileSync(
       join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
@@ -753,6 +759,34 @@ describe("Workflow Evidence Analysis progress card", () => {
     expect(sendProofIndex).toBeGreaterThan(-1)
   })
 
+  it("content script forwards upload-start from storage when the one-shot event was missed", () => {
+    const source = readFileSync(
+      join(process.cwd(), "../extension/src/content.ts"),
+      "utf8",
+    )
+    expect(source).toContain('const WEBSITE_PROOF_UPLOAD_STATE_KEY = "websiteProofUploadState"')
+    expect(source).toContain("chrome.storage.local.get(WEBSITE_PROOF_UPLOAD_STATE_KEY")
+    expect(source).toContain('uploadState?.status === "uploading"')
+    expect(source).toContain("publishProofUploadStarted({")
+    expect(source).toContain("}, 500)")
+  })
+
+  it("background persists upload-start state before the proof upload request", () => {
+    const source = readFileSync(
+      join(process.cwd(), "../extension/src/background.ts"),
+      "utf8",
+    )
+    const sendProofIndex = source.indexOf("async function sendProof")
+    const broadcastIndex = source.indexOf("broadcastProofUploadStarted()", sendProofIndex)
+    const persistIndex = source.indexOf("persistWebsiteProofUploadState({", source.indexOf("function broadcastProofUploadStarted"))
+    const fetchIndex = source.indexOf("await fetch(", sendProofIndex)
+    expect(source).toContain('const WEBSITE_PROOF_UPLOAD_STATE_KEY = "websiteProofUploadState"')
+    expect(source).toContain('lastEvent: "upload_started"')
+    expect(persistIndex).toBeGreaterThan(-1)
+    expect(broadcastIndex).toBeGreaterThan(sendProofIndex)
+    expect(fetchIndex).toBeGreaterThan(broadcastIndex)
+  })
+
   it("web listener handles upload-started event directly", () => {
     const source = readFileSync(
       join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
@@ -764,6 +798,15 @@ describe("Workflow Evidence Analysis progress card", () => {
     expect(eventIndex).toBeGreaterThan(-1)
     expect(stateIndex).toBeGreaterThan(eventIndex)
     expect(reducerIndex).toBeGreaterThan(stateIndex)
+  })
+
+  it("upload-start debug line can show upload_started", () => {
+    const source = readFileSync(
+      join(process.cwd(), "components/skill-proof/extension-proof-panel.tsx"),
+      "utf8",
+    )
+    expect(source).toContain("setWebsiteProofProgressLastEvent(event.type)")
+    expect(source).toContain("Progress lifecycle: {websiteProofProgressLifecycle}; Last event: {websiteProofProgressLastEvent}")
   })
 
   it("is placed after Verification Checklist and before the workflow report source", () => {

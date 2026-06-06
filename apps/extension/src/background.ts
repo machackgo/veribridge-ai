@@ -170,6 +170,7 @@ const state: InternalState = {
 // Written on START_RECORDING; cleared on STOP_RECORDING and successful upload.
 // Lets the service worker restore recording context after Chrome kills it.
 const _SW_STATE_KEY = "vb_sw_recording"
+const WEBSITE_PROOF_UPLOAD_STATE_KEY = "websiteProofUploadState"
 
 interface PersistedRecordingState {
   sessionId: string
@@ -178,6 +179,15 @@ interface PersistedRecordingState {
   startedAt: string
   originalTabId?: number | null
   proofBuilderTabId?: number | null
+}
+
+interface WebsiteProofUploadState {
+  status: "uploading" | "uploaded" | "upload_failed"
+  sessionId: string
+  startedAt: string
+  lastEvent: "upload_started" | "upload_succeeded" | "upload_failed"
+  statusMessage?: string
+  lastUploadError?: string | null
 }
 
 /**
@@ -203,6 +213,10 @@ function persistRecordingState(): void {
 function clearPersistedRecordingState(): void {
   void chrome.storage.local.remove(_SW_STATE_KEY)
   dbgVE("clearPersistedRecordingState: cleared")
+}
+
+function persistWebsiteProofUploadState(uploadState: WebsiteProofUploadState): void {
+  void chrome.storage.local.set({ [WEBSITE_PROOF_UPLOAD_STATE_KEY]: uploadState })
 }
 
 // On service-worker startup, check whether a recording was active before the SW
@@ -443,6 +457,15 @@ function broadcastStateUpdate(): void {
 }
 
 function broadcastProofUploadStarted(): void {
+  const startedAt = new Date().toISOString()
+  persistWebsiteProofUploadState({
+    status: "uploading",
+    sessionId: state.sessionId,
+    startedAt,
+    lastEvent: "upload_started",
+    statusMessage: "Uploading proof…",
+    lastUploadError: null,
+  })
   void broadcastToAllTabs({
     type: "PROOF_UPLOAD_STARTED",
     payload: {
@@ -451,6 +474,8 @@ function broadcastProofUploadStarted(): void {
       statusMessage: "Uploading proof…",
       lastUploadError: null,
       isRecording: state.isRecording,
+      startedAt,
+      lastEvent: "upload_started",
     },
   })
 }
@@ -1048,6 +1073,14 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
       state.status = "upload_failed"
       state.statusMessage = `Upload failed: ${errorMsg}`
       state.lastUploadError = errorMsg
+      persistWebsiteProofUploadState({
+        status: "upload_failed",
+        sessionId: state.sessionId,
+        startedAt: new Date().toISOString(),
+        lastEvent: "upload_failed",
+        statusMessage: state.statusMessage,
+        lastUploadError: errorMsg,
+      })
       broadcastStateUpdate()
       return { ok: false, error: errorMsg }
     }
@@ -1055,6 +1088,14 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     state.status = "uploaded"
     state.statusMessage = "Proof uploaded successfully ✓"
     state.lastUploadError = null
+    persistWebsiteProofUploadState({
+      status: "uploaded",
+      sessionId: state.sessionId,
+      startedAt: new Date().toISOString(),
+      lastEvent: "upload_succeeded",
+      statusMessage: state.statusMessage,
+      lastUploadError: null,
+    })
     broadcastStateUpdate()
     // Proof uploaded — clear persisted recording state so a future SW restart
     // doesn't incorrectly resume a completed recording.
@@ -1071,6 +1112,14 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     state.status = "upload_failed"
     state.statusMessage = `Upload failed: ${errorMsg}`
     state.lastUploadError = errorMsg
+    persistWebsiteProofUploadState({
+      status: "upload_failed",
+      sessionId: state.sessionId,
+      startedAt: new Date().toISOString(),
+      lastEvent: "upload_failed",
+      statusMessage: state.statusMessage,
+      lastUploadError: errorMsg,
+    })
     broadcastStateUpdate()
     return { ok: false, error: errorMsg }
   }

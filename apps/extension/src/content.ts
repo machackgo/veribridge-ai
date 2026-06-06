@@ -264,6 +264,17 @@ interface StateSnapshot {
   liveCoach?: LiveCoachState | null
 }
 
+interface WebsiteProofUploadStorageState {
+  status?: string
+  sessionId?: string
+  startedAt?: string
+  lastEvent?: string
+  statusMessage?: string
+  lastUploadError?: string | null
+}
+
+const WEBSITE_PROOF_UPLOAD_STATE_KEY = "websiteProofUploadState"
+
 function publishExtensionState(s: StateSnapshot): void {
   try {
     window.postMessage({
@@ -288,6 +299,8 @@ function publishProofUploadStarted(payload: Partial<StateSnapshot>): void {
     window.postMessage({
       source: "veribridge-extension",
       type: "VERIBRIDGE_PROOF_UPLOAD_STARTED",
+      status: "uploading",
+      lastEvent: "upload_started",
       sessionId,
       proofSessionId: sessionId,
       timestamp: new Date().toISOString(),
@@ -298,6 +311,7 @@ function publishProofUploadStarted(payload: Partial<StateSnapshot>): void {
         statusMessage: payload.statusMessage ?? "Uploading proof…",
         lastUploadError: null,
         isRecording: payload.isRecording ?? false,
+        lastEvent: "upload_started",
       },
     }, "*")
   } catch {
@@ -337,6 +351,21 @@ function startVbDashboardPoll(): void {
   if (contextInvalidated || !isVeriBridgeInternal()) return
   if (vbDashboardPoll) return
   vbDashboardPoll = setInterval(() => {
+    try {
+      chrome.storage.local.get(WEBSITE_PROOF_UPLOAD_STATE_KEY, (data) => {
+        if (contextInvalidated || chrome.runtime.lastError) return
+        const uploadState = data?.[WEBSITE_PROOF_UPLOAD_STATE_KEY] as WebsiteProofUploadStorageState | undefined
+        if (uploadState?.status === "uploading" && uploadState.sessionId) {
+          publishProofUploadStarted({
+            sessionId: uploadState.sessionId,
+            statusMessage: uploadState.statusMessage ?? "Uploading proof…",
+            isRecording: false,
+          })
+        }
+      })
+    } catch {
+      // Storage polling is a resilience path only; runtime state polling remains below.
+    }
     void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
       if (contextInvalidated || !s) return
       publishExtensionState(s)
@@ -355,7 +384,7 @@ function startVbDashboardPoll(): void {
         stopVbDashboardPoll()
       }
     })
-  }, 800)
+  }, 500)
 }
 
 function stopVbDashboardPoll(): void {

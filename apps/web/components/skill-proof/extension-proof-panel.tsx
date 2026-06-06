@@ -452,6 +452,7 @@ export function websiteProofProgressReducer(
     case "session_created":
       return "idle"
     case "recording_started":
+      if (doesWorkflowProgressOverrideRecordingUi(state)) return state
       return "recording"
     case "stop_send_clicked":
       return "upload_starting"
@@ -7010,6 +7011,12 @@ export function ExtensionProofPanel({
   const previousWorkflowProgressLifecycleRef = useRef<WebsiteProofProgressLifecycle>("idle")
 
   function transitionWebsiteProofProgress(event: WebsiteProofProgressEvent): void {
+    if (
+      event.type === "recording_started" &&
+      doesWorkflowProgressOverrideRecordingUi(websiteProofProgressLifecycle)
+    ) {
+      return
+    }
     setWebsiteProofProgressLastEvent(event.type)
     dispatchWebsiteProofProgress(event)
   }
@@ -7243,14 +7250,14 @@ export function ExtensionProofPanel({
         return { ...current, status: "uploaded", statusMessage: "Proof uploaded successfully" }
       })
     }
-    if (session.status === "recording") {
+    if (session.status === "recording" && !doesWorkflowProgressOverrideRecordingUi(websiteProofProgressLifecycle)) {
       transitionWebsiteProofProgress({ type: "recording_started" })
     } else if (session.status === "uploaded_pending_analysis") {
       transitionWebsiteProofProgress({ type: "upload_succeeded" })
     } else if (session.status === "analyzing") {
       transitionWebsiteProofProgress({ type: "analysis_request_started" })
     }
-  }, [session?.id, session?.status])
+  }, [session?.id, session?.status, websiteProofProgressLifecycle])
 
   // ── Session-scoped analysis ───────────────────────────────────────────────
   // workflowAnalysis state may hold a result from a previous session (if the user
