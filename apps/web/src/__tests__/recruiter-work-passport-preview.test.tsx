@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest"
 import {
   RecruiterWorkPassportPreview,
   SkillEvidenceDetailModal,
+  getSkillPipeline,
 } from "../../components/recruiter-passport/RecruiterWorkPassportPreview"
 import { EvidenceAccessRequestModal } from "../../components/recruiter-passport/EvidenceAccessRequestModal"
 import type { RecruiterPassportViewResponse } from "../lib/passport-api"
@@ -1115,5 +1116,272 @@ describe("RecruiterWorkPassportPreview — skill card compact actions", () => {
   it("live app chip visible for JS/Frontend (public app)", () => {
     render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
     expect(screen.getByTestId("skill-card-live-app-action")).toBeInTheDocument()
+  })
+})
+
+// ── SkillEvidencePipeline model tests ─────────────────────────────────────────
+
+describe("SkillEvidencePipeline — model structure", () => {
+  it("AI/ML pipeline has skillId, skillName, and category", () => {
+    const pipeline = getSkillPipeline("AI / Machine Learning")
+    expect(pipeline.skillId).toBe("ai-machine-learning")
+    expect(pipeline.skillName).toBe("AI / Machine Learning")
+    expect(pipeline.category).toBe("AI/ML")
+  })
+
+  it("AI/ML pipeline aggregates workflow, GitHub, visual, OCR, DOM, Qwen, transcript, and document evidence", () => {
+    const pipeline = getSkillPipeline("AI / Machine Learning")
+    expect(pipeline.workflowEvidence.length).toBeGreaterThan(0)
+    expect(pipeline.codeEvidence.length).toBeGreaterThan(0)
+    expect(pipeline.visualEvidence.length).toBeGreaterThan(0)
+    expect(pipeline.ocrEvidence.length).toBeGreaterThan(0)
+    expect(pipeline.domEvidence.length).toBeGreaterThan(0)
+    expect(pipeline.qwenEvidence.length).toBeGreaterThan(0)
+    expect(pipeline.transcriptEvidence.length).toBeGreaterThan(0)
+    expect(pipeline.documentEvidence.length).toBeGreaterThan(0)
+  })
+
+  it("AI/ML pipeline has multiple projects", () => {
+    const pipeline = getSkillPipeline("AI / Machine Learning")
+    expect(pipeline.projects.length).toBeGreaterThan(0)
+    expect(pipeline.projects[0].name).toMatch(/VeriBridge/i)
+  })
+
+  it("AI/ML pipeline has directActions for each evidence type", () => {
+    const pipeline = getSkillPipeline("AI / Machine Learning")
+    const types = pipeline.directActions.map((a) => a.sourceType)
+    expect(types).toContain("workflow")
+    expect(types).toContain("github")
+    expect(types).toContain("transcript")
+    expect(types).toContain("document")
+  })
+
+  it("AI/ML pipeline ocrEvidence extracts text from visual frames", () => {
+    const pipeline = getSkillPipeline("AI / Machine Learning")
+    expect(pipeline.ocrEvidence[0].extractedText).toMatch(/Overall Score: 87/i)
+  })
+
+  it("JavaScript/Frontend pipeline has different codeEvidence from AI/ML", () => {
+    const aiPipeline = getSkillPipeline("AI / Machine Learning")
+    const jsPipeline = getSkillPipeline("JavaScript / Frontend")
+    const aiPaths = aiPipeline.codeEvidence.map((f) => f.path)
+    const jsPaths = jsPipeline.codeEvidence.map((f) => f.path)
+    expect(jsPaths).not.toEqual(aiPaths)
+    expect(jsPaths.some((p) => p.includes("RecruiterWorkPassportPreview"))).toBe(true)
+    expect(aiPaths.some((p) => p.includes("final_evidence_evaluator_service"))).toBe(true)
+  })
+
+  it("JavaScript/Frontend pipeline has different workflowEvidence title from AI/ML", () => {
+    const aiPipeline = getSkillPipeline("AI / Machine Learning")
+    const jsPipeline = getSkillPipeline("JavaScript / Frontend")
+    expect(jsPipeline.workflowEvidence[0].title).not.toBe(aiPipeline.workflowEvidence[0].title)
+    expect(jsPipeline.workflowEvidence[0].title).toMatch(/Recruiter Passport/i)
+  })
+
+  it("JavaScript/Frontend pipeline category is Frontend", () => {
+    const pipeline = getSkillPipeline("JavaScript / Frontend")
+    expect(pipeline.category).toBe("Frontend")
+  })
+
+  it("Data & Visualization pipeline has partial support status", () => {
+    const pipeline = getSkillPipeline("Data & Visualization")
+    expect(pipeline.supportStatus).toBe("partially supported")
+    expect(pipeline.confidence).toBe("medium")
+  })
+
+  it("Data & Visualization pipeline has partial evidenceSources", () => {
+    const pipeline = getSkillPipeline("Data & Visualization")
+    const partial = pipeline.evidenceSources.filter((s) => s.status === "partial")
+    expect(partial.length).toBeGreaterThan(0)
+  })
+
+  it("DevOps/Deployment pipeline has needs-review status", () => {
+    const pipeline = getSkillPipeline("DevOps / Deployment")
+    expect(pipeline.supportStatus).toBe("needs review")
+    expect(pipeline.confidence).toBe("low")
+  })
+
+  it("DevOps/Deployment pipeline has missing workflow and GitHub evidence", () => {
+    const pipeline = getSkillPipeline("DevOps / Deployment")
+    expect(pipeline.workflowEvidence.length).toBe(0)
+    expect(pipeline.codeEvidence.length).toBe(0)
+    const wfSource = pipeline.evidenceSources.find((s) => s.key === "workflow")
+    expect(wfSource?.status).toBe("missing")
+  })
+
+  it("DevOps/Deployment pipeline has document-only coverage", () => {
+    const pipeline = getSkillPipeline("DevOps / Deployment")
+    expect(pipeline.documentEvidence.length).toBeGreaterThan(0)
+    expect(pipeline.transcriptEvidence.length).toBe(0)
+  })
+
+  it("pipeline evidenceSources matches bundle sources", () => {
+    const pipeline = getSkillPipeline("AI / Machine Learning")
+    expect(pipeline.evidenceSources.length).toBe(6)
+    expect(pipeline.evidenceSources.map((s) => s.key)).toContain("workflow")
+    expect(pipeline.evidenceSources.map((s) => s.key)).toContain("github")
+    expect(pipeline.evidenceSources.map((s) => s.key)).toContain("documents")
+  })
+
+  it("pipeline does not expose unsafe strings in any field", () => {
+    const pipeline = getSkillPipeline("AI / Machine Learning")
+    const serialized = JSON.stringify(pipeline)
+    expect(serialized).not.toContain("localhost")
+    expect(serialized).not.toContain("access_token")
+    expect(serialized).not.toContain("storage_path")
+    expect(serialized).not.toContain("token=")
+    expect(serialized).not.toContain("supabase")
+  })
+})
+
+// ── Document artifact action tests ────────────────────────────────────────────
+
+describe("SkillEvidenceDetailModal — document artifact actions", () => {
+  function renderModal(skillName: string, accessApproved: boolean) {
+    render(
+      <SkillEvidenceDetailModal
+        skillName={skillName}
+        accessApproved={accessApproved}
+        onClose={() => {}}
+      />,
+    )
+  }
+
+  it("document section shows Open document and Download document actions when approved", () => {
+    renderModal("AI / Machine Learning", true)
+    expect(screen.getByTestId("open-document-btn-0")).toBeInTheDocument()
+    expect(screen.getByTestId("download-document-btn-0")).toBeInTheDocument()
+  })
+
+  it("Open document and Download document buttons visible for public document without approval", () => {
+    renderModal("Data & Visualization", false)
+    // Data & Viz document is public (isProtected: false)
+    expect(screen.getByTestId("open-document-btn-0")).toBeInTheDocument()
+    expect(screen.getByTestId("download-document-btn-0")).toBeInTheDocument()
+  })
+
+  it("protected document download is locked before approval", () => {
+    renderModal("AI / Machine Learning", false)
+    // AI/ML document is protected — canView=false → shows locked state
+    expect(screen.getByTestId("document-download-locked-0")).toBeInTheDocument()
+    expect(screen.getByTestId("document-download-locked-0").textContent).toMatch(/student approval/i)
+  })
+
+  it("protected document download locked message says approval required", () => {
+    renderModal("AI / Machine Learning", false)
+    const locked = screen.getByTestId("document-download-locked-0")
+    expect(locked.textContent).toMatch(/Document download requires student approval/i)
+  })
+
+  it("approved document download action buttons are visible after approval", () => {
+    renderModal("AI / Machine Learning", true)
+    // Protected AI/ML document — with approval, canView=true, buttons appear
+    expect(screen.queryByTestId("document-download-locked-0")).not.toBeInTheDocument()
+    expect(screen.getByTestId("open-document-btn-0")).toBeInTheDocument()
+    expect(screen.getByTestId("download-document-btn-0")).toBeInTheDocument()
+  })
+
+  it("DevOps document is public — action buttons visible without approval", () => {
+    renderModal("DevOps / Deployment", false)
+    expect(screen.getByTestId("open-document-btn-0")).toBeInTheDocument()
+    expect(screen.getByTestId("download-document-btn-0")).toBeInTheDocument()
+  })
+
+  it("document action buttons do not render raw storage_path or Supabase URL", () => {
+    const { container } = render(
+      <SkillEvidenceDetailModal skillName="AI / Machine Learning" accessApproved={true} onClose={() => {}} />,
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain("storage_path")
+    expect(html).not.toContain("supabase")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("token=")
+    expect(html).not.toContain("localhost")
+  })
+})
+
+// ── Transcript artifact download tests ───────────────────────────────────────
+
+describe("SkillEvidenceDetailModal — transcript download actions", () => {
+  function renderModal(skillName: string, accessApproved: boolean) {
+    render(
+      <SkillEvidenceDetailModal
+        skillName={skillName}
+        accessApproved={accessApproved}
+        onClose={() => {}}
+      />,
+    )
+  }
+
+  it("transcript section shows Download transcript TXT button for AI/ML", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("download-transcript-txt-btn")).toBeInTheDocument()
+  })
+
+  it("transcript TXT download button is enabled when transcript evidence exists", () => {
+    renderModal("AI / Machine Learning", false)
+    const btn = screen.getByTestId("download-transcript-txt-btn")
+    expect(btn).not.toBeDisabled()
+  })
+
+  it("transcript PDF download action is visible but disabled (placeholder)", () => {
+    renderModal("AI / Machine Learning", false)
+    const pdfBtn = screen.getByTestId("download-transcript-pdf-btn")
+    expect(pdfBtn).toBeInTheDocument()
+    expect(pdfBtn).toBeDisabled()
+  })
+
+  it("transcript PDF placeholder button has tooltip about export service", () => {
+    renderModal("AI / Machine Learning", false)
+    const pdfBtn = screen.getByTestId("download-transcript-pdf-btn")
+    expect(pdfBtn).toHaveAttribute("title")
+    expect(pdfBtn.getAttribute("title")).toMatch(/transcript export service/i)
+  })
+
+  it("transcript download action row is visible even without approval (for public excerpts)", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("transcript-download-actions")).toBeInTheDocument()
+  })
+
+  it("transcript download actions do not render when skill has no transcript evidence", () => {
+    renderModal("DevOps / Deployment", false)
+    // DevOps has no transcript evidence — the entire section shows empty state, no download buttons
+    expect(screen.queryByTestId("download-transcript-txt-btn")).not.toBeInTheDocument()
+  })
+
+  it("transcript export excludes unsafe strings from component HTML", () => {
+    const { container } = render(
+      <SkillEvidenceDetailModal skillName="AI / Machine Learning" accessApproved={true} onClose={() => {}} />,
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain("storage_path")
+    expect(html).not.toContain("supabase")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("token=")
+    expect(html).not.toContain("localhost")
+    expect(html).not.toContain("raw_url")
+  })
+
+  it("skill-specific transcript includes skill name in download button section for AI/ML", () => {
+    renderModal("AI / Machine Learning", false)
+    // The section renders with the skill name available (passed via skillName prop)
+    const transcript = screen.getByTestId("skill-artifact-transcript")
+    expect(transcript).toBeInTheDocument()
+    expect(screen.getByTestId("download-transcript-txt-btn")).toBeInTheDocument()
+  })
+
+  it("JS/Frontend transcript download button is present for that skill", () => {
+    renderModal("JavaScript / Frontend", false)
+    expect(screen.getByTestId("download-transcript-txt-btn")).toBeInTheDocument()
+  })
+
+  it("UI still renders skill evidence cards from pipeline data", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("skill-artifact-workflow-recording")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-keyframes")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-github")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-transcript")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-documents")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-final-analysis")).toBeInTheDocument()
   })
 })

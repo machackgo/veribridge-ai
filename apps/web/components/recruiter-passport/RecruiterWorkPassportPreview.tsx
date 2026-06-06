@@ -960,6 +960,54 @@ export type SkillEvidenceBundle = {
   finalAnalysis?: SkillFinalAnalysis
 }
 
+// ── Skill Evidence Pipeline — multi-source, multi-project aggregated model ─────
+// Represents one skill across ALL evidence sources the student has collected,
+// not only one project or one workflow session.
+
+type OcrEvidenceItem = {
+  timestamp: string
+  extractedText: string
+  source: string
+  confidence: "high" | "medium" | "low"
+  note?: string
+}
+
+type EvidenceItem = {
+  sourceType: "workflow" | "github" | "visual" | "ocr" | "dom" | "qwen" | "transcript" | "document"
+  sourceTitle: string
+  projectName: string
+  visibility: "public" | "protected" | "approved" | "locked" | "unavailable"
+  relevanceToSkill: string
+  confidence: "high" | "medium" | "low"
+  proofReason: string
+  artifactActionLabel: string
+  artifactStatus: "supported" | "partial" | "missing" | "needs-review"
+}
+
+export type SkillEvidencePipeline = {
+  skillId: string
+  skillName: string
+  category: string
+  confidence: "high" | "medium" | "low"
+  supportStatus: "strongly supported" | "partially supported" | "needs review"
+  overallExplanation: string
+  evidenceSources: SkillSourceEvidence[]
+  codeEvidence: SkillGithubFile[]
+  workflowEvidence: SkillWorkflowRecording[]
+  visualEvidence: SkillVisualFrame[]
+  ocrEvidence: OcrEvidenceItem[]
+  domEvidence: SkillDomEvidence[]
+  qwenEvidence: SkillQwenAnalysis[]
+  transcriptEvidence: SkillTranscriptExcerpt[]
+  documentEvidence: SkillDocumentSnippet[]
+  projects: Array<{ name: string; type: string; evidenceCount: number }>
+  directActions: EvidenceItem[]
+  interviewQuestions: string[]
+  protectedEvidenceFlags: string[]
+  finalAnalysis?: SkillFinalAnalysis
+  liveApp?: { label: string; isPublic: boolean; publicUrl?: string }
+}
+
 const VERIBRIDGE_REPO = "https://github.com/machackgo/veribridge-ai"
 const VERIBRIDGE_BRANCH = "main"
 
@@ -1595,6 +1643,125 @@ function getSkillBundle(skillName: string): SkillEvidenceBundle {
     ],
     protectedEvidenceFlags: [],
   }
+}
+
+// ── Skill Evidence Pipelines — derived from bundles with new aggregation fields ─
+
+const _PIPELINE_CATEGORY: Record<string, string> = {
+  "AI / Machine Learning": "AI/ML",
+  "JavaScript / Frontend": "Frontend",
+  "Data & Visualization": "Data",
+  "DevOps / Deployment": "DevOps",
+}
+
+const _PIPELINE_PROJECTS: Record<string, Array<{ name: string; type: string; evidenceCount: number }>> = {
+  "AI / Machine Learning": [{ name: "VeriBridge AI Proof System", type: "AI/ML Web App", evidenceCount: 6 }],
+  "JavaScript / Frontend": [{ name: "Recruiter Passport Dashboard", type: "React/TypeScript Dashboard", evidenceCount: 4 }],
+  "Data & Visualization": [{ name: "Evidence Dashboard", type: "Data Visualization App", evidenceCount: 4 }],
+  "DevOps / Deployment": [{ name: "AI Engineering Project", type: "Full-Stack Application", evidenceCount: 1 }],
+}
+
+function _buildPipeline(skillName: string, bundle: SkillEvidenceBundle): SkillEvidencePipeline {
+  const ocrEvidence: OcrEvidenceItem[] = bundle.visualEvidence
+    .filter((f) => f.ocr)
+    .map((f) => ({
+      timestamp: f.timestamp,
+      extractedText: f.ocr,
+      source: f.pageTitle ?? skillName,
+      confidence: f.confidence,
+      note: f.observation,
+    }))
+
+  const directActions: EvidenceItem[] = [
+    ...(bundle.workflowRecording
+      ? [
+          {
+            sourceType: "workflow" as const,
+            sourceTitle: bundle.workflowRecording.title,
+            projectName: _PIPELINE_PROJECTS[skillName]?.[0]?.name ?? skillName,
+            visibility: (bundle.workflowRecording.isProtected ? "protected" : "public") as EvidenceItem["visibility"],
+            relevanceToSkill: bundle.workflowRecording.relatedSkills.join(", "),
+            confidence: "high" as const,
+            proofReason: `${bundle.workflowRecording.segments.length} workflow segments captured`,
+            artifactActionLabel: "View workflow recording",
+            artifactStatus: "supported" as const,
+          },
+        ]
+      : []),
+    ...bundle.githubEvidence.map(
+      (f): EvidenceItem => ({
+        sourceType: "github",
+        sourceTitle: f.path.split("/").pop() ?? f.path,
+        projectName: _PIPELINE_PROJECTS[skillName]?.[0]?.name ?? skillName,
+        visibility: f.isPublic ? "public" : "protected",
+        relevanceToSkill: f.reason,
+        confidence: f.confidence,
+        proofReason: f.reason,
+        artifactActionLabel: f.isPublic ? "Open GitHub file" : "Request access",
+        artifactStatus: "supported",
+      }),
+    ),
+    ...bundle.transcriptEvidence.map(
+      (t): EvidenceItem => ({
+        sourceType: "transcript",
+        sourceTitle: "Project defense excerpt",
+        projectName: _PIPELINE_PROJECTS[skillName]?.[0]?.name ?? skillName,
+        visibility: t.isProtected ? "protected" : "public",
+        relevanceToSkill: t.relevance,
+        confidence: "medium",
+        proofReason: t.ownershipSignal ?? t.relevance,
+        artifactActionLabel: t.isProtected ? "Request access" : "View approved excerpt",
+        artifactStatus: "supported",
+      }),
+    ),
+    ...bundle.documentEvidence.map(
+      (d): EvidenceItem => ({
+        sourceType: "document",
+        sourceTitle: d.title,
+        projectName: _PIPELINE_PROJECTS[skillName]?.[0]?.name ?? skillName,
+        visibility: d.isProtected ? "protected" : "public",
+        relevanceToSkill: d.relevance,
+        confidence: "medium",
+        proofReason: d.relevance,
+        artifactActionLabel: d.isProtected ? "Request access" : "View document",
+        artifactStatus: d.relevance.includes("aspirational") ? "needs-review" : "supported",
+      }),
+    ),
+  ]
+
+  return {
+    skillId: skillName.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    skillName: bundle.skillName,
+    category: _PIPELINE_CATEGORY[skillName] ?? skillName,
+    confidence: bundle.confidence,
+    supportStatus: bundle.supportStatus,
+    overallExplanation: bundle.explanation,
+    evidenceSources: bundle.sources,
+    codeEvidence: bundle.githubEvidence,
+    workflowEvidence: bundle.workflowRecording ? [bundle.workflowRecording] : [],
+    visualEvidence: bundle.visualEvidence,
+    ocrEvidence,
+    domEvidence: bundle.domEvidence ? [bundle.domEvidence] : [],
+    qwenEvidence: bundle.qwenAnalysis ? [bundle.qwenAnalysis] : [],
+    transcriptEvidence: bundle.transcriptEvidence,
+    documentEvidence: bundle.documentEvidence,
+    projects: _PIPELINE_PROJECTS[skillName] ?? [{ name: skillName, type: "Project", evidenceCount: bundle.sources.filter((s) => s.status === "supported").length }],
+    directActions,
+    interviewQuestions: bundle.interviewQuestions,
+    protectedEvidenceFlags: bundle.protectedEvidenceFlags,
+    finalAnalysis: bundle.finalAnalysis,
+    liveApp: bundle.liveApp,
+  }
+}
+
+const SKILL_EVIDENCE_PIPELINES: Record<string, SkillEvidencePipeline> = Object.fromEntries(
+  Object.entries(SKILL_EVIDENCE_BUNDLES).map(([k, v]) => [k, _buildPipeline(k, v)]),
+)
+
+export function getSkillPipeline(skillName: string): SkillEvidencePipeline {
+  if (SKILL_EVIDENCE_PIPELINES[skillName]) return SKILL_EVIDENCE_PIPELINES[skillName]
+  const bundle = getSkillBundle(skillName)
+  return _buildPipeline(skillName, bundle)
 }
 
 // Safe transcript excerpt — not a raw dump, no private content.
@@ -3231,8 +3398,53 @@ function GithubArtifactSection({ files, accessApproved }: { files: SkillGithubFi
 
 // ── Transcript Artifact ───────────────────────────────────────────────────────
 
-function TranscriptArtifactSection({ excerpts, accessApproved }: { excerpts: SkillTranscriptExcerpt[]; accessApproved: boolean }) {
+function TranscriptArtifactSection({
+  excerpts,
+  accessApproved,
+  skillName,
+}: {
+  excerpts: SkillTranscriptExcerpt[]
+  accessApproved: boolean
+  skillName?: string
+}) {
   const [expanded, setExpanded] = useState<number | null>(null)
+
+  const handleDownloadTxt = () => {
+    const approved = excerpts.filter((t) => !t.isProtected || accessApproved)
+    if (approved.length === 0) return
+    const lines: string[] = [
+      "VeriBridge Transcript Export — Recruiter Safe",
+      `Generated: ${new Date().toLocaleDateString()}`,
+      ...(skillName ? [`Skill: ${skillName}`] : []),
+      "Note: Recruiter-safe transcript export. Raw media URLs and private metadata excluded.",
+      "",
+      "--- Approved Transcript Excerpts ---",
+      "",
+    ]
+    approved.forEach((t, idx) => {
+      lines.push(`Excerpt ${idx + 1}:`)
+      lines.push(`"${t.fullExcerpt ?? t.excerpt}"`)
+      if (t.ownershipSignal) lines.push(`Ownership signal: ${t.ownershipSignal}`)
+      if (t.technicalDepth) lines.push(`Technical depth: ${t.technicalDepth}`)
+      if (t.skillMapping && t.skillMapping.length > 0) lines.push(`Skills: ${t.skillMapping.join(", ")}`)
+      if (t.lines && t.lines.length > 0) {
+        lines.push("Key lines:")
+        t.lines.forEach((line) => lines.push(`  > ${line}`))
+      }
+      lines.push("")
+    })
+    const blob = new Blob([lines.join("\n")], { type: "text/plain" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = skillName
+      ? `transcript-${skillName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.txt`
+      : "transcript-export.txt"
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
 
   if (excerpts.length === 0) {
     return (
@@ -3247,6 +3459,33 @@ function TranscriptArtifactSection({ excerpts, accessApproved }: { excerpts: Ski
   return (
     <div data-testid="skill-artifact-transcript">
       <ArtifactSectionHeader title="Project Defense Transcript" count={excerpts.length} color={C.sky} />
+      {/* Transcript download actions */}
+      <div data-testid="transcript-download-actions" style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+        <button
+          type="button"
+          data-testid="download-transcript-txt-btn"
+          onClick={handleDownloadTxt}
+          style={{
+            fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 5,
+            cursor: "pointer", color: C.sky, background: C.skySoft, border: "1px solid #bae6fd",
+          }}
+        >
+          Download transcript TXT
+        </button>
+        <button
+          type="button"
+          data-testid="download-transcript-pdf-btn"
+          disabled
+          title="PDF export will be enabled when transcript export service is connected."
+          style={{
+            fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 5,
+            cursor: "not-allowed", color: C.muted, background: C.bg,
+            border: `1px solid ${C.line}`, opacity: 0.55,
+          }}
+        >
+          Download transcript PDF
+        </button>
+      </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {excerpts.map((t, i) => {
           const canView = !t.isProtected || accessApproved
@@ -3398,6 +3637,31 @@ function DocumentArtifactSection({ docs, accessApproved }: { docs: SkillDocument
                       )}
                     </>
                   )}
+                  {/* Document artifact actions */}
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      data-testid={`open-document-btn-${i}`}
+                      onClick={() => {}}
+                      style={{
+                        fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 5,
+                        cursor: "pointer", color: C.amber, background: C.amberSoft, border: "1px solid #fde68a",
+                      }}
+                    >
+                      Open approved document
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`download-document-btn-${i}`}
+                      onClick={() => {}}
+                      style={{
+                        fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 5,
+                        cursor: "pointer", color: C.amber, background: C.amberSoft, border: "1px solid #fde68a",
+                      }}
+                    >
+                      Download document
+                    </button>
+                  </div>
                   {accessApproved && (
                     <div data-testid={`document-approved-viewer-${i}`} style={{ padding: "8px 10px", borderRadius: 5, background: C.amberSoft, border: "1px solid #fde68a" }}>
                       <p style={{ fontSize: 10, color: "#92400e", fontWeight: 600, margin: "0 0 2px" }}>Approved document file viewer</p>
@@ -3408,8 +3672,8 @@ function DocumentArtifactSection({ docs, accessApproved }: { docs: SkillDocument
                   )}
                 </div>
               ) : (
-                <div style={{ padding: "12px 14px" }}>
-                  <p style={{ fontSize: 11, color: "#818cf8", margin: 0 }}>Document access requires student approval. Request access to view extracted text and document summary.</p>
+                <div data-testid={`document-download-locked-${i}`} style={{ padding: "12px 14px" }}>
+                  <p style={{ fontSize: 11, color: "#818cf8", margin: 0 }}>Document download requires student approval. Request access to view extracted text and document summary.</p>
                 </div>
               )}
             </div>
@@ -3912,7 +4176,7 @@ export function SkillEvidenceDetailModal({
           <GithubArtifactSection files={bundle.githubEvidence} accessApproved={accessApproved} />
 
           {/* 5. Transcript artifact */}
-          <TranscriptArtifactSection excerpts={bundle.transcriptEvidence} accessApproved={accessApproved} />
+          <TranscriptArtifactSection excerpts={bundle.transcriptEvidence} accessApproved={accessApproved} skillName={bundle.skillName} />
 
           {/* 6. Document artifact */}
           <DocumentArtifactSection docs={bundle.documentEvidence} accessApproved={accessApproved} />
