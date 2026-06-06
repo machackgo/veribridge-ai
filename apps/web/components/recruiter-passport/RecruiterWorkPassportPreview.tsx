@@ -1029,6 +1029,7 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
       { key: "github",    label: "GitHub code",             status: "supported", score: 91, reason: "ML pipeline, evaluator service, and proof engine files confirmed"   },
       { key: "defense",   label: "Project defense",         status: "supported", score: 84, reason: "Candidate explained model selection, training, and evaluation"      },
       { key: "documents", label: "Documents",               status: "supported", score: 79, reason: "Project report covers ML methodology and experimental results"      },
+      { key: "dom",       label: "DOM Evidence",            status: "supported", score: 78, reason: "Captured page structure, visible UI labels, and proof builder state changes support this skill." },
     ],
     workflowRecording: {
       title: "AI Proof Builder — Model Inference Demo",
@@ -1791,6 +1792,21 @@ function _buildPipeline(skillName: string, bundle: SkillEvidenceBundle): SkillEv
         artifactStatus: d.relevance.includes("aspirational") ? "needs-review" : "supported",
       }),
     ),
+    ...(bundle.domEvidence
+      ? [
+          {
+            sourceType: "dom" as const,
+            sourceTitle: "DOM Evidence",
+            projectName: _PIPELINE_PROJECTS[skillName]?.[0]?.name ?? skillName,
+            visibility: (bundle.domEvidence.isProtected ? "protected" : "public") as EvidenceItem["visibility"],
+            relevanceToSkill: bundle.domEvidence.skillRelevance,
+            confidence: "medium" as const,
+            proofReason: "Captured page structure, visible UI labels, and proof builder state changes support this skill.",
+            artifactActionLabel: bundle.domEvidence.isProtected ? "Request access" : "View DOM capture",
+            artifactStatus: "supported" as const,
+          },
+        ]
+      : []),
   ]
 
   return {

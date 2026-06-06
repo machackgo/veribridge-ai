@@ -1217,10 +1217,11 @@ describe("SkillEvidencePipeline — model structure", () => {
 
   it("pipeline evidenceSources matches bundle sources", () => {
     const pipeline = getSkillPipeline("AI / Machine Learning")
-    expect(pipeline.evidenceSources.length).toBe(6)
+    expect(pipeline.evidenceSources.length).toBe(7)
     expect(pipeline.evidenceSources.map((s) => s.key)).toContain("workflow")
     expect(pipeline.evidenceSources.map((s) => s.key)).toContain("github")
     expect(pipeline.evidenceSources.map((s) => s.key)).toContain("documents")
+    expect(pipeline.evidenceSources.map((s) => s.key)).toContain("dom")
   })
 
   it("pipeline does not expose unsafe strings in any field", () => {
