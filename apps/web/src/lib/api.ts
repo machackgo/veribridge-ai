@@ -2593,3 +2593,119 @@ export async function getLiveFeedback(sessionId: string): Promise<LiveFeedbackRe
     return null
   }
 }
+
+// ── Skill Evidence Pipelines ──────────────────────────────────────────────────
+
+export type BackendEvidenceSource = {
+  key: string
+  label: string
+  status: "supported" | "partial" | "missing" | "protected"
+  score?: number | null
+  reason: string
+}
+
+export type BackendSkillPipeline = {
+  id: string
+  student_id: string | null
+  profile_id: string | null
+  skill_name: string
+  skill_category: string
+  confidence_score: number
+  support_status: "strongly_supported" | "partially_supported" | "needs_review"
+  evidence_count: number
+  strongest_proof: { label?: string; reason?: string } | null
+  weakest_proof: { label?: string; reason?: string } | null
+  missing_evidence: string[]
+  next_actions: string[]
+  evidence_sources: BackendEvidenceSource[]
+  recruiter_summary: string
+  student_summary: string
+  visibility_status: "public" | "protected" | "private"
+  created_at: string
+  updated_at: string
+}
+
+export type BackendSkillArtifact = {
+  id: string
+  pipeline_id: string
+  proof_session_id: string | null
+  source_type: string
+  source_title: string
+  project_name: string
+  visibility: string
+  confidence_score: number
+  relevance_to_skill: string
+  proof_reason: string
+  artifact_data: Record<string, unknown>
+  exact_code_url?: string | null
+  full_file_url?: string | null
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * List all skill evidence pipelines for the current student.
+ * Returns null on any error (backend unavailable).
+ */
+export async function listSkillEvidencePipelines(): Promise<BackendSkillPipeline[] | null> {
+  try {
+    const res = await fetchAPI("/api/v1/student/skill-pipelines")
+    if (!res.ok) return null
+    return res.json() as Promise<BackendSkillPipeline[]>
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Get a single skill evidence pipeline by ID.
+ * Returns null on 404 or any error.
+ */
+export async function getSkillEvidencePipeline(
+  pipelineId: string,
+): Promise<BackendSkillPipeline | null> {
+  try {
+    const res = await fetchAPI(
+      `/api/v1/student/skill-pipelines/${encodeURIComponent(pipelineId)}`,
+    )
+    if (!res.ok) return null
+    return res.json() as Promise<BackendSkillPipeline>
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Seed the deterministic MVP skill pipelines for the current student.
+ * Returns the created/updated pipelines, or null on error.
+ */
+export async function seedMockSkillEvidencePipelines(): Promise<BackendSkillPipeline[] | null> {
+  try {
+    const res = await fetchAPI("/api/v1/student/skill-pipelines/seed-mock", {
+      method: "POST",
+    })
+    if (!res.ok) return null
+    return res.json() as Promise<BackendSkillPipeline[]>
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetch a recruiter-safe pipeline view.
+ * Strips student_id, student_summary, private artifacts, and unsafe artifact_data keys.
+ * Returns null on any error.
+ */
+export async function getRecruiterSkillPipelineView(
+  pipelineId: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetchAPI(
+      `/api/v1/student/skill-pipelines/${encodeURIComponent(pipelineId)}/recruiter-view`,
+    )
+    if (!res.ok) return null
+    return res.json() as Promise<Record<string, unknown>>
+  } catch {
+    return null
+  }
+}
