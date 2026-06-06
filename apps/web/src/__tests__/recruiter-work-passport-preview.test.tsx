@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   RecruiterWorkPassportPreview,
   SkillEvidenceDetailModal,
@@ -9,6 +9,13 @@ import {
 } from "../../components/recruiter-passport/RecruiterWorkPassportPreview"
 import { EvidenceAccessRequestModal } from "../../components/recruiter-passport/EvidenceAccessRequestModal"
 import type { RecruiterPassportViewResponse } from "../lib/passport-api"
+import * as apiModule from "@/lib/api"
+import type { BackendSkillPipeline } from "@/lib/api"
+
+// Default: backend unavailable — safe fallback, existing tests unaffected.
+vi.mock("@/lib/api", () => ({
+  listRecruiterSkillEvidencePipelines: vi.fn().mockResolvedValue(null),
+}))
 
 // ── Fixture builder ───────────────────────────────────────────────────────────
 
@@ -1579,5 +1586,130 @@ describe("SkillEvidenceDetailModal — GitHub line-level proof links", () => {
       <SkillEvidenceDetailModal skillName="AI / Machine Learning" accessApproved={false} onClose={() => {}} />,
     )
     expect(container.innerHTML).not.toContain("candidate-repo")
+  })
+})
+
+// ── Backend skill pipeline integration ────────────────────────────────────────
+
+describe("RecruiterWorkPassportPreview — backend skill pipeline integration", () => {
+  // View with no skills at all — forces the backend-pipeline code path.
+  function makeEmptyView() {
+    return makeView({
+      skill_groups: [],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+    })
+  }
+
+  const mockPipeline: BackendSkillPipeline = {
+    id: "pipeline-ts-1",
+    student_id: "s-1",
+    profile_id: "p-1",
+    skill_name: "TypeScript",
+    skill_category: "Frontend",
+    confidence_score: 80,
+    support_status: "strongly_supported",
+    evidence_count: 2,
+    strongest_proof: { label: "GitHub code", reason: "TypeScript throughout codebase" },
+    weakest_proof: null,
+    missing_evidence: [],
+    next_actions: [],
+    evidence_sources: [
+      { key: "github", label: "GitHub code", status: "supported", score: 80, reason: "TS imports found" },
+      { key: "project", label: "Project defense", status: "partial", score: 50, reason: "mentioned in defense" },
+    ],
+    recruiter_summary: "Strong TypeScript evidence from GitHub and project defense.",
+    student_summary: "PRIVATE_student_summary_do_not_render",
+    visibility_status: "public",
+    created_at: "2025-01-01T00:00:00Z",
+    updated_at: "2025-01-01T00:00:00Z",
+  }
+
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  it("shows loading placeholder while backend fetch is pending (no view skills)", () => {
+    let settle!: () => void
+    const pending = new Promise<null>((r) => { settle = () => r(null) })
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockReturnValue(pending)
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    expect(screen.getByTestId("skill-pipelines-loading")).toBeInTheDocument()
+    settle()
+  })
+
+  it("safe fallback: existing view skills still render when backend returns null", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    render(<RecruiterWorkPassportPreview view={makeView()} />)
+    await waitFor(() => {
+      expect(screen.getAllByText("Chatbot UI").length).toBeGreaterThan(0)
+      expect(screen.getAllByText("React").length).toBeGreaterThan(0)
+    })
+  })
+
+  it("renders skill name from backend pipeline when view has no skills", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([mockPipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => {
+      expect(screen.getAllByText("TypeScript").length).toBeGreaterThan(0)
+    })
+  })
+
+  it("shows backend pipelines badge when backend provides pipelines", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([mockPipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => {
+      expect(screen.getByTestId("backend-pipelines-badge")).toBeInTheDocument()
+    })
+    expect(screen.getByTestId("backend-pipelines-badge").textContent).toMatch(/pipeline/)
+  })
+
+  it("shows empty state when backend returns an empty list", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => {
+      expect(screen.getByTestId("skill-pipelines-empty")).toBeInTheDocument()
+    })
+  })
+
+  it("backend pipeline evidence section renders Evidence-Backed Skills heading", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([mockPipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => {
+      expect(screen.getByTestId("evidence-backed-skills-section")).toBeInTheDocument()
+    })
+  })
+
+  it("does not render student_summary from backend pipeline in recruiter HTML", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([mockPipeline])
+    const { container } = render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => expect(screen.getAllByText("TypeScript").length).toBeGreaterThan(0))
+    expect(container.innerHTML).not.toContain("PRIVATE_student_summary_do_not_render")
+  })
+
+  it("does not render student_id from backend pipeline in recruiter HTML", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([mockPipeline])
+    const { container } = render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => expect(screen.getAllByText("TypeScript").length).toBeGreaterThan(0))
+    expect(container.innerHTML).not.toContain('"s-1"')
+  })
+
+  it("AI/ML SkillEvidenceDetailModal still opens and shows evidence from static mock", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([mockPipeline])
+    render(<SkillEvidenceDetailModal skillName="AI / Machine Learning" accessApproved={false} onClose={() => {}} />)
+    expect(screen.getAllByText(/AI \/ Machine Learning/i).length).toBeGreaterThan(0)
+    // Static GitHub evidence still present
+    expect(screen.getAllByText(/FinalEvidenceEvaluatorService/i).length).toBeGreaterThan(0)
+  })
+
+  it("GitHub exact code links still include /blob/main/ and #Lstart-Lend after backend load", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([mockPipeline])
+    render(<SkillEvidenceDetailModal skillName="AI / Machine Learning" accessApproved={true} onClose={() => {}} />)
+    const exactLinks = screen.getAllByTestId(/github-open-exact-/)
+    expect(exactLinks.length).toBeGreaterThan(0)
+    const href = exactLinks[0].getAttribute("href") ?? ""
+    expect(href).toContain("/blob/main/")
+    expect(href).toMatch(/#L\d+-L\d+/)
   })
 })

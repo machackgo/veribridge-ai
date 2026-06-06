@@ -2692,6 +2692,16 @@ export async function seedMockSkillEvidencePipelines(): Promise<BackendSkillPipe
 }
 
 /**
+ * List skill evidence pipelines that are safe for recruiter viewing.
+ * Filters out private pipelines. Returns null if backend unavailable.
+ */
+export async function listRecruiterSkillEvidencePipelines(): Promise<BackendSkillPipeline[] | null> {
+  const all = await listSkillEvidencePipelines()
+  if (all === null) return null
+  return all.filter((p) => p.visibility_status !== "private")
+}
+
+/**
  * Fetch a recruiter-safe pipeline view.
  * Strips student_id, student_summary, private artifacts, and unsafe artifact_data keys.
  * Returns null on any error.

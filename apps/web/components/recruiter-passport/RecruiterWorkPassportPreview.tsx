@@ -26,6 +26,10 @@ import type {
   RecruiterSkillGroupResponse,
   RecruiterProofSourceResponse,
 } from "../../src/lib/passport-api"
+import {
+  listRecruiterSkillEvidencePipelines,
+  type BackendSkillPipeline,
+} from "@/lib/api"
 
 // ── Design tokens (mirrors passport/shared TOKEN) ─────────────────────────────
 
@@ -4440,6 +4444,31 @@ function ProtectedEvidenceUnlockedSection({
 // Approved status is always preferred over pending/denied/revoked to avoid
 // showing stale pending requests when approval already exists.
 
+// Converts a BackendSkillPipeline into the RecruiterSkillGroupResponse shape
+// so the existing SkillGroupsSection can render backend pipelines without changes.
+function backendPipelineToSkillGroup(p: BackendSkillPipeline): RecruiterSkillGroupResponse {
+  const confidence: "high" | "medium" | "low" =
+    p.confidence_score >= 75 ? "high" : p.confidence_score >= 50 ? "medium" : "low"
+  const statusLabel =
+    p.support_status === "strongly_supported" ? "strongly supported" :
+    p.support_status === "partially_supported" ? "partially supported" : "needs review"
+  return {
+    group_name: p.skill_name,
+    category: p.skill_category,
+    confidence,
+    evidence_count: p.evidence_sources?.length ?? 0,
+    source_labels: (p.evidence_sources ?? []).map((s) => s.label),
+    skills: [{
+      skill: p.skill_name,
+      confidence,
+      status_label: statusLabel,
+      source_labels: (p.evidence_sources ?? [])
+        .filter((s) => s.status === "supported")
+        .map((s) => s.label),
+    }],
+  }
+}
+
 function loadBestRequest(
   passportSlug: string,
   recruiterEmail?: string,
@@ -4486,6 +4515,8 @@ export function RecruiterWorkPassportPreview({
   const [showModal, setShowModal] = useState(false)
   const [accessRequest, setAccessRequest] = useState<EvidenceAccessRequest | null>(null)
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null)
+  const [backendPipelines, setBackendPipelines] = useState<BackendSkillPipeline[] | null>(null)
+  const [loadingPipelines, setLoadingPipelines] = useState(true)
 
   // Load the best access request for this passport from the mock store on mount.
   // Scoped to the recruiter's own email when known so their status is shown.
@@ -4495,6 +4526,24 @@ export function RecruiterWorkPassportPreview({
     const best = loadBestRequest(slug, defaultRequester?.email)
     if (best) setAccessRequest(best)
   }, [view.public_slug, defaultRequester?.email])
+
+  // Fetch recruiter-safe skill pipelines from backend on mount.
+  // Falls back gracefully (null) when backend is unavailable — never throws.
+  useEffect(() => {
+    let cancelled = false
+    listRecruiterSkillEvidencePipelines().then((data) => {
+      if (!cancelled) {
+        setBackendPipelines(data)
+        setLoadingPipelines(false)
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setBackendPipelines(null)
+        setLoadingPipelines(false)
+      }
+    })
+    return () => { cancelled = true }
+  }, [])
 
   const handleModalSubmit = async () => {
     // Modal handles its own internal success state; we update parent state here.
@@ -4543,6 +4592,21 @@ export function RecruiterWorkPassportPreview({
     detailed_skill_evidence: "Detailed skill evidence",
   }
 
+  // True when the view already contains skills from any source (groups or flat lists).
+  const hasAnyViewSkills =
+    view.skill_groups.length > 0 ||
+    view.verified_skills.length > 0 ||
+    view.partially_verified_skills.length > 0 ||
+    view.skills_needing_review.length > 0
+
+  // When the view has no skills at all, fall back to backend pipelines (if loaded).
+  const effectiveGroups: RecruiterSkillGroupResponse[] =
+    view.skill_groups.length > 0
+      ? view.skill_groups
+      : backendPipelines && backendPipelines.length > 0
+        ? backendPipelines.map(backendPipelineToSkillGroup)
+        : []
+
   return (
     <>
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -4556,10 +4620,8 @@ export function RecruiterWorkPassportPreview({
         />
 
         {/* 2. Evidence-backed skills */}
-        {(view.skill_groups.length > 0 ||
-          view.verified_skills.length > 0 ||
-          view.partially_verified_skills.length > 0 ||
-          view.skills_needing_review.length > 0) && (
+        {/* Case A: view already has skills — render immediately, no backend dependency */}
+        {hasAnyViewSkills && (
           <SkillGroupsSection
             groups={view.skill_groups}
             verified={view.verified_skills}
@@ -4568,6 +4630,49 @@ export function RecruiterWorkPassportPreview({
             onViewSkill={setSelectedSkill}
             accessApproved={accessRequest?.status === "approved"}
           />
+        )}
+        {/* Case B: no view skills, still fetching backend — show loading placeholder */}
+        {!hasAnyViewSkills && loadingPipelines && (
+          <Card data-testid="evidence-backed-skills-section">
+            <SectionTitle>Evidence-Backed Skills</SectionTitle>
+            <p data-testid="skill-pipelines-loading" style={{ fontSize: 12, color: C.muted, margin: 0 }}>
+              Loading skill evidence pipelines…
+            </p>
+          </Card>
+        )}
+        {/* Case C: no view skills, backend loaded with pipelines — render backend groups */}
+        {!hasAnyViewSkills && !loadingPipelines && effectiveGroups.length > 0 && (
+          <>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <span
+                data-testid="backend-pipelines-badge"
+                style={{
+                  fontSize: 10, fontWeight: 700, padding: "2px 10px", borderRadius: 999,
+                  background: C.emeraldSoft, color: C.emerald, border: "1px solid #bbf7d0",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                {backendPipelines!.length} pipeline{backendPipelines!.length !== 1 ? "s" : ""} from VeriBridge backend
+              </span>
+            </div>
+            <SkillGroupsSection
+              groups={effectiveGroups}
+              verified={[]}
+              partial={[]}
+              needsReview={[]}
+              onViewSkill={setSelectedSkill}
+              accessApproved={accessRequest?.status === "approved"}
+            />
+          </>
+        )}
+        {/* Case D: no view skills, backend loaded but empty — show empty state */}
+        {!hasAnyViewSkills && !loadingPipelines && backendPipelines !== null && effectiveGroups.length === 0 && (
+          <Card data-testid="evidence-backed-skills-section">
+            <SectionTitle>Evidence-Backed Skills</SectionTitle>
+            <p data-testid="skill-pipelines-empty" style={{ fontSize: 12, color: C.muted, margin: 0 }}>
+              No skill evidence pipelines found for this candidate.
+            </p>
+          </Card>
         )}
 
         {/* 3. Project links */}
