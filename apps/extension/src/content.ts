@@ -323,6 +323,45 @@ let barPoll: ReturnType<typeof setInterval> | null = null
 let barMinimized = false
 let lastState: StateSnapshot | null = null
 
+// ── Dashboard upload-progress poll ────────────────────────────────────────────
+// On VeriBridge internal pages (e.g. /dashboard/profile) the floating bar is
+// suppressed, so barPoll never runs.  Without it the panel has no periodic
+// extension-state feed and only learns about upload events if the background's
+// one-shot broadcast arrives in time — which on fast local uploads it often
+// doesn't.  This lightweight poll fills that gap: it runs only when we are on an
+// internal page while recording or uploading is active, publishing state via
+// window.postMessage every 800 ms so the Website Proof modal stays in sync.
+let vbDashboardPoll: ReturnType<typeof setInterval> | null = null
+
+function startVbDashboardPoll(): void {
+  if (contextInvalidated || !isVeriBridgeInternal()) return
+  if (vbDashboardPoll) return
+  vbDashboardPoll = setInterval(() => {
+    void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
+      if (contextInvalidated || !s) return
+      publishExtensionState(s)
+      // Also publish an explicit upload-started signal so the panel can react
+      // immediately even if the PROOF_UPLOAD_STARTED broadcast was missed.
+      if (s.status === "uploading") {
+        publishProofUploadStarted({
+          sessionId: s.sessionId,
+          statusMessage: s.statusMessage,
+          isRecording: s.isRecording,
+        })
+      }
+      // Stop when recording has fully ended and upload is no longer in flight.
+      const activeStatuses: string[] = ["recording", "uploading"]
+      if (!s.isRecording && !activeStatuses.includes(s.status)) {
+        stopVbDashboardPoll()
+      }
+    })
+  }, 800)
+}
+
+function stopVbDashboardPoll(): void {
+  if (vbDashboardPoll) { clearInterval(vbDashboardPoll); vbDashboardPoll = null }
+}
+
 // ── Fullscreen state tracking ─────────────────────────────────────────────────
 /**
  * True when the document (or any element) is in fullscreen.
@@ -462,8 +501,9 @@ function handleContextInvalidated(): void {
   contextInvalidated = true
   console.warn("VeriBridge extension was updated. Refresh this page and start a fresh proof session.")
 
-  // Stop bar poll and auto-dismiss timer immediately
+  // Stop bar poll, dashboard poll, and auto-dismiss timer immediately
   if (barPoll) { clearInterval(barPoll); barPoll = null }
+  stopVbDashboardPoll()
   if (autoDismissTimer) { clearTimeout(autoDismissTimer); autoDismissTimer = null }
 
   // Clean up all capture state directly — bypasses stopCapture's capturing guard
@@ -798,6 +838,7 @@ function stopCapture(): void {
   if (postActionSnapTimer) { clearTimeout(postActionSnapTimer); postActionSnapTimer = null }
   if (mutDebounceTimer) { clearTimeout(mutDebounceTimer); mutDebounceTimer = null }
   if (mutObs) { mutObs.disconnect(); mutObs = null }
+  stopVbDashboardPoll()
 }
 
 chrome.runtime.onMessage.addListener((msg: { type: string; payload?: Partial<StateSnapshot> }) => {
@@ -809,6 +850,9 @@ chrome.runtime.onMessage.addListener((msg: { type: string; payload?: Partial<Sta
       if (!targetWebsiteUrl || isOnTargetPage()) {
         showFloatingBar()
       }
+      // On VeriBridge internal pages (dashboard) the bar is suppressed, so start
+      // a lightweight silent poll to keep the Website Proof modal in sync.
+      startVbDashboardPoll()
     })
   } else if (msg.type === "RECORDER_STREAM_STARTED") {
     dbgVE("RECORDER_STREAM_STARTED — recorder tab active")
@@ -819,6 +863,9 @@ chrome.runtime.onMessage.addListener((msg: { type: string; payload?: Partial<Sta
     refreshBar()
   } else if (msg.type === "PROOF_UPLOAD_STARTED") {
     publishProofUploadStarted(msg.payload ?? {})
+    // Also (re-)start dashboard poll so the modal catches the uploading state even
+    // if the bar is not visible on this page (e.g. the dashboard tab itself).
+    startVbDashboardPoll()
   } else if (msg.type === "EXTENSION_STATE_UPDATED") {
     void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
       if (s) publishExtensionState(s)

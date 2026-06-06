@@ -20,6 +20,7 @@ import {
   shouldShowWorkflowAnalysisProgress,
   websiteProofProgressReducer,
 } from "../../components/skill-proof/extension-proof-panel"
+import type { WebsiteProofProgressLifecycle } from "../../components/skill-proof/extension-proof-panel"
 import type { FinalEvaluationResult, LiveWebsiteCheckResponse, ProjectDefenseAnalysisResponse } from "../lib/api"
 
 beforeEach(() => {
@@ -777,6 +778,55 @@ describe("Workflow Evidence Analysis progress card", () => {
     expect(progressIndex).toBeGreaterThan(checklistIndex)
     expect(reportIndex).toBeGreaterThan(progressIndex)
     expect(source).not.toContain("Verification Progress")
+  })
+
+  it("upload_started reducer does not regress from upload_complete_manual_analysis_required", () => {
+    // Late extension events must not overwrite the completed upload state.
+    const completed = websiteProofProgressReducer("recording", { type: "upload_succeeded" })
+    expect(completed).toBe("upload_complete_manual_analysis_required")
+    const afterLateStart = websiteProofProgressReducer(completed, { type: "upload_started" })
+    expect(afterLateStart).toBe("upload_complete_manual_analysis_required")
+  })
+
+  it("upload_started reducer does not regress from any post-upload analysis state", () => {
+    const analysisStates: WebsiteProofProgressLifecycle[] = [
+      "analysis_starting",
+      "extracting_keyframes",
+      "running_ocr_visual",
+      "running_qwen_visual",
+      "matching_workflow_timeline",
+      "generating_workflow_report",
+      "workflow_report_ready",
+    ]
+    for (const analysisState of analysisStates) {
+      const after = websiteProofProgressReducer(analysisState, { type: "upload_started" })
+      expect(after).toBe(analysisState)
+    }
+  })
+
+  it("content script defines startVbDashboardPoll for dashboard upload-progress polling", () => {
+    const source = readFileSync(
+      join(process.cwd(), "../extension/src/content.ts"),
+      "utf8",
+    )
+    expect(source).toContain("startVbDashboardPoll")
+    expect(source).toContain("stopVbDashboardPoll")
+    expect(source).toContain("vbDashboardPoll")
+  })
+
+  it("content script calls startVbDashboardPoll in PROOF_UPLOAD_STARTED and START_CAPTURING handlers", () => {
+    const source = readFileSync(
+      join(process.cwd(), "../extension/src/content.ts"),
+      "utf8",
+    )
+    const uploadStartedHandlerIdx = source.indexOf('msg.type === "PROOF_UPLOAD_STARTED"')
+    const startCapturingHandlerIdx = source.indexOf('msg.type === "START_CAPTURING"')
+    const dashboardPollInUploadIdx = source.indexOf("startVbDashboardPoll()", uploadStartedHandlerIdx)
+    const dashboardPollInCaptureIdx = source.indexOf("startVbDashboardPoll()", startCapturingHandlerIdx)
+    expect(uploadStartedHandlerIdx).toBeGreaterThan(-1)
+    expect(startCapturingHandlerIdx).toBeGreaterThan(-1)
+    expect(dashboardPollInUploadIdx).toBeGreaterThan(uploadStartedHandlerIdx)
+    expect(dashboardPollInCaptureIdx).toBeGreaterThan(startCapturingHandlerIdx)
   })
 })
 

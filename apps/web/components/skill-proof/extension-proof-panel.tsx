@@ -455,8 +455,23 @@ export function websiteProofProgressReducer(
       return "recording"
     case "stop_send_clicked":
       return "upload_starting"
-    case "upload_started":
+    case "upload_started": {
+      // Do not regress from post-upload states if a late extension event arrives.
+      const postUploadStates: WebsiteProofProgressLifecycle[] = [
+        "upload_complete_manual_analysis_required",
+        "analysis_starting",
+        "extracting_keyframes",
+        "running_ocr_visual",
+        "running_qwen_visual",
+        "matching_workflow_timeline",
+        "generating_workflow_report",
+        "workflow_report_ready",
+        "analysis_failed",
+        "upload_failed",
+      ]
+      if (postUploadStates.includes(state)) return state
       return "uploading"
+    }
     case "upload_succeeded":
       return state === "workflow_report_ready" ? state : "upload_complete_manual_analysis_required"
     case "upload_failed":
