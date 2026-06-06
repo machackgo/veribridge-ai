@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   DetectedSkillProfileSection,
   ExtensionProofPanel,
@@ -18,14 +18,24 @@ import {
   mergeVisibleSourceScores,
   saveActiveExtensionProofSession,
   shouldShowWorkflowAnalysisProgress,
+  stabilizeFinalEvaluationForMvp,
   websiteProofProgressReducer,
 } from "../../components/skill-proof/extension-proof-panel"
+import {
+  MVP_AI_REVIEW_SECONDS,
+  VerificationReviewSection,
+  type WebsiteProofReviewSnapshot,
+} from "../../components/skill-proof/verification-review-section"
 import type { WebsiteProofProgressLifecycle } from "../../components/skill-proof/extension-proof-panel"
 import type { FinalEvaluationResult, LiveWebsiteCheckResponse, ProjectDefenseAnalysisResponse } from "../lib/api"
 
 beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 const learningAction = {
@@ -95,7 +105,109 @@ function evaluation(overrides: Partial<FinalEvaluationResult>): FinalEvaluationR
   }
 }
 
+function source(key: string, status: FinalEvaluationResult["evidence_source_breakdown"][number]["status"], score: number | null, notes = "") {
+  return { key, status, score, weight: 1, notes }
+}
+
+function reviewSnapshot(overrides: Partial<WebsiteProofReviewSnapshot> = {}): WebsiteProofReviewSnapshot {
+  return {
+    proofSessionId: "s1",
+    websiteUrlType: "local",
+    claimedSkills: ["React", "Workflow Evidence"],
+    workflowEvidenceStatus: "completed",
+    workflowAnalysisScore: 82,
+    videoKeyframeScore: 80,
+    ocrScore: 70,
+    domScore: 85,
+    qwenVisualReasoningScore: 88,
+    githubStatus: "not_available",
+    githubScore: null,
+    projectDefenseScore: 76,
+    documentEvidenceScore: 78,
+    finalEvidenceScore: 82,
+    privacyScanStatus: "clean",
+    generatedRecommendation: "Workflow, visual, DOM, transcript, and documents support the claimed skills.",
+    timestamp: "2026-06-06T00:00:00.000Z",
+    ...overrides,
+  }
+}
+
 describe("FinalRecommendationsSection", () => {
+  it("does not over-penalize failed GitHub when other Website Proof evidence is strong", () => {
+    const stabilized = stabilizeFinalEvaluationForMvp(evaluation({
+      final_score: 45,
+      confidence: "low",
+      final_student_summary: "React evidence is weak because the repository has not been analyzed yet.",
+      final_recruiter_summary: "Repository has not been analyzed yet.",
+      evidence_source_breakdown: [
+        source("website_workflow", "pass", 85),
+        source("dom_visible_evidence", "pass", 82),
+        source("video_keyframes", "pass", 80),
+        source("ocr", "partial", 65),
+        source("qwen_visual_reasoning", "pass", 90),
+        source("project_defense", "pass", 78),
+        source("uploaded_documents", "pass", 75),
+        source("github", "missing", 0, "repository unavailable"),
+        source("live_website_check", "not_run", null),
+      ],
+      recommendations: {
+        mode: "proof_repair",
+        proof_actions: [{
+          ...proofAction,
+          reason: "React evidence is weak because the repository has not been analyzed yet.",
+          source_reason: "Triggered by github evidence: status=missing.",
+        }],
+        learning_actions: [],
+      },
+    }), "localhost_url")
+
+    expect(stabilized?.final_score).toBeGreaterThanOrEqual(80)
+    expect(stabilized?.confidence).toBe("high")
+    expect(stabilized?.final_student_summary).toMatch(/Workflow recording|visual reasoning|DOM evidence/i)
+    expect(stabilized?.final_student_summary).toMatch(/GitHub evidence could strengthen code-level verification/i)
+    expect(stabilized?.final_student_summary).not.toMatch(/React evidence is weak because the repository has not been analyzed yet/i)
+    expect(stabilized?.evidence_source_breakdown.find((s) => s.key === "github")?.notes)
+      .toBe("GitHub evidence unavailable or failed. Other evidence sources still support this proof.")
+  })
+
+  it("treats local live website check as not applicable, not negative", () => {
+    const stabilized = stabilizeFinalEvaluationForMvp(evaluation({
+      evidence_source_breakdown: [
+        source("website_workflow", "pass", 80),
+        source("live_website_check", "missing", 0, "not reachable"),
+      ],
+      evidence_sources_missing: ["Live website check", "GitHub"],
+    }), "localhost_url")
+
+    const live = stabilized?.evidence_source_breakdown.find((s) => s.key === "live_website_check")
+    expect(live?.status).toBe("not_applicable")
+    expect(live?.score).toBeNull()
+    expect(stabilized?.evidence_sources_missing.join(" ")).not.toMatch(/live website/i)
+  })
+
+  it("final recommendation uses multiple evidence sources when GitHub is unavailable", () => {
+    const stabilized = stabilizeFinalEvaluationForMvp(evaluation({
+      final_score: 58,
+      confidence: "low",
+      final_student_summary: "",
+      evidence_source_breakdown: [
+        source("website_workflow", "pass", 85),
+        source("dom_visible_evidence", "pass", 82),
+        source("video_keyframes", "pass", 80),
+        source("qwen_visual_reasoning", "pass", 90),
+        source("project_defense", "partial", 62),
+        source("uploaded_documents", "partial", 66),
+        source("github", "not_available", null),
+      ],
+    }), "localhost_url")
+
+    expect(stabilized?.final_student_summary).toMatch(/workflow recording/i)
+    expect(stabilized?.final_student_summary).toMatch(/DOM evidence/i)
+    expect(stabilized?.final_student_summary).toMatch(/visual reasoning/i)
+    expect(stabilized?.final_student_summary).toMatch(/transcript/i)
+    expect(stabilized?.final_student_summary).toMatch(/documents/i)
+  })
+
   it("renders Recommended Next Actions for scores under 80", () => {
     render(
       <FinalRecommendationsSection
@@ -557,6 +669,188 @@ describe("Detected Skill Profile (grouped skill evidence)", () => {
     // Grouped skill evidence section renders with its group (single skill summary).
     expect(screen.getByText(/Review grouped skill evidence/i)).toBeInTheDocument()
     expect(screen.getByText(/JavaScript \/ Frontend/i)).toBeInTheDocument()
+  })
+})
+
+describe("VeriBridge AI Review MVP flow", () => {
+  it("starts review, shows progress UI, and disables submit during review", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-06-06T00:00:00.000Z"))
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+
+    expect(screen.getByText(/Status: Not submitted/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    expect(screen.getByText(/Status: Review in progress/i)).toBeInTheDocument()
+    expect(screen.getByText(/VeriBridge AI review in progress/i)).toBeInTheDocument()
+    expect(screen.getByText(/Estimated time: about 1 minute/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/Packaging evidence/i).length).toBeGreaterThan(0)
+    expect(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" })).toBeDisabled()
+  })
+
+  it("after 60 seconds review becomes approved and badge appears", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-06-06T00:00:00.000Z"))
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    act(() => {
+      vi.advanceTimersByTime(MVP_AI_REVIEW_SECONDS * 1000)
+    })
+
+    expect(screen.getByText(/Status: Approved/i)).toBeInTheDocument()
+    expect(screen.getByText("VeriBridge AI Reviewed")).toBeInTheDocument()
+    expect(screen.getByText(/Decision: Approved/i)).toBeInTheDocument()
+    expect(screen.getByText(/VeriBridge AI Approved/i)).toBeInTheDocument()
+    expect(screen.getByText(/This proof package passed VeriBridge AI review for MVP/i)).toBeInTheDocument()
+  })
+
+  it("review snapshot includes all major evidence source fields", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-06-06T00:00:00.000Z"))
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    const stored = JSON.parse(localStorage.getItem("vb_mvp_ai_review:s1") ?? "{}")
+    expect(stored.snapshot).toMatchObject({
+      proofSessionId: "s1",
+      websiteUrlType: "local",
+      claimedSkills: ["React", "Workflow Evidence"],
+      workflowEvidenceStatus: "completed",
+      workflowAnalysisScore: 82,
+      videoKeyframeScore: 80,
+      ocrScore: 70,
+      domScore: 85,
+      qwenVisualReasoningScore: 88,
+      githubStatus: "not_available",
+      githubScore: null,
+      projectDefenseScore: 76,
+      documentEvidenceScore: 78,
+      finalEvidenceScore: 82,
+      privacyScanStatus: "clean",
+      generatedRecommendation: "Workflow, visual, DOM, transcript, and documents support the claimed skills.",
+    })
+    expect(stored.snapshotHash).toContain("qwenVisualReasoningScore")
+  })
+
+  it("review state persists on refresh for the same proof session", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-06-06T00:00:00.000Z"))
+    const { unmount } = render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    act(() => {
+      vi.advanceTimersByTime(MVP_AI_REVIEW_SECONDS * 1000)
+    })
+    expect(screen.getByText(/Status: Approved/i)).toBeInTheDocument()
+
+    unmount()
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+    expect(screen.getByText(/Status: Approved/i)).toBeInTheDocument()
+    expect(screen.getByText("VeriBridge AI Reviewed")).toBeInTheDocument()
+  })
+
+  it("review state resets for a new proof session", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-06-06T00:00:00.000Z"))
+    const { rerender } = render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot({ proofSessionId: "s1" })}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    act(() => {
+      vi.advanceTimersByTime(MVP_AI_REVIEW_SECONDS * 1000)
+    })
+    expect(screen.getByText(/Status: Approved/i)).toBeInTheDocument()
+
+    rerender(
+      <VerificationReviewSection
+        sessionId="s2"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot({ proofSessionId: "s2" })}
+      />,
+    )
+    expect(screen.getByText(/Status: Not submitted/i)).toBeInTheDocument()
+  })
+
+  it("human and faculty review remain coming soon", () => {
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot()}
+      />,
+    )
+
+    expect(screen.getByText(/Human \/ Faculty \/ Expert Review/i)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Request human\/faculty review/i })).toBeDisabled()
+    expect(screen.getAllByText(/Coming soon/i).length).toBeGreaterThan(0)
+  })
+
+  it("does not store unsafe strings in review snapshot", () => {
+    render(
+      <VerificationReviewSection
+        sessionId="s1"
+        readinessScore={82}
+        readinessLevel="strong"
+        readinessReady
+        snapshot={reviewSnapshot({
+          generatedRecommendation: "token access_token storage_path https://abc.supabase.co/storage/v1/object/private/file env secrets",
+          githubStatus: "failed because token leaked",
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    const stored = localStorage.getItem("vb_mvp_ai_review:s1") ?? ""
+    expect(stored).not.toMatch(/access_token|storage_path|supabase\.co|env secrets/i)
   })
 })
 

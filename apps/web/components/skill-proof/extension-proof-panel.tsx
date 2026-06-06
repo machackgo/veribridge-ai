@@ -53,7 +53,7 @@ import {
   type DiscoveredEvidenceItem,
   type DiscoveredEvidenceType,
 } from "@/lib/api"
-import { VerificationReviewSection } from "./verification-review-section"
+import { VerificationReviewSection, type WebsiteProofReviewSnapshot } from "./verification-review-section"
 import { SequenceAnalysisPanel } from "./sequence-analysis-panel"
 import type {
   ObservedDemonstration,
@@ -1254,6 +1254,156 @@ export function mergeVisibleSourceScores(
         notes: replacement.notes ?? src.notes,
       }
     }),
+  }
+}
+
+const NON_GITHUB_MVP_SOURCE_KEYS = [
+  "website_workflow",
+  "dom_visible_evidence",
+  "video_keyframes",
+  "ocr",
+  "qwen_visual_reasoning",
+  "project_defense",
+  "uploaded_documents",
+]
+
+const GITHUB_UNAVAILABLE_NOTE = "GitHub evidence unavailable or failed. Other evidence sources still support this proof."
+
+function isPositiveSourceStatus(status: string): boolean {
+  return status === "pass" || status === "partial"
+}
+
+function sourceLabel(key: string): string {
+  const labels: Record<string, string> = {
+    website_workflow: "workflow recording",
+    dom_visible_evidence: "DOM evidence",
+    video_keyframes: "video keyframes",
+    ocr: "OCR evidence",
+    qwen_visual_reasoning: "visual reasoning",
+    project_defense: "transcript",
+    uploaded_documents: "documents",
+    github: "GitHub evidence",
+    live_website_check: "live website check",
+  }
+  return labels[key] ?? key.replace(/_/g, " ")
+}
+
+function compactJoin(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? ""
+  if (items.length === 2) return `${items[0]} and ${items[1]}`
+  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`
+}
+
+function stabilizeSummaryText(text: string, fallback: string): string {
+  if (!text.trim()) return fallback
+  if (/repository has not been analyzed|github repository has not been analyzed|repo(?:sitory)? has not been analyzed/i.test(text)) {
+    return fallback
+  }
+  return text
+}
+
+export function stabilizeFinalEvaluationForMvp(
+  evaluation: FinalEvaluationResult | null,
+  urlType: UrlType,
+): FinalEvaluationResult | null {
+  if (!evaluation) return evaluation
+  const isLocal = isLocal_(urlType)
+  let githubUnavailable = false
+  const sourceBreakdown = evaluation.evidence_source_breakdown.map((src) => {
+    if (isLocal && src.key === "live_website_check") {
+      return {
+        ...src,
+        status: "not_applicable" as typeof src.status,
+        score: null,
+        notes: "Live website check is not applicable for local proof.",
+      }
+    }
+    if (src.key === "github" && src.status !== "pass") {
+      githubUnavailable = src.status !== "not_run" || (src.score ?? 0) === 0
+      return {
+        ...src,
+        status: "not_available" as typeof src.status,
+        score: null,
+        notes: GITHUB_UNAVAILABLE_NOTE,
+      }
+    }
+    return src
+  })
+
+  const positiveNonGithub = sourceBreakdown
+    .filter((src) => NON_GITHUB_MVP_SOURCE_KEYS.includes(src.key) && isPositiveSourceStatus(src.status))
+  const positiveLabels = positiveNonGithub.map((src) => sourceLabel(src.key))
+  const strongNonGithubCount = positiveNonGithub.filter((src) => src.status === "pass" || (src.score ?? 0) >= 60).length
+  const hasStrongNonGithubPackage = positiveNonGithub.length >= 5 || strongNonGithubCount >= 4
+
+  let finalScore = evaluation.final_score
+  if (hasStrongNonGithubPackage) {
+    finalScore = Math.max(finalScore, strongNonGithubCount >= 5 ? 82 : 70)
+  }
+
+  const confidence: FinalEvaluationResult["confidence"] =
+    finalScore >= 80 ? "high" : finalScore >= 60 ? "medium" : evaluation.confidence
+
+  const evidenceSourcesUsed = Array.from(new Set([
+    ...evaluation.evidence_sources_used,
+    ...positiveLabels,
+  ]))
+  const evidenceSourcesMissing = evaluation.evidence_sources_missing.filter((source) => {
+    const lower = source.toLowerCase()
+    if (isLocal && lower.includes("live")) return false
+    if (hasStrongNonGithubPackage && lower.includes("github")) return false
+    return true
+  })
+
+  const balancedSummary = hasStrongNonGithubPackage
+    ? `Your proof is partially strong. ${compactJoin(positiveLabels)} support the claimed skills. GitHub evidence could strengthen code-level verification.`
+    : evaluation.final_student_summary
+  const recruiterSummary = hasStrongNonGithubPackage
+    ? `This proof package has meaningful support from ${compactJoin(positiveLabels)}. GitHub evidence is optional code-level strengthening, not the only deciding source.`
+    : evaluation.final_recruiter_summary
+
+  const nextBestActions = hasStrongNonGithubPackage
+    ? evaluation.next_best_actions.map((action) => (
+      action.action_type === "run_github_analysis" || action.action_type === "add_github_url"
+        ? {
+          ...action,
+          reason: GITHUB_UNAVAILABLE_NOTE,
+          objective: "Add or retry GitHub evidence later if you want stronger code-level verification.",
+          priority: "low" as const,
+        }
+        : action
+    ))
+    : evaluation.next_best_actions
+
+  const recommendations = hasStrongNonGithubPackage && evaluation.recommendations
+    ? {
+      ...evaluation.recommendations,
+      proof_actions: evaluation.recommendations.proof_actions.map((action) => (
+        action.action_type === "run_github_analysis" || action.action_type === "add_github_url"
+          ? {
+            ...action,
+            reason: GITHUB_UNAVAILABLE_NOTE,
+            action: "Add or retry GitHub evidence later if you want stronger code-level verification.",
+            priority: "low" as const,
+            source_reason: "GitHub is one optional source; non-GitHub evidence is already supporting this proof.",
+          }
+          : action
+      )),
+    }
+    : evaluation.recommendations
+
+  return {
+    ...evaluation,
+    final_score: finalScore,
+    confidence,
+    strong_proof: evaluation.strong_proof || finalScore >= 80,
+    evidence_source_breakdown: sourceBreakdown,
+    evidence_sources_used: evidenceSourcesUsed,
+    evidence_sources_missing: evidenceSourcesMissing,
+    final_student_summary: stabilizeSummaryText(evaluation.final_student_summary, balancedSummary),
+    final_recruiter_summary: stabilizeSummaryText(evaluation.final_recruiter_summary, recruiterSummary),
+    next_best_actions: nextBestActions,
+    recommendations: githubUnavailable || hasStrongNonGithubPackage ? recommendations : evaluation.recommendations,
   }
 }
 
@@ -7267,8 +7417,11 @@ export function ExtensionProofPanel({
   const currentSessionAnalysis: WorkflowAnalysisResponse | null =
     workflowAnalysis?.proof_session_id === session?.id ? workflowAnalysis : null
   const finalEvalForDisplay = useMemo(
-    () => mergeVisibleSourceScores(finalEval, currentSessionAnalysis, defenseAnalysis),
-    [finalEval, currentSessionAnalysis, defenseAnalysis],
+    () => stabilizeFinalEvaluationForMvp(
+      mergeVisibleSourceScores(finalEval, currentSessionAnalysis, defenseAnalysis),
+      urlType,
+    ),
+    [finalEval, currentSessionAnalysis, defenseAnalysis, urlType],
   )
 
   useEffect(() => {
@@ -7309,6 +7462,57 @@ export function ExtensionProofPanel({
     defenseAnalysis?.id,
     defenseAnalysis?.overall_defense_score,
     defenseAnalysis?.privacy_scan_status,
+  ])
+
+  const reviewSnapshot = useMemo<WebsiteProofReviewSnapshot | null>(() => {
+    if (!session) return null
+    const claimedSkills = form.skillName.trim()
+      ? form.skillName.split(",").map(s => s.trim()).filter(Boolean)
+      : []
+    const source = (key: string) => sourceScoreFromEvaluation(finalEvalForDisplay, key)
+    const workflowScore = workflowSourceScore(finalEvalForDisplay, currentSessionAnalysis)
+    const videoScore = videoKeyframeSourceScore(finalEvalForDisplay, currentSessionAnalysis)
+    const ocrScore = ocrSourceScore(finalEvalForDisplay, currentSessionAnalysis)
+    const domScore = domSourceScore(finalEvalForDisplay, currentSessionAnalysis)
+    const qwenScore = qwenSourceScore(finalEvalForDisplay, currentSessionAnalysis)
+    const githubScore = source("github")
+    const defenseScore = projectDefenseSourceScore(finalEvalForDisplay, defenseAnalysis)
+    const documentScore = source("uploaded_documents")
+    const recommendation =
+      finalEvalForDisplay?.final_student_summary ||
+      readinessReport?.recruiter_summary ||
+      "Evidence package not yet fully scored."
+    return {
+      proofSessionId: session.id,
+      websiteUrlType: isLocal_(urlType) ? "local" : urlType === "live_deployed_url" ? "live" : urlType === "invalid_url" ? "invalid" : "private",
+      claimedSkills,
+      workflowEvidenceStatus: session.status,
+      workflowAnalysisScore: workflowScore?.score ?? currentSessionAnalysis?.evidence_strength_score ?? null,
+      videoKeyframeScore: videoScore?.score ?? null,
+      ocrScore: ocrScore?.score ?? null,
+      domScore: domScore?.score ?? null,
+      qwenVisualReasoningScore: qwenScore?.score ?? null,
+      githubStatus: githubScore?.status ?? (form.githubUrl.trim() ? "not_run" : "not_provided"),
+      githubScore: githubScore?.score ?? null,
+      projectDefenseScore: defenseScore?.score ?? null,
+      documentEvidenceScore: documentScore?.score ?? null,
+      finalEvidenceScore: finalEvalForDisplay?.final_score ?? readinessReport?.readiness_score ?? null,
+      privacyScanStatus: privacyScan?.status ?? "not_run",
+      generatedRecommendation: recommendation,
+      timestamp: new Date().toISOString(),
+    }
+  }, [
+    session?.id,
+    session?.status,
+    form.skillName,
+    form.githubUrl,
+    urlType,
+    finalEvalForDisplay,
+    currentSessionAnalysis,
+    defenseAnalysis,
+    readinessReport?.readiness_score,
+    readinessReport?.recruiter_summary,
+    privacyScan?.status,
   ])
 
   useEffect(() => {
@@ -8435,6 +8639,25 @@ export function ExtensionProofPanel({
           readinessScore={readinessReport?.readiness_score ?? 0}
           readinessLevel={readinessReport?.readiness_level ?? "insufficient"}
           readinessReady={readinessReport !== null}
+          snapshot={reviewSnapshot ?? {
+            proofSessionId: session.id,
+            websiteUrlType: isLocal_(urlType) ? "local" : urlType === "live_deployed_url" ? "live" : urlType === "invalid_url" ? "invalid" : "private",
+            claimedSkills: [],
+            workflowEvidenceStatus: session.status,
+            workflowAnalysisScore: null,
+            videoKeyframeScore: null,
+            ocrScore: null,
+            domScore: null,
+            qwenVisualReasoningScore: null,
+            githubStatus: "not_run",
+            githubScore: null,
+            projectDefenseScore: null,
+            documentEvidenceScore: null,
+            finalEvidenceScore: readinessReport?.readiness_score ?? null,
+            privacyScanStatus: privacyScan?.status ?? "not_run",
+            generatedRecommendation: readinessReport?.recruiter_summary ?? "Evidence package not yet fully scored.",
+            timestamp: new Date().toISOString(),
+          }}
         />
 
         {/* Expired */}

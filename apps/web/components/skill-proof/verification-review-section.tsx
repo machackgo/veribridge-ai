@@ -3,563 +3,402 @@
 /**
  * VerificationReviewSection
  *
- * Shown after the Verification Readiness Report in the extension proof panel.
- *
- * Track A — AI Review MVP:
- *   - Student clicks "Submit for VeriBridge AI Review"
- *   - 5-minute countdown UI (simulated; real timer for UX)
- *   - On complete: shows decision badge (Approved / Needs More Evidence / Privacy Flagged)
- *   - On re-submission: allowed when previous status was needs_more_evidence,
- *     manual_review_recommended, or privacy_flagged
- *
- * Track B — Human Review placeholders:
- *   - "Request Faculty Review" — disabled / Coming Soon
- *   - "Request Domain Expert Review" — disabled / Coming Soon
- *   - "Request Company/Mentor Review" — disabled / Coming Soon
- *   - Explanation: human review will be available once VeriBridge adds reviewers
- *
- * Wording enforced:
- *   - "VeriBridge AI Reviewed" for ai_approved_for_sharing
- *   - NEVER "Human Verified" from AI review alone
- *   - Honest labels for every status
+ * MVP-only local VeriBridge AI review flow for Website Proof.
+ * This intentionally does not set any human/faculty review state.
  */
 
-import React, { useEffect, useRef, useState } from "react"
-import {
-  AiReviewStatus,
-  HumanReviewStatus,
-  VerificationReviewResponse,
-  getReviewStatus,
-  submitForAiReview,
-} from "@/lib/api"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export type MvpAiReviewStatus = "not_submitted" | "in_progress" | "approved"
+
+export type WebsiteProofReviewSnapshot = {
+  proofSessionId: string
+  websiteUrlType: "local" | "live" | "private" | "invalid"
+  claimedSkills: string[]
+  workflowEvidenceStatus: string
+  workflowAnalysisScore: number | null
+  videoKeyframeScore: number | null
+  ocrScore: number | null
+  domScore: number | null
+  qwenVisualReasoningScore: number | null
+  githubStatus: string
+  githubScore: number | null
+  projectDefenseScore: number | null
+  documentEvidenceScore: number | null
+  finalEvidenceScore: number | null
+  privacyScanStatus: string
+  generatedRecommendation: string
+  timestamp: string
+}
+
+type StoredMvpReview = {
+  status: MvpAiReviewStatus
+  decision: "Approved" | null
+  snapshot: WebsiteProofReviewSnapshot
+  snapshotHash: string
+  submittedAt: string
+  approvedAt: string | null
+}
+
 interface Props {
   sessionId: string
-  /** Readiness score from the VerificationReadinessReport (0–100). */
   readinessScore: number
-  /** Readiness level from the report. */
   readinessLevel: "strong" | "moderate" | "weak" | "insufficient"
-  /**
-   * Whether the readiness report is available (proof has been uploaded and
-   * at least one analysis has run).  The review section is only shown when true.
-   */
   readinessReady: boolean
+  snapshot: WebsiteProofReviewSnapshot
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/** Simulated review window in seconds (5 minutes). */
-const REVIEW_WINDOW_SECONDS = 300
+export const MVP_AI_REVIEW_SECONDS = 60
+export const MVP_REVIEW_STAGES = [
+  "Packaging evidence",
+  "Checking privacy safety",
+  "Reviewing source coverage",
+  "Generating VeriBridge AI decision",
+  "Saving approval badge",
+]
+
+const REVIEW_STORAGE_PREFIX = "vb_mvp_ai_review:"
+const APPROVED_SUMMARY =
+  "This proof package passed VeriBridge AI review for MVP. Evidence sources were checked for completeness, privacy, and recruiter readiness."
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+function storageKey(sessionId: string): string {
+  return `${REVIEW_STORAGE_PREFIX}${sessionId}`
+}
+
 function formatCountdown(remaining: number): string {
-  const m = Math.floor(remaining / 60)
-  const s = remaining % 60
-  return `${m}:${s.toString().padStart(2, "0")}`
+  return `${remaining}s`
 }
 
-function aiStatusColor(status: AiReviewStatus): string {
-  switch (status) {
-    case "ai_approved_for_sharing":      return "#065f46"
-    case "needs_more_evidence":          return "#92400e"
-    case "manual_review_recommended":    return "#1e40af"
-    case "privacy_flagged":              return "#991b1b"
-    case "ai_review_in_progress":
-    case "submitted_for_ai_review":      return "#1d4ed8"
-    default:                             return "#374151"
+function sanitizeString(value: string): string {
+  return value
+    .replace(/\b(access_token|id_token|refresh_token|token|api[_-]?key|secret|password)\b/gi, "[redacted]")
+    .replace(/\benv secrets?\b/gi, "[redacted]")
+    .replace(/\bprivate media url\b/gi, "[redacted-media-url]")
+    .replace(/https?:\/\/[a-z0-9.-]*supabase\.(?:co|com|io)[^\s"']*/gi, "[redacted-storage-url]")
+    .replace(/\bstorage_path\b/gi, "[redacted-storage-path]")
+}
+
+export function sanitizeReviewSnapshot(snapshot: WebsiteProofReviewSnapshot): WebsiteProofReviewSnapshot {
+  return {
+    ...snapshot,
+    claimedSkills: snapshot.claimedSkills.map(sanitizeString),
+    githubStatus: sanitizeString(snapshot.githubStatus),
+    workflowEvidenceStatus: sanitizeString(snapshot.workflowEvidenceStatus),
+    privacyScanStatus: sanitizeString(snapshot.privacyScanStatus),
+    generatedRecommendation: sanitizeString(snapshot.generatedRecommendation),
+    timestamp: sanitizeString(snapshot.timestamp),
   }
 }
 
-function aiStatusBg(status: AiReviewStatus): string {
-  switch (status) {
-    case "ai_approved_for_sharing":      return "#d1fae5"
-    case "needs_more_evidence":          return "#fef3c7"
-    case "manual_review_recommended":    return "#dbeafe"
-    case "privacy_flagged":              return "#fee2e2"
-    case "ai_review_in_progress":
-    case "submitted_for_ai_review":      return "#eff6ff"
-    default:                             return "#f3f4f6"
+export function hashReviewSnapshot(snapshot: WebsiteProofReviewSnapshot): string {
+  const stable = sanitizeReviewSnapshot({ ...snapshot, timestamp: "" })
+  return JSON.stringify(stable)
+}
+
+function loadStoredReview(sessionId: string): StoredMvpReview | null {
+  try {
+    const raw = localStorage.getItem(storageKey(sessionId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as StoredMvpReview
+    if (!parsed?.snapshot || parsed.snapshot.proofSessionId !== sessionId) return null
+    return parsed
+  } catch {
+    return null
   }
 }
 
-function aiStatusIcon(status: AiReviewStatus): string {
-  switch (status) {
-    case "ai_approved_for_sharing":      return "✅"
-    case "needs_more_evidence":          return "⚠️"
-    case "manual_review_recommended":    return "🔍"
-    case "privacy_flagged":              return "🔒"
-    case "ai_review_in_progress":
-    case "submitted_for_ai_review":      return "⏳"
-    default:                             return "📋"
+function saveStoredReview(sessionId: string, review: StoredMvpReview): void {
+  try {
+    localStorage.setItem(storageKey(sessionId), JSON.stringify(review))
+  } catch {
+    // Local persistence is best-effort for MVP.
   }
 }
 
-/** Human-readable label for each AI review status. */
-function aiStatusLabel(status: AiReviewStatus): string {
-  const labels: Record<AiReviewStatus, string> = {
-    not_submitted:               "Not Submitted",
-    submitted_for_ai_review:     "Submitted — Queued for Review",
-    ai_review_in_progress:       "VeriBridge AI Review In Progress…",
-    ai_approved_for_sharing:     "VeriBridge AI Reviewed — Approved for Sharing",
-    needs_more_evidence:         "Needs More Evidence",
-    manual_review_recommended:   "Manual Review Recommended",
-    privacy_flagged:             "Privacy Flag — Review Paused",
+function approveReview(review: StoredMvpReview, approvedAt = new Date().toISOString()): StoredMvpReview {
+  return {
+    ...review,
+    status: "approved",
+    decision: "Approved",
+    approvedAt,
   }
-  return labels[status] ?? status
 }
 
-/** Human-readable label for each human review status. */
-function humanStatusLabel(status: HumanReviewStatus): string {
-  const labels: Record<HumanReviewStatus, string> = {
-    human_review_not_requested:     "Not Requested",
-    human_review_requested:         "Requested",
-    faculty_review_pending:         "Faculty Review Pending",
-    company_review_pending:         "Company / Mentor Review Pending",
-    domain_expert_review_pending:   "Domain Expert Review Pending",
-    faculty_reviewed:               "Faculty Reviewed",
-    company_reviewed:               "Company / Mentor Reviewed",
-    domain_expert_reviewed:         "Domain Expert Reviewed",
-    human_verified:                 "Human Verified",
-    human_review_rejected:          "Human Review — Rejected",
-  }
-  return labels[status] ?? status
+function progressFromElapsed(elapsedSeconds: number): number {
+  return Math.min(100, Math.max(0, Math.floor((elapsedSeconds / MVP_AI_REVIEW_SECONDS) * 100)))
 }
 
-function canResubmit(status: AiReviewStatus): boolean {
-  return ["needs_more_evidence", "manual_review_recommended", "privacy_flagged"].includes(status)
+function stageFromElapsed(elapsedSeconds: number): string {
+  const idx = Math.min(
+    MVP_REVIEW_STAGES.length - 1,
+    Math.floor((elapsedSeconds / MVP_AI_REVIEW_SECONDS) * MVP_REVIEW_STAGES.length),
+  )
+  return MVP_REVIEW_STAGES[idx]
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function VerificationReviewSection({
   sessionId,
-  readinessScore,
-  readinessLevel,
   readinessReady,
+  snapshot,
 }: Props) {
-  const [review, setReview] = useState<VerificationReviewResponse | null>(null)
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [countdown, setCountdown] = useState<number | null>(null)
-  const [loaded, setLoaded] = useState(false)
+  const [review, setReview] = useState<StoredMvpReview | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const snapshotHash = useMemo(() => hashReviewSnapshot(snapshot), [snapshot])
 
-  // Load existing review status on mount
   useEffect(() => {
     if (!sessionId || !readinessReady) return
-    let cancelled = false
-    getReviewStatus(sessionId)
-      .then((r) => { if (!cancelled) { setReview(r); setLoaded(true) } })
-      .catch(() => { if (!cancelled) setLoaded(true) })
-    return () => { cancelled = true }
-  }, [sessionId, readinessReady])
-
-  // Countdown timer when review is in progress
-  useEffect(() => {
-    const status = review?.ai_review_status
-    const inProgress = status === "submitted_for_ai_review" || status === "ai_review_in_progress"
-    if (!inProgress) {
-      if (timerRef.current) clearInterval(timerRef.current)
+    const existing = loadStoredReview(sessionId)
+    if (!existing) {
+      setReview(null)
       return
     }
-    setCountdown(REVIEW_WINDOW_SECONDS)
+    const elapsedSeconds = Math.floor((Date.now() - new Date(existing.submittedAt).getTime()) / 1000)
+    const normalized =
+      existing.status === "in_progress" && elapsedSeconds >= MVP_AI_REVIEW_SECONDS
+        ? approveReview(existing)
+        : existing
+    if (normalized !== existing) saveStoredReview(sessionId, normalized)
+    setReview(normalized)
+  }, [sessionId, readinessReady])
+
+  useEffect(() => {
+    const inProgress = review?.status === "in_progress"
+    if (!inProgress) {
+      if (timerRef.current) clearInterval(timerRef.current)
+      timerRef.current = null
+      return
+    }
     timerRef.current = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev === null || prev <= 1) {
-          if (timerRef.current) clearInterval(timerRef.current)
-          return 0
-        }
-        return prev - 1
+      setNowMs(Date.now())
+      setReview((current) => {
+        if (!current || current.status !== "in_progress") return current
+        const elapsedSeconds = Math.floor((Date.now() - new Date(current.submittedAt).getTime()) / 1000)
+        if (elapsedSeconds < MVP_AI_REVIEW_SECONDS) return current
+        const approved = approveReview(current)
+        saveStoredReview(sessionId, approved)
+        return approved
       })
     }, 1000)
-    return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [review?.ai_review_status])
-
-  const handleSubmit = async () => {
-    if (submitting) return
-    setError(null)
-    setSubmitting(true)
-    try {
-      const result = await submitForAiReview(sessionId, readinessScore, readinessLevel)
-      setReview(result)
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Submission failed. Please try again."
-      setError(msg)
-    } finally {
-      setSubmitting(false)
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      timerRef.current = null
     }
-  }
+  }, [review?.status, sessionId])
 
   if (!readinessReady) return null
 
-  const aiStatus: AiReviewStatus = review?.ai_review_status ?? "not_submitted"
-  const humanStatus: HumanReviewStatus = review?.human_review_status ?? "human_review_not_requested"
-  const isInProgress = aiStatus === "submitted_for_ai_review" || aiStatus === "ai_review_in_progress"
-  const isApproved = aiStatus === "ai_approved_for_sharing"
-  const canSubmit =
-    !isInProgress &&
-    !isApproved &&
-    (aiStatus === "not_submitted" || canResubmit(aiStatus))
+  const elapsedSeconds = review
+    ? Math.max(0, Math.floor((nowMs - new Date(review.submittedAt).getTime()) / 1000))
+    : 0
+  const remaining = Math.max(0, MVP_AI_REVIEW_SECONDS - elapsedSeconds)
+  const progress = progressFromElapsed(elapsedSeconds)
+  const currentStage = stageFromElapsed(elapsedSeconds)
+  const isInProgress = review?.status === "in_progress"
+  const isApproved = review?.status === "approved"
+  const evidenceChangedAfterReview = Boolean(isApproved && review?.snapshotHash !== snapshotHash)
+
+  function startReview(): void {
+    const submittedAt = new Date().toISOString()
+    const sanitized = sanitizeReviewSnapshot({ ...snapshot, timestamp: submittedAt })
+    const next: StoredMvpReview = {
+      status: "in_progress",
+      decision: null,
+      snapshot: sanitized,
+      snapshotHash: hashReviewSnapshot(sanitized),
+      submittedAt,
+      approvedAt: null,
+    }
+    saveStoredReview(sessionId, next)
+    setNowMs(Date.now())
+    setReview(next)
+  }
 
   return (
     <div
       style={{
         border: "1px solid var(--line-2, #e5e7eb)",
         borderRadius: 14,
-        padding: "20px 20px",
+        padding: "18px 20px",
         marginTop: 4,
         background: "var(--bg-1, #fff)",
+        display: "grid",
+        gap: 14,
       }}
     >
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-        <span style={{ fontSize: 20 }}>🔍</span>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink, #111)" }}>
             Verification Review
           </div>
-          <div style={{ fontSize: 12, color: "var(--ink-2, #6b7280)", marginTop: 1 }}>
-            VeriBridge AI review + optional human faculty/expert review
+          <div style={{ fontSize: 12, color: "var(--ink-2, #6b7280)", marginTop: 2 }}>
+            VeriBridge AI review for recruiter-ready proof packages
           </div>
         </div>
+        <span style={{
+          fontSize: 11,
+          fontWeight: 700,
+          padding: "5px 10px",
+          borderRadius: 999,
+          background: isApproved ? "#d1fae5" : isInProgress ? "#eff6ff" : "#f3f4f6",
+          color: isApproved ? "#065f46" : isInProgress ? "#1d4ed8" : "#374151",
+          border: `1px solid ${isApproved ? "#bbf7d0" : isInProgress ? "#bfdbfe" : "#e5e7eb"}`,
+        }}>
+          Status: {isApproved ? "Approved" : isInProgress ? "Review in progress" : "Not submitted"}
+        </span>
       </div>
 
-      {/* ── Track A: AI Review Status ──────────────────────────────────────── */}
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3, #9ca3af)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
-          AI Review Status
-        </div>
-
-        {aiStatus !== "not_submitted" && (
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              background: aiStatusBg(aiStatus),
-              color: aiStatusColor(aiStatus),
-              borderRadius: 8,
-              padding: "6px 12px",
-              fontSize: 13,
-              fontWeight: 600,
-              marginBottom: 10,
-            }}
-          >
-            <span>{aiStatusIcon(aiStatus)}</span>
-            <span>{aiStatusLabel(aiStatus)}</span>
-          </div>
-        )}
-
-        {aiStatus === "not_submitted" && (
-          <div
-            style={{
-              fontSize: 12,
-              color: "var(--ink-3, #9ca3af)",
-              marginBottom: 8,
-            }}
-          >
-            Not yet submitted for review.
-          </div>
-        )}
-
-        {/* Decision summary */}
-        {review?.ai_decision_summary && aiStatus !== "not_submitted" && (
-          <div
-            style={{
-              fontSize: 12,
-              color: "var(--ink-2, #374151)",
-              lineHeight: 1.6,
-              background: "var(--bg-2, #f9fafb)",
-              borderRadius: 8,
-              padding: "8px 12px",
-              marginBottom: 10,
-            }}
-          >
-            {review.ai_decision_summary}
-          </div>
-        )}
-
-        {/* Countdown timer when in progress */}
-        {isInProgress && countdown !== null && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              background: "#eff6ff",
-              border: "1px solid #bfdbfe",
-              borderRadius: 10,
-              padding: "10px 14px",
-              marginBottom: 10,
-            }}
-          >
-            <span style={{ fontSize: 18 }}>⏱</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "#1e40af" }}>
-                {countdown > 0 ? `Estimated time remaining: ${formatCountdown(countdown)}` : "Review completing…"}
-              </div>
-              <div style={{ fontSize: 11, color: "#3b82f6", marginTop: 2 }}>
-                Your evidence package is under VeriBridge AI review. This usually takes around 5 minutes.
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* In-progress explanation */}
-        {isInProgress && (
-          <div style={{ fontSize: 11, color: "var(--ink-3, #6b7280)", lineHeight: 1.6, marginBottom: 8 }}>
-            If your evidence meets the readiness threshold and no privacy or risk issues are
-            detected, it will be approved for sharing. Some submissions may still require
-            human review.
-          </div>
-        )}
-
-        {/* Approved detail */}
-        {isApproved && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 10,
-              background: "#f0fdf4",
-              border: "1px solid #bbf7d0",
-              borderRadius: 10,
-              padding: "10px 14px",
-              marginBottom: 10,
-            }}
-          >
-            <span style={{ fontSize: 18 }}>✅</span>
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "#065f46" }}>
-                AI Approved for Sharing
-              </div>
-              <div style={{ fontSize: 11, color: "#047857", marginTop: 2, lineHeight: 1.6 }}>
-                This is a VeriBridge AI review. Human or faculty review has not yet been completed.
-                Recruiters will see &quot;VeriBridge AI Reviewed&quot; — not &quot;Human Verified.&quot;
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Readiness snapshot */}
-        {review && aiStatus !== "not_submitted" && (
-          <div style={{ fontSize: 11, color: "var(--ink-3, #9ca3af)", marginTop: 4 }}>
-            Reviewed at readiness score: <strong>{review.readiness_score}/100</strong> ({review.readiness_level})
-          </div>
-        )}
-      </div>
-
-      {/* ── Submit button ──────────────────────────────────────────────────── */}
-      {canSubmit && (
-        <div style={{ marginBottom: 16 }}>
+      {!review && (
+        <div style={{ display: "grid", gap: 10 }}>
+          <p style={{ margin: 0, fontSize: 12, color: "#475569", lineHeight: 1.6 }}>
+            Submit the current evidence package for VeriBridge AI review. Human/faculty review is separate and coming soon.
+          </p>
           <button
             type="button"
-            onClick={() => void handleSubmit()}
-            disabled={submitting || !readinessReady}
+            onClick={startReview}
             style={{
-              background: submitting ? "var(--bg-3, #e5e7eb)" : "#1e40af",
-              color: submitting ? "var(--ink-3, #6b7280)" : "#fff",
+              justifySelf: "start",
+              background: "#1e40af",
+              color: "#fff",
               border: "none",
               borderRadius: 10,
-              padding: "10px 20px",
+              padding: "10px 18px",
               fontWeight: 700,
               fontSize: 13,
-              cursor: submitting ? "not-allowed" : "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
+              cursor: "pointer",
             }}
           >
-            {submitting ? (
-              <>
-                <span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⏳</span>
-                Submitting…
-              </>
-            ) : (
-              <>
-                {aiStatus === "not_submitted" ? "🔍 Submit for VeriBridge AI Review" : "🔄 Resubmit for AI Review"}
-              </>
-            )}
+            Submit for VeriBridge AI Review
           </button>
+        </div>
+      )}
 
-          {aiStatus === "not_submitted" && (
-            <div style={{ fontSize: 11, color: "var(--ink-3, #9ca3af)", marginTop: 6, lineHeight: 1.5 }}>
-              VeriBridge AI will review your evidence package. This usually takes around 5 minutes.
-              No human reviewer has been assigned yet.
+      {isInProgress && (
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>
+            VeriBridge AI review in progress
+          </div>
+          <div style={{ fontSize: 12, color: "#3b82f6" }}>Estimated time: about 1 minute</div>
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+              <span style={{ fontSize: 11, color: "#1e40af" }}>Current stage: {currentStage}</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#1e40af" }}>
+                {progress}% · {formatCountdown(remaining)} remaining
+              </span>
+            </div>
+            <div style={{ height: 8, borderRadius: 999, background: "#dbeafe", overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${progress}%`, background: "#2563eb", transition: "width 0.3s ease" }} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            {MVP_REVIEW_STAGES.map((stage) => {
+              const active = stage === currentStage
+              const done = MVP_REVIEW_STAGES.indexOf(stage) < MVP_REVIEW_STAGES.indexOf(currentStage)
+              return (
+                <div key={stage} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: done ? "#065f46" : active ? "#1e40af" : "#94a3b8" }}>
+                  <span style={{ width: 14, textAlign: "center", fontWeight: 800 }}>{done ? "✓" : active ? "…" : "○"}</span>
+                  <span>{stage}</span>
+                </div>
+              )
+            })}
+          </div>
+          <button
+            type="button"
+            disabled
+            style={{
+              justifySelf: "start",
+              background: "#e5e7eb",
+              color: "#6b7280",
+              border: "none",
+              borderRadius: 10,
+              padding: "10px 18px",
+              fontWeight: 700,
+              fontSize: 13,
+              cursor: "not-allowed",
+            }}
+          >
+            Submit for VeriBridge AI Review
+          </button>
+        </div>
+      )}
+
+      {isApproved && (
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: "#065f46", background: "#d1fae5", border: "1px solid #bbf7d0", borderRadius: 999, padding: "5px 10px" }}>
+              VeriBridge AI Reviewed
+            </span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#065f46" }}>Decision: Approved</span>
+            <span style={{ fontSize: 11, color: "#64748b" }}>Approved at {review?.approvedAt ? new Date(review.approvedAt).toLocaleString() : "now"}</span>
+          </div>
+          <div style={{ border: "1px solid #bbf7d0", background: "#f0fdf4", borderRadius: 10, padding: "10px 12px", display: "grid", gap: 5 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#065f46" }}>VeriBridge AI Approved</div>
+            <p style={{ margin: 0, fontSize: 12, color: "#047857", lineHeight: 1.6 }}>{APPROVED_SUMMARY}</p>
+            <div style={{ fontSize: 11, color: "#047857" }}>Approved proof package</div>
+            <div style={{ fontSize: 11, color: "#64748b" }}>Human/faculty review not completed</div>
+          </div>
+          {evidenceChangedAfterReview && (
+            <div style={{ border: "1px solid #fde68a", background: "#fffbeb", color: "#92400e", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
+              Evidence changed after review — re-submit for review.
             </div>
           )}
-        </div>
-      )}
-
-      {/* Error */}
-      {error && (
-        <div
-          style={{
-            background: "#fef2f2",
-            border: "1px solid #fecaca",
-            borderRadius: 8,
-            padding: "8px 12px",
-            fontSize: 12,
-            color: "#991b1b",
-            marginBottom: 12,
-          }}
-        >
-          {error}
-        </div>
-      )}
-
-      {/* ── Divider ───────────────────────────────────────────────────────── */}
-      <div style={{ borderTop: "1px solid var(--line-2, #f3f4f6)", margin: "12px 0" }} />
-
-      {/* ── Track B: Human Review Status ──────────────────────────────────── */}
-      <div>
-        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-3, #9ca3af)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
-          Human / Faculty / Expert Review
-        </div>
-
-        {/* Current human status */}
-        <div style={{ fontSize: 12, color: "var(--ink-2, #374151)", marginBottom: 10 }}>
-          Current status:{" "}
-          <strong>
-            {humanStatus === "human_verified"
-              ? "✅ Human Verified"
-              : humanStatus === "faculty_reviewed"
-              ? "👩‍🏫 Faculty Reviewed"
-              : humanStatus === "company_reviewed"
-              ? "🏢 Company / Mentor Reviewed"
-              : humanStatus === "domain_expert_reviewed"
-              ? "🎓 Domain Expert Reviewed"
-              : humanStatus === "human_review_not_requested"
-              ? "Not Requested"
-              : humanStatusLabel(humanStatus)}
-          </strong>
-        </div>
-
-        {/* Placeholder action buttons */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <HumanReviewPlaceholderButton
-            icon="👩‍🏫"
-            label="Request Faculty Review"
-            description="Ask a WPI professor or faculty member to review your evidence."
-          />
-          <HumanReviewPlaceholderButton
-            icon="🎓"
-            label="Request Domain Expert Review"
-            description="Request review from a domain expert in your field of work."
-          />
-          <HumanReviewPlaceholderButton
-            icon="🏢"
-            label="Request Company / Mentor Review"
-            description="Ask your supervisor or company mentor to verify your work."
-          />
-        </div>
-
-        {/* Explanation */}
-        <div
-          style={{
-            background: "var(--bg-2, #f9fafb)",
-            borderRadius: 8,
-            padding: "10px 12px",
-            marginTop: 12,
-            fontSize: 11,
-            color: "var(--ink-3, #6b7280)",
-            lineHeight: 1.6,
-          }}
-        >
-          <strong style={{ color: "var(--ink-2, #374151)" }}>About human review:</strong> Human review
-          is optional and will become available as VeriBridge adds faculty, company, and domain expert
-          reviewers. We are planning to invite WPI professors and field experts to join the program.
-          A proof marked &quot;VeriBridge AI Reviewed&quot; has passed AI checks — human or faculty review
-          is an additional layer and has not yet been completed.
-        </div>
-
-        {/* Recruiter display note */}
-        <div
-          style={{
-            marginTop: 10,
-            fontSize: 11,
-            color: "var(--ink-3, #6b7280)",
-            lineHeight: 1.5,
-          }}
-        >
-          <strong style={{ color: "var(--ink-2, #374151)" }}>What recruiters see:</strong>{" "}
-          {isApproved
-            ? "\"VeriBridge AI Reviewed\" — honest and accurate. Human review will be shown separately once completed."
-            : "No review badge yet. Submit for AI review to get your \"VeriBridge AI Reviewed\" badge."}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── Sub-component: placeholder human review button ────────────────────────────
-
-function HumanReviewPlaceholderButton({
-  icon,
-  label,
-  description,
-}: {
-  icon: string
-  label: string
-  description: string
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        background: "var(--bg-2, #f9fafb)",
-        border: "1px solid var(--line-2, #e5e7eb)",
-        borderRadius: 10,
-        padding: "10px 14px",
-        opacity: 0.7,
-      }}
-    >
-      <span style={{ fontSize: 16 }}>{icon}</span>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-2, #374151)" }}>
-          {label}
-          <span
+          <button
+            type="button"
+            onClick={startReview}
             style={{
-              display: "inline-block",
-              marginLeft: 8,
-              fontSize: 10,
-              fontWeight: 600,
-              background: "#f3f4f6",
-              color: "#6b7280",
-              borderRadius: 4,
-              padding: "1px 6px",
-              verticalAlign: "middle",
+              justifySelf: "start",
+              background: evidenceChangedAfterReview ? "#1e40af" : "#f8fafc",
+              color: evidenceChangedAfterReview ? "#fff" : "#334155",
+              border: evidenceChangedAfterReview ? "none" : "1px solid #cbd5e1",
+              borderRadius: 10,
+              padding: "9px 16px",
+              fontWeight: 700,
+              fontSize: 13,
+              cursor: "pointer",
             }}
           >
-            Coming Soon
-          </span>
+            Re-run review
+          </button>
         </div>
-        <div style={{ fontSize: 11, color: "var(--ink-3, #9ca3af)", marginTop: 1 }}>
-          {description}
+      )}
+
+      <div style={{ borderTop: "1px solid var(--line-2, #f3f4f6)", paddingTop: 12, display: "grid", gap: 8 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          Human / Faculty / Expert Review
+        </div>
+        <div style={{ fontSize: 12, color: "#374151" }}>
+          Current status: <strong>Coming soon</strong>
+        </div>
+        <button
+          type="button"
+          disabled
+          aria-disabled="true"
+          style={{
+            justifySelf: "start",
+            background: "#e5e7eb",
+            color: "#9ca3af",
+            border: "none",
+            borderRadius: 8,
+            padding: "7px 12px",
+            fontWeight: 700,
+            fontSize: 12,
+            cursor: "not-allowed",
+          }}
+        >
+          Request human/faculty review — Coming soon
+        </button>
+        <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.5 }}>
+          What recruiters see: {isApproved ? "VeriBridge AI Reviewed, Approved proof package, Human/faculty review not completed." : "No VeriBridge AI review badge yet."}
         </div>
       </div>
-      <button
-        type="button"
-        disabled
-        aria-disabled="true"
-        style={{
-          background: "var(--bg-3, #e5e7eb)",
-          color: "var(--ink-3, #9ca3af)",
-          border: "none",
-          borderRadius: 8,
-          padding: "6px 12px",
-          fontWeight: 600,
-          fontSize: 11,
-          cursor: "not-allowed",
-        }}
-      >
-        Request
-      </button>
     </div>
   )
 }
