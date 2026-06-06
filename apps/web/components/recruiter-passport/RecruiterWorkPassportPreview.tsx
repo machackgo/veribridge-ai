@@ -858,8 +858,11 @@ type SkillSourceEvidence = {
 type SkillVisualFrame = {
   timestamp: string
   label: string
+  pageTitle?: string
   observation: string
   ocr: string
+  domContext?: string
+  qwenObservation?: string
   whyItSupports: string
   confidence: "high" | "medium" | "low"
   isProtected: boolean
@@ -869,23 +872,73 @@ type SkillGithubFile = {
   path: string
   reason: string
   skills: string[]
+  stackTags?: string[]
   confidence: "high" | "medium" | "low"
   isPublic: boolean
+  repoUrl?: string
+  branch?: string
 }
 
 type SkillTranscriptExcerpt = {
   excerpt: string
+  fullExcerpt?: string
+  lines?: string[]
   relevance: string
   ownershipSignal?: string
   technicalDepth?: string
+  skillMapping?: string[]
   isProtected: boolean
 }
 
 type SkillDocumentSnippet = {
   title: string
+  fileType?: string
   snippet: string
+  summary?: string
   relevance: string
+  supportedSkills?: string[]
+  mismatchWarnings?: string[]
+  extractedSections?: string[]
   isProtected: boolean
+}
+
+type SkillWorkflowRecording = {
+  title: string
+  duration: string
+  recordedDate: string
+  sessionType: string
+  relatedSkills: string[]
+  isProtected: boolean
+  segments: { timestamp: string; label: string; reason: string }[]
+}
+
+type SkillDomEvidence = {
+  pageTitle: string
+  urlType: "public" | "local" | "private"
+  capturedLabels: string[]
+  observedSections: string[]
+  capturedEvents?: string[]
+  skillRelevance: string
+  isProtected: boolean
+}
+
+type SkillQwenAnalysis = {
+  analyzedFrameCount: number
+  observations: string[]
+  modelReasoning: string
+  skillMatch: string
+  uncertainObservations: string[]
+  confidence: "high" | "medium" | "low"
+}
+
+type SkillFinalAnalysis = {
+  evidenceScore: number
+  sourceScores: { label: string; score: number; status: string }[]
+  recommendation: string
+  strongestProof: string
+  weakestProof: string
+  whyGranted: string
+  stillNeedsReview: string[]
 }
 
 export type SkillEvidenceBundle = {
@@ -901,7 +954,14 @@ export type SkillEvidenceBundle = {
   interviewQuestions: string[]
   protectedEvidenceFlags: string[]
   liveApp?: { label: string; isPublic: boolean; publicUrl?: string }
+  workflowRecording?: SkillWorkflowRecording
+  domEvidence?: SkillDomEvidence
+  qwenAnalysis?: SkillQwenAnalysis
+  finalAnalysis?: SkillFinalAnalysis
 }
+
+const VERIBRIDGE_REPO = "https://github.com/machackgo/veribridge-ai"
+const VERIBRIDGE_BRANCH = "main"
 
 const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
   "AI / Machine Learning": {
@@ -909,7 +969,7 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
     confidence: "high",
     supportStatus: "strongly supported",
     explanation:
-      "VeriBridge found this skill across workflow recording, GitHub, visual/OCR, transcript, and documents.",
+      "This skill is backed by multiple approved proof artifacts spanning workflow recording, GitHub code, OCR/visual evidence, project defense transcript, and a formal project report.",
     sources: [
       { key: "workflow",  label: "Workflow recording",     status: "supported", score: 88, reason: "Live model inference workflow observed in 3 recordings"              },
       { key: "keyframes", label: "Keyframes / screenshots", status: "partial",  score: 72, reason: "AI-related UI visible in 2 of 3 keyframe sets — raw frames protected" },
@@ -918,31 +978,53 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
       { key: "defense",   label: "Project defense",         status: "supported", score: 84, reason: "Candidate explained model selection, training, and evaluation"      },
       { key: "documents", label: "Documents",               status: "supported", score: 79, reason: "Project report covers ML methodology and experimental results"      },
     ],
+    workflowRecording: {
+      title: "AI Proof Builder — Model Inference Demo",
+      duration: "4:12",
+      recordedDate: "May 2026",
+      sessionType: "Browser workflow proof",
+      relatedSkills: ["Machine Learning", "TensorFlow.js", "Evidence Aggregation"],
+      isProtected: false,
+      segments: [
+        { timestamp: "0:22", label: "Model inference UI opened", reason: "Candidate opens proof builder and loads ML inference interface — confirms hands-on setup" },
+        { timestamp: "1:18", label: "Live prediction submitted", reason: "Input fed to TensorFlow.js model; output rendered in real-time — confirms functional ML pipeline" },
+        { timestamp: "2:05", label: "Evidence scoring dashboard", reason: "VeriBridge evidence score updated live as proof signals were captured — confirms ML workflow awareness" },
+      ],
+    },
     visualEvidence: [
       {
         timestamp: "0:22",
         label: "Model inference UI visible",
-        observation: "Live prediction interface with input and inference output visible in viewport",
-        ocr: "Overall Score: 87 · High confidence · Evidence reviewed",
-        whyItSupports: "Confirms hands-on interaction with an AI inference system",
+        pageTitle: "AI Proof Builder — VeriBridge",
+        observation: "Live prediction interface with input field and inference output visible in viewport",
+        ocr: "Overall Score: 87 · High confidence · Evidence reviewed · AI Proof Builder · VeriBridge",
+        domContext: "Evidence-backed skills section, proof source cards, and AI-reviewed confidence badge present in DOM",
+        qwenObservation: "Dashboard displays AI-generated evidence confidence score card with source breakdown. Proof builder UI shows 'AI Reviewed' badge and skill confidence meter.",
+        whyItSupports: "Confirms hands-on interaction with an AI inference system and evidence scoring pipeline",
         confidence: "high",
         isProtected: false,
       },
       {
         timestamp: "1:18",
         label: "Prediction/demo workflow observed",
+        pageTitle: "AI Proof Builder — Live Inference",
         observation: "Full model prediction workflow captured — input submission and real-time output rendered",
-        ocr: "Prediction: 94.2% confidence · model loaded",
-        whyItSupports: "Shows end-to-end ML workflow, not just a static UI",
+        ocr: "Prediction: 94.2% confidence · model loaded · TensorFlow.js runtime active",
+        domContext: "Input form, submit button, and prediction output div all captured in DOM snapshot",
+        qwenObservation: "TensorFlow.js inference output rendered on screen. Confidence percentage visible alongside input data and model result label.",
+        whyItSupports: "Shows end-to-end ML workflow with real model output, not just a static UI",
         confidence: "high",
         isProtected: true,
       },
       {
         timestamp: "2:05",
         label: "AI proof builder / evidence scoring visible",
-        observation: "Evidence scoring interface for AI skill signals observed",
-        ocr: "AI evidence score · Workflow: supported · GitHub: supported",
-        whyItSupports: "Demonstrates working knowledge of AI evidence aggregation",
+        pageTitle: "Evidence Score Dashboard — VeriBridge",
+        observation: "Evidence scoring interface for AI skill signals observed — per-source score breakdown visible",
+        ocr: "AI evidence score: 87 · Workflow: supported · GitHub: supported · OCR: partial",
+        domContext: "Score breakdown table, per-source status badges, and final recommendation paragraph captured",
+        qwenObservation: "Score dashboard shows per-source evidence status. Workflow and GitHub marked as 'supported', OCR as 'partial'. Final score 87/100 visible.",
+        whyItSupports: "Demonstrates working knowledge of AI evidence aggregation and multi-source scoring",
         confidence: "medium",
         isProtected: true,
       },
@@ -950,45 +1032,151 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
     githubEvidence: [
       {
         path: "apps/api/app/services/final_evidence_evaluator_service.py",
-        reason: "Combines workflow, GitHub, OCR, transcript, and document signals into a final skill confidence score",
+        reason: "Combines workflow, GitHub, OCR, transcript, and document signals into a final skill confidence score using weighted aggregation",
         skills: ["Python", "Machine Learning", "Evidence Aggregation"],
+        stackTags: ["Python", "FastAPI", "ML Pipeline", "Scoring"],
         confidence: "high",
-        isPublic: false,
+        isPublic: true,
+        repoUrl: VERIBRIDGE_REPO,
+        branch: VERIBRIDGE_BRANCH,
       },
       {
         path: "apps/api/app/services/extension_proof_workflow_analysis_service.py",
-        reason: "Analyzes browser workflow signals to extract skill evidence from recorded sessions",
+        reason: "Analyzes browser workflow signals to extract skill evidence from recorded sessions — core ML signal processing layer",
         skills: ["Python", "ML Signal Processing", "Workflow Analysis"],
+        stackTags: ["Python", "Signal Processing", "Async", "Evidence Extraction"],
         confidence: "high",
-        isPublic: false,
+        isPublic: true,
+        repoUrl: VERIBRIDGE_REPO,
+        branch: VERIBRIDGE_BRANCH,
       },
       {
-        path: "apps/web/components/skill-proof/extension-proof-panel.tsx",
-        reason: "Frontend component that displays proof workflow state and evidence source cards for skill validation",
-        skills: ["TypeScript", "React", "Evidence UI"],
+        path: "apps/api/app/services/verification_review_service.py",
+        reason: "AI review decision engine: applies approval rules based on score threshold, privacy check, and evidence completeness",
+        skills: ["Python", "Machine Learning", "Decision Logic"],
+        stackTags: ["Python", "AI Review", "Decision Tree", "Verification"],
         confidence: "medium",
-        isPublic: false,
+        isPublic: true,
+        repoUrl: VERIBRIDGE_REPO,
+        branch: VERIBRIDGE_BRANCH,
       },
     ],
     transcriptEvidence: [
       {
         excerpt:
-          "The main goal was to demonstrate machine learning in a browser environment. I chose TensorFlow.js because it allowed real-time inference without a backend server, which simplified deployment and made it easier to capture as evidence.",
-        relevance: "Explains model choice and deployment rationale — ownership signal",
-        ownershipSignal: "Candidate references specific design decisions with justification",
-        technicalDepth: "Discusses inference architecture and deployment trade-offs",
+          "The main goal was to demonstrate machine learning in a browser environment. I chose TensorFlow.js because it allowed real-time inference without a backend server.",
+        fullExcerpt:
+          "The main goal was to demonstrate machine learning in a browser environment. I chose TensorFlow.js because it allowed real-time inference without a backend server, which simplified deployment and made it easier to capture as evidence. The model was trained offline on a labeled dataset and then exported to the TensorFlow.js format. I validated accuracy using an 80/20 train/test split and measured 92% accuracy on held-out data.",
+        lines: [
+          "I chose TensorFlow.js because it allowed real-time inference without a backend server.",
+          "The model was trained offline on a labeled dataset, then exported to TensorFlow.js format.",
+          "I validated using an 80/20 train/test split and measured 92% accuracy on held-out data.",
+          "Real-time inference in the browser was the key proof — I could show the model running live.",
+        ],
+        relevance: "Explains model choice, training methodology, and validation — ownership signal",
+        ownershipSignal: "Candidate references specific design decisions with justification and quantitative results",
+        technicalDepth: "Covers inference architecture, deployment constraints, and evaluation methodology",
+        skillMapping: ["Machine Learning", "TensorFlow.js", "Model Evaluation"],
+        isProtected: false,
+      },
+      {
+        excerpt:
+          "The evidence scoring system aggregates signals from multiple sources — workflow, GitHub, OCR, and transcript — using a weighted confidence model.",
+        fullExcerpt:
+          "The evidence scoring system aggregates signals from multiple sources — workflow, GitHub, OCR, and transcript — using a weighted confidence model. Each source contributes a score between 0 and 100, and the final score is a weighted average with workflow and GitHub weighted more heavily because they are harder to fake.",
+        lines: [
+          "Each source contributes a score between 0 and 100.",
+          "Workflow and GitHub are weighted more heavily because they are harder to fake.",
+          "The final score is a weighted average across all active evidence sources.",
+        ],
+        relevance: "Demonstrates understanding of multi-signal ML evidence aggregation",
+        ownershipSignal: "Explains design rationale for weighting scheme",
+        technicalDepth: "Covers weighted scoring, source independence, and anti-gaming logic",
+        skillMapping: ["Machine Learning", "Evidence Aggregation", "Scoring Systems"],
         isProtected: true,
       },
     ],
+    domEvidence: {
+      pageTitle: "AI Proof Builder — VeriBridge",
+      urlType: "local",
+      capturedLabels: [
+        "Evidence-backed skills",
+        "Proof source cards",
+        "AI-reviewed badge",
+        "Submit inference button",
+        "Prediction output panel",
+        "Score: 87 / 100",
+      ],
+      observedSections: [
+        "Evidence score dashboard",
+        "Source coverage grid (Workflow, GitHub, OCR, Transcript)",
+        "Model inference input form",
+        "Real-time prediction output",
+        "Confidence meter",
+      ],
+      capturedEvents: [
+        "click on Submit Inference button",
+        "DOM update: prediction output rendered",
+        "DOM update: evidence score refreshed to 87",
+      ],
+      skillRelevance: "DOM confirms candidate actively used the AI proof builder and ML inference interface — not just viewed it",
+      isProtected: false,
+    },
+    qwenAnalysis: {
+      analyzedFrameCount: 3,
+      observations: [
+        "Proof builder UI with AI-reviewed confidence badge visible at 0:22",
+        "TensorFlow.js inference output rendered — 94.2% confidence label visible at 1:18",
+        "Per-source evidence score breakdown table visible at 2:05 (Workflow: supported, GitHub: supported, OCR: partial)",
+        "Score: 87/100 final evidence confidence displayed prominently",
+      ],
+      modelReasoning: "Qwen observed consistent AI tooling across all 3 analyzed frames: inference UI, live prediction output, and an evidence aggregation dashboard. The visual pattern matches a candidate who built and actively used an ML inference system — not a passive viewer of a demo.",
+      skillMatch: "AI / Machine Learning — high confidence match based on inference UI, model output visualization, and evidence scoring dashboard",
+      uncertainObservations: [
+        "Frame at 1:18 shows prediction output but model architecture not visible",
+        "Training code not captured in workflow — only inference/serving layer observed",
+      ],
+      confidence: "high",
+    },
     documentEvidence: [
       {
         title: "AI Engineering Project Report",
+        fileType: "PDF",
         snippet:
           "The model was trained on a custom dataset and evaluated using cross-validation. Training accuracy reached 94% on held-out test data.",
-        relevance: "Confirms quantitative ML evaluation — matches GitHub evidence",
+        summary:
+          "Comprehensive project report (24 pages) covering design, implementation, and evaluation of a browser-based ML system. Includes model selection rationale, training methodology, experimental results, and architecture diagrams.",
+        relevance: "Confirms quantitative ML evaluation — matches GitHub evidence and transcript",
+        supportedSkills: ["Machine Learning", "TensorFlow.js", "Model Evaluation", "Technical Documentation"],
+        mismatchWarnings: [],
+        extractedSections: [
+          "Section 2: Model Selection — Why TensorFlow.js was chosen for browser deployment",
+          "Section 3: Training Methodology — Dataset, split, and cross-validation approach",
+          "Section 4: Results — 94% accuracy on held-out test set",
+          "Section 5: Architecture — Inference pipeline from input to output",
+        ],
         isProtected: true,
       },
     ],
+    finalAnalysis: {
+      evidenceScore: 87,
+      sourceScores: [
+        { label: "GitHub code",             score: 91, status: "supported" },
+        { label: "Workflow recording",       score: 88, status: "supported" },
+        { label: "Project defense",          score: 84, status: "supported" },
+        { label: "Documents",               score: 79, status: "supported" },
+        { label: "Keyframes / screenshots", score: 72, status: "partial"   },
+        { label: "OCR / visual reasoning",  score: 65, status: "partial"   },
+      ],
+      recommendation: "Strongly supported — verified across 4 of 6 sources with high confidence. Proceed to technical interview.",
+      strongestProof: "GitHub code — 3 production service files confirm ML pipeline ownership. Final evaluator service is direct evidence of ML scoring implementation.",
+      weakestProof: "OCR / visual reasoning — some frames inconclusive; protected frames not yet released.",
+      whyGranted: "Candidate demonstrated working ML inference in browser (TensorFlow.js), implemented multi-source evidence scoring (Python services), and explained model evaluation methodology with quantitative results.",
+      stillNeedsReview: [
+        "Protected keyframes at 1:18 and 2:05 not yet reviewed",
+        "Training code not observed in workflow — verify in GitHub if needed",
+      ],
+    },
     interviewQuestions: [
       "Walk me through how the evidence scoring model combines workflow, GitHub, OCR, and transcript signals.",
       "Which parts of your AI pipeline are rule-based versus model-based, and why?",
@@ -1005,7 +1193,7 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
     confidence: "high",
     supportStatus: "strongly supported",
     explanation:
-      "VeriBridge found this skill confirmed in GitHub code and workflow recording.",
+      "This skill is backed by GitHub code artifacts and workflow recording. Component architecture, state management, and live UI interaction are all directly observable.",
     sources: [
       { key: "github",    label: "GitHub code",             status: "supported", score: 88, reason: "React components and TypeScript modules confirmed across multiple files"      },
       { key: "workflow",  label: "Workflow recording",     status: "supported", score: 75, reason: "Live frontend UI interaction captured in workflow recordings"                 },
@@ -1014,22 +1202,40 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
       { key: "defense",   label: "Project defense",         status: "partial",  score: 65, reason: "Architecture discussed at high level; limited implementation depth"          },
       { key: "documents", label: "Documents",               status: "missing",        reason: "No frontend-specific documentation uploaded"                                     },
     ],
+    workflowRecording: {
+      title: "Recruiter Passport Dashboard — UI Interaction Demo",
+      duration: "3:01",
+      recordedDate: "May 2026",
+      sessionType: "Browser workflow proof",
+      relatedSkills: ["React", "TypeScript", "UI State Management", "Next.js"],
+      isProtected: false,
+      segments: [
+        { timestamp: "0:14", label: "React component interaction captured", reason: "Dashboard component with interactive evidence cards visible — state changes captured on click" },
+        { timestamp: "1:32", label: "Proof builder state transition", reason: "Evidence panel opened and closed — confirms React state management in a live app" },
+      ],
+    },
     visualEvidence: [
       {
         timestamp: "0:14",
         label: "React UI interaction observed",
-        observation: "Dashboard component with interactive evidence cards visible; state changes captured",
-        ocr: "Evidence Backed Skills · High confidence · Dashboard / Proof Builder",
-        whyItSupports: "Confirms hands-on interaction with a React-based interface",
+        pageTitle: "Recruiter Passport — VeriBridge Dashboard",
+        observation: "Dashboard component with interactive evidence cards visible; state changes captured on interaction",
+        ocr: "Evidence Backed Skills · High confidence · Dashboard / Proof Builder · VeriBridge",
+        domContext: "React component tree with evidence cards, tab navigation, and modal trigger buttons captured in DOM snapshot",
+        qwenObservation: "React-based dashboard UI visible with interactive evidence cards, tab navigation, and skill confidence badges. Component hierarchy visible through rendered DOM structure.",
+        whyItSupports: "Confirms hands-on interaction with a React-based interface and working state management",
         confidence: "high",
         isProtected: false,
       },
       {
         timestamp: "1:32",
         label: "Dashboard/proof builder state changed",
+        pageTitle: "VeriBridge — Evidence Proof Builder",
         observation: "Proof builder component state update captured — evidence panel opened and closed",
-        ocr: "Website Proof · Session active · Evidence being captured",
-        whyItSupports: "Shows working knowledge of component state management in a live app",
+        ocr: "Website Proof · Session active · Evidence being captured · VeriBridge",
+        domContext: "Modal overlay, evidence form, and close button captured — confirms React modal/portal state",
+        qwenObservation: "Modal overlay rendered with evidence form and structured input fields. State transition from closed to open panel captured across frames.",
+        whyItSupports: "Shows working knowledge of component state management — modal/portal pattern in a live app",
         confidence: "high",
         isProtected: true,
       },
@@ -1037,37 +1243,104 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
     githubEvidence: [
       {
         path: "apps/web/components/recruiter-passport/RecruiterWorkPassportPreview.tsx",
-        reason: "Complex React component implementing evidence gating, modal state, and recruiter-safe rendering",
+        reason: "3050+ line React component implementing evidence gating, modal state, protected/public artifact rendering, and recruiter-safe output",
         skills: ["TypeScript", "React", "UI Architecture"],
+        stackTags: ["TypeScript", "React", "Next.js", "Modal", "State Management"],
         confidence: "high",
-        isPublic: false,
-      },
-      {
-        path: "apps/web/components/skill-proof/extension-proof-panel.tsx",
-        reason: "Extension-based proof panel with workflow recording state and evidence source card rendering",
-        skills: ["TypeScript", "React", "UI State"],
-        confidence: "high",
-        isPublic: false,
+        isPublic: true,
+        repoUrl: VERIBRIDGE_REPO,
+        branch: VERIBRIDGE_BRANCH,
       },
       {
         path: "apps/web/src/app/recruiter/passport/page.tsx",
-        reason: "Recruiter passport page with tab navigation, saved candidates, and comparison panel integration",
+        reason: "Recruiter passport page with tab navigation, saved candidates, and access request state management",
         skills: ["TypeScript", "Next.js", "React"],
+        stackTags: ["TypeScript", "Next.js", "Page Router", "Data Fetching"],
         confidence: "medium",
-        isPublic: false,
+        isPublic: true,
+        repoUrl: VERIBRIDGE_REPO,
+        branch: VERIBRIDGE_BRANCH,
       },
     ],
     transcriptEvidence: [
       {
         excerpt:
           "I structured the React component tree to separate the recruiter and student views cleanly, so neither side has access to the other's data paths.",
+        fullExcerpt:
+          "I structured the React component tree to separate the recruiter and student views cleanly, so neither side has access to the other's data paths. The recruiter sees a safe summary with controlled access gates, while the student controls what is revealed. This separation also makes the state model simpler — each view has its own data contract.",
+        lines: [
+          "The recruiter sees a safe summary with controlled access gates.",
+          "The student controls what is revealed through explicit approval.",
+          "Separating views simplifies the state model — each has its own data contract.",
+          "I used a prop-based gating system rather than global state to keep it testable.",
+        ],
         relevance: "Shows deliberate component architecture decision — ownership signal",
-        ownershipSignal: "Candidate describes intentional structural choices",
-        technicalDepth: "Covers component separation and data access patterns",
+        ownershipSignal: "Candidate describes intentional structural choices with rationale",
+        technicalDepth: "Covers component separation, data access patterns, and testability",
+        skillMapping: ["React", "TypeScript", "UI Architecture", "State Management"],
         isProtected: true,
       },
     ],
+    domEvidence: {
+      pageTitle: "Recruiter Passport — VeriBridge Dashboard",
+      urlType: "local",
+      capturedLabels: [
+        "Evidence Backed Skills",
+        "View skill evidence",
+        "High confidence badge",
+        "Tab navigation: Overview / Evidence / Skills",
+        "Access request button",
+        "Skill group cards",
+      ],
+      observedSections: [
+        "Recruiter work passport header with candidate score",
+        "Evidence source coverage grid",
+        "Skill group cards with inline proof",
+        "Modal trigger for skill evidence detail",
+      ],
+      capturedEvents: [
+        "click on View skill evidence button",
+        "DOM update: skill evidence modal rendered",
+        "click on tab navigation: Evidence tab",
+      ],
+      skillRelevance: "DOM confirms candidate built and interacted with a full React dashboard with modal state, tab navigation, and conditional rendering",
+      isProtected: false,
+    },
+    qwenAnalysis: {
+      analyzedFrameCount: 2,
+      observations: [
+        "React-based recruiter dashboard UI with interactive evidence cards and tab navigation visible at 0:14",
+        "Modal overlay with evidence form captured at 1:32 — confirms React modal/portal pattern",
+        "Skill confidence badges and source coverage grid rendered — TypeScript props-based rendering visible",
+      ],
+      modelReasoning: "Qwen identified a well-structured React dashboard with multiple interactive components. Tab navigation, modal state, and conditional rendering patterns are all observable. The UI complexity matches a senior React developer, not a beginner using a template.",
+      skillMatch: "JavaScript / Frontend (React, TypeScript) — high confidence match based on dashboard complexity, state management patterns, and component architecture",
+      uncertainObservations: [
+        "Frame at 1:32 is protected — full modal interaction not confirmed without approval",
+        "CSS/styling approach (Tailwind vs inline) not definitively identified from visual alone",
+      ],
+      confidence: "high",
+    },
     documentEvidence: [],
+    finalAnalysis: {
+      evidenceScore: 83,
+      sourceScores: [
+        { label: "GitHub code",             score: 88, status: "supported" },
+        { label: "Workflow recording",       score: 75, status: "supported" },
+        { label: "Project defense",          score: 65, status: "partial"   },
+        { label: "Keyframes / screenshots", score: 58, status: "partial"   },
+        { label: "OCR / visual reasoning",  score: 60, status: "partial"   },
+        { label: "Documents",               score: 0,  status: "missing"   },
+      ],
+      recommendation: "Strongly supported — GitHub and workflow evidence are high quality. No frontend documentation uploaded, but code speaks for itself.",
+      strongestProof: "GitHub code — RecruiterWorkPassportPreview.tsx is a large, complex React component demonstrating advanced TypeScript and state management.",
+      weakestProof: "Documents — no frontend documentation uploaded. Missing is expected for code-first candidates.",
+      whyGranted: "Candidate built a production React dashboard (3000+ lines, TypeScript, modal state, data gating) and demonstrated live UI interaction in a workflow recording.",
+      stillNeedsReview: [
+        "Protected keyframe at 1:32 — full modal interaction not verified",
+        "Transcript excerpt references architecture decisions — verify depth in interview",
+      ],
+    },
     interviewQuestions: [
       "Walk me through the component architecture of your most complex UI and why you structured it that way.",
       "How do you handle state management across deeply nested React components?",
@@ -1083,7 +1356,7 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
     confidence: "medium",
     supportStatus: "partially supported",
     explanation:
-      "VeriBridge found this skill in workflow and OCR evidence. GitHub and transcript coverage is partial.",
+      "VeriBridge found this skill in workflow and OCR evidence. GitHub and transcript coverage is partial. Artifact inspection available for public evidence.",
     sources: [
       { key: "workflow",  label: "Workflow recording",     status: "supported", score: 72, reason: "Chart and dashboard interaction observed in workflow recordings"   },
       { key: "ocr",       label: "OCR / visual reasoning",  status: "partial",  score: 55, reason: "Chart/table text partially extracted from keyframes"              },
@@ -1092,13 +1365,27 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
       { key: "keyframes", label: "Keyframes / screenshots", status: "partial",  score: 48, reason: "Charts partially visible in protected keyframe set"               },
       { key: "defense",   label: "Project defense",         status: "missing",        reason: "Data visualization was not a focus of the defense discussion"         },
     ],
+    workflowRecording: {
+      title: "Data Dashboard — Chart Interaction Recording",
+      duration: "2:30",
+      recordedDate: "May 2026",
+      sessionType: "Browser workflow proof",
+      relatedSkills: ["D3.js", "Data Visualization", "Dashboard UI"],
+      isProtected: false,
+      segments: [
+        { timestamp: "2:11", label: "Chart/table/dashboard output visible", reason: "Data visualization panel with chart output captured — confirms live data rendering" },
+      ],
+    },
     visualEvidence: [
       {
         timestamp: "2:11",
         label: "Chart/table/dashboard output visible",
+        pageTitle: "Evidence Dashboard — Data Visualization",
         observation: "Data visualization panel with chart output captured in viewport",
-        ocr: "Chart · Data output · Dashboard view",
-        whyItSupports: "Confirms live interaction with a data visualization interface",
+        ocr: "Chart · Data output · Dashboard view · Evidence score",
+        domContext: "Chart canvas element and data table captured in DOM — D3 SVG elements present",
+        qwenObservation: "Bar chart and data table visible in dashboard. D3-style SVG chart elements rendered. Data labels and axis titles partially visible.",
+        whyItSupports: "Confirms live interaction with a data visualization interface using D3 or equivalent library",
         confidence: "medium",
         isProtected: false,
       },
@@ -1106,29 +1393,110 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
     githubEvidence: [
       {
         path: "apps/web/components/recruiter-passport/CandidateComparison.tsx",
-        reason: "Candidate comparison panel rendering tabular data and comparative skill metrics",
+        reason: "Candidate comparison panel rendering tabular skill metrics — data display component with sorting and comparison logic",
         skills: ["TypeScript", "React", "Data Display"],
+        stackTags: ["TypeScript", "React", "Table", "Comparison UI"],
         confidence: "medium",
-        isPublic: false,
+        isPublic: true,
+        repoUrl: VERIBRIDGE_REPO,
+        branch: VERIBRIDGE_BRANCH,
       },
     ],
     transcriptEvidence: [
       {
         excerpt:
           "Data visualization was part of the project but not the primary focus — I used D3 for the chart layer.",
+        fullExcerpt:
+          "Data visualization was part of the project but not the primary focus — I used D3 for the chart layer and focused more on the data pipeline and transformations that fed into the charts.",
+        lines: [
+          "I used D3 for the chart layer.",
+          "The primary focus was the data pipeline and transformations, not the chart styling.",
+          "D3 gave me fine-grained control over SVG rendering for custom chart types.",
+        ],
         relevance: "Acknowledges limited depth in visualization work — honest self-assessment",
+        ownershipSignal: "Candidate names specific library (D3) with rationale",
+        technicalDepth: "Limited — surface-level description without implementation details",
+        skillMapping: ["D3.js", "Data Visualization"],
         isProtected: true,
       },
     ],
+    domEvidence: {
+      pageTitle: "Evidence Dashboard — Data Visualization",
+      urlType: "local",
+      capturedLabels: [
+        "Evidence Dashboard",
+        "D3 chart panel",
+        "Data table",
+        "Export button",
+        "Filter controls",
+      ],
+      observedSections: [
+        "Bar chart with D3 SVG rendering",
+        "Data table with sortable columns",
+        "Dashboard header with title and filter controls",
+      ],
+      capturedEvents: [
+        "click on chart bar (hover tooltip appeared)",
+        "DOM update: data table re-sorted on column click",
+      ],
+      skillRelevance: "DOM confirms D3 SVG chart and interactive data table are implemented — not just a screenshot of a chart library demo",
+      isProtected: false,
+    },
+    qwenAnalysis: {
+      analyzedFrameCount: 1,
+      observations: [
+        "D3-style SVG bar chart with axis labels visible at 2:11",
+        "Data table with column headers captured below chart",
+        "Dashboard title 'Evidence Dashboard' and filter controls visible",
+      ],
+      modelReasoning: "Single analyzed frame confirms a working data dashboard with chart output. Evidence is partial — only one frame captured, and chart type is basic. Coverage is not deep enough to confirm advanced D3 expertise.",
+      skillMatch: "Data & Visualization — medium confidence. Basic chart rendering confirmed; advanced pipeline or custom visualization not observed.",
+      uncertainObservations: [
+        "Only one frame analyzed — limited coverage",
+        "Chart type (bar chart) is basic — could be from a charting library, not raw D3",
+        "Data pipeline feeding the chart not visible in recording",
+      ],
+      confidence: "medium",
+    },
     documentEvidence: [
       {
         title: "AI Engineering Project Report",
+        fileType: "PDF",
         snippet:
           "Three.js WebGL rendering pipeline was designed for real-time performance, targeting 60fps on standard hardware.",
-        relevance: "Partial match — visual rendering is related but not core data visualization",
+        summary:
+          "Project report covers data visualization as one of several components. Primary focus is on ML and backend systems. Visualization coverage is section 6 (4 pages of 24).",
+        relevance: "Partial match — visual rendering is related but not core data visualization; mentions D3 and Three.js",
+        supportedSkills: ["Data Visualization", "Three.js", "Performance"],
+        mismatchWarnings: ["Primary evidence is ML-focused — data visualization is mentioned but not the main contribution"],
+        extractedSections: [
+          "Section 6: Visualization Layer — D3 chart integration and Three.js WebGL pipeline",
+          "Section 6.1: Chart types used — bar, line, and scatter plots",
+          "Section 6.2: Real-time rendering target — 60fps on standard hardware",
+        ],
         isProtected: false,
       },
     ],
+    finalAnalysis: {
+      evidenceScore: 58,
+      sourceScores: [
+        { label: "Workflow recording",       score: 72, status: "supported" },
+        { label: "Documents",               score: 60, status: "partial"   },
+        { label: "GitHub code",             score: 50, status: "partial"   },
+        { label: "OCR / visual reasoning",  score: 55, status: "partial"   },
+        { label: "Keyframes / screenshots", score: 48, status: "partial"   },
+        { label: "Project defense",          score: 0,  status: "missing"   },
+      ],
+      recommendation: "Partially supported — confirm depth in interview. Candidate self-reports D3 usage; basic chart rendering is confirmed but advanced data pipeline not verified.",
+      strongestProof: "Workflow recording — chart and dashboard interaction observed. D3 SVG elements confirmed in DOM capture.",
+      weakestProof: "Project defense — data visualization was not discussed in defense session.",
+      whyGranted: "Basic data visualization confirmed via workflow recording, DOM capture, and project report. Depth is limited — treat as supporting skill, not primary.",
+      stillNeedsReview: [
+        "Protected keyframes — full chart interaction not verified",
+        "Data pipeline implementation not observed in GitHub or workflow",
+        "Advanced D3 usage not confirmed",
+      ],
+    },
     interviewQuestions: [
       "Explain how data flows from your source through to the visualization layer.",
       "What data pipeline libraries or tools have you used and why did you choose them?",
@@ -1143,7 +1511,7 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
     confidence: "low",
     supportStatus: "needs review",
     explanation:
-      "VeriBridge found limited evidence of deployment skills. Coverage is document-only — no workflow or GitHub activity observed.",
+      "VeriBridge found limited evidence of deployment skills. Coverage is document-only with aspirational mentions — no workflow, GitHub, or keyframe artifacts observed.",
     sources: [
       { key: "workflow",  label: "Workflow recording",     status: "missing", reason: "No deployment or CI/CD workflow captured in recordings"                   },
       { key: "github",    label: "GitHub code",             status: "missing", reason: "No deployment configuration, Dockerfiles, or CI pipelines detected"       },
@@ -1158,11 +1526,42 @@ const SKILL_EVIDENCE_BUNDLES: Record<string, SkillEvidenceBundle> = {
     documentEvidence: [
       {
         title: "AI Engineering Project Report",
+        fileType: "PDF",
         snippet: "Future work includes containerizing the application for deployment.",
+        summary:
+          "Project report mentions deployment as future work only. No current deployment configuration, CI/CD pipeline, or infrastructure setup described.",
         relevance: "Aspirational mention only — no implemented deployment evidence",
+        supportedSkills: [],
+        mismatchWarnings: [
+          "Deployment is listed as 'future work' — not current capability",
+          "No Dockerfile, CI config, or deployment manifest found in GitHub",
+        ],
+        extractedSections: [
+          "Section 7: Future Work — 'Future work includes containerizing the application for cloud deployment using Docker and Kubernetes.'",
+        ],
         isProtected: false,
       },
     ],
+    finalAnalysis: {
+      evidenceScore: 22,
+      sourceScores: [
+        { label: "Documents",               score: 35, status: "partial"   },
+        { label: "Workflow recording",       score: 0,  status: "missing"   },
+        { label: "GitHub code",             score: 0,  status: "missing"   },
+        { label: "OCR / visual reasoning",  score: 0,  status: "missing"   },
+        { label: "Keyframes / screenshots", score: 0,  status: "missing"   },
+        { label: "Project defense",          score: 0,  status: "missing"   },
+      ],
+      recommendation: "Needs review — only aspirational document mention found. Do not treat as confirmed skill. Probe in interview.",
+      strongestProof: "Project report — mentions Docker/Kubernetes as future work goal. Shows awareness of deployment tooling.",
+      weakestProof: "All sources except documents — no workflow, GitHub, keyframe, or defense evidence found.",
+      whyGranted: "Not granted as confirmed skill. Listed for review only.",
+      stillNeedsReview: [
+        "Docker/Kubernetes experience not confirmed — aspirational only",
+        "CI/CD pipeline setup not observed anywhere",
+        "No deployment artifacts in GitHub repository",
+      ],
+    },
     interviewQuestions: [
       "Describe your experience with containerization tools such as Docker or Podman.",
       "How would you set up a CI/CD pipeline for this project?",
@@ -2410,72 +2809,9 @@ function SkillSourceCoverageCard({ source }: { source: SkillSourceEvidence }) {
   )
 }
 
-function SkillKeyframeCard({ frame }: { frame: SkillVisualFrame }) {
-  return (
-    <div style={{
-      background: "#1e293b", borderRadius: 8, padding: "12px 14px",
-      border: "1px solid #334155",
-    }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>{frame.timestamp}</span>
-        <span style={{
-          fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 999,
-          background: frame.confidence === "high" ? "#166534" : frame.confidence === "medium" ? "#92400e" : "#334155",
-          color: "#fff",
-        }}>
-          {frame.confidence}
-        </span>
-      </div>
-      <p style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", margin: "0 0 4px" }}>{frame.label}</p>
-      <p style={{ fontSize: 11, color: "#94a3b8", margin: "0 0 4px", lineHeight: 1.4 }}>{frame.observation}</p>
-      {frame.ocr && (
-        <p style={{ fontSize: 10, color: "#64748b", margin: "0 0 4px", fontStyle: "italic" }}>
-          OCR: {frame.ocr}
-        </p>
-      )}
-      <div style={{ marginTop: 6, padding: "6px 8px", background: "#0f172a", borderRadius: 4 }}>
-        <p style={{ fontSize: 10, fontWeight: 600, color: "#7c3aed", margin: "0 0 2px" }}>Why this supports the skill</p>
-        <p style={{ fontSize: 10, color: "#a78bfa", margin: 0, lineHeight: 1.4 }}>{frame.whyItSupports}</p>
-      </div>
-    </div>
-  )
-}
-
-function SkillGithubFileCard({ file }: { file: SkillGithubFile }) {
-  return (
-    <div style={{ border: `1px solid ${C.line}`, borderRadius: 7, overflow: "hidden" }}>
-      <div style={{
-        padding: "7px 12px", background: C.bg,
-        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-      }}>
-        <code style={{ fontSize: 10, color: C.indigo, fontFamily: "monospace", wordBreak: "break-all" as const }}>
-          {file.path}
-        </code>
-        <span style={{
-          fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 999, flexShrink: 0,
-          background: file.confidence === "high" ? C.emeraldSoft : C.amberSoft,
-          color: file.confidence === "high" ? C.emerald : C.amber,
-          border: `1px solid ${file.confidence === "high" ? "#bbf7d0" : "#fde68a"}`,
-        }}>
-          {file.confidence} confidence
-        </span>
-      </div>
-      <div style={{ padding: "8px 12px", borderTop: `1px solid ${C.line}` }}>
-        <p style={{ fontSize: 11, color: C.inkSoft, margin: "0 0 6px", lineHeight: 1.5 }}>{file.reason}</p>
-        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-          {file.skills.map((sk) => (
-            <span key={sk} style={{
-              fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 4,
-              background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe",
-            }}>
-              {sk}
-            </span>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
+// ── Proof Artifact Components ─────────────────────────────────────────────────
+// Each component renders one class of proof artifact with full inspection detail.
+// Privacy: no raw storage paths, tokens, localhost URLs, or Supabase URLs exposed.
 
 function SkillProtectedLock({ label }: { label: string }) {
   return (
@@ -2500,12 +2836,661 @@ function SkillProtectedLock({ label }: { label: string }) {
   )
 }
 
-// ── Direct Proof Links Section ────────────────────────────────────────────────
-// Direct inspection actions for each evidence artifact in a skill bundle.
-// Public evidence is actionable inline; protected evidence requires student approval.
-// Privacy: no raw storage URLs, tokens, localhost, or private media paths exposed.
+function ArtifactBadge({ label, color, bg, border }: { label: string; color: string; bg: string; border: string }) {
+  return (
+    <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4, color, background: bg, border: `1px solid ${border}`, flexShrink: 0 }}>
+      {label}
+    </span>
+  )
+}
 
-function DirectProofLinksSection({
+function ArtifactSectionHeader({ title, count, color }: { title: string; count?: number; color?: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+      <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: color ?? C.ink }}>{title}</span>
+      {count !== undefined && (
+        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: C.bg, color: C.muted, border: `1px solid ${C.line}` }}>{count}</span>
+      )}
+    </div>
+  )
+}
+
+// ── Artifact Access Summary ───────────────────────────────────────────────────
+
+function ArtifactAccessSummary({ bundle, accessApproved }: { bundle: SkillEvidenceBundle; accessApproved: boolean }) {
+  const hasProtected = bundle.protectedEvidenceFlags.length > 0
+  const items = [
+    { label: "Workflow recording",    public: !!(bundle.workflowRecording && !bundle.workflowRecording.isProtected), available: !!bundle.workflowRecording },
+    { label: "Keyframes / OCR / DOM", public: bundle.visualEvidence.some(f => !f.isProtected),                      available: bundle.visualEvidence.length > 0 },
+    { label: "GitHub code",           public: bundle.githubEvidence.some(f => f.isPublic),                           available: bundle.githubEvidence.length > 0 },
+    { label: "Transcript",            public: bundle.transcriptEvidence.some(t => !t.isProtected),                  available: bundle.transcriptEvidence.length > 0 },
+    { label: "Documents",             public: bundle.documentEvidence.some(d => !d.isProtected),                    available: bundle.documentEvidence.length > 0 },
+    { label: "Final analysis",        public: !!bundle.finalAnalysis,                                                available: !!bundle.finalAnalysis },
+  ]
+  return (
+    <div data-testid="skill-artifact-access-summary" style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        <ArtifactBadge label="Public — visible now"      color={C.emerald} bg={C.emeraldSoft} border="#bbf7d0" />
+        {hasProtected && !accessApproved && <ArtifactBadge label="Protected — approval needed" color={C.indigo} bg={C.indigoSoft} border="#c7d2fe" />}
+        {hasProtected && accessApproved  && <ArtifactBadge label="Approved — protected unlocked" color={C.violet} bg={C.violetSoft} border="#ddd6fe" />}
+        {!bundle.workflowRecording && bundle.visualEvidence.length === 0 && <ArtifactBadge label="Limited artifacts" color={C.amber} bg={C.amberSoft} border="#fde68a" />}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 5 }}>
+        {items.filter(it => it.available).map(it => (
+          <div key={it.label} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 7px", borderRadius: 5, background: C.paper, border: `1px solid ${C.line}`, fontSize: 10 }}>
+            <span style={{ color: it.public || accessApproved ? C.emerald : C.indigo, fontSize: 12, flexShrink: 0 }}>
+              {it.public || accessApproved ? "✓" : "🔒"}
+            </span>
+            <span style={{ color: C.inkSoft, fontWeight: 500 }}>{it.label}</span>
+          </div>
+        ))}
+      </div>
+      <p style={{ fontSize: 10, color: C.muted, margin: "8px 0 0", fontStyle: "italic" }}>
+        Student controls visibility per proof type. Raw files and storage paths are never exposed.
+      </p>
+    </div>
+  )
+}
+
+// ── Workflow Recording Artifact ───────────────────────────────────────────────
+
+function WorkflowRecordingArtifact({ recording, accessApproved }: { recording: SkillWorkflowRecording; accessApproved: boolean }) {
+  const canView = !recording.isProtected || accessApproved
+  return (
+    <div data-testid="skill-artifact-workflow-recording">
+      <ArtifactSectionHeader title="Workflow Recording" color={C.violet} />
+      {!canView ? (
+        <SkillProtectedLock label="Workflow recording" />
+      ) : (
+        <div style={{ border: `1px solid #ddd6fe`, borderRadius: 8, overflow: "hidden" }}>
+          {/* Recording header */}
+          <div style={{ padding: "10px 14px", background: "#1e1b4b", display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 700, color: "#e0e7ff", margin: "0 0 3px" }}>{recording.title}</p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 10, color: "#a5b4fc" }}>Duration: {recording.duration}</span>
+                <span style={{ fontSize: 10, color: "#a5b4fc" }}>Recorded: {recording.recordedDate}</span>
+                <span style={{ fontSize: 10, color: "#a5b4fc" }}>Type: {recording.sessionType}</span>
+              </div>
+            </div>
+            <ArtifactBadge label={recording.isProtected ? (accessApproved ? "Approved" : "Protected") : "Public"} color={recording.isProtected ? (accessApproved ? C.violet : C.indigo) : C.emerald} bg={recording.isProtected ? (accessApproved ? C.violetSoft : C.indigoSoft) : C.emeraldSoft} border={recording.isProtected ? (accessApproved ? "#ddd6fe" : "#c7d2fe") : "#bbf7d0"} />
+          </div>
+          {/* Related skills */}
+          <div style={{ padding: "8px 14px", background: "#13102b", borderBottom: "1px solid #312e81", display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 9, fontWeight: 700, color: "#6366f1", textTransform: "uppercase" as const }}>Skills observed:</span>
+            {recording.relatedSkills.map(sk => (
+              <span key={sk} style={{ fontSize: 9, padding: "1px 6px", borderRadius: 4, background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe", fontWeight: 600 }}>{sk}</span>
+            ))}
+          </div>
+          {/* Placeholder viewer */}
+          <div data-testid="workflow-recording-viewer" style={{ padding: "12px 14px", background: "#0f172a", borderBottom: "1px solid #1e293b" }}>
+            <div style={{ borderRadius: 6, background: "#1e293b", border: "1px solid #334155", padding: "10px 12px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}>Timeline scrubber</span>
+                <span style={{ fontSize: 9, color: "#475569" }}>Duration: {recording.duration}</span>
+              </div>
+              <div style={{ height: 6, background: "#334155", borderRadius: 3, position: "relative" as const, marginBottom: 10 }}>
+                <div style={{ width: "40%", height: "100%", background: "#6366f1", borderRadius: 3 }} />
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {recording.segments.map((seg, i) => (
+                  <span key={i} style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4, background: "#1e293b", color: "#94a3b8", border: "1px solid #334155" }}>{seg.timestamp}</span>
+                ))}
+              </div>
+            </div>
+            <p style={{ fontSize: 10, color: "#475569", margin: "8px 0 0", fontStyle: "italic" }}>
+              Raw recording artifact will load here when backend media URL is connected.
+            </p>
+          </div>
+          {/* Segments */}
+          <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 7 }}>
+            <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase" as const, color: C.muted }}>Segments</span>
+            {recording.segments.map((seg, i) => (
+              <div key={i} style={{ padding: "8px 10px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 6, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: C.indigo, flexShrink: 0, fontFamily: "monospace" }}>{seg.timestamp}</span>
+                <div>
+                  <p style={{ fontSize: 11, fontWeight: 600, color: C.ink, margin: "0 0 2px" }}>{seg.label}</p>
+                  <p style={{ fontSize: 10, color: C.inkSoft, margin: 0, lineHeight: 1.4 }}>{seg.reason}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Keyframe / OCR / DOM / Qwen Artifact ─────────────────────────────────────
+
+function KeyframeArtifactSection({
+  frames, qwenAnalysis, domEvidence, accessApproved,
+}: {
+  frames: SkillVisualFrame[]
+  qwenAnalysis?: SkillQwenAnalysis
+  domEvidence?: SkillDomEvidence
+  accessApproved: boolean
+}) {
+  const [expandedFrame, setExpandedFrame] = useState<number | null>(null)
+
+  return (
+    <div data-testid="skill-artifact-keyframes">
+      <ArtifactSectionHeader title="Keyframes, OCR & Visual Reasoning" count={frames.length} color="#7c3aed" />
+
+      {/* Per-frame artifact cards */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {frames.map((frame, i) => {
+          const canView = !frame.isProtected || accessApproved
+          const isExpanded = expandedFrame === i
+          return (
+            <div key={i} data-testid={`keyframe-artifact-${i}`} style={{ borderRadius: 8, overflow: "hidden", border: canView ? "1px solid #334155" : "1px solid #4f46e5" }}>
+              <div style={{ padding: "10px 14px", background: canView ? "#1e293b" : "#1e1b4b" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", fontFamily: "monospace" }}>{frame.timestamp}</span>
+                    {frame.pageTitle && <span style={{ fontSize: 10, color: "#64748b" }}>{frame.pageTitle}</span>}
+                  </div>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    <ArtifactBadge
+                      label={frame.isProtected ? (accessApproved ? "Approved" : "Protected") : "Public"}
+                      color={frame.isProtected ? (accessApproved ? "#7c3aed" : "#818cf8") : C.emerald}
+                      bg={frame.isProtected ? (accessApproved ? "#ede9fe" : "#1e1b4b") : C.emeraldSoft}
+                      border={frame.isProtected ? (accessApproved ? "#ddd6fe" : "#4f46e5") : "#bbf7d0"}
+                    />
+                    <ArtifactBadge
+                      label={`${frame.confidence} confidence`}
+                      color={frame.confidence === "high" ? C.emerald : frame.confidence === "medium" ? C.amber : C.muted}
+                      bg={frame.confidence === "high" ? C.emeraldSoft : frame.confidence === "medium" ? C.amberSoft : C.bg}
+                      border={frame.confidence === "high" ? "#bbf7d0" : frame.confidence === "medium" ? "#fde68a" : C.line}
+                    />
+                  </div>
+                </div>
+                {canView ? (
+                  <>
+                    <p style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", margin: "0 0 4px" }}>{frame.label}</p>
+                    <p style={{ fontSize: 11, color: "#94a3b8", margin: 0, lineHeight: 1.4 }}>{frame.observation}</p>
+                    <button
+                      type="button"
+                      data-testid={`expand-keyframe-${i}`}
+                      onClick={() => setExpandedFrame(isExpanded ? null : i)}
+                      style={{ marginTop: 8, fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 4, cursor: "pointer", color: "#a5b4fc", background: "#312e81", border: "1px solid #4f46e5" }}
+                    >
+                      {isExpanded ? "Hide details" : "View full keyframe details"}
+                    </button>
+                  </>
+                ) : (
+                  <p style={{ fontSize: 11, color: "#818cf8", margin: 0 }}>Protected keyframe — student approval required to view OCR, DOM, and Qwen observations.</p>
+                )}
+              </div>
+              {isExpanded && canView && (
+                <div data-testid={`keyframe-detail-${i}`} style={{ padding: "12px 14px", background: "#0f172a", display: "flex", flexDirection: "column", gap: 9 }}>
+                  {/* OCR */}
+                  <div data-testid={`keyframe-ocr-${i}`} style={{ padding: "8px 10px", background: "#1e293b", borderRadius: 6, border: "1px solid #334155" }}>
+                    <p style={{ fontSize: 9, fontWeight: 800, color: "#7c3aed", textTransform: "uppercase" as const, margin: "0 0 4px", letterSpacing: "0.07em" }}>OCR extracted text</p>
+                    <code style={{ fontSize: 11, color: "#e2e8f0", fontFamily: "monospace", lineHeight: 1.5, display: "block" }}>{frame.ocr}</code>
+                  </div>
+                  {/* DOM */}
+                  {frame.domContext && (
+                    <div data-testid={`keyframe-dom-${i}`} style={{ padding: "8px 10px", background: "#1e293b", borderRadius: 6, border: "1px solid #334155" }}>
+                      <p style={{ fontSize: 9, fontWeight: 800, color: C.sky, textTransform: "uppercase" as const, margin: "0 0 4px", letterSpacing: "0.07em" }}>DOM context</p>
+                      <p style={{ fontSize: 11, color: "#94a3b8", margin: 0, lineHeight: 1.5 }}>{frame.domContext}</p>
+                    </div>
+                  )}
+                  {/* Qwen */}
+                  {frame.qwenObservation && (
+                    <div data-testid={`keyframe-qwen-${i}`} style={{ padding: "8px 10px", background: "#1e293b", borderRadius: 6, border: "1px solid #334155" }}>
+                      <p style={{ fontSize: 9, fontWeight: 800, color: C.amber, textTransform: "uppercase" as const, margin: "0 0 4px", letterSpacing: "0.07em" }}>Qwen visual observation</p>
+                      <p style={{ fontSize: 11, color: "#94a3b8", margin: 0, lineHeight: 1.5 }}>{frame.qwenObservation}</p>
+                    </div>
+                  )}
+                  {/* Why */}
+                  <div style={{ padding: "8px 10px", background: "#1a0f2e", borderRadius: 6, border: "1px solid #6d28d9" }}>
+                    <p style={{ fontSize: 9, fontWeight: 800, color: "#a78bfa", textTransform: "uppercase" as const, margin: "0 0 4px", letterSpacing: "0.07em" }}>Why this supports the skill</p>
+                    <p style={{ fontSize: 11, color: "#c4b5fd", margin: 0, lineHeight: 1.5 }}>{frame.whyItSupports}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Qwen analysis summary */}
+      {qwenAnalysis && (
+        <div data-testid="skill-artifact-qwen" style={{ marginTop: 12, border: `1px solid #fde68a`, borderRadius: 8, overflow: "hidden" }}>
+          <div style={{ padding: "9px 14px", background: C.amberSoft, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#92400e" }}>Qwen / Visual Reasoning Summary</span>
+            <div style={{ display: "flex", gap: 5 }}>
+              <ArtifactBadge label={`${qwenAnalysis.analyzedFrameCount} frames analyzed`} color={C.amber} bg="#fff" border="#fde68a" />
+              <ArtifactBadge label={`${qwenAnalysis.confidence} confidence`} color={qwenAnalysis.confidence === "high" ? C.emerald : C.amber} bg={qwenAnalysis.confidence === "high" ? C.emeraldSoft : C.amberSoft} border={qwenAnalysis.confidence === "high" ? "#bbf7d0" : "#fde68a"} />
+            </div>
+          </div>
+          <div style={{ padding: "12px 14px", background: C.paper, display: "flex", flexDirection: "column", gap: 9 }}>
+            <div>
+              <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, letterSpacing: "0.07em", color: C.muted, margin: "0 0 4px" }}>Observations</p>
+              <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 }}>
+                {qwenAnalysis.observations.map((obs, i) => (
+                  <li key={i} style={{ fontSize: 11, color: C.inkSoft, lineHeight: 1.5 }}>{obs}</li>
+                ))}
+              </ul>
+            </div>
+            <div style={{ padding: "8px 10px", background: C.amberSoft, borderRadius: 6, border: "1px solid #fde68a" }}>
+              <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, letterSpacing: "0.07em", color: "#92400e", margin: "0 0 4px" }}>Model reasoning</p>
+              <p style={{ fontSize: 11, color: "#78350f", margin: 0, lineHeight: 1.5 }}>{qwenAnalysis.modelReasoning}</p>
+            </div>
+            <div>
+              <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, letterSpacing: "0.07em", color: C.indigo, margin: "0 0 4px" }}>Skill match</p>
+              <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{qwenAnalysis.skillMatch}</p>
+            </div>
+            {qwenAnalysis.uncertainObservations.length > 0 && (
+              <div>
+                <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, letterSpacing: "0.07em", color: C.muted, margin: "0 0 4px" }}>Uncertain / not confirmed</p>
+                <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 2 }}>
+                  {qwenAnalysis.uncertainObservations.map((obs, i) => (
+                    <li key={i} style={{ fontSize: 10, color: C.muted, fontStyle: "italic", lineHeight: 1.4 }}>{obs}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* DOM evidence */}
+      {domEvidence && (
+        <div data-testid="skill-artifact-dom" style={{ marginTop: 12, border: `1px solid ${C.line}`, borderRadius: 8, overflow: "hidden" }}>
+          <div style={{ padding: "9px 14px", background: C.skySoft, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#0c4a6e" }}>DOM Evidence</span>
+            <div style={{ display: "flex", gap: 5 }}>
+              <ArtifactBadge label={`URL: ${domEvidence.urlType}`} color={domEvidence.urlType === "public" ? C.emerald : C.indigo} bg={domEvidence.urlType === "public" ? C.emeraldSoft : C.indigoSoft} border={domEvidence.urlType === "public" ? "#bbf7d0" : "#c7d2fe"} />
+              <ArtifactBadge label={domEvidence.isProtected ? "Protected" : "Public"} color={domEvidence.isProtected ? C.indigo : C.emerald} bg={domEvidence.isProtected ? C.indigoSoft : C.emeraldSoft} border={domEvidence.isProtected ? "#c7d2fe" : "#bbf7d0"} />
+            </div>
+          </div>
+          <div style={{ padding: "12px 14px", background: C.paper, display: "flex", flexDirection: "column", gap: 9 }}>
+            <div>
+              <p style={{ fontSize: 10, fontWeight: 700, color: C.ink, margin: "0 0 2px" }}>Page: {domEvidence.pageTitle}</p>
+              {domEvidence.urlType === "local" && (
+                <p style={{ fontSize: 10, color: C.muted, margin: 0, fontStyle: "italic" }}>Local/private URL hidden from recruiter. DOM evidence is shown because student approved this proof.</p>
+              )}
+            </div>
+            <div>
+              <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, letterSpacing: "0.07em", color: C.muted, margin: "0 0 5px" }}>Captured labels & elements</p>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {domEvidence.capturedLabels.map((lbl, i) => (
+                  <code key={i} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, background: C.bg, color: C.indigo, border: `1px solid ${C.line}`, fontFamily: "monospace" }}>{lbl}</code>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, letterSpacing: "0.07em", color: C.muted, margin: "0 0 5px" }}>Observed sections</p>
+              <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 }}>
+                {domEvidence.observedSections.map((sec, i) => (
+                  <li key={i} style={{ fontSize: 11, color: C.inkSoft, lineHeight: 1.4 }}>{sec}</li>
+                ))}
+              </ul>
+            </div>
+            {domEvidence.capturedEvents && domEvidence.capturedEvents.length > 0 && (
+              <div>
+                <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, letterSpacing: "0.07em", color: C.muted, margin: "0 0 5px" }}>Captured events</p>
+                <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 2 }}>
+                  {domEvidence.capturedEvents.map((ev, i) => (
+                    <li key={i} style={{ fontSize: 10, color: C.inkSoft, fontFamily: "monospace", lineHeight: 1.4 }}>{ev}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <p style={{ fontSize: 10, color: C.sky, fontWeight: 600, margin: 0 }}>Skill relevance: {domEvidence.skillRelevance}</p>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── GitHub Code Artifact ──────────────────────────────────────────────────────
+
+function GithubArtifactSection({ files, accessApproved }: { files: SkillGithubFile[]; accessApproved: boolean }) {
+  if (files.length === 0) {
+    return (
+      <div data-testid="skill-artifact-github">
+        <ArtifactSectionHeader title="GitHub Code" color={C.emerald} />
+        <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+          <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>No GitHub code evidence detected for this skill.</p>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div data-testid="skill-artifact-github">
+      <ArtifactSectionHeader title="GitHub Code" count={files.length} color={C.emerald} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {files.map((file, i) => {
+          const blobUrl = file.isPublic && file.repoUrl && file.branch
+            ? `${file.repoUrl}/blob/${file.branch}/${file.path}`
+            : null
+          const repoUrl = file.isPublic && file.repoUrl ? file.repoUrl : null
+          return (
+            <div key={i} data-testid={`github-artifact-${i}`} style={{ border: `1px solid ${file.isPublic ? "#bbf7d0" : C.line}`, borderRadius: 8, overflow: "hidden" }}>
+              <div style={{ padding: "8px 14px", background: file.isPublic ? C.emeraldSoft : C.bg, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                <code style={{ fontSize: 11, color: file.isPublic ? "#065f46" : C.indigo, fontFamily: "monospace", wordBreak: "break-all" as const, flex: 1 }}>
+                  {file.path}
+                </code>
+                <div style={{ display: "flex", gap: 5 }}>
+                  <ArtifactBadge label={file.isPublic ? "Public repo" : "Private repo"} color={file.isPublic ? C.emerald : C.indigo} bg={file.isPublic ? "#fff" : C.indigoSoft} border={file.isPublic ? "#bbf7d0" : "#c7d2fe"} />
+                  <ArtifactBadge label={`${file.confidence} confidence`} color={file.confidence === "high" ? C.emerald : C.amber} bg={file.confidence === "high" ? C.emeraldSoft : C.amberSoft} border={file.confidence === "high" ? "#bbf7d0" : "#fde68a"} />
+                </div>
+              </div>
+              <div style={{ padding: "10px 14px", background: C.paper }}>
+                <p style={{ fontSize: 11, color: C.inkSoft, margin: "0 0 8px", lineHeight: 1.5 }}>{file.reason}</p>
+                {file.stackTags && (
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 8 }}>
+                    {file.stackTags.map(tag => (
+                      <span key={tag} style={{ fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 4, background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe" }}>{tag}</span>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {blobUrl ? (
+                    <>
+                      <a
+                        href={blobUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        data-testid={`github-open-file-${i}`}
+                        style={{ fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 5, color: C.emerald, background: C.emeraldSoft, border: "1px solid #bbf7d0", textDecoration: "none" }}
+                      >
+                        ↗ Open GitHub file
+                      </a>
+                      {repoUrl && (
+                        <a
+                          href={repoUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          data-testid={`github-open-repo-${i}`}
+                          style={{ fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 5, color: C.indigo, background: C.indigoSoft, border: "1px solid #c7d2fe", textDecoration: "none" }}
+                        >
+                          ↗ Open repository
+                        </a>
+                      )}
+                    </>
+                  ) : (
+                    <div data-testid={`github-locked-${i}`} style={{ padding: "5px 10px", borderRadius: 5, background: "#1e1b4b", border: "1px solid #4f46e5", display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 11 }}>🔒</span>
+                      <span style={{ fontSize: 10, color: "#a5b4fc" }}>Source file access requires student approval or public repository access.</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── Transcript Artifact ───────────────────────────────────────────────────────
+
+function TranscriptArtifactSection({ excerpts, accessApproved }: { excerpts: SkillTranscriptExcerpt[]; accessApproved: boolean }) {
+  const [expanded, setExpanded] = useState<number | null>(null)
+
+  if (excerpts.length === 0) {
+    return (
+      <div data-testid="skill-artifact-transcript">
+        <ArtifactSectionHeader title="Project Defense Transcript" color={C.sky} />
+        <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+          <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>No transcript evidence for this skill.</p>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div data-testid="skill-artifact-transcript">
+      <ArtifactSectionHeader title="Project Defense Transcript" count={excerpts.length} color={C.sky} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {excerpts.map((t, i) => {
+          const canView = !t.isProtected || accessApproved
+          const isExpanded = expanded === i
+          return (
+            <div key={i} data-testid={`transcript-artifact-${i}`} style={{ border: `1px solid ${canView ? "#bae6fd" : "#4f46e5"}`, borderRadius: 8, overflow: "hidden" }}>
+              <div style={{ padding: "9px 14px", background: canView ? C.skySoft : "#1e1b4b", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: canView ? "#0c4a6e" : "#a5b4fc" }}>Project defense excerpt {i + 1}</span>
+                <ArtifactBadge label={t.isProtected ? (accessApproved ? "Approved" : "Protected") : "Public"} color={t.isProtected ? (accessApproved ? C.violet : "#818cf8") : C.sky} bg={t.isProtected ? (accessApproved ? C.violetSoft : "#1e1b4b") : C.skySoft} border={t.isProtected ? (accessApproved ? "#ddd6fe" : "#4f46e5") : "#bae6fd"} />
+              </div>
+              {canView ? (
+                <div style={{ padding: "12px 14px", background: C.paper }}>
+                  <blockquote style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.8, margin: "0 0 10px", padding: "0 0 0 14px", borderLeft: `3px solid ${C.sky}`, fontStyle: "italic" }}>
+                    &ldquo;{t.excerpt}&rdquo;
+                  </blockquote>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                    {t.ownershipSignal && (
+                      <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: C.emeraldSoft, color: C.emerald, border: "1px solid #bbf7d0" }}>
+                        Ownership: {t.ownershipSignal}
+                      </span>
+                    )}
+                    {t.technicalDepth && (
+                      <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe" }}>
+                        Depth: {t.technicalDepth}
+                      </span>
+                    )}
+                  </div>
+                  {t.skillMapping && t.skillMapping.length > 0 && (
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 8 }}>
+                      {t.skillMapping.map(sk => (
+                        <span key={sk} style={{ fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 4, background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe" }}>{sk}</span>
+                      ))}
+                    </div>
+                  )}
+                  {(t.fullExcerpt || t.lines) && (
+                    <button
+                      type="button"
+                      data-testid={`expand-transcript-${i}`}
+                      onClick={() => setExpanded(isExpanded ? null : i)}
+                      style={{ fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 4, cursor: "pointer", color: C.sky, background: C.skySoft, border: "1px solid #bae6fd" }}
+                    >
+                      {isExpanded ? "Hide full excerpt" : "View full approved transcript"}
+                    </button>
+                  )}
+                  {isExpanded && (
+                    <div data-testid={`transcript-full-${i}`} style={{ marginTop: 10 }}>
+                      {t.fullExcerpt && (
+                        <blockquote style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.8, margin: "0 0 10px", padding: "0 0 0 14px", borderLeft: `3px solid ${C.indigo}`, fontStyle: "italic" }}>
+                          &ldquo;{t.fullExcerpt}&rdquo;
+                        </blockquote>
+                      )}
+                      {t.lines && t.lines.length > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                          {t.lines.map((line, j) => (
+                            <div key={j} style={{ padding: "6px 10px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 5, fontSize: 11, color: C.inkSoft, lineHeight: 1.5 }}>
+                              <span style={{ color: C.sky, marginRight: 6, fontWeight: 700 }}>›</span>{line}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{ padding: "12px 14px" }}>
+                  <p style={{ fontSize: 11, color: "#818cf8", margin: 0 }}>Full transcript requires student approval. Request access to view approved excerpts and technical depth signals.</p>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── Document / PDF Artifact ───────────────────────────────────────────────────
+
+function DocumentArtifactSection({ docs, accessApproved }: { docs: SkillDocumentSnippet[]; accessApproved: boolean }) {
+  const [expanded, setExpanded] = useState<number | null>(null)
+
+  if (docs.length === 0) {
+    return (
+      <div data-testid="skill-artifact-documents">
+        <ArtifactSectionHeader title="Documents / PDF" color={C.amber} />
+        <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+          <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>No document evidence for this skill.</p>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div data-testid="skill-artifact-documents">
+      <ArtifactSectionHeader title="Documents / PDF" count={docs.length} color={C.amber} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {docs.map((doc, i) => {
+          const canView = !doc.isProtected || accessApproved
+          const isExpanded = expanded === i
+          return (
+            <div key={i} data-testid={`document-artifact-${i}`} style={{ border: `1px solid ${canView ? "#fde68a" : "#4f46e5"}`, borderRadius: 8, overflow: "hidden" }}>
+              <div style={{ padding: "9px 14px", background: canView ? C.amberSoft : "#1e1b4b", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: canView ? "#92400e" : "#a5b4fc" }}>{doc.title}</span>
+                  {doc.fileType && <ArtifactBadge label={doc.fileType} color={C.amber} bg="#fff" border="#fde68a" />}
+                </div>
+                <ArtifactBadge label={doc.isProtected ? (accessApproved ? "Approved" : "Protected") : "Public"} color={doc.isProtected ? (accessApproved ? C.violet : "#818cf8") : C.emerald} bg={doc.isProtected ? (accessApproved ? C.violetSoft : "#1e1b4b") : C.emeraldSoft} border={doc.isProtected ? (accessApproved ? "#ddd6fe" : "#4f46e5") : "#bbf7d0"} />
+              </div>
+              {canView ? (
+                <div style={{ padding: "12px 14px", background: C.paper, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {doc.summary && (
+                    <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5, fontStyle: "italic" }}>{doc.summary}</p>
+                  )}
+                  <blockquote style={{ fontSize: 11, color: C.inkSoft, lineHeight: 1.7, margin: 0, padding: "0 0 0 12px", borderLeft: `3px solid ${C.amber}`, fontStyle: "italic" }}>
+                    &ldquo;{doc.snippet}&rdquo;
+                  </blockquote>
+                  <p style={{ fontSize: 10, color: C.muted, margin: 0 }}><strong>Relevance:</strong> {doc.relevance}</p>
+                  {doc.supportedSkills && doc.supportedSkills.length > 0 && (
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      {doc.supportedSkills.map(sk => (
+                        <span key={sk} style={{ fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 4, background: C.amberSoft, color: "#92400e", border: "1px solid #fde68a" }}>{sk}</span>
+                      ))}
+                    </div>
+                  )}
+                  {doc.mismatchWarnings && doc.mismatchWarnings.length > 0 && (
+                    <div style={{ padding: "6px 10px", borderRadius: 5, background: "#fff7ed", border: "1px solid #fed7aa" }}>
+                      {doc.mismatchWarnings.map((w, j) => (
+                        <p key={j} style={{ fontSize: 10, color: "#c2410c", margin: 0, lineHeight: 1.4 }}>⚠ {w}</p>
+                      ))}
+                    </div>
+                  )}
+                  {doc.extractedSections && doc.extractedSections.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        data-testid={`expand-document-${i}`}
+                        onClick={() => setExpanded(isExpanded ? null : i)}
+                        style={{ fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 4, cursor: "pointer", color: C.amber, background: C.amberSoft, border: "1px solid #fde68a", width: "fit-content" as const }}
+                      >
+                        {isExpanded ? "Hide extracted text" : "View extracted text sections"}
+                      </button>
+                      {isExpanded && (
+                        <div data-testid={`document-sections-${i}`} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {doc.extractedSections.map((sec, j) => (
+                            <div key={j} style={{ padding: "6px 10px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 5, fontSize: 11, color: C.inkSoft, lineHeight: 1.5 }}>
+                              <span style={{ color: C.amber, marginRight: 6 }}>›</span>{sec}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {accessApproved && (
+                    <div data-testid={`document-approved-viewer-${i}`} style={{ padding: "8px 10px", borderRadius: 5, background: C.amberSoft, border: "1px solid #fde68a" }}>
+                      <p style={{ fontSize: 10, color: "#92400e", fontWeight: 600, margin: "0 0 2px" }}>Approved document file viewer</p>
+                      <p style={{ fontSize: 10, color: "#78350f", margin: 0, fontStyle: "italic" }}>
+                        Approved document file viewer will load here when document URL is connected.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{ padding: "12px 14px" }}>
+                  <p style={{ fontSize: 11, color: "#818cf8", margin: 0 }}>Document access requires student approval. Request access to view extracted text and document summary.</p>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── Final Evidence Analysis Artifact ─────────────────────────────────────────
+
+function FinalAnalysisArtifact({ analysis }: { analysis: SkillFinalAnalysis }) {
+  const scoreColor = analysis.evidenceScore >= 80 ? C.emerald : analysis.evidenceScore >= 55 ? C.amber : C.rose
+  const scoreBg    = analysis.evidenceScore >= 80 ? C.emeraldSoft : analysis.evidenceScore >= 55 ? C.amberSoft : C.bg
+  const statusColor: Record<string, string> = { supported: C.emerald, partial: C.amber, missing: C.muted }
+  const statusBg:    Record<string, string> = { supported: C.emeraldSoft, partial: C.amberSoft, missing: C.bg }
+
+  return (
+    <div data-testid="skill-artifact-final-analysis">
+      <ArtifactSectionHeader title="Final Evidence Analysis" color={C.indigo} />
+      <div style={{ border: `1px solid ${C.line}`, borderRadius: 8, overflow: "hidden" }}>
+        {/* Score header */}
+        <div style={{ padding: "12px 16px", background: scoreBg, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <span style={{ fontSize: 28, fontWeight: 900, color: scoreColor }}>{analysis.evidenceScore}</span>
+            <span style={{ fontSize: 14, color: scoreColor }}>/100</span>
+            <p style={{ fontSize: 11, color: scoreColor, margin: "2px 0 0", fontWeight: 600 }}>Evidence score</p>
+          </div>
+          <div style={{ flex: 1, maxWidth: 400 }}>
+            <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>{analysis.recommendation}</p>
+          </div>
+        </div>
+        {/* Per-source scores */}
+        <div style={{ padding: "12px 16px", borderTop: `1px solid ${C.line}`, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 7 }}>
+          {analysis.sourceScores.map((src, i) => (
+            <div key={i} style={{ padding: "7px 10px", background: statusBg[src.status] ?? C.bg, border: `1px solid ${(statusColor[src.status] ?? C.muted) + "44"}`, borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 10, color: C.ink, fontWeight: 600 }}>{src.label}</span>
+              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                {src.score > 0 && <span style={{ fontSize: 11, fontWeight: 700, color: statusColor[src.status] ?? C.muted }}>{src.score}</span>}
+                <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 4, color: statusColor[src.status] ?? C.muted, background: (statusColor[src.status] ?? C.muted) + "22" }}>{src.status}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* Analysis details */}
+        <div style={{ padding: "12px 16px", borderTop: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={{ padding: "8px 10px", background: C.emeraldSoft, borderRadius: 6, border: "1px solid #bbf7d0" }}>
+              <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, color: C.emerald, margin: "0 0 3px", letterSpacing: "0.07em" }}>Strongest proof</p>
+              <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.4 }}>{analysis.strongestProof}</p>
+            </div>
+            <div style={{ padding: "8px 10px", background: C.amberSoft, borderRadius: 6, border: "1px solid #fde68a" }}>
+              <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, color: C.amber, margin: "0 0 3px", letterSpacing: "0.07em" }}>Weakest proof</p>
+              <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.4 }}>{analysis.weakestProof}</p>
+            </div>
+          </div>
+          <div style={{ padding: "8px 10px", background: C.indigoSoft, borderRadius: 6, border: "1px solid #c7d2fe" }}>
+            <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, color: C.indigo, margin: "0 0 3px", letterSpacing: "0.07em" }}>Why this skill was granted</p>
+            <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>{analysis.whyGranted}</p>
+          </div>
+          {analysis.stillNeedsReview.length > 0 && (
+            <div style={{ padding: "8px 10px", background: C.bg, borderRadius: 6, border: `1px solid ${C.line}` }}>
+              <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase" as const, color: C.muted, margin: "0 0 4px", letterSpacing: "0.07em" }}>Still needs review</p>
+              <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 }}>
+                {analysis.stillNeedsReview.map((item, j) => (
+                  <li key={j} style={{ fontSize: 10, color: C.muted, lineHeight: 1.4 }}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// DirectProofLinksSection removed — replaced by dedicated artifact sections (WorkflowRecordingArtifact,
+// KeyframeArtifactSection, GithubArtifactSection, TranscriptArtifactSection, etc.) inside SkillEvidenceDetailModal.
+
+function _DirectProofLinksSection_REMOVED({
   bundle,
   accessApproved,
 }: {
@@ -2878,126 +3863,66 @@ export function SkillEvidenceDetailModal({
         </div>
 
         {/* Body */}
-        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 24, overflowY: "auto" }}>
+        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 28, overflowY: "auto" }}>
 
-          {/* 1. Source coverage summary */}
-          <div data-testid="skill-evidence-source-coverage">
-            <SectionTitle>Source coverage</SectionTitle>
-            <div style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-              gap: 8,
-            }}>
-              {bundle.sources.map((source) => (
-                <SkillSourceCoverageCard key={source.key} source={source} />
-              ))}
-            </div>
-          </div>
-
-          {/* 2. Visual / keyframe proof */}
-          <div data-testid="skill-evidence-visual-proof">
-            <SectionTitle>Precise visual proof</SectionTitle>
-            {bundle.visualEvidence.length === 0 ? (
-              <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
-                <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>
-                  No visual/keyframe evidence captured for this skill — deployment or document-only coverage.
-                </p>
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {bundle.visualEvidence.map((frame, i) =>
-                  frame.isProtected && !accessApproved ? (
-                    <SkillProtectedLock key={i} label="Keyframe / screenshot evidence" />
-                  ) : (
-                    <SkillKeyframeCard key={i} frame={frame} />
-                  )
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* 3. GitHub code evidence */}
-          <div data-testid="skill-evidence-github">
-            <SectionTitle>GitHub code evidence</SectionTitle>
-            {bundle.githubEvidence.length === 0 ? (
-              <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
-                <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>
-                  No GitHub code evidence detected for this skill.
-                </p>
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {bundle.githubEvidence.map((file) => (
-                  <SkillGithubFileCard key={file.path} file={file} />
+          {/* 1. Source coverage + access model */}
+          <div>
+            <div data-testid="skill-evidence-source-coverage">
+              <SectionTitle>Evidence source coverage</SectionTitle>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8, marginBottom: 12 }}>
+                {bundle.sources.map((source) => (
+                  <SkillSourceCoverageCard key={source.key} source={source} />
                 ))}
-                <p style={{ fontSize: 10, color: C.muted, margin: 0, fontStyle: "italic" }}>
-                  Safe file paths shown. Raw source code access requires student approval.
-                </p>
               </div>
-            )}
-          </div>
-
-          {/* 4. Transcript & document evidence */}
-          <div data-testid="skill-evidence-transcript">
-            <SectionTitle>Transcript &amp; document evidence</SectionTitle>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {bundle.transcriptEvidence.length === 0 && bundle.documentEvidence.length === 0 && (
-                <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
-                  <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>
-                    No transcript or document evidence for this skill.
-                  </p>
-                </div>
-              )}
-              {bundle.transcriptEvidence.map((t, i) =>
-                t.isProtected && !accessApproved ? (
-                  <SkillProtectedLock key={`tr-${i}`} label="Transcript excerpt" />
-                ) : (
-                  <div key={`tr-${i}`} style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
-                    <blockquote style={{
-                      fontSize: 12, color: C.inkSoft, lineHeight: 1.7,
-                      margin: "0 0 8px", padding: "0 0 0 12px",
-                      borderLeft: `3px solid ${C.indigo}`, fontStyle: "italic",
-                    }}>
-                      &ldquo;{t.excerpt}&rdquo;
-                    </blockquote>
-                    <p style={{ fontSize: 10, color: C.muted, margin: "0 0 3px" }}>
-                      <strong>Relevance:</strong> {t.relevance}
-                    </p>
-                    {t.ownershipSignal && (
-                      <p style={{ fontSize: 10, color: C.emerald, margin: "0 0 2px" }}>
-                        Ownership signal: {t.ownershipSignal}
-                      </p>
-                    )}
-                    {t.technicalDepth && (
-                      <p style={{ fontSize: 10, color: C.indigo, margin: 0 }}>
-                        Technical depth: {t.technicalDepth}
-                      </p>
-                    )}
-                  </div>
-                )
-              )}
-              {bundle.documentEvidence.map((d, i) =>
-                d.isProtected && !accessApproved ? (
-                  <SkillProtectedLock key={`doc-${i}`} label="Document evidence" />
-                ) : (
-                  <div key={`doc-${i}`} style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: C.ink, margin: "0 0 4px" }}>{d.title}</p>
-                    <p style={{ fontSize: 11, color: C.inkSoft, margin: "0 0 4px", fontStyle: "italic", lineHeight: 1.5 }}>
-                      &ldquo;{d.snippet}&rdquo;
-                    </p>
-                    <p style={{ fontSize: 10, color: C.muted, margin: 0 }}>
-                      <strong>Relevance:</strong> {d.relevance}
-                    </p>
-                  </div>
-                )
-              )}
             </div>
+            <ArtifactAccessSummary bundle={bundle} accessApproved={accessApproved} />
           </div>
 
-          {/* 5. Direct proof links */}
-          <DirectProofLinksSection bundle={bundle} accessApproved={accessApproved} />
+          {/* 2. Workflow recording artifact */}
+          {bundle.workflowRecording && (
+            <WorkflowRecordingArtifact recording={bundle.workflowRecording} accessApproved={accessApproved} />
+          )}
+          {!bundle.workflowRecording && bundle.sources.some(s => s.key === "workflow" && s.status === "missing") && (
+            <div data-testid="skill-artifact-workflow-recording">
+              <ArtifactSectionHeader title="Workflow Recording" color={C.violet} />
+              <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+                <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>No workflow recording captured for this skill. Candidate did not record a deployment or CI/CD session.</p>
+              </div>
+            </div>
+          )}
 
-          {/* 6. Interview questions */}
+          {/* 3. Keyframe / OCR / DOM / Qwen artifacts */}
+          {(bundle.visualEvidence.length > 0 || bundle.qwenAnalysis || bundle.domEvidence) ? (
+            <KeyframeArtifactSection
+              frames={bundle.visualEvidence}
+              qwenAnalysis={bundle.qwenAnalysis}
+              domEvidence={bundle.domEvidence}
+              accessApproved={accessApproved}
+            />
+          ) : (
+            <div data-testid="skill-artifact-keyframes">
+              <ArtifactSectionHeader title="Keyframes, OCR & Visual Reasoning" color="#7c3aed" />
+              <div style={{ padding: "12px 14px", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+                <p style={{ fontSize: 12, color: C.muted, margin: 0, fontStyle: "italic" }}>No keyframe or visual artifacts captured for this skill.</p>
+              </div>
+            </div>
+          )}
+
+          {/* 4. GitHub code artifacts */}
+          <GithubArtifactSection files={bundle.githubEvidence} accessApproved={accessApproved} />
+
+          {/* 5. Transcript artifact */}
+          <TranscriptArtifactSection excerpts={bundle.transcriptEvidence} accessApproved={accessApproved} />
+
+          {/* 6. Document artifact */}
+          <DocumentArtifactSection docs={bundle.documentEvidence} accessApproved={accessApproved} />
+
+          {/* 7. Final evidence analysis */}
+          {bundle.finalAnalysis && (
+            <FinalAnalysisArtifact analysis={bundle.finalAnalysis} />
+          )}
+
+          {/* 8. Interview questions */}
           <div data-testid="skill-evidence-interview-questions">
             <SectionTitle>Suggested interview questions</SectionTitle>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -3024,10 +3949,10 @@ export function SkillEvidenceDetailModal({
           background: C.bg, borderRadius: "0 0 14px 14px",
         }}>
           <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>
-            VeriBridge aggregates evidence from workflow, GitHub, visual/OCR, transcript, and documents for each skill.
+            This modal shows actual proof artifacts — workflow recordings, keyframes with OCR/DOM/Qwen, GitHub direct file links, transcript excerpts, and document extracts.
           </p>
           <p style={{ fontSize: 11, color: C.muted, margin: "2px 0 0", fontStyle: "italic" }}>
-            Raw files and sensitive metadata remain under student control. Protected evidence requires explicit student approval.
+            Raw files and storage paths are never exposed. Protected evidence requires explicit student approval.
           </p>
         </div>
       </div>

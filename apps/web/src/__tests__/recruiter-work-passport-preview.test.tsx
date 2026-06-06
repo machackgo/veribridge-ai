@@ -397,40 +397,46 @@ describe("RecruiterWorkPassportPreview — skill-first evidence", () => {
   it("skill modal aggregates workflow, visual, GitHub, transcript, and document proof sections", () => {
     render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
     fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
-    expect(screen.getByTestId("skill-evidence-visual-proof")).toBeInTheDocument()
-    expect(screen.getByTestId("skill-evidence-github")).toBeInTheDocument()
-    expect(screen.getByTestId("skill-evidence-transcript")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-workflow-recording")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-keyframes")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-github")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-transcript")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-documents")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-final-analysis")).toBeInTheDocument()
     expect(screen.getByTestId("skill-evidence-interview-questions")).toBeInTheDocument()
   })
 
-  it("GitHub code evidence shows safe file paths and reasons", () => {
+  it("GitHub code evidence shows direct file links for public repo", () => {
     render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
     fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
-    const github = screen.getByTestId("skill-evidence-github")
+    const github = screen.getByTestId("skill-artifact-github")
     expect(github.textContent).toMatch(/final_evidence_evaluator_service\.py/i)
     expect(github.textContent).toMatch(/combines workflow.*GitHub.*signals/i)
+    // Public repo — direct open file links should exist
+    expect(screen.getByTestId("github-open-file-0")).toBeInTheDocument()
   })
 
   it("visual evidence cards are skill-specific not generic for AI/ML", () => {
     render(<RecruiterWorkPassportPreview view={makeGroupedView()} />)
     fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
-    const visual = screen.getByTestId("skill-evidence-visual-proof")
-    expect(visual.textContent).toMatch(/Model inference UI visible/i)
+    const keyframes = screen.getByTestId("skill-artifact-keyframes")
+    expect(keyframes.textContent).toMatch(/Model inference UI visible/i)
   })
 
-  it("without approval, protected frames in AI/ML show locked request-access state", () => {
+  it("without approval, protected frames in AI/ML show locked message", () => {
     render(<RecruiterWorkPassportPreview view={makeGroupedView({ has_protected_evidence: true })} />)
     fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
-    const locks = screen.getAllByTestId("skill-evidence-protected-lock")
-    expect(locks.length).toBeGreaterThan(0)
-    expect(locks[0].textContent).toMatch(/Protected evidence available/i)
+    const keyframes = screen.getByTestId("skill-artifact-keyframes")
+    // Frames 1 and 2 are protected — should show locked state
+    expect(keyframes.textContent).toMatch(/Protected keyframe/i)
   })
 
   it("public-safe proof visible without approval", () => {
     render(<RecruiterWorkPassportPreview view={makeGroupedView({ has_protected_evidence: true })} />)
     fireEvent.click(screen.getAllByTestId("view-skill-evidence-btn")[0])
-    const visual = screen.getByTestId("skill-evidence-visual-proof")
-    expect(visual.textContent).toMatch(/Model inference UI visible/i)
+    const keyframes = screen.getByTestId("skill-artifact-keyframes")
+    // Frame 0 is public — should be visible
+    expect(keyframes.textContent).toMatch(/Model inference UI visible/i)
   })
 
   it("interview questions render per skill", () => {
@@ -445,9 +451,9 @@ describe("RecruiterWorkPassportPreview — skill-first evidence", () => {
     const btns = screen.getAllByTestId("view-skill-evidence-btn")
     fireEvent.click(btns[1])
     expect(screen.getByTestId("skill-evidence-detail-modal")).toBeInTheDocument()
-    const visual = screen.getByTestId("skill-evidence-visual-proof")
-    expect(visual.textContent).toMatch(/React UI interaction/i)
-    expect(visual.textContent).not.toMatch(/Model inference UI visible/i)
+    const keyframes = screen.getByTestId("skill-artifact-keyframes")
+    expect(keyframes.textContent).toMatch(/React UI interaction/i)
+    expect(keyframes.textContent).not.toMatch(/Model inference UI visible/i)
   })
 
   it("DevOps/Deployment shows needs-review state with document-only coverage", () => {
@@ -456,9 +462,10 @@ describe("RecruiterWorkPassportPreview — skill-first evidence", () => {
     fireEvent.click(btns[2])
     expect(screen.getByTestId("skill-evidence-detail-modal")).toBeInTheDocument()
     expect(screen.getAllByText(/needs review/i).length).toBeGreaterThan(0)
-    const visual = screen.getByTestId("skill-evidence-visual-proof")
-    expect(visual.textContent).toMatch(/No visual\/keyframe evidence/i)
-    const github = screen.getByTestId("skill-evidence-github")
+    // DevOps has no keyframes or github — both sections show empty state
+    const keyframes = screen.getByTestId("skill-artifact-keyframes")
+    expect(keyframes.textContent).toMatch(/No keyframe or visual artifacts/i)
+    const github = screen.getByTestId("skill-artifact-github")
     expect(github.textContent).toMatch(/No GitHub code evidence/i)
   })
 })
@@ -476,7 +483,7 @@ describe("SkillEvidenceDetailModal", () => {
     )
     expect(screen.getByTestId("skill-evidence-detail-modal")).toBeInTheDocument()
     expect(screen.getByText("AI / Machine Learning")).toBeInTheDocument()
-    expect(screen.getByText(/strongly supported/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/strongly supported/i).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/high confidence/i).length).toBeGreaterThan(0)
   })
 
@@ -495,7 +502,7 @@ describe("SkillEvidenceDetailModal", () => {
     expect(coverage.textContent).toMatch(/Project defense/i)
   })
 
-  it("shows skill-specific visual evidence label for AI/ML without approval", () => {
+  it("shows actual proof artifact sections for AI/ML", () => {
     render(
       <SkillEvidenceDetailModal
         skillName="AI / Machine Learning"
@@ -503,11 +510,15 @@ describe("SkillEvidenceDetailModal", () => {
         onClose={vi.fn()}
       />,
     )
-    const visual = screen.getByTestId("skill-evidence-visual-proof")
-    expect(visual.textContent).toMatch(/Model inference UI visible/i)
+    expect(screen.getByTestId("skill-artifact-workflow-recording")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-keyframes")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-github")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-transcript")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-documents")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-final-analysis")).toBeInTheDocument()
   })
 
-  it("shows protected locks for AI/ML protected frames when not approved", () => {
+  it("shows skill-specific keyframe artifact for AI/ML — model inference label", () => {
     render(
       <SkillEvidenceDetailModal
         skillName="AI / Machine Learning"
@@ -515,12 +526,24 @@ describe("SkillEvidenceDetailModal", () => {
         onClose={vi.fn()}
       />,
     )
-    const locks = screen.getAllByTestId("skill-evidence-protected-lock")
-    expect(locks.length).toBeGreaterThan(0)
-    expect(locks[0].textContent).toMatch(/Protected evidence available/i)
+    const keyframes = screen.getByTestId("skill-artifact-keyframes")
+    expect(keyframes.textContent).toMatch(/Model inference UI visible/i)
   })
 
-  it("shows all protected visual frames when access is approved", () => {
+  it("shows protected keyframe message for locked frames when not approved", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    // Frames 1 and 2 are protected — show locked message
+    const keyframes = screen.getByTestId("skill-artifact-keyframes")
+    expect(keyframes.textContent).toMatch(/Protected keyframe/i)
+  })
+
+  it("expands protected keyframe details when access is approved", () => {
     render(
       <SkillEvidenceDetailModal
         skillName="AI / Machine Learning"
@@ -528,12 +551,14 @@ describe("SkillEvidenceDetailModal", () => {
         onClose={vi.fn()}
       />,
     )
-    const visual = screen.getByTestId("skill-evidence-visual-proof")
-    expect(visual.textContent).toMatch(/Prediction\/demo workflow observed/i)
-    expect(visual.textContent).toMatch(/AI proof builder/i)
+    const keyframes = screen.getByTestId("skill-artifact-keyframes")
+    expect(keyframes.textContent).toMatch(/Prediction\/demo workflow observed/i)
+    expect(keyframes.textContent).toMatch(/AI proof builder/i)
+    // No locked message when approved
+    expect(keyframes.textContent).not.toMatch(/Protected keyframe/i)
   })
 
-  it("transcript is locked when not approved", () => {
+  it("transcript shows locked message when not approved", () => {
     render(
       <SkillEvidenceDetailModal
         skillName="AI / Machine Learning"
@@ -541,12 +566,11 @@ describe("SkillEvidenceDetailModal", () => {
         onClose={vi.fn()}
       />,
     )
-    const transcript = screen.getByTestId("skill-evidence-transcript")
-    const lock = transcript.querySelector('[data-testid="skill-evidence-protected-lock"]')
-    expect(lock).not.toBeNull()
+    const transcript = screen.getByTestId("skill-artifact-transcript")
+    expect(transcript.textContent).toMatch(/Full transcript requires student approval/i)
   })
 
-  it("transcript excerpt visible when approved", () => {
+  it("transcript artifact shows excerpt and ownership signal when approved", () => {
     render(
       <SkillEvidenceDetailModal
         skillName="AI / Machine Learning"
@@ -554,12 +578,12 @@ describe("SkillEvidenceDetailModal", () => {
         onClose={vi.fn()}
       />,
     )
-    const transcript = screen.getByTestId("skill-evidence-transcript")
+    const transcript = screen.getByTestId("skill-artifact-transcript")
     expect(transcript.textContent).toMatch(/TensorFlow\.js/i)
     expect(transcript.textContent).toMatch(/inference/i)
   })
 
-  it("GitHub code evidence shows safe file paths and reasons", () => {
+  it("GitHub artifact shows direct open file link for public repo (AI/ML)", () => {
     render(
       <SkillEvidenceDetailModal
         skillName="AI / Machine Learning"
@@ -567,9 +591,25 @@ describe("SkillEvidenceDetailModal", () => {
         onClose={vi.fn()}
       />,
     )
-    const github = screen.getByTestId("skill-evidence-github")
+    const github = screen.getByTestId("skill-artifact-github")
     expect(github.textContent).toMatch(/final_evidence_evaluator_service\.py/i)
     expect(github.textContent).toMatch(/extension_proof_workflow_analysis_service\.py/i)
+    // Should have open file links (public repo)
+    expect(screen.getByTestId("github-open-file-0")).toBeInTheDocument()
+    expect(screen.getByTestId("github-open-repo-0")).toBeInTheDocument()
+  })
+
+  it("GitHub open file link points to /blob/main/ path", () => {
+    render(
+      <SkillEvidenceDetailModal
+        skillName="AI / Machine Learning"
+        accessApproved={false}
+        onClose={vi.fn()}
+      />,
+    )
+    const link = screen.getByTestId("github-open-file-0") as HTMLAnchorElement
+    expect(link.href).toMatch(/github\.com\/machackgo\/veribridge-ai\/blob\/main\//i)
+    expect(link.href).toMatch(/final_evidence_evaluator_service\.py/i)
   })
 
   it("interview questions render for AI/ML", () => {
@@ -585,7 +625,7 @@ describe("SkillEvidenceDetailModal", () => {
     expect(qs.textContent).toMatch(/rule-based versus model-based/i)
   })
 
-  it("JavaScript/Frontend shows different visual evidence than AI/ML", () => {
+  it("JavaScript/Frontend keyframe artifact is different from AI/ML", () => {
     render(
       <SkillEvidenceDetailModal
         skillName="JavaScript / Frontend"
@@ -593,12 +633,12 @@ describe("SkillEvidenceDetailModal", () => {
         onClose={vi.fn()}
       />,
     )
-    const visual = screen.getByTestId("skill-evidence-visual-proof")
-    expect(visual.textContent).toMatch(/React UI interaction/i)
-    expect(visual.textContent).not.toMatch(/Model inference UI visible/i)
+    const keyframes = screen.getByTestId("skill-artifact-keyframes")
+    expect(keyframes.textContent).toMatch(/React UI interaction/i)
+    expect(keyframes.textContent).not.toMatch(/Model inference UI visible/i)
   })
 
-  it("JavaScript/Frontend GitHub files differ from AI/ML", () => {
+  it("JavaScript/Frontend GitHub artifacts differ from AI/ML", () => {
     render(
       <SkillEvidenceDetailModal
         skillName="JavaScript / Frontend"
@@ -606,12 +646,12 @@ describe("SkillEvidenceDetailModal", () => {
         onClose={vi.fn()}
       />,
     )
-    const github = screen.getByTestId("skill-evidence-github")
+    const github = screen.getByTestId("skill-artifact-github")
     expect(github.textContent).toMatch(/RecruiterWorkPassportPreview\.tsx/i)
     expect(github.textContent).not.toMatch(/final_evidence_evaluator_service\.py/i)
   })
 
-  it("DevOps/Deployment shows needs-review with no visual or GitHub evidence", () => {
+  it("DevOps/Deployment shows needs-review with no keyframe or GitHub artifacts", () => {
     render(
       <SkillEvidenceDetailModal
         skillName="DevOps / Deployment"
@@ -620,13 +660,13 @@ describe("SkillEvidenceDetailModal", () => {
       />,
     )
     expect(screen.getAllByText(/needs review/i).length).toBeGreaterThan(0)
-    const visual = screen.getByTestId("skill-evidence-visual-proof")
-    expect(visual.textContent).toMatch(/No visual\/keyframe evidence/i)
-    const github = screen.getByTestId("skill-evidence-github")
+    const keyframes = screen.getByTestId("skill-artifact-keyframes")
+    expect(keyframes.textContent).toMatch(/No keyframe or visual artifacts/i)
+    const github = screen.getByTestId("skill-artifact-github")
     expect(github.textContent).toMatch(/No GitHub code evidence/i)
   })
 
-  it("DevOps/Deployment document-only evidence visible without approval", () => {
+  it("DevOps/Deployment document artifact visible without approval (not protected)", () => {
     render(
       <SkillEvidenceDetailModal
         skillName="DevOps / Deployment"
@@ -634,8 +674,8 @@ describe("SkillEvidenceDetailModal", () => {
         onClose={vi.fn()}
       />,
     )
-    const transcript = screen.getByTestId("skill-evidence-transcript")
-    expect(transcript.textContent).toMatch(/containerizing/i)
+    const docs = screen.getByTestId("skill-artifact-documents")
+    expect(docs.textContent).toMatch(/containerizing/i)
   })
 
   it("skill evidence modal does not render unsafe strings", () => {
@@ -830,9 +870,9 @@ describe("RecruiterWorkPassportPreview — inline skill evidence cards", () => {
   })
 })
 
-// ── SkillEvidenceDetailModal — direct proof links ─────────────────────────────
+// ── SkillEvidenceDetailModal — artifact inspection ────────────────────────────
 
-describe("SkillEvidenceDetailModal — direct proof links", () => {
+describe("SkillEvidenceDetailModal — artifact inspection", () => {
   function renderModal(skillName: string, accessApproved: boolean) {
     render(
       <SkillEvidenceDetailModal
@@ -843,109 +883,167 @@ describe("SkillEvidenceDetailModal — direct proof links", () => {
     )
   }
 
-  it("renders direct proof links section in the modal", () => {
+  it("artifact access summary is shown in the modal", () => {
     renderModal("AI / Machine Learning", false)
-    expect(screen.getByTestId("skill-direct-proof-links")).toBeInTheDocument()
-    expect(screen.getByText(/direct proof links/i)).toBeInTheDocument()
+    expect(screen.getByTestId("skill-artifact-access-summary")).toBeInTheDocument()
   })
 
-  it("GitHub section renders locked state for private repos before approval", () => {
+  it("workflow recording placeholder viewer is rendered", () => {
     renderModal("AI / Machine Learning", false)
-    expect(screen.getByTestId("skill-direct-github")).toBeInTheDocument()
-    // AI/ML github files are all private → locked banners not open-source-file links
-    expect(screen.getByTestId("locked-github-file-0")).toBeInTheDocument()
-    expect(screen.queryByTestId("open-source-file-0")).not.toBeInTheDocument()
+    expect(screen.getByTestId("workflow-recording-viewer")).toBeInTheDocument()
   })
 
-  it("GitHub section renders locked state for private repo files (all bundles use private repos)", () => {
+  it("workflow recording shows title, duration, and segments for AI/ML", () => {
+    renderModal("AI / Machine Learning", false)
+    const recording = screen.getByTestId("skill-artifact-workflow-recording")
+    expect(recording.textContent).toMatch(/AI Proof Builder/i)
+    expect(recording.textContent).toMatch(/4:12/i)
+    expect(recording.textContent).toMatch(/Model inference UI opened/i)
+  })
+
+  it("workflow recording shows different skills for JS/Frontend", () => {
     renderModal("JavaScript / Frontend", false)
-    // All github evidence is private in mock data — all should show locked banners
-    expect(screen.getByTestId("locked-github-file-0")).toBeInTheDocument()
-    expect(screen.queryByTestId("open-source-file-0")).not.toBeInTheDocument()
+    const recording = screen.getByTestId("skill-artifact-workflow-recording")
+    expect(recording.textContent).toMatch(/Recruiter Passport Dashboard/i)
+    expect(recording.textContent).not.toMatch(/AI Proof Builder/i)
   })
 
-  it("keyframe section shows view-keyframe-btn for public frames and locked for protected frames", () => {
+  it("keyframe artifact shows per-frame card with public frame visible", () => {
     renderModal("AI / Machine Learning", false)
-    expect(screen.getByTestId("skill-direct-keyframes")).toBeInTheDocument()
-    // Frame 0 is public → view-keyframe-btn visible
-    expect(screen.getAllByTestId("view-keyframe-btn").length).toBeGreaterThan(0)
-    // Frames 1 and 2 are protected and not approved → locked banners
-    expect(screen.getAllByTestId("locked-keyframe-btn").length).toBeGreaterThan(0)
+    expect(screen.getByTestId("keyframe-artifact-0")).toBeInTheDocument()
+    expect(screen.getByTestId("keyframe-artifact-0").textContent).toMatch(/Model inference UI visible/i)
   })
 
-  it("keyframe section shows all frames openable after approval", () => {
-    renderModal("AI / Machine Learning", true)
-    // All frames should have view-keyframe-btn (no locked banners)
-    expect(screen.getAllByTestId("view-keyframe-btn").length).toBeGreaterThan(0)
-    expect(screen.queryByTestId("locked-keyframe-btn")).not.toBeInTheDocument()
-    // At least one frame has OCR → ocr details btn visible
-    expect(screen.getAllByTestId("view-ocr-details-btn").length).toBeGreaterThan(0)
-    // All frames approved → open-recording-segment-btn visible
-    expect(screen.getAllByTestId("open-recording-segment-btn").length).toBeGreaterThan(0)
-  })
-
-  it("transcript section shows locked state before approval", () => {
+  it("expanding public keyframe reveals OCR, DOM, and Qwen", async () => {
     renderModal("AI / Machine Learning", false)
-    expect(screen.getByTestId("skill-direct-transcript")).toBeInTheDocument()
-    expect(screen.getByTestId("locked-transcript-btn")).toBeInTheDocument()
-    expect(screen.queryByTestId("view-transcript-excerpt-btn")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("expand-keyframe-0"))
+    await waitFor(() => expect(screen.getByTestId("keyframe-detail-0")).toBeInTheDocument())
+    expect(screen.getByTestId("keyframe-ocr-0")).toBeInTheDocument()
+    expect(screen.getByTestId("keyframe-dom-0")).toBeInTheDocument()
+    expect(screen.getByTestId("keyframe-qwen-0")).toBeInTheDocument()
   })
 
-  it("transcript section shows view + full transcript after approval", () => {
-    renderModal("AI / Machine Learning", true)
-    expect(screen.getByTestId("view-transcript-excerpt-btn")).toBeInTheDocument()
-    expect(screen.getByTestId("view-full-transcript-btn")).toBeInTheDocument()
-  })
-
-  it("document section shows locked state before approval for protected docs", () => {
+  it("OCR text is artifact-specific for AI/ML frame 0", async () => {
     renderModal("AI / Machine Learning", false)
-    expect(screen.getByTestId("skill-direct-documents")).toBeInTheDocument()
-    expect(screen.getByTestId("locked-document-btn")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("expand-keyframe-0"))
+    await waitFor(() => expect(screen.getByTestId("keyframe-ocr-0")).toBeInTheDocument())
+    expect(screen.getByTestId("keyframe-ocr-0").textContent).toMatch(/Overall Score: 87/i)
   })
 
-  it("document section shows open-approved-document-btn after approval", () => {
+  it("DOM context is shown for AI/ML frame 0", async () => {
+    renderModal("AI / Machine Learning", false)
+    fireEvent.click(screen.getByTestId("expand-keyframe-0"))
+    await waitFor(() => expect(screen.getByTestId("keyframe-dom-0")).toBeInTheDocument())
+    expect(screen.getByTestId("keyframe-dom-0").textContent).toMatch(/Evidence-backed skills/i)
+  })
+
+  it("Qwen observation is shown for AI/ML frame 0", async () => {
+    renderModal("AI / Machine Learning", false)
+    fireEvent.click(screen.getByTestId("expand-keyframe-0"))
+    await waitFor(() => expect(screen.getByTestId("keyframe-qwen-0")).toBeInTheDocument())
+    // Qwen observation for frame 0 is about the proof builder dashboard
+    expect(screen.getByTestId("keyframe-qwen-0").textContent).toMatch(/proof builder/i)
+  })
+
+  it("Qwen analysis summary section is shown for AI/ML", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("skill-artifact-qwen")).toBeInTheDocument()
+    const qwen = screen.getByTestId("skill-artifact-qwen")
+    expect(qwen.textContent).toMatch(/3 frames analyzed/i)
+    expect(qwen.textContent).toMatch(/evidence confidence/i)
+  })
+
+  it("DOM evidence artifact is shown for AI/ML", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("skill-artifact-dom")).toBeInTheDocument()
+    const dom = screen.getByTestId("skill-artifact-dom")
+    expect(dom.textContent).toMatch(/AI Proof Builder/i)
+    expect(dom.textContent).toMatch(/Evidence-backed skills/i)
+  })
+
+  it("DOM evidence says local/private URL hidden (not exposing raw URL)", () => {
+    renderModal("AI / Machine Learning", false)
+    const dom = screen.getByTestId("skill-artifact-dom")
+    expect(dom.textContent).toMatch(/local\/private URL hidden/i)
+  })
+
+  it("GitHub artifact shows direct /blob/main/ links for public repo", () => {
+    renderModal("AI / Machine Learning", false)
+    const link = screen.getByTestId("github-open-file-0") as HTMLAnchorElement
+    expect(link.href).toContain("github.com/machackgo/veribridge-ai/blob/main/")
+    expect(link.href).toContain("final_evidence_evaluator_service.py")
+  })
+
+  it("GitHub artifact has open repo link alongside open file", () => {
+    renderModal("AI / Machine Learning", false)
+    expect(screen.getByTestId("github-open-repo-0")).toBeInTheDocument()
+    const repoLink = screen.getByTestId("github-open-repo-0") as HTMLAnchorElement
+    expect(repoLink.href).toContain("github.com/machackgo/veribridge-ai")
+  })
+
+  it("transcript artifact shows first excerpt (public) without approval for AI/ML", () => {
+    renderModal("AI / Machine Learning", false)
+    const transcript = screen.getByTestId("skill-artifact-transcript")
+    // First excerpt is public
+    expect(transcript.textContent).toMatch(/TensorFlow\.js/i)
+  })
+
+  it("expanding transcript shows full excerpt lines when approved", async () => {
     renderModal("AI / Machine Learning", true)
-    expect(screen.getByTestId("view-document-summary-btn")).toBeInTheDocument()
-    expect(screen.getByTestId("open-approved-document-btn")).toBeInTheDocument()
+    // Second transcript is protected — but there should be an expand button for first (public)
+    const expandBtns = screen.getAllByTestId("expand-transcript-0")
+    fireEvent.click(expandBtns[0])
+    await waitFor(() => expect(screen.getByTestId("transcript-full-0")).toBeInTheDocument())
+    expect(screen.getByTestId("transcript-full-0").textContent).toMatch(/80\/20 train\/test split/i)
   })
 
-  it("live app section shows open-live-app-btn for public app (JS/Frontend)", () => {
+  it("document artifact shows title, file type, and extracted sections for AI/ML (when approved)", async () => {
+    renderModal("AI / Machine Learning", true)
+    const docs = screen.getByTestId("skill-artifact-documents")
+    expect(docs.textContent).toMatch(/AI Engineering Project Report/i)
+    expect(docs.textContent).toMatch(/PDF/i)
+    fireEvent.click(screen.getByTestId("expand-document-0"))
+    await waitFor(() => expect(screen.getByTestId("document-sections-0")).toBeInTheDocument())
+    expect(screen.getByTestId("document-sections-0").textContent).toMatch(/Model Selection/i)
+  })
+
+  it("document approved viewer placeholder shown when approved", () => {
+    renderModal("AI / Machine Learning", true)
+    expect(screen.getByTestId("document-approved-viewer-0")).toBeInTheDocument()
+    expect(screen.getByTestId("document-approved-viewer-0").textContent).toMatch(/Approved document file viewer/i)
+  })
+
+  it("final analysis artifact shows evidence score and per-source scores", () => {
+    renderModal("AI / Machine Learning", false)
+    const analysis = screen.getByTestId("skill-artifact-final-analysis")
+    expect(analysis.textContent).toMatch(/87/i)
+    expect(analysis.textContent).toMatch(/91/i)
+    expect(analysis.textContent).toMatch(/Strongly supported/i)
+  })
+
+  it("final analysis shows strongest and weakest proof", () => {
+    renderModal("AI / Machine Learning", false)
+    const analysis = screen.getByTestId("skill-artifact-final-analysis")
+    expect(analysis.textContent).toMatch(/Strongest proof/i)
+    expect(analysis.textContent).toMatch(/Weakest proof/i)
+    expect(analysis.textContent).toMatch(/GitHub code.*3 production service files/i)
+  })
+
+  it("DevOps final analysis shows score of 22 and no workflow/GitHub", () => {
+    renderModal("DevOps / Deployment", false)
+    const analysis = screen.getByTestId("skill-artifact-final-analysis")
+    expect(analysis.textContent).toMatch(/22/i)
+    expect(analysis.textContent).toMatch(/Needs review/i)
+  })
+
+  it("JS/Frontend Qwen analysis shows different observations from AI/ML", () => {
     renderModal("JavaScript / Frontend", false)
-    expect(screen.getByTestId("skill-direct-live-app")).toBeInTheDocument()
-    expect(screen.getByTestId("open-live-app-btn")).toBeInTheDocument()
-    expect(screen.queryByTestId("local-private-app-notice")).not.toBeInTheDocument()
+    const qwen = screen.getByTestId("skill-artifact-qwen")
+    expect(qwen.textContent).toMatch(/React-based recruiter dashboard/i)
+    expect(qwen.textContent).not.toMatch(/TensorFlow/i)
   })
 
-  it("live app section shows local-private-app-notice for private/local apps", () => {
-    renderModal("AI / Machine Learning", false)
-    expect(screen.getByTestId("skill-direct-live-app")).toBeInTheDocument()
-    expect(screen.getByTestId("local-private-app-notice")).toBeInTheDocument()
-    expect(screen.queryByTestId("open-live-app-btn")).not.toBeInTheDocument()
-  })
-
-  it("keyframe expand/collapse panel works (frame 0 is public)", async () => {
-    // Frame 0 is public — can expand without approval
-    renderModal("AI / Machine Learning", false)
-    const btns = screen.getAllByTestId("view-keyframe-btn")
-    fireEvent.click(btns[0])
-    await waitFor(() => expect(screen.getByTestId("keyframe-detail-panel-0")).toBeInTheDocument())
-    fireEvent.click(screen.getAllByTestId("view-keyframe-btn")[0])
-    await waitFor(() => expect(screen.queryByTestId("keyframe-detail-panel-0")).not.toBeInTheDocument())
-  })
-
-  it("transcript expand/collapse panel works after approval", async () => {
-    renderModal("AI / Machine Learning", true)
-    fireEvent.click(screen.getByTestId("view-transcript-excerpt-btn"))
-    await waitFor(() => expect(screen.getByTestId("transcript-detail-panel-0")).toBeInTheDocument())
-  })
-
-  it("document expand/collapse panel works after approval", async () => {
-    renderModal("AI / Machine Learning", true)
-    fireEvent.click(screen.getByTestId("view-document-summary-btn"))
-    await waitFor(() => expect(screen.getByTestId("document-detail-panel-0")).toBeInTheDocument())
-  })
-
-  it("direct proof links modal html contains no private unsafe strings", () => {
+  it("modal artifact inspection html contains no unsafe private strings", () => {
     const { container } = render(
       <SkillEvidenceDetailModal skillName="AI / Machine Learning" accessApproved={true} onClose={() => {}} />,
     )
