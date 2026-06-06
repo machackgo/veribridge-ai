@@ -12,6 +12,7 @@ import {
   visaSignals,
 } from "../../data/mock";
 import { StudentProofSubmissionPanel } from "../skill-proof/student-proof-submission-panel";
+import { StudentSkillEvidencePipelines } from "./StudentSkillEvidencePipelines";
 
 /* ── Shared micro-components (minimal, not over-abstracted) ── */
 
@@ -798,6 +799,11 @@ export function StudentProfileProof() {
             ))}
           </div>
         </Card>
+      </div>
+
+      {/* Skill Evidence Pipelines */}
+      <div style={{ marginTop: 20 }}>
+        <StudentSkillEvidencePipelines />
       </div>
     </div>
   );
