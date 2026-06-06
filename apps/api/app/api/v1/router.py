@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     ai_domain_review,
+    skill_evidence_pipelines,
     admin_quality_review,
     admin_notifications,
     debug,
@@ -76,6 +77,11 @@ api_router.include_router(
     skill_evidence_profile.router,
     prefix="/student/skill-evidence-profiles",
     tags=["skill-evidence-profiles"],
+)
+api_router.include_router(
+    skill_evidence_pipelines.router,
+    prefix="/student/skill-pipelines",
+    tags=["skill-evidence-pipelines"],
 )
 api_router.include_router(
     website_verification_runs.router,
