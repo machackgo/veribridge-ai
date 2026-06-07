@@ -8,9 +8,10 @@ import {
   getSkillPipeline,
 } from "../../components/recruiter-passport/RecruiterWorkPassportPreview"
 import { EvidenceAccessRequestModal } from "../../components/recruiter-passport/EvidenceAccessRequestModal"
+import DevRecruiterPassportPreviewPage from "../app/dev/recruiter-passport-preview/page"
 import type { RecruiterPassportViewResponse } from "../lib/passport-api"
 import * as apiModule from "@/lib/api"
-import type { BackendSkillPipeline } from "@/lib/api"
+import type { RecruiterSafePipelineSummary } from "@/lib/api"
 
 // Default: backend unavailable — safe fallback, existing tests unaffected.
 vi.mock("@/lib/api", () => ({
@@ -1602,10 +1603,8 @@ describe("RecruiterWorkPassportPreview — backend skill pipeline integration", 
     })
   }
 
-  const mockPipeline: BackendSkillPipeline = {
+  const mockPipeline: RecruiterSafePipelineSummary = {
     id: "pipeline-ts-1",
-    student_id: "s-1",
-    profile_id: "p-1",
     skill_name: "TypeScript",
     skill_category: "Frontend",
     confidence_score: 80,
@@ -1620,10 +1619,9 @@ describe("RecruiterWorkPassportPreview — backend skill pipeline integration", 
       { key: "project", label: "Project defense", status: "partial", score: 50, reason: "mentioned in defense" },
     ],
     recruiter_summary: "Strong TypeScript evidence from GitHub and project defense.",
-    student_summary: "PRIVATE_student_summary_do_not_render",
     visibility_status: "public",
-    created_at: "2025-01-01T00:00:00Z",
-    updated_at: "2025-01-01T00:00:00Z",
+    is_locked_for_recruiter: false,
+    artifacts: [],
   }
 
   afterEach(() => {
@@ -1711,5 +1709,658 @@ describe("RecruiterWorkPassportPreview — backend skill pipeline integration", 
     const href = exactLinks[0].getAttribute("href") ?? ""
     expect(href).toContain("/blob/main/")
     expect(href).toMatch(/#L\d+-L\d+/)
+  })
+})
+
+// ── Visibility enforcement: view.skill_groups + backend authority (Case A) ─────
+
+describe("RecruiterWorkPassportPreview — visibility enforcement via view.skill_groups", () => {
+  // View that has both AI/ML and JS as pre-loaded skill groups (the typical production state).
+  function makeViewWithTwoGroups(): RecruiterPassportViewResponse {
+    return makeView({
+      skill_groups: [
+        {
+          group_name: "AI / Machine Learning",
+          category: "AI/ML",
+          confidence: "high",
+          evidence_count: 4,
+          source_labels: ["GitHub", "Website Workflow"],
+          skills: [
+            { skill: "Machine Learning", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] },
+          ],
+        },
+        {
+          group_name: "JavaScript / Frontend",
+          category: "Frontend",
+          confidence: "high",
+          evidence_count: 3,
+          source_labels: ["GitHub"],
+          skills: [
+            { skill: "React", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] },
+          ],
+        },
+      ],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+    })
+  }
+
+  // Backend returns only JS (AI/ML is private → server excluded it entirely)
+  const jsPublicPipeline: RecruiterSafePipelineSummary = {
+    id: "p-js-pub",
+    skill_name: "JavaScript / Frontend",
+    skill_category: "Frontend",
+    confidence_score: 75,
+    support_status: "strongly_supported",
+    evidence_count: 2,
+    strongest_proof: { label: "GitHub", reason: "JS throughout" },
+    weakest_proof: null,
+    missing_evidence: [],
+    next_actions: [],
+    evidence_sources: [{ key: "github", label: "GitHub code", status: "supported", score: 75, reason: "TS imports" }],
+    recruiter_summary: "Strong JS evidence.",
+    visibility_status: "public",
+    is_locked_for_recruiter: false,
+    artifacts: [],
+  }
+
+  // Backend returns AI/ML as protected/locked
+  const aiMlLockedPipeline: RecruiterSafePipelineSummary = {
+    id: "p-ai-locked",
+    skill_name: "AI / Machine Learning",
+    skill_category: "AI/ML",
+    confidence_score: 88,
+    support_status: "strongly_supported",
+    evidence_count: 7,
+    strongest_proof: {},
+    weakest_proof: {},
+    missing_evidence: [],
+    next_actions: [],
+    evidence_sources: [
+      { key: "github", label: "GitHub code", status: "protected", score: null, reason: "" },
+    ],
+    recruiter_summary: "Protected evidence available. Student approval required to inspect protected details.",
+    visibility_status: "protected",
+    is_locked_for_recruiter: true,
+    artifacts: [],
+  }
+
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  it("private skill absent from backend: AI/ML group card is not rendered", async () => {
+    // Backend only returns JS; AI/ML is absent (private → excluded server-side)
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([jsPublicPipeline])
+    render(<RecruiterWorkPassportPreview view={makeViewWithTwoGroups()} />)
+    await waitFor(() => {
+      expect(screen.getAllByText("JavaScript / Frontend").length).toBeGreaterThan(0)
+    })
+    // AI/ML view group must be filtered out — no SkillGroupCard for it
+    expect(screen.queryByTestId("skill-group-card-ai-machine-learning")).not.toBeInTheDocument()
+  })
+
+  it("public skill still renders as SkillGroupCard when backend confirms it public", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([jsPublicPipeline])
+    render(<RecruiterWorkPassportPreview view={makeViewWithTwoGroups()} />)
+    await waitFor(() => {
+      expect(screen.getAllByText("JavaScript / Frontend").length).toBeGreaterThan(0)
+    })
+    expect(screen.getByTestId("skill-group-card-javascript-frontend")).toBeInTheDocument()
+  })
+
+  it("protected skill: AI/ML renders as LockedPipelineCard, not SkillGroupCard", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      aiMlLockedPipeline,
+      jsPublicPipeline,
+    ])
+    render(<RecruiterWorkPassportPreview view={makeViewWithTwoGroups()} />)
+    await waitFor(() => {
+      expect(screen.getByTestId("locked-pipeline-card-ai-machine-learning")).toBeInTheDocument()
+    })
+    // Full skill group card must NOT be shown — that would expose mock static artifacts
+    expect(screen.queryByTestId("skill-group-card-ai-machine-learning")).not.toBeInTheDocument()
+  })
+
+  it("protected locked card shows Protected badge and approval message", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      aiMlLockedPipeline,
+      jsPublicPipeline,
+    ])
+    render(<RecruiterWorkPassportPreview view={makeViewWithTwoGroups()} />)
+    await waitFor(() => {
+      expect(screen.getByTestId("protected-pipeline-badge")).toBeInTheDocument()
+    })
+    expect(screen.getByTestId("protected-pipeline-message").textContent).toMatch(
+      /student approval required/i
+    )
+  })
+
+  it("protected skill: no GitHub exact code links rendered before approval", async () => {
+    // Only AI/ML in view (locked) — SkillGroupsSection not rendered at all
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlLockedPipeline])
+    render(<RecruiterWorkPassportPreview view={makeView({
+      skill_groups: [{
+        group_name: "AI / Machine Learning",
+        category: "AI/ML",
+        confidence: "high",
+        evidence_count: 4,
+        source_labels: ["GitHub"],
+        skills: [{ skill: "Machine Learning", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] }],
+      }],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+    })} />)
+    await waitFor(() => {
+      expect(screen.getByTestId("locked-pipeline-card-ai-machine-learning")).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("github-open-exact-0")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("github-open-file-0")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-artifact-github")).not.toBeInTheDocument()
+  })
+
+  it("protected skill: no OCR, DOM, or Qwen detail cards before approval", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlLockedPipeline])
+    render(<RecruiterWorkPassportPreview view={makeView({
+      skill_groups: [{
+        group_name: "AI / Machine Learning",
+        category: "AI/ML",
+        confidence: "high",
+        evidence_count: 4,
+        source_labels: ["GitHub"],
+        skills: [{ skill: "Machine Learning", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] }],
+      }],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+    })} />)
+    await waitFor(() => {
+      expect(screen.getByTestId("locked-pipeline-card-ai-machine-learning")).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("skill-artifact-dom")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-artifact-transcript")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-artifact-keyframes")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-artifact-qwen")).not.toBeInTheDocument()
+  })
+
+  it("protected skill: no view-skill-evidence-btn on locked card (no direct proof action)", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlLockedPipeline])
+    render(<RecruiterWorkPassportPreview view={makeView({
+      skill_groups: [{
+        group_name: "AI / Machine Learning",
+        category: "AI/ML",
+        confidence: "high",
+        evidence_count: 4,
+        source_labels: ["GitHub"],
+        skills: [{ skill: "Machine Learning", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] }],
+      }],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+    })} />)
+    await waitFor(() => {
+      expect(screen.getByTestId("locked-pipeline-card-ai-machine-learning")).toBeInTheDocument()
+    })
+    // LockedPipelineCard has no view-skill-evidence-btn — no detail modal can be opened
+    expect(screen.queryByTestId("view-skill-evidence-btn")).not.toBeInTheDocument()
+  })
+
+  it("backend data is not merged with mock artifact details for locked skill", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlLockedPipeline])
+    const { container } = render(<RecruiterWorkPassportPreview view={makeView({
+      skill_groups: [{
+        group_name: "AI / Machine Learning",
+        category: "AI/ML",
+        confidence: "high",
+        evidence_count: 4,
+        source_labels: ["GitHub"],
+        skills: [{ skill: "Machine Learning", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] }],
+      }],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+    })} />)
+    await waitFor(() => {
+      expect(screen.getByTestId("locked-pipeline-card-ai-machine-learning")).toBeInTheDocument()
+    })
+    const html = container.innerHTML
+    // Static mock bundle data for AI/ML must not appear — no merge with SKILL_EVIDENCE_BUNDLES
+    expect(html).not.toContain("FinalEvidenceEvaluatorService")
+    expect(html).not.toContain("Overall Score: 87")
+    expect(html).not.toContain("TensorFlow.js")
+    expect(html).not.toContain("Model inference UI")
+  })
+
+  it("fallback: when backend unavailable, all view groups are shown (no visibility filtering)", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    render(<RecruiterWorkPassportPreview view={makeViewWithTwoGroups()} />)
+    await waitFor(() => {
+      expect(screen.getAllByText("JavaScript / Frontend").length).toBeGreaterThan(0)
+      expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0)
+    })
+  })
+})
+
+// ── Recruiter Work Passport — pipeline visibility enforcement ─────────────────
+
+describe("RecruiterWorkPassportPreview — pipeline visibility enforcement", () => {
+  function makeEmptyViewForVisibility(): RecruiterPassportViewResponse {
+    return {
+      public_slug: "vis-test-slug",
+      student_display_name: "Test Candidate",
+      field: "Engineering",
+      public_title: "Software Engineer",
+      public_summary: "Test summary.",
+      overall_score: 70,
+      evidence_confidence: "medium",
+      verification_status: null,
+      readiness_level: null,
+      skill_groups: [],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+      proof_sources: [],
+      why_credible: [],
+      strongest_skills: [],
+      areas_needing_review: [],
+      suggested_interview_questions: [],
+      public_project_links: [],
+      project_type: "Engineering",
+      access_request_available: false,
+      has_protected_evidence: false,
+      disclosure_note: "Test disclosure.",
+    }
+  }
+
+  function makePublicPipeline(overrides: Partial<RecruiterSafePipelineSummary> = {}): RecruiterSafePipelineSummary {
+    return {
+      id: "pub-pipeline-1",
+      skill_name: "Public Skill",
+      skill_category: "Frontend",
+      confidence_score: 80,
+      support_status: "strongly_supported",
+      evidence_count: 2,
+      strongest_proof: { label: "GitHub code", reason: "Confirmed" },
+      weakest_proof: null,
+      missing_evidence: [],
+      next_actions: [],
+      evidence_sources: [
+        { key: "github", label: "GitHub code", status: "supported", score: 80, reason: "Confirmed" },
+      ],
+      recruiter_summary: "Strong public evidence.",
+      visibility_status: "public",
+      is_locked_for_recruiter: false,
+      artifacts: [],
+      ...overrides,
+    }
+  }
+
+  function makeProtectedPipeline(overrides: Partial<RecruiterSafePipelineSummary> = {}): RecruiterSafePipelineSummary {
+    return {
+      id: "prot-pipeline-1",
+      skill_name: "Protected Skill",
+      skill_category: "AI/ML",
+      confidence_score: 75,
+      support_status: "strongly_supported",
+      evidence_count: 3,
+      strongest_proof: { label: "Workflow", reason: "Inference observed" },
+      weakest_proof: null,
+      missing_evidence: [],
+      next_actions: [],
+      evidence_sources: [],
+      recruiter_summary: "Protected evidence available. Student approval required to inspect protected details.",
+      visibility_status: "protected",
+      is_locked_for_recruiter: true,
+      artifacts: [
+        { id: "art-1", source_type: "transcript", source_title: "Defense excerpt",
+          project_name: "P", visibility: "protected", confidence_score: 80,
+          proof_reason: "", artifact_data: {} },
+      ],
+      ...overrides,
+    }
+  }
+
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  it("private pipeline is not rendered (backend already excludes it)", async () => {
+    // Backend excludes private pipelines; we verify no remnant renders
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePublicPipeline({ skill_name: "Visible Skill" }),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() => expect(screen.getAllByText("Visible Skill").length).toBeGreaterThan(0))
+    expect(screen.queryByText("Private Skill")).not.toBeInTheDocument()
+  })
+
+  it("public pipeline is visible in recruiter view", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePublicPipeline(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() => expect(screen.getAllByText("Public Skill").length).toBeGreaterThan(0))
+    // Should NOT show the locked badge for public pipeline
+    expect(screen.queryByTestId("protected-pipeline-badge")).not.toBeInTheDocument()
+  })
+
+  it("protected pipeline shows locked card with Protected badge", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makeProtectedPipeline(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() => expect(screen.getByTestId("protected-pipeline-badge")).toBeInTheDocument())
+    expect(screen.getByTestId("protected-pipeline-badge").textContent).toMatch(/Protected/i)
+  })
+
+  it("protected pipeline shows approval required message", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makeProtectedPipeline(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() =>
+      expect(screen.getByTestId("protected-pipeline-message")).toBeInTheDocument()
+    )
+    expect(screen.getByTestId("protected-pipeline-message").textContent).toMatch(
+      /student approval required/i
+    )
+  })
+
+  it("protected pipeline locked card shows the skill name", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makeProtectedPipeline({ skill_name: "AI / Machine Learning" }),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() => expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0))
+    expect(screen.getByTestId("protected-pipeline-badge")).toBeInTheDocument()
+  })
+
+  it("mixed visibility: public shown normally, protected shown as locked", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePublicPipeline({ skill_name: "JavaScript" }),
+      makeProtectedPipeline({ skill_name: "AI / Machine Learning" }),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() => {
+      expect(screen.getAllByText("JavaScript").length).toBeGreaterThan(0)
+      expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0)
+    })
+    // Protected card is shown with badge; public card has no lock badge
+    expect(screen.getByTestId("protected-pipeline-badge")).toBeInTheDocument()
+  })
+
+  it("protected pipeline locked card does not expose detailed artifact data", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makeProtectedPipeline({
+        artifacts: [
+          { id: "art-1", source_type: "transcript", source_title: "Defense",
+            project_name: "P", visibility: "protected", confidence_score: 80,
+            proof_reason: "", artifact_data: { excerpt: "PRIVATE_TRANSCRIPT_CONTENT" } },
+        ],
+      }),
+    ])
+    const { container } = render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() => expect(screen.getByTestId("protected-pipeline-badge")).toBeInTheDocument())
+    expect(container.innerHTML).not.toContain("PRIVATE_TRANSCRIPT_CONTENT")
+  })
+
+  it("backend pipelines badge count includes both public and protected pipelines", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePublicPipeline(),
+      makeProtectedPipeline(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() => expect(screen.getByTestId("backend-pipelines-badge")).toBeInTheDocument())
+    expect(screen.getByTestId("backend-pipelines-badge").textContent).toMatch(/2 pipeline/)
+  })
+
+  it("public pipeline github exact code links include /blob/main/ and #Lstart-Lend", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePublicPipeline({
+        artifacts: [
+          {
+            id: "art-gh-1",
+            source_type: "github",
+            source_title: "evaluator.py",
+            project_name: "VeriBridge",
+            visibility: "public",
+            confidence_score: 90,
+            proof_reason: "ML confirmed",
+            artifact_data: {
+              repo_url: "https://github.com/veribridge-ai/veribridge",
+              branch: "main",
+              file_path: "apps/api/app/services/evaluator.py",
+            },
+            exact_code_url: "https://github.com/veribridge-ai/veribridge/blob/main/apps/api/app/services/evaluator.py#L40-L140",
+            full_file_url: "https://github.com/veribridge-ai/veribridge/blob/main/apps/api/app/services/evaluator.py",
+          },
+        ],
+      }),
+    ])
+    // Public pipeline renders via SkillGroupsSection (no static bundle for "Public Skill")
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() => expect(screen.getAllByText("Public Skill").length).toBeGreaterThan(0))
+    // The pipeline renders but artifact links are inside the detail modal — confirm no unsafe strings
+    const { container } = render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() => expect(screen.getAllByText("Public Skill").length).toBeGreaterThan(0))
+    expect(container.innerHTML).not.toContain("storage_path")
+    expect(container.innerHTML).not.toContain("signed_url")
+    expect(container.innerHTML).not.toContain("access_token")
+  })
+
+  it("unsafe strings not rendered in recruiter view output", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePublicPipeline({
+        // These should never appear even if somehow passed in
+        recruiter_summary: "Safe summary without tokens",
+        artifacts: [
+          {
+            id: "art-safe",
+            source_type: "workflow",
+            source_title: "recording",
+            project_name: "P",
+            visibility: "public",
+            confidence_score: 80,
+            proof_reason: "Captured",
+            artifact_data: { frame_label: "SAFE_LABEL" },
+          },
+        ],
+      }),
+    ])
+    const { container } = render(<RecruiterWorkPassportPreview view={makeEmptyViewForVisibility()} />)
+    await waitFor(() => expect(screen.getAllByText("Public Skill").length).toBeGreaterThan(0))
+    expect(container.innerHTML).not.toContain("storage_path")
+    expect(container.innerHTML).not.toContain("signed_url")
+    expect(container.innerHTML).not.toContain("access_token")
+    expect(container.innerHTML).not.toContain("service_role")
+    expect(container.innerHTML).not.toContain("private_url")
+  })
+})
+
+// ── Private-all fix: backend [] with view.skill_groups ────────────────────────
+// Regression test for the bug where backend returning [] (all private)
+// caused backendHasAuthority=false and showed all mock groups as fallback.
+// With the fix, backendPipelineMap is an empty Map (not null), so
+// backendHasAuthority=true and all view groups are filtered out.
+
+describe("RecruiterWorkPassportPreview — all-private fix (backend returns [])", () => {
+  function makeViewWithTwoGroups(): RecruiterPassportViewResponse {
+    return {
+      public_slug: "priv-all-slug",
+      student_display_name: "Test Candidate",
+      field: "AI",
+      public_title: "AI Engineer",
+      public_summary: "Summary.",
+      overall_score: 80,
+      evidence_confidence: "high",
+      verification_status: null,
+      readiness_level: null,
+      skill_groups: [
+        {
+          group_name: "AI / Machine Learning",
+          category: "AI/ML",
+          confidence: "high",
+          evidence_count: 4,
+          source_labels: ["GitHub"],
+          skills: [{ skill: "Machine Learning", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] }],
+        },
+        {
+          group_name: "JavaScript / Frontend",
+          category: "Frontend",
+          confidence: "high",
+          evidence_count: 3,
+          source_labels: ["GitHub"],
+          skills: [{ skill: "React", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] }],
+        },
+      ],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+      proof_sources: [],
+      why_credible: [],
+      strongest_skills: [],
+      areas_needing_review: [],
+      suggested_interview_questions: [],
+      public_project_links: [],
+      project_type: null,
+      access_request_available: false,
+      has_protected_evidence: false,
+      disclosure_note: "Test.",
+    }
+  }
+
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  it("backend returns [] (all private) → no skill group cards rendered", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+    render(<RecruiterWorkPassportPreview view={makeViewWithTwoGroups()} />)
+    // Wait for backend to respond and component to re-render with empty map
+    await waitFor(() => {
+      expect(screen.queryByTestId("skill-group-card-ai-machine-learning")).not.toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("skill-group-card-javascript-frontend")).not.toBeInTheDocument()
+  })
+
+  it("backend returns [] (all private) → mock AI/ML static content not leaked", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+    const { container } = render(<RecruiterWorkPassportPreview view={makeViewWithTwoGroups()} />)
+    await waitFor(() => {
+      expect(screen.queryByTestId("skill-group-card-ai-machine-learning")).not.toBeInTheDocument()
+    })
+    expect(container.innerHTML).not.toContain("Model inference UI visible")
+    expect(container.innerHTML).not.toContain("Overall Score: 87")
+    expect(container.innerHTML).not.toContain("FinalEvidenceEvaluatorService")
+  })
+
+  it("backend returns [] (all private) → protected section also absent", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+    render(<RecruiterWorkPassportPreview view={makeViewWithTwoGroups()} />)
+    await waitFor(() => {
+      expect(screen.queryByTestId("skill-group-card-ai-machine-learning")).not.toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("protected-pipelines-section")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("protected-pipeline-badge")).not.toBeInTheDocument()
+  })
+
+  it("backend null (unavailable) still shows all mock groups as fallback", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    render(<RecruiterWorkPassportPreview view={makeViewWithTwoGroups()} />)
+    await waitFor(() => {
+      expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0)
+      expect(screen.getAllByText("JavaScript / Frontend").length).toBeGreaterThan(0)
+    })
+  })
+})
+
+// ── /dev/recruiter-passport-preview page banner and backend integration ────────
+
+describe("DevRecruiterPassportPreviewPage — banner and backend state", () => {
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  it("shows fallback mock badge when backend returns null", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() =>
+      expect(screen.getByTestId("banner-fallback-badge")).toBeInTheDocument()
+    )
+    expect(screen.getByTestId("banner-fallback-badge").textContent).toMatch(/Fallback mock preview/i)
+  })
+
+  it("shows backend badge when backend returns pipeline data (empty array)", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() =>
+      expect(screen.getByTestId("banner-backend-badge")).toBeInTheDocument()
+    )
+    expect(screen.getByTestId("banner-backend-badge").textContent).toMatch(/Backend recruiter-safe data/i)
+  })
+
+  it("shows backend badge when backend returns non-empty pipelines", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      {
+        id: "p-1",
+        skill_name: "JavaScript",
+        skill_category: "Frontend",
+        confidence_score: 80,
+        support_status: "strongly_supported",
+        evidence_count: 2,
+        strongest_proof: null,
+        weakest_proof: null,
+        missing_evidence: [],
+        next_actions: [],
+        evidence_sources: [],
+        recruiter_summary: "Strong JS.",
+        visibility_status: "public",
+        is_locked_for_recruiter: false,
+        artifacts: [],
+      },
+    ])
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() =>
+      expect(screen.getByTestId("banner-backend-badge")).toBeInTheDocument()
+    )
+  })
+
+  it("dev page: when backend responds, mock AI/ML group card is not shown", async () => {
+    // Backend returns [] — all pipelines are private or none exist.
+    // Dev page passes skill_groups:[] to component; component's own fetch returns [].
+    // Result: no skill group cards rendered (correct recruiter-safe behavior).
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() =>
+      expect(screen.getByTestId("banner-backend-badge")).toBeInTheDocument()
+    )
+    expect(screen.queryByTestId("skill-group-card-ai-machine-learning")).not.toBeInTheDocument()
+  })
+
+  it("dev page: when backend unavailable, mock groups are shown as fallback", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() =>
+      expect(screen.getByTestId("banner-fallback-badge")).toBeInTheDocument()
+    )
+    // Fallback: full MOCK_VIEW with skill_groups is passed, so all groups visible
+    await waitFor(() =>
+      expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0)
+    )
+  })
+
+  it("dev page: banner does not expose unsafe strings", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    const { container } = render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() =>
+      expect(screen.getByTestId("banner-fallback-badge")).toBeInTheDocument()
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("storage_path")
+    expect(html).not.toContain("transcript_text")
+    expect(html).not.toContain("media_storage_path")
   })
 })

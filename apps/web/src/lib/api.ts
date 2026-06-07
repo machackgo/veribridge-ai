@@ -2701,13 +2701,56 @@ export async function seedMockSkillEvidencePipelines(): Promise<BackendSkillPipe
 }
 
 /**
- * List skill evidence pipelines that are safe for recruiter viewing.
- * Filters out private pipelines. Returns null if backend unavailable.
+ * Recruiter-safe pipeline summary as returned by the backend /recruiter-safe endpoint.
+ * Visibility rules are enforced server-side:
+ * - private pipelines excluded
+ * - protected pipelines returned with is_locked_for_recruiter=true and no detailed artifact content
+ * - public pipelines returned with full safe payload
  */
-export async function listRecruiterSkillEvidencePipelines(): Promise<BackendSkillPipeline[] | null> {
-  const all = await listSkillEvidencePipelines()
-  if (all === null) return null
-  return all.filter((p) => p.visibility_status !== "private")
+export type RecruiterSafePipelineSummary = {
+  id: string
+  skill_name: string
+  skill_category: string
+  confidence_score: number
+  support_status: "strongly_supported" | "partially_supported" | "needs_review"
+  evidence_count: number
+  strongest_proof: { label?: string; reason?: string } | null
+  weakest_proof: { label?: string; reason?: string } | null
+  missing_evidence: string[]
+  next_actions: string[]
+  evidence_sources: BackendEvidenceSource[]
+  recruiter_summary: string
+  visibility_status: "public" | "protected" | "private"
+  /** True when the pipeline is protected and the recruiter has not yet received approval. */
+  is_locked_for_recruiter: boolean
+  artifacts: Array<{
+    id: string
+    source_type: string
+    source_title: string
+    project_name: string
+    visibility: string
+    confidence_score: number
+    proof_reason: string
+    artifact_data: Record<string, unknown>
+    exact_code_url?: string | null
+    full_file_url?: string | null
+  }>
+}
+
+/**
+ * List skill evidence pipelines that are safe for recruiter viewing.
+ * Calls the backend /recruiter-safe endpoint which enforces visibility server-side:
+ * private pipelines excluded, protected shown as locked, public shown in full.
+ * Returns null if backend unavailable.
+ */
+export async function listRecruiterSkillEvidencePipelines(): Promise<RecruiterSafePipelineSummary[] | null> {
+  try {
+    const res = await fetchAPI("/api/v1/student/skill-pipelines/recruiter-safe")
+    if (!res.ok) return null
+    return res.json() as Promise<RecruiterSafePipelineSummary[]>
+  } catch {
+    return null
+  }
 }
 
 /**

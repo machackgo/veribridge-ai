@@ -190,6 +190,11 @@ class RecruiterPipelineSummary(BaseModel):
 
     Fields excluded: student_id, profile_id, student_summary,
     private artifact_data, any internal storage references.
+
+    is_locked_for_recruiter is True when visibility_status == "protected"
+    and the recruiter has not yet received student approval.  In this state
+    recruiter_summary is replaced with a generic locked message and
+    artifact_data is stripped to empty for all artifacts.
     """
     id: str
     skill_name: str
@@ -200,6 +205,9 @@ class RecruiterPipelineSummary(BaseModel):
     strongest_proof: dict[str, Any]
     weakest_proof: dict[str, Any]
     missing_evidence: list[Any]
+    next_actions: list[Any] = Field(default_factory=list)
+    evidence_sources: list[Any] = Field(default_factory=list)
     recruiter_summary: str
     visibility_status: str
+    is_locked_for_recruiter: bool = False
     artifacts: list[dict[str, Any]] = Field(default_factory=list)

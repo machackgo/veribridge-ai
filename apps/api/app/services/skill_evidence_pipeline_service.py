@@ -45,6 +45,10 @@ _UNSAFE_ARTIFACT_KEYS = frozenset({
 # Visibility states that are never shown to recruiters.
 _RECRUITER_HIDDEN_VISIBILITIES = frozenset({"private", "locked", "unavailable"})
 
+# Pipeline visibility values that mean "hidden from recruiter entirely".
+# Includes "private_only" as a defensive alias in case old data uses that string.
+_PRIVATE_VISIBILITY_VALUES = frozenset({"private", "private_only"})
+
 # ── MVP mock pipeline definitions ─────────────────────────────────────────────
 
 _MVP_PIPELINES: list[dict[str, Any]] = [
@@ -634,36 +638,121 @@ class SkillEvidencePipelineService:
 
     # ── Recruiter sanitization ────────────────────────────────────────────────
 
+    def _list_artifacts_for_pipeline_by_id(
+        self,
+        pipeline_id: str,
+    ) -> list[SkillEvidenceArtifactResponse]:
+        """Fetch artifacts without an ownership check.
+
+        Caller must already have confirmed pipeline ownership.
+        """
+        if isinstance(self._client, dict):
+            rows = self._dict_list_artifacts_for_pipeline(pipeline_id)
+        else:
+            result = (
+                self._client.table(_ARTIFACTS_TABLE)
+                .select("*")
+                .eq("pipeline_id", pipeline_id)
+                .order("created_at", desc=False)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+        return [_artifact_row_to_response(r) for r in rows]
+
     def sanitize_recruiter_payload(
         self,
         pipeline: SkillEvidencePipelineResponse,
         artifacts: list[SkillEvidenceArtifactResponse],
+        access_approved: bool = False,
     ) -> RecruiterPipelineSummary:
         """Build a recruiter-safe view of a pipeline.
 
-        Strips: student_id, profile_id, student_summary, private/locked
-        artifacts, and any unsafe keys from artifact_data.
+        Visibility rules applied here:
+        - Private pipeline: caller should exclude; if passed, returns empty artifacts.
+        - Protected pipeline without approval:
+            is_locked_for_recruiter=True, generic recruiter_summary,
+            no detailed artifact_data exposed.
+        - Public pipeline: full safe payload; private artifacts excluded,
+            protected artifacts shown as locked cards (no detail).
+
+        Unsafe fields are always stripped: storage_path, signed_url,
+        access_token, and similar keys defined in _UNSAFE_ARTIFACT_KEYS.
         """
-        safe_artifacts = []
+        is_locked = (
+            pipeline.visibility_status == "protected" and not access_approved
+        )
+
+        safe_artifacts: list[dict[str, Any]] = []
         for art in artifacts:
             if art.visibility in _RECRUITER_HIDDEN_VISIBILITIES:
-                continue
-            safe_data = _strip_unsafe_artifact_data(art.artifact_data)
-            entry: dict[str, Any] = {
-                "id": art.id,
-                "source_type": art.source_type,
-                "source_title": art.source_title,
-                "project_name": art.project_name,
-                "visibility": art.visibility,
-                "confidence_score": art.confidence_score,
-                "proof_reason": art.proof_reason,
-                "artifact_data": safe_data,
-            }
-            if art.exact_code_url:
-                entry["exact_code_url"] = art.exact_code_url
-            if art.full_file_url:
-                entry["full_file_url"] = art.full_file_url
+                continue  # always hide private/locked/unavailable
+
+            art_is_protected = art.visibility == "protected"
+
+            if is_locked or art_is_protected:
+                # Protected artifact or locked pipeline: minimal locked card — no detail
+                entry: dict[str, Any] = {
+                    "id": art.id,
+                    "source_type": art.source_type,
+                    "source_title": art.source_title,
+                    "project_name": art.project_name,
+                    "visibility": "protected",
+                    "confidence_score": art.confidence_score,
+                    "proof_reason": "",
+                    "artifact_data": {},
+                }
+            else:
+                # Public artifact in a public (or approved protected) pipeline
+                safe_data = _strip_unsafe_artifact_data(art.artifact_data)
+                entry = {
+                    "id": art.id,
+                    "source_type": art.source_type,
+                    "source_title": art.source_title,
+                    "project_name": art.project_name,
+                    "visibility": art.visibility,
+                    "confidence_score": art.confidence_score,
+                    "proof_reason": art.proof_reason,
+                    "artifact_data": safe_data,
+                }
+                if art.exact_code_url:
+                    entry["exact_code_url"] = art.exact_code_url
+                if art.full_file_url:
+                    entry["full_file_url"] = art.full_file_url
             safe_artifacts.append(entry)
+
+        if is_locked:
+            # Protected pipeline: return minimal locked summary.
+            # Strip proof details (reasons, missing evidence, next actions) to prevent
+            # evidence detail leakage before the recruiter receives student approval.
+            # Source coverage keys/labels/status are kept so the locked card can show
+            # which evidence types exist, but reasons and scores are stripped.
+            locked_sources = [
+                {
+                    "key": s.get("key", "") if isinstance(s, dict) else getattr(s, "key", ""),
+                    "label": s.get("label", "") if isinstance(s, dict) else getattr(s, "label", ""),
+                    "status": "protected",
+                    "score": None,
+                    "reason": "",
+                }
+                for s in (pipeline.evidence_sources or [])
+            ]
+            return RecruiterPipelineSummary(
+                id=pipeline.id,
+                skill_name=pipeline.skill_name,
+                skill_category=pipeline.skill_category,
+                confidence_score=pipeline.confidence_score,
+                support_status=pipeline.support_status,
+                evidence_count=pipeline.evidence_count,
+                strongest_proof={},
+                weakest_proof={},
+                missing_evidence=[],
+                next_actions=[],
+                evidence_sources=locked_sources,
+                recruiter_summary="Protected evidence available. Student approval required to inspect protected details.",
+                visibility_status=pipeline.visibility_status,
+                is_locked_for_recruiter=True,
+                artifacts=[],
+            )
 
         return RecruiterPipelineSummary(
             id=pipeline.id,
@@ -675,7 +764,35 @@ class SkillEvidencePipelineService:
             strongest_proof=pipeline.strongest_proof,
             weakest_proof=pipeline.weakest_proof,
             missing_evidence=pipeline.missing_evidence,
+            next_actions=pipeline.next_actions,
+            evidence_sources=pipeline.evidence_sources,
             recruiter_summary=pipeline.recruiter_summary,
             visibility_status=pipeline.visibility_status,
+            is_locked_for_recruiter=False,
             artifacts=safe_artifacts,
         )
+
+    def list_recruiter_safe_pipelines(
+        self,
+        student_id: str,
+        access_approved: bool = False,
+    ) -> list[RecruiterPipelineSummary]:
+        """List all non-private pipelines for a student in recruiter-safe format.
+
+        Enforces student visibility choices server-side:
+        - private pipelines are excluded entirely
+        - protected pipelines are returned as locked summaries
+        - public pipelines are returned with full safe payload
+        """
+        all_pipelines = self.list_pipelines_for_student(student_id)
+        result: list[RecruiterPipelineSummary] = []
+        for pipeline in all_pipelines:
+            # Exclude private pipelines — handle any "private*" variant defensively.
+            if pipeline.visibility_status in _PRIVATE_VISIBILITY_VALUES:
+                continue
+            artifacts = self._list_artifacts_for_pipeline_by_id(pipeline.id)
+            summary = self.sanitize_recruiter_payload(
+                pipeline, artifacts, access_approved=access_approved
+            )
+            result.append(summary)
+        return result

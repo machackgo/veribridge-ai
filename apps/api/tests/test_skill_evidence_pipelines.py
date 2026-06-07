@@ -1157,3 +1157,485 @@ class TestDevAuthFallbackEndpoints:
             assert r.status_code == 401, r.text
         finally:
             app.dependency_overrides.clear()
+
+
+# ── Recruiter-safe list service tests ────────────────────────────────────────
+
+
+class TestRecruiterSafeListService:
+    """Service-level tests for list_recruiter_safe_pipelines."""
+
+    def test_private_pipeline_excluded(self, svc: SkillEvidencePipelineService):
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Private Skill", visibility_status="private",
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        names = [r.skill_name for r in result]
+        assert "Private Skill" not in names
+
+    def test_public_pipeline_included(self, svc: SkillEvidencePipelineService):
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Public Skill", visibility_status="public",
+            recruiter_summary="Strong public evidence.",
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        names = [r.skill_name for r in result]
+        assert "Public Skill" in names
+        pub = next(r for r in result if r.skill_name == "Public Skill")
+        assert pub.is_locked_for_recruiter is False
+        assert pub.recruiter_summary == "Strong public evidence."
+
+    def test_protected_pipeline_included_as_locked(self, svc: SkillEvidencePipelineService):
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Protected Skill", visibility_status="protected",
+            recruiter_summary="Detailed private summary not for recruiter.",
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        names = [r.skill_name for r in result]
+        assert "Protected Skill" in names
+        prot = next(r for r in result if r.skill_name == "Protected Skill")
+        assert prot.is_locked_for_recruiter is True
+        assert "approval" in prot.recruiter_summary.lower()
+        assert "Detailed private summary" not in prot.recruiter_summary
+
+    def test_only_non_private_pipelines_returned(self, svc: SkillEvidencePipelineService):
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        for vis in ("public", "protected", "private"):
+            svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+                skill_name=f"Skill-{vis}", visibility_status=vis,
+            ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        names = {r.skill_name for r in result}
+        assert "Skill-public" in names
+        assert "Skill-protected" in names
+        assert "Skill-private" not in names
+
+    def test_protected_artifact_data_hidden_in_public_pipeline(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import (
+            SkillEvidencePipelineCreate,
+            SkillEvidenceArtifactCreate,
+        )
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="ML Skill", visibility_status="public",
+        ))
+        svc.add_artifact(STUDENT_A, SkillEvidenceArtifactCreate(
+            pipeline_id=pipeline.id,
+            source_type="transcript",
+            source_title="Defense excerpt",
+            project_name="P",
+            visibility="protected",
+            confidence_score=80,
+            proof_reason="Explains model selection",
+            artifact_data={"excerpt": "PRIVATE_TRANSCRIPT_TEXT", "ownership_signals": ["explained design"]},
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        skill = next(r for r in result if r.skill_name == "ML Skill")
+        assert len(skill.artifacts) == 1
+        art = skill.artifacts[0]
+        assert art["visibility"] == "protected"
+        assert art["artifact_data"] == {}
+        assert "PRIVATE_TRANSCRIPT_TEXT" not in str(art)
+
+    def test_private_artifact_excluded_in_public_pipeline(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import (
+            SkillEvidencePipelineCreate,
+            SkillEvidenceArtifactCreate,
+        )
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="FE Skill", visibility_status="public",
+        ))
+        svc.add_artifact(STUDENT_A, SkillEvidenceArtifactCreate(
+            pipeline_id=pipeline.id,
+            source_type="github",
+            source_title="private_file.py",
+            project_name="P",
+            visibility="private",
+            confidence_score=80,
+            proof_reason="Private code",
+            artifact_data={"file_path": "secret.py"},
+        ))
+        svc.add_artifact(STUDENT_A, SkillEvidenceArtifactCreate(
+            pipeline_id=pipeline.id,
+            source_type="github",
+            source_title="public_file.py",
+            project_name="P",
+            visibility="public",
+            confidence_score=85,
+            proof_reason="Public code",
+            artifact_data={"repo_url": "https://github.com/x/y", "file_path": "safe.py"},
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        skill = next(r for r in result if r.skill_name == "FE Skill")
+        assert len(skill.artifacts) == 1
+        assert skill.artifacts[0]["source_title"] == "public_file.py"
+
+    def test_public_github_link_visible_in_public_pipeline(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import (
+            SkillEvidencePipelineCreate,
+            SkillEvidenceArtifactCreate,
+        )
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Code Skill", visibility_status="public",
+        ))
+        svc.add_artifact(STUDENT_A, SkillEvidenceArtifactCreate(
+            pipeline_id=pipeline.id,
+            source_type="github",
+            source_title="evaluator.py",
+            project_name="VeriBridge",
+            visibility="public",
+            confidence_score=90,
+            proof_reason="ML confirmed",
+            artifact_data={
+                "repo_url": "https://github.com/veribridge-ai/veribridge",
+                "branch": "main",
+                "file_path": "apps/api/app/services/evaluator.py",
+                "start_line": 40,
+                "end_line": 140,
+            },
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        skill = next(r for r in result if r.skill_name == "Code Skill")
+        art = skill.artifacts[0]
+        assert "exact_code_url" in art
+        assert "/blob/main/" in art["exact_code_url"]
+        assert "#L40-L140" in art["exact_code_url"]
+
+    def test_unsafe_keys_stripped_from_public_artifact(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import (
+            SkillEvidencePipelineCreate,
+            SkillEvidenceArtifactCreate,
+        )
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Workflow Skill", visibility_status="public",
+        ))
+        svc.add_artifact(STUDENT_A, SkillEvidenceArtifactCreate(
+            pipeline_id=pipeline.id,
+            source_type="workflow",
+            source_title="recording",
+            project_name="P",
+            visibility="public",
+            confidence_score=70,
+            proof_reason="Workflow captured",
+            artifact_data={
+                "signed_url": "UNSAFE_SIGNED_URL",
+                "storage_path": "UNSAFE_STORAGE_PATH",
+                "access_token": "UNSAFE_TOKEN",
+                "frame_label": "Safe label",
+            },
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        skill = next(r for r in result if r.skill_name == "Workflow Skill")
+        art_data = skill.artifacts[0]["artifact_data"]
+        assert "signed_url" not in art_data
+        assert "storage_path" not in art_data
+        assert "access_token" not in art_data
+        assert art_data["frame_label"] == "Safe label"
+
+    def test_changing_visibility_private_excludes_from_recruiter_safe(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Toggle Skill", visibility_status="public",
+        ))
+        result_before = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        assert any(r.skill_name == "Toggle Skill" for r in result_before)
+
+        svc.update_pipeline_visibility(pipeline.id, STUDENT_A, "private")
+        result_after = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        assert not any(r.skill_name == "Toggle Skill" for r in result_after)
+
+    def test_changing_visibility_to_protected_locks_recruiter_view(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Switch Skill", visibility_status="public",
+            recruiter_summary="Full detail summary.",
+        ))
+        svc.update_pipeline_visibility(pipeline.id, STUDENT_A, "protected")
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        skill = next(r for r in result if r.skill_name == "Switch Skill")
+        assert skill.is_locked_for_recruiter is True
+        assert "Full detail summary" not in skill.recruiter_summary
+
+    def test_private_only_variant_excluded(self, svc: SkillEvidencePipelineService, mem: dict):
+        # Simulate legacy "private_only" stored by old code paths.
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Legacy Private Skill",
+        ))
+        mem["skill_evidence_pipelines"][pipeline.id]["visibility_status"] = "private_only"
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        assert not any(r.skill_name == "Legacy Private Skill" for r in result)
+
+    def test_protected_pipeline_strips_strongest_and_weakest_proof(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Sensitive Skill",
+            visibility_status="protected",
+            strongest_proof={"label": "GitHub", "reason": "ML confirmed in 3 files"},
+            weakest_proof={"label": "OCR", "reason": "Partial extraction only"},
+            missing_evidence=["Live demo"],
+            next_actions=["Add deployment report"],
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        p = next(r for r in result if r.skill_name == "Sensitive Skill")
+        assert p.strongest_proof == {}
+        assert p.weakest_proof == {}
+        assert p.missing_evidence == []
+        assert p.next_actions == []
+
+    def test_protected_pipeline_strips_evidence_source_reasons(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Sensitive Skill",
+            visibility_status="protected",
+            evidence_sources=[
+                {"key": "github", "label": "GitHub code", "status": "supported",
+                 "score": 91, "reason": "ML pipeline confirmed in 3 production service files"},
+                {"key": "workflow", "label": "Workflow recording", "status": "partial",
+                 "score": 65, "reason": "Inference output text extracted; some frames inconclusive"},
+            ],
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        p = next(r for r in result if r.skill_name == "Sensitive Skill")
+        for src in p.evidence_sources:
+            assert src.get("reason", "") == "", f"reason leaked for source {src['key']}"
+            assert src.get("score") is None, f"score leaked for source {src['key']}"
+            assert src["status"] == "protected"
+
+    def test_protected_pipeline_artifacts_excluded(self, svc: SkillEvidencePipelineService):
+        from app.schemas.skill_evidence_pipeline import (
+            SkillEvidencePipelineCreate,
+            SkillEvidenceArtifactCreate,
+        )
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Protected With Artifacts", visibility_status="protected",
+        ))
+        svc.add_artifact(STUDENT_A, SkillEvidenceArtifactCreate(
+            pipeline_id=pipeline.id,
+            source_type="github",
+            source_title="secret_impl.py",
+            project_name="P",
+            visibility="public",
+            confidence_score=90,
+            proof_reason="Core logic",
+            artifact_data={"file_path": "secret_impl.py", "repo_url": "https://github.com/x/y"},
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        p = next(r for r in result if r.skill_name == "Protected With Artifacts")
+        assert p.artifacts == []
+        assert "secret_impl.py" not in str(p)
+
+
+# ── Recruiter-safe list endpoint tests ───────────────────────────────────────
+
+
+class TestRecruiterSafeListEndpoint:
+    """HTTP endpoint tests for GET /student/skill-pipelines/recruiter-safe."""
+
+    def test_recruiter_safe_excludes_private_pipeline(self, client_a: TestClient):
+        _upsert(client_a, "Private Pipeline", visibility_status="private")
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        names = [p["skill_name"] for p in r.json()]
+        assert "Private Pipeline" not in names
+
+    def test_recruiter_safe_includes_public_pipeline(self, client_a: TestClient):
+        _upsert(client_a, "Public Pipeline", visibility_status="public",
+                recruiter_summary="Evidence-backed public skill.")
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        pipelines = r.json()
+        pub = next((p for p in pipelines if p["skill_name"] == "Public Pipeline"), None)
+        assert pub is not None
+        assert pub["is_locked_for_recruiter"] is False
+        assert pub["recruiter_summary"] == "Evidence-backed public skill."
+
+    def test_recruiter_safe_includes_protected_pipeline_as_locked(self, client_a: TestClient):
+        _upsert(client_a, "Protected Pipeline", visibility_status="protected")
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        pipelines = r.json()
+        prot = next((p for p in pipelines if p["skill_name"] == "Protected Pipeline"), None)
+        assert prot is not None
+        assert prot["is_locked_for_recruiter"] is True
+        assert "approval" in prot["recruiter_summary"].lower()
+
+    def test_recruiter_safe_excludes_private_artifacts_from_public_pipeline(
+        self, client_a: TestClient
+    ):
+        p = _upsert(client_a, "AI / Machine Learning", visibility_status="public")
+        pub = _add_artifact(client_a, p["id"], source_type="github", visibility="public",
+                            source_title="public.py")
+        prv = _add_artifact(client_a, p["id"], source_type="github", visibility="private",
+                            source_title="private.py")
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        pipeline = next(p for p in r.json() if p["skill_name"] == "AI / Machine Learning")
+        art_ids = [a["id"] for a in pipeline["artifacts"]]
+        assert pub["id"] in art_ids
+        assert prv["id"] not in art_ids
+
+    def test_recruiter_safe_protected_artifact_strips_detail(self, client_a: TestClient):
+        p = _upsert(client_a, "AI / Machine Learning", visibility_status="public")
+        art = _add_artifact(
+            client_a, p["id"],
+            source_type="transcript",
+            source_title="Defense excerpt",
+            visibility="protected",
+            artifact_data={
+                "excerpt": "PRIVATE_TRANSCRIPT",
+                "ownership_signals": ["described decisions"],
+            },
+        )
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        pipeline = next(p for p in r.json() if p["skill_name"] == "AI / Machine Learning")
+        protected_art = next((a for a in pipeline["artifacts"] if a["id"] == art["id"]), None)
+        assert protected_art is not None
+        assert protected_art["artifact_data"] == {}
+        assert "PRIVATE_TRANSCRIPT" not in r.text
+
+    def test_recruiter_safe_public_github_link_visible(self, client_a: TestClient):
+        p = _upsert(client_a, "Code Skill", visibility_status="public")
+        _add_artifact(
+            client_a, p["id"],
+            source_type="github",
+            source_title="evaluator.py",
+            visibility="public",
+            artifact_data={
+                "repo_url": "https://github.com/veribridge-ai/veribridge",
+                "branch": "main",
+                "file_path": "apps/api/app/services/evaluator.py",
+                "start_line": 40,
+                "end_line": 140,
+            },
+        )
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        pipeline = next(p for p in r.json() if p["skill_name"] == "Code Skill")
+        art = pipeline["artifacts"][0]
+        assert "exact_code_url" in art
+        assert "/blob/main/" in art["exact_code_url"]
+        assert "#L40-L140" in art["exact_code_url"]
+
+    def test_recruiter_safe_strips_unsafe_strings_from_response(self, client_a: TestClient):
+        p = _upsert(client_a, "Workflow Skill", visibility_status="public")
+        _add_artifact(
+            client_a, p["id"],
+            source_type="workflow",
+            source_title="recording",
+            visibility="public",
+            artifact_data={
+                "signed_url": "UNSAFE_SIGNED_URL",
+                "storage_path": "UNSAFE_STORAGE_PATH",
+                "access_token": "UNSAFE_TOKEN",
+                "frame_label": "Safe label",
+            },
+        )
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        text = r.text
+        assert "UNSAFE_SIGNED_URL" not in text
+        assert "UNSAFE_STORAGE_PATH" not in text
+        assert "UNSAFE_TOKEN" not in text
+        assert "Safe label" in text
+
+    def test_recruiter_safe_response_excludes_student_fields(self, client_a: TestClient):
+        _upsert(client_a, "AI / Machine Learning", visibility_status="public",
+                student_summary="Private note for student only.")
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        text = r.text
+        assert "student_id" not in text
+        assert "student_summary" not in text
+        assert "profile_id" not in text
+
+    def test_recruiter_safe_empty_when_all_private(self, client_a: TestClient):
+        _upsert(client_a, "Secret Skill 1", visibility_status="private")
+        _upsert(client_a, "Secret Skill 2", visibility_status="private")
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_recruiter_safe_mixed_visibility(self, client_a: TestClient):
+        _upsert(client_a, "Public Skill", visibility_status="public")
+        _upsert(client_a, "Protected Skill", visibility_status="protected")
+        _upsert(client_a, "Private Skill", visibility_status="private")
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        names = {p["skill_name"] for p in r.json()}
+        assert "Public Skill" in names
+        assert "Protected Skill" in names
+        assert "Private Skill" not in names
+        # Verify locking
+        pub = next(p for p in r.json() if p["skill_name"] == "Public Skill")
+        prot = next(p for p in r.json() if p["skill_name"] == "Protected Skill")
+        assert pub["is_locked_for_recruiter"] is False
+        assert prot["is_locked_for_recruiter"] is True
+
+    def test_recruiter_safe_protected_pipeline_strips_proof_fields(self, client_a: TestClient):
+        _upsert(
+            client_a, "Protected Evidence Skill",
+            visibility_status="protected",
+            strongest_proof={"label": "GitHub", "reason": "Confirmed in 3 files"},
+            weakest_proof={"label": "OCR", "reason": "Partial only"},
+            missing_evidence=["Live demo URL"],
+            next_actions=["Add deployment demo"],
+            evidence_sources=[
+                {"key": "github", "label": "GitHub code", "status": "supported",
+                 "score": 91, "reason": "ML pipeline confirmed"},
+            ],
+        )
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        p = next(x for x in r.json() if x["skill_name"] == "Protected Evidence Skill")
+        assert p["is_locked_for_recruiter"] is True
+        assert p["strongest_proof"] == {}
+        assert p["weakest_proof"] == {}
+        assert p["missing_evidence"] == []
+        assert p["next_actions"] == []
+        assert p["artifacts"] == []
+        # Proof reasons must not appear in the HTTP response text
+        assert "Confirmed in 3 files" not in r.text
+        assert "Partial only" not in r.text
+        assert "Live demo URL" not in r.text
+        assert "ML pipeline confirmed" not in r.text
+
+    def test_recruiter_safe_protected_pipeline_no_artifacts_before_approval(
+        self, client_a: TestClient
+    ):
+        p = _upsert(client_a, "Protected Pipeline With Artifacts", visibility_status="protected")
+        _add_artifact(
+            client_a, p["id"],
+            source_type="github",
+            source_title="secret_impl.py",
+            visibility="public",
+            artifact_data={
+                "repo_url": "https://github.com/x/y",
+                "file_path": "SECRET_PATH.py",
+                "start_line": 1, "end_line": 100,
+            },
+        )
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        pipeline = next(x for x in r.json() if x["skill_name"] == "Protected Pipeline With Artifacts")
+        assert pipeline["artifacts"] == []
+        assert "SECRET_PATH.py" not in r.text

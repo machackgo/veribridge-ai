@@ -3,13 +3,14 @@
 /**
  * DEV PREVIEW ONLY — not linked in production navigation.
  *
- * Renders RecruiterWorkPassportPreview with realistic mock recruiter-safe
- * data so the UI can be reviewed without a live backend call.
+ * Renders RecruiterWorkPassportPreview using backend recruiter-safe data when
+ * the backend is available, or falls back to mock data when it is not.
  *
  * URL: http://localhost:3000/dev/recruiter-passport-preview
  */
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { listRecruiterSkillEvidencePipelines } from "@/lib/api"
 import { RecruiterWorkPassportPreview } from "../../../../components/recruiter-passport/RecruiterWorkPassportPreview"
 import {
   createAccessRequest,
@@ -231,12 +232,39 @@ export default function DevRecruiterPassportPreviewPage() {
   // Incrementing resetKey remounts RecruiterWorkPassportPreview so its useEffect
   // re-reads the store after a reset.
   const [resetKey, setResetKey] = useState(0)
+  // "loading" while the backend probe is in-flight; "available" when backend
+  // responded (even with []); "unavailable" when the call failed or returned null.
+  const [backendStatus, setBackendStatus] = useState<"loading" | "available" | "unavailable">("loading")
+
+  useEffect(() => {
+    let cancelled = false
+    listRecruiterSkillEvidencePipelines().then((data) => {
+      if (!cancelled) setBackendStatus(data !== null ? "available" : "unavailable")
+    }).catch(() => {
+      if (!cancelled) setBackendStatus("unavailable")
+    })
+    return () => { cancelled = true }
+  }, [])
 
   const handleReset = () => {
     clearMockEvidenceAccessRequests()   // writes [] so sample-data pending never re-loads
     setAccessRequested(false)
     setResetKey((k) => k + 1)
   }
+
+  // When the backend is reachable, strip skill groups from the view so the
+  // component uses the backend's own recruiter-safe pipeline response (with
+  // real visibility enforcement) rather than hardcoded mock groups.
+  // When the backend is unavailable, keep all mock groups as a visual fallback.
+  const activeView: RecruiterPassportViewResponse = backendStatus === "available"
+    ? {
+        ...MOCK_VIEW,
+        skill_groups: [],
+        verified_skills: [],
+        partially_verified_skills: [],
+        skills_needing_review: [],
+      }
+    : MOCK_VIEW
 
   return (
     <div style={{
@@ -258,10 +286,44 @@ export default function DevRecruiterPassportPreviewPage() {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 16 }}>🛠</span>
           <span style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>
-            Development preview — mock recruiter-safe data
+            Development preview
           </span>
+          {backendStatus === "loading" && (
+            <span
+              data-testid="banner-loading-badge"
+              style={{ fontSize: 12, color: "#b45309" }}
+            >
+              Connecting to backend…
+            </span>
+          )}
+          {backendStatus === "available" && (
+            <span
+              data-testid="banner-backend-badge"
+              style={{
+                fontSize: 12, fontWeight: 700,
+                color: "#166534", background: "#dcfce7",
+                padding: "2px 10px", borderRadius: 999,
+                border: "1px solid #bbf7d0",
+              }}
+            >
+              Backend recruiter-safe data
+            </span>
+          )}
+          {backendStatus === "unavailable" && (
+            <span
+              data-testid="banner-fallback-badge"
+              style={{
+                fontSize: 12, fontWeight: 700,
+                color: "#92400e", background: "#fef3c7",
+                padding: "2px 10px", borderRadius: 999,
+                border: "1px solid #fbbf24",
+              }}
+            >
+              Fallback mock preview
+            </span>
+          )}
           <span style={{ fontSize: 12, color: "#b45309" }}>
-            No backend call · No private fields · Not linked in production
+            · No private fields · Not linked in production
           </span>
         </div>
         <button
@@ -320,7 +382,7 @@ export default function DevRecruiterPassportPreviewPage() {
       <div style={{ maxWidth: 860, margin: "0 auto", padding: "28px 20px 48px" }}>
         <RecruiterWorkPassportPreview
           key={resetKey}
-          view={MOCK_VIEW}
+          view={activeView}
           onRequestAccess={() => setAccessRequested(true)}
           onRequestCreated={handleRequestCreated}
           onReset={handleReset}

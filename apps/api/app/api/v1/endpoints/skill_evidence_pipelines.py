@@ -131,6 +131,37 @@ def upsert_pipeline(
         ) from exc
 
 
+# ── GET /student/skill-pipelines/recruiter-safe ───────────────────────────────
+# Must be defined before /{pipeline_id} to avoid routing ambiguity.
+
+
+@router.get(
+    "/recruiter-safe",
+    response_model=list[RecruiterPipelineSummary],
+    summary="Recruiter-safe list of all skill pipelines (visibility enforced server-side)",
+)
+def list_recruiter_safe_pipelines(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_pipeline_db),
+) -> list[RecruiterPipelineSummary]:
+    """Return all non-private pipelines in recruiter-safe format.
+
+    Enforces student visibility choices server-side:
+    - private pipelines are excluded entirely
+    - protected pipelines are returned as locked summaries (no detailed artifact content)
+    - public pipelines are returned with full safe payload (private artifacts excluded,
+      protected artifacts shown as locked cards, unsafe keys stripped)
+    """
+    try:
+        return SkillEvidencePipelineService(db).list_recruiter_safe_pipelines(user_id)
+    except Exception as exc:
+        logger.exception("GET recruiter-safe: unexpected error for user %s", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "list_failed", "message": str(exc)},
+        ) from exc
+
+
 # ── GET /student/skill-pipelines/{pipeline_id} ───────────────────────────────
 
 
