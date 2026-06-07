@@ -11,6 +11,12 @@ vi.mock("../../components/dashboard/StudentSkillEvidencePipelines", () => ({
   ),
 }))
 
+vi.mock("../../components/dashboard/EvidenceFlowVisual", () => ({
+  EvidenceFlowVisual: () => (
+    <div data-testid="evidence-flow-visual">Evidence Flow Visual</div>
+  ),
+}))
+
 vi.mock("../../components/skill-proof/student-proof-submission-panel", () => ({
   StudentProofSubmissionPanel: () => (
     <div data-testid="mock-proof-panel">Proof Submission Panel</div>
@@ -214,5 +220,25 @@ describe("StudentProfileProof – tab accessibility", () => {
     for (const name of inactiveTabs) {
       expect(screen.getByRole("tab", { name })).toHaveAttribute("tabindex", "-1")
     }
+  })
+
+  // ── Motion polish ─────────────────────────────────────────────────────────
+
+  it("Overview panel has vb-tab-panel animation class", () => {
+    expect(screen.getByRole("tabpanel")).toHaveClass("vb-tab-panel")
+  })
+
+  it("Overview tab renders the EvidenceFlowVisual component", () => {
+    expect(screen.getByTestId("evidence-flow-visual")).toBeInTheDocument()
+  })
+
+  it("switching to Proof Center panel still has vb-tab-panel class", () => {
+    fireEvent.click(screen.getByRole("tab", { name: "Proof Center" }))
+    expect(screen.getByRole("tabpanel")).toHaveClass("vb-tab-panel")
+  })
+
+  it("switching to Work Passport panel still has vb-tab-panel class", () => {
+    fireEvent.click(screen.getByRole("tab", { name: "Work Passport" }))
+    expect(screen.getByRole("tabpanel")).toHaveClass("vb-tab-panel")
   })
 })

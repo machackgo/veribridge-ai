@@ -13,6 +13,7 @@ import {
 } from "../../data/mock";
 import { StudentProofSubmissionPanel } from "../skill-proof/student-proof-submission-panel";
 import { StudentSkillEvidencePipelines } from "./StudentSkillEvidencePipelines";
+import { EvidenceFlowVisual } from "./EvidenceFlowVisual";
 
 /* ── Shared micro-components (minimal, not over-abstracted) ── */
 
@@ -206,7 +207,7 @@ function ScoreRing({ score }: { score: number }) {
   const offset = circ * (1 - score / 100);
   return (
     <div style={{ width: 96, height: 96, position: "relative", flexShrink: 0 }}>
-      <svg viewBox="0 0 100 100" style={{ width: "100%", height: "100%", transform: "rotate(-90deg)" }}>
+      <svg viewBox="0 0 100 100" className="vb-ring-svg" style={{ width: "100%", height: "100%" }}>
         <circle cx="50" cy="50" r={r} fill="none" stroke="rgba(255,255,255,.15)" strokeWidth="7" />
         <circle
           cx="50" cy="50" r={r} fill="none"
@@ -767,11 +768,19 @@ export function StudentProfileProof() {
         lede="Every skill is anchored to evidence — GitHub commits, deployed apps, transcripts, and certifications."
       />
 
-      {/* Tab navigation */}
+      {/* Tab navigation — pill container */}
       <div
         role="tablist"
         aria-label="Profile sections"
-        style={{ display: "flex", gap: 0, marginBottom: 24, borderBottom: "1px solid var(--line)" }}
+        style={{
+          display: "flex", gap: 2,
+          marginBottom: 28, padding: 4,
+          background: "var(--bg-2)",
+          borderRadius: 13,
+          border: "1px solid var(--line)",
+          overflowX: "auto",
+          scrollbarWidth: "none" as const,
+        }}
         onKeyDown={handleTabKeyDown}
       >
         {PROFILE_TABS.map((tab) => (
@@ -786,16 +795,19 @@ export function StudentProfileProof() {
             ref={(el) => { tabRefs.current[tab.id] = el; }}
             onClick={() => setActiveTab(tab.id)}
             style={{
-              padding: "10px 18px",
+              padding: "8px 16px",
               border: "none",
-              background: "none",
+              borderRadius: 10,
+              background: activeTab === tab.id ? "var(--paper)" : "transparent",
               cursor: "pointer",
               fontSize: 13,
-              fontWeight: activeTab === tab.id ? 600 : 400,
+              fontWeight: activeTab === tab.id ? 600 : 500,
               color: activeTab === tab.id ? "var(--ink)" : "var(--muted)",
-              borderBottom: `2px solid ${activeTab === tab.id ? "var(--ink)" : "transparent"}`,
-              marginBottom: -1,
-              transition: "color 0.15s",
+              boxShadow: activeTab === tab.id
+                ? "0 1px 4px rgba(10,14,26,.10), 0 1px 2px rgba(10,14,26,.06)"
+                : "none",
+              transition: "all 0.18s ease",
+              whiteSpace: "nowrap" as const,
             }}
           >
             {tab.label}
@@ -805,32 +817,20 @@ export function StudentProfileProof() {
 
       {/* ── Overview ── */}
       {activeTab === "overview" && (
-        <div id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabIndex={0}>
+        <div id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabIndex={0} className="vb-tab-panel">
           {/* Student identity card */}
-          <Card style={{ marginBottom: 16, padding: 14 }}>
+          <Card style={{ marginBottom: 0, padding: "16px 18px", border: "1px solid var(--line)", boxShadow: "0 1px 4px rgba(10,14,26,.05)" }}>
             <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 16, alignItems: "center" }}>
-              <div
-                style={{
-                  width: 56,
-                  height: 56,
-                  borderRadius: 14,
-                  background: "linear-gradient(135deg,#4f46e5,#8b5cf6)",
-                  color: "#fff",
-                  display: "grid",
-                  placeItems: "center",
-                  fontSize: 20,
-                  fontWeight: 600,
-                  flexShrink: 0,
-                }}
-              >
-                MR
+              <div style={{ position: "relative", flexShrink: 0 }}>
+                <div style={{ width: 56, height: 56, borderRadius: 16, background: "linear-gradient(140deg,#4f46e5 0%,#8b5cf6 60%,#c084fc 100%)", color: "#fff", display: "grid", placeItems: "center", fontSize: 20, fontWeight: 700, boxShadow: "0 0 0 3px var(--paper), 0 0 0 4px color-mix(in srgb,var(--indigo) 30%,transparent)" }}>MR</div>
+                <div style={{ position: "absolute", bottom: -1, right: -1, width: 14, height: 14, borderRadius: "50%", background: "var(--emerald)", border: "2px solid var(--paper)" }} />
               </div>
               <div>
-                <h2 style={{ margin: "0 0 2px", fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em" }}>Maya Reyes</h2>
+                <h2 style={{ margin: "0 0 2px", fontSize: 18, fontWeight: 700, letterSpacing: "-0.02em", color: "var(--ink)" }}>Maya Reyes</h2>
                 <Mono style={{ fontSize: 11, color: "var(--muted)", letterSpacing: "0.04em" }}>
                   WPI · CS &#39;26 · GPA 3.84 · Worcester, MA
                 </Mono>
-                <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 5, marginTop: 7, flexWrap: "wrap" }}>
                   <Stat label="✓ .edu Verified" color="var(--emerald)" bg="var(--emerald-soft)" />
                   <Stat label="F-1 · Visa OK" color="var(--indigo)" bg="var(--indigo-soft)" />
                   <Stat label="Score 82 · Top 12%" color="var(--purple)" bg="var(--purple-soft)" />
@@ -842,6 +842,9 @@ export function StudentProfileProof() {
               </div>
             </div>
           </Card>
+
+          {/* Evidence → AI → Passport visual */}
+          <EvidenceFlowVisual />
 
           {/* Score + top skills row */}
           <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16, marginBottom: 16 }}>
@@ -896,37 +899,31 @@ export function StudentProfileProof() {
             </div>
 
             {/* Top verified skills summary */}
-            <Card>
+            <Card style={{ display: "flex", flexDirection: "column" }}>
               <CardHeader title="Top verified skills" eyebrow={`${student.verifiedSkills} verified`} />
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 7, flex: 1 }}>
                 {[
                   { name: "AI / Machine Learning", conf: "high" as const, pct: 88, badge: "Strongly supported" },
                   { name: "JavaScript / Frontend", conf: "high" as const, pct: 84, badge: "Strongly supported" },
-                  { name: "Data & Visualization", conf: "medium" as const, pct: 67, badge: "Partially supported" },
-                  { name: "DevOps / Deployment", conf: "medium" as const, pct: 58, badge: "Needs more proof" },
+                  { name: "Data & Visualization", conf: "medium" as const, pct: 67, badge: "Partial" },
+                  { name: "DevOps / Deployment", conf: "low" as const, pct: 58, badge: "Needs more proof" },
                 ].map((sk) => (
-                  <div key={sk.name} style={{ padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 9, background: "var(--bg-2)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                      <span style={{ fontSize: 13, fontWeight: 600 }}>{sk.name}</span>
-                      <Mono
-                        style={{
-                          fontSize: 10, padding: "2px 7px", borderRadius: 4, fontWeight: 600,
-                          color: sk.conf === "high" ? "var(--emerald)" : "var(--amber)",
-                          background: sk.conf === "high" ? "var(--emerald-soft)" : "var(--amber-soft)",
-                        }}
-                      >
-                        {sk.pct}%
+                  <div key={sk.name} className="vb-row-item" style={{ padding: "9px 11px", border: "1px solid var(--line)", borderRadius: 10, background: "var(--bg-2)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink)" }}>{sk.name}</span>
+                      <Mono style={{ fontSize: 9, padding: "3px 8px", borderRadius: 5, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: sk.conf === "high" ? "var(--emerald)" : sk.conf === "medium" ? "var(--amber)" : "var(--rose)", background: sk.conf === "high" ? "var(--emerald-soft)" : sk.conf === "medium" ? "var(--amber-soft)" : "var(--rose-soft)", border: `1px solid color-mix(in srgb,${sk.conf === "high" ? "var(--emerald)" : sk.conf === "medium" ? "var(--amber)" : "var(--rose)"} 20%,transparent)` }}>
+                        {sk.badge}
                       </Mono>
                     </div>
-                    <Bar pct={sk.pct} color={sk.conf === "high" ? "linear-gradient(90deg,#4f46e5,#10b981)" : "linear-gradient(90deg,#f59e0b,#f43f5e)"} />
-                    <Mono style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>{sk.badge}</Mono>
+                    <Bar pct={sk.pct} color={sk.conf === "high" ? "linear-gradient(90deg,#4f46e5,#10b981)" : sk.conf === "medium" ? "linear-gradient(90deg,#f59e0b,#f97316)" : "linear-gradient(90deg,#f43f5e,#e11d48)"} />
+                    <Mono style={{ fontSize: 10, color: "var(--muted)", marginTop: 3, textAlign: "right" }}>{sk.pct}%</Mono>
                   </div>
                 ))}
               </div>
               <button
                 type="button"
                 onClick={() => setActiveTab("skill-graph")}
-                style={{ marginTop: 12, width: "100%", textAlign: "center", fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "none", border: "none", cursor: "pointer", padding: "6px 0" }}
+                style={{ marginTop: 12, width: "100%", textAlign: "center", fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "var(--indigo-soft)", border: "1px solid color-mix(in srgb,var(--indigo) 16%,transparent)", borderRadius: 9, cursor: "pointer", padding: "8px 0" }}
               >
                 Manage skill evidence →
               </button>
@@ -934,30 +931,20 @@ export function StudentProfileProof() {
           </div>
 
           {/* Next Best Action teaser */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr auto",
-              gap: 16,
-              alignItems: "center",
-              padding: "16px 20px",
-              background: "linear-gradient(135deg,var(--indigo-soft),var(--purple-soft))",
-              border: "1px solid color-mix(in srgb,var(--indigo) 18%,transparent)",
-              borderRadius: 12,
-            }}
-          >
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 14, alignItems: "center", padding: "16px 20px", background: "linear-gradient(135deg,var(--indigo-soft) 0%,var(--purple-soft) 100%)", border: "1px solid color-mix(in srgb,var(--indigo) 18%,transparent)", borderRadius: 14, boxShadow: "0 1px 4px rgba(10,14,26,.05)" }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: "linear-gradient(140deg,var(--indigo),var(--purple))", display: "grid", placeItems: "center", flexShrink: 0, boxShadow: "0 2px 8px color-mix(in srgb,var(--indigo) 30%,transparent)" }}>
+              <span style={{ fontSize: 16 }}>✦</span>
+            </div>
             <div>
-              <Mono style={{ fontSize: 10, letterSpacing: "0.14em", color: "var(--muted)", textTransform: "uppercase", marginBottom: 4 }}>
-                Next best action · AI · Today
-              </Mono>
-              <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", letterSpacing: "-0.01em" }}>
+              <Mono style={{ fontSize: 9, letterSpacing: "0.18em", color: "var(--muted)", textTransform: "uppercase", marginBottom: 4, display: "block" }}>AI Coach · Today</Mono>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)", letterSpacing: "-0.01em", lineHeight: 1.4 }}>
                 Ship a small Kubernetes project — closes your highest-impact skill gap (68% of target roles).
               </div>
             </div>
             <button
               type="button"
               onClick={() => setActiveTab("improvement")}
-              style={{ fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "none", border: "none", cursor: "pointer", whiteSpace: "nowrap", padding: 0 }}
+              style={{ fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "var(--paper)", border: "1px solid color-mix(in srgb,var(--indigo) 20%,transparent)", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap", padding: "7px 13px", flexShrink: 0 }}
             >
               View plan →
             </button>
@@ -967,18 +954,21 @@ export function StudentProfileProof() {
 
       {/* ── Skill Graph ── */}
       {activeTab === "skill-graph" && (
-        <div id="panel-skill-graph" role="tabpanel" aria-labelledby="tab-skill-graph" tabIndex={0}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+        <div id="panel-skill-graph" role="tabpanel" aria-labelledby="tab-skill-graph" tabIndex={0} className="vb-tab-panel">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24, paddingBottom: 20, borderBottom: "1px solid var(--line)" }}>
             <div>
-              <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>Skill Evidence Pipelines</h2>
-              <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.5 }}>
-                AI-verified skills anchored to evidence from multiple sources. Control public, protected, and private visibility per skill.
+              <Mono style={{ fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--muted)", display: "block", marginBottom: 5 }}>
+                Skill Evidence Pipelines
+              </Mono>
+              <h2 style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 700, letterSpacing: "-0.02em", color: "var(--ink)" }}>AI-verified skill graph</h2>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.5, maxWidth: 520 }}>
+                Each skill is anchored to evidence from multiple sources and verified by VeriBridge AI. Control visibility per skill.
               </p>
             </div>
             <button
               type="button"
               onClick={() => setActiveTab("proof-center")}
-              style={{ fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "none", border: "1px solid color-mix(in srgb,var(--indigo) 30%,transparent)", borderRadius: 8, cursor: "pointer", padding: "7px 12px", whiteSpace: "nowrap" }}
+              style={{ fontSize: 13, fontWeight: 600, color: "var(--indigo)", background: "var(--indigo-soft)", border: "1px solid color-mix(in srgb,var(--indigo) 22%,transparent)", borderRadius: 9, cursor: "pointer", padding: "9px 16px", whiteSpace: "nowrap", transition: "background 150ms", flexShrink: 0 }}
             >
               + Add proof
             </button>
@@ -989,39 +979,50 @@ export function StudentProfileProof() {
 
       {/* ── Proof Center ── */}
       {activeTab === "proof-center" && (
-        <div id="panel-proof-center" role="tabpanel" aria-labelledby="tab-proof-center" tabIndex={0}>
-          <p style={{ margin: "0 0 20px", fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
-            Add and manage raw evidence. Each proof is analyzed by VeriBridge AI and linked to verified skills in your Skill Graph.
-          </p>
+        <div id="panel-proof-center" role="tabpanel" aria-labelledby="tab-proof-center" tabIndex={0} className="vb-tab-panel">
+          {/* Section intro */}
+          <div style={{ marginBottom: 24, paddingBottom: 20, borderBottom: "1px solid var(--line)" }}>
+            <Mono style={{ fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--muted)", display: "block", marginBottom: 5 }}>
+              Evidence Management
+            </Mono>
+            <h2 style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 700, letterSpacing: "-0.02em", color: "var(--ink)" }}>Proof Center</h2>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.55 }}>
+              Add and manage raw evidence. Each proof is analyzed by VeriBridge AI and linked to verified skills in your Skill Graph.
+            </p>
+          </div>
 
-          {/* Proof type entry cards */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 24 }}>
+          {/* Proof type module cards */}
+          <div className="vb-stagger" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 28 }}>
             {[
-              { type: "AI Session", desc: "AI walks through your work session end-to-end", icon: "◈", color: "var(--purple)", bg: "var(--purple-soft)" },
-              { type: "GitHub Proof", desc: "Scan repos, commits, and contribution history", icon: "◎", color: "var(--ink)", bg: "var(--bg-2)" },
-              { type: "Website Proof", desc: "Verify deployed projects and live app URLs", icon: "◉", color: "var(--indigo)", bg: "var(--indigo-soft)" },
-              { type: "Project Defense", desc: "Upload defense recording or transcript", icon: "◑", color: "var(--emerald)", bg: "var(--emerald-soft)" },
-              { type: "Documents / Reports", desc: "PDF, research reports, or technical write-ups", icon: "◫", color: "var(--amber)", bg: "var(--amber-soft)" },
-              { type: "Certificates / Reports", desc: "Professional or course certifications", icon: "◇", color: "var(--emerald)", bg: "var(--emerald-soft)" },
+              { type: "AI Session",            desc: "AI walks through your work session end-to-end", icon: "◈", color: "var(--purple)", bg: "var(--purple-soft)", borderC: "color-mix(in srgb,var(--purple) 22%,transparent)" },
+              { type: "GitHub Proof",          desc: "Scan repos, commits, and contribution history", icon: "◎", color: "var(--ink)", bg: "var(--bg-2)", borderC: "var(--line-2)" },
+              { type: "Website Proof",         desc: "Verify deployed projects and live app URLs", icon: "◉", color: "var(--indigo)", bg: "var(--indigo-soft)", borderC: "color-mix(in srgb,var(--indigo) 22%,transparent)" },
+              { type: "Project Defense",       desc: "Upload defense recording or transcript", icon: "◑", color: "var(--emerald)", bg: "var(--emerald-soft)", borderC: "color-mix(in srgb,var(--emerald) 22%,transparent)" },
+              { type: "Documents / Reports",   desc: "PDF, research reports, or technical write-ups", icon: "◫", color: "var(--amber)", bg: "var(--amber-soft)", borderC: "color-mix(in srgb,var(--amber) 22%,transparent)" },
+              { type: "Certificates / Reports", desc: "Professional or course certifications", icon: "◇", color: "var(--emerald)", bg: "var(--emerald-soft)", borderC: "color-mix(in srgb,var(--emerald) 22%,transparent)" },
             ].map((p) => (
               <div
                 key={p.type}
+                className="vb-module-card"
                 style={{
-                  padding: 14,
-                  background: p.bg,
-                  border: `1px solid color-mix(in srgb,${p.color} 20%,transparent)`,
-                  borderRadius: 11,
+                  padding: "15px 16px",
+                  background: "var(--paper)",
+                  border: `1px solid ${p.borderC}`,
+                  borderRadius: 13,
                   cursor: "pointer",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
+                  position: "relative",
+                  overflow: "hidden",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 18, color: p.color }}>{p.icon}</span>
-                  <span style={{ fontWeight: 600, fontSize: 13, color: "var(--ink)" }}>{p.type}</span>
+                {/* Top color stripe */}
+                <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: p.color, opacity: 0.45 }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 9 }}>
+                  <div style={{ width: 34, height: 34, borderRadius: 9, background: p.bg, display: "grid", placeItems: "center", color: p.color, fontSize: 17, flexShrink: 0, border: `1px solid ${p.borderC}` }}>
+                    {p.icon}
+                  </div>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: "var(--ink)", letterSpacing: "-0.005em" }}>{p.type}</span>
                 </div>
-                <p style={{ margin: 0, fontSize: 12, color: "var(--muted)", lineHeight: 1.4 }}>{p.desc}</p>
+                <p style={{ margin: 0, fontSize: 11.5, color: "var(--muted)", lineHeight: 1.45 }}>{p.desc}</p>
               </div>
             ))}
           </div>
@@ -1030,8 +1031,13 @@ export function StudentProfileProof() {
           <StudentProofSubmissionPanel notify={show} />
 
           {/* Saved proof inventory */}
-          <Card style={{ marginTop: 16 }}>
-            <CardHeader title="Saved proof inventory" eyebrow={`${student.publicProof} items`} />
+          <div style={{ marginTop: 20, background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 16, padding: 20, boxShadow: "0 1px 3px rgba(10,14,26,.04)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "-0.01em", color: "var(--ink)" }}>Saved proof inventory</div>
+              <Mono style={{ fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 5, fontWeight: 700, color: "var(--muted)", background: "var(--bg-2)", border: "1px solid var(--line)" }}>
+                {student.publicProof} items
+              </Mono>
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {[
                 { name: "Docker Compose deploy · CS 4515 project", type: "GitHub", status: "Analyzed", skills: ["DevOps", "Docker"], vis: "Public" },
@@ -1041,135 +1047,104 @@ export function StudentProfileProof() {
               ].map((item) => (
                 <div
                   key={item.name}
+                  className="vb-row-item"
                   style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr auto auto auto",
-                    gap: 12,
-                    alignItems: "center",
-                    padding: "11px 12px",
-                    border: "1px solid var(--line)",
-                    borderRadius: 9,
-                    background: "var(--bg-2)",
+                    display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 12, alignItems: "center",
+                    padding: "12px 14px", border: "1px solid var(--line)", borderRadius: 10, background: "var(--bg-2)",
                   }}
                 >
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{item.name}</div>
-                    <div style={{ display: "flex", gap: 5, marginTop: 4, flexWrap: "wrap" }}>
-                      <Mono style={{ fontSize: 10, color: "var(--muted)", letterSpacing: "0.04em" }}>{item.type}</Mono>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)", letterSpacing: "-0.005em" }}>{item.name}</div>
+                    <div style={{ display: "flex", gap: 5, marginTop: 5, flexWrap: "wrap" }}>
+                      <Mono style={{ fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 4, fontWeight: 600, color: "var(--muted)", background: "var(--paper)", border: "1px solid var(--line)" }}>{item.type}</Mono>
                       {item.skills.map(s => (
-                        <Mono key={s} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "var(--indigo-soft)", color: "var(--indigo)", fontWeight: 600 }}>{s}</Mono>
+                        <Mono key={s} style={{ fontSize: 9, letterSpacing: "0.06em", padding: "2px 7px", borderRadius: 4, fontWeight: 600, background: "var(--indigo-soft)", color: "var(--indigo)", border: "1px solid color-mix(in srgb,var(--indigo) 18%,transparent)" }}>{s}</Mono>
                       ))}
                     </div>
                   </div>
-                  <Mono
-                    style={{
-                      fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase",
-                      padding: "3px 8px", borderRadius: 4,
-                      color: item.status === "Approved" ? "var(--emerald)" : item.status === "Analyzed" ? "var(--indigo)" : "var(--amber)",
-                      background: item.status === "Approved" ? "var(--emerald-soft)" : item.status === "Analyzed" ? "var(--indigo-soft)" : "var(--amber-soft)",
-                    }}
-                  >
-                    {item.status}
-                  </Mono>
-                  <Mono
-                    style={{
-                      fontSize: 10, fontWeight: 600, letterSpacing: "0.08em",
-                      color: item.vis === "Public" ? "var(--emerald)" : item.vis === "Protected" ? "var(--amber)" : "var(--muted)",
-                    }}
-                  >
+                  <Mono style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 5, whiteSpace: "nowrap",
+                    color: item.status === "Approved" ? "var(--emerald)" : item.status === "Analyzed" ? "var(--indigo)" : "var(--amber)",
+                    background: item.status === "Approved" ? "var(--emerald-soft)" : item.status === "Analyzed" ? "var(--indigo-soft)" : "var(--amber-soft)",
+                    border: `1px solid color-mix(in srgb,${item.status === "Approved" ? "var(--emerald)" : item.status === "Analyzed" ? "var(--indigo)" : "var(--amber)"} 18%,transparent)`,
+                  }}>{item.status}</Mono>
+                  <Mono style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", whiteSpace: "nowrap",
+                    color: item.vis === "Public" ? "var(--emerald)" : item.vis === "Protected" ? "var(--amber)" : "var(--muted)",
+                  }}>
                     {item.vis === "Public" ? "◎ Public" : item.vis === "Protected" ? "◑ Protected" : "● Private"}
                   </Mono>
-                  <Btn ghost style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => show(`Managing proof (demo).`)}>Manage</Btn>
+                  <Btn ghost style={{ fontSize: 11, padding: "5px 11px" }} onClick={() => show(`Managing proof (demo).`)}>Manage</Btn>
                 </div>
               ))}
             </div>
-          </Card>
+          </div>
         </div>
       )}
 
       {/* ── Work Passport ── */}
       {activeTab === "work-passport" && (
-        <div id="panel-work-passport" role="tabpanel" aria-labelledby="tab-work-passport" tabIndex={0}>
-          {/* Header */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
-            <div>
-              <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>What recruiters see</h2>
-              <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.5 }}>
-                Your Work Passport contains only AI-verified skills and approved evidence. No raw private artifacts are visible to recruiters.
-              </p>
+        <div id="panel-work-passport" role="tabpanel" aria-labelledby="tab-work-passport" tabIndex={0} className="vb-tab-panel">
+          {/* Passport header — dark trust panel */}
+          <div style={{ padding: "20px 24px", background: "linear-gradient(135deg,#0c0e1a 0%,#111428 100%)", borderRadius: 16, marginBottom: 20, border: "1px solid rgba(79,70,229,.22)", boxShadow: "0 8px 32px rgba(10,14,26,.2)", position: "relative", overflow: "hidden" }}>
+            <div style={{ position: "absolute", right: -40, top: -40, width: 180, height: 180, background: "radial-gradient(circle,rgba(139,92,246,.22),transparent 70%)", filter: "blur(24px)", pointerEvents: "none" }} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "relative" }}>
+              <div>
+                <Mono style={{ fontSize: 9, letterSpacing: "0.22em", textTransform: "uppercase", color: "rgba(165,180,252,.55)", display: "block", marginBottom: 6 }}>
+                  Recruiter · Verified Output
+                </Mono>
+                <h2 style={{ margin: "0 0 6px", fontSize: 19, fontWeight: 700, color: "#fff", letterSpacing: "-0.02em" }}>Work Passport</h2>
+                <p style={{ margin: 0, fontSize: 12.5, color: "rgba(255,255,255,.52)", lineHeight: 1.55, maxWidth: 440 }}>
+                  Contains only AI-verified skills and approved evidence. No raw private artifacts are visible to recruiters.
+                </p>
+              </div>
+              <Btn onClick={() => show("Recruiter preview — coming soon.")} style={{ background: "rgba(255,255,255,.1)", border: "1px solid rgba(255,255,255,.18)", color: "#fff", flexShrink: 0 }}>
+                Preview as recruiter →
+              </Btn>
             </div>
-            <Btn onClick={() => show("Recruiter preview — coming soon.")}>Preview as recruiter →</Btn>
           </div>
 
           {/* Privacy tiers */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+          <div className="vb-stagger" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
             {[
-              {
-                tier: "Public", icon: "◎",
-                desc: "Visible to all verified recruiters — no approval required.",
-                count: "6 skills · 4 proof items",
-                color: "var(--emerald)", border: "color-mix(in srgb,var(--emerald) 22%,transparent)", bg: "var(--emerald-soft)",
-              },
-              {
-                tier: "Protected", icon: "◑",
-                desc: "Visible only after you approve a recruiter access request.",
-                count: "3 skills · 2 proof items",
-                color: "var(--amber)", border: "color-mix(in srgb,var(--amber) 22%,transparent)", bg: "var(--amber-soft)",
-              },
-              {
-                tier: "Private", icon: "●",
-                desc: "Only you can see this. Never shared without explicit opt-in.",
-                count: "2 skills · 1 proof item",
-                color: "var(--muted)", border: "var(--line)", bg: "var(--bg-2)",
-              },
+              { tier: "Public", icon: "◎", desc: "Visible to all verified recruiters — no approval required.", count: "6 skills · 4 proof items", color: "var(--emerald)", borderC: "color-mix(in srgb,var(--emerald) 22%,transparent)", bg: "var(--emerald-soft)" },
+              { tier: "Protected", icon: "◑", desc: "Visible only after you approve a recruiter access request.", count: "3 skills · 2 proof items", color: "var(--amber)", borderC: "color-mix(in srgb,var(--amber) 22%,transparent)", bg: "var(--amber-soft)" },
+              { tier: "Private", icon: "●", desc: "Only you can see this. Never shared without explicit opt-in.", count: "2 skills · 1 proof item", color: "var(--muted)", borderC: "var(--line)", bg: "var(--bg-2)" },
             ].map((t) => (
-              <div key={t.tier} style={{ padding: 16, background: t.bg, border: `1px solid ${t.border}`, borderRadius: 12 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span style={{ fontSize: 16, color: t.color }}>{t.icon}</span>
-                  <span style={{ fontWeight: 600, fontSize: 14, color: t.color }}>{t.tier}</span>
+              <div key={t.tier} style={{ padding: 18, background: t.bg, border: `1px solid ${t.borderC}`, borderRadius: 14 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
+                  <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,.6)", display: "grid", placeItems: "center", fontSize: 14, color: t.color, border: `1px solid ${t.borderC}` }}>{t.icon}</div>
+                  <span style={{ fontWeight: 700, fontSize: 14, color: t.color, letterSpacing: "-0.01em" }}>{t.tier}</span>
                 </div>
-                <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--ink-2)", lineHeight: 1.5 }}>{t.desc}</p>
-                <Mono style={{ fontSize: 11, fontWeight: 700, color: t.color }}>{t.count}</Mono>
+                <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--ink-2)", lineHeight: 1.5 }}>{t.desc}</p>
+                <Mono style={{ fontSize: 10, fontWeight: 700, color: t.color, letterSpacing: "0.04em" }}>{t.count}</Mono>
               </div>
             ))}
           </div>
 
           {/* Access requests */}
-          <Card style={{ marginBottom: 16 }}>
-            <CardHeader title="Access requests" eyebrow="2 pending" />
+          <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 16, padding: 20, marginBottom: 16, boxShadow: "0 1px 3px rgba(10,14,26,.04)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "-0.01em", color: "var(--ink)" }}>Access requests</div>
+              <Mono style={{ fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 5, fontWeight: 700, color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid color-mix(in srgb,var(--amber) 18%,transparent)" }}>
+                2 pending
+              </Mono>
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {[
                 { co: "Stripe · Backend Eng. Intern", when: "Requested 1d ago", status: "Pending" as const },
                 { co: "Linear · SWE Intern", when: "Requested 3d ago", status: "Pending" as const },
                 { co: "Vercel · Full-stack Intern", when: "Approved 5d ago", status: "Approved" as const },
               ].map((r) => (
-                <div
-                  key={r.co}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    padding: "11px 12px",
-                    border: "1px solid var(--line)",
-                    borderRadius: 9,
-                    background: "var(--bg-2)",
-                  }}
-                >
+                <div key={r.co} className="vb-row-item" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", border: "1px solid var(--line)", borderRadius: 10, background: "var(--bg-2)" }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{r.co}</div>
-                    <Mono style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{r.when}</Mono>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{r.co}</div>
+                    <Mono style={{ fontSize: 11, color: "var(--muted)", marginTop: 2, letterSpacing: "0.04em" }}>{r.when}</Mono>
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <Mono
-                      style={{
-                        fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase",
-                        padding: "3px 8px", borderRadius: 4,
-                        color: r.status === "Approved" ? "var(--emerald)" : "var(--amber)",
-                        background: r.status === "Approved" ? "var(--emerald-soft)" : "var(--amber-soft)",
-                      }}
-                    >
-                      {r.status}
-                    </Mono>
+                    <Mono style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 5,
+                      color: r.status === "Approved" ? "var(--emerald)" : "var(--amber)",
+                      background: r.status === "Approved" ? "var(--emerald-soft)" : "var(--amber-soft)",
+                      border: `1px solid color-mix(in srgb,${r.status === "Approved" ? "var(--emerald)" : "var(--amber)"} 18%,transparent)`,
+                    }}>{r.status}</Mono>
                     {r.status === "Pending" && (
                       <>
                         <Btn ghost style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => show("Access approved (demo).")}>Approve</Btn>
@@ -1180,137 +1155,115 @@ export function StudentProfileProof() {
                 </div>
               ))}
             </div>
-          </Card>
+          </div>
 
-          {/* Last updated strip */}
-          <div
-            style={{
-              padding: "14px 16px",
-              background: "var(--bg-2)",
-              border: "1px solid var(--line)",
-              borderRadius: 11,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
+          {/* Live passport strip */}
+          <div className="vb-passport-glow" style={{ padding: "14px 18px", background: "linear-gradient(135deg,var(--emerald-soft) 0%,var(--bg-2) 100%)", border: "1px solid color-mix(in srgb,var(--emerald) 25%,transparent)", borderRadius: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>Passport last updated</div>
-              <Mono style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>2 hours ago · Docker skill verified · 3 evidence sources</Mono>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)", letterSpacing: "-0.01em" }}>Passport last updated</div>
+              <Mono style={{ fontSize: 11, color: "var(--muted)", marginTop: 2, letterSpacing: "0.04em" }}>2 hours ago · Docker skill verified · 3 evidence sources</Mono>
             </div>
-            <Mono style={{ fontSize: 10, letterSpacing: "0.14em", color: "var(--emerald)", textTransform: "uppercase", fontWeight: 700 }}>Live ●</Mono>
+            <Mono style={{ fontSize: 10, letterSpacing: "0.18em", color: "var(--emerald)", textTransform: "uppercase", fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+              Live <span className="vb-live-dot">●</span>
+            </Mono>
           </div>
         </div>
       )}
 
       {/* ── Improvement Plan ── */}
       {activeTab === "improvement" && (
-        <div id="panel-improvement" role="tabpanel" aria-labelledby="tab-improvement" tabIndex={0} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {/* Next best action */}
-          <div
-            style={{
-              background: "linear-gradient(135deg,var(--indigo-soft),var(--purple-soft))",
-              border: "1px solid color-mix(in srgb,var(--indigo) 18%,transparent)",
-              borderRadius: 14,
-              padding: 20,
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-              <span style={{ fontWeight: 600, fontSize: 14, color: "var(--indigo)" }}>Next Best Action</span>
-              <Mono style={{ fontSize: 10, letterSpacing: "0.14em", color: "var(--muted)", textTransform: "uppercase" }}>AI · Today</Mono>
+        <div id="panel-improvement" role="tabpanel" aria-labelledby="tab-improvement" tabIndex={0} className="vb-tab-panel vb-stagger" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Section header */}
+          <div style={{ paddingBottom: 20, borderBottom: "1px solid var(--line)" }}>
+            <Mono style={{ fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--muted)", display: "block", marginBottom: 5 }}>
+              AI Coaching · Updated Daily
+            </Mono>
+            <h2 style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 700, letterSpacing: "-0.02em", color: "var(--ink)" }}>Your improvement plan</h2>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.5 }}>
+              AI-ranked actions to close skill gaps and improve your career readiness score.
+            </p>
+          </div>
+
+          {/* Next best action — dark cinematic */}
+          <div style={{ background: "linear-gradient(135deg,#0c0e1a 0%,#111428 100%)", border: "1px solid rgba(79,70,229,.22)", borderRadius: 16, padding: 22, boxShadow: "0 8px 32px rgba(10,14,26,.18)", position: "relative", overflow: "hidden" }}>
+            <div style={{ position: "absolute", right: -30, top: -30, width: 180, height: 180, background: "radial-gradient(circle,rgba(139,92,246,.28),transparent 70%)", filter: "blur(24px)", pointerEvents: "none" }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, position: "relative" }}>
+              <span style={{ fontWeight: 700, fontSize: 14, color: "#fff", letterSpacing: "-0.01em" }}>Next Best Action</span>
+              <Mono style={{ fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 5, fontWeight: 700, background: "rgba(165,180,252,.14)", border: "1px solid rgba(165,180,252,.2)", color: "rgba(165,180,252,.9)" }}>AI · Today</Mono>
             </div>
-            <Mono style={{ fontSize: 10, letterSpacing: "0.14em", color: "var(--muted)", textTransform: "uppercase", marginBottom: 6 }}>
+            <Mono style={{ fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(255,255,255,.38)", display: "block", marginBottom: 7, position: "relative" }}>
               Why this matters
             </Mono>
-            <h3 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em", color: "var(--ink)" }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 700, letterSpacing: "-0.02em", color: "#fff", position: "relative" }}>
               Ship a small Kubernetes project this week.
             </h3>
-            <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--ink-2)", lineHeight: 1.5 }}>
+            <p style={{ margin: "0 0 18px", fontSize: 13, color: "rgba(255,255,255,.62)", lineHeight: 1.6, position: "relative" }}>
               It closes the highest-impact gap in your saved-job list — present in 68% of roles you&#39;re targeting — and we&#39;ll auto-link the deployed app as proof.
             </p>
-            <Btn onClick={() => show("Project brief — AI-generated plan coming soon.")}>Open project brief →</Btn>
+            <Btn onClick={() => show("Project brief — AI-generated plan coming soon.")} style={{ position: "relative", background: "rgba(165,180,252,.16)", border: "1px solid rgba(165,180,252,.28)", color: "#fff" }}>
+              Open project brief →
+            </Btn>
           </div>
 
           {/* Skill gaps */}
-          <Card>
-            <CardHeader title="Skill gaps · ranked by impact" eyebrow="Updated daily" />
+          <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 16, padding: 20, boxShadow: "0 1px 3px rgba(10,14,26,.04)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "-0.01em", color: "var(--ink)" }}>Skill gaps · ranked by impact</div>
+              <Mono style={{ fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 5, fontWeight: 700, color: "var(--muted)", background: "var(--bg-2)", border: "1px solid var(--line)" }}>Updated daily</Mono>
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {skillGaps.slice(0, 3).map((gap) => (
-                <div
-                  key={gap.skill}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr auto",
-                    gap: 6,
-                    padding: "10px 12px",
-                    border: "1px solid var(--line)",
-                    borderRadius: 9,
-                    background: "var(--bg-2)",
-                  }}
-                >
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>{gap.skill}</div>
-                  <Mono style={{ fontSize: 11, color: "var(--muted)" }}>{gap.impact}% of saved jobs</Mono>
-                  <Mono style={{ gridColumn: "1/-1", fontSize: 11, color: "var(--muted)", letterSpacing: "0.04em" }}>{gap.plan}</Mono>
-                  <div style={{ gridColumn: "1/-1" }}>
-                    <Bar pct={gap.impact} />
+              {skillGaps.slice(0, 3).map((gap, i) => (
+                <div key={gap.skill} style={{ padding: "13px 14px", border: `1px solid ${i === 0 ? "color-mix(in srgb,var(--indigo) 25%,transparent)" : "var(--line)"}`, borderRadius: 11, background: i === 0 ? "linear-gradient(135deg,var(--indigo-soft) 0%,var(--paper) 100%)" : "var(--bg-2)", position: "relative", overflow: "hidden" }}>
+                  {i === 0 && <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: "var(--indigo)", borderRadius: "11px 0 0 11px" }} />}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginLeft: i === 0 ? 8 : 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: "var(--ink)", letterSpacing: "-0.005em" }}>{gap.skill}</div>
+                    <Mono style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", color: i === 0 ? "var(--indigo)" : "var(--muted)" }}>{gap.impact}% of saved jobs</Mono>
+                  </div>
+                  <Mono style={{ fontSize: 11, color: "var(--muted)", letterSpacing: "0.04em", marginTop: 3, marginLeft: i === 0 ? 8 : 0 }}>{gap.plan}</Mono>
+                  <div style={{ height: 4, borderRadius: 2, background: "var(--line)", overflow: "hidden", marginTop: 10 }}>
+                    <div style={{ height: "100%", width: `${gap.impact}%`, background: i === 0 ? "linear-gradient(90deg,var(--indigo),var(--purple))" : "linear-gradient(90deg,var(--amber),var(--rose))", borderRadius: 2 }} />
                   </div>
                 </div>
               ))}
             </div>
-          </Card>
+          </div>
 
           {/* Learning plan — collapsible */}
-          <div style={{ border: "1px solid var(--line)", borderRadius: 14, overflow: "hidden", background: "var(--paper)" }}>
+          <div style={{ border: "1px solid var(--line)", borderRadius: 16, overflow: "hidden", background: "var(--paper)", boxShadow: "0 1px 3px rgba(10,14,26,.04)" }}>
             <button
               type="button"
               onClick={() => setShowLearningPlan((v) => !v)}
-              style={{
-                width: "100%",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                padding: "14px 20px",
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                fontSize: 14,
-                fontWeight: 600,
-                color: "var(--ink)",
-              }}
+              style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", background: "none", border: "none", cursor: "pointer", fontSize: 14, fontWeight: 700, color: "var(--ink)", letterSpacing: "-0.01em" }}
             >
-              <span>Learning plan · 6 weeks</span>
-              <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
-                {showLearningPlan ? "Collapse ▲" : "Expand ▼"}
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span>Learning plan</span>
+                <Mono style={{ fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 5, fontWeight: 700, color: "var(--indigo)", background: "var(--indigo-soft)", border: "1px solid color-mix(in srgb,var(--indigo) 18%,transparent)" }}>6 weeks</Mono>
+              </div>
+              <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}>{showLearningPlan ? "Collapse ▲" : "Expand ▼"}</span>
             </button>
             {showLearningPlan && (
-              <div style={{ padding: "0 20px 16px", display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--line)" }}>
+              <div style={{ padding: "4px 20px 20px", borderTop: "1px solid var(--line)" }}>
                 {[
-                  { week: "W1-2", title: "Kubernetes Up & Running", sub: "CKAD prep · ~12 hrs" },
-                  { week: "W3-4", title: "Build minikube project", sub: "Deployed proof artifact · ~16 hrs" },
-                  { week: "W5", title: "System Design drills", sub: "Mock interview pack · 5 sessions" },
-                  { week: "W6", title: "Re-score & verify", sub: "Expected lift: +6 to score" },
-                ].map((w) => (
-                  <div
-                    key={w.week}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "auto 1fr auto",
-                      gap: 10,
-                      padding: 10,
-                      border: "1px solid var(--line)",
-                      borderRadius: 8,
-                      background: "var(--bg-2)",
-                      alignItems: "center",
-                      marginTop: 8,
-                    }}
-                  >
-                    <Mono style={{ fontSize: 11, fontWeight: 700, color: "var(--indigo)", width: 30 }}>{w.week}</Mono>
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 600 }}>{w.title}</div>
-                      <Mono style={{ fontSize: 10, color: "var(--muted)" }}>{w.sub}</Mono>
+                  { week: "W1–2", title: "Kubernetes Up & Running", sub: "CKAD prep · ~12 hrs" },
+                  { week: "W3–4", title: "Build minikube project", sub: "Deployed proof artifact · ~16 hrs" },
+                  { week: "W5",   title: "System Design drills",   sub: "Mock interview pack · 5 sessions" },
+                  { week: "W6",   title: "Re-score & verify",      sub: "Expected lift: +6 to score" },
+                ].map((w, i, arr) => (
+                  <div key={w.week} style={{ display: "flex", gap: 14, paddingTop: 16 }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: "var(--indigo-soft)", border: "2px solid color-mix(in srgb,var(--indigo) 30%,transparent)", display: "grid", placeItems: "center" }}>
+                        <Mono style={{ fontSize: 9, fontWeight: 700, color: "var(--indigo)" }}>{i + 1}</Mono>
+                      </div>
+                      {i < arr.length - 1 && <div style={{ width: 1, flex: 1, minHeight: 14, background: "var(--line)", marginTop: 4 }} />}
                     </div>
-                    <span style={{ fontSize: 10, color: "var(--muted)" }}>→</span>
+                    <div style={{ flex: 1, paddingBottom: i < arr.length - 1 ? 4 : 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                        <Mono style={{ fontSize: 9, fontWeight: 700, color: "var(--indigo)", letterSpacing: "0.1em" }}>{w.week}</Mono>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{w.title}</div>
+                      </div>
+                      <Mono style={{ fontSize: 11, color: "var(--muted)", letterSpacing: "0.04em" }}>{w.sub}</Mono>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1318,74 +1271,48 @@ export function StudentProfileProof() {
           </div>
 
           {/* Follow-up proof tasks — collapsible */}
-          <div style={{ border: "1px solid var(--line)", borderRadius: 14, overflow: "hidden", background: "var(--paper)" }}>
+          <div style={{ border: "1px solid var(--line)", borderRadius: 16, overflow: "hidden", background: "var(--paper)", boxShadow: "0 1px 3px rgba(10,14,26,.04)" }}>
             <button
               type="button"
               onClick={() => setShowFollowUpTasks((v) => !v)}
-              style={{
-                width: "100%",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                padding: "14px 20px",
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                fontSize: 14,
-                fontWeight: 600,
-                color: "var(--ink)",
-              }}
+              style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", background: "none", border: "none", cursor: "pointer", fontSize: 14, fontWeight: 700, color: "var(--ink)", letterSpacing: "-0.01em" }}
             >
-              <span>Follow-up proof tasks</span>
-              <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
-                {showFollowUpTasks ? "Collapse ▲" : "Expand ▼"}
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span>Follow-up proof tasks</span>
+                <Mono style={{ fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 5, fontWeight: 700, color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid color-mix(in srgb,var(--amber) 22%,transparent)" }}>3 pending</Mono>
+              </div>
+              <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}>{showFollowUpTasks ? "Collapse ▲" : "Expand ▼"}</span>
             </button>
             {showFollowUpTasks && (
-              <div style={{ padding: "0 20px 16px", borderTop: "1px solid var(--line)" }}>
+              <div style={{ borderTop: "1px solid var(--line)" }}>
                 {[
                   { task: "Upload Kubernetes deployment walkthrough", skill: "DevOps / Deployment", priority: "HIGH" },
                   { task: "Add model evaluation report for BSAR project", skill: "AI / Machine Learning", priority: "MED" },
                   { task: "Record UI component test for the React dashboard", skill: "JavaScript / Frontend", priority: "MED" },
-                ].map((t) => (
+                ].map((t, i, arr) => (
                   <div
                     key={t.task}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      padding: "11px 0",
-                      borderBottom: "1px solid var(--line)",
-                    }}
+                    className="vb-row-item"
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 20px", borderBottom: i < arr.length - 1 ? "1px solid var(--line)" : "none", background: "transparent" }}
                   >
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{t.task}</div>
-                      <Mono style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{t.skill}</Mono>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)", marginBottom: 3 }}>{t.task}</div>
+                      <Mono style={{ fontSize: 11, color: "var(--muted)", letterSpacing: "0.04em" }}>{t.skill}</Mono>
                     </div>
-                    <Mono
-                      style={{
-                        fontSize: 10,
-                        padding: "3px 8px",
-                        borderRadius: 4,
-                        fontWeight: 700,
-                        letterSpacing: "0.1em",
-                        color: t.priority === "HIGH" ? "var(--rose)" : "var(--amber)",
-                        background: t.priority === "HIGH" ? "var(--rose-soft)" : "var(--amber-soft)",
-                        whiteSpace: "nowrap",
-                        marginLeft: 12,
-                      }}
-                    >
+                    <Mono style={{ fontSize: 9, padding: "4px 10px", borderRadius: 5, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: t.priority === "HIGH" ? "var(--rose)" : "var(--amber)", background: t.priority === "HIGH" ? "var(--rose-soft)" : "var(--amber-soft)", border: `1px solid color-mix(in srgb,${t.priority === "HIGH" ? "var(--rose)" : "var(--amber)"} 22%,transparent)`, whiteSpace: "nowrap", marginLeft: 14, flexShrink: 0 }}>
                       {t.priority}
                     </Mono>
                   </div>
                 ))}
-                <button
-                  type="button"
-                  onClick={() => { setActiveTab("proof-center"); }}
-                  style={{ marginTop: 12, fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
-                >
-                  Add proof now →
-                </button>
+                <div style={{ padding: "12px 20px 14px" }}>
+                  <button
+                    type="button"
+                    onClick={() => { setActiveTab("proof-center"); }}
+                    style={{ fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "var(--indigo-soft)", border: "1px solid color-mix(in srgb,var(--indigo) 18%,transparent)", borderRadius: 8, cursor: "pointer", padding: "7px 14px" }}
+                  >
+                    Add proof now →
+                  </button>
+                </div>
               </div>
             )}
           </div>

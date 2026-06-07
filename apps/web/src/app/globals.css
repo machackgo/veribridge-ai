@@ -366,3 +366,134 @@ html {
   .vb-btn-lift:hover, .vb-btn-lift:active { transform: none; box-shadow: none; }
   .vb-stagger > * { animation: none; opacity: 1; transform: none; }
 }
+
+/* ── Tab panel entrance ── */
+@keyframes vb-tab-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.vb-tab-panel {
+  animation: vb-tab-in 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Evidence flow: animated SVG dashes ── */
+@keyframes vb-flow-dash {
+  to { stroke-dashoffset: -20; }
+}
+.vb-flow-line {
+  stroke-dasharray: 6 4;
+  animation: vb-flow-dash 1.4s linear infinite;
+}
+
+/* ── Node entrance (scale + fade) ── */
+@keyframes vb-node-in {
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.vb-node-in {
+  animation: vb-node-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Live status dot pulse ── */
+@keyframes vb-live-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+.vb-live-dot {
+  display: inline-block;
+  animation: vb-live-pulse 2s ease-in-out infinite;
+}
+
+/* ── Work Passport trust glow ── */
+@keyframes vb-passport-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  50%       { box-shadow: 0 0 28px 4px rgba(16, 185, 129, 0.1); }
+}
+.vb-passport-glow {
+  animation: vb-passport-glow 4s ease-in-out infinite;
+}
+
+/* ── Proof entry card hover ── */
+.vb-proof-card {
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 200ms ease,
+              border-color 200ms ease;
+}
+.vb-proof-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px -6px rgba(10, 14, 26, 0.1);
+}
+
+/* ── Score ring entrance ── */
+@keyframes vb-ring-scale-in {
+  from { opacity: 0; transform: scale(0.82) rotate(-90deg); }
+  to   { opacity: 1; transform: scale(1) rotate(-90deg); }
+}
+.vb-ring-svg {
+  animation: vb-ring-scale-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: 120ms;
+}
+
+/* ── Evidence flow: hub pulse rings ── */
+@keyframes vb-hub-ring {
+  0%   { transform: translate(-50%, -50%) scale(1);   opacity: 0.45; }
+  100% { transform: translate(-50%, -50%) scale(2.5); opacity: 0; }
+}
+.vb-hub-ring {
+  animation: vb-hub-ring 2.8s ease-out infinite;
+}
+
+/* ── Evidence flow: hub scan line sweep ── */
+@keyframes vb-hub-scan {
+  0%   { top: 0%;   opacity: 0.85; }
+  100% { top: 100%; opacity: 0; }
+}
+.vb-hub-scan {
+  animation: vb-hub-scan 2.2s linear infinite;
+}
+
+/* ── Proof module cards — hover lift ── */
+.vb-module-card {
+  transition: transform 200ms cubic-bezier(0.22,1,0.36,1),
+              box-shadow 200ms ease,
+              border-color 200ms ease;
+}
+.vb-module-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 24px -8px rgba(10,14,26,.12);
+}
+
+/* ── Row items — hover highlight ── */
+.vb-row-item {
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.vb-row-item:hover {
+  background: var(--paper) !important;
+  border-color: var(--line-strong) !important;
+}
+
+/* ── Evidence flow: hub processing dots ── */
+@keyframes vb-hub-dot {
+  0%, 100% { opacity: 0.25; transform: scale(0.7); }
+  50%       { opacity: 1;    transform: scale(1.1); }
+}
+.vb-hub-dot {
+  animation: vb-hub-dot 1.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vb-tab-panel           { animation: none; opacity: 1; transform: none; }
+  .vb-flow-line           { animation: none; }
+  .vb-node-in             { animation: none; opacity: 1; transform: none; }
+  .vb-live-dot            { animation: none; }
+  .vb-passport-glow       { animation: none; box-shadow: none; }
+  .vb-proof-card          { transition: none; }
+  .vb-proof-card:hover    { transform: none; box-shadow: none; }
+  .vb-ring-svg            { animation: none; opacity: 1; transform: rotate(-90deg); }
+  .vb-hub-ring            { animation: none; opacity: 0.15; transform: translate(-50%, -50%) scale(1); }
+  .vb-hub-scan            { animation: none; display: none; }
+  .vb-hub-dot             { animation: none; opacity: 0.5; transform: scale(1); }
+  .vb-module-card         { transition: none; }
+  .vb-module-card:hover   { transform: none; box-shadow: none; }
+  .vb-row-item            { transition: none; }
+}
