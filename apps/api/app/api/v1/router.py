@@ -32,6 +32,7 @@ from app.api.v1.endpoints import (
     student,
     verification_readiness,
     website_evidence_discovery,
+    website_proof_artifact_sync,
     workflow_visible_evidence,
     workflow_visual_frames,
     verification_review,
@@ -82,6 +83,11 @@ api_router.include_router(
     skill_evidence_pipelines.router,
     prefix="/student/skill-pipelines",
     tags=["skill-evidence-pipelines"],
+)
+api_router.include_router(
+    website_proof_artifact_sync.router,
+    prefix="/student/skill-pipelines",
+    tags=["website-proof-artifact-sync"],
 )
 api_router.include_router(
     website_verification_runs.router,
