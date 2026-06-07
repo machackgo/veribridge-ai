@@ -725,86 +725,408 @@ export function StudentOverview() {
 }
 
 /* ── PROFILE & PROOF ── */
+
+type ProfileTab = "overview" | "skills" | "proofs" | "improvement"
+
+const PROFILE_TABS: { id: ProfileTab; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "skills", label: "Skills" },
+  { id: "proofs", label: "Proofs" },
+  { id: "improvement", label: "Improvement Plan" },
+]
+
 export function StudentProfileProof() {
   const { show, msg } = useDemoToast();
+  const [activeTab, setActiveTab] = useState<ProfileTab>("overview");
+  const [showLearningPlan, setShowLearningPlan] = useState(false);
+  const [showFollowUpTasks, setShowFollowUpTasks] = useState(false);
 
   return (
     <div>
       <DemoToast msg={msg} />
       <PageHeader
         compact
-        crumb="Dashboard · Profile & Proof"
+        crumb="Dashboard · Profile"
         title="Your verified profile."
         lede="Every skill is anchored to evidence — GitHub commits, deployed apps, transcripts, and certifications."
       />
 
-      {/* Profile card */}
-      <Card style={{ marginBottom: 10, padding: 14 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 16, alignItems: "center" }}>
-          <div
+      {/* Tab navigation */}
+      <div style={{ display: "flex", gap: 0, marginBottom: 24, borderBottom: "1px solid var(--line)" }}>
+        {PROFILE_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
             style={{
-              width: 56,
-              height: 56,
-              borderRadius: 14,
-              background: "linear-gradient(135deg,#4f46e5,#8b5cf6)",
-              color: "#fff",
-              display: "grid",
-              placeItems: "center",
-              fontSize: 20,
-              fontWeight: 600,
-              flexShrink: 0,
+              padding: "10px 18px",
+              border: "none",
+              background: "none",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: activeTab === tab.id ? 600 : 400,
+              color: activeTab === tab.id ? "var(--ink)" : "var(--muted)",
+              borderBottom: `2px solid ${activeTab === tab.id ? "var(--ink)" : "transparent"}`,
+              marginBottom: -1,
+              transition: "color 0.15s",
             }}
           >
-            MR
-          </div>
-          <div>
-            <h2 style={{ margin: "0 0 2px", fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em" }}>Maya Reyes</h2>
-            <Mono style={{ fontSize: 11, color: "var(--muted)", letterSpacing: "0.04em" }}>
-              WPI · CS &#39;26 · GPA 3.84 · Worcester, MA
-            </Mono>
-            <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
-              <Stat label="✓ .edu Verified" color="var(--emerald)" bg="var(--emerald-soft)" />
-              <Stat label="F-1 · Visa OK" color="var(--indigo)" bg="var(--indigo-soft)" />
-              <Stat label="Score 82 · Top 12%" color="var(--purple)" bg="var(--purple-soft)" />
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <Btn ghost onClick={() => show("Preview mode — recruiter view coming soon.")}>Preview as recruiter</Btn>
-            <Btn onClick={() => show("Edit profile — coming soon.")}>Edit profile</Btn>
-          </div>
-        </div>
-      </Card>
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
-      {/* Evidence cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <StudentProofSubmissionPanel notify={show} />
-        <Card>
-          <CardHeader title="Suggested proof types" eyebrow="Not selected" />
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {["GitHub repo", "LinkedIn post", "Certificate", "Report", "Demo link", "Dashboard"].map((item, index) => (
-              <span
-                key={`${item}-${index}`}
+      {/* ── Overview ── */}
+      {activeTab === "overview" && (
+        <div>
+          {/* Student identity card */}
+          <Card style={{ marginBottom: 16, padding: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 16, alignItems: "center" }}>
+              <div
                 style={{
-                  fontSize: 12,
-                  padding: "7px 11px",
-                  background: "var(--bg-2)",
-                  border: "1px dashed var(--line-2)",
-                  color: "var(--muted)",
-                  borderRadius: 999,
+                  width: 56,
+                  height: 56,
+                  borderRadius: 14,
+                  background: "linear-gradient(135deg,#4f46e5,#8b5cf6)",
+                  color: "#fff",
+                  display: "grid",
+                  placeItems: "center",
+                  fontSize: 20,
                   fontWeight: 600,
+                  flexShrink: 0,
                 }}
               >
-                {item}
-              </span>
-            ))}
-          </div>
-        </Card>
-      </div>
+                MR
+              </div>
+              <div>
+                <h2 style={{ margin: "0 0 2px", fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em" }}>Maya Reyes</h2>
+                <Mono style={{ fontSize: 11, color: "var(--muted)", letterSpacing: "0.04em" }}>
+                  WPI · CS &#39;26 · GPA 3.84 · Worcester, MA
+                </Mono>
+                <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
+                  <Stat label="✓ .edu Verified" color="var(--emerald)" bg="var(--emerald-soft)" />
+                  <Stat label="F-1 · Visa OK" color="var(--indigo)" bg="var(--indigo-soft)" />
+                  <Stat label="Score 82 · Top 12%" color="var(--purple)" bg="var(--purple-soft)" />
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <Btn ghost onClick={() => show("Preview mode — recruiter view coming soon.")}>Preview as recruiter</Btn>
+                <Btn onClick={() => show("Edit profile — coming soon.")}>Edit profile</Btn>
+              </div>
+            </div>
+          </Card>
 
-      {/* Skill Evidence Pipelines */}
-      <div style={{ marginTop: 20 }}>
-        <StudentSkillEvidencePipelines />
-      </div>
+          {/* Score + top skills row */}
+          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16 }}>
+            {/* Evidence confidence card */}
+            <div
+              style={{
+                background: "linear-gradient(135deg,var(--ink),#1a2040 60%,#2a1a4a)",
+                color: "#fff",
+                position: "relative",
+                overflow: "hidden",
+                borderRadius: 14,
+                padding: 20,
+              }}
+            >
+              <div
+                style={{
+                  position: "absolute",
+                  right: -60,
+                  top: -60,
+                  width: 240,
+                  height: 240,
+                  background: "radial-gradient(circle,rgba(139,92,246,.5),transparent 70%)",
+                  filter: "blur(20px)",
+                  pointerEvents: "none",
+                }}
+              />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, position: "relative" }}>
+                <span style={{ fontWeight: 600, fontSize: 14, color: "#fff" }}>Evidence Confidence</span>
+                <Mono style={{ fontSize: 10, letterSpacing: "0.14em", color: "rgba(255,255,255,.5)", textTransform: "uppercase" }}>Updated 2h ago</Mono>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 24, alignItems: "center", position: "relative" }}>
+                <ScoreRing score={student.score} />
+                <div>
+                  <Mono style={{ fontSize: 10, letterSpacing: "0.16em", color: "rgba(255,255,255,.5)", textTransform: "uppercase" }}>Overall Score</Mono>
+                  <h2 style={{ margin: "6px 0 4px", fontSize: 22, fontWeight: 600, letterSpacing: "-0.01em" }}>
+                    Strong · Top 12% of CS &#39;26
+                  </h2>
+                  <div style={{ color: "#86efac", fontSize: 13, fontWeight: 500 }}>↑ 14 in last 30 days</div>
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginTop: 18, position: "relative" }}>
+                {[["Skills", 88], ["Proof", 79], ["Experience", 72], ["Polish", 86]].map(([l, v]) => (
+                  <div key={l} style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 9, padding: "10px 12px" }}>
+                    <Mono style={{ fontSize: 9, letterSpacing: "0.14em", color: "rgba(255,255,255,.5)", textTransform: "uppercase" }}>{l}</Mono>
+                    <div style={{ fontSize: 16, fontWeight: 600, marginTop: 3 }}>{v}</div>
+                    <div style={{ height: 3, background: "rgba(255,255,255,.15)", borderRadius: 2, marginTop: 8, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${v}%`, background: "linear-gradient(90deg,#a5b4fc,#86efac)" }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Top verified skills summary */}
+            <Card>
+              <CardHeader title="Top verified skills" eyebrow={`${student.verifiedSkills} verified`} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {[
+                  { name: "AI / Machine Learning", conf: "high" as const, pct: 88, badge: "Strongly supported" },
+                  { name: "JavaScript / Frontend", conf: "high" as const, pct: 84, badge: "Strongly supported" },
+                  { name: "Data & Visualization", conf: "medium" as const, pct: 67, badge: "Partially supported" },
+                  { name: "DevOps / Deployment", conf: "medium" as const, pct: 58, badge: "Needs more proof" },
+                ].map((sk) => (
+                  <div key={sk.name} style={{ padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 9, background: "var(--bg-2)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{sk.name}</span>
+                      <Mono
+                        style={{
+                          fontSize: 10, padding: "2px 7px", borderRadius: 4, fontWeight: 600,
+                          color: sk.conf === "high" ? "var(--emerald)" : "var(--amber)",
+                          background: sk.conf === "high" ? "var(--emerald-soft)" : "var(--amber-soft)",
+                        }}
+                      >
+                        {sk.pct}%
+                      </Mono>
+                    </div>
+                    <Bar pct={sk.pct} color={sk.conf === "high" ? "linear-gradient(90deg,#4f46e5,#10b981)" : "linear-gradient(90deg,#f59e0b,#f43f5e)"} />
+                    <Mono style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>{sk.badge}</Mono>
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab("skills")}
+                style={{ marginTop: 12, width: "100%", textAlign: "center", fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "none", border: "none", cursor: "pointer", padding: "6px 0" }}
+              >
+                Manage skill evidence →
+              </button>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {/* ── Skills ── */}
+      {activeTab === "skills" && <StudentSkillEvidencePipelines />}
+
+      {/* ── Proofs ── */}
+      {activeTab === "proofs" && (
+        <div>
+          <StudentProofSubmissionPanel notify={show} />
+          <Card style={{ marginTop: 16 }}>
+            <CardHeader title="Suggested proof types" eyebrow="Not yet submitted" />
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {["GitHub repo", "LinkedIn post", "Certificate", "Report", "Demo link", "Dashboard"].map((item, index) => (
+                <span
+                  key={`${item}-${index}`}
+                  style={{
+                    fontSize: 12,
+                    padding: "7px 11px",
+                    background: "var(--bg-2)",
+                    border: "1px dashed var(--line-2)",
+                    color: "var(--muted)",
+                    borderRadius: 999,
+                    fontWeight: 600,
+                  }}
+                >
+                  {item}
+                </span>
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* ── Improvement Plan ── */}
+      {activeTab === "improvement" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Next best action */}
+          <div
+            style={{
+              background: "linear-gradient(135deg,var(--indigo-soft),var(--purple-soft))",
+              border: "1px solid color-mix(in srgb,var(--indigo) 18%,transparent)",
+              borderRadius: 14,
+              padding: 20,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <span style={{ fontWeight: 600, fontSize: 14, color: "var(--indigo)" }}>Next Best Action</span>
+              <Mono style={{ fontSize: 10, letterSpacing: "0.14em", color: "var(--muted)", textTransform: "uppercase" }}>AI · Today</Mono>
+            </div>
+            <Mono style={{ fontSize: 10, letterSpacing: "0.14em", color: "var(--muted)", textTransform: "uppercase", marginBottom: 6 }}>
+              Why this matters
+            </Mono>
+            <h3 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em", color: "var(--ink)" }}>
+              Ship a small Kubernetes project this week.
+            </h3>
+            <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--ink-2)", lineHeight: 1.5 }}>
+              It closes the highest-impact gap in your saved-job list — present in 68% of roles you&#39;re targeting — and we&#39;ll auto-link the deployed app as proof.
+            </p>
+            <Btn onClick={() => show("Project brief — AI-generated plan coming soon.")}>Open project brief →</Btn>
+          </div>
+
+          {/* Skill gaps */}
+          <Card>
+            <CardHeader title="Skill gaps · ranked by impact" eyebrow="Updated daily" />
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {skillGaps.slice(0, 3).map((gap) => (
+                <div
+                  key={gap.skill}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto",
+                    gap: 6,
+                    padding: "10px 12px",
+                    border: "1px solid var(--line)",
+                    borderRadius: 9,
+                    background: "var(--bg-2)",
+                  }}
+                >
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{gap.skill}</div>
+                  <Mono style={{ fontSize: 11, color: "var(--muted)" }}>{gap.impact}% of saved jobs</Mono>
+                  <Mono style={{ gridColumn: "1/-1", fontSize: 11, color: "var(--muted)", letterSpacing: "0.04em" }}>{gap.plan}</Mono>
+                  <div style={{ gridColumn: "1/-1" }}>
+                    <Bar pct={gap.impact} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Learning plan — collapsible */}
+          <div style={{ border: "1px solid var(--line)", borderRadius: 14, overflow: "hidden", background: "var(--paper)" }}>
+            <button
+              type="button"
+              onClick={() => setShowLearningPlan((v) => !v)}
+              style={{
+                width: "100%",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "14px 20px",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontSize: 14,
+                fontWeight: 600,
+                color: "var(--ink)",
+              }}
+            >
+              <span>Learning plan · 6 weeks</span>
+              <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
+                {showLearningPlan ? "Collapse ▲" : "Expand ▼"}
+              </span>
+            </button>
+            {showLearningPlan && (
+              <div style={{ padding: "0 20px 16px", display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--line)" }}>
+                {[
+                  { week: "W1-2", title: "Kubernetes Up & Running", sub: "CKAD prep · ~12 hrs" },
+                  { week: "W3-4", title: "Build minikube project", sub: "Deployed proof artifact · ~16 hrs" },
+                  { week: "W5", title: "System Design drills", sub: "Mock interview pack · 5 sessions" },
+                  { week: "W6", title: "Re-score & verify", sub: "Expected lift: +6 to score" },
+                ].map((w) => (
+                  <div
+                    key={w.week}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "auto 1fr auto",
+                      gap: 10,
+                      padding: 10,
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      background: "var(--bg-2)",
+                      alignItems: "center",
+                      marginTop: 8,
+                    }}
+                  >
+                    <Mono style={{ fontSize: 11, fontWeight: 700, color: "var(--indigo)", width: 30 }}>{w.week}</Mono>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600 }}>{w.title}</div>
+                      <Mono style={{ fontSize: 10, color: "var(--muted)" }}>{w.sub}</Mono>
+                    </div>
+                    <span style={{ fontSize: 10, color: "var(--muted)" }}>→</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Follow-up proof tasks — collapsible */}
+          <div style={{ border: "1px solid var(--line)", borderRadius: 14, overflow: "hidden", background: "var(--paper)" }}>
+            <button
+              type="button"
+              onClick={() => setShowFollowUpTasks((v) => !v)}
+              style={{
+                width: "100%",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "14px 20px",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontSize: 14,
+                fontWeight: 600,
+                color: "var(--ink)",
+              }}
+            >
+              <span>Follow-up proof tasks</span>
+              <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
+                {showFollowUpTasks ? "Collapse ▲" : "Expand ▼"}
+              </span>
+            </button>
+            {showFollowUpTasks && (
+              <div style={{ padding: "0 20px 16px", borderTop: "1px solid var(--line)" }}>
+                {[
+                  { task: "Upload Kubernetes deployment walkthrough", skill: "DevOps / Deployment", priority: "HIGH" },
+                  { task: "Add model evaluation report for BSAR project", skill: "AI / Machine Learning", priority: "MED" },
+                  { task: "Record UI component test for the React dashboard", skill: "JavaScript / Frontend", priority: "MED" },
+                ].map((t) => (
+                  <div
+                    key={t.task}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: "11px 0",
+                      borderBottom: "1px solid var(--line)",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{t.task}</div>
+                      <Mono style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{t.skill}</Mono>
+                    </div>
+                    <Mono
+                      style={{
+                        fontSize: 10,
+                        padding: "3px 8px",
+                        borderRadius: 4,
+                        fontWeight: 700,
+                        letterSpacing: "0.1em",
+                        color: t.priority === "HIGH" ? "var(--rose)" : "var(--amber)",
+                        background: t.priority === "HIGH" ? "var(--rose-soft)" : "var(--amber-soft)",
+                        whiteSpace: "nowrap",
+                        marginLeft: 12,
+                      }}
+                    >
+                      {t.priority}
+                    </Mono>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => { setActiveTab("proofs"); }}
+                  style={{ marginTop: 12, fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                >
+                  Add proof now →
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
