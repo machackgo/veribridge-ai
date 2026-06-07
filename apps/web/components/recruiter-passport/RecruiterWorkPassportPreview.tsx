@@ -28,7 +28,7 @@ import type {
 } from "../../src/lib/passport-api"
 import {
   listRecruiterSkillEvidencePipelines,
-  type BackendSkillPipeline,
+  type RecruiterSafePipelineSummary,
 } from "@/lib/api"
 
 // ── Design tokens (mirrors passport/shared TOKEN) ─────────────────────────────
@@ -4444,9 +4444,65 @@ function ProtectedEvidenceUnlockedSection({
 // Approved status is always preferred over pending/denied/revoked to avoid
 // showing stale pending requests when approval already exists.
 
-// Converts a BackendSkillPipeline into the RecruiterSkillGroupResponse shape
-// so the existing SkillGroupsSection can render backend pipelines without changes.
-function backendPipelineToSkillGroup(p: BackendSkillPipeline): RecruiterSkillGroupResponse {
+// ── Locked pipeline card — shown for protected pipelines before approval ──────
+
+function LockedPipelineCard({ pipeline }: { pipeline: RecruiterSafePipelineSummary }) {
+  return (
+    <div
+      data-testid={`locked-pipeline-card-${pipeline.skill_name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+      style={{
+        border: "1px solid #c7d2fe",
+        borderRadius: 10,
+        overflow: "hidden",
+      }}
+    >
+      <div style={{
+        padding: "12px 14px",
+        background: "#eef2ff",
+        borderBottom: "1px solid #c7d2fe",
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+      }}>
+        <span style={{ fontSize: 14, flexShrink: 0 }}>🔒</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 700, fontSize: 13, color: "#1e1b4b" }}>
+              {pipeline.skill_name}
+            </span>
+            <span
+              data-testid="protected-pipeline-badge"
+              style={{
+                fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                background: "#c7d2fe", color: "#3730a3", border: "1px solid #a5b4fc",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Protected
+            </span>
+          </div>
+          <p
+            data-testid="protected-pipeline-message"
+            style={{ fontSize: 11, color: "#4338ca", margin: "4px 0 0", lineHeight: 1.5 }}
+          >
+            Student approval required to inspect protected evidence.
+          </p>
+        </div>
+      </div>
+      <div style={{ padding: "10px 14px", background: "#fff" }}>
+        <p style={{ fontSize: 11, color: "#6366f1", margin: 0 }}>
+          {pipeline.artifacts.length > 0
+            ? `${pipeline.artifacts.length} protected artifact${pipeline.artifacts.length !== 1 ? "s" : ""} — Request Access to view protected skill evidence.`
+            : "Protected evidence available — Request Access to inspect this skill."}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// Converts a RecruiterSafePipelineSummary into the RecruiterSkillGroupResponse shape
+// so the existing SkillGroupsSection can render public backend pipelines without changes.
+function backendPipelineToSkillGroup(p: RecruiterSafePipelineSummary): RecruiterSkillGroupResponse {
   const confidence: "high" | "medium" | "low" =
     p.confidence_score >= 75 ? "high" : p.confidence_score >= 50 ? "medium" : "low"
   const statusLabel =
@@ -4515,7 +4571,7 @@ export function RecruiterWorkPassportPreview({
   const [showModal, setShowModal] = useState(false)
   const [accessRequest, setAccessRequest] = useState<EvidenceAccessRequest | null>(null)
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null)
-  const [backendPipelines, setBackendPipelines] = useState<BackendSkillPipeline[] | null>(null)
+  const [backendPipelines, setBackendPipelines] = useState<RecruiterSafePipelineSummary[] | null>(null)
   const [loadingPipelines, setLoadingPipelines] = useState(true)
 
   // Load the best access request for this passport from the mock store on mount.
@@ -4599,12 +4655,47 @@ export function RecruiterWorkPassportPreview({
     view.partially_verified_skills.length > 0 ||
     view.skills_needing_review.length > 0
 
-  // When the view has no skills at all, fall back to backend pipelines (if loaded).
+  // Separate backend pipelines into public and protected for differentiated rendering.
+  const publicBackendPipelines = backendPipelines?.filter((p) => !p.is_locked_for_recruiter) ?? []
+  const protectedBackendPipelines = backendPipelines?.filter((p) => p.is_locked_for_recruiter) ?? []
+
+  // When the backend has returned pipeline data, use it as the source of truth for visibility.
+  // Private pipelines are absent from backendPipelines (excluded server-side).
+  // Protected pipelines have is_locked_for_recruiter=true.
+  // Engage whenever loading has finished AND backend responded (even with an empty array —
+  // empty means all pipelines are private, so nothing should be shown).
+  const backendPipelineMap: Map<string, RecruiterSafePipelineSummary> | null =
+    !loadingPipelines && backendPipelines !== null
+      ? new Map(backendPipelines.map((p) => [p.skill_name, p]))
+      : null
+
+  // True when backend pipeline data is available and authoritative.
+  const backendHasAuthority = backendPipelineMap !== null
+
+  // Public view groups: skills that are present in backend AND not locked.
+  // Private skills (absent from backend) are dropped; protected are routed to locked cards.
+  // When backend is unavailable (null), fall back to showing all view groups.
+  const publicViewGroups: RecruiterSkillGroupResponse[] = backendHasAuthority
+    ? view.skill_groups.filter((g) => {
+        const bp = backendPipelineMap!.get(g.group_name)
+        return bp !== undefined && !bp.is_locked_for_recruiter
+      })
+    : view.skill_groups
+
+  // Protected pipelines derived from view.skill_groups to render as locked cards.
+  const protectedFromViewGroups: RecruiterSafePipelineSummary[] = backendHasAuthority
+    ? view.skill_groups.flatMap((g) => {
+        const bp = backendPipelineMap!.get(g.group_name)
+        return bp?.is_locked_for_recruiter ? [bp] : []
+      })
+    : []
+
+  // Only public pipelines contribute to SkillGroupsSection; protected are shown as locked cards.
   const effectiveGroups: RecruiterSkillGroupResponse[] =
     view.skill_groups.length > 0
-      ? view.skill_groups
-      : backendPipelines && backendPipelines.length > 0
-        ? backendPipelines.map(backendPipelineToSkillGroup)
+      ? publicViewGroups
+      : publicBackendPipelines.length > 0
+        ? publicBackendPipelines.map(backendPipelineToSkillGroup)
         : []
 
   return (
@@ -4620,16 +4711,35 @@ export function RecruiterWorkPassportPreview({
         />
 
         {/* 2. Evidence-backed skills */}
-        {/* Case A: view already has skills — render immediately, no backend dependency */}
+        {/* Case A: view already has skills — render with backend visibility enforcement.
+            Private skills (absent from backend) are hidden.
+            Protected skills (is_locked_for_recruiter) are shown as locked cards only.
+            When backend is unavailable or has no pipeline data, all view groups are shown. */}
         {hasAnyViewSkills && (
-          <SkillGroupsSection
-            groups={view.skill_groups}
-            verified={view.verified_skills}
-            partial={view.partially_verified_skills}
-            needsReview={view.skills_needing_review}
-            onViewSkill={setSelectedSkill}
-            accessApproved={accessRequest?.status === "approved"}
-          />
+          <>
+            {/* Public skills: full evidence display */}
+            {(publicViewGroups.length > 0 || !backendHasAuthority) && (
+              <SkillGroupsSection
+                groups={publicViewGroups}
+                verified={view.verified_skills}
+                partial={view.partially_verified_skills}
+                needsReview={view.skills_needing_review}
+                onViewSkill={setSelectedSkill}
+                accessApproved={accessRequest?.status === "approved"}
+              />
+            )}
+            {/* Protected skills from view.skill_groups: locked cards, no detail exposed */}
+            {protectedFromViewGroups.length > 0 && (
+              <Card data-testid="protected-pipelines-section">
+                <SectionTitle>Evidence-Backed Skills — Protected</SectionTitle>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {protectedFromViewGroups.map((p) => (
+                    <LockedPipelineCard key={p.id} pipeline={p} />
+                  ))}
+                </div>
+              </Card>
+            )}
+          </>
         )}
         {/* Case B: no view skills, still fetching backend — show loading placeholder */}
         {!hasAnyViewSkills && loadingPipelines && (
@@ -4641,7 +4751,7 @@ export function RecruiterWorkPassportPreview({
           </Card>
         )}
         {/* Case C: no view skills, backend loaded with pipelines — render backend groups */}
-        {!hasAnyViewSkills && !loadingPipelines && effectiveGroups.length > 0 && (
+        {!hasAnyViewSkills && !loadingPipelines && (effectiveGroups.length > 0 || protectedBackendPipelines.length > 0) && (
           <>
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <span
@@ -4655,18 +4765,32 @@ export function RecruiterWorkPassportPreview({
                 {backendPipelines!.length} pipeline{backendPipelines!.length !== 1 ? "s" : ""} from VeriBridge backend
               </span>
             </div>
-            <SkillGroupsSection
-              groups={effectiveGroups}
-              verified={[]}
-              partial={[]}
-              needsReview={[]}
-              onViewSkill={setSelectedSkill}
-              accessApproved={accessRequest?.status === "approved"}
-            />
+            {/* Public pipelines: full evidence display */}
+            {effectiveGroups.length > 0 && (
+              <SkillGroupsSection
+                groups={effectiveGroups}
+                verified={[]}
+                partial={[]}
+                needsReview={[]}
+                onViewSkill={setSelectedSkill}
+                accessApproved={accessRequest?.status === "approved"}
+              />
+            )}
+            {/* Protected pipelines: locked cards shown before approval */}
+            {protectedBackendPipelines.length > 0 && (
+              <Card data-testid="protected-pipelines-section">
+                <SectionTitle>Evidence-Backed Skills — Protected</SectionTitle>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {protectedBackendPipelines.map((p) => (
+                    <LockedPipelineCard key={p.id} pipeline={p} />
+                  ))}
+                </div>
+              </Card>
+            )}
           </>
         )}
         {/* Case D: no view skills, backend loaded but empty — show empty state */}
-        {!hasAnyViewSkills && !loadingPipelines && backendPipelines !== null && effectiveGroups.length === 0 && (
+        {!hasAnyViewSkills && !loadingPipelines && backendPipelines !== null && effectiveGroups.length === 0 && protectedBackendPipelines.length === 0 && (
           <Card data-testid="evidence-backed-skills-section">
             <SectionTitle>Evidence-Backed Skills</SectionTitle>
             <p data-testid="skill-pipelines-empty" style={{ fontSize: 12, color: C.muted, margin: 0 }}>
@@ -4933,13 +5057,12 @@ export function RecruiterWorkPassportPreview({
           )
         )}
 
-        {/* 6. Unlocked evidence sections — only when access is approved */}
-        {view.has_protected_evidence && accessRequest?.status === "approved" && (
-          <ProtectedEvidenceUnlockedSection
-            approvedTypes={accessRequest.approvedEvidenceTypes ?? []}
-            view={view}
-          />
-        )}
+        {/* TODO: rebuild approved evidence viewer from backend recruiter-safe artifacts only.
+            The static mock-based ProtectedEvidenceUnlockedSection (workflow recordings,
+            project defense transcript, detailed skill evidence) is intentionally not
+            rendered here because it used old static/mock data that leaked private and
+            protected evidence. It will be replaced with a backend-driven evidence
+            viewer that reads recruiter-safe artifacts only. */}
 
         {/* Disclosure */}
         <div style={{
