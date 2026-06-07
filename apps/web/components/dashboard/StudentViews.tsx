@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { DemoToast, useDemoToast } from "../ui/DemoToast";
 import {
   applications,
@@ -726,12 +726,13 @@ export function StudentOverview() {
 
 /* ── PROFILE & PROOF ── */
 
-type ProfileTab = "overview" | "skills" | "proofs" | "improvement"
+type ProfileTab = "overview" | "proof-center" | "skill-graph" | "work-passport" | "improvement"
 
 const PROFILE_TABS: { id: ProfileTab; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "skills", label: "Skills" },
-  { id: "proofs", label: "Proofs" },
+  { id: "proof-center", label: "Proof Center" },
+  { id: "skill-graph", label: "Skill Graph" },
+  { id: "work-passport", label: "Work Passport" },
   { id: "improvement", label: "Improvement Plan" },
 ]
 
@@ -740,6 +741,21 @@ export function StudentProfileProof() {
   const [activeTab, setActiveTab] = useState<ProfileTab>("overview");
   const [showLearningPlan, setShowLearningPlan] = useState(false);
   const [showFollowUpTasks, setShowFollowUpTasks] = useState(false);
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  const handleTabKeyDown = (e: React.KeyboardEvent) => {
+    const tabIds = PROFILE_TABS.map(t => t.id);
+    const currentIdx = tabIds.indexOf(activeTab);
+    let nextIdx: number | null = null;
+    if (e.key === "ArrowRight") nextIdx = (currentIdx + 1) % tabIds.length;
+    else if (e.key === "ArrowLeft") nextIdx = (currentIdx - 1 + tabIds.length) % tabIds.length;
+    if (nextIdx !== null) {
+      e.preventDefault();
+      const nextId = tabIds[nextIdx];
+      setActiveTab(nextId);
+      tabRefs.current[nextId]?.focus();
+    }
+  };
 
   return (
     <div>
@@ -752,11 +768,22 @@ export function StudentProfileProof() {
       />
 
       {/* Tab navigation */}
-      <div style={{ display: "flex", gap: 0, marginBottom: 24, borderBottom: "1px solid var(--line)" }}>
+      <div
+        role="tablist"
+        aria-label="Profile sections"
+        style={{ display: "flex", gap: 0, marginBottom: 24, borderBottom: "1px solid var(--line)" }}
+        onKeyDown={handleTabKeyDown}
+      >
         {PROFILE_TABS.map((tab) => (
           <button
             key={tab.id}
+            id={`tab-${tab.id}`}
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            aria-controls={`panel-${tab.id}`}
             type="button"
+            tabIndex={activeTab === tab.id ? 0 : -1}
+            ref={(el) => { tabRefs.current[tab.id] = el; }}
             onClick={() => setActiveTab(tab.id)}
             style={{
               padding: "10px 18px",
@@ -778,7 +805,7 @@ export function StudentProfileProof() {
 
       {/* ── Overview ── */}
       {activeTab === "overview" && (
-        <div>
+        <div id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabIndex={0}>
           {/* Student identity card */}
           <Card style={{ marginBottom: 16, padding: 14 }}>
             <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 16, alignItems: "center" }}>
@@ -810,14 +837,14 @@ export function StudentProfileProof() {
                 </div>
               </div>
               <div style={{ display: "flex", gap: 6 }}>
-                <Btn ghost onClick={() => show("Preview mode — recruiter view coming soon.")}>Preview as recruiter</Btn>
+                <Btn ghost onClick={() => setActiveTab("work-passport")}>Preview as recruiter</Btn>
                 <Btn onClick={() => show("Edit profile — coming soon.")}>Edit profile</Btn>
               </div>
             </div>
           </Card>
 
           {/* Score + top skills row */}
-          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16, marginBottom: 16 }}>
             {/* Evidence confidence card */}
             <div
               style={{
@@ -898,50 +925,287 @@ export function StudentProfileProof() {
               </div>
               <button
                 type="button"
-                onClick={() => setActiveTab("skills")}
+                onClick={() => setActiveTab("skill-graph")}
                 style={{ marginTop: 12, width: "100%", textAlign: "center", fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "none", border: "none", cursor: "pointer", padding: "6px 0" }}
               >
                 Manage skill evidence →
               </button>
             </Card>
           </div>
+
+          {/* Next Best Action teaser */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr auto",
+              gap: 16,
+              alignItems: "center",
+              padding: "16px 20px",
+              background: "linear-gradient(135deg,var(--indigo-soft),var(--purple-soft))",
+              border: "1px solid color-mix(in srgb,var(--indigo) 18%,transparent)",
+              borderRadius: 12,
+            }}
+          >
+            <div>
+              <Mono style={{ fontSize: 10, letterSpacing: "0.14em", color: "var(--muted)", textTransform: "uppercase", marginBottom: 4 }}>
+                Next best action · AI · Today
+              </Mono>
+              <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", letterSpacing: "-0.01em" }}>
+                Ship a small Kubernetes project — closes your highest-impact skill gap (68% of target roles).
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveTab("improvement")}
+              style={{ fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "none", border: "none", cursor: "pointer", whiteSpace: "nowrap", padding: 0 }}
+            >
+              View plan →
+            </button>
+          </div>
         </div>
       )}
 
-      {/* ── Skills ── */}
-      {activeTab === "skills" && <StudentSkillEvidencePipelines />}
+      {/* ── Skill Graph ── */}
+      {activeTab === "skill-graph" && (
+        <div id="panel-skill-graph" role="tabpanel" aria-labelledby="tab-skill-graph" tabIndex={0}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+            <div>
+              <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>Skill Evidence Pipelines</h2>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.5 }}>
+                AI-verified skills anchored to evidence from multiple sources. Control public, protected, and private visibility per skill.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveTab("proof-center")}
+              style={{ fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "none", border: "1px solid color-mix(in srgb,var(--indigo) 30%,transparent)", borderRadius: 8, cursor: "pointer", padding: "7px 12px", whiteSpace: "nowrap" }}
+            >
+              + Add proof
+            </button>
+          </div>
+          <StudentSkillEvidencePipelines />
+        </div>
+      )}
 
-      {/* ── Proofs ── */}
-      {activeTab === "proofs" && (
-        <div>
+      {/* ── Proof Center ── */}
+      {activeTab === "proof-center" && (
+        <div id="panel-proof-center" role="tabpanel" aria-labelledby="tab-proof-center" tabIndex={0}>
+          <p style={{ margin: "0 0 20px", fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
+            Add and manage raw evidence. Each proof is analyzed by VeriBridge AI and linked to verified skills in your Skill Graph.
+          </p>
+
+          {/* Proof type entry cards */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 24 }}>
+            {[
+              { type: "AI Session", desc: "AI walks through your work session end-to-end", icon: "◈", color: "var(--purple)", bg: "var(--purple-soft)" },
+              { type: "GitHub Proof", desc: "Scan repos, commits, and contribution history", icon: "◎", color: "var(--ink)", bg: "var(--bg-2)" },
+              { type: "Website Proof", desc: "Verify deployed projects and live app URLs", icon: "◉", color: "var(--indigo)", bg: "var(--indigo-soft)" },
+              { type: "Project Defense", desc: "Upload defense recording or transcript", icon: "◑", color: "var(--emerald)", bg: "var(--emerald-soft)" },
+              { type: "Documents / Reports", desc: "PDF, research reports, or technical write-ups", icon: "◫", color: "var(--amber)", bg: "var(--amber-soft)" },
+              { type: "Certificates / Reports", desc: "Professional or course certifications", icon: "◇", color: "var(--emerald)", bg: "var(--emerald-soft)" },
+            ].map((p) => (
+              <div
+                key={p.type}
+                style={{
+                  padding: 14,
+                  background: p.bg,
+                  border: `1px solid color-mix(in srgb,${p.color} 20%,transparent)`,
+                  borderRadius: 11,
+                  cursor: "pointer",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 18, color: p.color }}>{p.icon}</span>
+                  <span style={{ fontWeight: 600, fontSize: 13, color: "var(--ink)" }}>{p.type}</span>
+                </div>
+                <p style={{ margin: 0, fontSize: 12, color: "var(--muted)", lineHeight: 1.4 }}>{p.desc}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Proof submission panel (GitHub, Website, AI Agent, Extension) */}
           <StudentProofSubmissionPanel notify={show} />
+
+          {/* Saved proof inventory */}
           <Card style={{ marginTop: 16 }}>
-            <CardHeader title="Suggested proof types" eyebrow="Not yet submitted" />
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {["GitHub repo", "LinkedIn post", "Certificate", "Report", "Demo link", "Dashboard"].map((item, index) => (
-                <span
-                  key={`${item}-${index}`}
+            <CardHeader title="Saved proof inventory" eyebrow={`${student.publicProof} items`} />
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {[
+                { name: "Docker Compose deploy · CS 4515 project", type: "GitHub", status: "Analyzed", skills: ["DevOps", "Docker"], vis: "Public" },
+                { name: "ML model evaluation report · BSAR research", type: "Document", status: "Uploaded", skills: ["AI / ML"], vis: "Protected" },
+                { name: "portfolio-flux.app · live deploy", type: "Website", status: "Approved", skills: ["JavaScript", "Deployment"], vis: "Public" },
+                { name: "AWS Cloud Practitioner cert", type: "Certificate", status: "Approved", skills: ["Cloud", "DevOps"], vis: "Public" },
+              ].map((item) => (
+                <div
+                  key={item.name}
                   style={{
-                    fontSize: 12,
-                    padding: "7px 11px",
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto auto auto",
+                    gap: 12,
+                    alignItems: "center",
+                    padding: "11px 12px",
+                    border: "1px solid var(--line)",
+                    borderRadius: 9,
                     background: "var(--bg-2)",
-                    border: "1px dashed var(--line-2)",
-                    color: "var(--muted)",
-                    borderRadius: 999,
-                    fontWeight: 600,
                   }}
                 >
-                  {item}
-                </span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{item.name}</div>
+                    <div style={{ display: "flex", gap: 5, marginTop: 4, flexWrap: "wrap" }}>
+                      <Mono style={{ fontSize: 10, color: "var(--muted)", letterSpacing: "0.04em" }}>{item.type}</Mono>
+                      {item.skills.map(s => (
+                        <Mono key={s} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "var(--indigo-soft)", color: "var(--indigo)", fontWeight: 600 }}>{s}</Mono>
+                      ))}
+                    </div>
+                  </div>
+                  <Mono
+                    style={{
+                      fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase",
+                      padding: "3px 8px", borderRadius: 4,
+                      color: item.status === "Approved" ? "var(--emerald)" : item.status === "Analyzed" ? "var(--indigo)" : "var(--amber)",
+                      background: item.status === "Approved" ? "var(--emerald-soft)" : item.status === "Analyzed" ? "var(--indigo-soft)" : "var(--amber-soft)",
+                    }}
+                  >
+                    {item.status}
+                  </Mono>
+                  <Mono
+                    style={{
+                      fontSize: 10, fontWeight: 600, letterSpacing: "0.08em",
+                      color: item.vis === "Public" ? "var(--emerald)" : item.vis === "Protected" ? "var(--amber)" : "var(--muted)",
+                    }}
+                  >
+                    {item.vis === "Public" ? "◎ Public" : item.vis === "Protected" ? "◑ Protected" : "● Private"}
+                  </Mono>
+                  <Btn ghost style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => show(`Managing proof (demo).`)}>Manage</Btn>
+                </div>
               ))}
             </div>
           </Card>
         </div>
       )}
 
+      {/* ── Work Passport ── */}
+      {activeTab === "work-passport" && (
+        <div id="panel-work-passport" role="tabpanel" aria-labelledby="tab-work-passport" tabIndex={0}>
+          {/* Header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+            <div>
+              <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>What recruiters see</h2>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.5 }}>
+                Your Work Passport contains only AI-verified skills and approved evidence. No raw private artifacts are visible to recruiters.
+              </p>
+            </div>
+            <Btn onClick={() => show("Recruiter preview — coming soon.")}>Preview as recruiter →</Btn>
+          </div>
+
+          {/* Privacy tiers */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+            {[
+              {
+                tier: "Public", icon: "◎",
+                desc: "Visible to all verified recruiters — no approval required.",
+                count: "6 skills · 4 proof items",
+                color: "var(--emerald)", border: "color-mix(in srgb,var(--emerald) 22%,transparent)", bg: "var(--emerald-soft)",
+              },
+              {
+                tier: "Protected", icon: "◑",
+                desc: "Visible only after you approve a recruiter access request.",
+                count: "3 skills · 2 proof items",
+                color: "var(--amber)", border: "color-mix(in srgb,var(--amber) 22%,transparent)", bg: "var(--amber-soft)",
+              },
+              {
+                tier: "Private", icon: "●",
+                desc: "Only you can see this. Never shared without explicit opt-in.",
+                count: "2 skills · 1 proof item",
+                color: "var(--muted)", border: "var(--line)", bg: "var(--bg-2)",
+              },
+            ].map((t) => (
+              <div key={t.tier} style={{ padding: 16, background: t.bg, border: `1px solid ${t.border}`, borderRadius: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 16, color: t.color }}>{t.icon}</span>
+                  <span style={{ fontWeight: 600, fontSize: 14, color: t.color }}>{t.tier}</span>
+                </div>
+                <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--ink-2)", lineHeight: 1.5 }}>{t.desc}</p>
+                <Mono style={{ fontSize: 11, fontWeight: 700, color: t.color }}>{t.count}</Mono>
+              </div>
+            ))}
+          </div>
+
+          {/* Access requests */}
+          <Card style={{ marginBottom: 16 }}>
+            <CardHeader title="Access requests" eyebrow="2 pending" />
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {[
+                { co: "Stripe · Backend Eng. Intern", when: "Requested 1d ago", status: "Pending" as const },
+                { co: "Linear · SWE Intern", when: "Requested 3d ago", status: "Pending" as const },
+                { co: "Vercel · Full-stack Intern", when: "Approved 5d ago", status: "Approved" as const },
+              ].map((r) => (
+                <div
+                  key={r.co}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "11px 12px",
+                    border: "1px solid var(--line)",
+                    borderRadius: 9,
+                    background: "var(--bg-2)",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{r.co}</div>
+                    <Mono style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{r.when}</Mono>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <Mono
+                      style={{
+                        fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase",
+                        padding: "3px 8px", borderRadius: 4,
+                        color: r.status === "Approved" ? "var(--emerald)" : "var(--amber)",
+                        background: r.status === "Approved" ? "var(--emerald-soft)" : "var(--amber-soft)",
+                      }}
+                    >
+                      {r.status}
+                    </Mono>
+                    {r.status === "Pending" && (
+                      <>
+                        <Btn ghost style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => show("Access approved (demo).")}>Approve</Btn>
+                        <Btn ghost style={{ fontSize: 11, padding: "4px 10px", color: "var(--rose)", borderColor: "color-mix(in srgb,var(--rose) 25%,transparent)" }} onClick={() => show("Access denied (demo).")}>Deny</Btn>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Last updated strip */}
+          <div
+            style={{
+              padding: "14px 16px",
+              background: "var(--bg-2)",
+              border: "1px solid var(--line)",
+              borderRadius: 11,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Passport last updated</div>
+              <Mono style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>2 hours ago · Docker skill verified · 3 evidence sources</Mono>
+            </div>
+            <Mono style={{ fontSize: 10, letterSpacing: "0.14em", color: "var(--emerald)", textTransform: "uppercase", fontWeight: 700 }}>Live ●</Mono>
+          </div>
+        </div>
+      )}
+
       {/* ── Improvement Plan ── */}
       {activeTab === "improvement" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div id="panel-improvement" role="tabpanel" aria-labelledby="tab-improvement" tabIndex={0} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* Next best action */}
           <div
             style={{
@@ -1117,7 +1381,7 @@ export function StudentProfileProof() {
                 ))}
                 <button
                   type="button"
-                  onClick={() => { setActiveTab("proofs"); }}
+                  onClick={() => { setActiveTab("proof-center"); }}
                   style={{ marginTop: 12, fontSize: 12, fontWeight: 600, color: "var(--indigo)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
                 >
                   Add proof now →
