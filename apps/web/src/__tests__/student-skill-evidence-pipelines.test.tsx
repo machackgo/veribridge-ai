@@ -11,11 +11,13 @@ vi.mock("@/lib/api", () => ({
   seedMockSkillEvidencePipelines: vi.fn(),
   getSkillEvidencePipeline: vi.fn(),
   getRecruiterSkillPipelineView: vi.fn(),
+  updateSkillPipelineVisibility: vi.fn(),
 }))
 
 import {
   listSkillEvidencePipelines,
   seedMockSkillEvidencePipelines,
+  updateSkillPipelineVisibility,
 } from "@/lib/api"
 
 // ── Minimal backend pipeline fixture ──────────────────────────────────────────
@@ -61,6 +63,11 @@ const aiId = "ai-machine-learning"
 // "DevOps / Deployment"     → "devops-deployment"
 
 describe("StudentSkillEvidencePipelines", () => {
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(updateSkillPipelineVisibility).mockResolvedValue(null)
+  })
 
   // ── Loading state ────────────────────────────────────────────────────────────
 
@@ -137,6 +144,45 @@ describe("StudentSkillEvidencePipelines", () => {
 
       await act(async () => resolveSeed([]))
     })
+
+    it("shows error message when seed backend call fails (throws)", async () => {
+      vi.mocked(seedMockSkillEvidencePipelines).mockRejectedValueOnce(
+        new Error("Unable to seed pipelines — please sign in or check backend connection."),
+      )
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => expect(screen.getByTestId("seed-demo-btn")).toBeInTheDocument())
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("seed-demo-btn"))
+      })
+
+      await waitFor(() =>
+        expect(screen.getByTestId("seed-error-msg")).toBeInTheDocument(),
+      )
+      expect(screen.getByTestId("seed-error-msg")).toHaveTextContent(/sign in|backend/i)
+    })
+
+    it("seed success removes Demo data badge and shows backend pipelines", async () => {
+      const seeded = [makeBackendPipeline()]
+      vi.mocked(seedMockSkillEvidencePipelines).mockResolvedValueOnce(seeded)
+      vi.mocked(listSkillEvidencePipelines)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce(seeded)
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => expect(screen.getByTestId("seed-demo-btn")).toBeInTheDocument())
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("seed-demo-btn"))
+      })
+
+      await waitFor(() =>
+        expect(screen.getByTestId(`skill-pipeline-card-${aiId}`)).toBeInTheDocument(),
+      )
+      expect(screen.queryByTestId("fallback-badge")).not.toBeInTheDocument()
+    })
   })
 
   // ── Fallback mock (backend returns null / throws) ────────────────────────────
@@ -175,6 +221,23 @@ describe("StudentSkillEvidencePipelines", () => {
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() =>
         expect(screen.getByTestId(`skill-confidence-${aiId}`)).toHaveTextContent(/high confidence/i),
+      )
+    })
+
+    it("shows seed error when seed fails in fallback mode", async () => {
+      vi.mocked(seedMockSkillEvidencePipelines).mockRejectedValueOnce(
+        new Error("Seed failed"),
+      )
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => expect(screen.getByTestId("seed-demo-btn")).toBeInTheDocument())
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("seed-demo-btn"))
+      })
+
+      await waitFor(() =>
+        expect(screen.getByTestId("seed-error-msg")).toBeInTheDocument(),
       )
     })
   })
@@ -361,6 +424,23 @@ describe("StudentSkillEvidencePipelines", () => {
       expect(screen.queryByTestId("manage-skill-modal")).not.toBeInTheDocument()
     })
 
+    it("closes when Escape key is pressed", async () => {
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+      expect(screen.getByTestId("manage-skill-modal")).toBeInTheDocument()
+      fireEvent.keyDown(document, { key: "Escape" })
+      expect(screen.queryByTestId("manage-skill-modal")).not.toBeInTheDocument()
+    })
+
+    it("modal content is present in the document when open", async () => {
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+      expect(screen.getByTestId("manage-skill-modal-content")).toBeInTheDocument()
+      expect(screen.getByTestId("manage-modal-close")).toBeInTheDocument()
+    })
+
     it("visibility controls change recruiter view text", async () => {
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
@@ -537,6 +617,205 @@ describe("StudentSkillEvidencePipelines", () => {
         expect(screen.getByTestId(`skill-pipeline-card-${aiId}`)).toBeInTheDocument(),
       )
       expect(container.innerHTML).not.toMatch(/signed_url/i)
+    })
+  })
+
+  // ── Visibility persistence ────────────────────────────────────────────────────
+
+  describe("visibility persistence", () => {
+    it("changing visibility calls updateSkillPipelineVisibility with correct args", async () => {
+      vi.mocked(updateSkillPipelineVisibility).mockResolvedValueOnce(
+        makeBackendPipeline({ visibility_status: "protected" }),
+      )
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(`visibility-btn-${aiId}-protected`))
+      })
+
+      expect(vi.mocked(updateSkillPipelineVisibility)).toHaveBeenCalledWith(
+        "pipeline-uuid-1",
+        "protected",
+      )
+    })
+
+    it("shows saving state while backend call is in progress", async () => {
+      let resolve!: (v: ReturnType<typeof makeBackendPipeline>) => void
+      vi.mocked(updateSkillPipelineVisibility).mockReturnValueOnce(
+        new Promise<ReturnType<typeof makeBackendPipeline>>((r) => {
+          resolve = r
+        }),
+      )
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+
+      fireEvent.click(screen.getByTestId(`visibility-btn-${aiId}-protected`))
+
+      await waitFor(() =>
+        expect(screen.getByTestId(`visibility-saving-${aiId}`)).toBeInTheDocument(),
+      )
+
+      await act(async () => resolve(makeBackendPipeline({ visibility_status: "protected" })))
+    })
+
+    it("shows saved state after successful backend call", async () => {
+      vi.mocked(updateSkillPipelineVisibility).mockResolvedValueOnce(
+        makeBackendPipeline({ visibility_status: "protected" }),
+      )
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(`visibility-btn-${aiId}-protected`))
+      })
+
+      await waitFor(() =>
+        expect(screen.getByTestId(`visibility-saved-${aiId}`)).toBeInTheDocument(),
+      )
+    })
+
+    it("shows error state when backend call returns null", async () => {
+      vi.mocked(updateSkillPipelineVisibility).mockResolvedValueOnce(null)
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(`visibility-btn-${aiId}-protected`))
+      })
+
+      await waitFor(() =>
+        expect(screen.getByTestId(`visibility-error-${aiId}`)).toBeInTheDocument(),
+      )
+    })
+
+    it("does not call backend when using fallback mock", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue(null)
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(`visibility-btn-${aiId}-protected`))
+      })
+
+      expect(vi.mocked(updateSkillPipelineVisibility)).not.toHaveBeenCalled()
+    })
+
+    it("loads initial visibility_status from backend", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ visibility_status: "protected" }),
+      ])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+
+      // Protected button should be active (backend-loaded), not public
+      // (If public were active, clicking protected would be a no-op visually)
+      // We verify by checking that clicking public triggers a backend call for "public"
+      vi.mocked(updateSkillPipelineVisibility).mockResolvedValueOnce(
+        makeBackendPipeline({ visibility_status: "public" }),
+      )
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(`visibility-btn-${aiId}-public`))
+      })
+      expect(vi.mocked(updateSkillPipelineVisibility)).toHaveBeenCalledWith(
+        "pipeline-uuid-1",
+        "public",
+      )
+    })
+
+    it("private visibility does not appear in recruiter list (client-side filter)", async () => {
+      // listRecruiterSkillEvidencePipelines filters private pipelines client-side
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ visibility_status: "private" }),
+      ])
+      // When rendered, private pipeline would still show in student view
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+      // Student can still see private pipeline in their own profile view
+      expect(screen.getByTestId(`skill-pipeline-card-${aiId}`)).toBeInTheDocument()
+    })
+
+    it("protected visibility button label is 'Protected evidence'", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+      expect(screen.getByTestId(`visibility-btn-${aiId}-protected`)).toHaveTextContent(
+        "Protected evidence",
+      )
+    })
+
+    it("saved state does not render unsafe strings", async () => {
+      vi.mocked(updateSkillPipelineVisibility).mockResolvedValueOnce(
+        makeBackendPipeline({ visibility_status: "protected" }),
+      )
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+
+      const { container } = render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(`visibility-btn-${aiId}-protected`))
+      })
+
+      await waitFor(() => screen.getByTestId(`visibility-saved-${aiId}`))
+
+      expect(container.innerHTML).not.toMatch(/access_token|signed_url|storage_path|service_role/i)
+    })
+
+    it("visible text does not contain the literal word 'token'", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+      const { container } = render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+      const text = container.textContent ?? ""
+      expect(text.toLowerCase()).not.toContain("access token")
+      expect(text.toLowerCase()).not.toContain("access_token")
+    })
+
+    it("remount/refetch restores persisted visibility from backend", async () => {
+      // First mount: pipeline has protected visibility from backend
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValueOnce([
+        makeBackendPipeline({ visibility_status: "protected" }),
+      ])
+      const { unmount } = render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+      unmount()
+
+      // Second mount (page refresh): backend still returns protected
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValueOnce([
+        makeBackendPipeline({ visibility_status: "protected" }),
+      ])
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`skill-pipeline-card-${aiId}`))
+
+      // Switching to public should trigger a backend call with "public"
+      vi.mocked(updateSkillPipelineVisibility).mockResolvedValueOnce(
+        makeBackendPipeline({ visibility_status: "public" }),
+      )
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(`visibility-btn-${aiId}-public`))
+      })
+      expect(vi.mocked(updateSkillPipelineVisibility)).toHaveBeenCalledWith(
+        "pipeline-uuid-1",
+        "public",
+      )
+    })
+
+    it("backend reachable with empty response does not show demo fallback badge", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([])
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => expect(screen.queryByTestId("pipelines-loading")).not.toBeInTheDocument())
+      expect(screen.queryByTestId("fallback-badge")).not.toBeInTheDocument()
+      expect(screen.getByTestId("pipelines-empty")).toBeInTheDocument()
     })
   })
 

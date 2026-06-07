@@ -173,6 +173,16 @@ class SkillEvidenceArtifactResponse(BaseModel):
     full_file_url: Optional[str] = None
 
 
+# ── Visibility update request schemas ────────────────────────────────────────
+
+class UpdatePipelineVisibilityRequest(BaseModel):
+    visibility: VisibilityStatus
+
+
+class UpdateArtifactVisibilityRequest(BaseModel):
+    visibility: ArtifactVisibility
+
+
 # ── Recruiter-safe pipeline response ─────────────────────────────────────────
 
 class RecruiterPipelineSummary(BaseModel):

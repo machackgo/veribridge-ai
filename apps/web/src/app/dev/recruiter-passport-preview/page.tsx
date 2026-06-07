@@ -206,7 +206,7 @@ const MOCK_VIEW: RecruiterPassportViewResponse = {
   disclosure_note:
     "This is a recruiter-safe summary. Protected evidence — including full workflow recordings, " +
     "private project defense media, and detailed skill reports — requires student-approved access. " +
-    "No private URLs, access tokens, raw transcripts, or debug metadata are exposed here.",
+    "No private links, credentials, raw transcripts, or internal diagnostics are exposed here.",
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────

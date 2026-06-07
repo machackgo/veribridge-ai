@@ -563,6 +563,75 @@ class SkillEvidencePipelineService:
         except Exception:
             return 0
 
+    # ── Visibility updates ────────────────────────────────────────────────────
+
+    def update_pipeline_visibility(
+        self,
+        pipeline_id: str,
+        student_id: str,
+        visibility: str,
+    ) -> SkillEvidencePipelineResponse:
+        """Update visibility_status for a pipeline owned by student_id."""
+        # Ownership check (raises PipelineNotFoundError if not found or wrong user)
+        self.get_pipeline(pipeline_id, student_id)
+        now = _now()
+
+        if isinstance(self._client, dict):
+            row = self._dict_update(_PIPELINES_TABLE, pipeline_id, {"visibility_status": visibility})
+            return _pipeline_row_to_response(row)
+
+        result = (
+            self._client.table(_PIPELINES_TABLE)
+            .update({"visibility_status": visibility, "updated_at": now})
+            .eq("id", pipeline_id)
+            .eq("student_id", student_id)
+            .execute()
+        )
+        rows = getattr(result, "data", []) or []
+        return _pipeline_row_to_response(rows[0])
+
+    def update_artifact_visibility(
+        self,
+        artifact_id: str,
+        student_id: str,
+        visibility: str,
+    ) -> SkillEvidenceArtifactResponse:
+        """Update visibility for an artifact whose pipeline is owned by student_id."""
+        if isinstance(self._client, dict):
+            artifact_row = self._dict_table(_ARTIFACTS_TABLE).get(artifact_id)
+            if not artifact_row:
+                raise ArtifactNotFoundError(f"Artifact {artifact_id} not found")
+            # Verify pipeline ownership
+            pipeline_id = str(artifact_row["pipeline_id"])
+            self.get_pipeline(pipeline_id, student_id)
+            updated = self._dict_update(_ARTIFACTS_TABLE, artifact_id, {"visibility": visibility})
+            return _artifact_row_to_response(updated)
+
+        # Supabase path: fetch artifact, verify pipeline ownership, then update
+        art_result = (
+            self._client.table(_ARTIFACTS_TABLE)
+            .select("*")
+            .eq("id", artifact_id)
+            .limit(1)
+            .execute()
+        )
+        art_rows = getattr(art_result, "data", []) or []
+        if not art_rows:
+            raise ArtifactNotFoundError(f"Artifact {artifact_id} not found")
+
+        pipeline_id = str(art_rows[0]["pipeline_id"])
+        self.get_pipeline(pipeline_id, student_id)
+
+        now = _now()
+        result = (
+            self._client.table(_ARTIFACTS_TABLE)
+            .update({"visibility": visibility, "updated_at": now})
+            .eq("id", artifact_id)
+            .execute()
+        )
+        rows = getattr(result, "data", []) or []
+        return _artifact_row_to_response(rows[0])
+
     # ── Recruiter sanitization ────────────────────────────────────────────────
 
     def sanitize_recruiter_payload(

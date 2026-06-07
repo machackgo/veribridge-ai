@@ -30,13 +30,15 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_pipeline_db
 from app.schemas.skill_evidence_pipeline import (
     RecruiterPipelineSummary,
     SkillEvidenceArtifactCreate,
     SkillEvidenceArtifactResponse,
     SkillEvidencePipelineCreate,
     SkillEvidencePipelineResponse,
+    UpdateArtifactVisibilityRequest,
+    UpdatePipelineVisibilityRequest,
 )
 from app.services.skill_evidence_pipeline_service import (
     ArtifactNotFoundError,
@@ -58,11 +60,18 @@ router = APIRouter()
 )
 def list_pipelines(
     user_id: str = Depends(get_current_user_id),
-    db: Any = Depends(get_db),
+    db: Any = Depends(get_pipeline_db),
 ) -> list[SkillEvidencePipelineResponse]:
     """Return skill evidence pipelines for the authenticated student,
     ordered by confidence_score descending."""
-    return SkillEvidencePipelineService(db).list_pipelines_for_student(user_id)
+    try:
+        return SkillEvidencePipelineService(db).list_pipelines_for_student(user_id)
+    except Exception as exc:
+        logger.exception("GET skill-pipelines: unexpected error for user %s", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "list_failed", "message": str(exc)},
+        ) from exc
 
 
 # ── POST /student/skill-pipelines/seed-mock ───────────────────────────────────
@@ -76,14 +85,21 @@ def list_pipelines(
 )
 def seed_mock_pipelines(
     user_id: str = Depends(get_current_user_id),
-    db: Any = Depends(get_db),
+    db: Any = Depends(get_pipeline_db),
 ) -> list[SkillEvidencePipelineResponse]:
     """Create or refresh the standard set of MVP skill pipelines for this student.
 
     Idempotent: re-running updates existing pipelines without duplicating.
     Designed for WPI career fair testing.
     """
-    return SkillEvidencePipelineService(db).build_mock_pipelines_for_student(user_id)
+    try:
+        return SkillEvidencePipelineService(db).build_mock_pipelines_for_student(user_id)
+    except Exception as exc:
+        logger.exception("POST skill-pipelines/seed-mock: unexpected error for user %s", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "seed_failed", "message": str(exc)},
+        ) from exc
 
 
 # ── POST /student/skill-pipelines/upsert ──────────────────────────────────────
@@ -98,7 +114,7 @@ def seed_mock_pipelines(
 def upsert_pipeline(
     body: SkillEvidencePipelineCreate,
     user_id: str = Depends(get_current_user_id),
-    db: Any = Depends(get_db),
+    db: Any = Depends(get_pipeline_db),
 ) -> SkillEvidencePipelineResponse:
     """Upsert a skill pipeline for the authenticated student.
 
@@ -126,7 +142,7 @@ def upsert_pipeline(
 def get_pipeline(
     pipeline_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: Any = Depends(get_db),
+    db: Any = Depends(get_pipeline_db),
 ) -> SkillEvidencePipelineResponse:
     try:
         return SkillEvidencePipelineService(db).get_pipeline(pipeline_id, user_id)
@@ -150,7 +166,7 @@ def add_artifact(
     pipeline_id: str,
     body: SkillEvidenceArtifactCreate,
     user_id: str = Depends(get_current_user_id),
-    db: Any = Depends(get_db),
+    db: Any = Depends(get_pipeline_db),
 ) -> SkillEvidenceArtifactResponse:
     """Add a new evidence artifact (GitHub, transcript, document, workflow, etc.)
     to the specified pipeline.
@@ -180,6 +196,72 @@ def add_artifact(
         ) from exc
 
 
+# ── PATCH /student/skill-pipelines/artifacts/{artifact_id}/visibility ────────
+# Must be defined before /{pipeline_id}/visibility to avoid routing ambiguity.
+
+
+@router.patch(
+    "/artifacts/{artifact_id}/visibility",
+    response_model=SkillEvidenceArtifactResponse,
+    summary="Update an artifact's visibility",
+)
+def update_artifact_visibility(
+    artifact_id: str,
+    body: UpdateArtifactVisibilityRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_pipeline_db),
+) -> SkillEvidenceArtifactResponse:
+    """Set visibility for a single evidence artifact.
+
+    Ownership is verified by checking that the artifact's parent pipeline
+    belongs to the authenticated student.
+    """
+    svc = SkillEvidencePipelineService(db)
+    try:
+        return svc.update_artifact_visibility(artifact_id, user_id, body.visibility)
+    except ArtifactNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "artifact_not_found", "message": str(exc)},
+        ) from exc
+    except PipelineNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "pipeline_not_found", "message": str(exc)},
+        ) from exc
+
+
+# ── PATCH /student/skill-pipelines/{pipeline_id}/visibility ──────────────────
+
+
+@router.patch(
+    "/{pipeline_id}/visibility",
+    response_model=SkillEvidencePipelineResponse,
+    summary="Update a skill pipeline's visibility",
+)
+def update_pipeline_visibility(
+    pipeline_id: str,
+    body: UpdatePipelineVisibilityRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_pipeline_db),
+) -> SkillEvidencePipelineResponse:
+    """Set visibility_status (public / protected / private) for a pipeline.
+
+    Allowed values:
+      public    — recruiter can see skill summary and safe public evidence.
+      protected — recruiter sees a locked card; must request access for details.
+      private   — pipeline is hidden from all recruiter-facing views.
+    """
+    svc = SkillEvidencePipelineService(db)
+    try:
+        return svc.update_pipeline_visibility(pipeline_id, user_id, body.visibility)
+    except PipelineNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "pipeline_not_found", "message": str(exc)},
+        ) from exc
+
+
 # ── GET /student/skill-pipelines/{pipeline_id}/recruiter-view ────────────────
 
 
@@ -191,7 +273,7 @@ def add_artifact(
 def recruiter_view(
     pipeline_id: str,
     user_id: str = Depends(get_current_user_id),
-    db: Any = Depends(get_db),
+    db: Any = Depends(get_pipeline_db),
 ) -> RecruiterPipelineSummary:
     """Return a sanitized pipeline payload suitable for recruiter sharing.
 

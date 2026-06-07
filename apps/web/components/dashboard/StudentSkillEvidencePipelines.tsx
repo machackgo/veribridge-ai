@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useEffect, useState } from "react"
+import { createPortal } from "react-dom"
 import {
   getSkillPipeline,
   type SkillEvidencePipeline,
@@ -8,6 +9,7 @@ import {
 import {
   listSkillEvidencePipelines,
   seedMockSkillEvidencePipelines,
+  updateSkillPipelineVisibility,
   type BackendSkillPipeline,
   type BackendEvidenceSource,
 } from "@/lib/api"
@@ -57,6 +59,7 @@ type DirectActionItem = {
 
 type DisplayPipeline = {
   id: string
+  backendId?: string
   skillName: string
   category: string
   confidence: "high" | "medium" | "low"
@@ -70,6 +73,8 @@ type DisplayPipeline = {
   directActions: DirectActionItem[]
   fromBackend: boolean
 }
+
+type VisibilitySaveState = "idle" | "saving" | "saved" | "error"
 
 // ── Visibility ────────────────────────────────────────────────────────────────
 
@@ -91,6 +96,7 @@ function backendToDisplay(b: BackendSkillPipeline): DisplayPipeline {
   }
   return {
     id: b.skill_name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    backendId: b.id,
     skillName: b.skill_name,
     category: b.skill_category,
     confidence: scoreToConfidence(b.confidence_score),
@@ -201,11 +207,13 @@ const SOURCE_TYPE_LABEL: Record<string, string> = {
 function SkillPipelineCard({
   pipeline,
   visibility,
+  savingState,
   onVisibilityChange,
   onManage,
 }: {
   pipeline: DisplayPipeline
   visibility: VisibilityMode
+  savingState: VisibilitySaveState
   onVisibilityChange: (v: VisibilityMode) => void
   onManage: () => void
 }) {
@@ -343,7 +351,7 @@ function SkillPipelineCard({
         <div style={{ fontSize: 10, fontWeight: 700, color: "#6b7280", marginBottom: 5 }}>
           Visibility
         </div>
-        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
           {(["public", "protected", "private"] as VisibilityMode[]).map((v) => {
             const vc = visibilityColors(v)
             const active = visibility === v
@@ -368,6 +376,30 @@ function SkillPipelineCard({
               </button>
             )
           })}
+          {savingState === "saving" && (
+            <span
+              data-testid={`visibility-saving-${pipeline.id}`}
+              style={{ fontSize: 10, color: "#6b7280" }}
+            >
+              Saving…
+            </span>
+          )}
+          {savingState === "saved" && (
+            <span
+              data-testid={`visibility-saved-${pipeline.id}`}
+              style={{ fontSize: 10, color: "#059669", fontWeight: 600 }}
+            >
+              Saved
+            </span>
+          )}
+          {savingState === "error" && (
+            <span
+              data-testid={`visibility-error-${pipeline.id}`}
+              style={{ fontSize: 10, color: "#dc2626" }}
+            >
+              Error saving
+            </span>
+          )}
         </div>
       </div>
 
@@ -404,17 +436,25 @@ function SkillPipelineCard({
 function ManageSkillModal({
   pipeline,
   visibility,
+  savingState,
   onVisibilityChange,
   onClose,
 }: {
   pipeline: DisplayPipeline
   visibility: VisibilityMode
+  savingState: VisibilitySaveState
   onVisibilityChange: (v: VisibilityMode) => void
   onClose: () => void
 }) {
   const visC = visibilityColors(visibility)
 
-  return (
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose() }
+    document.addEventListener("keydown", handler)
+    return () => document.removeEventListener("keydown", handler)
+  }, [onClose])
+
+  const modal = (
     <div
       data-testid="manage-skill-modal"
       style={{
@@ -647,7 +687,7 @@ function ManageSkillModal({
                 {visibility === "private" &&
                   "Recruiter cannot see this skill. It will not appear in the public passport."}
               </div>
-              <div style={{ display: "flex", gap: 4 }}>
+              <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
                 {(["public", "protected", "private"] as VisibilityMode[]).map((v) => {
                   const vc = visibilityColors(v)
                   const active = visibility === v
@@ -669,6 +709,30 @@ function ManageSkillModal({
                     </button>
                   )
                 })}
+                {savingState === "saving" && (
+                  <span
+                    data-testid={`modal-visibility-saving-${pipeline.id}`}
+                    style={{ fontSize: 10, color: "#6b7280" }}
+                  >
+                    Saving…
+                  </span>
+                )}
+                {savingState === "saved" && (
+                  <span
+                    data-testid={`modal-visibility-saved-${pipeline.id}`}
+                    style={{ fontSize: 10, color: "#059669", fontWeight: 600 }}
+                  >
+                    Saved
+                  </span>
+                )}
+                {savingState === "error" && (
+                  <span
+                    data-testid={`modal-visibility-error-${pipeline.id}`}
+                    style={{ fontSize: 10, color: "#dc2626" }}
+                  >
+                    Error saving
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -697,6 +761,7 @@ function ManageSkillModal({
       </div>
     </div>
   )
+  return typeof document !== "undefined" ? createPortal(modal, document.body) : modal
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -705,9 +770,11 @@ export function StudentSkillEvidencePipelines() {
   const [pipelines, setPipelines] = useState<DisplayPipeline[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [seeding, setSeeding] = useState(false)
+  const [seedError, setSeedError] = useState<string | null>(null)
   const [usingFallback, setUsingFallback] = useState(false)
   const [managingId, setManagingId] = useState<string | null>(null)
   const [visibilities, setVisibilities] = useState<Record<string, VisibilityMode>>({})
+  const [savingStates, setSavingStates] = useState<Record<string, VisibilitySaveState>>({})
 
   async function loadFromBackend() {
     setLoading(true)
@@ -717,14 +784,11 @@ export function StudentSkillEvidencePipelines() {
         const displayed = data.map(backendToDisplay)
         setPipelines(displayed)
         setUsingFallback(false)
-        // Seed visibility state for any new skills
-        setVisibilities((prev) => {
-          const next = { ...prev }
-          for (const p of displayed) {
-            if (!(p.skillName in next)) next[p.skillName] = "public"
-          }
-          return next
-        })
+        // Always sync visibility from backend (overrides any stale local state)
+        setVisibilities(
+          Object.fromEntries(data.map((p) => [p.skill_name, p.visibility_status]))
+        )
+        setSavingStates({})
       } else if (data && data.length === 0) {
         // Backend is reachable but empty
         setPipelines([])
@@ -735,12 +799,14 @@ export function StudentSkillEvidencePipelines() {
         setPipelines(mock)
         setUsingFallback(true)
         setVisibilities(Object.fromEntries(SKILL_NAMES.map((s) => [s, "public" as VisibilityMode])))
+        setSavingStates({})
       }
     } catch {
       const mock = SKILL_NAMES.map(getSkillPipeline).map(mockToDisplay)
       setPipelines(mock)
       setUsingFallback(true)
       setVisibilities(Object.fromEntries(SKILL_NAMES.map((s) => [s, "public" as VisibilityMode])))
+      setSavingStates({})
     } finally {
       setLoading(false)
     }
@@ -753,16 +819,52 @@ export function StudentSkillEvidencePipelines() {
 
   async function handleSeed() {
     setSeeding(true)
+    setSeedError(null)
     try {
       await seedMockSkillEvidencePipelines()
       await loadFromBackend()
+    } catch (err) {
+      setSeedError(
+        err instanceof Error
+          ? err.message
+          : "Unexpected error while seeding pipelines.",
+      )
     } finally {
       setSeeding(false)
     }
   }
 
-  function setVisibility(skillName: string, v: VisibilityMode) {
+  async function handleVisibilityChange(
+    skillName: string,
+    backendId: string | undefined,
+    v: VisibilityMode,
+  ) {
+    // Optimistic UI update
     setVisibilities((prev) => ({ ...prev, [skillName]: v }))
+
+    if (!backendId || usingFallback) {
+      // Fallback mode: local UI state only, no backend call
+      if (usingFallback && process.env.NODE_ENV !== "production") {
+        console.warn("[VeriBridge] Visibility change not persisted: backend unavailable (fallback mode).")
+      }
+      return
+    }
+
+    setSavingStates((prev) => ({ ...prev, [skillName]: "saving" }))
+
+    try {
+      const result = await updateSkillPipelineVisibility(backendId, v)
+      if (result) {
+        setSavingStates((prev) => ({ ...prev, [skillName]: "saved" }))
+        setTimeout(() => {
+          setSavingStates((prev) => ({ ...prev, [skillName]: "idle" }))
+        }, 2000)
+      } else {
+        setSavingStates((prev) => ({ ...prev, [skillName]: "error" }))
+      }
+    } catch {
+      setSavingStates((prev) => ({ ...prev, [skillName]: "error" }))
+    }
   }
 
   const managingPipeline = managingId
@@ -838,6 +940,14 @@ export function StudentSkillEvidencePipelines() {
           >
             {seeding ? "Seeding…" : "Seed demo skill pipelines"}
           </button>
+          {seedError && (
+            <div
+              data-testid="seed-error-msg"
+              style={{ fontSize: 11, color: "#dc2626", marginTop: 8 }}
+            >
+              {seedError}
+            </div>
+          )}
         </div>
       )}
 
@@ -864,6 +974,14 @@ export function StudentSkillEvidencePipelines() {
               <span style={{ fontSize: 11, color: "#6b7280" }}>
                 Showing demo data. Click to persist to backend.
               </span>
+              {seedError && (
+                <span
+                  data-testid="seed-error-msg"
+                  style={{ fontSize: 11, color: "#dc2626" }}
+                >
+                  {seedError}
+                </span>
+              )}
             </div>
           )}
 
@@ -876,7 +994,10 @@ export function StudentSkillEvidencePipelines() {
                 key={pipeline.id}
                 pipeline={pipeline}
                 visibility={visibilities[pipeline.skillName] ?? "public"}
-                onVisibilityChange={(v) => setVisibility(pipeline.skillName, v)}
+                savingState={savingStates[pipeline.skillName] ?? "idle"}
+                onVisibilityChange={(v) =>
+                  handleVisibilityChange(pipeline.skillName, pipeline.backendId, v)
+                }
                 onManage={() => setManagingId(pipeline.id)}
               />
             ))}
@@ -889,7 +1010,10 @@ export function StudentSkillEvidencePipelines() {
         <ManageSkillModal
           pipeline={managingPipeline}
           visibility={visibilities[managingPipeline.skillName] ?? "public"}
-          onVisibilityChange={(v) => setVisibility(managingPipeline.skillName, v)}
+          savingState={savingStates[managingPipeline.skillName] ?? "idle"}
+          onVisibilityChange={(v) =>
+            handleVisibilityChange(managingPipeline.skillName, managingPipeline.backendId, v)
+          }
           onClose={() => setManagingId(null)}
         />
       )}

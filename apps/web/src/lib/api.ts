@@ -2677,18 +2677,27 @@ export async function getSkillEvidencePipeline(
 
 /**
  * Seed the deterministic MVP skill pipelines for the current student.
- * Returns the created/updated pipelines, or null on error.
+ * Throws an Error with the backend message on failure so callers can
+ * display the real reason (table missing, auth error, etc.) instead of
+ * a generic message.
  */
-export async function seedMockSkillEvidencePipelines(): Promise<BackendSkillPipeline[] | null> {
-  try {
-    const res = await fetchAPI("/api/v1/student/skill-pipelines/seed-mock", {
-      method: "POST",
-    })
-    if (!res.ok) return null
-    return res.json() as Promise<BackendSkillPipeline[]>
-  } catch {
-    return null
+export async function seedMockSkillEvidencePipelines(): Promise<BackendSkillPipeline[]> {
+  const res = await fetchAPI("/api/v1/student/skill-pipelines/seed-mock", {
+    method: "POST",
+  })
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`
+    try {
+      const body = await res.json()
+      if (body?.detail?.message) message = body.detail.message
+      else if (typeof body?.detail === "string") message = body.detail
+      else if (body?.message) message = body.message
+    } catch {
+      // body not JSON — use status text
+    }
+    throw new Error(message)
   }
+  return res.json() as Promise<BackendSkillPipeline[]>
 }
 
 /**
@@ -2699,6 +2708,47 @@ export async function listRecruiterSkillEvidencePipelines(): Promise<BackendSkil
   const all = await listSkillEvidencePipelines()
   if (all === null) return null
   return all.filter((p) => p.visibility_status !== "private")
+}
+
+/**
+ * Persist a pipeline's visibility_status to the backend.
+ * Returns the updated pipeline, or null on any error (non-throwing; UI handles gracefully).
+ */
+export async function updateSkillPipelineVisibility(
+  pipelineId: string,
+  visibility: "public" | "protected" | "private",
+): Promise<BackendSkillPipeline | null> {
+  try {
+    const res = await fetchAPI(
+      `/api/v1/student/skill-pipelines/${encodeURIComponent(pipelineId)}/visibility`,
+      { method: "PATCH", body: JSON.stringify({ visibility }) },
+    )
+    if (!res.ok) return null
+    return res.json() as Promise<BackendSkillPipeline>
+  } catch {
+    return null
+  }
+}
+
+
+/**
+ * Persist an artifact's visibility to the backend.
+ * Returns the updated artifact, or null on any error.
+ */
+export async function updateSkillArtifactVisibility(
+  artifactId: string,
+  visibility: "public" | "protected" | "private" | "approved" | "locked" | "unavailable",
+): Promise<BackendSkillArtifact | null> {
+  try {
+    const res = await fetchAPI(
+      `/api/v1/student/skill-pipelines/artifacts/${encodeURIComponent(artifactId)}/visibility`,
+      { method: "PATCH", body: JSON.stringify({ visibility }) },
+    )
+    if (!res.ok) return null
+    return res.json() as Promise<BackendSkillArtifact>
+  } catch {
+    return null
+  }
 }
 
 /**

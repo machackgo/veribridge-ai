@@ -26,13 +26,15 @@ No real network calls.
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, get_pipeline_db
 from app.main import app
 from app.services.skill_evidence_pipeline_service import (
-    SkillEvidencePipelineService,
+    ArtifactNotFoundError,
     PipelineNotFoundError,
+    SkillEvidencePipelineService,
     _compute_github_urls,
     _strip_unsafe_artifact_data,
 )
@@ -791,3 +793,367 @@ class TestRecruiterViewEndpoint:
         assert "UNSAFE_STORAGE_PATH" not in payload_str
         assert "service_role" not in payload_str
         assert "access_token" not in payload_str
+
+
+# ── Visibility persistence endpoints ─────────────────────────────────────────
+
+
+class TestVisibilityPersistenceEndpoints:
+    def test_patch_pipeline_visibility_to_protected(self, client_a: TestClient):
+        p = _upsert(client_a, "AI / Machine Learning", visibility_status="public")
+        r = client_a.patch(
+            f"/api/v1/student/skill-pipelines/{p['id']}/visibility",
+            json={"visibility": "protected"},
+        )
+        assert r.status_code == 200
+        assert r.json()["visibility_status"] == "protected"
+
+    def test_patch_pipeline_visibility_to_private(self, client_a: TestClient):
+        p = _upsert(client_a, "JavaScript / Frontend", visibility_status="public")
+        r = client_a.patch(
+            f"/api/v1/student/skill-pipelines/{p['id']}/visibility",
+            json={"visibility": "private"},
+        )
+        assert r.status_code == 200
+        assert r.json()["visibility_status"] == "private"
+
+    def test_patch_pipeline_visibility_to_public(self, client_a: TestClient):
+        p = _upsert(client_a, "Data & Visualization", visibility_status="protected")
+        r = client_a.patch(
+            f"/api/v1/student/skill-pipelines/{p['id']}/visibility",
+            json={"visibility": "public"},
+        )
+        assert r.status_code == 200
+        assert r.json()["visibility_status"] == "public"
+
+    def test_invalid_pipeline_visibility_rejected(self, client_a: TestClient):
+        p = _upsert(client_a, "DevOps / Deployment")
+        r = client_a.patch(
+            f"/api/v1/student/skill-pipelines/{p['id']}/visibility",
+            json={"visibility": "invalid_value"},
+        )
+        assert r.status_code == 422
+
+    def test_patch_pipeline_visibility_404_for_wrong_user(
+        self, client_a: TestClient, mem: dict
+    ):
+        svc = SkillEvidencePipelineService(mem)
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        pb = svc.upsert_pipeline(STUDENT_B, SkillEvidencePipelineCreate(skill_name="NLP"))
+        r = client_a.patch(
+            f"/api/v1/student/skill-pipelines/{pb.id}/visibility",
+            json={"visibility": "private"},
+        )
+        assert r.status_code == 404
+
+    def test_patch_artifact_visibility(self, client_a: TestClient):
+        p = _upsert(client_a, "AI / Machine Learning")
+        art = _add_artifact(client_a, p["id"], visibility="public")
+        r = client_a.patch(
+            f"/api/v1/student/skill-pipelines/artifacts/{art['id']}/visibility",
+            json={"visibility": "protected"},
+        )
+        assert r.status_code == 200
+        assert r.json()["visibility"] == "protected"
+
+    def test_patch_artifact_visibility_all_valid_values(self, client_a: TestClient):
+        p = _upsert(client_a, "AI / Machine Learning")
+        art = _add_artifact(client_a, p["id"], visibility="public")
+        for vis in ("public", "protected", "private", "approved", "locked", "unavailable"):
+            r = client_a.patch(
+                f"/api/v1/student/skill-pipelines/artifacts/{art['id']}/visibility",
+                json={"visibility": vis},
+            )
+            assert r.status_code == 200, f"Failed for visibility={vis}: {r.text}"
+            assert r.json()["visibility"] == vis
+
+    def test_invalid_artifact_visibility_rejected(self, client_a: TestClient):
+        p = _upsert(client_a, "AI / Machine Learning")
+        art = _add_artifact(client_a, p["id"])
+        r = client_a.patch(
+            f"/api/v1/student/skill-pipelines/artifacts/{art['id']}/visibility",
+            json={"visibility": "invalid_value"},
+        )
+        assert r.status_code == 422
+
+    def test_patch_artifact_visibility_404_for_unknown_artifact(self, client_a: TestClient):
+        r = client_a.patch(
+            "/api/v1/student/skill-pipelines/artifacts/00000000-0000-0000-0000-000000000099/visibility",
+            json={"visibility": "public"},
+        )
+        assert r.status_code == 404
+
+    def test_recruiter_view_excludes_private_artifacts_after_visibility_update(
+        self, client_a: TestClient
+    ):
+        p = _upsert(client_a, "AI / Machine Learning")
+        pub = _add_artifact(client_a, p["id"], source_type="github", visibility="public")
+        prv = _add_artifact(client_a, p["id"], source_type="github", visibility="public")
+        # Change second artifact to private
+        client_a.patch(
+            f"/api/v1/student/skill-pipelines/artifacts/{prv['id']}/visibility",
+            json={"visibility": "private"},
+        )
+        r = client_a.get(f"/api/v1/student/skill-pipelines/{p['id']}/recruiter-view")
+        ids = [a["id"] for a in r.json()["artifacts"]]
+        assert pub["id"] in ids
+        assert prv["id"] not in ids
+
+    def test_protected_artifact_appears_in_recruiter_view(self, client_a: TestClient):
+        p = _upsert(client_a, "AI / Machine Learning")
+        art = _add_artifact(client_a, p["id"], source_type="github", visibility="protected")
+        r = client_a.get(f"/api/v1/student/skill-pipelines/{p['id']}/recruiter-view")
+        assert r.status_code == 200
+        artifacts = r.json()["artifacts"]
+        assert any(a["id"] == art["id"] and a["visibility"] == "protected" for a in artifacts)
+
+    def test_public_artifact_appears_in_recruiter_view(self, client_a: TestClient):
+        p = _upsert(client_a, "AI / Machine Learning")
+        art = _add_artifact(client_a, p["id"], source_type="github", visibility="public")
+        r = client_a.get(f"/api/v1/student/skill-pipelines/{p['id']}/recruiter-view")
+        assert r.status_code == 200
+        artifacts = r.json()["artifacts"]
+        assert any(a["id"] == art["id"] and a["visibility"] == "public" for a in artifacts)
+
+    def test_service_update_pipeline_visibility(self, svc: SkillEvidencePipelineService):
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        pipeline = svc.upsert_pipeline(
+            STUDENT_A,
+            SkillEvidencePipelineCreate(skill_name="AI/ML", visibility_status="public"),
+        )
+        updated = svc.update_pipeline_visibility(pipeline.id, STUDENT_A, "protected")
+        assert updated.visibility_status == "protected"
+        assert updated.id == pipeline.id
+
+    def test_service_update_artifact_visibility(self, svc: SkillEvidencePipelineService):
+        from app.schemas.skill_evidence_pipeline import (
+            SkillEvidencePipelineCreate,
+            SkillEvidenceArtifactCreate,
+        )
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(skill_name="AI/ML"))
+        artifact = svc.add_artifact(
+            STUDENT_A,
+            SkillEvidenceArtifactCreate(
+                pipeline_id=pipeline.id,
+                source_type="github",
+                source_title="evaluator.py",
+                project_name="P",
+                visibility="public",
+                confidence_score=80,
+                proof_reason="Confirmed",
+                artifact_data={},
+            ),
+        )
+        updated = svc.update_artifact_visibility(artifact.id, STUDENT_A, "private")
+        assert updated.visibility == "private"
+        assert updated.id == artifact.id
+
+    def test_service_update_pipeline_visibility_wrong_user_raises(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(skill_name="AI/ML"))
+        with pytest.raises(PipelineNotFoundError):
+            svc.update_pipeline_visibility(pipeline.id, STUDENT_B, "private")
+
+    def test_service_update_artifact_visibility_unknown_artifact_raises(
+        self, svc: SkillEvidencePipelineService
+    ):
+        with pytest.raises(ArtifactNotFoundError):
+            svc.update_artifact_visibility("nonexistent-id", STUDENT_A, "public")
+
+    def test_visibility_persists_after_get(self, svc: SkillEvidencePipelineService):
+        """Simulates a page refresh: update visibility then re-fetch to confirm persistence."""
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        pipeline = svc.upsert_pipeline(
+            STUDENT_A,
+            SkillEvidencePipelineCreate(skill_name="AI/ML", visibility_status="public"),
+        )
+        svc.update_pipeline_visibility(pipeline.id, STUDENT_A, "protected")
+        fetched = svc.get_pipeline(pipeline.id, STUDENT_A)
+        assert fetched.visibility_status == "protected"
+
+
+# ── Dev fallback ID persistence tests ─────────────────────────────────────────
+
+# UUID that matches the DEMO_USER_ID set in apps/api/.env for local dev.
+DEV_FALLBACK_ID = "836d5bc3-3b1b-4bae-8c8b-104fc220ac95"
+
+
+class TestDevFallbackPersistence:
+    """Verify the full seed → fetch → update → refresh cycle using the dev fallback user ID.
+
+    In non-production, get_current_user_id falls back to DEMO_USER_ID when no
+    valid JWT is present.  These tests exercise that same user ID end-to-end via
+    the service layer (dict-mode, no network).
+    """
+
+    def test_seed_demo_pipelines_with_dev_fallback_id(self, svc: SkillEvidencePipelineService):
+        pipelines = svc.build_mock_pipelines_for_student(DEV_FALLBACK_ID)
+        assert len(pipelines) == 4
+
+    def test_fetch_returns_seeded_pipelines_for_dev_fallback_id(self, svc: SkillEvidencePipelineService):
+        svc.build_mock_pipelines_for_student(DEV_FALLBACK_ID)
+        pipelines = svc.list_pipelines_for_student(DEV_FALLBACK_ID)
+        assert len(pipelines) == 4
+        names = {p.skill_name for p in pipelines}
+        assert "AI / Machine Learning" in names
+
+    def test_update_visibility_persists_for_dev_fallback_id(self, svc: SkillEvidencePipelineService):
+        svc.build_mock_pipelines_for_student(DEV_FALLBACK_ID)
+        pipelines = svc.list_pipelines_for_student(DEV_FALLBACK_ID)
+        ai_ml = next(p for p in pipelines if p.skill_name == "AI / Machine Learning")
+        updated = svc.update_pipeline_visibility(ai_ml.id, DEV_FALLBACK_ID, "protected")
+        assert updated.visibility_status == "protected"
+
+    def test_refresh_fetch_returns_updated_visibility(self, svc: SkillEvidencePipelineService):
+        """Simulates a page refresh: update then re-list to confirm the change persisted."""
+        svc.build_mock_pipelines_for_student(DEV_FALLBACK_ID)
+        pipelines = svc.list_pipelines_for_student(DEV_FALLBACK_ID)
+        ai_ml = next(p for p in pipelines if p.skill_name == "AI / Machine Learning")
+        svc.update_pipeline_visibility(ai_ml.id, DEV_FALLBACK_ID, "private")
+        refreshed = svc.list_pipelines_for_student(DEV_FALLBACK_ID)
+        updated = next(p for p in refreshed if p.skill_name == "AI / Machine Learning")
+        assert updated.visibility_status == "private"
+
+    def test_seed_is_idempotent_for_dev_fallback_id(self, svc: SkillEvidencePipelineService):
+        svc.build_mock_pipelines_for_student(DEV_FALLBACK_ID)
+        svc.build_mock_pipelines_for_student(DEV_FALLBACK_ID)
+        pipelines = svc.list_pipelines_for_student(DEV_FALLBACK_ID)
+        assert len(pipelines) == 4  # no duplicates
+
+    def test_recruiter_safe_payload_excludes_private_for_dev_fallback(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import SkillEvidenceArtifactResponse
+        svc.build_mock_pipelines_for_student(DEV_FALLBACK_ID)
+        pipelines = svc.list_pipelines_for_student(DEV_FALLBACK_ID)
+        ai_ml = next(p for p in pipelines if p.skill_name == "AI / Machine Learning")
+        now = "2026-06-06T00:00:00+00:00"
+        artifacts = [
+            SkillEvidenceArtifactResponse(
+                id="art-pub", pipeline_id=ai_ml.id, source_type="github",
+                source_title="public.py", project_name="P",
+                visibility="public", confidence_score=80,
+                relevance_to_skill="High", proof_reason="Confirmed",
+                artifact_data={"repo_url": "https://github.com/x/y"},
+                created_at=now, updated_at=now,
+            ),
+            SkillEvidenceArtifactResponse(
+                id="art-prv", pipeline_id=ai_ml.id, source_type="github",
+                source_title="private.py", project_name="P",
+                visibility="private", confidence_score=80,
+                relevance_to_skill="High", proof_reason="Confirmed",
+                artifact_data={"repo_url": "https://github.com/x/y"},
+                created_at=now, updated_at=now,
+            ),
+            SkillEvidenceArtifactResponse(
+                id="art-pro", pipeline_id=ai_ml.id, source_type="github",
+                source_title="protected.py", project_name="P",
+                visibility="protected", confidence_score=80,
+                relevance_to_skill="High", proof_reason="Confirmed",
+                artifact_data={"repo_url": "https://github.com/x/y"},
+                created_at=now, updated_at=now,
+            ),
+        ]
+        summary = svc.sanitize_recruiter_payload(ai_ml, artifacts)
+        ids = [a["id"] for a in summary.artifacts]
+        assert "art-pub" in ids       # public visible
+        assert "art-pro" in ids       # protected visible (locked card)
+        assert "art-prv" not in ids   # private excluded
+        # student_id and student_summary must not appear in recruiter payload
+        payload = summary.model_dump()
+        assert "student_id" not in payload
+        assert "student_summary" not in payload
+
+
+# ── Dev auth fallback endpoint tests ─────────────────────────────────────────
+# These tests exercise the real get_current_user_id dependency (no override)
+# so they verify that missing/invalid auth falls back to DEMO_USER_ID in dev.
+# get_db (and therefore get_pipeline_db) is still overridden to avoid real
+# Supabase calls.
+
+
+class TestDevAuthFallbackEndpoints:
+    """Verify that all pipeline endpoints work without an Authorization header
+    in non-production mode (DEMO_USER_ID fallback active).
+
+    Requirement: seed / list / visibility PATCH must work in local dev even
+    when the browser has no Supabase session token.
+    """
+
+    @pytest.fixture()
+    def no_auth_client(self) -> TestClient:
+        """TestClient with real auth dependency (no get_current_user_id override)
+        but in-memory DB so no real Supabase calls are made."""
+        mem: dict = {}
+        app.dependency_overrides[get_db] = lambda: mem
+        yield TestClient(app)
+        app.dependency_overrides.clear()
+
+    def test_seed_without_auth_header_succeeds(self, no_auth_client: TestClient):
+        """POST seed-mock without Authorization header → 200 in dev (DEMO_USER_ID fallback)."""
+        r = no_auth_client.post("/api/v1/student/skill-pipelines/seed-mock")
+        assert r.status_code == 200, r.text
+        assert len(r.json()) == 4
+
+    def test_list_without_auth_header_returns_seeded(self, no_auth_client: TestClient):
+        """GET list without Authorization header → returns seeded pipelines."""
+        no_auth_client.post("/api/v1/student/skill-pipelines/seed-mock")
+        r = no_auth_client.get("/api/v1/student/skill-pipelines")
+        assert r.status_code == 200, r.text
+        names = {p["skill_name"] for p in r.json()}
+        assert "AI / Machine Learning" in names
+
+    def test_visibility_patch_without_auth_header_succeeds(self, no_auth_client: TestClient):
+        """PATCH visibility without Authorization header → 200 in dev."""
+        seed_r = no_auth_client.post("/api/v1/student/skill-pipelines/seed-mock")
+        pipelines = seed_r.json()
+        first_id = pipelines[0]["id"]
+        r = no_auth_client.patch(
+            f"/api/v1/student/skill-pipelines/{first_id}/visibility",
+            json={"visibility": "protected"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["visibility_status"] == "protected"
+
+    def test_visibility_persists_after_re_list(self, no_auth_client: TestClient):
+        """Visibility PATCH without auth persists when the list endpoint is re-called
+        (simulates a browser refresh against the same server process)."""
+        seed_r = no_auth_client.post("/api/v1/student/skill-pipelines/seed-mock")
+        pipeline_id = seed_r.json()[0]["id"]
+        no_auth_client.patch(
+            f"/api/v1/student/skill-pipelines/{pipeline_id}/visibility",
+            json={"visibility": "private"},
+        )
+        list_r = no_auth_client.get("/api/v1/student/skill-pipelines")
+        updated = next(p for p in list_r.json() if p["id"] == pipeline_id)
+        assert updated["visibility_status"] == "private"
+
+    def test_seed_is_idempotent_without_auth(self, no_auth_client: TestClient):
+        """Re-seeding without auth does not duplicate pipelines."""
+        no_auth_client.post("/api/v1/student/skill-pipelines/seed-mock")
+        no_auth_client.post("/api/v1/student/skill-pipelines/seed-mock")
+        r = no_auth_client.get("/api/v1/student/skill-pipelines")
+        assert len(r.json()) == 4  # no duplicates
+
+    def test_production_mode_rejects_missing_auth(self):
+        """In production mode, missing auth must return 401."""
+        mem: dict = {}
+        app.dependency_overrides[get_db] = lambda: mem
+
+        def _prod_auth(
+            credentials=None,  # simulates no Authorization header
+        ) -> str:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "unauthorized", "message": "Authentication required."},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        app.dependency_overrides[get_current_user_id] = _prod_auth
+        try:
+            r = TestClient(app).post("/api/v1/student/skill-pipelines/seed-mock")
+            assert r.status_code == 401, r.text
+        finally:
+            app.dependency_overrides.clear()
