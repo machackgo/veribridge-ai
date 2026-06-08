@@ -4617,6 +4617,385 @@ function ArtifactConfidence({ score }: { score: number }) {
   )
 }
 
+// ── Safe artifact-data helpers ────────────────────────────────────────────────
+
+const UNSAFE_ARTIFACT_KEYS = new Set([
+  "proof_session_id", "token", "access_token", "storage_path",
+  "signed_url", "video_url", "media_storage_path", "service_role",
+  "anon_key", "secret", "private_url", "raw_url", "internal_url",
+])
+
+function safeList(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null
+  const items = v
+    .map((item) => (typeof item === "string" ? item.trim() : null))
+    .filter((s): s is string => s !== null && s.length > 0)
+  return items.length > 0 ? items : null
+}
+
+// ── Browser-noise filter helpers ─────────────────────────────────────────────
+
+const NOISY_BROWSER_TERMS = [
+  "supabase", "storage", "buckets", "new tab", "terminal",
+  "extension", "extensions", "devtools", "developer tools",
+  "chrome extension", "bookmarks", "notifications",
+  "history", "downloads",
+  // Platform infrastructure noise — always environment, never target-app content
+  // "shared pooler" omitted: "pooler" already catches that phrase
+  "maintenance", "pooler", "us-east", "eu-west",
+]
+
+// Groups of terms treated as a family: if ANY member matches the target domain,
+// all members in the group are exempt from filtering.
+// "maintenance" and "pooler" are grouped with "supabase" so they're preserved
+// when the target app IS Supabase (e.g. proving supabase dashboard skills).
+const NOISY_TERM_GROUPS: string[][] = [
+  ["supabase", "storage", "buckets", "maintenance", "pooler"],
+  ["devtools", "developer tools", "extensions", "chrome extension"],
+  ["new tab", "bookmarks", "history", "downloads", "notifications"],
+]
+
+function _termExempted(term: string, domainLower: string): boolean {
+  if (domainLower.includes(term)) return true
+  const group = NOISY_TERM_GROUPS.find((g) => g.includes(term))
+  if (group) return group.some((t) => domainLower.includes(t))
+  return false
+}
+
+function extractTargetDomain(
+  arts: RecruiterSafePipelineSummary["artifacts"],
+): string | null {
+  for (const art of arts) {
+    if (["workflow", "workflow_recording"].includes(art.source_type)) {
+      const url = safeStr(art.artifact_data.website_url)
+      if (url) {
+        try {
+          const u = new URL(url.startsWith("http") ? url : `https://${url}`)
+          return u.hostname
+        } catch {
+          return url.split("/")[0] ?? null
+        }
+      }
+    }
+  }
+  return null
+}
+
+function filterBrowserNoise(
+  text: string,
+  targetDomain: string | null,
+): { text: string; filtered: boolean } {
+  const domainLower = (targetDomain ?? "").toLowerCase()
+  const segments = text.split(/[;\n]+/).map((s) => s.trim()).filter(Boolean)
+  const kept: string[] = []
+  let filtered = false
+  for (const seg of segments) {
+    const segLower = seg.toLowerCase()
+    let isNoisy = false
+    for (const term of NOISY_BROWSER_TERMS) {
+      if (_termExempted(term, domainLower)) continue
+      if (segLower.includes(term)) { isNoisy = true; break }
+    }
+    if (isNoisy) { filtered = true } else { kept.push(seg) }
+  }
+  return { text: kept.join("; ").trim(), filtered }
+}
+
+function filterNoisyLabels(
+  labels: string[],
+  targetDomain: string | null,
+): { labels: string[]; filtered: boolean } {
+  const domainLower = (targetDomain ?? "").toLowerCase()
+  let filtered = false
+  const kept = labels.filter((label) => {
+    const lLower = label.toLowerCase()
+    for (const term of NOISY_BROWSER_TERMS) {
+      if (_termExempted(term, domainLower)) continue
+      if (lLower.includes(term)) { filtered = true; return false }
+    }
+    return true
+  })
+  return { labels: kept, filtered }
+}
+
+// Terms whose presence in any field definitively signals browser/infrastructure pollution.
+// A field containing any of these (unless domain-exempted) is quarantined as a whole.
+const STRONG_NOISE_TERMS = [
+  "buckets", "storage", "supabase", "terminal",
+  "extension", "extensions", "devtools", "developer tools",
+  "pooler", "maintenance", "us-east", "eu-west",
+]
+
+export function isStrongEnvironmentNoise(text: string, targetDomain: string | null): boolean {
+  const lower = text.toLowerCase()
+  const domainLower = (targetDomain ?? "").toLowerCase()
+  return STRONG_NOISE_TERMS.some((term) => {
+    if (_termExempted(term, domainLower)) return false
+    return lower.includes(term)
+  })
+}
+
+// A string is recruiter-grade only if it has ≥2 words with 4+ alpha chars
+// AND ≤1 isolated single/zero-char token (OCR fragment indicator).
+function isCleanRecruiterText(text: string): boolean {
+  const words = text.trim().split(/\s+/)
+  if (words.length === 0) return false
+  const longWords = words.filter((w) => w.replace(/[^a-zA-Z]/g, "").length >= 4).length
+  const singleCharTokens = words.filter((w) => w.replace(/[^a-zA-Z0-9]/g, "").length <= 1).length
+  return longWords >= 2 && singleCharTokens <= 1
+}
+
+// Strict field-level recruiter grade filter.
+// If the original text contains strong environment noise, the ENTIRE field is quarantined
+// unless the noise-free remainder forms a clean, intelligible sentence.
+// Never returns the original noisy text or a garbled partial.
+export function getRecruiterGradeText(
+  text: string,
+  targetDomain: string | null,
+): { text: string | null; quarantined: boolean; filtered: boolean } {
+  if (isStrongEnvironmentNoise(text, targetDomain)) {
+    const { text: cleaned } = filterBrowserNoise(text, targetDomain)
+    if (cleaned && isCleanRecruiterText(cleaned)) {
+      return { text: cleaned, quarantined: false, filtered: true }
+    }
+    return { text: null, quarantined: true, filtered: true }
+  }
+  const { text: cleaned, filtered } = filterBrowserNoise(text, targetDomain)
+  return { text: cleaned || null, quarantined: false, filtered }
+}
+
+function SafeDetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: "flex", gap: 6, fontSize: 11, lineHeight: 1.5 }}>
+      <span style={{ color: C.muted, fontWeight: 600, flexShrink: 0, minWidth: 110 }}>{label}:</span>
+      <span style={{ color: C.inkSoft }}>{value}</span>
+    </div>
+  )
+}
+
+function SafeTagList({ items, testId }: { items: string[]; testId?: string }) {
+  return (
+    <div data-testid={testId} style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+      {items.map((item, i) => (
+        <span
+          key={i}
+          style={{
+            fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 999,
+            background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe",
+          }}
+        >
+          {item}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function NoDetailData() {
+  return (
+    <div
+      data-testid="no-detail-data"
+      style={{
+        padding: "8px 10px", borderRadius: 6,
+        background: C.bg, border: `1px dashed ${C.line}`,
+        fontSize: 11, color: C.muted, fontStyle: "italic",
+      }}
+    >
+      No detailed safe artifact data is available for this evidence item yet.
+    </div>
+  )
+}
+
+function FilteredNoiseNotice() {
+  return (
+    <div
+      data-testid="noise-filter-notice"
+      style={{
+        padding: "5px 8px", borderRadius: 5,
+        background: "#fffbeb", border: "1px solid #fde68a",
+        fontSize: 10, color: "#92400e", fontStyle: "italic",
+      }}
+    >
+      Captured environment noise was filtered from recruiter view.
+    </div>
+  )
+}
+
+function FilteredFieldEmpty() {
+  return (
+    <div
+      data-testid="noise-filter-empty"
+      style={{
+        padding: "6px 10px", borderRadius: 5,
+        background: "#fff7ed", border: "1px solid #fed7aa",
+        fontSize: 10, color: "#9a3412", fontStyle: "italic",
+      }}
+    >
+      Environment/browser noise was removed. No target-app text remained for this field.
+    </div>
+  )
+}
+
+function SafeProofReason({
+  proofReason,
+  targetDomain,
+}: {
+  proofReason: string | undefined | null
+  targetDomain: string | null
+}) {
+  if (!proofReason) return null
+  const { text, quarantined } = getRecruiterGradeText(proofReason, targetDomain)
+  if (quarantined || !text) {
+    return (
+      <div
+        data-testid="proof-reason-noise-filter"
+        style={{
+          padding: "6px 10px", borderRadius: 5,
+          background: "#fff7ed", border: "1px solid #fed7aa",
+          fontSize: 10, color: "#9a3412", fontStyle: "italic",
+        }}
+      >
+        Environment/browser noise was removed. No recruiter-grade target-app text remained for this field.
+      </div>
+    )
+  }
+  return <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }} data-testid="proof-reason-text">{text}</p>
+}
+
+// Phrases that indicate visual reasoning analyzed the recorder/browser UI instead of target app
+const RECORDER_UI_PHRASES = [
+  "screen recording interface",
+  "veribridge ai is open",
+  "recorder tab",
+  "veribridge recorder",
+  "stop & upload",
+  "start screen recording",
+  "recording interface",
+  "proof builder is open",
+]
+
+function isRecorderUiObservation(text: string): boolean {
+  const lower = text.toLowerCase()
+  return RECORDER_UI_PHRASES.some((p) => lower.includes(p))
+}
+
+function RecorderUiGradeNotice() {
+  return (
+    <div
+      data-testid="qwen-recorder-ui-notice"
+      style={{
+        padding: "6px 10px", borderRadius: 5,
+        background: "#fff7ed", border: "1px solid #fed7aa",
+        fontSize: 10, color: "#9a3412", fontStyle: "italic",
+      }}
+    >
+      Visual reasoning for this artifact is not recruiter-grade: the frame focused on the recorder/browser UI, not the target application.
+    </div>
+  )
+}
+
+function EvidenceQualityBadge({ quality }: { quality?: string }) {
+  if (!quality) return null
+  const colors: Record<string, { bg: string; color: string; border: string }> = {
+    clean:   { bg: "#f0fdf4", color: "#166534", border: "#bbf7d0" },
+    partial: { bg: "#fffbeb", color: "#92400e", border: "#fde68a" },
+    noisy:   { bg: "#fff1f2", color: "#9f1239", border: "#fecdd3" },
+  }
+  const c = colors[quality]
+  if (!c) return null
+  return (
+    <span
+      data-testid="evidence-quality-badge"
+      style={{
+        fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 999,
+        background: c.bg, color: c.color, border: `1px solid ${c.border}`,
+        letterSpacing: "0.04em", textTransform: "uppercase",
+      }}
+    >
+      {quality}
+    </span>
+  )
+}
+
+function NoWebsiteProofNote({ hasGithubOnly }: { hasGithubOnly: boolean }) {
+  return (
+    <div
+      data-testid="no-website-proof-note"
+      style={{
+        padding: "10px 14px", borderRadius: 7,
+        background: C.amberSoft, border: "1px solid #fde68a",
+        fontSize: 11, color: C.amber, lineHeight: 1.6, marginBottom: 4,
+      }}
+    >
+      {hasGithubOnly ? (
+        <>
+          <strong style={{ color: C.ink }}>GitHub-backed evidence found.</strong>
+          {" "}Website Proof artifacts from this proof session are linked to related skills such as WebGL, Three.js, Computer Graphics, JavaScript, or Frontend Development.
+        </>
+      ) : (
+        <>
+          No Website Proof artifacts are directly linked to this skill. Related Website Proof evidence may appear under skills such as WebGL, Three.js, Computer Graphics, JavaScript, or Frontend Development.
+        </>
+      )}
+    </div>
+  )
+}
+
+function SafeDetailsRenderer({ data, testId, targetDomain }: { data: Record<string, unknown>; testId?: string; targetDomain?: string | null }) {
+  const entries = Object.entries(data).filter(([k, v]) => {
+    if (UNSAFE_ARTIFACT_KEYS.has(k)) return false
+    if (v === null || v === undefined || v === "") return false
+    if (typeof v === "string" && v.trim().length === 0) return false
+    if (Array.isArray(v) && v.length === 0) return false
+    return true
+  })
+  if (entries.length === 0) return null
+  return (
+    <div
+      data-testid={testId ?? "safe-details-renderer"}
+      style={{
+        padding: "8px 10px", borderRadius: 6, background: C.bg,
+        border: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 4,
+        marginTop: 4,
+      }}
+    >
+      <div style={{
+        fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: "0.06em",
+        textTransform: "uppercase", marginBottom: 2,
+      }}>
+        Additional verified details
+      </div>
+      {entries.map(([key, val]) => {
+        const label = key.replace(/_/g, " ")
+        if (typeof val === "string") {
+          const { text: filteredVal } = getRecruiterGradeText(val, targetDomain ?? null)
+          if (!filteredVal) return null
+          const truncated = filteredVal.length > 300 ? `${filteredVal.slice(0, 300)}…` : filteredVal
+          return <SafeDetailRow key={key} label={label} value={truncated} />
+        }
+        if (typeof val === "number" || typeof val === "boolean") {
+          return <SafeDetailRow key={key} label={label} value={String(val)} />
+        }
+        if (Array.isArray(val)) {
+          const strs = (val as unknown[])
+            .filter((x): x is string => typeof x === "string" && (x as string).trim().length > 0)
+            .map((s) => getRecruiterGradeText(s, targetDomain ?? null).text)
+            .filter((s): s is string => s !== null && s.length > 0)
+            .slice(0, 8)
+          if (strs.length === 0) return null
+          return (
+            <div key={key} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>{label}:</span>
+              <SafeTagList items={strs} />
+            </div>
+          )
+        }
+        return null
+      })}
+    </div>
+  )
+}
+
 function RecruiterSafeEvidencePipelineViewer({
   pipeline,
   onClose,
@@ -4646,6 +5025,11 @@ function RecruiterSafeEvidencePipelineViewer({
   const documentArts = artifacts.filter((a) =>
     ["document", "pdf", "uploaded_document"].includes(a.source_type),
   )
+
+  const targetDomain = extractTargetDomain(artifacts)
+  const hasNoWebsiteProofArts =
+    keyframeArts.length === 0 && workflowArts.length === 0 &&
+    ocrArts.length === 0 && domArts.length === 0 && qwenArts.length === 0
 
   const confColor =
     pipeline.confidence_score >= 75 ? C.emerald
@@ -4737,6 +5121,11 @@ function RecruiterSafeEvidencePipelineViewer({
         {/* ── Sections ── */}
         <div style={{ padding: "16px 22px 22px", display: "flex", flexDirection: "column", gap: 0 }}>
 
+          {/* No Website Proof note — shown when skill has no website proof artifacts */}
+          {hasNoWebsiteProofArts && (
+            <NoWebsiteProofNote hasGithubOnly={githubArts.length > 0} />
+          )}
+
           {/* Section 2: Website Proof / Keyframe */}
           <EvidenceViewerSection title="Website Proof Snapshot / Keyframe Evidence" icon="🖼" count={keyframeArts.length}>
             {keyframeArts.length > 0 ? (
@@ -4746,16 +5135,38 @@ function RecruiterSafeEvidencePipelineViewer({
                   : isSafeViewerUrl(art.artifact_data.snapshot_url) ? art.artifact_data.snapshot_url
                   : isSafeViewerUrl(art.artifact_data.image_url) ? art.artifact_data.image_url
                   : null
+                const frameCount = typeof art.artifact_data.frame_count === "number" ? art.artifact_data.frame_count : null
+                const rawVisualSummary = safeStr(art.artifact_data.visual_summary)
+                const { text: filteredKfSummary, filtered: kfFiltered } = rawVisualSummary
+                  ? getRecruiterGradeText(rawVisualSummary, targetDomain)
+                  : { text: null, filtered: false }
+                const visualSummary = filteredKfSummary || null
+                const hasDetail = imgUrl || frameCount !== null || visualSummary
                 return (
-                  <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>
-                      {art.source_title}
-                      {art.project_name && (
-                        <span style={{ fontSize: 11, fontWeight: 400, color: C.muted, marginLeft: 6 }}>
-                          — {art.project_name}
-                        </span>
-                      )}
+                  <div key={art.id} data-testid={`keyframe-artifact-detail-${i}`} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>
+                        {art.source_title}
+                        {art.project_name && (
+                          <span style={{ fontSize: 11, fontWeight: 400, color: C.muted, marginLeft: 6 }}>
+                            — {art.project_name}
+                          </span>
+                        )}
+                      </span>
+                      <EvidenceQualityBadge quality={safeStr(art.artifact_data.evidence_quality) ?? undefined} />
                     </div>
+                    {targetDomain && (
+                      <div
+                        data-testid={`keyframe-target-domain-${i}`}
+                        style={{
+                          fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 999,
+                          background: C.skySoft, color: C.sky, border: "1px solid #bae6fd",
+                          width: "fit-content",
+                        }}
+                      >
+                        Target: {targetDomain}
+                      </div>
+                    )}
                     {imgUrl ? (
                       <img
                         src={imgUrl as string}
@@ -4778,17 +5189,33 @@ function RecruiterSafeEvidencePipelineViewer({
                         <span style={{ fontSize: 16, flexShrink: 0 }}>🖼</span>
                         <div>
                           <p style={{ fontSize: 11, fontWeight: 600, color: C.inkSoft, margin: "0 0 3px" }}>
-                            Keyframe image unavailable
+                            No saved keyframe image is available for this proof session.
                           </p>
                           <p style={{ fontSize: 11, color: C.muted, margin: 0, lineHeight: 1.5 }}>
-                            Saved metadata and AI visual analysis are shown below. The snapshot URL is not available in the recruiter-safe view.
+                            Future Website Proof sessions will persist recruiter-safe keyframe thumbnails.
                           </p>
                         </div>
                       </div>
                     )}
-                    {art.proof_reason && (
-                      <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                    <SafeProofReason proofReason={art.proof_reason} targetDomain={targetDomain} />
+                    {frameCount !== null && (
+                      <SafeDetailRow label="Frames captured" value={String(frameCount)} />
                     )}
+                    {kfFiltered && !filteredKfSummary && <FilteredFieldEmpty />}
+                    {visualSummary && (
+                      <div
+                        data-testid={`keyframe-visual-summary-${i}`}
+                        style={{
+                          padding: "8px 10px", background: C.violetSoft,
+                          border: "1px solid #ddd6fe", borderRadius: 6,
+                          fontSize: 11, color: "#5b21b6", lineHeight: 1.5,
+                        }}
+                      >
+                        {visualSummary}
+                      </div>
+                    )}
+                    {kfFiltered && <FilteredNoiseNotice />}
+                    {!hasDetail && <NoDetailData />}
                     <ArtifactConfidence score={art.confidence_score} />
                   </div>
                 )
@@ -4801,23 +5228,41 @@ function RecruiterSafeEvidencePipelineViewer({
           {/* Section 3: Workflow Evidence */}
           <EvidenceViewerSection title="Workflow Evidence" icon="🎬" count={workflowArts.length}>
             {workflowArts.length > 0 ? (
-              workflowArts.map((art) => (
-                <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
-                  {art.project_name && (
-                    <div style={{ fontSize: 11, color: C.muted }}>{art.project_name}</div>
-                  )}
-                  {art.proof_reason && (
-                    <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
-                  )}
-                  {safeStr(art.artifact_data.frame_label) && (
-                    <p style={{ fontSize: 11, color: C.muted, margin: 0, fontStyle: "italic" }}>
-                      Frame: {safeStr(art.artifact_data.frame_label)}
-                    </p>
-                  )}
-                  <ArtifactConfidence score={art.confidence_score} />
-                </div>
-              ))
+              workflowArts.map((art) => {
+                const websiteUrl = safeStr(art.artifact_data.website_url)
+                const stepsCount = typeof art.artifact_data.steps_count === "number" ? art.artifact_data.steps_count : null
+                const workflowSummary = safeStr(art.artifact_data.workflow_summary)
+                const matchedSkills = safeList(art.artifact_data.matched_skills)
+                const hasDetail = websiteUrl || stepsCount !== null || workflowSummary || matchedSkills
+                return (
+                  <div key={art.id} data-testid="workflow-artifact-detail" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
+                    {art.project_name && <div style={{ fontSize: 11, color: C.muted }}>{art.project_name}</div>}
+                    <SafeProofReason proofReason={art.proof_reason} targetDomain={targetDomain} />
+                    {websiteUrl && <SafeDetailRow label="Website / domain" value={websiteUrl} />}
+                    {stepsCount !== null && <SafeDetailRow label="Steps captured" value={String(stepsCount)} />}
+                    {workflowSummary && (
+                      <div
+                        data-testid="workflow-summary-text"
+                        style={{
+                          padding: "8px 10px", background: C.bg, borderRadius: 6,
+                          border: `1px solid ${C.line}`, fontSize: 11, color: C.inkSoft, lineHeight: 1.5,
+                        }}
+                      >
+                        {workflowSummary}
+                      </div>
+                    )}
+                    {matchedSkills && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Matched skills:</span>
+                        <SafeTagList items={matchedSkills} testId="workflow-matched-skills" />
+                      </div>
+                    )}
+                    {!hasDetail && <NoDetailData />}
+                    <ArtifactConfidence score={art.confidence_score} />
+                  </div>
+                )
+              })
             ) : (
               <EvidenceUnavailable message="No workflow recording artifacts for this skill pipeline." />
             )}
@@ -4826,25 +5271,50 @@ function RecruiterSafeEvidencePipelineViewer({
           {/* Section 4: OCR Evidence */}
           <EvidenceViewerSection title="OCR Evidence" icon="🔤" count={ocrArts.length}>
             {ocrArts.length > 0 ? (
-              ocrArts.map((art) => (
-                <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
-                  {art.proof_reason && (
-                    <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
-                  )}
-                  {safeStr(art.artifact_data.ocr_text) && (
-                    <div style={{
-                      padding: "8px 10px", background: C.bg, borderRadius: 6,
-                      border: `1px solid ${C.line}`, fontFamily: "monospace",
-                      fontSize: 10, color: C.inkSoft, whiteSpace: "pre-wrap",
-                      maxHeight: 120, overflowY: "auto",
-                    }}>
-                      {safeStr(art.artifact_data.ocr_text)}
-                    </div>
-                  )}
-                  <ArtifactConfidence score={art.confidence_score} />
-                </div>
-              ))
+              ocrArts.map((art) => {
+                const rawExtracted = safeStr(art.artifact_data.extracted_text_summary)
+                const rawLabels = safeList(art.artifact_data.matched_ui_labels)
+                const frameCount = typeof art.artifact_data.frame_count === "number" ? art.artifact_data.frame_count : null
+                const { text: extractedSummary, filtered: extFiltered } = rawExtracted
+                  ? getRecruiterGradeText(rawExtracted, targetDomain)
+                  : { text: null, filtered: false }
+                const { labels: filteredLabels, filtered: labFiltered } = rawLabels
+                  ? filterNoisyLabels(rawLabels, targetDomain)
+                  : { labels: [], filtered: false }
+                const ocrWasFiltered = extFiltered || labFiltered
+                const matchedLabels = filteredLabels.length > 0 ? filteredLabels : null
+                const hasDetail = extractedSummary || matchedLabels || frameCount !== null
+                return (
+                  <div key={art.id} data-testid="ocr-artifact-detail" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
+                    <SafeProofReason proofReason={art.proof_reason} targetDomain={targetDomain} />
+                    {frameCount !== null && <SafeDetailRow label="Frames analyzed" value={String(frameCount)} />}
+                    {extFiltered && !extractedSummary && <FilteredFieldEmpty />}
+                    {extractedSummary && (
+                      <div
+                        data-testid="ocr-extracted-summary"
+                        style={{
+                          padding: "8px 10px", background: C.bg, borderRadius: 6,
+                          border: `1px solid ${C.line}`, fontFamily: "monospace",
+                          fontSize: 10, color: C.inkSoft, whiteSpace: "pre-wrap",
+                          maxHeight: 120, overflowY: "auto",
+                        }}
+                      >
+                        {extractedSummary}
+                      </div>
+                    )}
+                    {matchedLabels && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Detected UI labels / buttons:</span>
+                        <SafeTagList items={matchedLabels} testId="ocr-matched-labels" />
+                      </div>
+                    )}
+                    {ocrWasFiltered && <FilteredNoiseNotice />}
+                    {!hasDetail && <NoDetailData />}
+                    <ArtifactConfidence score={art.confidence_score} />
+                  </div>
+                )
+              })
             ) : (
               <EvidenceUnavailable message="No OCR evidence artifacts for this skill pipeline." />
             )}
@@ -4853,20 +5323,64 @@ function RecruiterSafeEvidencePipelineViewer({
           {/* Section 5: DOM Evidence */}
           <EvidenceViewerSection title="DOM Evidence" icon="🌐" count={domArts.length}>
             {domArts.length > 0 ? (
-              domArts.map((art) => (
-                <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
-                  {art.proof_reason && (
-                    <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
-                  )}
-                  {(safeStr(art.artifact_data.dom_structure_summary) ?? safeStr(art.artifact_data.page_title)) && (
-                    <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>
-                      {safeStr(art.artifact_data.dom_structure_summary) ?? safeStr(art.artifact_data.page_title)}
-                    </p>
-                  )}
-                  <ArtifactConfidence score={art.confidence_score} />
-                </div>
-              ))
+              domArts.map((art) => {
+                const rawDomSummary = safeStr(art.artifact_data.dom_summary)
+                const rawInteracted = safeStr(art.artifact_data.interacted_elements_summary)
+                const rawStateChanges = safeStr(art.artifact_data.state_changes_summary)
+                const { text: domSummaryText, filtered: domF } = rawDomSummary
+                  ? getRecruiterGradeText(rawDomSummary, targetDomain)
+                  : { text: null, filtered: false }
+                const { text: interactedText, filtered: intF } = rawInteracted
+                  ? getRecruiterGradeText(rawInteracted, targetDomain)
+                  : { text: null, filtered: false }
+                const { text: stateChangesText, filtered: scF } = rawStateChanges
+                  ? getRecruiterGradeText(rawStateChanges, targetDomain)
+                  : { text: null, filtered: false }
+                const domWasFiltered = domF || intF || scF
+                const domSummary = domSummaryText || null
+                const interacted = interactedText || null
+                const stateChanges = stateChangesText || null
+                const hasDetail = domSummary || interacted || stateChanges
+                return (
+                  <div key={art.id} data-testid="dom-artifact-detail" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
+                    <SafeProofReason proofReason={art.proof_reason} targetDomain={targetDomain} />
+                    {domF && !domSummaryText && <FilteredFieldEmpty />}
+                    {domSummary && (
+                      <div
+                        data-testid="dom-summary-text"
+                        style={{
+                          padding: "8px 10px", background: C.bg, borderRadius: 6,
+                          border: `1px solid ${C.line}`, fontSize: 11, color: C.inkSoft, lineHeight: 1.5,
+                        }}
+                      >
+                        {domSummary}
+                      </div>
+                    )}
+                    {intF && !interactedText && <FilteredFieldEmpty />}
+                    {interacted && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Interacted elements:</span>
+                        <p data-testid="dom-interacted-elements" style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                          {interacted}
+                        </p>
+                      </div>
+                    )}
+                    {scF && !stateChangesText && <FilteredFieldEmpty />}
+                    {stateChanges && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Observed state changes:</span>
+                        <p data-testid="dom-state-changes" style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                          {stateChanges}
+                        </p>
+                      </div>
+                    )}
+                    {domWasFiltered && <FilteredNoiseNotice />}
+                    {!hasDetail && <NoDetailData />}
+                    <ArtifactConfidence score={art.confidence_score} />
+                  </div>
+                )
+              })
             ) : (
               <EvidenceUnavailable message="No DOM evidence artifacts for this skill pipeline." />
             )}
@@ -4876,25 +5390,47 @@ function RecruiterSafeEvidencePipelineViewer({
           <EvidenceViewerSection title="Qwen / Visual Reasoning" icon="🤖" count={qwenArts.length}>
             {qwenArts.length > 0 ? (
               qwenArts.map((art) => {
-                const reasoning =
-                  safeStr(art.artifact_data.visual_reasoning) ??
-                  safeStr(art.artifact_data.reasoning_summary) ??
-                  safeStr(art.artifact_data.qwen_analysis)
+                const rawObservation = safeStr(art.artifact_data.visual_observation_summary)
+                const reasoning = safeStr(art.artifact_data.evidence_reasoning)
+                const backendRecorderUi = art.artifact_data.recorder_ui_detected === true
+                const rawIsRecorderUi = rawObservation ? isRecorderUiObservation(rawObservation) : false
+                const isRecorderUi = backendRecorderUi || rawIsRecorderUi
+                const { text: filteredObservation, filtered: obsFiltered } = rawObservation
+                  ? getRecruiterGradeText(rawObservation, targetDomain)
+                  : { text: null, filtered: false }
+                const observation = !isRecorderUi ? (filteredObservation || null) : null
+                const evidenceQuality = safeStr(art.artifact_data.evidence_quality)
+                const hasDetail = observation || reasoning
                 return (
-                  <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
-                    {art.proof_reason && (
-                      <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
-                    )}
-                    {reasoning && (
-                      <div style={{
-                        padding: "8px 10px", background: "#faf5ff",
-                        border: "1px solid #e9d5ff", borderRadius: 6,
-                        fontSize: 11, color: "#6b21a8", lineHeight: 1.5,
-                      }}>
-                        {reasoning}
+                  <div key={art.id} data-testid="qwen-artifact-detail" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</span>
+                      <EvidenceQualityBadge quality={evidenceQuality ?? undefined} />
+                    </div>
+                    <SafeProofReason proofReason={art.proof_reason} targetDomain={targetDomain} />
+                    {isRecorderUi && <RecorderUiGradeNotice />}
+                    {observation && (
+                      <div
+                        data-testid="qwen-visual-observation"
+                        style={{
+                          padding: "8px 10px", background: "#faf5ff",
+                          border: "1px solid #e9d5ff", borderRadius: 6,
+                          fontSize: 11, color: "#6b21a8", lineHeight: 1.5,
+                        }}
+                      >
+                        {observation}
                       </div>
                     )}
+                    {reasoning && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Model reasoning:</span>
+                        <p data-testid="qwen-evidence-reasoning" style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                          {reasoning}
+                        </p>
+                      </div>
+                    )}
+                    {obsFiltered && !isRecorderUi && <FilteredNoiseNotice />}
+                    {!hasDetail && !isRecorderUi && <NoDetailData />}
                     <ArtifactConfidence score={art.confidence_score} />
                   </div>
                 )
@@ -4907,16 +5443,45 @@ function RecruiterSafeEvidencePipelineViewer({
           {/* Section 7: GitHub Code Evidence */}
           <EvidenceViewerSection title="GitHub Code Evidence" icon="💻" count={githubArts.length}>
             {githubArts.length > 0 ? (
-              githubArts.map((art) => {
+              githubArts.map((art, i) => {
                 const hasExact = isSafeViewerUrl(art.exact_code_url)
                 const hasFile = isSafeViewerUrl(art.full_file_url)
                 const filePath = safeStr(art.artifact_data.file_path) ?? art.source_title
+                const symbolName = safeStr(art.artifact_data.symbol_name)
+                const codeReason = safeStr(art.artifact_data.code_reason)
+                const startLine = typeof art.artifact_data.start_line === "number" ? art.artifact_data.start_line : null
+                const endLine = typeof art.artifact_data.end_line === "number" ? art.artifact_data.end_line : null
+                const hasDetail = symbolName || codeReason || startLine !== null
                 return (
-                  <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{filePath}</div>
-                    {art.proof_reason && (
-                      <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                  <div key={art.id} data-testid={`github-artifact-detail-${i}`} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: C.ink, fontFamily: "monospace" }}>{filePath}</div>
+                      {startLine !== null && endLine !== null && (
+                        <span
+                          data-testid={`github-line-range-viewer-${i}`}
+                          style={{
+                            fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 999,
+                            background: C.emeraldSoft, color: C.emerald, border: "1px solid #bbf7d0",
+                          }}
+                        >
+                          L{startLine}–L{endLine}
+                        </span>
+                      )}
+                    </div>
+                    {symbolName && <SafeDetailRow label="Symbol / function" value={symbolName} />}
+                    <SafeProofReason proofReason={art.proof_reason} targetDomain={targetDomain} />
+                    {codeReason && (
+                      <div
+                        data-testid={`github-code-reason-${i}`}
+                        style={{
+                          padding: "7px 10px", background: C.emeraldSoft, borderRadius: 6,
+                          border: "1px solid #bbf7d0", fontSize: 11, color: "#166534", lineHeight: 1.5,
+                        }}
+                      >
+                        {codeReason}
+                      </div>
                     )}
+                    {!hasDetail && <NoDetailData />}
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {hasExact ? (
                         <a
@@ -4983,53 +5548,80 @@ function RecruiterSafeEvidencePipelineViewer({
           {/* Section 8: Transcript Evidence */}
           <EvidenceViewerSection title="Transcript Evidence" icon="📋" count={transcriptArts.length}>
             {transcriptArts.length > 0 ? (
-              transcriptArts.map((art) => (
-                <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
-                  {art.proof_reason && (
-                    <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
-                  )}
-                  {safeStr(art.artifact_data.excerpt) && (
-                    <div style={{
-                      padding: "8px 10px", background: C.skySoft,
-                      border: `1px solid #bae6fd`, borderRadius: 6,
-                      fontSize: 11, color: "#0369a1", lineHeight: 1.5, fontStyle: "italic",
-                    }}>
-                      &ldquo;{safeStr(art.artifact_data.excerpt)}&rdquo;
+              transcriptArts.map((art) => {
+                const excerpt = safeStr(art.artifact_data.excerpt)
+                const ownershipSignals = safeList(art.artifact_data.ownership_signals)
+                const depthSignals = safeList(art.artifact_data.technical_depth_signals)
+                const matchedSkills = safeList(art.artifact_data.matched_skills)
+                const hasDetail = excerpt || ownershipSignals || depthSignals || matchedSkills
+                return (
+                  <div key={art.id} data-testid="transcript-artifact-detail" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
+                    <SafeProofReason proofReason={art.proof_reason} targetDomain={targetDomain} />
+                    {excerpt && (
+                      <div
+                        data-testid="transcript-excerpt-text"
+                        style={{
+                          padding: "8px 10px", background: C.skySoft,
+                          border: "1px solid #bae6fd", borderRadius: 6,
+                          fontSize: 11, color: "#0369a1", lineHeight: 1.5, fontStyle: "italic",
+                        }}
+                      >
+                        &ldquo;{excerpt}&rdquo;
+                      </div>
+                    )}
+                    {ownershipSignals && ownershipSignals.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Ownership signals:</span>
+                        <SafeTagList items={ownershipSignals} testId="transcript-ownership-signals" />
+                      </div>
+                    )}
+                    {depthSignals && depthSignals.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Technical depth signals:</span>
+                        <SafeTagList items={depthSignals} testId="transcript-depth-signals" />
+                      </div>
+                    )}
+                    {matchedSkills && matchedSkills.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Matched skills:</span>
+                        <SafeTagList items={matchedSkills} testId="transcript-matched-skills" />
+                      </div>
+                    )}
+                    {!hasDetail && <NoDetailData />}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                      <button
+                        type="button"
+                        disabled
+                        data-testid="transcript-txt-download-disabled"
+                        style={{
+                          fontSize: 11, color: C.muted, background: C.bg,
+                          border: `1px solid ${C.line}`, borderRadius: 5,
+                          padding: "3px 9px", cursor: "not-allowed", opacity: 0.6,
+                        }}
+                      >
+                        ↓ Download TXT
+                      </button>
+                      <button
+                        type="button"
+                        disabled
+                        data-testid="transcript-pdf-download-disabled"
+                        style={{
+                          fontSize: 11, color: C.muted, background: C.bg,
+                          border: `1px solid ${C.line}`, borderRadius: 5,
+                          padding: "3px 9px", cursor: "not-allowed", opacity: 0.6,
+                        }}
+                      >
+                        ↓ Download PDF
+                      </button>
+                      <span style={{ fontSize: 10, color: C.muted, fontStyle: "italic" }}>
+                        Full transcript not available for download in recruiter view.
+                      </span>
                     </div>
-                  )}
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    <button
-                      type="button"
-                      disabled
-                      data-testid="transcript-txt-download-disabled"
-                      style={{
-                        fontSize: 11, color: C.muted, background: C.bg,
-                        border: `1px solid ${C.line}`, borderRadius: 5,
-                        padding: "3px 9px", cursor: "not-allowed", opacity: 0.6,
-                      }}
-                    >
-                      ↓ Download TXT
-                    </button>
-                    <button
-                      type="button"
-                      disabled
-                      data-testid="transcript-pdf-download-disabled"
-                      style={{
-                        fontSize: 11, color: C.muted, background: C.bg,
-                        border: `1px solid ${C.line}`, borderRadius: 5,
-                        padding: "3px 9px", cursor: "not-allowed", opacity: 0.6,
-                      }}
-                    >
-                      ↓ Download PDF
-                    </button>
-                    <span style={{ fontSize: 10, color: C.muted, fontStyle: "italic" }}>
-                      Full transcript not available for download in recruiter view.
-                    </span>
+                    <ArtifactConfidence score={art.confidence_score} />
                   </div>
-                  <ArtifactConfidence score={art.confidence_score} />
-                </div>
-              ))
+                )
+              })
             ) : (
               <EvidenceUnavailable message="No transcript evidence artifacts for this skill pipeline." />
             )}
@@ -5040,12 +5632,42 @@ function RecruiterSafeEvidencePipelineViewer({
             {documentArts.length > 0 ? (
               documentArts.map((art) => {
                 const hasDoc = isSafeViewerUrl(art.full_file_url)
+                const docTitle = safeStr(art.artifact_data.document_title)
+                const extractedSections = safeList(art.artifact_data.extracted_sections_summary)
+                const matchedSkills = safeList(art.artifact_data.matched_skills)
+                const hasDetail = docTitle || extractedSections || matchedSkills
                 return (
-                  <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
-                    {art.proof_reason && (
-                      <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                  <div key={art.id} data-testid="document-artifact-detail" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>
+                      {docTitle ?? art.source_title}
+                    </div>
+                    <SafeProofReason proofReason={art.proof_reason} targetDomain={targetDomain} />
+                    {extractedSections && extractedSections.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Extracted sections:</span>
+                        <div
+                          data-testid="document-extracted-sections"
+                          style={{
+                            display: "flex", flexDirection: "column", gap: 4,
+                            padding: "8px 10px", background: C.amberSoft, borderRadius: 6,
+                            border: "1px solid #fde68a",
+                          }}
+                        >
+                          {extractedSections.map((section, si) => (
+                            <p key={si} style={{ fontSize: 11, color: "#78350f", margin: 0, lineHeight: 1.5 }}>
+                              {section}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
                     )}
+                    {matchedSkills && matchedSkills.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Matched skills:</span>
+                        <SafeTagList items={matchedSkills} testId="document-matched-skills" />
+                      </div>
+                    )}
+                    {!hasDetail && <NoDetailData />}
                     {hasDoc ? (
                       <a
                         href={art.full_file_url as string}

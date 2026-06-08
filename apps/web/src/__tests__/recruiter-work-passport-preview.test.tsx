@@ -2795,7 +2795,7 @@ describe("RecruiterSafeEvidencePipelineViewer — backend mode evidence viewer",
     await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
     fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
     expect(screen.getByTestId("keyframe-unavailable-0")).toBeInTheDocument()
-    expect(screen.getByTestId("keyframe-unavailable-0").textContent).toMatch(/Keyframe image unavailable/i)
+    expect(screen.getByTestId("keyframe-unavailable-0").textContent).toMatch(/No saved keyframe image is available/i)
   })
 
   it("viewer blocks unsafe localhost keyframe URL, shows unavailable state", async () => {
@@ -2972,5 +2972,1488 @@ describe("RecruiterSafeEvidencePipelineViewer — backend mode evidence viewer",
     expect(viewer.textContent).toContain("No workflow recording artifacts")
     expect(viewer.textContent).toContain("No transcript evidence artifacts")
     expect(viewer.textContent).toContain("No document artifacts")
+  })
+})
+
+// ── RecruiterSafeEvidencePipelineViewer — deep artifact detail rendering ───────
+
+describe("RecruiterSafeEvidencePipelineViewer — deep artifact detail rendering", () => {
+  function makeEmptyView(): RecruiterPassportViewResponse {
+    return {
+      public_slug: "detail-test",
+      student_display_name: "Detail Candidate",
+      field: "AI",
+      public_title: "Engineer",
+      public_summary: "Summary.",
+      overall_score: 80,
+      evidence_confidence: "high",
+      verification_status: null,
+      readiness_level: null,
+      skill_groups: [],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+      proof_sources: [],
+      why_credible: [],
+      strongest_skills: [],
+      areas_needing_review: [],
+      suggested_interview_questions: [],
+      public_project_links: [],
+      project_type: "Engineering",
+      access_request_available: false,
+      has_protected_evidence: false,
+      disclosure_note: "Test.",
+    }
+  }
+
+  function makePipeline(artifacts: RecruiterSafePipelineSummary["artifacts"]): RecruiterSafePipelineSummary {
+    return {
+      id: "dp-1",
+      skill_name: "Detail Skill",
+      skill_category: "AI/ML",
+      confidence_score: 80,
+      support_status: "strongly_supported",
+      evidence_count: artifacts.length,
+      strongest_proof: { label: "Workflow", reason: "Recorded" },
+      weakest_proof: null,
+      missing_evidence: [],
+      next_actions: [],
+      evidence_sources: [],
+      recruiter_summary: "Evidence from real proof session.",
+      visibility_status: "public",
+      is_locked_for_recruiter: false,
+      artifacts,
+    }
+  }
+
+  async function openViewer(pipeline: RecruiterSafePipelineSummary) {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([pipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => expect(screen.getAllByText("Detail Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+  }
+
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  // ── Workflow artifact details ────────────────────────────────────────────────
+
+  it("workflow artifact renders website_url", async () => {
+    await openViewer(makePipeline([{
+      id: "wf-1", source_type: "workflow", source_title: "Website Workflow", project_name: "Demo",
+      visibility: "public", confidence_score: 80, proof_reason: "Live recorded session.",
+      artifact_data: {
+        website_url: "https://demo.vercel.app",
+        steps_count: 5,
+        workflow_summary: "Candidate interacted with 3D canvas using Three.js API.",
+        matched_skills: ["WebGL", "Three.js"],
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("workflow-artifact-detail")).toBeInTheDocument()
+    expect(screen.getByTestId("workflow-artifact-detail").textContent).toMatch(/demo\.vercel\.app/)
+  })
+
+  it("workflow artifact renders steps_count", async () => {
+    await openViewer(makePipeline([{
+      id: "wf-2", source_type: "workflow", source_title: "Workflow", project_name: "Demo",
+      visibility: "public", confidence_score: 80, proof_reason: "Recorded.",
+      artifact_data: { steps_count: 7, workflow_summary: "7 steps captured." },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("workflow-artifact-detail").textContent).toMatch(/7/)
+  })
+
+  it("workflow artifact renders workflow_summary", async () => {
+    await openViewer(makePipeline([{
+      id: "wf-3", source_type: "workflow", source_title: "Workflow", project_name: "Demo",
+      visibility: "public", confidence_score: 80, proof_reason: "Recorded.",
+      artifact_data: { workflow_summary: "Candidate demonstrated shader compilation workflow." },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("workflow-summary-text").textContent).toMatch(/shader compilation/)
+  })
+
+  it("workflow artifact renders matched_skills as tags", async () => {
+    await openViewer(makePipeline([{
+      id: "wf-4", source_type: "workflow", source_title: "Workflow", project_name: "Demo",
+      visibility: "public", confidence_score: 80, proof_reason: "Recorded.",
+      artifact_data: { matched_skills: ["WebGL", "GLSL"] },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    const tags = screen.getByTestId("workflow-matched-skills")
+    expect(tags.textContent).toMatch(/WebGL/)
+    expect(tags.textContent).toMatch(/GLSL/)
+  })
+
+  it("workflow artifact with no detail data shows NoDetailData", async () => {
+    await openViewer(makePipeline([{
+      id: "wf-5", source_type: "workflow", source_title: "Website Workflow", project_name: "Demo",
+      visibility: "public", confidence_score: 80, proof_reason: "Recorded.",
+      artifact_data: {},
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("no-detail-data")).toBeInTheDocument()
+    expect(screen.getByTestId("no-detail-data").textContent).toMatch(/No detailed safe artifact data/)
+  })
+
+  // ── OCR artifact details ─────────────────────────────────────────────────────
+
+  it("OCR artifact renders extracted_text_summary", async () => {
+    await openViewer(makePipeline([{
+      id: "ocr-1", source_type: "ocr", source_title: "OCR Evidence", project_name: "Demo",
+      visibility: "public", confidence_score: 70, proof_reason: "Text extracted.",
+      artifact_data: {
+        extracted_text_summary: "Canvas initialized; WebGL context: enabled; Shader compiled",
+        matched_ui_labels: ["Canvas", "WebGL context"],
+        frame_count: 3,
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("ocr-artifact-detail")).toBeInTheDocument()
+    expect(screen.getByTestId("ocr-extracted-summary").textContent).toMatch(/Canvas initialized/)
+  })
+
+  it("OCR artifact renders matched_ui_labels", async () => {
+    await openViewer(makePipeline([{
+      id: "ocr-2", source_type: "ocr", source_title: "OCR Evidence", project_name: "Demo",
+      visibility: "public", confidence_score: 70, proof_reason: "Text extracted.",
+      artifact_data: { matched_ui_labels: ["Submit", "Compile Shader", "Render"] },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    const labels = screen.getByTestId("ocr-matched-labels")
+    expect(labels.textContent).toMatch(/Submit/)
+    expect(labels.textContent).toMatch(/Compile Shader/)
+  })
+
+  it("OCR artifact shows NoDetailData when artifact_data is empty", async () => {
+    await openViewer(makePipeline([{
+      id: "ocr-3", source_type: "ocr", source_title: "OCR", project_name: "Demo",
+      visibility: "public", confidence_score: 55, proof_reason: "OCR.",
+      artifact_data: {},
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("no-detail-data").textContent).toMatch(/No detailed safe artifact data/)
+  })
+
+  // ── DOM artifact details ─────────────────────────────────────────────────────
+
+  it("DOM artifact renders dom_summary", async () => {
+    await openViewer(makePipeline([{
+      id: "dom-1", source_type: "dom", source_title: "DOM Evidence", project_name: "Demo",
+      visibility: "public", confidence_score: 65, proof_reason: "DOM captured.",
+      artifact_data: {
+        dom_summary: "Three.js canvas with WebGL context; shader controls visible",
+        interacted_elements_summary: "Clicked Compile button; adjusted uniforms slider",
+        state_changes_summary: "Canvas re-rendered after shader update",
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("dom-artifact-detail")).toBeInTheDocument()
+    expect(screen.getByTestId("dom-summary-text").textContent).toMatch(/Three\.js canvas/)
+  })
+
+  it("DOM artifact renders interacted_elements_summary", async () => {
+    await openViewer(makePipeline([{
+      id: "dom-2", source_type: "dom", source_title: "DOM Evidence", project_name: "Demo",
+      visibility: "public", confidence_score: 65, proof_reason: "DOM captured.",
+      artifact_data: { interacted_elements_summary: "Button: Compile; Slider: resolution" },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("dom-interacted-elements").textContent).toMatch(/Button: Compile/)
+  })
+
+  it("DOM artifact renders state_changes_summary", async () => {
+    await openViewer(makePipeline([{
+      id: "dom-3", source_type: "dom", source_title: "DOM", project_name: "Demo",
+      visibility: "public", confidence_score: 65, proof_reason: "DOM.",
+      artifact_data: { state_changes_summary: "Canvas repainted with new fragment shader output" },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("dom-state-changes").textContent).toMatch(/fragment shader/)
+  })
+
+  it("DOM artifact shows NoDetailData when artifact_data is empty", async () => {
+    await openViewer(makePipeline([{
+      id: "dom-4", source_type: "dom", source_title: "DOM", project_name: "Demo",
+      visibility: "public", confidence_score: 45, proof_reason: "Partial.",
+      artifact_data: {},
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("no-detail-data").textContent).toMatch(/No detailed safe artifact data/)
+  })
+
+  // ── Qwen / visual reasoning details ─────────────────────────────────────────
+
+  it("Qwen artifact renders visual_observation_summary", async () => {
+    await openViewer(makePipeline([{
+      id: "qwen-1", source_type: "qwen", source_title: "Visual Reasoning", project_name: "Demo",
+      visibility: "public", confidence_score: 75, proof_reason: "Qwen analyzed frames.",
+      artifact_data: {
+        visual_observation_summary: "3D mesh rendering with wireframe overlay visible; WebGL context active.",
+        evidence_reasoning: "Frame confirms active WebGL pipeline usage",
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("qwen-artifact-detail")).toBeInTheDocument()
+    expect(screen.getByTestId("qwen-visual-observation").textContent).toMatch(/3D mesh rendering/)
+  })
+
+  it("Qwen artifact renders evidence_reasoning", async () => {
+    await openViewer(makePipeline([{
+      id: "qwen-2", source_type: "qwen", source_title: "Visual Reasoning", project_name: "Demo",
+      visibility: "public", confidence_score: 75, proof_reason: "Qwen analyzed.",
+      artifact_data: { evidence_reasoning: "Active GPU pipeline confirmed from rendered output" },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("qwen-evidence-reasoning").textContent).toMatch(/GPU pipeline/)
+  })
+
+  it("Qwen artifact shows NoDetailData when artifact_data is empty", async () => {
+    await openViewer(makePipeline([{
+      id: "qwen-3", source_type: "qwen", source_title: "Qwen", project_name: "Demo",
+      visibility: "public", confidence_score: 50, proof_reason: "Visual.",
+      artifact_data: {},
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("no-detail-data").textContent).toMatch(/No detailed safe artifact data/)
+  })
+
+  // ── Keyframe metadata when image unavailable ─────────────────────────────────
+
+  it("keyframe artifact renders visual_summary when image unavailable", async () => {
+    await openViewer(makePipeline([{
+      id: "kf-1", source_type: "keyframe", source_title: "Video Keyframes", project_name: "Demo",
+      visibility: "public", confidence_score: 80, proof_reason: "4 keyframes captured.",
+      artifact_data: {
+        frame_count: 4,
+        visual_summary: "3D scene with rotating geometry; WebGL context visible",
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("keyframe-artifact-detail-0")).toBeInTheDocument()
+    expect(screen.getByTestId("keyframe-unavailable-0")).toBeInTheDocument()
+    expect(screen.getByTestId("keyframe-visual-summary-0").textContent).toMatch(/3D scene with rotating geometry/)
+  })
+
+  it("keyframe artifact renders frame_count", async () => {
+    await openViewer(makePipeline([{
+      id: "kf-2", source_type: "keyframe", source_title: "Keyframes", project_name: "Demo",
+      visibility: "public", confidence_score: 80, proof_reason: "Frames captured.",
+      artifact_data: { frame_count: 6 },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("keyframe-artifact-detail-0").textContent).toMatch(/6/)
+  })
+
+  it("keyframe artifact shows NoDetailData when no frame_count or visual_summary", async () => {
+    await openViewer(makePipeline([{
+      id: "kf-3", source_type: "keyframe", source_title: "Keyframes", project_name: "Demo",
+      visibility: "public", confidence_score: 60, proof_reason: "Captured.",
+      artifact_data: {},
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("no-detail-data").textContent).toMatch(/No detailed safe artifact data/)
+  })
+
+  // ── Transcript artifact details ───────────────────────────────────────────────
+
+  it("transcript artifact renders excerpt", async () => {
+    await openViewer(makePipeline([{
+      id: "tr-1", source_type: "transcript", source_title: "Project Defense", project_name: "Demo",
+      visibility: "public", confidence_score: 68, proof_reason: "Defense recorded.",
+      artifact_data: {
+        excerpt: "I built the WebGL renderer from scratch using GLSL shader programs.",
+        ownership_signals: ["First-person explanation", "Described personal implementation"],
+        technical_depth_signals: ["Architecture/design discussion"],
+        matched_skills: ["WebGL"],
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("transcript-artifact-detail")).toBeInTheDocument()
+    expect(screen.getByTestId("transcript-excerpt-text").textContent).toMatch(/GLSL shader programs/)
+  })
+
+  it("transcript artifact renders ownership_signals", async () => {
+    await openViewer(makePipeline([{
+      id: "tr-2", source_type: "transcript", source_title: "Defense", project_name: "Demo",
+      visibility: "public", confidence_score: 68, proof_reason: "Defense.",
+      artifact_data: { ownership_signals: ["First-person explanation", "Described personal implementation"] },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    const signals = screen.getByTestId("transcript-ownership-signals")
+    expect(signals.textContent).toMatch(/First-person explanation/)
+  })
+
+  it("transcript artifact renders technical_depth_signals", async () => {
+    await openViewer(makePipeline([{
+      id: "tr-3", source_type: "transcript", source_title: "Defense", project_name: "Demo",
+      visibility: "public", confidence_score: 68, proof_reason: "Defense.",
+      artifact_data: { technical_depth_signals: ["Technical depth detected", "Architecture/design discussion"] },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    const signals = screen.getByTestId("transcript-depth-signals")
+    expect(signals.textContent).toMatch(/Technical depth detected/)
+  })
+
+  it("transcript artifact shows NoDetailData when artifact_data is empty", async () => {
+    await openViewer(makePipeline([{
+      id: "tr-4", source_type: "transcript", source_title: "Transcript", project_name: "Demo",
+      visibility: "public", confidence_score: 50, proof_reason: "Partial.",
+      artifact_data: {},
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("no-detail-data").textContent).toMatch(/No detailed safe artifact data/)
+  })
+
+  // ── Document artifact details ─────────────────────────────────────────────────
+
+  it("document artifact renders document_title", async () => {
+    await openViewer(makePipeline([{
+      id: "doc-1", source_type: "document", source_title: "Document — report.pdf", project_name: "Demo",
+      visibility: "public", confidence_score: 75, proof_reason: "Submitted document.",
+      artifact_data: {
+        document_title: "WebGL Engineering Report",
+        extracted_sections_summary: ["Section: Shader Architecture", "Section: Performance Benchmarks"],
+        matched_skills: ["WebGL", "GLSL"],
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("document-artifact-detail")).toBeInTheDocument()
+    expect(screen.getByTestId("document-artifact-detail").textContent).toMatch(/WebGL Engineering Report/)
+  })
+
+  it("document artifact renders extracted_sections_summary", async () => {
+    await openViewer(makePipeline([{
+      id: "doc-2", source_type: "document", source_title: "Document", project_name: "Demo",
+      visibility: "public", confidence_score: 75, proof_reason: "Document.",
+      artifact_data: {
+        extracted_sections_summary: ["Vertex shader implementation described in detail", "Fragment output analysis"],
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("document-extracted-sections").textContent).toMatch(/Vertex shader/)
+  })
+
+  it("document artifact renders matched_skills", async () => {
+    await openViewer(makePipeline([{
+      id: "doc-3", source_type: "document", source_title: "Document", project_name: "Demo",
+      visibility: "public", confidence_score: 75, proof_reason: "Document.",
+      artifact_data: { matched_skills: ["Three.js", "Computer Vision"] },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    const skills = screen.getByTestId("document-matched-skills")
+    expect(skills.textContent).toMatch(/Three\.js/)
+    expect(skills.textContent).toMatch(/Computer Vision/)
+  })
+
+  it("document artifact shows NoDetailData when artifact_data is empty", async () => {
+    await openViewer(makePipeline([{
+      id: "doc-4", source_type: "document", source_title: "Document", project_name: "Demo",
+      visibility: "public", confidence_score: 50, proof_reason: "Partial.",
+      artifact_data: {},
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("no-detail-data").textContent).toMatch(/No detailed safe artifact data/)
+  })
+
+  // ── GitHub artifact details ───────────────────────────────────────────────────
+
+  it("GitHub artifact renders file_path and symbol_name", async () => {
+    await openViewer(makePipeline([{
+      id: "gh-1", source_type: "github", source_title: "GitHub Code", project_name: "Demo",
+      visibility: "public", confidence_score: 90, proof_reason: "Code confirmed.",
+      artifact_data: {
+        file_path: "apps/api/app/services/webgl_analyzer.py",
+        symbol_name: "WebGLAnalyzerService",
+        code_reason: "Service implements WebGL frame analysis using computer vision.",
+        start_line: 10,
+        end_line: 80,
+      },
+      exact_code_url: "https://github.com/example/repo/blob/main/apps/api/app/services/webgl_analyzer.py#L10-L80",
+      full_file_url: "https://github.com/example/repo/blob/main/apps/api/app/services/webgl_analyzer.py",
+    }]))
+    const detail = screen.getByTestId("github-artifact-detail-0")
+    expect(detail.textContent).toMatch(/webgl_analyzer\.py/)
+    expect(detail.textContent).toMatch(/WebGLAnalyzerService/)
+  })
+
+  it("GitHub artifact renders code_reason", async () => {
+    await openViewer(makePipeline([{
+      id: "gh-2", source_type: "github", source_title: "GitHub", project_name: "Demo",
+      visibility: "public", confidence_score: 90, proof_reason: "Code.",
+      artifact_data: {
+        file_path: "evaluator.py",
+        code_reason: "Implements evidence strength scoring using weighted aggregation.",
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("github-code-reason-0").textContent).toMatch(/weighted aggregation/)
+  })
+
+  it("GitHub artifact renders line range badge from start_line and end_line", async () => {
+    await openViewer(makePipeline([{
+      id: "gh-3", source_type: "github", source_title: "GitHub", project_name: "Demo",
+      visibility: "public", confidence_score: 90, proof_reason: "Code.",
+      artifact_data: { file_path: "service.py", start_line: 42, end_line: 120 },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("github-line-range-viewer-0").textContent).toMatch(/L42/)
+    expect(screen.getByTestId("github-line-range-viewer-0").textContent).toMatch(/L120/)
+  })
+
+  it("GitHub artifact shows NoDetailData when only file_path is present", async () => {
+    await openViewer(makePipeline([{
+      id: "gh-4", source_type: "github", source_title: "GitHub", project_name: "Demo",
+      visibility: "public", confidence_score: 80, proof_reason: "Code.",
+      artifact_data: { file_path: "some/file.py" },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    expect(screen.getByTestId("no-detail-data").textContent).toMatch(/No detailed safe artifact data/)
+  })
+
+  // ── Unsafe key blocking ───────────────────────────────────────────────────────
+
+  it("unsafe keys are not rendered in any artifact section", async () => {
+    await openViewer(makePipeline([{
+      id: "unsafe-1", source_type: "workflow", source_title: "Workflow", project_name: "Demo",
+      visibility: "public", confidence_score: 80, proof_reason: "Safe proof only.",
+      artifact_data: {
+        workflow_summary: "Candidate demonstrated workflow.",
+        proof_session_id: "session-abc-123",
+        access_token: "eyJhbGciOiJIUzI1NiJ9.secret",
+        storage_path: "/private/recordings/abc.webm",
+        signed_url: "https://supabase.co/storage/v1/object/sign/abc?token=xyz",
+        video_url: "https://internal.veribridge.app/private/abc.mp4",
+        service_role: "supabase-service-role-key",
+        anon_key: "supabase-anon-key",
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    const html = viewer.outerHTML
+    expect(html).not.toContain("session-abc-123")
+    expect(html).not.toContain("eyJhbGciOiJIUzI1NiJ9")
+    expect(html).not.toContain("/private/recordings/")
+    expect(html).not.toContain("supabase.co/storage")
+    expect(html).not.toContain("supabase-service-role-key")
+    expect(html).not.toContain("supabase-anon-key")
+  })
+
+  it("safe workflow summary renders but unsafe keys do not appear", async () => {
+    await openViewer(makePipeline([{
+      id: "wf-safe", source_type: "workflow", source_title: "Workflow", project_name: "Demo",
+      visibility: "public", confidence_score: 80, proof_reason: "Proof.",
+      artifact_data: {
+        workflow_summary: "Candidate demonstrated Three.js scene rendering.",
+        storage_path: "/private/vid.webm",
+        signed_url: "https://example.supabase.co/storage/abc?token=xyz",
+      },
+      exact_code_url: null, full_file_url: null,
+    }]))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(viewer.textContent).toMatch(/Three\.js scene rendering/)
+    expect(viewer.outerHTML).not.toContain("/private/vid.webm")
+    expect(viewer.outerHTML).not.toContain("supabase.co/storage")
+  })
+})
+
+// ── RecruiterSafeEvidencePipelineViewer — noise filtering & related-skill notes ─
+
+describe("RecruiterSafeEvidencePipelineViewer — noise filtering and related skill notes", () => {
+  function makeEmptyView(): RecruiterPassportViewResponse {
+    return {
+      public_slug: "noise-filter-test",
+      student_display_name: "Filter Candidate",
+      field: "Computer Graphics",
+      public_title: "Graphics Engineer",
+      public_summary: "Summary.",
+      overall_score: 80,
+      evidence_confidence: "high",
+      verification_status: null,
+      readiness_level: null,
+      skill_groups: [],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+      proof_sources: [],
+      why_credible: [],
+      strongest_skills: [],
+      areas_needing_review: [],
+      suggested_interview_questions: [],
+      public_project_links: [],
+      project_type: "Engineering",
+      access_request_available: false,
+      has_protected_evidence: false,
+      disclosure_note: "Test.",
+    }
+  }
+
+  function makePipeline(
+    arts: RecruiterSafePipelineSummary["artifacts"],
+    skill = "Computer Graphics",
+  ): RecruiterSafePipelineSummary {
+    return {
+      id: "nf-pipeline-1",
+      skill_name: skill,
+      skill_category: "Frontend",
+      confidence_score: 80,
+      support_status: "strongly_supported",
+      evidence_count: arts.length,
+      strongest_proof: { label: "Workflow", reason: "Recorded" },
+      weakest_proof: null,
+      missing_evidence: [],
+      next_actions: [],
+      evidence_sources: [],
+      recruiter_summary: "Evidence from WebGL proof session.",
+      visibility_status: "public",
+      is_locked_for_recruiter: false,
+      artifacts: arts,
+    }
+  }
+
+  async function openViewer(pipeline: RecruiterSafePipelineSummary) {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([pipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() =>
+      expect(screen.getAllByText(pipeline.skill_name).length).toBeGreaterThan(0),
+    )
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+  }
+
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  // ── OCR noise filtering ────────────────────────────────────────────────────
+
+  it("OCR: noisy Supabase text filtered when target domain is threejs.org", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-kf-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org/examples/#webgl_geometry_cube" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-noisy-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Text extracted.",
+        artifact_data: {
+          extracted_text_summary:
+            "Canvas initialized; WebGL context: enabled; Supabase; Storage; Buckets",
+          matched_ui_labels: ["Canvas", "WebGL context", "Supabase", "Buckets"],
+          frame_count: 3,
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const summary = screen.getByTestId("ocr-extracted-summary")
+    expect(summary.textContent).toMatch(/Canvas initialized/)
+    expect(summary.textContent).toMatch(/WebGL context/)
+    expect(summary.textContent).not.toMatch(/Supabase/)
+    expect(summary.textContent).not.toMatch(/Buckets/)
+  })
+
+  it("OCR: noisy browser labels filtered from matched_ui_labels when target is threejs.org", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-kf-2", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-labs-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Labels extracted.",
+        artifact_data: {
+          matched_ui_labels: ["Render", "3D View", "Supabase", "Storage", "Canvas"],
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const labels = screen.getByTestId("ocr-matched-labels")
+    expect(labels.textContent).toMatch(/Render/)
+    expect(labels.textContent).toMatch(/Canvas/)
+    expect(labels.textContent).not.toMatch(/Supabase/)
+    expect(labels.textContent).not.toMatch(/Storage/)
+  })
+
+  it("OCR: noise-filter notice shown when noisy text was removed", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-kf-3", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-notice-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Text extracted.",
+        artifact_data: {
+          extracted_text_summary: "Canvas active; Supabase; Storage buckets",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.getByTestId("noise-filter-notice")).toBeInTheDocument()
+    expect(screen.getByTestId("noise-filter-notice").textContent).toMatch(
+      /environment noise was filtered/i,
+    )
+  })
+
+  // ── DOM noise filtering ────────────────────────────────────────────────────
+
+  it("DOM: Supabase/storage text filtered when target domain is threejs.org", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-dom-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "dom-noisy-1", source_type: "dom", source_title: "DOM Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 65,
+        proof_reason: "DOM captured.",
+        artifact_data: {
+          dom_summary:
+            "Three.js canvas with WebGL context; Supabase admin panel visible; Storage bucket list",
+          interacted_elements_summary: "Clicked Compile button; Supabase navigation active",
+          state_changes_summary: "Canvas re-rendered after shader update",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.getByTestId("dom-summary-text").textContent).toMatch(/Three\.js canvas/)
+    expect(screen.getByTestId("dom-summary-text").textContent).not.toMatch(/Supabase admin panel/)
+    expect(screen.getByTestId("dom-state-changes").textContent).toMatch(/Canvas re-rendered/)
+  })
+
+  it("DOM: noise-filter notice shown when DOM text was filtered", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-dom-n", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "dom-fn-1", source_type: "dom", source_title: "DOM Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 65,
+        proof_reason: "DOM captured.",
+        artifact_data: {
+          dom_summary: "Canvas element present; Supabase panel captured",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.getByTestId("noise-filter-notice")).toBeInTheDocument()
+  })
+
+  // ── Target-domain preservation (anti-over-filter) ─────────────────────────
+
+  it("OCR: target-relevant text preserved — WebGL/3D text not filtered for threejs.org target", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-pres-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org/examples/#webgl_geometry" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-pres-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Text extracted.",
+        artifact_data: {
+          extracted_text_summary:
+            "WebGL geometry; Rotation matrix applied; Canvas 3D render active",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const summary = screen.getByTestId("ocr-extracted-summary")
+    expect(summary.textContent).toMatch(/WebGL geometry/)
+    expect(summary.textContent).toMatch(/Canvas 3D render/)
+  })
+
+  it("anti-over-filter: Supabase text preserved when target domain is supabase.com", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-sb-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://supabase.com/dashboard" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-sb-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Text extracted.",
+        artifact_data: {
+          extracted_text_summary: "Supabase dashboard; Storage buckets created; Database table",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const summary = screen.getByTestId("ocr-extracted-summary")
+    expect(summary.textContent).toMatch(/Supabase dashboard/)
+    expect(summary.textContent).toMatch(/Storage buckets/)
+  })
+
+  // ── Keyframe: target domain badge ─────────────────────────────────────────
+
+  it("keyframe unavailable state shows target domain when workflow artifact has website_url", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-kf-dom-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org/examples/#webgl_geometry_cube" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "kf-td-1", source_type: "keyframe", source_title: "Video Keyframes",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "4 keyframes captured.",
+        artifact_data: { frame_count: 4, visual_summary: "3D mesh rendered; WebGL active" },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const badge = screen.getByTestId("keyframe-target-domain-0")
+    expect(badge).toBeInTheDocument()
+    expect(badge.textContent).toMatch(/threejs\.org/)
+  })
+
+  it("keyframe: noisy visual_summary filtered and FilteredNoiseNotice shown", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-kf-vn-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "kf-vn-1", source_type: "keyframe", source_title: "Video Keyframes",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Captured.",
+        artifact_data: {
+          frame_count: 2,
+          visual_summary: "3D scene visible; Supabase dashboard open in background",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const summary = screen.getByTestId("keyframe-visual-summary-0")
+    expect(summary.textContent).toMatch(/3D scene visible/)
+    expect(summary.textContent).not.toMatch(/Supabase/)
+    expect(screen.getByTestId("noise-filter-notice")).toBeInTheDocument()
+  })
+
+  // ── No Website Proof note ─────────────────────────────────────────────────
+
+  it("shows github-only note when skill has github artifacts but no website proof arts", async () => {
+    await openViewer(
+      makePipeline(
+        [
+          {
+            id: "gh-only-1", source_type: "github", source_title: "evaluator.py",
+            project_name: "VeriBridge", visibility: "public", confidence_score: 85,
+            proof_reason: "Code confirmed.",
+            artifact_data: { file_path: "apps/api/evaluator.py", symbol_name: "EvaluatorService" },
+            exact_code_url: "https://github.com/example/repo/blob/main/apps/api/evaluator.py",
+            full_file_url: "https://github.com/example/repo/blob/main/apps/api/evaluator.py",
+          },
+        ],
+        "AI / Machine Learning",
+      ),
+    )
+    const note = screen.getByTestId("no-website-proof-note")
+    expect(note).toBeInTheDocument()
+    expect(note.textContent).toMatch(/GitHub-backed evidence found/i)
+    expect(note.textContent).toMatch(/WebGL|Three\.js|Computer Graphics|JavaScript|Frontend Development/i)
+  })
+
+  it("shows generic related-skill note when no website proof and no github artifacts", async () => {
+    await openViewer(
+      makePipeline(
+        [
+          {
+            id: "tr-only-1", source_type: "transcript", source_title: "Defense",
+            project_name: "Demo", visibility: "public", confidence_score: 60,
+            proof_reason: "Transcript.",
+            artifact_data: { excerpt: "Explained the approach." },
+            exact_code_url: null, full_file_url: null,
+          },
+        ],
+        "AI / Machine Learning",
+      ),
+    )
+    const note = screen.getByTestId("no-website-proof-note")
+    expect(note).toBeInTheDocument()
+    expect(note.textContent).toMatch(/No Website Proof artifacts/i)
+    expect(note.textContent).toMatch(/WebGL|Three\.js|Computer Graphics/i)
+  })
+
+  it("does NOT show no-website-proof note when skill has workflow artifact", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-present", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org", workflow_summary: "Demo recorded." },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.queryByTestId("no-website-proof-note")).not.toBeInTheDocument()
+  })
+
+  // ── Qwen visual reasoning preserved ─────────────────────────────────────────
+
+  it("Qwen visual observation shows target-app reasoning and is not suppressed by noise filter", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "qwen-pres-1", source_type: "qwen", source_title: "Visual Reasoning",
+        project_name: "Demo", visibility: "public", confidence_score: 75,
+        proof_reason: "Qwen analyzed frames.",
+        artifact_data: {
+          visual_observation_summary:
+            "Three.js scene rendering a rotating 3D cube using WebGL pipeline. Shader active.",
+          evidence_reasoning: "GPU pipeline confirmed from rendered output on threejs.org",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.getByTestId("qwen-visual-observation").textContent).toMatch(
+      /Three\.js scene rendering/,
+    )
+    expect(screen.getByTestId("qwen-evidence-reasoning").textContent).toMatch(
+      /GPU pipeline confirmed/,
+    )
+  })
+
+  // ── All-noisy content: FilteredFieldEmpty shown, original text not rendered ─
+
+  it("OCR: all-noisy extracted_text_summary shows FilteredFieldEmpty, not original noisy text", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-alln-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-alln-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Text extracted.",
+        artifact_data: {
+          extracted_text_summary: "Buckets; Storage; terminal; Supabase",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.queryByTestId("ocr-extracted-summary")).not.toBeInTheDocument()
+    expect(screen.getByTestId("noise-filter-empty")).toBeInTheDocument()
+    expect(screen.getByTestId("noise-filter-empty").textContent).toMatch(
+      /Environment\/browser noise was removed/i,
+    )
+    expect(screen.getByTestId("noise-filter-notice")).toBeInTheDocument()
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(viewer.outerHTML).not.toContain("Buckets")
+    expect(viewer.outerHTML).not.toContain("terminal")
+  })
+
+  it("DOM: all-noisy dom_summary shows FilteredFieldEmpty, not original noisy text", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-domn-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "dom-alln-1", source_type: "dom", source_title: "DOM Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 65,
+        proof_reason: "DOM captured.",
+        artifact_data: {
+          dom_summary: "Supabase admin panel; Storage buckets list",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.queryByTestId("dom-summary-text")).not.toBeInTheDocument()
+    expect(screen.getByTestId("noise-filter-empty")).toBeInTheDocument()
+    expect(screen.getByTestId("noise-filter-notice")).toBeInTheDocument()
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(viewer.outerHTML).not.toContain("Supabase admin panel")
+    expect(viewer.outerHTML).not.toContain("Storage buckets list")
+  })
+
+  it("keyframe: all-noisy visual_summary shows FilteredFieldEmpty, not original noisy text", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-kfn-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "kf-alln-1", source_type: "keyframe", source_title: "Keyframe",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Captured.",
+        artifact_data: {
+          frame_count: 1,
+          visual_summary: "Supabase dashboard; Storage buckets panel; terminal open",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.queryByTestId("keyframe-visual-summary-0")).not.toBeInTheDocument()
+    expect(screen.getByTestId("noise-filter-empty")).toBeInTheDocument()
+    expect(screen.getByTestId("noise-filter-notice")).toBeInTheDocument()
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(viewer.outerHTML).not.toContain("Supabase dashboard")
+    expect(viewer.outerHTML).not.toContain("terminal open")
+  })
+
+  // ── Strict quarantine: mixed noisy + garbled residue ──────────────────────
+
+  it("OCR: mixed noisy string with garbled OCR residue — entire field quarantined", async () => {
+    // Exact failing string from QA: Buckets/storage segments + garbled OCR residue in same field.
+    // The garbled segment must NOT be shown even though it contains the word 'threejs'.
+    await openViewer(makePipeline([
+      {
+        id: "wf-mixed-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-mixed-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Text extracted.",
+        artifact_data: {
+          extracted_text_summary:
+            "Buckets; storage; veriido: x xP threejs examples x Veriardge—sewon rec x +",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-clean-1", source_type: "ocr", source_title: "OCR Clean",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Clean evidence.",
+        artifact_data: {
+          extracted_text_summary: "Three.js canvas element rendered with WebGL context active",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    // Quarantined field: replacement shown, original NOT rendered
+    expect(screen.getByTestId("noise-filter-empty")).toBeInTheDocument()
+    // The noisy OCR field must not be shown (check OCR artifact sections directly)
+    const ocrDetails = document.querySelectorAll('[data-testid="ocr-artifact-detail"]')
+    const ocrHtml = Array.from(ocrDetails).map((el) => el.outerHTML).join("")
+    expect(ocrHtml).not.toContain("Buckets")
+    expect(ocrHtml).not.toContain("veriido")
+    expect(ocrHtml).not.toContain("Veriardge")
+    expect(ocrHtml).not.toContain("sewon")
+    // Target-app proof from clean artifact still visible
+    expect(ocrHtml).toContain("Three.js canvas element rendered")
+  })
+
+  it("DOM: pooler/maintenance/us-east residue — entire field quarantined", async () => {
+    // Exact failing DOM string from QA: infrastructure noise + garbled residue.
+    await openViewer(makePipeline([
+      {
+        id: "wf-pooler-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "dom-pooler-1", source_type: "dom", source_title: "DOM Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 65,
+        proof_reason: "DOM captured.",
+        artifact_data: {
+          dom_summary:
+            "Shared pooler maintenance in; us-east-1; 03 Jun, 09:00; machackgo.",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(screen.queryByTestId("dom-summary-text")).not.toBeInTheDocument()
+    expect(screen.getByTestId("noise-filter-empty")).toBeInTheDocument()
+    expect(viewer.outerHTML).not.toContain("pooler")
+    expect(viewer.outerHTML).not.toContain("maintenance")
+    expect(viewer.outerHTML).not.toContain("us-east")
+    expect(viewer.outerHTML).not.toContain("machackgo")
+  })
+
+  it("OCR: 'extension' (singular) term is filtered for non-extension target domain", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-ext-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-ext-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Text extracted.",
+        artifact_data: {
+          extracted_text_summary: "Canvas active; Chrome extension recorder running; WebGL enabled",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    const html = viewer.outerHTML
+    expect(html).not.toContain("Chrome extension recorder")
+    expect(html).toContain("Canvas active")
+    expect(html).toContain("WebGL enabled")
+  })
+
+  it("AI/ML related-skill note names WebGL, Three.js, Computer Graphics, JavaScript, Frontend Development explicitly", async () => {
+    await openViewer(
+      makePipeline(
+        [
+          {
+            id: "gh-aiml-1", source_type: "github", source_title: "model.py",
+            project_name: "Demo", visibility: "public", confidence_score: 80,
+            proof_reason: "Code confirmed.",
+            artifact_data: { file_path: "model.py", symbol_name: "ModelRunner" },
+            exact_code_url: "https://github.com/example/repo/blob/main/model.py",
+            full_file_url: "https://github.com/example/repo/blob/main/model.py",
+          },
+        ],
+        "AI / Machine Learning",
+      ),
+    )
+    const note = screen.getByTestId("no-website-proof-note")
+    expect(note.textContent).toMatch(/WebGL/i)
+    expect(note.textContent).toMatch(/Three\.js/i)
+    expect(note.textContent).toMatch(/Computer Graphics/i)
+    expect(note.textContent).toMatch(/JavaScript/i)
+    expect(note.textContent).toMatch(/Frontend Development/i)
+    expect(note.textContent).not.toMatch(/frontend\/graphics skills/i)
+  })
+
+  it("target-app terms WebGL/3D/threejs.org preserved after filtering", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-tgt-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org/examples/#webgl_cube" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "kf-tgt-1", source_type: "keyframe", source_title: "Keyframe",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Captured.",
+        artifact_data: {
+          frame_count: 3,
+          visual_summary: "3D scene with WebGL geometry; threejs.org demo running; geometric simplification applied",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const summary = screen.getByTestId("keyframe-visual-summary-0")
+    expect(summary.textContent).toMatch(/3D scene/)
+    expect(summary.textContent).toMatch(/WebGL geometry/)
+    expect(summary.textContent).toMatch(/geometric simplification/)
+    expect(screen.queryByTestId("noise-filter-notice")).not.toBeInTheDocument()
+  })
+
+  // ── Maintenance / pooler term filtering (new terms) ───────────────────────
+
+  it("OCR: 'maintenance' and 'pooler' segments filtered for threejs.org target", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-mp-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org/examples/#webgl_cube" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-mp-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Text extracted.",
+        artifact_data: {
+          extracted_text_summary:
+            "WebGL cube rendered; shared pooler maintenance page; Canvas 3D context active",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const summary = screen.getByTestId("ocr-extracted-summary")
+    expect(summary.textContent).toMatch(/WebGL cube rendered/)
+    expect(summary.textContent).toMatch(/Canvas 3D context active/)
+    expect(summary.textContent).not.toMatch(/pooler/)
+    expect(summary.textContent).not.toMatch(/maintenance/)
+  })
+
+  it("DOM: 'maintenance' and 'pooler' segments filtered for threejs.org target", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-mp-2", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "dom-mp-1", source_type: "dom", source_title: "DOM Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 65,
+        proof_reason: "DOM captured.",
+        artifact_data: {
+          dom_summary:
+            "Three.js canvas initialized with WebGL; database pooler connection panel visible; Canvas active",
+          interacted_elements_summary: "Clicked play button on threejs demo",
+          state_changes_summary: "shared pooler maintenance window appeared; shader compiled",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const domSummary = screen.getByTestId("dom-summary-text")
+    expect(domSummary.textContent).toMatch(/Three\.js canvas initialized/)
+    expect(domSummary.textContent).not.toMatch(/pooler/)
+    const stateChanges = screen.getByTestId("dom-state-changes")
+    expect(stateChanges.textContent).toMatch(/shader compiled/)
+    expect(stateChanges.textContent).not.toMatch(/maintenance/)
+  })
+
+  it("anti-over-filter: 'maintenance' and 'pooler' preserved when target domain is supabase.com", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-sb-mp", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://supabase.com/dashboard/project/abc" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-sb-mp", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Text extracted.",
+        artifact_data: {
+          extracted_text_summary:
+            "Supabase dashboard; shared pooler maintenance page; Storage bucket created",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const summary = screen.getByTestId("ocr-extracted-summary")
+    expect(summary.textContent).toMatch(/Supabase dashboard/)
+    expect(summary.textContent).toMatch(/pooler/)
+    expect(summary.textContent).toMatch(/maintenance/)
+    expect(summary.textContent).toMatch(/Storage bucket/)
+  })
+
+  // ── Qwen: recorder UI detection ─────────────────────────────────────────────
+
+  it("Qwen: recorder UI observation shows RecorderUiGradeNotice and hides observation text", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "qwen-rec-1", source_type: "qwen", source_title: "Visual Reasoning",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Qwen analyzed frames.",
+        artifact_data: {
+          visual_observation_summary:
+            "Screen recording interface is visible with a Stop & Upload button.",
+          evidence_reasoning: "Confirming WebGL usage from timeline data.",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.getByTestId("qwen-recorder-ui-notice")).toBeInTheDocument()
+    expect(screen.queryByTestId("qwen-visual-observation")).not.toBeInTheDocument()
+    expect(screen.getByTestId("qwen-evidence-reasoning").textContent).toMatch(/WebGL usage/)
+  })
+
+  it("Qwen: backend recorder_ui_detected: true flag triggers RecorderUiGradeNotice", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "qwen-be-rec-1", source_type: "qwen", source_title: "Visual Reasoning",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Qwen analyzed frames.",
+        artifact_data: {
+          recorder_ui_detected: true,
+          visual_observation_summary: "Three.js geometry rendered on canvas.",
+          evidence_reasoning: "Shader pipeline active.",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.getByTestId("qwen-recorder-ui-notice")).toBeInTheDocument()
+    expect(screen.queryByTestId("qwen-visual-observation")).not.toBeInTheDocument()
+  })
+
+  it("Qwen: recorder UI not triggered for genuine target-app observation", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "qwen-clean-1", source_type: "qwen", source_title: "Visual Reasoning",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Qwen analyzed frames.",
+        artifact_data: {
+          visual_observation_summary:
+            "Three.js geometry cube rotating in real-time with WebGL context active.",
+          evidence_reasoning: "GPU pipeline confirmed from rendered output.",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.queryByTestId("qwen-recorder-ui-notice")).not.toBeInTheDocument()
+    expect(screen.getByTestId("qwen-visual-observation").textContent).toMatch(
+      /Three\.js geometry cube/,
+    )
+  })
+
+  // ── Evidence quality badge ────────────────────────────────────────────────
+
+  it("evidence_quality badge renders on keyframe artifact when field is present", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-kf-q-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "kf-q-1", source_type: "keyframe", source_title: "Video Keyframes",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "4 keyframes captured.",
+        artifact_data: {
+          frame_count: 4,
+          visual_summary: "3D mesh rendered with WebGL active.",
+          evidence_quality: "partial",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.getByTestId("evidence-quality-badge")).toBeInTheDocument()
+  })
+
+  it("evidence_quality badge renders on Qwen artifact when field is present", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "qwen-q-1", source_type: "qwen", source_title: "Visual Reasoning",
+        project_name: "Demo", visibility: "public", confidence_score: 75,
+        proof_reason: "Qwen analyzed frames.",
+        artifact_data: {
+          visual_observation_summary: "WebGL cube rotating on threejs.org canvas.",
+          evidence_quality: "clean",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    expect(screen.getByTestId("evidence-quality-badge")).toBeInTheDocument()
+  })
+
+  // ── Keyframe: updated unavailable message ─────────────────────────────────
+
+  it("keyframe unavailable state shows updated message text", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-kf-ua", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "kf-ua-1", source_type: "keyframe", source_title: "Video Keyframes",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Session recorded.",
+        artifact_data: {
+          frame_count: 3,
+          keyframe_image_available: false,
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const unavailable = screen.getByTestId("keyframe-unavailable-0")
+    expect(unavailable).toBeInTheDocument()
+    expect(unavailable.textContent).toMatch(/No saved keyframe image is available/)
+    expect(unavailable.textContent).toMatch(/Future Website Proof sessions/)
+  })
+
+  // ── Unsafe keys still hidden ──────────────────────────────────────────────
+
+  // ── proof_reason quarantine — exact Codex QA failing OCR noise ───────────────
+
+  it("OCR: exact failing noise string in proof_reason is quarantined, not rendered", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-pr-noise-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-pr-noise-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Buckets; storage; veriido: x xP threejs examples x Veriardge—sewon rec x +",
+        artifact_data: { extracted_text_summary: "Three.js canvas rendered with WebGL context active." },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(viewer.outerHTML).not.toContain("Buckets")
+    expect(viewer.outerHTML).not.toContain("veriido")
+    expect(viewer.outerHTML).not.toContain("Veriardge")
+    expect(viewer.outerHTML).not.toContain("sewon rec")
+    expect(screen.getByTestId("proof-reason-noise-filter")).toBeInTheDocument()
+    expect(screen.getByTestId("proof-reason-noise-filter").textContent).toMatch(
+      /Environment\/browser noise was removed/i,
+    )
+  })
+
+  it("OCR: noisy proof_reason quarantined but clean artifact_data text remains visible", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-pr-mixed-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "ocr-pr-mixed-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Buckets; storage; veriido: x xP threejs examples x Veriardge—sewon rec x +",
+        artifact_data: {
+          extracted_text_summary: "Three.js WebGL canvas rendering 3D mesh geometry on threejs.org.",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    // noisy proof_reason quarantined
+    expect(screen.getByTestId("proof-reason-noise-filter")).toBeInTheDocument()
+    // clean artifact_data still visible
+    const ocrSummary = screen.getByTestId("ocr-extracted-summary")
+    expect(ocrSummary.textContent).toMatch(/Three\.js WebGL canvas/)
+    expect(ocrSummary.textContent).toMatch(/3D mesh geometry/)
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(viewer.outerHTML).not.toContain("Buckets")
+    expect(viewer.outerHTML).not.toContain("veriido")
+  })
+
+  it("clean proof_reason renders normally through SafeProofReason", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "ocr-pr-clean-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Live WebGL session confirmed on threejs.org.",
+        artifact_data: { extracted_text_summary: "Canvas active with WebGL context." },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const prText = screen.getByTestId("proof-reason-text")
+    expect(prText).toBeInTheDocument()
+    expect(prText.textContent).toMatch(/Live WebGL session confirmed/)
+    expect(screen.queryByTestId("proof-reason-noise-filter")).not.toBeInTheDocument()
+  })
+
+  it("noisy proof_reason quarantined in DOM artifact section", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-pr-dom-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "dom-pr-noise-1", source_type: "dom", source_title: "DOM Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 65,
+        proof_reason: "Buckets; storage; veriido: x xP threejs examples x Veriardge—sewon rec x +",
+        artifact_data: { dom_summary: "Three.js WebGL canvas element observed in DOM." },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(viewer.outerHTML).not.toContain("Buckets")
+    expect(viewer.outerHTML).not.toContain("veriido")
+    expect(viewer.outerHTML).not.toContain("Veriardge")
+    expect(screen.getByTestId("proof-reason-noise-filter")).toBeInTheDocument()
+    expect(screen.getByTestId("dom-summary-text").textContent).toMatch(/Three\.js WebGL canvas/)
+  })
+
+  it("noisy proof_reason quarantined in Qwen artifact section", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "wf-pr-qwen-1", source_type: "workflow", source_title: "Website Workflow",
+        project_name: "Demo", visibility: "public", confidence_score: 80,
+        proof_reason: "Recorded.",
+        artifact_data: { website_url: "https://threejs.org" },
+        exact_code_url: null, full_file_url: null,
+      },
+      {
+        id: "qwen-pr-noise-1", source_type: "qwen", source_title: "Visual Reasoning",
+        project_name: "Demo", visibility: "public", confidence_score: 75,
+        proof_reason: "Buckets; storage; veriido: x xP threejs examples x Veriardge—sewon rec x +",
+        artifact_data: {
+          visual_observation_summary: "WebGL renderer active on threejs.org with 3D mesh visible.",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(viewer.outerHTML).not.toContain("Buckets")
+    expect(viewer.outerHTML).not.toContain("sewon rec")
+    expect(screen.getByTestId("proof-reason-noise-filter")).toBeInTheDocument()
+    expect(screen.getByTestId("qwen-visual-observation").textContent).toMatch(/WebGL renderer active/)
+  })
+
+  it("unsafe keys (token, storage_path, signed_url, etc.) still hidden after filtering logic added", async () => {
+    await openViewer(makePipeline([
+      {
+        id: "unsafe-nf-1", source_type: "ocr", source_title: "OCR Evidence",
+        project_name: "Demo", visibility: "public", confidence_score: 70,
+        proof_reason: "Text extracted.",
+        artifact_data: {
+          extracted_text_summary: "Canvas active; WebGL context enabled",
+          access_token: "eyJhbGciOiJIUzI1NiJ9.secret",
+          storage_path: "/private/recordings/abc.webm",
+          signed_url: "https://supabase.co/storage/v1/sign/abc?token=xyz",
+          video_url: "https://internal.veribridge.app/private/abc.mp4",
+          service_role: "supabase-service-role-key",
+          anon_key: "supabase-anon-key",
+          media_storage_path: "/media/abc",
+        },
+        exact_code_url: null, full_file_url: null,
+      },
+    ]))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    const html = viewer.outerHTML
+    expect(html).not.toContain("eyJhbGciOiJIUzI1NiJ9")
+    expect(html).not.toContain("/private/recordings/")
+    expect(html).not.toContain("supabase.co/storage")
+    expect(html).not.toContain("supabase-service-role-key")
+    expect(html).not.toContain("supabase-anon-key")
+    expect(html).not.toContain("media_storage_path")
+    expect(html).not.toContain("video_url")
   })
 })
