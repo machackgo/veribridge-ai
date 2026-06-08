@@ -2363,4 +2363,614 @@ describe("DevRecruiterPassportPreviewPage — banner and backend state", () => {
     expect(html).not.toContain("transcript_text")
     expect(html).not.toContain("media_storage_path")
   })
+
+  // ── Refresh / loading regression tests ────────────────────────────────────
+
+  it("loading state: has_protected_evidence=false → protected CTA not rendered", () => {
+    let resolve!: (v: null) => void
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockReturnValue(
+      new Promise<null>((r) => { resolve = r }),
+    )
+    render(<DevRecruiterPassportPreviewPage />)
+    expect(screen.getByTestId("banner-loading-badge")).toBeInTheDocument()
+    // has_protected_evidence stripped to false during loading — protected CTA must be absent
+    expect(screen.queryByText(/Protected Evidence Available/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId("request-access-btn")).not.toBeInTheDocument()
+    resolve(null)
+  })
+
+  it("loading state: banner reset button not visible during fetch", () => {
+    let resolve!: (v: null) => void
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockReturnValue(
+      new Promise<null>((r) => { resolve = r }),
+    )
+    render(<DevRecruiterPassportPreviewPage />)
+    expect(screen.getByTestId("banner-loading-badge")).toBeInTheDocument()
+    expect(screen.queryByTestId("banner-reset-btn")).not.toBeInTheDocument()
+    resolve(null)
+  })
+
+  it("backend success with empty data stays in backend-safe mode (not mock mode)", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() => expect(screen.getByTestId("banner-backend-badge")).toBeInTheDocument())
+    // Empty pipeline list is still backend success — must not fall back to mock groups
+    expect(screen.queryByTestId("skill-group-card-ai-machine-learning")).not.toBeInTheDocument()
+    // No protected evidence CTA from mock store
+    expect(screen.queryByText(/Protected Evidence Available/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId("banner-reset-btn")).not.toBeInTheDocument()
+  })
+
+  it("backend failure (null) is the only trigger for mock fallback mode", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() => expect(screen.getByTestId("banner-fallback-badge")).toBeInTheDocument())
+    // Only in fallback mode should the reset button appear (mock controls enabled)
+    expect(screen.getByTestId("banner-reset-btn")).toBeInTheDocument()
+  })
+})
+
+// ── suppressMockActions: backend mode hides mock-derived controls ─────────────
+
+describe("RecruiterWorkPassportPreview — suppressMockActions in backend mode", () => {
+  // View with no skill_groups so the component fetches from backend (Case C)
+  function makeEmptyView(): RecruiterPassportViewResponse {
+    return makeView({
+      skill_groups: [],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+      has_protected_evidence: false,
+    })
+  }
+
+  const aiMlPublicPipeline: RecruiterSafePipelineSummary = {
+    id: "p-ai-public",
+    skill_name: "AI / Machine Learning",
+    skill_category: "AI/ML",
+    confidence_score: 85,
+    support_status: "strongly_supported",
+    evidence_count: 4,
+    strongest_proof: { label: "GitHub", reason: "ML training loops" },
+    weakest_proof: null,
+    missing_evidence: [],
+    next_actions: [],
+    evidence_sources: [
+      { key: "github", label: "GitHub code", status: "supported", score: 85, reason: "ML code" },
+    ],
+    recruiter_summary: "Strong AI/ML evidence from GitHub and workflow.",
+    visibility_status: "public",
+    is_locked_for_recruiter: false,
+    artifacts: [],
+  }
+
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  it("backend mode: compact action chips are hidden for AI/ML group (suppressMockActions=true)", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlPublicPipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0))
+    // suppressMockActions=true in Case C → no compact action chips from mock bundle
+    expect(screen.queryByTestId("skill-card-compact-actions")).not.toBeInTheDocument()
+  })
+
+  it("backend mode: no GitHub proof chip from mock bundle (suppressMockActions=true)", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlPublicPipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0))
+    expect(screen.queryByTestId("skill-card-github-proof-action")).not.toBeInTheDocument()
+  })
+
+  it("backend mode: no keyframe chip from mock bundle (suppressMockActions=true)", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlPublicPipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0))
+    expect(screen.queryByTestId("skill-card-keyframe-action")).not.toBeInTheDocument()
+  })
+
+  it("backend mode: Protected evidence approved text is hidden when has_protected_evidence=false", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlPublicPipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0))
+    expect(screen.queryByText(/Protected evidence approved/i)).not.toBeInTheDocument()
+  })
+
+  it("backend mode: no Reset mock access requests button when onReset=undefined", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlPublicPipeline])
+    // No onReset prop → all *-reset-btn testids absent
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} onReset={undefined} />)
+    await waitFor(() => expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0))
+    expect(screen.queryByTestId("approved-reset-btn")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("pending-reset-btn")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("cta-reset-btn")).not.toBeInTheDocument()
+  })
+
+  it("backend mode: view-skill-evidence-btn is disabled (not a dead enabled button)", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlPublicPipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0))
+    const btn = screen.getByTestId("view-skill-evidence-btn")
+    expect(btn).toBeDisabled()
+  })
+
+  it("backend mode: view-skill-evidence-disabled helper text is shown", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlPublicPipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0))
+    expect(screen.getByTestId("view-skill-evidence-disabled")).toBeInTheDocument()
+    expect(screen.getByTestId("view-skill-evidence-disabled").textContent).toMatch(
+      /Evidence viewer unavailable/i,
+    )
+  })
+
+  it("backend mode: clicking disabled view-skill-evidence-btn does not open skill evidence modal", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([aiMlPublicPipeline])
+    render(<RecruiterWorkPassportPreview view={makeEmptyView()} />)
+    await waitFor(() => expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0))
+    const btn = screen.getByTestId("view-skill-evidence-btn")
+    fireEvent.click(btn)
+    expect(screen.queryByTestId("skill-evidence-detail-modal")).not.toBeInTheDocument()
+  })
+
+  it("fallback mode: compact action chips ARE rendered from mock bundle when backend unavailable", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    // Use view with skill_groups (Case A: fallback mock groups)
+    const viewWithGroups = makeView({
+      skill_groups: [
+        {
+          group_name: "AI / Machine Learning",
+          category: "AI/ML",
+          confidence: "high",
+          evidence_count: 4,
+          source_labels: ["GitHub", "Website Workflow"],
+          skills: [{ skill: "Machine Learning", confidence: "high", status_label: "strongly supported", source_labels: ["GitHub"] }],
+        },
+      ],
+      verified_skills: ["Machine Learning"],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+    })
+    render(<RecruiterWorkPassportPreview view={viewWithGroups} />)
+    await waitFor(() => expect(screen.getAllByText("AI / Machine Learning").length).toBeGreaterThan(0))
+    // In fallback mode (backend null), Case A renders with suppressMockActions=false → chips present
+    expect(screen.queryAllByTestId("skill-card-compact-actions").length).toBeGreaterThan(0)
+  })
+})
+
+// ── Dev page: banner reset button gating ──────────────────────────────────────
+
+describe("DevRecruiterPassportPreviewPage — banner reset button gating", () => {
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  it("banner-reset-btn is hidden in backend-safe mode", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() => expect(screen.getByTestId("banner-backend-badge")).toBeInTheDocument())
+    expect(screen.queryByTestId("banner-reset-btn")).not.toBeInTheDocument()
+  })
+
+  it("banner-reset-btn is shown in fallback/mock mode", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() => expect(screen.getByTestId("banner-fallback-badge")).toBeInTheDocument())
+    expect(screen.getByTestId("banner-reset-btn")).toBeInTheDocument()
+  })
+})
+
+// ── Dev page: onReset gating with backend state ────────────────────────────────
+
+describe("DevRecruiterPassportPreviewPage — onReset gating", () => {
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  it("dev page: no inner Reset button in RecruiterWorkPassportPreview when backend is available", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() => expect(screen.getByTestId("banner-backend-badge")).toBeInTheDocument())
+    // onReset=undefined in backend mode → no inner reset buttons
+    expect(screen.queryByTestId("approved-reset-btn")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("pending-reset-btn")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("cta-reset-btn")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("denied-reset-btn")).not.toBeInTheDocument()
+  })
+
+  it("dev page: loading state does not show inner reset buttons (onReset=undefined during loading)", async () => {
+    // Simulate slow backend response
+    let resolve!: (v: null) => void
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockReturnValue(
+      new Promise<null>((r) => { resolve = r }),
+    )
+    render(<DevRecruiterPassportPreviewPage />)
+    expect(screen.getByTestId("banner-loading-badge")).toBeInTheDocument()
+    // During loading, backendStatus === "loading" → onReset=undefined
+    expect(screen.queryByTestId("cta-reset-btn")).not.toBeInTheDocument()
+    resolve(null)
+  })
+
+  it("dev page: has_protected_evidence=false in backend mode suppresses protected CTA", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() => expect(screen.getByTestId("banner-backend-badge")).toBeInTheDocument())
+    // has_protected_evidence=false → no "Protected Evidence Available" CTA rendered
+    expect(screen.queryByText(/Protected Evidence Available/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId("request-access-btn")).not.toBeInTheDocument()
+  })
+
+  it("dev page: fallback mode shows inner reset button (onReset defined when backend unavailable)", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    render(<DevRecruiterPassportPreviewPage />)
+    await waitFor(() => expect(screen.getByTestId("banner-fallback-badge")).toBeInTheDocument())
+    // onReset=handleReset when backendStatus==="unavailable"
+    // has_protected_evidence=true in MOCK_VIEW → protected section renders
+    // SAMPLE_REQUESTS has Stripe pending request (filtered by defaultRequester email) → pending-reset-btn
+    await waitFor(() =>
+      expect(screen.getByTestId("pending-reset-btn")).toBeInTheDocument()
+    )
+  })
+})
+
+// ── RecruiterSafeEvidencePipelineViewer ──────────────────────────────────────
+
+describe("RecruiterSafeEvidencePipelineViewer — backend mode evidence viewer", () => {
+  function makeEmptyViewForViewer(): RecruiterPassportViewResponse {
+    return {
+      public_slug: "viewer-test-slug",
+      student_display_name: "Test Candidate",
+      field: "AI",
+      public_title: "AI Engineer",
+      public_summary: "Summary.",
+      overall_score: 80,
+      evidence_confidence: "high",
+      verification_status: null,
+      readiness_level: null,
+      skill_groups: [],
+      verified_skills: [],
+      partially_verified_skills: [],
+      skills_needing_review: [],
+      proof_sources: [],
+      why_credible: [],
+      strongest_skills: [],
+      areas_needing_review: [],
+      suggested_interview_questions: [],
+      public_project_links: [],
+      project_type: "Engineering",
+      access_request_available: false,
+      has_protected_evidence: false,
+      disclosure_note: "Test.",
+    }
+  }
+
+  function makePipelineWithArtifacts(
+    overrides: Partial<RecruiterSafePipelineSummary> = {},
+  ): RecruiterSafePipelineSummary {
+    return {
+      id: "viewer-pipeline-1",
+      skill_name: "Viewer Skill",
+      skill_category: "AI/ML",
+      confidence_score: 85,
+      support_status: "strongly_supported",
+      evidence_count: 3,
+      strongest_proof: { label: "GitHub", reason: "Code confirmed" },
+      weakest_proof: null,
+      missing_evidence: [],
+      next_actions: [],
+      evidence_sources: [
+        { key: "github", label: "GitHub code", status: "supported", score: 85, reason: "Code confirmed" },
+      ],
+      recruiter_summary: "Strong evidence from GitHub and workflow.",
+      visibility_status: "public",
+      is_locked_for_recruiter: false,
+      artifacts: [
+        {
+          id: "art-gh-1",
+          source_type: "github",
+          source_title: "evaluator.py",
+          project_name: "VeriBridge",
+          visibility: "public",
+          confidence_score: 90,
+          proof_reason: "ML training loop confirmed",
+          artifact_data: { file_path: "apps/api/evaluator.py" },
+          exact_code_url: "https://github.com/veribridge-ai/veribridge/blob/main/apps/api/evaluator.py#L1-L50",
+          full_file_url: "https://github.com/veribridge-ai/veribridge/blob/main/apps/api/evaluator.py",
+        },
+      ],
+      ...overrides,
+    }
+  }
+
+  afterEach(() => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+  })
+
+  it("view-skill-evidence-btn is enabled when pipeline has artifacts", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    const btn = screen.getByTestId("view-skill-evidence-btn")
+    expect(btn).not.toBeDisabled()
+  })
+
+  it("view-skill-evidence-btn disabled when pipeline has no artifacts", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts({ artifacts: [] }),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    const btn = screen.getByTestId("view-skill-evidence-btn")
+    expect(btn).toBeDisabled()
+  })
+
+  it("clicking enabled view-skill-evidence-btn opens recruiter-safe-evidence-viewer", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    expect(screen.getByTestId("recruiter-safe-evidence-viewer")).toBeInTheDocument()
+  })
+
+  it("viewer shows skill name in header", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(viewer.textContent).toContain("Viewer Skill")
+    expect(viewer.textContent).toContain("85% confidence")
+  })
+
+  it("viewer shows github exact code link when exact_code_url is safe", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    const link = screen.getByTestId("github-exact-code-link")
+    expect(link).toBeInTheDocument()
+    expect(link).toHaveAttribute("href", expect.stringContaining("github.com"))
+  })
+
+  it("viewer shows github full file link when full_file_url is safe", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    const link = screen.getByTestId("github-full-file-link")
+    expect(link).toBeInTheDocument()
+    expect(link).toHaveAttribute("href", expect.stringContaining("github.com"))
+  })
+
+  it("viewer shows 'Exact lines not available' when exact_code_url is absent", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts({
+        artifacts: [{
+          id: "art-gh-nox",
+          source_type: "github",
+          source_title: "model.py",
+          project_name: "P",
+          visibility: "public",
+          confidence_score: 75,
+          proof_reason: "Confirmed",
+          artifact_data: {},
+          exact_code_url: null,
+          full_file_url: null,
+        }],
+      }),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    expect(screen.getByTestId("github-exact-code-unavailable")).toBeInTheDocument()
+  })
+
+  it("viewer shows keyframe-unavailable when no safe keyframe URL", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts({
+        artifacts: [{
+          id: "art-kf-1",
+          source_type: "keyframe",
+          source_title: "Frame 3",
+          project_name: "Demo",
+          visibility: "public",
+          confidence_score: 80,
+          proof_reason: "Shows model output",
+          artifact_data: {},
+        }],
+      }),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    expect(screen.getByTestId("keyframe-unavailable-0")).toBeInTheDocument()
+    expect(screen.getByTestId("keyframe-unavailable-0").textContent).toMatch(/Keyframe image unavailable/i)
+  })
+
+  it("viewer blocks unsafe localhost keyframe URL, shows unavailable state", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts({
+        artifacts: [{
+          id: "art-kf-unsafe",
+          source_type: "keyframe",
+          source_title: "Frame",
+          project_name: "Demo",
+          visibility: "public",
+          confidence_score: 70,
+          proof_reason: "Proof",
+          artifact_data: { keyframe_url: "http://localhost:3000/media/frame.png" },
+        }],
+      }),
+    ])
+    const { container } = render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    expect(screen.getByTestId("keyframe-unavailable-0")).toBeInTheDocument()
+    expect(container.innerHTML).not.toContain("localhost")
+  })
+
+  it("viewer shows transcript disabled download buttons", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts({
+        artifacts: [{
+          id: "art-tr-1",
+          source_type: "transcript",
+          source_title: "Project defense excerpt",
+          project_name: "P",
+          visibility: "public",
+          confidence_score: 75,
+          proof_reason: "Ownership signals present",
+          artifact_data: { excerpt: "I implemented the training loop using PyTorch." },
+        }],
+      }),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    expect(screen.getByTestId("transcript-txt-download-disabled")).toBeDisabled()
+    expect(screen.getByTestId("transcript-pdf-download-disabled")).toBeDisabled()
+  })
+
+  it("viewer shows transcript excerpt text", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts({
+        artifacts: [{
+          id: "art-tr-2",
+          source_type: "transcript",
+          source_title: "Defense",
+          project_name: "P",
+          visibility: "public",
+          confidence_score: 75,
+          proof_reason: "Strong ownership",
+          artifact_data: { excerpt: "I built the feature extraction pipeline from scratch." },
+        }],
+      }),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    expect(viewer.textContent).toContain("I built the feature extraction pipeline from scratch.")
+  })
+
+  it("viewer document shows disabled open button when full_file_url absent", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts({
+        artifacts: [{
+          id: "art-doc-1",
+          source_type: "document",
+          source_title: "Project Report",
+          project_name: "P",
+          visibility: "public",
+          confidence_score: 70,
+          proof_reason: "Technical report",
+          artifact_data: {},
+        }],
+      }),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    expect(screen.getByTestId("document-open-disabled")).toBeDisabled()
+  })
+
+  it("viewer shows safety footer", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    const footer = screen.getByTestId("evidence-viewer-safety-footer")
+    expect(footer).toBeInTheDocument()
+    expect(footer.textContent).toMatch(/Private files.*internal storage references.*sensitive credentials/i)
+  })
+
+  it("evidence viewer safety footer does not contain literal unsafe-key vocabulary", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    const footer = screen.getByTestId("evidence-viewer-safety-footer")
+    const text = footer.textContent ?? ""
+    // None of these literal unsafe-key strings may appear in the footer
+    expect(text).not.toContain("token")
+    expect(text).not.toContain("access_token")
+    expect(text).not.toContain("storage_path")
+    expect(text).not.toContain("signed_url")
+    expect(text).not.toContain("video_url")
+    expect(text).not.toContain("media_storage_path")
+    expect(text).not.toContain("service_role")
+    expect(text).not.toContain("anon_key")
+  })
+
+  it("evidence-viewer-close button closes the viewer", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    expect(screen.getByTestId("recruiter-safe-evidence-viewer")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("evidence-viewer-close"))
+    expect(screen.queryByTestId("recruiter-safe-evidence-viewer")).not.toBeInTheDocument()
+  })
+
+  it("viewer does not expose unsafe strings in rendered HTML", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts({
+        artifacts: [
+          {
+            id: "art-safe-1",
+            source_type: "github",
+            source_title: "model.py",
+            project_name: "P",
+            visibility: "public",
+            confidence_score: 80,
+            proof_reason: "Code confirmed",
+            artifact_data: { file_path: "apps/model.py" },
+            exact_code_url: "https://github.com/veribridge-ai/repo/blob/main/model.py",
+            full_file_url: "https://github.com/veribridge-ai/repo/blob/main/model.py",
+          },
+        ],
+      }),
+    ])
+    const { container } = render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    const html = container.innerHTML
+    expect(html).not.toContain("storage_path")
+    expect(html).not.toContain("access_token")
+    expect(html).not.toContain("service_role")
+    expect(html).not.toContain("anon_key")
+    expect(html).not.toContain("signed_url")
+  })
+
+  it("viewer sections show 'no data' state for artifact types not present", async () => {
+    vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue([
+      makePipelineWithArtifacts(),
+    ])
+    render(<RecruiterWorkPassportPreview view={makeEmptyViewForViewer()} />)
+    await waitFor(() => expect(screen.getAllByText("Viewer Skill").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByTestId("view-skill-evidence-btn"))
+    const viewer = screen.getByTestId("recruiter-safe-evidence-viewer")
+    // keyframe, workflow, ocr, dom, qwen, transcript, document — all absent from makePipelineWithArtifacts default
+    expect(viewer.textContent).toContain("No keyframe evidence artifacts")
+    expect(viewer.textContent).toContain("No workflow recording artifacts")
+    expect(viewer.textContent).toContain("No transcript evidence artifacts")
+    expect(viewer.textContent).toContain("No document artifacts")
+  })
 })

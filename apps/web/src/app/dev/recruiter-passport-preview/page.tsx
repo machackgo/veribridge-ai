@@ -252,19 +252,23 @@ export default function DevRecruiterPassportPreviewPage() {
     setResetKey((k) => k + 1)
   }
 
-  // When the backend is reachable, strip skill groups from the view so the
-  // component uses the backend's own recruiter-safe pipeline response (with
-  // real visibility enforcement) rather than hardcoded mock groups.
-  // When the backend is unavailable, keep all mock groups as a visual fallback.
-  const activeView: RecruiterPassportViewResponse = backendStatus === "available"
-    ? {
+  // Strip skill groups and protected evidence from the view while loading or
+  // when the backend is reachable, so the component uses the backend's own
+  // recruiter-safe pipeline response (with real visibility enforcement) rather
+  // than hardcoded mock groups. has_protected_evidence=false while loading
+  // prevents the mock access store from showing stale approved/pending state
+  // during the fetch. Only when the backend call explicitly fails do we fall
+  // back to the full mock view.
+  const activeView: RecruiterPassportViewResponse = backendStatus === "unavailable"
+    ? MOCK_VIEW
+    : {
         ...MOCK_VIEW,
         skill_groups: [],
         verified_skills: [],
         partially_verified_skills: [],
         skills_needing_review: [],
+        has_protected_evidence: false,
       }
-    : MOCK_VIEW
 
   return (
     <div style={{
@@ -326,18 +330,20 @@ export default function DevRecruiterPassportPreviewPage() {
             · No private fields · Not linked in production
           </span>
         </div>
-        <button
-          type="button"
-          data-testid="banner-reset-btn"
-          onClick={handleReset}
-          style={{
-            fontSize: 11, fontWeight: 600, color: "#92400e",
-            background: "#fef3c7", border: "1px solid #f59e0b",
-            borderRadius: 6, padding: "4px 10px", cursor: "pointer",
-          }}
-        >
-          Reset mock access requests
-        </button>
+        {backendStatus === "unavailable" && (
+          <button
+            type="button"
+            data-testid="banner-reset-btn"
+            onClick={handleReset}
+            style={{
+              fontSize: 11, fontWeight: 600, color: "#92400e",
+              background: "#fef3c7", border: "1px solid #f59e0b",
+              borderRadius: 6, padding: "4px 10px", cursor: "pointer",
+            }}
+          >
+            Reset mock access requests
+          </button>
+        )}
       </div>
 
       {/* Candidate header */}
@@ -385,7 +391,7 @@ export default function DevRecruiterPassportPreviewPage() {
           view={activeView}
           onRequestAccess={() => setAccessRequested(true)}
           onRequestCreated={handleRequestCreated}
-          onReset={backendStatus !== "available" ? handleReset : undefined}
+          onReset={backendStatus === "unavailable" ? handleReset : undefined}
           defaultRequester={{
             name: "Stripe Early Talent",
             email: "recruiter@stripe.com",

@@ -263,10 +263,16 @@ function SkillGroupCard({
   group,
   accessApproved,
   onViewEvidence,
+  suppressMockActions = false,
+  backendPipeline,
+  onViewBackendEvidence,
 }: {
   group: RecruiterSkillGroupResponse
   accessApproved: boolean
   onViewEvidence?: () => void
+  suppressMockActions?: boolean
+  backendPipeline?: RecruiterSafePipelineSummary
+  onViewBackendEvidence?: () => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const bundle = getSkillBundle(group.group_name)
@@ -485,54 +491,57 @@ function SkillGroupCard({
             </div>
           </div>
 
-          {/* Footer — row 1: compact action chips */}
-          <div data-testid="skill-card-compact-actions" style={{
-            paddingTop: 10,
-            borderTop: `1px solid ${confidenceBorder(group.confidence)}`,
-            display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8,
-          }}>
-            {bundle.githubEvidence.length > 0 && (
-              <button
-                type="button"
-                data-testid="skill-card-github-proof-action"
-                onClick={onViewEvidence}
-                style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.emerald, background: C.emeraldSoft, border: "1px solid #bbf7d0" }}
-              >
-                ↗ GitHub proof
-              </button>
-            )}
-            {bundle.visualEvidence.length > 0 && (bundle.visualEvidence[0].isProtected ? accessApproved : true) && (
-              <button
-                type="button"
-                data-testid="skill-card-keyframe-action"
-                onClick={onViewEvidence}
-                style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.violet, background: C.violetSoft, border: "1px solid #ddd6fe" }}
-              >
-                View keyframe
-              </button>
-            )}
-            {bundle.transcriptEvidence.length > 0 && (bundle.transcriptEvidence[0].isProtected ? accessApproved : true) && (
-              <button
-                type="button"
-                data-testid="skill-card-transcript-action"
-                onClick={onViewEvidence}
-                style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.sky, background: C.skySoft, border: "1px solid #bae6fd" }}
-              >
-                View transcript
-              </button>
-            )}
-            {bundle.liveApp?.isPublic && (
-              <a
-                href={bundle.liveApp.publicUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                data-testid="skill-card-live-app-action"
-                style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.emerald, background: C.emeraldSoft, border: "1px solid #bbf7d0", textDecoration: "none" }}
-              >
-                ↗ Live app
-              </a>
-            )}
-          </div>
+          {/* Footer — row 1: compact action chips — suppressed in backend-authoritative mode
+              to prevent mock-derived buttons with no real backend URLs from rendering */}
+          {!suppressMockActions && (
+            <div data-testid="skill-card-compact-actions" style={{
+              paddingTop: 10,
+              borderTop: `1px solid ${confidenceBorder(group.confidence)}`,
+              display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8,
+            }}>
+              {bundle.githubEvidence.length > 0 && (
+                <button
+                  type="button"
+                  data-testid="skill-card-github-proof-action"
+                  onClick={onViewEvidence}
+                  style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.emerald, background: C.emeraldSoft, border: "1px solid #bbf7d0" }}
+                >
+                  ↗ GitHub proof
+                </button>
+              )}
+              {bundle.visualEvidence.length > 0 && (bundle.visualEvidence[0].isProtected ? accessApproved : true) && (
+                <button
+                  type="button"
+                  data-testid="skill-card-keyframe-action"
+                  onClick={onViewEvidence}
+                  style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.violet, background: C.violetSoft, border: "1px solid #ddd6fe" }}
+                >
+                  View keyframe
+                </button>
+              )}
+              {bundle.transcriptEvidence.length > 0 && (bundle.transcriptEvidence[0].isProtected ? accessApproved : true) && (
+                <button
+                  type="button"
+                  data-testid="skill-card-transcript-action"
+                  onClick={onViewEvidence}
+                  style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.sky, background: C.skySoft, border: "1px solid #bae6fd" }}
+                >
+                  View transcript
+                </button>
+              )}
+              {bundle.liveApp?.isPublic && (
+                <a
+                  href={bundle.liveApp.publicUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid="skill-card-live-app-action"
+                  style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, cursor: "pointer", color: C.emerald, background: C.emeraldSoft, border: "1px solid #bbf7d0", textDecoration: "none" }}
+                >
+                  ↗ Live app
+                </a>
+              )}
+            </div>
+          )}
 
           {/* Footer — row 2: approval status + view button */}
           <div style={{
@@ -540,30 +549,95 @@ function SkillGroupCard({
             gap: 8, flexWrap: "wrap",
           }}>
             <div>
-              {hasProtectedEvidence && !accessApproved && (
+              {/* Mock-store derived approval state — only shown in non-backend mode */}
+              {!suppressMockActions && hasProtectedEvidence && !accessApproved && (
                 <span style={{ fontSize: 10, color: C.indigo, fontStyle: "italic" }}>
                   Protected evidence available — request student approval
                 </span>
               )}
-              {hasProtectedEvidence && accessApproved && (
+              {!suppressMockActions && hasProtectedEvidence && accessApproved && (
                 <span style={{ fontSize: 10, color: C.emerald, fontWeight: 600 }}>
                   Protected evidence approved
                 </span>
               )}
             </div>
-            {onViewEvidence && (
-              <button
-                type="button"
-                data-testid="view-skill-evidence-btn"
-                onClick={onViewEvidence}
-                style={{
-                  fontSize: 11, fontWeight: 600, color: C.indigo,
-                  background: C.indigoSoft, border: "1px solid #c7d2fe",
-                  borderRadius: 5, padding: "3px 9px", cursor: "pointer", flexShrink: 0,
-                }}
-              >
-                View skill evidence
-              </button>
+            {backendPipeline !== undefined ? (
+              backendPipeline.artifacts.length > 0 && onViewBackendEvidence ? (
+                <button
+                  type="button"
+                  data-testid="view-skill-evidence-btn"
+                  onClick={onViewBackendEvidence}
+                  style={{
+                    fontSize: 11, fontWeight: 600, color: C.indigo,
+                    background: C.indigoSoft, border: "1px solid #c7d2fe",
+                    borderRadius: 5, padding: "3px 9px", cursor: "pointer", flexShrink: 0,
+                  }}
+                >
+                  View skill evidence
+                </button>
+              ) : (
+                <div
+                  data-testid="view-skill-evidence-disabled"
+                  style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-end" }}
+                >
+                  <button
+                    type="button"
+                    data-testid="view-skill-evidence-btn"
+                    disabled
+                    style={{
+                      fontSize: 11, fontWeight: 600, color: C.muted,
+                      background: C.bg, border: `1px solid ${C.line}`,
+                      borderRadius: 5, padding: "3px 9px", cursor: "not-allowed", flexShrink: 0,
+                      opacity: 0.6,
+                    }}
+                  >
+                    View skill evidence
+                  </button>
+                  <span style={{ fontSize: 9, color: C.muted, fontStyle: "italic", textAlign: "right" }}>
+                    Evidence viewer unavailable — no artifact details for this pipeline.
+                  </span>
+                </div>
+              )
+            ) : (
+              <>
+                {onViewEvidence && !suppressMockActions && (
+                  <button
+                    type="button"
+                    data-testid="view-skill-evidence-btn"
+                    onClick={onViewEvidence}
+                    style={{
+                      fontSize: 11, fontWeight: 600, color: C.indigo,
+                      background: C.indigoSoft, border: "1px solid #c7d2fe",
+                      borderRadius: 5, padding: "3px 9px", cursor: "pointer", flexShrink: 0,
+                    }}
+                  >
+                    View skill evidence
+                  </button>
+                )}
+                {onViewEvidence && suppressMockActions && (
+                  <div
+                    data-testid="view-skill-evidence-disabled"
+                    style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-end" }}
+                  >
+                    <button
+                      type="button"
+                      data-testid="view-skill-evidence-btn"
+                      disabled
+                      style={{
+                        fontSize: 11, fontWeight: 600, color: C.muted,
+                        background: C.bg, border: `1px solid ${C.line}`,
+                        borderRadius: 5, padding: "3px 9px", cursor: "not-allowed", flexShrink: 0,
+                        opacity: 0.6,
+                      }}
+                    >
+                      View skill evidence
+                    </button>
+                    <span style={{ fontSize: 9, color: C.muted, fontStyle: "italic", textAlign: "right" }}>
+                      Evidence viewer unavailable until approved evidence URL is connected.
+                    </span>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -579,6 +653,9 @@ function SkillGroupsSection({
   needsReview,
   onViewSkill,
   accessApproved,
+  suppressMockActions = false,
+  pipelineMap,
+  onViewBackendPipeline,
 }: {
   groups: RecruiterSkillGroupResponse[]
   verified: string[]
@@ -586,6 +663,9 @@ function SkillGroupsSection({
   needsReview: string[]
   onViewSkill?: (skillName: string) => void
   accessApproved: boolean
+  suppressMockActions?: boolean
+  pipelineMap?: Map<string, RecruiterSafePipelineSummary>
+  onViewBackendPipeline?: (p: RecruiterSafePipelineSummary) => void
 }) {
   const hasGroups = groups.length > 0
   return (
@@ -593,14 +673,22 @@ function SkillGroupsSection({
       <SectionTitle>Evidence-Backed Skills</SectionTitle>
       {hasGroups ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {groups.map((g) => (
-            <SkillGroupCard
-              key={g.group_name}
-              group={g}
-              accessApproved={accessApproved}
-              onViewEvidence={onViewSkill ? () => onViewSkill(g.group_name) : undefined}
-            />
-          ))}
+          {groups.map((g) => {
+            const bp = pipelineMap?.get(g.group_name)
+            return (
+              <SkillGroupCard
+                key={g.group_name}
+                group={g}
+                accessApproved={accessApproved}
+                suppressMockActions={suppressMockActions}
+                onViewEvidence={onViewSkill ? () => onViewSkill(g.group_name) : undefined}
+                backendPipeline={bp}
+                onViewBackendEvidence={
+                  bp && onViewBackendPipeline ? () => onViewBackendPipeline(bp) : undefined
+                }
+              />
+            )
+          })}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -4454,6 +4542,572 @@ function ProtectedEvidenceUnlockedSection({
 
 // ── Locked pipeline card — shown for protected pipelines before approval ──────
 
+// ── Recruiter-Safe Evidence Viewer ───────────────────────────────────────────
+
+function isSafeViewerUrl(url: unknown): url is string {
+  if (typeof url !== "string" || !url.startsWith("http")) return false
+  try {
+    const u = new URL(url)
+    const hostname = u.hostname.toLowerCase()
+    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0") return false
+    if (hostname.endsWith(".supabase.co")) return false
+    if (u.searchParams.has("token") || u.searchParams.has("access_token")) return false
+    const full = url.toLowerCase()
+    if (full.includes("service_role") || full.includes("anon_key")) return false
+    return true
+  } catch {
+    return false
+  }
+}
+
+function safeStr(v: unknown): string | null {
+  return typeof v === "string" && v.trim().length > 0 ? v : null
+}
+
+function EvidenceViewerSection({
+  title,
+  icon,
+  count,
+  children,
+}: {
+  title: string
+  icon: string
+  count: number
+  children: React.ReactNode
+}) {
+  return (
+    <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+        <span style={{ fontSize: 13 }}>{icon}</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>{title}</span>
+        <span style={{
+          fontSize: 10, fontWeight: 600, padding: "1px 7px", borderRadius: 999,
+          background: count > 0 ? C.emeraldSoft : C.bg,
+          color: count > 0 ? C.emerald : C.muted,
+          border: count > 0 ? "1px solid #bbf7d0" : `1px solid ${C.line}`,
+        }}>
+          {count > 0 ? `${count} artifact${count !== 1 ? "s" : ""}` : "no data"}
+        </span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function EvidenceUnavailable({ message }: { message: string }) {
+  return (
+    <div style={{
+      padding: "10px 12px", borderRadius: 7,
+      background: C.bg, border: `1px dashed ${C.line}`,
+      fontSize: 11, color: C.muted, fontStyle: "italic",
+    }}>
+      {message}
+    </div>
+  )
+}
+
+function ArtifactConfidence({ score }: { score: number }) {
+  const color = score >= 75 ? C.emerald : score >= 50 ? C.amber : C.muted
+  return (
+    <div style={{ marginTop: 4 }}>
+      <span style={{ fontSize: 10, color, fontWeight: 600 }}>{score}% artifact confidence</span>
+    </div>
+  )
+}
+
+function RecruiterSafeEvidencePipelineViewer({
+  pipeline,
+  onClose,
+}: {
+  pipeline: RecruiterSafePipelineSummary
+  onClose: () => void
+}) {
+  const { artifacts } = pipeline
+
+  const keyframeArts = artifacts.filter((a) =>
+    ["keyframe", "screenshot", "website_proof"].includes(a.source_type),
+  )
+  const workflowArts = artifacts.filter((a) =>
+    ["workflow", "workflow_recording"].includes(a.source_type),
+  )
+  const ocrArts = artifacts.filter((a) =>
+    ["ocr", "frame_ocr"].includes(a.source_type),
+  )
+  const domArts = artifacts.filter((a) => a.source_type === "dom")
+  const qwenArts = artifacts.filter((a) =>
+    ["qwen", "visual_reasoning", "qwen_visual"].includes(a.source_type),
+  )
+  const githubArts = artifacts.filter((a) => a.source_type === "github")
+  const transcriptArts = artifacts.filter((a) =>
+    ["transcript", "project_defense"].includes(a.source_type),
+  )
+  const documentArts = artifacts.filter((a) =>
+    ["document", "pdf", "uploaded_document"].includes(a.source_type),
+  )
+
+  const confColor =
+    pipeline.confidence_score >= 75 ? C.emerald
+    : pipeline.confidence_score >= 50 ? C.amber
+    : C.muted
+  const confBg =
+    pipeline.confidence_score >= 75 ? C.emeraldSoft
+    : pipeline.confidence_score >= 50 ? C.amberSoft
+    : C.bg
+  const confBorder =
+    pipeline.confidence_score >= 75 ? "#bbf7d0"
+    : pipeline.confidence_score >= 50 ? "#fde68a"
+    : C.line
+
+  return (
+    <div
+      data-testid="recruiter-safe-evidence-viewer"
+      style={{
+        position: "fixed", inset: 0,
+        background: "rgba(0,0,0,0.6)",
+        display: "flex", alignItems: "flex-start", justifyContent: "center",
+        zIndex: 1100, padding: "40px 20px",
+        overflowY: "auto",
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div style={{
+        background: C.paper, borderRadius: 14,
+        width: "100%", maxWidth: 860,
+        boxShadow: "0 24px 60px rgba(0,0,0,0.3)",
+        display: "flex", flexDirection: "column",
+        marginBottom: 40,
+      }}>
+
+        {/* ── Header ── */}
+        <div style={{
+          padding: "18px 22px 14px",
+          borderBottom: `1px solid ${C.line}`,
+          display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+        }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+              <span style={{ fontSize: 16, fontWeight: 800, color: C.ink }}>
+                {pipeline.skill_name}
+              </span>
+              <span style={{
+                fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                background: confBg, color: confColor, border: `1px solid ${confBorder}`,
+              }}>
+                {pipeline.confidence_score}% confidence
+              </span>
+              <span style={{
+                fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0",
+              }}>
+                Public evidence
+              </span>
+            </div>
+            <p style={{ fontSize: 12, color: C.inkSoft, margin: "0 0 6px", lineHeight: 1.5 }}>
+              {pipeline.recruiter_summary}
+            </p>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, color: C.muted }}>
+                {artifacts.length} artifact{artifacts.length !== 1 ? "s" : ""}
+              </span>
+              {pipeline.evidence_sources.length > 0 && (
+                <span style={{ fontSize: 11, color: C.muted }}>
+                  {pipeline.evidence_sources.filter((s) => s.status === "supported").length} of{" "}
+                  {pipeline.evidence_sources.length} sources supported
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            data-testid="evidence-viewer-close"
+            onClick={onClose}
+            aria-label="Close evidence viewer"
+            style={{
+              fontSize: 22, fontWeight: 300, color: C.muted, lineHeight: 1,
+              background: "none", border: "none", cursor: "pointer",
+              padding: "0 4px", flexShrink: 0, marginLeft: 12,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        {/* ── Sections ── */}
+        <div style={{ padding: "16px 22px 22px", display: "flex", flexDirection: "column", gap: 0 }}>
+
+          {/* Section 2: Website Proof / Keyframe */}
+          <EvidenceViewerSection title="Website Proof Snapshot / Keyframe Evidence" icon="🖼" count={keyframeArts.length}>
+            {keyframeArts.length > 0 ? (
+              keyframeArts.map((art, i) => {
+                const imgUrl =
+                  isSafeViewerUrl(art.artifact_data.keyframe_url) ? art.artifact_data.keyframe_url
+                  : isSafeViewerUrl(art.artifact_data.snapshot_url) ? art.artifact_data.snapshot_url
+                  : isSafeViewerUrl(art.artifact_data.image_url) ? art.artifact_data.image_url
+                  : null
+                return (
+                  <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>
+                      {art.source_title}
+                      {art.project_name && (
+                        <span style={{ fontSize: 11, fontWeight: 400, color: C.muted, marginLeft: 6 }}>
+                          — {art.project_name}
+                        </span>
+                      )}
+                    </div>
+                    {imgUrl ? (
+                      <img
+                        src={imgUrl as string}
+                        alt={`Keyframe for ${pipeline.skill_name}`}
+                        data-testid={`keyframe-img-${i}`}
+                        style={{
+                          width: "100%", maxHeight: 280, objectFit: "contain",
+                          borderRadius: 8, border: `1px solid ${C.line}`,
+                        }}
+                      />
+                    ) : (
+                      <div
+                        data-testid={`keyframe-unavailable-${i}`}
+                        style={{
+                          padding: "12px 14px", borderRadius: 7,
+                          background: C.bg, border: `1px dashed ${C.line}`,
+                          display: "flex", alignItems: "flex-start", gap: 8,
+                        }}
+                      >
+                        <span style={{ fontSize: 16, flexShrink: 0 }}>🖼</span>
+                        <div>
+                          <p style={{ fontSize: 11, fontWeight: 600, color: C.inkSoft, margin: "0 0 3px" }}>
+                            Keyframe image unavailable
+                          </p>
+                          <p style={{ fontSize: 11, color: C.muted, margin: 0, lineHeight: 1.5 }}>
+                            Saved metadata and AI visual analysis are shown below. The snapshot URL is not available in the recruiter-safe view.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                    {art.proof_reason && (
+                      <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                    )}
+                    <ArtifactConfidence score={art.confidence_score} />
+                  </div>
+                )
+              })
+            ) : (
+              <EvidenceUnavailable message="No keyframe evidence artifacts — website proof was not captured for this skill." />
+            )}
+          </EvidenceViewerSection>
+
+          {/* Section 3: Workflow Evidence */}
+          <EvidenceViewerSection title="Workflow Evidence" icon="🎬" count={workflowArts.length}>
+            {workflowArts.length > 0 ? (
+              workflowArts.map((art) => (
+                <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
+                  {art.project_name && (
+                    <div style={{ fontSize: 11, color: C.muted }}>{art.project_name}</div>
+                  )}
+                  {art.proof_reason && (
+                    <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                  )}
+                  {safeStr(art.artifact_data.frame_label) && (
+                    <p style={{ fontSize: 11, color: C.muted, margin: 0, fontStyle: "italic" }}>
+                      Frame: {safeStr(art.artifact_data.frame_label)}
+                    </p>
+                  )}
+                  <ArtifactConfidence score={art.confidence_score} />
+                </div>
+              ))
+            ) : (
+              <EvidenceUnavailable message="No workflow recording artifacts for this skill pipeline." />
+            )}
+          </EvidenceViewerSection>
+
+          {/* Section 4: OCR Evidence */}
+          <EvidenceViewerSection title="OCR Evidence" icon="🔤" count={ocrArts.length}>
+            {ocrArts.length > 0 ? (
+              ocrArts.map((art) => (
+                <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
+                  {art.proof_reason && (
+                    <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                  )}
+                  {safeStr(art.artifact_data.ocr_text) && (
+                    <div style={{
+                      padding: "8px 10px", background: C.bg, borderRadius: 6,
+                      border: `1px solid ${C.line}`, fontFamily: "monospace",
+                      fontSize: 10, color: C.inkSoft, whiteSpace: "pre-wrap",
+                      maxHeight: 120, overflowY: "auto",
+                    }}>
+                      {safeStr(art.artifact_data.ocr_text)}
+                    </div>
+                  )}
+                  <ArtifactConfidence score={art.confidence_score} />
+                </div>
+              ))
+            ) : (
+              <EvidenceUnavailable message="No OCR evidence artifacts for this skill pipeline." />
+            )}
+          </EvidenceViewerSection>
+
+          {/* Section 5: DOM Evidence */}
+          <EvidenceViewerSection title="DOM Evidence" icon="🌐" count={domArts.length}>
+            {domArts.length > 0 ? (
+              domArts.map((art) => (
+                <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
+                  {art.proof_reason && (
+                    <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                  )}
+                  {(safeStr(art.artifact_data.dom_structure_summary) ?? safeStr(art.artifact_data.page_title)) && (
+                    <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>
+                      {safeStr(art.artifact_data.dom_structure_summary) ?? safeStr(art.artifact_data.page_title)}
+                    </p>
+                  )}
+                  <ArtifactConfidence score={art.confidence_score} />
+                </div>
+              ))
+            ) : (
+              <EvidenceUnavailable message="No DOM evidence artifacts for this skill pipeline." />
+            )}
+          </EvidenceViewerSection>
+
+          {/* Section 6: Qwen / Visual Reasoning */}
+          <EvidenceViewerSection title="Qwen / Visual Reasoning" icon="🤖" count={qwenArts.length}>
+            {qwenArts.length > 0 ? (
+              qwenArts.map((art) => {
+                const reasoning =
+                  safeStr(art.artifact_data.visual_reasoning) ??
+                  safeStr(art.artifact_data.reasoning_summary) ??
+                  safeStr(art.artifact_data.qwen_analysis)
+                return (
+                  <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
+                    {art.proof_reason && (
+                      <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                    )}
+                    {reasoning && (
+                      <div style={{
+                        padding: "8px 10px", background: "#faf5ff",
+                        border: "1px solid #e9d5ff", borderRadius: 6,
+                        fontSize: 11, color: "#6b21a8", lineHeight: 1.5,
+                      }}>
+                        {reasoning}
+                      </div>
+                    )}
+                    <ArtifactConfidence score={art.confidence_score} />
+                  </div>
+                )
+              })
+            ) : (
+              <EvidenceUnavailable message="No visual reasoning artifacts for this skill pipeline." />
+            )}
+          </EvidenceViewerSection>
+
+          {/* Section 7: GitHub Code Evidence */}
+          <EvidenceViewerSection title="GitHub Code Evidence" icon="💻" count={githubArts.length}>
+            {githubArts.length > 0 ? (
+              githubArts.map((art) => {
+                const hasExact = isSafeViewerUrl(art.exact_code_url)
+                const hasFile = isSafeViewerUrl(art.full_file_url)
+                const filePath = safeStr(art.artifact_data.file_path) ?? art.source_title
+                return (
+                  <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{filePath}</div>
+                    {art.proof_reason && (
+                      <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                    )}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {hasExact ? (
+                        <a
+                          href={art.exact_code_url as string}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          data-testid="github-exact-code-link"
+                          style={{
+                            fontSize: 11, fontWeight: 600, color: C.emerald,
+                            background: C.emeraldSoft, border: "1px solid #bbf7d0",
+                            borderRadius: 5, padding: "3px 9px", textDecoration: "none",
+                          }}
+                        >
+                          ↗ View exact code lines
+                        </a>
+                      ) : (
+                        <span
+                          data-testid="github-exact-code-unavailable"
+                          style={{
+                            fontSize: 11, color: C.muted, background: C.bg,
+                            border: `1px solid ${C.line}`, borderRadius: 5, padding: "3px 9px",
+                            opacity: 0.6,
+                          }}
+                        >
+                          Exact lines not available
+                        </span>
+                      )}
+                      {hasFile ? (
+                        <a
+                          href={art.full_file_url as string}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          data-testid="github-full-file-link"
+                          style={{
+                            fontSize: 11, fontWeight: 600, color: C.emerald,
+                            background: C.emeraldSoft, border: "1px solid #bbf7d0",
+                            borderRadius: 5, padding: "3px 9px", textDecoration: "none",
+                          }}
+                        >
+                          ↗ View full file
+                        </a>
+                      ) : (
+                        <span
+                          data-testid="github-full-file-unavailable"
+                          style={{
+                            fontSize: 11, color: C.muted, background: C.bg,
+                            border: `1px solid ${C.line}`, borderRadius: 5, padding: "3px 9px",
+                            opacity: 0.6,
+                          }}
+                        >
+                          Full file not available
+                        </span>
+                      )}
+                    </div>
+                    <ArtifactConfidence score={art.confidence_score} />
+                  </div>
+                )
+              })
+            ) : (
+              <EvidenceUnavailable message="No GitHub code artifacts for this skill pipeline." />
+            )}
+          </EvidenceViewerSection>
+
+          {/* Section 8: Transcript Evidence */}
+          <EvidenceViewerSection title="Transcript Evidence" icon="📋" count={transcriptArts.length}>
+            {transcriptArts.length > 0 ? (
+              transcriptArts.map((art) => (
+                <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
+                  {art.proof_reason && (
+                    <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                  )}
+                  {safeStr(art.artifact_data.excerpt) && (
+                    <div style={{
+                      padding: "8px 10px", background: C.skySoft,
+                      border: `1px solid #bae6fd`, borderRadius: 6,
+                      fontSize: 11, color: "#0369a1", lineHeight: 1.5, fontStyle: "italic",
+                    }}>
+                      &ldquo;{safeStr(art.artifact_data.excerpt)}&rdquo;
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <button
+                      type="button"
+                      disabled
+                      data-testid="transcript-txt-download-disabled"
+                      style={{
+                        fontSize: 11, color: C.muted, background: C.bg,
+                        border: `1px solid ${C.line}`, borderRadius: 5,
+                        padding: "3px 9px", cursor: "not-allowed", opacity: 0.6,
+                      }}
+                    >
+                      ↓ Download TXT
+                    </button>
+                    <button
+                      type="button"
+                      disabled
+                      data-testid="transcript-pdf-download-disabled"
+                      style={{
+                        fontSize: 11, color: C.muted, background: C.bg,
+                        border: `1px solid ${C.line}`, borderRadius: 5,
+                        padding: "3px 9px", cursor: "not-allowed", opacity: 0.6,
+                      }}
+                    >
+                      ↓ Download PDF
+                    </button>
+                    <span style={{ fontSize: 10, color: C.muted, fontStyle: "italic" }}>
+                      Full transcript not available for download in recruiter view.
+                    </span>
+                  </div>
+                  <ArtifactConfidence score={art.confidence_score} />
+                </div>
+              ))
+            ) : (
+              <EvidenceUnavailable message="No transcript evidence artifacts for this skill pipeline." />
+            )}
+          </EvidenceViewerSection>
+
+          {/* Section 9: Document Evidence */}
+          <EvidenceViewerSection title="Document Evidence" icon="📄" count={documentArts.length}>
+            {documentArts.length > 0 ? (
+              documentArts.map((art) => {
+                const hasDoc = isSafeViewerUrl(art.full_file_url)
+                return (
+                  <div key={art.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</div>
+                    {art.proof_reason && (
+                      <p style={{ fontSize: 11, color: C.inkSoft, margin: 0 }}>{art.proof_reason}</p>
+                    )}
+                    {hasDoc ? (
+                      <a
+                        href={art.full_file_url as string}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        data-testid="document-open-link"
+                        style={{
+                          display: "inline-flex", alignItems: "center",
+                          fontSize: 11, fontWeight: 600, color: C.amber,
+                          background: C.amberSoft, border: "1px solid #fde68a",
+                          borderRadius: 5, padding: "3px 9px", textDecoration: "none",
+                          width: "fit-content",
+                        }}
+                      >
+                        ↗ Open / Download
+                      </a>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          disabled
+                          data-testid="document-open-disabled"
+                          style={{
+                            fontSize: 11, color: C.muted, background: C.bg,
+                            border: `1px solid ${C.line}`, borderRadius: 5,
+                            padding: "3px 9px", cursor: "not-allowed", opacity: 0.6,
+                          }}
+                        >
+                          ↗ Open document
+                        </button>
+                        <span style={{ fontSize: 10, color: C.muted, fontStyle: "italic" }}>
+                          Document URL not available in recruiter-safe view.
+                        </span>
+                      </div>
+                    )}
+                    <ArtifactConfidence score={art.confidence_score} />
+                  </div>
+                )
+              })
+            ) : (
+              <EvidenceUnavailable message="No document artifacts for this skill pipeline." />
+            )}
+          </EvidenceViewerSection>
+
+          {/* Section 10: Safety footer */}
+          <div
+            data-testid="evidence-viewer-safety-footer"
+            style={{
+              marginTop: 16, padding: "12px 14px", borderRadius: 7,
+              background: "#f0f9ff", border: "1px solid #bae6fd",
+              fontSize: 11, color: "#0369a1",
+            }}
+          >
+            <strong>Privacy &amp; Safety:</strong>{" "}
+            Private files, internal storage references, temporary access links, and sensitive credentials are never exposed in this viewer. All evidence shown here has been reviewed and marked public by the candidate.
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function LockedPipelineCard({ pipeline }: { pipeline: RecruiterSafePipelineSummary }) {
   return (
     <div
@@ -4579,6 +5233,7 @@ export function RecruiterWorkPassportPreview({
   const [showModal, setShowModal] = useState(false)
   const [accessRequest, setAccessRequest] = useState<EvidenceAccessRequest | null>(null)
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null)
+  const [selectedBackendPipeline, setSelectedBackendPipeline] = useState<RecruiterSafePipelineSummary | null>(null)
   const [backendPipelines, setBackendPipelines] = useState<RecruiterSafePipelineSummary[] | null>(null)
   const [loadingPipelines, setLoadingPipelines] = useState(true)
 
@@ -4782,6 +5437,9 @@ export function RecruiterWorkPassportPreview({
                 needsReview={[]}
                 onViewSkill={setSelectedSkill}
                 accessApproved={accessRequest?.status === "approved"}
+                suppressMockActions={true}
+                pipelineMap={backendPipelineMap ?? undefined}
+                onViewBackendPipeline={setSelectedBackendPipeline}
               />
             )}
             {/* Protected pipelines: locked cards shown before approval */}
@@ -5085,12 +5743,20 @@ export function RecruiterWorkPassportPreview({
         </div>
       </div>
 
-      {/* Skill evidence detail modal */}
+      {/* Skill evidence detail modal (mock mode) */}
       {selectedSkill && (
         <SkillEvidenceDetailModal
           skillName={selectedSkill}
           accessApproved={accessRequest?.status === "approved"}
           onClose={() => setSelectedSkill(null)}
+        />
+      )}
+
+      {/* Recruiter-safe backend evidence viewer */}
+      {selectedBackendPipeline && (
+        <RecruiterSafeEvidencePipelineViewer
+          pipeline={selectedBackendPipeline}
+          onClose={() => setSelectedBackendPipeline(null)}
         />
       )}
 
