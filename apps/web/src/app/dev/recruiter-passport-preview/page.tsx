@@ -385,7 +385,7 @@ export default function DevRecruiterPassportPreviewPage() {
           view={activeView}
           onRequestAccess={() => setAccessRequested(true)}
           onRequestCreated={handleRequestCreated}
-          onReset={handleReset}
+          onReset={backendStatus !== "available" ? handleReset : undefined}
           defaultRequester={{
             name: "Stripe Early Talent",
             email: "recruiter@stripe.com",

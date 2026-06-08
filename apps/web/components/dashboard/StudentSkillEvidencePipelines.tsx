@@ -8,10 +8,12 @@ import {
 } from "../recruiter-passport/RecruiterWorkPassportPreview"
 import {
   listSkillEvidencePipelines,
+  listRecruiterSkillEvidencePipelines,
   seedMockSkillEvidencePipelines,
   updateSkillPipelineVisibility,
   type BackendSkillPipeline,
   type BackendEvidenceSource,
+  type RecruiterSafePipelineSummary,
 } from "@/lib/api"
 
 // ── Skill list (mock fallback) ────────────────────────────────────────────────
@@ -57,6 +59,14 @@ type DirectActionItem = {
   artifactStatus: string
 }
 
+type ArtifactGroup = {
+  sourceType: string
+  label: string
+  count: number
+  visibility: string
+  summary: string
+}
+
 type DisplayPipeline = {
   id: string
   backendId?: string
@@ -71,6 +81,8 @@ type DisplayPipeline = {
   stillNeedsReview: string[]
   nextAction: string
   directActions: DirectActionItem[]
+  artifactGroups: ArtifactGroup[]
+  totalArtifactCount: number
   fromBackend: boolean
 }
 
@@ -88,7 +100,10 @@ function scoreToConfidence(score: number): "high" | "medium" | "low" {
   return "low"
 }
 
-function backendToDisplay(b: BackendSkillPipeline): DisplayPipeline {
+function backendToDisplay(
+  b: BackendSkillPipeline,
+  artifacts?: RecruiterSafePipelineSummary["artifacts"],
+): DisplayPipeline {
   const supportStatusMap: Record<string, string> = {
     strongly_supported: "Strongly supported",
     partially_supported: "Partially supported",
@@ -121,6 +136,8 @@ function backendToDisplay(b: BackendSkillPipeline): DisplayPipeline {
       NEXT_ACTION[b.skill_name] ??
       "Add more evidence to improve this skill's proof.",
     directActions: [],
+    artifactGroups: artifacts ? buildArtifactGroups(artifacts) : [],
+    totalArtifactCount: artifacts ? artifacts.length : b.evidence_count,
     fromBackend: true,
   }
 }
@@ -160,6 +177,8 @@ function mockToDisplay(m: SkillEvidencePipeline): DisplayPipeline {
       proofReason: d.proofReason,
       artifactStatus: d.artifactStatus,
     })),
+    artifactGroups: [],
+    totalArtifactCount: 0,
     fromBackend: false,
   }
 }
@@ -200,6 +219,40 @@ const SOURCE_TYPE_LABEL: Record<string, string> = {
   qwen: "Visual AI",
   transcript: "Transcript",
   document: "Document",
+}
+
+const ARTIFACT_GROUP_LABEL: Record<string, string> = {
+  workflow: "Workflow evidence",
+  github: "GitHub code evidence",
+  ocr: "OCR evidence",
+  dom: "DOM evidence",
+  visual: "Visual reasoning / Qwen evidence",
+  qwen: "Visual reasoning / Qwen evidence",
+  keyframe: "Keyframe evidence",
+  transcript: "Transcript evidence",
+  document: "Document evidence",
+  review: "Review evidence",
+}
+
+function buildArtifactGroups(
+  artifacts: RecruiterSafePipelineSummary["artifacts"],
+): ArtifactGroup[] {
+  const groupMap: Record<string, { count: number; visibility: string; summaries: string[] }> = {}
+  for (const art of artifacts) {
+    const key = art.source_type
+    if (!groupMap[key]) groupMap[key] = { count: 0, visibility: art.visibility, summaries: [] }
+    groupMap[key].count++
+    if (art.proof_reason && groupMap[key].summaries.length < 1) {
+      groupMap[key].summaries.push(art.proof_reason)
+    }
+  }
+  return Object.entries(groupMap).map(([sourceType, g]) => ({
+    sourceType,
+    label: ARTIFACT_GROUP_LABEL[sourceType] ?? sourceType,
+    count: g.count,
+    visibility: g.visibility,
+    summary: g.summaries[0] ?? "",
+  }))
 }
 
 // ── SkillPipelineCard ──────────────────────────────────────────────────────────
@@ -555,6 +608,75 @@ function ManageSkillModal({
             </div>
           </div>
 
+          {/* Persisted evidence artifact inventory (backend only) */}
+          {pipeline.fromBackend && pipeline.totalArtifactCount > 0 && (
+            <div data-testid="artifact-inventory-section">
+              <div style={{
+                fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+                letterSpacing: "0.06em", color: "#6b7280", marginBottom: 8,
+              }}>
+                Persisted evidence artifacts ({pipeline.totalArtifactCount})
+              </div>
+              {pipeline.artifactGroups.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  {pipeline.artifactGroups.map((group) => {
+                    const visC = visibilityColors(
+                      group.visibility === "public"
+                        ? "public"
+                        : group.visibility === "private"
+                          ? "private"
+                          : "protected"
+                    )
+                    return (
+                      <div
+                        key={group.sourceType}
+                        data-testid={`artifact-group-${group.sourceType}`}
+                        style={{
+                          display: "flex", alignItems: "flex-start", gap: 10,
+                          padding: "8px 10px", border: "1px solid #e5e7eb",
+                          borderRadius: 8, background: "#f9fafb",
+                        }}
+                      >
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+                          background: visC.bg, color: visC.color, border: `1px solid ${visC.border}`,
+                          whiteSpace: "nowrap" as const, marginTop: 1, flexShrink: 0,
+                        }}>
+                          {group.count}
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: "#111827" }}>
+                            {group.label}
+                          </span>
+                          <span style={{
+                            fontSize: 9, fontWeight: 600, marginLeft: 6,
+                            padding: "1px 5px", borderRadius: 3,
+                            background: visC.bg, color: visC.color, border: `1px solid ${visC.border}`,
+                          }}>
+                            {group.visibility}
+                          </span>
+                          {group.summary && (
+                            <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2, lineHeight: 1.4 }}>
+                              {group.summary}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div style={{
+                  fontSize: 11, color: "#6b7280", padding: "8px 10px",
+                  border: "1px solid #e5e7eb", borderRadius: 8, background: "#f9fafb",
+                }}>
+                  {pipeline.totalArtifactCount} artifact{pipeline.totalArtifactCount !== 1 ? "s" : ""} synced.
+                  Detailed breakdown visible when pipeline is public.
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Evidence artifacts (mock-only — backend artifacts loaded separately) */}
           {pipeline.directActions.length > 0 && (
             <div>
@@ -779,9 +901,20 @@ export function StudentSkillEvidencePipelines() {
   async function loadFromBackend() {
     setLoading(true)
     try {
-      const data = await listSkillEvidencePipelines()
+      const [data, recruiterData] = await Promise.all([
+        listSkillEvidencePipelines(),
+        listRecruiterSkillEvidencePipelines(),
+      ])
+      // Build artifact map keyed by skill_name from recruiter-safe response
+      const artifactMap = new Map<string, RecruiterSafePipelineSummary["artifacts"]>()
+      if (recruiterData) {
+        for (const p of recruiterData) {
+          artifactMap.set(p.skill_name, p.artifacts)
+        }
+      }
+
       if (data && data.length > 0) {
-        const displayed = data.map(backendToDisplay)
+        const displayed = data.map((p) => backendToDisplay(p, artifactMap.get(p.skill_name)))
         setPipelines(displayed)
         setUsingFallback(false)
         // Always sync visibility from backend (overrides any stale local state)

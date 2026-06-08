@@ -2,12 +2,13 @@ import React from "react"
 import { render, screen, fireEvent, within, waitFor, act } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { StudentSkillEvidencePipelines } from "../../components/dashboard/StudentSkillEvidencePipelines"
-import type { BackendSkillPipeline } from "@/lib/api"
+import type { BackendSkillPipeline, RecruiterSafePipelineSummary } from "@/lib/api"
 
 // ── Mock @/lib/api ─────────────────────────────────────────────────────────────
 
 vi.mock("@/lib/api", () => ({
   listSkillEvidencePipelines: vi.fn(),
+  listRecruiterSkillEvidencePipelines: vi.fn(),
   seedMockSkillEvidencePipelines: vi.fn(),
   getSkillEvidencePipeline: vi.fn(),
   getRecruiterSkillPipelineView: vi.fn(),
@@ -16,6 +17,7 @@ vi.mock("@/lib/api", () => ({
 
 import {
   listSkillEvidencePipelines,
+  listRecruiterSkillEvidencePipelines,
   seedMockSkillEvidencePipelines,
   updateSkillPipelineVisibility,
 } from "@/lib/api"
@@ -67,6 +69,8 @@ describe("StudentSkillEvidencePipelines", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(updateSkillPipelineVisibility).mockResolvedValue(null)
+    // Default: recruiter-safe endpoint returns null (backend unavailable in most tests)
+    vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
   })
 
   // ── Loading state ────────────────────────────────────────────────────────────
@@ -816,6 +820,137 @@ describe("StudentSkillEvidencePipelines", () => {
       await waitFor(() => expect(screen.queryByTestId("pipelines-loading")).not.toBeInTheDocument())
       expect(screen.queryByTestId("fallback-badge")).not.toBeInTheDocument()
       expect(screen.getByTestId("pipelines-empty")).toBeInTheDocument()
+    })
+  })
+
+  // ── Artifact inventory (backend mode) ─────────────────────────────────────────
+
+  describe("artifact inventory in manage modal", () => {
+    function makeRecruiterPipeline(
+      overrides: Partial<RecruiterSafePipelineSummary> = {},
+    ): RecruiterSafePipelineSummary {
+      return {
+        id: "pipeline-uuid-1",
+        skill_name: "AI / Machine Learning",
+        skill_category: "Core ML",
+        confidence_score: 82,
+        support_status: "strongly_supported",
+        evidence_count: 5,
+        strongest_proof: { label: "GitHub", reason: "ML repo" },
+        weakest_proof: { label: "Transcript", reason: "Partial" },
+        missing_evidence: [],
+        next_actions: [],
+        evidence_sources: [],
+        recruiter_summary: "Strong ML foundation.",
+        visibility_status: "public",
+        is_locked_for_recruiter: false,
+        artifacts: [
+          { id: "a1", source_type: "workflow", source_title: "Website Proof", project_name: "ML Demo", visibility: "protected", confidence_score: 80, proof_reason: "Recorded workflow session", artifact_data: {}, exact_code_url: null, full_file_url: null },
+          { id: "a2", source_type: "ocr", source_title: "OCR Keyframe", project_name: "ML Demo", visibility: "protected", confidence_score: 70, proof_reason: "Extracted text from keyframe", artifact_data: {}, exact_code_url: null, full_file_url: null },
+          { id: "a3", source_type: "dom", source_title: "DOM Capture", project_name: "ML Demo", visibility: "protected", confidence_score: 75, proof_reason: "DOM structure captured", artifact_data: {}, exact_code_url: null, full_file_url: null },
+          { id: "a4", source_type: "workflow", source_title: "Website Proof 2", project_name: "ML Demo", visibility: "protected", confidence_score: 82, proof_reason: "Second workflow session", artifact_data: {}, exact_code_url: null, full_file_url: null },
+          { id: "a5", source_type: "transcript", source_title: "Defense Transcript", project_name: "ML Demo", visibility: "protected", confidence_score: 68, proof_reason: "Project defense excerpt", artifact_data: {}, exact_code_url: null, full_file_url: null },
+        ],
+        ...overrides,
+      }
+    }
+
+    it("shows artifact inventory section when backend returns artifacts", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline({ evidence_count: 5 })])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+      })
+
+      expect(screen.getByTestId("artifact-inventory-section")).toBeInTheDocument()
+    })
+
+    it("shows total artifact count in modal", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline({ evidence_count: 5 })])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(screen.getByTestId("artifact-inventory-section")).toHaveTextContent("Persisted evidence artifacts (5)")
+    })
+
+    it("shows workflow artifact group", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(screen.getByTestId("artifact-group-workflow")).toBeInTheDocument()
+    })
+
+    it("shows OCR artifact group", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(screen.getByTestId("artifact-group-ocr")).toBeInTheDocument()
+    })
+
+    it("shows DOM artifact group", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(screen.getByTestId("artifact-group-dom")).toBeInTheDocument()
+    })
+
+    it("shows transcript artifact group", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(screen.getByTestId("artifact-group-transcript")).toBeInTheDocument()
+    })
+
+    it("does not expose unsafe fields in artifact inventory", async () => {
+      const safeArtifact = {
+        id: "a1", source_type: "workflow", source_title: "Safe Proof", project_name: "Demo",
+        visibility: "protected", confidence_score: 80, proof_reason: "Verified session",
+        artifact_data: {}, exact_code_url: null, full_file_url: null,
+      }
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([
+        makeRecruiterPipeline({ artifacts: [safeArtifact] }),
+      ])
+
+      const { container } = render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(container.innerHTML).not.toMatch(/storage_path|signed_url|access_token|video_url|media_storage_path/i)
+    })
+
+    it("does not show artifact inventory section for fallback mock data", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue(null)
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(screen.queryByTestId("artifact-inventory-section")).not.toBeInTheDocument()
     })
   })
 

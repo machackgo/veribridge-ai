@@ -3190,7 +3190,7 @@ function WorkflowRecordingArtifact({ recording, accessApproved }: { recording: S
               </div>
             </div>
             <p style={{ fontSize: 10, color: "#475569", margin: "8px 0 0", fontStyle: "italic" }}>
-              Raw recording artifact will load here when backend media URL is connected.
+              Full recording playback not available yet. Showing verified keyframe snapshots from the saved proof session.
             </p>
           </div>
           {/* Segments */}
@@ -3621,6 +3621,9 @@ function TranscriptArtifactSection({
           Download transcript PDF
         </button>
       </div>
+      <p data-testid="transcript-pdf-unavailable-note" style={{ fontSize: 10, color: C.muted, margin: "4px 0 8px", fontStyle: "italic" }}>
+        PDF export not available yet. TXT transcript is available above.
+      </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {excerpts.map((t, i) => {
           const canView = !t.isProtected || accessApproved
@@ -3777,10 +3780,11 @@ function DocumentArtifactSection({ docs, accessApproved }: { docs: SkillDocument
                     <button
                       type="button"
                       data-testid={`open-document-btn-${i}`}
-                      onClick={() => {}}
+                      disabled
+                      title="Document file URL not connected yet. Showing extracted approved summary only."
                       style={{
                         fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 5,
-                        cursor: "pointer", color: C.amber, background: C.amberSoft, border: "1px solid #fde68a",
+                        cursor: "not-allowed", color: C.muted, background: C.bg, border: `1px solid ${C.line}`, opacity: 0.55,
                       }}
                     >
                       Open approved document
@@ -3788,15 +3792,19 @@ function DocumentArtifactSection({ docs, accessApproved }: { docs: SkillDocument
                     <button
                       type="button"
                       data-testid={`download-document-btn-${i}`}
-                      onClick={() => {}}
+                      disabled
+                      title="Document file URL not connected yet. Showing extracted approved summary only."
                       style={{
                         fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 5,
-                        cursor: "pointer", color: C.amber, background: C.amberSoft, border: "1px solid #fde68a",
+                        cursor: "not-allowed", color: C.muted, background: C.bg, border: `1px solid ${C.line}`, opacity: 0.55,
                       }}
                     >
                       Download document
                     </button>
                   </div>
+                  <p data-testid={`document-url-unavailable-${i}`} style={{ fontSize: 10, color: C.muted, margin: "4px 0 0", fontStyle: "italic" }}>
+                    Document file URL not connected yet. Showing extracted approved summary only.
+                  </p>
                   {accessApproved && (
                     <div data-testid={`document-approved-viewer-${i}`} style={{ padding: "8px 10px", borderRadius: 5, background: C.amberSoft, border: "1px solid #fde68a" }}>
                       <p style={{ fontSize: 10, color: "#92400e", fontWeight: 600, margin: "0 0 2px" }}>Approved document file viewer</p>
