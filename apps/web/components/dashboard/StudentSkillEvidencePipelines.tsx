@@ -136,8 +136,8 @@ function backendToDisplay(
       NEXT_ACTION[b.skill_name] ??
       "Add more evidence to improve this skill's proof.",
     directActions: [],
-    artifactGroups: artifacts ? buildArtifactGroups(artifacts) : [],
-    totalArtifactCount: artifacts ? artifacts.length : b.evidence_count,
+    artifactGroups: artifacts && artifacts.length > 0 ? buildArtifactGroups(artifacts) : [],
+    totalArtifactCount: b.evidence_count,
     fromBackend: true,
   }
 }
@@ -670,8 +670,12 @@ function ManageSkillModal({
                   fontSize: 11, color: "#6b7280", padding: "8px 10px",
                   border: "1px solid #e5e7eb", borderRadius: 8, background: "#f9fafb",
                 }}>
-                  {pipeline.totalArtifactCount} artifact{pipeline.totalArtifactCount !== 1 ? "s" : ""} synced.
-                  Detailed breakdown visible when pipeline is public.
+                  {pipeline.totalArtifactCount} artifact{pipeline.totalArtifactCount !== 1 ? "s" : ""} synced
+                  {visibility === "protected"
+                    ? " — protected. Recruiters must request access to view artifact details."
+                    : visibility === "private"
+                      ? " — private. Set to Protected or Public to share artifact details with recruiters."
+                      : " — artifact detail loading from backend."}
                 </div>
               )}
             </div>

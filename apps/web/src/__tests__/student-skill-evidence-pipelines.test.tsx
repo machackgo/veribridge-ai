@@ -952,6 +952,150 @@ describe("StudentSkillEvidencePipelines", () => {
 
       expect(screen.queryByTestId("artifact-inventory-section")).not.toBeInTheDocument()
     })
+
+    it("artifact inventory renders for arbitrary backend pipeline (WebGL), not only AI/ML", async () => {
+      const webglPipeline: BackendSkillPipeline = {
+        id: "pipeline-webgl-1",
+        student_id: "student-1",
+        profile_id: "profile-1",
+        skill_name: "WebGL",
+        skill_category: "Graphics",
+        confidence_score: 78,
+        support_status: "strongly_supported",
+        evidence_count: 3,
+        strongest_proof: { label: "Workflow", reason: "3D rendering captured" },
+        weakest_proof: null,
+        missing_evidence: [],
+        next_actions: ["Add more geometry evidence"],
+        evidence_sources: [
+          { key: "workflow", label: "Workflow recording", status: "supported", score: 80, reason: "3D workflow" },
+          { key: "dom", label: "DOM Evidence", status: "supported", score: 75, reason: "Canvas DOM captured" },
+          { key: "ocr", label: "OCR", status: "partial", score: 55, reason: "Partial text extraction" },
+        ],
+        recruiter_summary: "WebGL evidence from Website Proof.",
+        student_summary: "Your WebGL evidence from workflow recording.",
+        visibility_status: "public",
+        created_at: "2025-01-01T00:00:00Z",
+        updated_at: "2025-01-01T00:00:00Z",
+      }
+      const webglRecruiterPipeline: RecruiterSafePipelineSummary = {
+        id: "pipeline-webgl-1",
+        skill_name: "WebGL",
+        skill_category: "Graphics",
+        confidence_score: 78,
+        support_status: "strongly_supported",
+        evidence_count: 3,
+        strongest_proof: { label: "Workflow", reason: "3D rendering captured" },
+        weakest_proof: null,
+        missing_evidence: [],
+        next_actions: [],
+        evidence_sources: [],
+        recruiter_summary: "WebGL evidence.",
+        visibility_status: "public",
+        is_locked_for_recruiter: false,
+        artifacts: [
+          { id: "w1", source_type: "workflow", source_title: "3D Proof Session", project_name: "WebGL Demo", visibility: "public", confidence_score: 80, proof_reason: "3D rendering observed", artifact_data: {}, exact_code_url: null, full_file_url: null },
+          { id: "w2", source_type: "dom", source_title: "Canvas DOM", project_name: "WebGL Demo", visibility: "public", confidence_score: 75, proof_reason: "Canvas element captured", artifact_data: {}, exact_code_url: null, full_file_url: null },
+          { id: "w3", source_type: "keyframe", source_title: "3D Keyframe", project_name: "WebGL Demo", visibility: "public", confidence_score: 70, proof_reason: "Keyframe from recording", artifact_data: {}, exact_code_url: null, full_file_url: null },
+        ],
+      }
+
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([webglPipeline])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([webglRecruiterPipeline])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId("manage-btn-webgl"))
+      fireEvent.click(screen.getByTestId("manage-btn-webgl"))
+
+      expect(screen.getByTestId("artifact-inventory-section")).toBeInTheDocument()
+      expect(screen.getByTestId("artifact-inventory-section")).toHaveTextContent("Persisted evidence artifacts (3)")
+      expect(screen.getByTestId("artifact-group-workflow")).toBeInTheDocument()
+      expect(screen.getByTestId("artifact-group-dom")).toBeInTheDocument()
+      expect(screen.getByTestId("artifact-group-keyframe")).toBeInTheDocument()
+    })
+
+    it("protected pipeline still shows artifact count from evidence_count when recruiter-safe returns empty artifacts", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 8, visibility_status: "protected" }),
+      ])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([
+        makeRecruiterPipeline({ artifacts: [], is_locked_for_recruiter: true, visibility_status: "protected" }),
+      ])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      const section = screen.getByTestId("artifact-inventory-section")
+      expect(section).toBeInTheDocument()
+      expect(section).toHaveTextContent("Persisted evidence artifacts (8)")
+    })
+
+    it("AI/ML with only 2 artifacts shows count 2 not a fake large number", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 2 }),
+      ])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([
+        makeRecruiterPipeline({
+          artifacts: [
+            { id: "b1", source_type: "github", source_title: "GitHub", project_name: "Demo", visibility: "public", confidence_score: 90, proof_reason: "GitHub code", artifact_data: {}, exact_code_url: "https://github.com/example/repo/blob/main/file.py#L1-L10", full_file_url: null },
+            { id: "b2", source_type: "workflow", source_title: "Workflow", project_name: "Demo", visibility: "public", confidence_score: 80, proof_reason: "Workflow", artifact_data: {}, exact_code_url: null, full_file_url: null },
+          ],
+        }),
+      ])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      const section = screen.getByTestId("artifact-inventory-section")
+      expect(section).toHaveTextContent("Persisted evidence artifacts (2)")
+      expect(section.textContent).not.toMatch(/\(5[5-9]\)|\([6-9]\d\)/i)
+    })
+
+    it("empty artifact state: no inventory section when evidence_count is 0", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 0 }),
+      ])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([
+        makeRecruiterPipeline({ artifacts: [] }),
+      ])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(screen.queryByTestId("artifact-inventory-section")).not.toBeInTheDocument()
+    })
+
+    it("private pipeline shows artifact count with private message when artifacts not available", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 4, visibility_status: "private" }),
+      ])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      const section = screen.getByTestId("artifact-inventory-section")
+      expect(section).toBeInTheDocument()
+      expect(section).toHaveTextContent("4 artifacts synced")
+    })
+
+    it("does not render unsafe strings in artifact inventory section", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline({ evidence_count: 5 })])
+      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+
+      const { container } = render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      const html = container.innerHTML
+      expect(html).not.toMatch(/storage\.googleapis|supabase\.co\/storage|access_token|signed_url/i)
+      expect(html).not.toMatch(/video_url|media_storage_path|raw_full_dom|raw_full_transcript/i)
+      expect(html).not.toMatch(/service_role|anon_key|env_secret/i)
+    })
   })
 
   // ── Section structure ─────────────────────────────────────────────────────────

@@ -501,10 +501,17 @@ class TestRecruiterSafety:
         ml_summary = next((s for s in summaries if s.skill_name == "Machine Learning"), None)
         assert ml_summary is not None
         assert ml_summary.is_locked_for_recruiter is False
-        # Protected artifacts in a public pipeline appear as locked cards (empty artifact_data)
+        # Protected artifacts in a public pipeline show safe sanitized data.
+        # artifact visibility is a student label, not a data gate — the pipeline gate controls access.
         for art in ml_summary.artifacts:
             if art.get("visibility") == "protected":
-                assert art.get("artifact_data") == {}
+                # Safe artifact data is surfaced (not empty) for public pipelines
+                assert isinstance(art.get("artifact_data"), dict)
+                # Unsafe storage/auth keys must never appear
+                data = art.get("artifact_data") or {}
+                assert "signed_url" not in data
+                assert "storage_path" not in data
+                assert "access_token" not in data
 
 
 class TestNoSkillsCase:
