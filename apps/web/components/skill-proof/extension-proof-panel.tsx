@@ -1770,6 +1770,41 @@ function GraphicalRenderingBadge() {
 // Shows structured Qwen2.5-VL / Qwen3-VL reasoning when VISUAL_REASONING_ENABLED=true.
 // Hidden cleanly when reasoning is disabled or null.
 
+const _RECORDER_UI_PHRASES_FE = [
+  "live video recording", "stop or send the recording", "recording controls",
+  "recorder controls", "veribridge screen recorder", "veribridge recording interface",
+  "recording active", "stop recording", "send proof", "send recording",
+  "screen recorder overlay", "browser recorder", "extension recorder",
+  "stop & upload", "start screen recording", "recording interface",
+  "recorder tab", "veribridge recorder",
+]
+
+function _containsRecorderUi(text: string): boolean {
+  const lower = (text || "").toLowerCase()
+  return _RECORDER_UI_PHRASES_FE.some(p => lower.includes(p))
+}
+
+function _filterRecorderUiElements(elements: string[]): string[] {
+  return (elements || []).filter(el => !_containsRecorderUi(el))
+}
+
+function _preferSanitizedSummary(obs: {
+  sanitized_summary?: string
+  visual_summary?: string
+  recorder_ui_detected?: boolean
+}): string {
+  if (obs.sanitized_summary && !_containsRecorderUi(obs.sanitized_summary)) {
+    return obs.sanitized_summary
+  }
+  if (obs.visual_summary && !_containsRecorderUi(obs.visual_summary)) {
+    return obs.visual_summary
+  }
+  if (obs.visual_summary && obs.recorder_ui_detected) {
+    return ""
+  }
+  return obs.visual_summary || ""
+}
+
 type VisualReasoningSummary = NonNullable<WorkflowAnalysisResponse["visual_reasoning_summary"]>
 
 function AdvancedVisualReasoningSection({
@@ -1915,11 +1950,22 @@ function AdvancedVisualReasoningSection({
                       confidence: {(obs.confidence_score * 100).toFixed(0)}%
                     </span>
                   </div>
-                  {obs.visual_summary && (
-                    <div style={{ fontSize: 10, color: "#374151", lineHeight: 1.4 }}>
-                      {obs.visual_summary}
-                    </div>
-                  )}
+                  {(() => {
+                    const displaySummary = _preferSanitizedSummary(obs as {
+                      sanitized_summary?: string
+                      visual_summary?: string
+                      recorder_ui_detected?: boolean
+                    })
+                    return displaySummary ? (
+                      <div style={{ fontSize: 10, color: "#374151", lineHeight: 1.4 }}>
+                        {displaySummary}
+                      </div>
+                    ) : (obs as { recorder_ui_detected?: boolean }).recorder_ui_detected ? (
+                      <div style={{ fontSize: 10, color: "#92400e", lineHeight: 1.4, fontStyle: "italic" }}>
+                        Recorder UI was detected and excluded from target-app evidence.
+                      </div>
+                    ) : null
+                  })()}
                   {/* Visible diagrams / objects */}
                   {(obs.visible_objects_or_diagrams ?? obs.visible_objects ?? []).length > 0 && (
                     <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 3 }}>
@@ -1933,18 +1979,21 @@ function AdvancedVisualReasoningSection({
                       ))}
                     </div>
                   )}
-                  {obs.visible_ui_elements && obs.visible_ui_elements.length > 0 && (
-                    <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 3 }}>
-                      <span style={{ fontSize: 9, color: "#6b7280", marginRight: 2 }}>UI:</span>
-                      {obs.visible_ui_elements.slice(0, 4).map((el, j) => (
-                        <span key={j} style={{ fontSize: 9, padding: "1px 5px",
-                          background: "#ede9fe", color: "#6d28d9",
-                          borderRadius: 3, border: "1px solid #c4b5fd" }}>
-                          {el}
-                        </span>
-                      ))}
-                    </div>
-                  )}
+                  {(() => {
+                    const cleanUi = _filterRecorderUiElements(obs.visible_ui_elements || [])
+                    return cleanUi.length > 0 ? (
+                      <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 3 }}>
+                        <span style={{ fontSize: 9, color: "#6b7280", marginRight: 2 }}>UI:</span>
+                        {cleanUi.slice(0, 4).map((el, j) => (
+                          <span key={j} style={{ fontSize: 9, padding: "1px 5px",
+                            background: "#ede9fe", color: "#6d28d9",
+                            borderRadius: 3, border: "1px solid #c4b5fd" }}>
+                            {el}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null
+                  })()}
                   {obs.detected_outputs && obs.detected_outputs.length > 0 && (
                     <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 3 }}>
                       <span style={{ fontSize: 9, color: "#6b7280", marginRight: 2 }}>Outputs:</span>

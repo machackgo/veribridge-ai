@@ -163,6 +163,7 @@ def _build_proof_verification_prompt(
     ocr_snippets: list[str],
     timestamp_ms: int | None,
     skill_checklist: dict[str, list[str]],
+    target_domain: str = "",
 ) -> str:
     """Build a targeted, context-aware proof-verification prompt for Qwen-VL."""
     parts: list[str] = []
@@ -183,7 +184,27 @@ def _build_proof_verification_prompt(
         parts.append(f"Proof objective: {proof_objective[:200]}")
 
     if website_context:
-        parts.append(f"Target website/app: {website_context[:100]}")
+        parts.append(f"Target website/app URL: {website_context[:150]}")
+    if target_domain:
+        parts.append(f"Target domain: {target_domain[:100]}")
+
+    if website_context or target_domain:
+        parts.append(
+            "\nCRITICAL — RECORDER UI EXCLUSION:\n"
+            "This frame may include a browser screen recording overlay. "
+            "YOU MUST IGNORE all of the following and treat them as NON-EVIDENCE:\n"
+            "  • VeriBridge Screen Recorder overlay or toolbar\n"
+            "  • 'Recording active', 'Recording controls', 'Stop Recording' buttons\n"
+            "  • 'Send Proof', 'Stop & Upload Video', 'Send Recording' buttons\n"
+            "  • Any recorder timer, event counter, or screen-recording UI element\n"
+            "  • Browser extension popups, recorder tabs, or VeriBridge UI panels\n"
+            "When recorder UI is visible, set recorder_ui_detected=true and describe it ONLY in "
+            "non_target_ui_observation — do NOT include it in visual_summary, "
+            "target_app_observation, or sanitized_summary.\n"
+            f"Focus ONLY on the target website content at domain: {target_domain or website_context[:80] or 'unknown'}.\n"
+            "If the target site is NOT clearly visible (recorder overlay covers it), "
+            "set target_app_visible=false and recruiter_grade=false.\n"
+        )
 
     if ocr_snippets:
         parts.append("\nOCR text extracted from this frame:")
@@ -219,13 +240,19 @@ def _build_proof_verification_prompt(
         "Return ONLY a valid JSON object. No markdown, no code blocks, no explanation.\n"
         "\n"
         "{\n"
-        '  "visual_summary": "<one sentence: what is most prominent in this frame>",\n'
+        '  "visual_summary": "<one sentence: what is most prominent in this frame — TARGET SITE only, exclude recorder UI>",\n'
+        '  "sanitized_summary": "<clean recruiter-facing summary of the TARGET APP only — no recorder/browser UI mentioned>",\n'
+        '  "target_app_visible": true,\n'
+        '  "target_app_observation": "<what is the target website/app showing — ignore recorder overlay>",\n'
+        '  "recorder_ui_detected": false,\n'
+        '  "non_target_ui_observation": "<if recorder/browser UI is visible, describe it here — not in other fields>",\n'
+        '  "recruiter_grade": true,\n'
         '  "evidence_kind": "<direct_workflow|contextual_page|embedded_video|unrelated>",\n'
         '  "skill_support_level": "<strong|partial|weak|none>",\n'
-        '  "visible_ui_elements": ["<UI components: buttons, panels, controls, toolbars>"],\n'
+        '  "visible_ui_elements": ["<TARGET APP UI components only — NOT recorder buttons/controls>"],\n'
         '  "visible_objects_or_diagrams": ["<neural network diagram, chart, plot, model architecture, code, etc>"],\n'
         '  "detected_workflow_stage": "<model_training|results_display|data_input|prediction_output|processing|navigation|browsing|idle|unknown>",\n'
-        '  "detected_user_action": "<what the user appears to be doing>",\n'
+        '  "detected_user_action": "<what the user appears to be doing on the TARGET SITE>",\n'
         '  "detected_outputs": ["<visible numbers, metrics, labels, results>"],\n'
         '  "skill_evidence": {\n'
         '    "<skill name>": {"items_visible": ["<checklist items confirmed visible>"], "verdict": "<supported|partial|not_visible>"}\n'
@@ -233,7 +260,7 @@ def _build_proof_verification_prompt(
         '  "supported_skills": ["<skills with clear visible DIRECT evidence — not marketing/homepage/video>"],\n'
         '  "missing_or_unclear_evidence": ["<skills or items not clearly visible>"],\n'
         '  "confidence_score": 0.7,\n'
-        '  "limitations": ["<any analysis limitations, especially if embedded video or marketing content is visible>"]\n'
+        '  "limitations": ["<any analysis limitations, especially if recorder UI or embedded video is visible>"]\n'
         "}\n"
         "\n"
         "Rules:\n"
@@ -243,11 +270,77 @@ def _build_proof_verification_prompt(
         "4. If the frame shows a fullscreen or embedded VIDEO PLAYING (not the student's own interaction),\n"
         "   set evidence_kind=embedded_video, skill_support_level=none, supported_skills=[], confidence_score<=0.2.\n"
         "   Add limitation: 'Contextual evidence only — embedded video, not direct proof of student skill.'\n"
-        "5. If evidence is unclear, mark it unclear — do not guess or hallucinate.\n"
-        "6. Return ONLY the JSON object — no other text before or after."
+        "5. RECORDER UI RULE: If recording controls (Stop Recording, Send Proof, Recording active) are visible,\n"
+        "   set recorder_ui_detected=true. Put recorder UI description ONLY in non_target_ui_observation.\n"
+        "   visible_ui_elements must contain ONLY target-site UI. sanitized_summary must not mention recorder.\n"
+        "6. recruiter_grade=false when the target app is not clearly visible or only recorder UI is shown.\n"
+        "7. If evidence is unclear, mark it unclear — do not guess or hallucinate.\n"
+        "8. Return ONLY the JSON object — no other text before or after."
     )
 
     return "\n".join(parts)
+
+
+# ── Recorder UI phrase detection and sanitization ─────────────────────────────
+
+# Phrases that indicate Qwen analyzed the recorder/browser UI instead of the
+# target app.  Any of these in a visual summary means the observation includes
+# recorder noise.  Keep lowercase for case-insensitive matching.
+_RECORDER_UI_PHRASES: frozenset[str] = frozenset({
+    "live video recording",
+    "stop or send the recording",
+    "recording controls",
+    "recorder controls",
+    "veribridge screen recorder",
+    "veribridge recording interface",
+    "recording active",
+    "stop recording",
+    "send proof",
+    "send recording",
+    "screen recorder overlay",
+    "browser recorder",
+    "extension recorder",
+    "stop & upload",
+    "start screen recording",
+    "recording interface",
+    "recorder tab",
+    "proof builder is open",
+    "veribridge recorder",
+    "veribridge ai is open",
+    "screen recording interface",
+})
+
+
+def _contains_recorder_ui(text: str) -> bool:
+    """True if text contains any recorder UI phrase."""
+    lower = (text or "").lower()
+    return any(phrase in lower for phrase in _RECORDER_UI_PHRASES)
+
+
+def _sanitize_text_of_recorder_phrases(text: str) -> tuple[str, bool]:
+    """Remove recorder-UI-contaminated sentences from text.
+
+    Returns (sanitized_text, recorder_ui_detected).
+    If the whole text is recorder-focused, returns ("", True).
+    If no recorder phrases are found, returns (text, False) unchanged.
+    """
+    if not text or not text.strip():
+        return text or "", False
+    if not _contains_recorder_ui(text):
+        return text, False
+    # Split on sentence boundaries and keep only target-app sentences.
+    sentences = [s.strip() for s in text.replace("! ", ". ").split(". ") if s.strip()]
+    clean = [s for s in sentences if not _contains_recorder_ui(s)]
+    return (". ".join(clean), True) if clean else ("", True)
+
+
+def _sanitize_ui_elements(elements: list[str]) -> tuple[list[str], list[str]]:
+    """Split a list of UI element strings into (clean, removed) by recorder phrases."""
+    clean: list[str] = []
+    removed: list[str] = []
+    for el in elements:
+        (removed if _contains_recorder_ui(el) else clean).append(el)
+    return clean, removed
 
 
 # ── Sensitive-text masking (mirrors workflow_visual_analysis_service) ──────────
@@ -312,6 +405,14 @@ class VisualReasoningObservation:
     confidence_score: float = 0.0
     limitations: list[str] = field(default_factory=list)
 
+    # Recorder UI sanitization fields
+    recorder_ui_detected: bool = False
+    sanitized_summary: str = ""
+    target_app_visible: bool | None = None
+    target_app_observation: str = ""
+    non_target_ui_observation: str = ""
+    recruiter_grade: bool = True
+
     # Meta
     status: str = REASONING_STATUS_DISABLED
     privacy_flags: list[str] = field(default_factory=list)
@@ -323,6 +424,12 @@ class VisualReasoningObservation:
             "timestamp_ms":                 self.timestamp_ms,
             "model_provider":               self.model_provider,
             "visual_summary":               self.visual_summary,
+            "sanitized_summary":            self.sanitized_summary,
+            "recorder_ui_detected":         self.recorder_ui_detected,
+            "target_app_visible":           self.target_app_visible,
+            "target_app_observation":       self.target_app_observation,
+            "non_target_ui_observation":    self.non_target_ui_observation,
+            "recruiter_grade":              self.recruiter_grade,
             "evidence_kind":                self.evidence_kind,
             "skill_support_level":          self.skill_support_level,
             "visible_ui_elements":          self.visible_ui_elements,
@@ -746,8 +853,38 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
         raw_support = str(parsed.get("skill_support_level", "")).lower().strip()
         skill_support_level = raw_support if raw_support in _VALID_SUPPORT_LEVELS else ""
 
+        raw_target_app_visible = parsed.get("target_app_visible")
+        if isinstance(raw_target_app_visible, bool):
+            target_app_visible: bool | None = raw_target_app_visible
+        elif isinstance(raw_target_app_visible, str):
+            target_app_visible = raw_target_app_visible.lower() not in ("false", "0", "no")
+        else:
+            target_app_visible = None
+
+        raw_recorder_ui = parsed.get("recorder_ui_detected", False)
+        if isinstance(raw_recorder_ui, bool):
+            recorder_ui_detected = raw_recorder_ui
+        elif isinstance(raw_recorder_ui, str):
+            recorder_ui_detected = raw_recorder_ui.lower() in ("true", "1", "yes")
+        else:
+            recorder_ui_detected = False
+
+        raw_recruiter_grade = parsed.get("recruiter_grade", True)
+        if isinstance(raw_recruiter_grade, bool):
+            recruiter_grade = raw_recruiter_grade
+        elif isinstance(raw_recruiter_grade, str):
+            recruiter_grade = raw_recruiter_grade.lower() not in ("false", "0", "no")
+        else:
+            recruiter_grade = True
+
         return {
             "visual_summary":               str(parsed.get("visual_summary", ""))[:500],
+            "sanitized_summary":            str(parsed.get("sanitized_summary", ""))[:500],
+            "target_app_visible":           target_app_visible,
+            "target_app_observation":       str(parsed.get("target_app_observation", ""))[:400],
+            "recorder_ui_detected":         recorder_ui_detected,
+            "non_target_ui_observation":    str(parsed.get("non_target_ui_observation", ""))[:400],
+            "recruiter_grade":              recruiter_grade,
             "evidence_kind":                evidence_kind,
             "skill_support_level":          skill_support_level,
             "visible_ui_elements":          to_str_list(parsed.get("visible_ui_elements")),
@@ -801,6 +938,7 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
             ocr_snippets=list(ctx.get("ocr_snippets") or []),
             timestamp_ms=timestamp_ms,
             skill_checklist=checklist,
+            target_domain=str(ctx.get("target_domain", "")),
         )
         logger.debug(
             "[VisionReasoning] dynamic prompt built: frame_index=%s skills=%s",
@@ -826,14 +964,69 @@ class QwenVLReasoningProvider(VisualReasoningProvider):
         parsed = self._parse_json_output(cleaned)
         norm = self._normalize_parsed(parsed)
 
+        # ── Post-processing: apply recorder UI sanitizer ───────────────────────
+        # Even when the prompt instructs Qwen to separate recorder UI, model output
+        # can still blend them.  Apply phrase-level sanitization as a defense layer.
+        raw_summary = norm["visual_summary"]
+        sanitized_from_prompt = norm["sanitized_summary"]
+
+        clean_summary, recorder_detected_in_summary = _sanitize_text_of_recorder_phrases(raw_summary)
+        clean_ui_elements, removed_ui = _sanitize_ui_elements(norm["visible_ui_elements"])
+
+        # Determine final sanitized_summary: prefer explicit Qwen field, then clean_summary
+        if sanitized_from_prompt and not _contains_recorder_ui(sanitized_from_prompt):
+            final_sanitized = sanitized_from_prompt
+        elif clean_summary:
+            final_sanitized = clean_summary
+        else:
+            final_sanitized = ""
+
+        # Final recorder_ui_detected: True if Qwen flagged it OR sanitizer caught phrases
+        recorder_ui_detected = (
+            norm["recorder_ui_detected"]
+            or recorder_detected_in_summary
+            or bool(removed_ui)
+        )
+
+        # If recorder UI contaminated the summary and no target content survived,
+        # downgrade recruiter_grade
+        recruiter_grade = norm["recruiter_grade"]
+        if recorder_ui_detected and not final_sanitized and norm["target_app_visible"] is not True:
+            recruiter_grade = False
+
+        # Build non_target_ui_observation: include recorder phrases found by sanitizer
+        non_target_obs = norm["non_target_ui_observation"]
+        if removed_ui and not non_target_obs:
+            non_target_obs = (
+                "Recorder UI elements were visible and excluded from target-app evidence: "
+                + ", ".join(removed_ui[:4])
+            )
+
+        if recorder_ui_detected and not norm["limitations"]:
+            norm["limitations"] = [
+                "Recorder UI was detected and excluded from recruiter-grade evidence."
+            ]
+        elif recorder_ui_detected:
+            limit_key = "recorder ui"
+            if not any(limit_key in lim.lower() for lim in norm["limitations"]):
+                norm["limitations"] = list(norm["limitations"]) + [
+                    "Recorder UI was detected and excluded from recruiter-grade evidence."
+                ]
+
         return VisualReasoningObservation(
             frame_index=frame_index,
             timestamp_ms=timestamp_ms,
             model_provider=provider_label,
-            visual_summary=norm["visual_summary"],
+            visual_summary=raw_summary,
+            sanitized_summary=final_sanitized,
+            recorder_ui_detected=recorder_ui_detected,
+            target_app_visible=norm["target_app_visible"],
+            target_app_observation=norm["target_app_observation"],
+            non_target_ui_observation=non_target_obs,
+            recruiter_grade=recruiter_grade,
             evidence_kind=norm["evidence_kind"],
             skill_support_level=norm["skill_support_level"],
-            visible_ui_elements=norm["visible_ui_elements"],
+            visible_ui_elements=clean_ui_elements,
             visible_objects=norm["visible_objects"],
             visible_objects_or_diagrams=norm["visible_objects_or_diagrams"],
             detected_workflow_stage=norm["detected_workflow_stage"],
@@ -1387,6 +1580,7 @@ class VisualReasoningService:
         max_frames: int | None = None,
         proof_objective: str = "",
         website_context: str = "",
+        target_domain: str = "",
         dom_snippets: list[str] | None = None,
         ocr_snippets: list[str] | None = None,
     ) -> VisualReasoningSessionSummary:
@@ -1476,6 +1670,7 @@ class VisualReasoningService:
                 "timestamp_ms":   ts_ms,
                 "proof_objective": proof_objective,
                 "website_context": website_context,
+                "target_domain":   target_domain,
                 "dom_snippets":    dom_snippets or [],
                 "ocr_snippets":    ocr_snippets or [],
             }

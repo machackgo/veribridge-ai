@@ -809,6 +809,44 @@ function FrameOCREvidenceSubsection({
 // Shows structured Qwen2.5-VL / Qwen3-VL reasoning when enabled.
 // Hidden cleanly when reasoning is disabled (VISUAL_REASONING_ENABLED=false).
 
+const _WF_RECORDER_UI_PHRASES = [
+  "live video recording", "stop or send the recording", "recording controls",
+  "recorder controls", "veribridge screen recorder", "veribridge recording interface",
+  "recording active", "stop recording", "send proof", "send recording",
+  "screen recorder overlay", "browser recorder", "extension recorder",
+  "stop & upload", "start screen recording", "recording interface",
+  "recorder tab", "veribridge recorder",
+  "screen recording interface",
+  "veribridge ai is open",
+  "proof builder is open",
+  "start and stop recording",
+  "showing options to start and stop recording",
+]
+
+function _wfContainsRecorderUi(text: string): boolean {
+  const lower = (text || "").toLowerCase()
+  return _WF_RECORDER_UI_PHRASES.some(p => lower.includes(p))
+}
+
+function _wfPreferSanitizedSummary(obs: {
+  sanitized_summary?: string
+  visual_summary?: string
+  recorder_ui_detected?: boolean
+}): string {
+  if (obs.sanitized_summary && !_wfContainsRecorderUi(obs.sanitized_summary)) {
+    return obs.sanitized_summary
+  }
+  if (obs.visual_summary && !_wfContainsRecorderUi(obs.visual_summary)) {
+    return obs.visual_summary
+  }
+  if (obs.recorder_ui_detected) return ""
+  return obs.visual_summary || ""
+}
+
+function _wfFilterRecorderUiElements(elements: string[]): string[] {
+  return (elements || []).filter(el => !_wfContainsRecorderUi(el))
+}
+
 type VisualReasoningSummary = NonNullable<WorkflowAnalysisResponse["visual_reasoning_summary"]>
 
 function AdvancedVisualReasoningSection({
@@ -969,11 +1007,22 @@ function AdvancedVisualReasoningSection({
                       confidence: {(obs.confidence_score * 100).toFixed(0)}%
                     </span>
                   </div>
-                  {obs.visual_summary && (
-                    <div style={{ fontSize: 10, color: "#374151", lineHeight: 1.4 }}>
-                      {obs.visual_summary}
-                    </div>
-                  )}
+                  {(() => {
+                    const displaySummary = _wfPreferSanitizedSummary(obs as {
+                      sanitized_summary?: string
+                      visual_summary?: string
+                      recorder_ui_detected?: boolean
+                    })
+                    return displaySummary ? (
+                      <div style={{ fontSize: 10, color: "#374151", lineHeight: 1.4 }}>
+                        {displaySummary}
+                      </div>
+                    ) : (obs as { recorder_ui_detected?: boolean }).recorder_ui_detected ? (
+                      <div style={{ fontSize: 10, color: "#92400e", lineHeight: 1.4, fontStyle: "italic" }}>
+                        Recorder UI was detected and excluded from target-app evidence.
+                      </div>
+                    ) : null
+                  })()}
                   {obs.detected_outputs && obs.detected_outputs.length > 0 && (
                     <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 3 }}>
                       {obs.detected_outputs.slice(0, 4).map((out, j) => (

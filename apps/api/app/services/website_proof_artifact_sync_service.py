@@ -79,6 +79,22 @@ _RECORDER_UI_PHRASES: frozenset[str] = frozenset({
     "start screen recording",
     "recording interface",
     "proof builder is open",
+    # Exact phrases from the failing Teachable Machine session (added 2026-06-09)
+    "live video recording",
+    "stop or send the recording",
+    "recording controls",
+    "recorder controls",
+    "veribridge screen recorder",
+    "veribridge recording interface",
+    "recording active",
+    "stop recording",
+    "send proof",
+    "send recording",
+    "screen recorder overlay",
+    "browser recorder",
+    "extension recorder",
+    "start and stop recording",
+    "showing options to start and stop recording",
 })
 
 
@@ -825,15 +841,25 @@ class WebsiteProofArtifactSyncService:
         recorder_ui_detected = _is_recorder_ui_text(summary)
         target_domain = _extract_domain(str(wf.get("target_website") or ""))
         qwen_quality = "noisy" if recorder_ui_detected else "clean"
+        # Compute sanitized target-only summary by dropping recorder-contaminated segments
+        if recorder_ui_detected:
+            raw_segs = [s.strip() for s in summary.replace(" | ", ";").replace("\n", ";").split(";") if s.strip()]
+            clean_segs = [s for s in raw_segs if not _is_recorder_ui_text(s)]
+            sanitized_visual_summary = _truncate("; ".join(clean_segs), 400) if clean_segs else ""
+        else:
+            sanitized_visual_summary = ""
         artifact_data = _strip_unsafe({
             "proof_session_id": session_id,
             "visual_observation_summary": summary,
+            "sanitized_visual_summary": sanitized_visual_summary or None,
             "evidence_reasoning": _truncate(str(vrs.get("missing_claims") or ""), 200),
             "confidence": round(confidence / 100.0, 2),
             "recorder_ui_detected": recorder_ui_detected,
             "evidence_quality": qwen_quality,
             "target_domain": target_domain or None,
         })
+        # Never expose raw contaminated Qwen output as proof_reason
+        safe_proof_reason = "" if recorder_ui_detected else _truncate(summary, 200)
         self._add_artifact(
             user_id,
             SkillEvidenceArtifactCreate(
@@ -845,7 +871,7 @@ class WebsiteProofArtifactSyncService:
                 visibility="protected",
                 confidence_score=confidence,
                 relevance_to_skill=f"Qwen visual analysis supports {skill}",
-                proof_reason=_truncate(summary, 200),
+                proof_reason=safe_proof_reason,
                 artifact_data=artifact_data,
             ),
             result,

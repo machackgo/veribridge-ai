@@ -55,6 +55,7 @@ from app.services.visual_reasoning_service import (
     select_frame_ids_for_reasoning,
 )
 from app.services.keyframe_storage_service import KeyframeStorageService
+from app.services.proof_target_resolver import resolve_target_url, resolve_target_domain
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -557,20 +558,35 @@ async def upload_workflow_video(
                     _claimed_skills: list[str] = []
                     _proof_objective: str = ""
                     _website_context: str = ""
+                    _target_domain: str = ""
                     _ocr_snippets: list[str] = []
                     try:
                         _sess = db.table("extension_proof_sessions").select(
-                            "claimed_skills, proof_objective, website_url"
+                            "claimed_skills, proof_objective, website_url, proof_data"
                         ).eq("id", session_id).eq("user_id", user_id).maybe_single().execute()
                         if _sess and _sess.data:
                             raw_skills = _sess.data.get("claimed_skills") or []
                             _claimed_skills = [str(s) for s in raw_skills if s] if isinstance(raw_skills, list) else []
                             _proof_objective = str(_sess.data.get("proof_objective") or "")[:300]
-                            _website_context = str(_sess.data.get("website_url") or "")[:100]
+                            # Use proof_target_resolver to get canonical URL/domain,
+                            # falling back to proof_data.live_website_check.website_url
+                            # when extension_proof_sessions.website_url is None.
+                            _session_url = _sess.data.get("website_url")
+                            _proof_data = _sess.data.get("proof_data") or {}
+                            _resolved_url = resolve_target_url(_session_url, _proof_data)
+                            _resolved_domain = resolve_target_domain(_session_url, _proof_data)
+                            _website_context = (_resolved_url or "")[:150]
+                            _target_domain = (_resolved_domain or "")[:100]
                     except Exception as _ctx_exc:
                         logger.warning("[WorkflowVideo] Could not fetch session context for Qwen prompt (non-fatal): %s", _ctx_exc)
 
                     # Fetch OCR text already extracted from keyframes (OCR ran in step 5)
+                    _RECORDER_NOISE_LOWER: frozenset[str] = frozenset({
+                        "veribridge screen recorder", "recording active", "stop recording",
+                        "send proof", "recording controls", "recorder controls",
+                        "stop & upload", "live video recording", "stop or send the recording",
+                        "screen recorder", "veribridge recorder",
+                    })
                     try:
                         _ocr_resp = db.table("workflow_visual_frame_evidence").select(
                             "ocr_text"
@@ -580,17 +596,26 @@ async def upload_workflow_video(
                         for _row in (_ocr_resp.data or []):
                             _ocr_val = _row.get("ocr_text")
                             if isinstance(_ocr_val, str) and _ocr_val.strip():
-                                _ocr_snippets.append(_ocr_val.strip()[:150])
+                                snip = _ocr_val.strip()[:150]
+                                if not any(p in snip.lower() for p in _RECORDER_NOISE_LOWER):
+                                    _ocr_snippets.append(snip)
                             elif isinstance(_ocr_val, list):
-                                for _item in _ocr_val[:3]:
-                                    if isinstance(_item, str) and _item.strip():
-                                        _ocr_snippets.append(_item.strip()[:150])
+                                for _item in _ocr_val[:5]:
+                                    # Support both plain strings and {"text": "..."} dicts
+                                    if isinstance(_item, dict):
+                                        _text = str(_item.get("text", "")).strip()
+                                    elif isinstance(_item, str):
+                                        _text = _item.strip()
+                                    else:
+                                        continue
+                                    if _text and not any(p in _text.lower() for p in _RECORDER_NOISE_LOWER):
+                                        _ocr_snippets.append(_text[:150])
                     except Exception as _ocr_ctx_exc:
                         logger.warning("[WorkflowVideo] Could not fetch OCR context for Qwen prompt (non-fatal): %s", _ocr_ctx_exc)
 
                     logger.info(
-                        "[WorkflowVideo] Qwen context: skills=%s objective=%r website=%r ocr_snippets=%d",
-                        _claimed_skills, _proof_objective[:60], _website_context, len(_ocr_snippets),
+                        "[WorkflowVideo] Qwen context: skills=%s objective=%r website=%r domain=%r ocr_snippets=%d",
+                        _claimed_skills, _proof_objective[:60], _website_context, _target_domain, len(_ocr_snippets),
                     )
 
                     summary = reasoning_svc.analyze_frames(
@@ -599,6 +624,7 @@ async def upload_workflow_video(
                         claimed_skills=_claimed_skills or None,
                         proof_objective=_proof_objective,
                         website_context=_website_context,
+                        target_domain=_target_domain,
                         ocr_snippets=_ocr_snippets or None,
                     )
                     logger.info(
