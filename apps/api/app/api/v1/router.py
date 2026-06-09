@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     extension_proof,
     extension_proof_github_analysis,
     extension_proof_workflow_analysis,
+    keyframe_thumbnail,
     live_feedback,
     github_portfolio,
     github_proofs,
@@ -173,6 +174,11 @@ api_router.include_router(
     workflow_visual_frames.router,
     prefix="/student/extension-proof/sessions",
     tags=["workflow-visual-frames"],
+)
+api_router.include_router(
+    keyframe_thumbnail.router,
+    prefix="/proof",
+    tags=["keyframe-thumbnail"],
 )
 api_router.include_router(
     live_website_check.router,

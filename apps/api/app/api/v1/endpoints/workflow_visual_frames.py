@@ -54,6 +54,7 @@ from app.services.visual_reasoning_service import (
     REASONING_STATUS_REJECTED_STALE,
     select_frame_ids_for_reasoning,
 )
+from app.services.keyframe_storage_service import KeyframeStorageService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -462,6 +463,9 @@ async def upload_workflow_video(
                 session_id, _clr_exc,
             )
 
+        _frame_bucket = settings.supabase_frame_evidence_bucket
+        _storage_svc = KeyframeStorageService() if _frame_bucket else None
+
         for ts_ms, jpeg_bytes in result._extracted_frames:
             frame_id = va_svc.store_visual_frame(
                 user_id=user_id,
@@ -474,6 +478,33 @@ async def upload_workflow_video(
             )
             frame_bytes_map[frame_id] = jpeg_bytes
             frames_stored += 1
+
+            # Upload JPEG + thumbnail to Supabase Storage (non-fatal)
+            if _storage_svc and not isinstance(db, dict):
+                try:
+                    paths = _storage_svc.upload_keyframe(
+                        db=db,
+                        user_id=user_id,
+                        session_id=session_id,
+                        frame_id=frame_id,
+                        jpeg_bytes=jpeg_bytes,
+                        bucket=_frame_bucket,
+                    )
+                    update: dict[str, str | None] = {}
+                    if paths.get("storage_path"):
+                        update["frame_storage_path"] = paths["storage_path"]
+                    if paths.get("thumbnail_path"):
+                        update["frame_thumbnail_storage_path"] = paths["thumbnail_path"]
+                    if update:
+                        db.table("workflow_visual_frame_evidence").update(
+                            update
+                        ).eq("id", frame_id).eq("user_id", user_id).execute()
+                except Exception as _stor_exc:
+                    logger.warning(
+                        "[WorkflowVideo] Storage upload failed (non-fatal) "
+                        "frame_id=%s: %s",
+                        frame_id, _stor_exc,
+                    )
 
         # ── 5. Trigger visual analysis if provider is configured ────────────────
         if frames_stored > 0 and provider_info["provider_configured"]:

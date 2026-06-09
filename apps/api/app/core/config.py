@@ -73,6 +73,17 @@ class Settings(BaseSettings):
         alias="SUPABASE_DEFENSE_MEDIA_BUCKET",
     )
 
+    # ── Keyframe / visual frame evidence storage ──────────────────
+    # Name of the Supabase Storage bucket for extracted keyframe JPEGs.
+    # When empty, keyframes are analyzed in-memory only (no persistent screenshots).
+    # When set, each extracted JPEG + a thumbnail are uploaded and
+    # frame_storage_path / frame_thumbnail_storage_path are persisted in DB.
+    # Example: frame-evidence
+    supabase_frame_evidence_bucket: str = Field(
+        default="",
+        alias="SUPABASE_FRAME_EVIDENCE_BUCKET",
+    )
+
     # ── AI Domain Reviewer ────────────────────────────────────────
     # Anthropic API key for AI Domain Reviewer agents (Astra, Atlas, Nova, etc.)
     #
