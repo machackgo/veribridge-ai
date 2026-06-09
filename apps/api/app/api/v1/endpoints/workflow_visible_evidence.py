@@ -28,6 +28,7 @@ from app.schemas.workflow_visible_evidence import (
     VisibleEvidenceBatchRequest,
     VisibleEvidenceSummaryResponse,
 )
+from app.services.proof_target_resolver import resolve_target_domain
 from app.services.workflow_visible_evidence_service import (
     WorkflowVisibleEvidenceService,
 )
@@ -92,7 +93,20 @@ def get_visible_evidence_summary(
 ) -> VisibleEvidenceSummaryResponse:
     svc = WorkflowVisibleEvidenceService(db)
     try:
-        summary = svc.get_summary(user_id=user_id, session_id=session_id)
+        # Resolve canonical target domain so unrelated titles/text are excluded
+        # from events_summary (Supabase, GitHub, localhost, etc.).
+        target_domain: str | None = None
+        session = svc._get_session(user_id, session_id)
+        if session:
+            target_domain = resolve_target_domain(
+                session.get("website_url") or "",
+                session.get("proof_data") or {},
+            )
+        summary = svc.get_summary(
+            user_id=user_id,
+            session_id=session_id,
+            target_domain=target_domain,
+        )
         return summary
     except Exception as exc:
         logger.exception(

@@ -437,6 +437,38 @@ def _detect_graphical_rendering(rows: list[dict[str, Any]]) -> tuple[bool, str |
     return True, note
 
 
+def _partition_rows_by_domain(
+    rows: list[dict[str, Any]],
+    target_domain: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split rows into (target_domain_rows, unrelated_rows).
+
+    target_domain must already be normalized (no www., no protocol).
+    Rows whose target_domain is empty are kept with the target set to preserve
+    backward compatibility with old ingested events that predate domain tagging.
+    """
+    from app.services.proof_target_resolver import domain_matches_target
+
+    tgt = (target_domain or "").lower().strip()
+    if not tgt:
+        return rows, []
+
+    target_rows: list[dict[str, Any]] = []
+    unrelated_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        row_domain = (row.get("target_domain") or "").strip()
+        if not row_domain:
+            # No domain stored on row (old event) — keep it conservatively.
+            target_rows.append(row)
+        elif domain_matches_target(row_domain, tgt):
+            target_rows.append(row)
+        else:
+            unrelated_rows.append(row)
+
+    return target_rows, unrelated_rows
+
+
 def _derive_observations_from_rows(rows: list[dict[str, Any]]) -> ExtractedObservations:
     """Build structured observations from stored evidence event rows."""
     observed_inputs: list[str] = []
@@ -652,8 +684,15 @@ class WorkflowVisibleEvidenceService:
         self,
         user_id: str,
         session_id: str,
+        target_domain: str | None = None,
     ) -> ExtractedObservations:
         """Return structured observations for workflow analysis.
+
+        When target_domain is provided (e.g. 'threejs.org'), only rows whose
+        stored target_domain matches are included in the analysis.  Unrelated
+        rows (supabase.com, github.com, localhost veribridge app, etc.) are
+        counted and excluded.  The caller can surface the count as
+        "N unrelated browser events filtered" without leaking titles or text.
 
         If no visible evidence exists for this session, returns an
         ExtractedObservations with status = "not_captured".
@@ -661,7 +700,20 @@ class WorkflowVisibleEvidenceService:
         rows = self._get_rows(user_id, session_id)
         if not rows:
             return ExtractedObservations(visible_evidence_status="not_captured")
-        return _derive_observations_from_rows(rows)
+
+        if target_domain:
+            target_rows, unrelated_rows = _partition_rows_by_domain(rows, target_domain)
+            # If filtering removes everything (no events on target domain yet),
+            # fall back to all rows so old recordings are not broken.
+            rows_to_analyze = target_rows if target_rows else rows
+            unrelated_count = len(unrelated_rows)
+        else:
+            rows_to_analyze = rows
+            unrelated_count = 0
+
+        obs = _derive_observations_from_rows(rows_to_analyze)
+        obs.filtered_unrelated_count = unrelated_count
+        return obs
 
     # ── Summary endpoint ──────────────────────────────────────────────────────
 
@@ -669,16 +721,28 @@ class WorkflowVisibleEvidenceService:
         self,
         user_id: str,
         session_id: str,
+        target_domain: str | None = None,
     ) -> VisibleEvidenceSummaryResponse:
         """Build a student/debug-facing summary of all captured events.
 
         This is NOT surfaced to recruiters — only student + admin use.
+        When target_domain is provided, observations AND events_summary are both
+        filtered to target-domain rows only; unrelated rows contribute only to
+        filtered_unrelated_count and are not exposed as page titles or text.
         """
         rows = self._get_rows(user_id, session_id)
-        observations = _derive_observations_from_rows(rows)
+        unrelated_count = 0
+        if target_domain:
+            target_rows, unrelated_rows = _partition_rows_by_domain(rows, target_domain)
+            rows_to_analyze = target_rows if target_rows else rows
+            unrelated_count = len(unrelated_rows) if target_rows else 0
+        else:
+            rows_to_analyze = rows
+        observations = _derive_observations_from_rows(rows_to_analyze)
+        observations.filtered_unrelated_count = unrelated_count
 
         events_summary: list[VisibleEvidenceSummaryEvent] = []
-        for row in rows:
+        for row in rows_to_analyze:
             events_summary.append(VisibleEvidenceSummaryEvent(
                 event_type=row.get("event_type", ""),
                 timestamp_ms=row.get("timestamp_ms"),
@@ -691,7 +755,7 @@ class WorkflowVisibleEvidenceService:
 
         return VisibleEvidenceSummaryResponse(
             proof_session_id=session_id,
-            event_count=len(rows),
+            event_count=len(rows_to_analyze),
             result_event_count=observations.result_event_count,
             file_upload_count=observations.file_upload_count,
             visible_evidence_status=observations.visible_evidence_status,
@@ -704,6 +768,7 @@ class WorkflowVisibleEvidenceService:
             page_context_summary=observations.page_context_summary,
             events_summary=events_summary,
             extracted_observations=observations,
+            filtered_unrelated_count=unrelated_count,
         )
 
     # ── DB helpers ────────────────────────────────────────────────────────────
@@ -727,6 +792,36 @@ class WorkflowVisibleEvidenceService:
             return
 
         self._client.table(_TABLE).insert(insert).execute()
+
+    def _get_session(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        """Return the extension_proof_sessions row for this user+session, or None."""
+        if isinstance(self._client, dict):
+            store = self._client.get("extension_proof_sessions", {})
+            row = store.get(session_id)
+            if row and str(row.get("user_id")) == user_id:
+                return row
+            # Also search by proof_session_id field (some in-memory stores key by id)
+            for r in store.values():
+                if (str(r.get("id")) == session_id or str(r.get("proof_session_id")) == session_id) and str(r.get("user_id")) == user_id:
+                    return r
+            return None
+
+        try:
+            result = (
+                self._client.table("extension_proof_sessions")
+                .select("id,user_id,website_url,proof_data")
+                .eq("user_id", user_id)
+                .eq("id", session_id)
+                .maybe_single()
+                .execute()
+            )
+            return getattr(result, "data", None)
+        except Exception:
+            logger.warning(
+                "VISIBLE_EVIDENCE_GET_SESSION_FAILED session=%s",
+                session_id, exc_info=True,
+            )
+            return None
 
     def _get_rows(self, user_id: str, session_id: str) -> list[dict[str, Any]]:
         if isinstance(self._client, dict):
