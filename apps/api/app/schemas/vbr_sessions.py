@@ -81,3 +81,12 @@ class VBRTelemetryResponse(BaseModel):
 
 class VBRFinalizeRequest(BaseModel):
     duration_s: int | None = Field(default=None, ge=0)
+
+
+class VBRMediaProcessingResponse(BaseModel):
+    session_id: str
+    status: str
+    chunk_count: int
+    total_bytes: int
+    next_steps: list[str] = Field(default_factory=list)
+    message: str

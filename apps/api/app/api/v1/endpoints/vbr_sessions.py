@@ -26,11 +26,13 @@ from app.schemas.vbr_sessions import (
     VBRConsentRequest,
     VBRConsentResponse,
     VBRFinalizeRequest,
+    VBRMediaProcessingResponse,
     VBRSessionDetailResponse,
     VBRSessionResponse,
     VBRTelemetryRequest,
     VBRTelemetryResponse,
 )
+from app.services.vbr_media_processing import process_uploaded_session_skeleton
 from app.services.vbr_question_generation import list_session_questions
 from app.services.vbr_session_recording import (
     count_chunks,
@@ -276,3 +278,17 @@ def finalize_session_route(
     _advance_project_status(db, project, "session_uploaded")
 
     return _to_session_response(updated, chunk_count)
+
+
+@router.post(
+    "/{session_id}/process",
+    response_model=VBRMediaProcessingResponse,
+    summary="Run the deterministic media-processing skeleton for an uploaded session",
+)
+def process_session_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRMediaProcessingResponse:
+    result = process_uploaded_session_skeleton(db, session_id, user_id)
+    return VBRMediaProcessingResponse(**result)
