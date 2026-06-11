@@ -1,4 +1,4 @@
-"""VBR uploaded-session media-processing skeleton (T5A + T5B).
+"""VBR uploaded-session media-processing skeleton (T5A + T5B + T5C).
 
 T5A scope: deterministic chunk-manifest validation and the controlled
 session/project status transition that must happen before any real media
@@ -6,9 +6,13 @@ processing runs.
 
 T5B scope: download the validated chunks from private storage into a
 controlled local temp directory, verify each downloaded file against its
-recorded size/sha256, and prepare an ffmpeg concat manifest. This module
-still does NOT run ffmpeg, Whisper, OCR, keyframe extraction, or LLM calls,
-and never mints/exposes signed URLs or local temp paths to clients.
+recorded size/sha256, and prepare an ffmpeg concat manifest.
+
+T5C scope: run the safe ffmpeg concat command to assemble the verified
+chunks into one full-session video, verify the output, and upload it to
+private storage. This module still does NOT run Whisper, OCR, keyframe
+extraction, or LLM calls, and never mints/exposes signed URLs or local temp
+paths to clients.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import hashlib
 import logging
 import re
 import shutil
+import subprocess
 import tempfile
 
 from datetime import UTC, datetime
@@ -43,13 +48,25 @@ _CHUNKS_TABLE = "vbr_video_chunks"
 # real Supabase client.
 _CHUNK_BLOBS_TABLE = "vbr_video_chunk_blobs"
 
+# Fake-DB only (dict-based test store): storage_path -> raw bytes, used to
+# simulate the uploaded full-session video. Never used with a real Supabase
+# client.
+_PROCESSED_VIDEO_BLOBS_TABLE = "vbr_processed_video_blobs"
+
 _SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _MAX_TOTAL_BYTES = int(1.5 * 1024 * 1024 * 1024)  # 1.5GB MVP cap
 
 _WORK_DIR_ROOT = Path(tempfile.gettempdir()) / "veribridge_vbr_processing"
 
-NEXT_STEPS: list[str] = ["concat_video", "transcribe_audio", "extract_keyframes"]
+_FFMPEG_TIMEOUT_SECONDS = 120
+
+_CONCAT_FAILED_DETAIL = {
+    "code": "vbr_media_concat_failed",
+    "message": "Could not assemble the recording. Please try again.",
+}
+
+NEXT_STEPS: list[str] = ["transcribe_audio", "extract_keyframes"]
 
 __all__ = [
     "list_session_chunks",
@@ -63,6 +80,12 @@ __all__ = [
     "verify_downloaded_chunk_files",
     "build_ffmpeg_concat_manifest",
     "build_safe_ffmpeg_concat_command",
+    "ffmpeg_available",
+    "validate_ffmpeg_binary",
+    "run_ffmpeg_concat",
+    "verify_full_video_output",
+    "full_video_storage_path",
+    "upload_processed_full_video",
     "fake_chunk_bytes",
     "process_uploaded_session_skeleton",
 ]
@@ -220,7 +243,11 @@ def mark_session_processing_started(db: Any, session_id: str) -> dict[str, Any]:
 
 
 def mark_session_media_processed(
-    db: Any, session_id: str, manifest_summary: dict[str, int]
+    db: Any,
+    session_id: str,
+    manifest_summary: dict[str, int],
+    full_video_summary: dict[str, Any],
+    full_video_storage_path_value: str,
 ) -> dict[str, Any]:
     session = get_session(db, session_id) or {}
     telemetry = dict(session.get("telemetry") or {})
@@ -236,6 +263,15 @@ def mark_session_media_processed(
             "concat_manifest_created": True,
             "chunk_count": manifest_summary["chunk_count"],
             "total_bytes": manifest_summary["total_bytes"],
+            "full_video_created": True,
+            "full_video_bytes": full_video_summary["bytes"],
+            "full_video_sha256": full_video_summary["sha256"],
+            "full_video": {
+                "storage_path": full_video_storage_path_value,
+                "bytes": full_video_summary["bytes"],
+                "sha256": full_video_summary["sha256"],
+                "created_at": completed_at,
+            },
             "completed_at": completed_at,
             "next_steps": list(NEXT_STEPS),
         }
@@ -345,7 +381,9 @@ def _download_chunk_bytes(
         data = db.storage.from_(bucket).download(storage_path)
     except Exception as exc:
         logger.warning(
-            "[VBR] Chunk download failed for session %s chunk %d: %s", session_id, chunk_index, exc
+            "[VBR] Chunk download failed for session %s chunk %d",
+            session_id,
+            chunk_index,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -476,7 +514,7 @@ def build_safe_ffmpeg_concat_command(manifest_path: Path, output_path: Path) -> 
     """Return an argv list for an ffmpeg concat command.
 
     This is a command builder only — callers must pass the result directly
-    to ``subprocess.run`` (never ``shell=True``). Not executed by T5B.
+    to ``subprocess.run`` (never ``shell=True``).
     """
     return [
         "ffmpeg",
@@ -489,16 +527,160 @@ def build_safe_ffmpeg_concat_command(manifest_path: Path, output_path: Path) -> 
     ]
 
 
+# ── ffmpeg concat execution + output verification (T5C) ─────────────────────
+
+
+def ffmpeg_available() -> bool:
+    """Return True if an ``ffmpeg`` binary is on PATH."""
+    return shutil.which("ffmpeg") is not None
+
+
+def validate_ffmpeg_binary() -> None:
+    """Raise the controlled concat-failure error if ffmpeg is unavailable."""
+    if not ffmpeg_available():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=dict(_CONCAT_FAILED_DETAIL),
+        )
+
+
+def run_ffmpeg_concat(manifest_path: Path, output_path: Path) -> None:
+    """Run the safe ffmpeg concat command to assemble ``output_path``.
+
+    Uses ``subprocess.run`` with an argv list only (never ``shell=True``)
+    and a bounded timeout. Raises a controlled ``HTTPException`` (500,
+    ``vbr_media_concat_failed``) on any failure. Raw stderr is never
+    included in the exception or logged.
+    """
+    validate_ffmpeg_binary()
+
+    command = build_safe_ffmpeg_concat_command(manifest_path, output_path)
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=_FFMPEG_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("[VBR] ffmpeg concat failed (stage=run, reason=%s)", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=dict(_CONCAT_FAILED_DETAIL),
+        ) from exc
+
+    if result.returncode != 0:
+        logger.warning("[VBR] ffmpeg concat exited non-zero (stage=run)")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=dict(_CONCAT_FAILED_DETAIL),
+        )
+
+
+def verify_full_video_output(output_path: Path) -> dict[str, Any]:
+    """Verify the assembled full-session video and return its size/sha256.
+
+    Raises the controlled concat-failure error if the output is missing or
+    empty.
+    """
+    if not output_path.is_file() or output_path.stat().st_size <= 0:
+        logger.warning("[VBR] ffmpeg concat output missing or empty (stage=verify_output)")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=dict(_CONCAT_FAILED_DETAIL),
+        )
+
+    digest = hashlib.sha256()
+    size = 0
+    with output_path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+            size += len(block)
+
+    return {"bytes": size, "sha256": digest.hexdigest()}
+
+
+# ── Full video upload (T5C) ──────────────────────────────────────────────────
+
+
+def full_video_storage_path(session_id: str) -> str:
+    """Return the exact, server-controlled object path for a session's full video."""
+    return f"vbr/sessions/{session_id}/processed/full.webm"
+
+
+def upload_processed_full_video(db: Any, session_id: str, output_path: Path) -> str:
+    """Upload assembled full video to private storage and return internal path."""
+    storage_path = f"vbr/sessions/{session_id}/processed/full.webm"
+
+    if isinstance(db, dict):
+        media_store = db.setdefault("_vbr_media_objects", {})
+        media_store[storage_path] = output_path.read_bytes()
+        return storage_path
+
+    bucket = settings.supabase_vbr_media_bucket
+    if not bucket:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vbr_media_bucket_not_configured",
+                "message": "Recording upload storage is not configured.",
+            },
+        )
+
+    if not hasattr(db, "storage"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vbr_storage_client_unavailable",
+                "message": "Recording upload storage is unavailable.",
+            },
+        )
+
+    data = output_path.read_bytes()
+    try:
+        result = db.storage.from_(bucket).upload(
+            storage_path,
+            data,
+            file_options={"content-type": "video/webm", "upsert": "true"},
+        )
+    except Exception as exc:
+        logger.warning("[VBR] Full video upload failed (stage=upload)")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "vbr_media_full_video_upload_failed",
+                "message": "Could not assemble the recording. Please try again.",
+            },
+        ) from exc
+
+    has_error = bool(getattr(result, "error", None))
+    if isinstance(result, dict):
+        has_error = has_error or bool(result.get("error"))
+
+    if has_error:
+        logger.warning("[VBR] Full video upload returned an error (stage=upload)")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "vbr_media_full_video_upload_failed",
+                "message": "Could not assemble the recording. Please try again.",
+            },
+        )
+
+    return storage_path
+
 def process_uploaded_session_skeleton(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
-    """Run the media-processing pipeline foundation for an uploaded session.
+    """Run the media-processing pipeline for an uploaded session.
 
     Validates ownership, session status, and the chunk manifest, then
     downloads each chunk to a controlled local temp directory, verifies the
-    downloaded bytes against the recorded size/sha256, and prepares an
-    ffmpeg concat manifest. Finally transitions the session to ``processed``
-    and the parent project to ``media_processed``.
+    downloaded bytes against the recorded size/sha256, concatenates them
+    into a single full-session video, verifies the output, and uploads it to
+    private storage. Finally transitions the session to ``processed`` and
+    the parent project to ``media_processed``.
 
-    No video is concatenated, transcribed, or analyzed by an LLM here.
+    No transcription, keyframe extraction, or LLM analysis happens here.
     """
     session, project = get_owned_vbr_session_or_404(db, session_id, user_id)
 
@@ -521,13 +703,16 @@ def process_uploaded_session_skeleton(db: Any, session_id: str, user_id: str) ->
     try:
         local_paths = download_session_chunks_to_workdir(db, session_id, chunks)
         verify_downloaded_chunk_files(local_paths, chunks)
-        build_ffmpeg_concat_manifest(local_paths, work_dir)
+        manifest_path = build_ffmpeg_concat_manifest(local_paths, work_dir)
+
+        output_path = work_dir / "full.webm"
+        run_ffmpeg_concat(manifest_path, output_path)
+        full_video_summary = verify_full_video_output(output_path)
+        storage_path = upload_processed_full_video(db, session_id, output_path)
     finally:
-        # TODO(T5C): a future concat/transcription step will need these
-        # files again — until then, do not leave downloaded media on disk.
         shutil.rmtree(work_dir, ignore_errors=True)
 
-    updated_session = mark_session_media_processed(db, session_id, summary)
+    updated_session = mark_session_media_processed(db, session_id, summary, full_video_summary, storage_path)
     _advance_project_status(db, project, "media_processed")
 
     return {
@@ -535,6 +720,8 @@ def process_uploaded_session_skeleton(db: Any, session_id: str, user_id: str) ->
         "status": updated_session.get("status") or "processed",
         "chunk_count": summary["chunk_count"],
         "total_bytes": summary["total_bytes"],
+        "full_video_bytes": full_video_summary["bytes"],
+        "full_video_sha256": full_video_summary["sha256"],
         "next_steps": list(NEXT_STEPS),
-        "message": "Media downloaded, verified, and concat manifest prepared. Transcription, keyframes, and judging are not yet implemented.",
+        "message": "Media downloaded, verified, and assembled into a full session recording. Transcription and keyframe extraction are not yet implemented.",
     }

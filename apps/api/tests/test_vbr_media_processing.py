@@ -15,12 +15,22 @@ from app.services.vbr_media_processing import (
     build_chunk_local_path,
     build_ffmpeg_concat_manifest,
     build_processing_work_dir,
+    build_safe_ffmpeg_concat_command,
     download_session_chunks_to_workdir,
     fake_chunk_bytes,
+    upload_processed_full_video,
+    verify_full_video_output,
 )
 
 USER_ID = "00000000-0000-0000-0000-000000000042"
 OTHER_USER_ID = "00000000-0000-0000-0000-000000000099"
+
+_FAKE_FULL_VIDEO_BYTES = b"fake-full-session-video-bytes"
+
+
+def _fake_run_ffmpeg_concat(_manifest_path, output_path) -> None:
+    """Deterministic stand-in for ffmpeg concat execution in tests."""
+    output_path.write_bytes(_FAKE_FULL_VIDEO_BYTES)
 
 
 @pytest.fixture()
@@ -29,7 +39,10 @@ def mem_store() -> dict:
 
 
 @pytest.fixture()
-def client(mem_store: dict) -> TestClient:
+def client(mem_store: dict, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setattr(
+        "app.services.vbr_media_processing.run_ffmpeg_concat", _fake_run_ffmpeg_concat
+    )
     app.dependency_overrides[get_current_user_id] = lambda: USER_ID
     app.dependency_overrides[get_db] = lambda: mem_store
     yield TestClient(app)
@@ -220,7 +233,9 @@ def test_process_succeeds_and_sets_session_and_project_status(client: TestClient
     assert body["status"] == "processed"
     assert body["chunk_count"] == 2
     assert body["total_bytes"] == 2048
-    assert body["next_steps"] == ["concat_video", "transcribe_audio", "extract_keyframes"]
+    assert body["full_video_bytes"] == len(_FAKE_FULL_VIDEO_BYTES)
+    assert body["full_video_sha256"] == hashlib.sha256(_FAKE_FULL_VIDEO_BYTES).hexdigest()
+    assert body["next_steps"] == ["transcribe_audio", "extract_keyframes"]
 
     assert mem_store["vbr_verification_sessions"][session_id]["status"] == "processed"
 
@@ -238,6 +253,7 @@ def test_process_response_does_not_expose_storage_paths_or_signed_urls(client: T
     assert "storage_path" not in raw
     assert "signed" not in raw
     assert "vbr/sessions" not in raw
+    assert "processed/full.webm" not in raw
     assert "tmp" not in raw.lower()
     assert "veribridge_vbr_processing" not in raw
 
@@ -256,7 +272,17 @@ def test_manifest_summary_is_stored_in_session_telemetry(client: TestClient, mem
     assert media_processing["total_bytes"] == 1024
     assert media_processing["started_at"]
     assert media_processing["completed_at"]
-    assert media_processing["next_steps"] == ["concat_video", "transcribe_audio", "extract_keyframes"]
+    assert media_processing["next_steps"] == ["transcribe_audio", "extract_keyframes"]
+
+    assert media_processing["full_video_created"] is True
+    assert media_processing["full_video_bytes"] == len(_FAKE_FULL_VIDEO_BYTES)
+    assert media_processing["full_video_sha256"] == hashlib.sha256(_FAKE_FULL_VIDEO_BYTES).hexdigest()
+
+    full_video = media_processing["full_video"]
+    assert full_video["storage_path"] == f"vbr/sessions/{session_id}/processed/full.webm"
+    assert full_video["bytes"] == len(_FAKE_FULL_VIDEO_BYTES)
+    assert full_video["sha256"] == hashlib.sha256(_FAKE_FULL_VIDEO_BYTES).hexdigest()
+    assert full_video["created_at"]
 
 
 def test_process_rejects_invalid_chunk_index(client: TestClient, mem_store: dict) -> None:
@@ -403,10 +429,14 @@ def test_process_downloads_from_configured_storage_client(client: TestClient, me
     class FakeBucket:
         def __init__(self) -> None:
             self.downloaded_paths: list[str] = []
+            self.uploaded: dict[str, bytes] = {}
 
         def download(self, storage_path: str) -> bytes:
             self.downloaded_paths.append(storage_path)
             return chunk_bytes
+
+        def upload(self, storage_path: str, data: bytes, file_options: dict | None = None) -> None:
+            self.uploaded[storage_path] = bytes(data)
 
     class FakeStorage:
         def __init__(self) -> None:
@@ -472,7 +502,8 @@ def test_process_downloads_from_configured_storage_client(client: TestClient, me
             return FakeTableQuery(self._store, table_name)
 
     monkeypatch.setattr(settings, "supabase_vbr_media_bucket", "test-vbr-media")
-    app.dependency_overrides[get_db] = lambda: FakeRealDb(mem_store)
+    fake_db = FakeRealDb(mem_store)
+    app.dependency_overrides[get_db] = lambda: fake_db
 
     response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/process")
 
@@ -480,3 +511,170 @@ def test_process_downloads_from_configured_storage_client(client: TestClient, me
     assert response.json()["status"] == "processed"
     assert mem_store["vbr_verification_sessions"][session_id]["status"] == "processed"
     assert mem_store["vbr_projects"][project_id]["status"] == "media_processed"
+
+    expected_storage_path = f"vbr/sessions/{session_id}/processed/full.webm"
+    assert fake_db.storage.bucket.uploaded[expected_storage_path] == _FAKE_FULL_VIDEO_BYTES
+
+
+# ── T5C: ffmpeg concat execution + full video upload ────────────────────────
+
+
+def test_process_ffmpeg_failure_returns_controlled_error_and_leaves_status_unchanged(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id, session_id = _setup_uploaded_session(client, chunk_count=1)
+
+    def _failing_concat(_manifest_path, _output_path) -> None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "vbr_media_concat_failed",
+                "message": "Could not assemble the recording. Please try again.",
+            },
+        )
+
+    monkeypatch.setattr("app.services.vbr_media_processing.run_ffmpeg_concat", _failing_concat)
+
+    response = _process(client, session_id)
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "vbr_media_concat_failed"
+    assert "Could not assemble the recording" in response.json()["detail"]["message"]
+
+    assert mem_store["vbr_verification_sessions"][session_id]["status"] == "uploaded"
+    assert mem_store["vbr_projects"][project_id]["status"] != "media_processed"
+
+
+def test_verify_full_video_output_computes_sha256_from_bytes(tmp_path) -> None:
+    output_path = tmp_path / "full.webm"
+    data = b"some-full-session-video-bytes"
+    output_path.write_bytes(data)
+
+    summary = verify_full_video_output(output_path)
+
+    assert summary["bytes"] == len(data)
+    assert summary["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_fake_db_upload_stores_full_video_bytes(tmp_path) -> None:
+    mem_store: dict = {}
+    output_path = tmp_path / "full.webm"
+    output_path.write_bytes(_FAKE_FULL_VIDEO_BYTES)
+
+    storage_path = upload_processed_full_video(mem_store, "session-xyz", output_path)
+
+    assert storage_path == "vbr/sessions/session-xyz/processed/full.webm"
+    assert mem_store["_vbr_media_objects"][storage_path] == _FAKE_FULL_VIDEO_BYTES
+
+
+def test_upload_full_video_fails_closed_without_configured_bucket(tmp_path) -> None:
+    """Real (non-dict) DBs must fail closed if the media bucket isn't configured."""
+
+    class _FakeRealDb:
+        """Stand-in for a real Supabase client with no storage configured."""
+
+    output_path = tmp_path / "full.webm"
+    output_path.write_bytes(_FAKE_FULL_VIDEO_BYTES)
+
+    with pytest.raises(HTTPException) as exc_info:
+        upload_processed_full_video(_FakeRealDb(), "fake-session-id", output_path)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["code"] == "vbr_media_bucket_not_configured"
+
+
+def test_build_safe_ffmpeg_concat_command_returns_argv_list(tmp_path) -> None:
+    manifest_path = tmp_path / "concat_manifest.txt"
+    output_path = tmp_path / "full.webm"
+
+    command = build_safe_ffmpeg_concat_command(manifest_path, output_path)
+
+    assert isinstance(command, list)
+    assert all(isinstance(part, str) for part in command)
+    assert command[0] == "ffmpeg"
+    assert "-c" in command and "copy" in command
+    assert str(manifest_path) in command
+    assert str(output_path) in command
+
+
+def test_process_fails_if_full_video_upload_returns_error(client: TestClient, mem_store: dict, monkeypatch) -> None:
+    import hashlib
+    from app.core.config import settings
+    from app.services import vbr_media_processing
+
+    project_id, session_id = _setup_uploaded_session(client)
+    chunk = next(iter(mem_store["vbr_video_chunks"].values()))
+    chunk_bytes = b"chunk-for-upload-error-test"
+    chunk["bytes"] = len(chunk_bytes)
+    chunk["sha256"] = hashlib.sha256(chunk_bytes).hexdigest()
+
+    def fake_run_ffmpeg_concat(_manifest_path, output_path):
+        output_path.write_bytes(b"assembled-video-bytes")
+
+    monkeypatch.setattr(vbr_media_processing, "run_ffmpeg_concat", fake_run_ffmpeg_concat)
+
+    class FakeBucket:
+        def download(self, _storage_path: str) -> bytes:
+            return chunk_bytes
+
+        def upload(self, *_args, **_kwargs):
+            return {"error": {"message": "simulated storage failure with hidden path"}}
+
+    class FakeStorage:
+        def from_(self, _bucket_name: str) -> FakeBucket:
+            return FakeBucket()
+
+    class FakeTableQuery:
+        def __init__(self, store: dict, table_name: str) -> None:
+            self.store = store
+            self.table_name = table_name
+            self.filters: list[tuple[str, object]] = []
+            self.update_payload: dict | None = None
+            self.return_single = False
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def update(self, payload: dict):
+            self.update_payload = payload
+            return self
+
+        def eq(self, key: str, value: object):
+            self.filters.append((key, value))
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def maybe_single(self):
+            self.return_single = True
+            return self
+
+        def execute(self):
+            table = self.store[self.table_name]
+            rows = list(table.values()) if isinstance(table, dict) else list(table)
+            for key, value in self.filters:
+                rows = [row for row in rows if row.get(key) == value]
+            if self.update_payload is not None:
+                for row in rows:
+                    row.update(self.update_payload)
+                data = rows[0] if self.return_single and rows else rows
+                return type("Result", (), {"data": data})()
+            data = rows[0] if self.return_single and rows else rows
+            return type("Result", (), {"data": data})()
+
+    class FakeRealDb:
+        storage = FakeStorage()
+
+        def table(self, table_name: str):
+            return FakeTableQuery(mem_store, table_name)
+
+    monkeypatch.setattr(settings, "supabase_vbr_media_bucket", "test-vbr-media")
+    app.dependency_overrides[get_db] = lambda: FakeRealDb()
+
+    response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/process")
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "vbr_media_full_video_upload_failed"
+    assert mem_store["vbr_verification_sessions"][session_id]["status"] == "uploaded"
+    assert mem_store["vbr_projects"][project_id]["status"] != "media_processed"

@@ -88,5 +88,7 @@ class VBRMediaProcessingResponse(BaseModel):
     status: str
     chunk_count: int
     total_bytes: int
+    full_video_bytes: int
+    full_video_sha256: str
     next_steps: list[str] = Field(default_factory=list)
     message: str
