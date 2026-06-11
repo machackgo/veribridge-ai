@@ -31,9 +31,11 @@ from app.schemas.vbr_sessions import (
     VBRSessionResponse,
     VBRTelemetryRequest,
     VBRTelemetryResponse,
+    VBRTranscriptionResponse,
 )
 from app.services.vbr_media_processing import process_uploaded_session_skeleton
 from app.services.vbr_question_generation import list_session_questions
+from app.services.vbr_transcription import transcribe_session_skeleton
 from app.services.vbr_session_recording import (
     count_chunks,
     create_chunk_upload_target,
@@ -292,3 +294,17 @@ def process_session_route(
 ) -> VBRMediaProcessingResponse:
     result = process_uploaded_session_skeleton(db, session_id, user_id)
     return VBRMediaProcessingResponse(**result)
+
+
+@router.post(
+    "/{session_id}/transcribe",
+    response_model=VBRTranscriptionResponse,
+    summary="Run the deterministic transcript-generation skeleton for a processed session",
+)
+def transcribe_session_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRTranscriptionResponse:
+    result = transcribe_session_skeleton(db, session_id, user_id)
+    return VBRTranscriptionResponse(**result)

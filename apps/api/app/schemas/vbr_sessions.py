@@ -92,3 +92,12 @@ class VBRMediaProcessingResponse(BaseModel):
     full_video_sha256: str
     next_steps: list[str] = Field(default_factory=list)
     message: str
+
+
+class VBRTranscriptionResponse(BaseModel):
+    session_id: str
+    status: str
+    transcript_id: str
+    segment_count: int
+    duration_s: float | None = None
+    message: str
