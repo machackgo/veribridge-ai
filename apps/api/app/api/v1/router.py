@@ -31,6 +31,7 @@ from app.api.v1.endpoints import (
     skill_evidence_timeline,
     skill_evidence_profile,
     student,
+    vbr_projects,
     verification_readiness,
     website_evidence_discovery,
     website_proof_artifact_sync,
@@ -69,6 +70,11 @@ api_router.include_router(
     work_passport_analytics.router,
     prefix="/student/work-passport",
     tags=["work-passport-analytics"],
+)
+api_router.include_router(
+    vbr_projects.router,
+    prefix="/student/vbr/projects",
+    tags=["vbr-projects"],
 )
 api_router.include_router(
     skill_evidence.router,
