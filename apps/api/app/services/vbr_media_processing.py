@@ -1,33 +1,53 @@
-"""VBR uploaded-session media-processing skeleton (T5A).
+"""VBR uploaded-session media-processing skeleton (T5A + T5B).
 
-T5A scope only: deterministic chunk-manifest validation and the controlled
+T5A scope: deterministic chunk-manifest validation and the controlled
 session/project status transition that must happen before any real media
-processing runs. This module does NOT run ffmpeg, Whisper, OCR, keyframe
-extraction, or LLM calls, and never downloads media or mints/exposes signed
-URLs.
+processing runs.
+
+T5B scope: download the validated chunks from private storage into a
+controlled local temp directory, verify each downloaded file against its
+recorded size/sha256, and prepare an ffmpeg concat manifest. This module
+still does NOT run ffmpeg, Whisper, OCR, keyframe extraction, or LLM calls,
+and never mints/exposes signed URLs or local temp paths to clients.
 """
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import re
+import shutil
+import tempfile
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, status
 
 from app.api.v1.endpoints.vbr_projects import _advance_project_status
+from app.core.config import settings
 from app.services.vbr_session_recording import (
     chunk_storage_path,
     get_owned_vbr_session_or_404,
     get_session,
 )
 
+logger = logging.getLogger(__name__)
+
 _SESSIONS_TABLE = "vbr_verification_sessions"
 _CHUNKS_TABLE = "vbr_video_chunks"
 
+# Fake-DB only (dict-based test store): storage_path -> raw bytes, used to
+# simulate non-default downloaded content for a chunk. Never used with a
+# real Supabase client.
+_CHUNK_BLOBS_TABLE = "vbr_video_chunk_blobs"
+
 _SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _MAX_TOTAL_BYTES = int(1.5 * 1024 * 1024 * 1024)  # 1.5GB MVP cap
+
+_WORK_DIR_ROOT = Path(tempfile.gettempdir()) / "veribridge_vbr_processing"
 
 NEXT_STEPS: list[str] = ["concat_video", "transcribe_audio", "extract_keyframes"]
 
@@ -37,6 +57,13 @@ __all__ = [
     "compute_manifest_summary",
     "mark_session_processing_started",
     "mark_session_media_processed",
+    "build_processing_work_dir",
+    "build_chunk_local_path",
+    "download_session_chunks_to_workdir",
+    "verify_downloaded_chunk_files",
+    "build_ffmpeg_concat_manifest",
+    "build_safe_ffmpeg_concat_command",
+    "fake_chunk_bytes",
     "process_uploaded_session_skeleton",
 ]
 
@@ -204,6 +231,9 @@ def mark_session_media_processed(
     media_processing.update(
         {
             "manifest_verified": True,
+            "chunks_downloaded": True,
+            "download_verified": True,
+            "concat_manifest_created": True,
             "chunk_count": manifest_summary["chunk_count"],
             "total_bytes": manifest_summary["total_bytes"],
             "completed_at": completed_at,
@@ -219,12 +249,256 @@ def mark_session_media_processed(
     )
 
 
+# ── Local workdir + storage download (T5B) ──────────────────────────────────
+
+
+def build_processing_work_dir(session_id: str) -> Path:
+    """Return (and create) a controlled local temp directory for one session.
+
+    ``session_id`` is already DB-resolved (via ``get_owned_vbr_session_or_404``)
+    by the time this is called, but it is validated again here defensively
+    since it becomes part of a filesystem path.
+    """
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "vbr_media_invalid_session_id",
+                "message": "Session id is not safe for media processing.",
+            },
+        )
+
+    work_dir = _WORK_DIR_ROOT / session_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+    return work_dir
+
+
+def build_chunk_local_path(work_dir: Path, chunk_index: int) -> Path:
+    """Return the local path for one chunk's downloaded bytes.
+
+    Filenames are derived solely from ``chunk_index`` — never from any
+    user-controlled string.
+    """
+    if chunk_index < 0:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "vbr_media_invalid_chunk_index",
+                "message": "Chunk index is not safe for media processing.",
+            },
+        )
+
+    return work_dir / f"chunk_{chunk_index:03d}.webm"
+
+
+def fake_chunk_bytes(session_id: str, chunk_index: int, size: int) -> bytes:
+    """Deterministic fake chunk content for the in-memory test database.
+
+    Real Supabase Storage downloads never use this — see
+    ``_download_chunk_bytes``. Exposed for tests so they can compute a
+    matching sha256 for a given (session_id, chunk_index, size).
+    """
+    if size <= 0:
+        return b""
+
+    seed = f"vbr-fake-chunk:{session_id}:{chunk_index:03d}".encode("utf-8")
+    repeats = (size // len(seed)) + 1
+    return (seed * repeats)[:size]
+
+
+def _download_chunk_bytes(
+    db: Any, session_id: str, chunk_index: int, storage_path: str, expected_bytes: int
+) -> bytes:
+    """Download one chunk's raw bytes from the configured private bucket.
+
+    Fake dict DBs simulate downloaded content (see ``fake_chunk_bytes`` and
+    ``_CHUNK_BLOBS_TABLE``). Real Supabase clients fail closed with a 503 if
+    the media bucket is not configured or the storage client is unavailable.
+    """
+    if isinstance(db, dict):
+        blobs = db.setdefault(_CHUNK_BLOBS_TABLE, {})
+        blob = blobs.get(storage_path)
+        if blob is not None:
+            return bytes(blob)
+        return fake_chunk_bytes(session_id, chunk_index, expected_bytes)
+
+    bucket = settings.supabase_vbr_media_bucket
+    if not bucket:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vbr_media_bucket_not_configured",
+                "message": "Recording media storage is not configured.",
+            },
+        )
+
+    if not hasattr(db, "storage"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vbr_storage_client_unavailable",
+                "message": "Recording media storage is unavailable.",
+            },
+        )
+
+    try:
+        data = db.storage.from_(bucket).download(storage_path)
+    except Exception as exc:
+        logger.warning(
+            "[VBR] Chunk download failed for session %s chunk %d: %s", session_id, chunk_index, exc
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "vbr_media_chunk_download_failed",
+                "message": f"Failed to download chunk {chunk_index}.",
+            },
+        ) from exc
+
+    if not isinstance(data, (bytes, bytearray)):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "vbr_media_chunk_download_failed",
+                "message": f"Failed to download chunk {chunk_index}.",
+            },
+        )
+
+    return bytes(data)
+
+
+def download_session_chunks_to_workdir(
+    db: Any, session_id: str, chunks: list[dict[str, Any]]
+) -> list[Path]:
+    """Download each chunk in order into a controlled local temp directory.
+
+    Returns the local paths in chunk-index order. Raises ``HTTPException``
+    if the storage backend is unavailable/misconfigured or a download fails.
+    """
+    work_dir = build_processing_work_dir(session_id)
+
+    local_paths: list[Path] = []
+    for chunk in sorted(chunks, key=lambda chunk: chunk["chunk_index"]):
+        chunk_index = chunk["chunk_index"]
+        storage_path = chunk["storage_path"]
+        expected_bytes = int(chunk.get("bytes") or 0)
+
+        data = _download_chunk_bytes(db, session_id, chunk_index, storage_path, expected_bytes)
+        local_path = build_chunk_local_path(work_dir, chunk_index)
+
+        try:
+            local_path.write_bytes(data)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "vbr_media_chunk_download_failed",
+                    "message": f"Failed to store chunk {chunk_index} for processing.",
+                },
+            ) from exc
+
+        local_paths.append(local_path)
+
+    return local_paths
+
+
+def verify_downloaded_chunk_files(
+    local_paths: list[Path], expected_chunks: list[dict[str, Any]]
+) -> None:
+    """Verify each downloaded file's size and sha256 against the manifest.
+
+    Raises ``HTTPException`` (400) on the first mismatch found, or 500 if a
+    file is missing entirely.
+    """
+    ordered_chunks = sorted(expected_chunks, key=lambda chunk: chunk["chunk_index"])
+
+    for local_path, chunk in zip(local_paths, ordered_chunks):
+        chunk_index = chunk["chunk_index"]
+
+        if not local_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "vbr_media_chunk_download_failed",
+                    "message": f"Chunk {chunk_index} was not downloaded.",
+                },
+            )
+
+        expected_bytes = int(chunk.get("bytes") or 0)
+        actual_bytes = local_path.stat().st_size
+        if actual_bytes != expected_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "vbr_media_chunk_size_mismatch",
+                    "message": f"Chunk {chunk_index} downloaded size does not match the recorded size.",
+                },
+            )
+
+        digest = hashlib.sha256()
+        with local_path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+
+        expected_sha256 = (chunk.get("sha256") or "").lower()
+        if digest.hexdigest() != expected_sha256:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "vbr_media_chunk_hash_mismatch",
+                    "message": f"Chunk {chunk_index} downloaded content does not match the recorded sha256.",
+                },
+            )
+
+
+def build_ffmpeg_concat_manifest(local_paths: list[Path], work_dir: Path) -> Path:
+    """Write an ffmpeg concat-demuxer manifest listing chunks in order.
+
+    The manifest references only local paths produced by
+    ``build_chunk_local_path`` under ``work_dir`` — never user input.
+    """
+    manifest_path = work_dir / "concat_manifest.txt"
+
+    lines: list[str] = []
+    for path in local_paths:
+        # ffmpeg concat demuxer: wrap in single quotes, escape embedded quotes.
+        escaped = path.as_posix().replace("'", "'\\''")
+        lines.append(f"file '{escaped}'")
+
+    content = "\n".join(lines)
+    if content:
+        content += "\n"
+    manifest_path.write_text(content, encoding="utf-8")
+    return manifest_path
+
+
+def build_safe_ffmpeg_concat_command(manifest_path: Path, output_path: Path) -> list[str]:
+    """Return an argv list for an ffmpeg concat command.
+
+    This is a command builder only — callers must pass the result directly
+    to ``subprocess.run`` (never ``shell=True``). Not executed by T5B.
+    """
+    return [
+        "ffmpeg",
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(manifest_path),
+        "-c", "copy",
+        str(output_path),
+    ]
+
+
 def process_uploaded_session_skeleton(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
-    """Run the deterministic media-processing skeleton for an uploaded session.
+    """Run the media-processing pipeline foundation for an uploaded session.
 
     Validates ownership, session status, and the chunk manifest, then
-    transitions the session to ``processed`` and the parent project to
-    ``media_processed``. No media is read or downloaded.
+    downloads each chunk to a controlled local temp directory, verifies the
+    downloaded bytes against the recorded size/sha256, and prepares an
+    ffmpeg concat manifest. Finally transitions the session to ``processed``
+    and the parent project to ``media_processed``.
+
+    No video is concatenated, transcribed, or analyzed by an LLM here.
     """
     session, project = get_owned_vbr_session_or_404(db, session_id, user_id)
 
@@ -242,6 +516,17 @@ def process_uploaded_session_skeleton(db: Any, session_id: str, user_id: str) ->
     summary = compute_manifest_summary(chunks)
 
     mark_session_processing_started(db, session_id)
+
+    work_dir = build_processing_work_dir(session_id)
+    try:
+        local_paths = download_session_chunks_to_workdir(db, session_id, chunks)
+        verify_downloaded_chunk_files(local_paths, chunks)
+        build_ffmpeg_concat_manifest(local_paths, work_dir)
+    finally:
+        # TODO(T5C): a future concat/transcription step will need these
+        # files again — until then, do not leave downloaded media on disk.
+        shutil.rmtree(work_dir, ignore_errors=True)
+
     updated_session = mark_session_media_processed(db, session_id, summary)
     _advance_project_status(db, project, "media_processed")
 
@@ -251,5 +536,5 @@ def process_uploaded_session_skeleton(db: Any, session_id: str, user_id: str) ->
         "chunk_count": summary["chunk_count"],
         "total_bytes": summary["total_bytes"],
         "next_steps": list(NEXT_STEPS),
-        "message": "Media processing manifest verified. Transcription, keyframes, and judging are not yet implemented.",
+        "message": "Media downloaded, verified, and concat manifest prepared. Transcription, keyframes, and judging are not yet implemented.",
     }
