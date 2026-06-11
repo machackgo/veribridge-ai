@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, type CSSProperties } from "react"
+import { useEffect, useRef, useState, type CSSProperties } from "react"
 import {
   createVBRSessionConsent,
   finalizeVBRSession,
@@ -26,6 +26,25 @@ const STATUS_LABELS: Record<string, string> = {
   created: "Not started",
   recording: "Recording in progress",
   uploaded: "Uploaded",
+}
+
+type BrowserRecordingState = "inactive" | "recording" | "stopping" | "stopped"
+
+const BROWSER_RECORDING_LABELS: Record<BrowserRecordingState, string> = {
+  inactive: "Browser recording inactive",
+  recording: "Browser recording active",
+  stopping: "Stopping…",
+  stopped: "Browser recording stopped",
+}
+
+// Preferred MediaRecorder mimeTypes, in order of preference. Browsers vary in
+// codec support, so we pick the first one the browser reports as supported.
+const RECORDER_MIME_TYPES = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+
+function pickRecorderMimeType(): string | undefined {
+  const Recorder = typeof window !== "undefined" ? window.MediaRecorder : undefined
+  if (!Recorder || typeof Recorder.isTypeSupported !== "function") return undefined
+  return RECORDER_MIME_TYPES.find((type) => Recorder.isTypeSupported(type))
 }
 
 function formatDuration(totalSeconds: number): string {
@@ -130,12 +149,37 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
 
   const [elapsedS, setElapsedS] = useState(0)
 
+  const [recordingState, setRecordingState] = useState<BrowserRecordingState>("inactive")
+  const [recordingError, setRecordingError] = useState<string | null>(null)
+  const [recordedChunkCount, setRecordedChunkCount] = useState(0)
+  const [lastChunkBytes, setLastChunkBytes] = useState<number | null>(null)
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const screenStreamRef = useRef<MediaStream | null>(null)
+  const micStreamRef = useRef<MediaStream | null>(null)
+  const cameraStreamRef = useRef<MediaStream | null>(null)
+  const combinedStreamRef = useRef<MediaStream | null>(null)
+  const chunkIndexRef = useRef(0)
+  const recordedChunkCountRef = useRef(0)
+  const chunkQueueRef = useRef<Promise<void>>(Promise.resolve())
+
   // Browser support is only known on the client — compute after mount to avoid hydration mismatch.
   useEffect(() => {
     setBrowserSupport({
       mediaDevices: typeof navigator !== "undefined" && !!navigator.mediaDevices,
       mediaRecorder: typeof window !== "undefined" && typeof window.MediaRecorder !== "undefined",
     })
+  }, [])
+
+  // Make sure recording never keeps running after the component unmounts (e.g. navigation).
+  useEffect(() => {
+    return () => {
+      const recorder = mediaRecorderRef.current
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop()
+      }
+      stopAllStreams()
+    }
   }, [])
 
   useEffect(() => {
@@ -193,6 +237,131 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
     }
   }
 
+  function stopAllStreams() {
+    for (const ref of [screenStreamRef, micStreamRef, cameraStreamRef]) {
+      ref.current?.getTracks().forEach((track) => track.stop())
+      ref.current = null
+    }
+    combinedStreamRef.current = null
+  }
+
+  async function saveChunkMetadata(chunkIndex: number, bytes: number) {
+    try {
+      const padded = String(chunkIndex).padStart(3, "0")
+      const chunk = await uploadVBRSessionChunk(sessionId, {
+        chunk_index: chunkIndex,
+        storage_path: `vbr/sessions/${sessionId}/chunks/${padded}.webm`,
+        bytes,
+        // TODO(T4D): replace this placeholder with a real signed upload + SHA-256 of the chunk bytes.
+        sha256: "0".repeat(64),
+      })
+      recordedChunkCountRef.current += 1
+      setRecordedChunkCount(recordedChunkCountRef.current)
+      setLastChunkBytes(chunk.bytes ?? bytes)
+      await refreshSession()
+    } catch (err) {
+      setRecordingError(err instanceof Error ? err.message : "Failed to save chunk metadata.")
+    }
+  }
+
+  async function startBrowserRecording() {
+    setRecordingError(null)
+
+    if (typeof navigator === "undefined" || !navigator.mediaDevices || typeof window === "undefined" || typeof window.MediaRecorder === "undefined") {
+      setRecordingError("This browser does not support browser-based recording.")
+      return
+    }
+
+    let screenStream: MediaStream
+    try {
+      screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+    } catch (err) {
+      setRecordingError(err instanceof Error ? err.message : "Screen share permission was denied.")
+      return
+    }
+    screenStreamRef.current = screenStream
+
+    let micStream: MediaStream | null = null
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      micStreamRef.current = micStream
+    } catch {
+      // Mic is optional — recording continues with screen audio only, if any.
+    }
+
+    // TODO(T4D): optional webcam capture/PiP is not implemented in T4C.
+
+    try {
+      const tracks: MediaStreamTrack[] = [...screenStream.getVideoTracks()]
+      const audioTrack = micStream?.getAudioTracks()[0] ?? screenStream.getAudioTracks()[0]
+      if (audioTrack) tracks.push(audioTrack)
+
+      const combinedStream = new MediaStream(tracks)
+      combinedStreamRef.current = combinedStream
+
+      const mimeType = pickRecorderMimeType()
+      const recorder = mimeType ? new MediaRecorder(combinedStream, { mimeType }) : new MediaRecorder(combinedStream)
+
+      chunkIndexRef.current = 0
+      recordedChunkCountRef.current = 0
+      chunkQueueRef.current = Promise.resolve()
+      setRecordedChunkCount(0)
+      setLastChunkBytes(null)
+
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data.size > 0) {
+          const chunkIndex = chunkIndexRef.current
+          chunkIndexRef.current += 1
+          chunkQueueRef.current = chunkQueueRef.current.then(() => saveChunkMetadata(chunkIndex, event.data.size))
+        }
+      }
+
+      recorder.onerror = () => {
+        setRecordingError("Browser recording stopped due to an error.")
+        stopAllStreams()
+        mediaRecorderRef.current = null
+        setRecordingState("stopped")
+      }
+
+      recorder.onstop = () => {
+        stopAllStreams()
+        mediaRecorderRef.current = null
+        setRecordingState("stopped")
+      }
+
+      // If the user stops sharing via the browser's own UI, stop the recorder too.
+      screenStream.getVideoTracks()[0]?.addEventListener("ended", () => {
+        if (mediaRecorderRef.current?.state === "recording") {
+          mediaRecorderRef.current.stop()
+        }
+      })
+
+      mediaRecorderRef.current = recorder
+      recorder.start(10_000)
+      setRecordingState("recording")
+    } catch (err) {
+      setRecordingError(err instanceof Error ? err.message : "Failed to start browser recording.")
+      stopAllStreams()
+    }
+  }
+
+  async function stopBrowserRecording() {
+    const recorder = mediaRecorderRef.current
+    if (!recorder || recorder.state === "inactive") {
+      stopAllStreams()
+      setRecordingState((prev) => (prev === "recording" || prev === "stopping" ? "stopped" : prev))
+      return
+    }
+
+    setRecordingState("stopping")
+    await new Promise<void>((resolve) => {
+      recorder.addEventListener("stop", () => resolve(), { once: true })
+      recorder.stop()
+    })
+
+    await chunkQueueRef.current
+  }
+
   async function handleConsent() {
     setConsentLoading(true)
     setConsentError(null)
@@ -212,6 +381,7 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
     try {
       const updated = await startVBRSession(sessionId)
       setSession((prev) => (prev ? { ...prev, ...updated } : prev))
+      await startBrowserRecording()
     } catch (err) {
       setStartError(err instanceof Error ? err.message : "Failed to start session.")
     } finally {
@@ -223,7 +393,17 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
     setFinalizeLoading(true)
     setFinalizeError(null)
     setFinalizeMessage(null)
+
     try {
+      if (recordingState === "recording" || recordingState === "stopping") {
+        await stopBrowserRecording()
+      }
+
+      if (recordedChunkCountRef.current === 0 && (session?.chunk_count ?? 0) === 0) {
+        setFinalizeMessage("No recording chunks captured yet.")
+        return
+      }
+
       const updated = await finalizeVBRSession(sessionId, elapsedS)
       setSession((prev) => (prev ? { ...prev, ...updated } : prev))
       setFinalizeMessage("Session finalized and marked as uploaded.")
@@ -414,6 +594,18 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
         )}
         {startError && <p style={{ color: "var(--rose)", fontSize: 12, marginTop: 8 }}>{startError}</p>}
       </section>
+
+      {(isRecording || recordingState !== "inactive" || recordingError) && (
+        <section style={cardStyle} data-testid="vbr-browser-recording">
+          <div style={sectionTitleStyle}>Browser recording</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, fontSize: 13, color: "var(--ink)" }}>
+            <div><strong>Status:</strong> {BROWSER_RECORDING_LABELS[recordingState]}</div>
+            <div><strong>Chunks captured:</strong> {recordedChunkCount}</div>
+            <div><strong>Last chunk size:</strong> {lastChunkBytes !== null ? `${lastChunkBytes} bytes` : "—"}</div>
+          </div>
+          {recordingError && <p style={{ color: "var(--rose)", fontSize: 12, marginTop: 8 }}>{recordingError}</p>}
+        </section>
+      )}
 
       <section style={cardStyle}>
         <div style={sectionTitleStyle}>
