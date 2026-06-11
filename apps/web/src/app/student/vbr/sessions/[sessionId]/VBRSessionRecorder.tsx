@@ -113,6 +113,8 @@ const chipStyle: CSSProperties = {
   fontFamily: "var(--font-mono)",
 }
 
+const showDevChunkButton = process.env.NODE_ENV !== "production";
+
 export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<VBRSessionDetailResponse | null>(null)
   const [project, setProject] = useState<VBRProjectResponse | null>(null)
@@ -653,7 +655,8 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
         )}
       </section>
 
-      <section style={cardStyle}>
+      {showDevChunkButton && (
+<section style={cardStyle}>
         <div style={sectionTitleStyle}>Test only — chunk metadata</div>
         <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 0 }}>
           Verifies the frontend can save chunk metadata to the backend. No real video is uploaded.
@@ -672,6 +675,7 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
         )}
         {chunkError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{chunkError}</p>}
       </section>
+)}
 
       <section style={cardStyle}>
         <div style={sectionTitleStyle}>Finish</div>
