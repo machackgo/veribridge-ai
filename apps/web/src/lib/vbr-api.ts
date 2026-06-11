@@ -3,8 +3,9 @@
 import { fetchAPI } from "@/lib/api"
 
 /**
- * Client for the Verified Build Report (VBR) session recording endpoints
- * (T4A backend). MVP metadata-only — no real signed upload URLs yet.
+ * Client for the Verified Build Report (VBR) session recording endpoints.
+ * Chunks are uploaded via a short-lived signed URL (chunk-upload-url), then
+ * their metadata (storage_path, bytes, sha256) is saved via /chunk.
  */
 
 export type VBRSessionStatus = "created" | "recording" | "uploaded" | string
@@ -64,7 +65,7 @@ export type VBRChunkUploadRequest = {
   chunk_index: number
   storage_path: string
   bytes: number
-  sha256?: string | null
+  sha256: string
 }
 
 export type VBRChunkResponse = {
@@ -74,6 +75,19 @@ export type VBRChunkResponse = {
   bytes: number | null
   sha256: string | null
   received_at: string
+}
+
+export type VBRChunkUploadUrlRequest = {
+  chunk_index: number
+  bytes: number
+  sha256: string
+}
+
+export type VBRChunkUploadUrlResponse = {
+  upload_url: string
+  storage_path: string
+  chunk_index: number
+  expires_in: number | null
 }
 
 export type VBRTelemetryResponse = {
@@ -127,6 +141,31 @@ export async function startVBRSession(sessionId: string): Promise<VBRSessionResp
   })
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to start session (HTTP ${res.status}).`))
   return res.json()
+}
+
+export async function requestVBRChunkUploadUrl(
+  sessionId: string,
+  payload: VBRChunkUploadUrlRequest
+): Promise<VBRChunkUploadUrlResponse> {
+  const res = await fetchAPI(`/api/v1/student/vbr/sessions/${encodeURIComponent(sessionId)}/chunk-upload-url`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to request an upload URL (HTTP ${res.status}).`))
+  return res.json()
+}
+
+export async function uploadVBRChunkBytes(uploadUrl: string, blob: Blob): Promise<void> {
+  const res = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": blob.type || "video/webm",
+      "x-upsert": "true",
+      apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
+    },
+    body: blob,
+  })
+  if (!res.ok) throw new Error(`Failed to upload chunk bytes (HTTP ${res.status}).`)
 }
 
 export async function uploadVBRSessionChunk(

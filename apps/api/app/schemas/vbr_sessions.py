@@ -44,7 +44,7 @@ class VBRChunkUploadRequest(BaseModel):
     chunk_index: int = Field(..., ge=0)
     storage_path: str = Field(..., min_length=1, max_length=500)
     bytes: int = Field(..., gt=0)
-    sha256: str | None = Field(default=None, max_length=128)
+    sha256: str = Field(..., min_length=1, max_length=128)
 
 
 class VBRChunkResponse(BaseModel):
@@ -54,6 +54,19 @@ class VBRChunkResponse(BaseModel):
     bytes: int | None = None
     sha256: str | None = None
     received_at: str
+
+
+class VBRChunkUploadUrlRequest(BaseModel):
+    chunk_index: int = Field(..., ge=0)
+    bytes: int = Field(..., gt=0)
+    sha256: str = Field(..., min_length=1, max_length=128)
+
+
+class VBRChunkUploadUrlResponse(BaseModel):
+    upload_url: str
+    storage_path: str
+    chunk_index: int
+    expires_in: int | None
 
 
 class VBRTelemetryRequest(BaseModel):

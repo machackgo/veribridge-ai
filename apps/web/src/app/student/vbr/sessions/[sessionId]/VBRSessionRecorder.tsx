@@ -6,8 +6,10 @@ import {
   finalizeVBRSession,
   getVBRProject,
   getVBRSession,
+  requestVBRChunkUploadUrl,
   startVBRSession,
   updateVBRSessionTelemetry,
+  uploadVBRChunkBytes,
   uploadVBRSessionChunk,
   type VBRProjectResponse,
   type VBRSessionDetailResponse,
@@ -45,6 +47,16 @@ function pickRecorderMimeType(): string | undefined {
   const Recorder = typeof window !== "undefined" ? window.MediaRecorder : undefined
   if (!Recorder || typeof Recorder.isTypeSupported !== "function") return undefined
   return RECORDER_MIME_TYPES.find((type) => Recorder.isTypeSupported(type))
+}
+
+type ChunkUploadState = "queued" | "uploading" | "saved" | "failed"
+
+async function calculateSha256(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer()
+  const digest = await crypto.subtle.digest("SHA-256", buffer)
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
 }
 
 function formatDuration(totalSeconds: number): string {
@@ -112,8 +124,6 @@ const chipStyle: CSSProperties = {
   fontFamily: "var(--font-mono)",
 }
 
-const showDevChunkButton = process.env.NODE_ENV !== "production";
-
 export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<VBRSessionDetailResponse | null>(null)
   const [project, setProject] = useState<VBRProjectResponse | null>(null)
@@ -132,9 +142,6 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   const [finalizeMessage, setFinalizeMessage] = useState<string | null>(null)
 
-  const [chunkStatus, setChunkStatus] = useState<string | null>(null)
-  const [chunkError, setChunkError] = useState<string | null>(null)
-  const [chunkSaving, setChunkSaving] = useState(false)
 
   const [telemetryStatus, setTelemetryStatus] = useState<string | null>(null)
   const [telemetryError, setTelemetryError] = useState<string | null>(null)
@@ -154,6 +161,8 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
   const [recordingError, setRecordingError] = useState<string | null>(null)
   const [recordedChunkCount, setRecordedChunkCount] = useState(0)
   const [lastChunkBytes, setLastChunkBytes] = useState<number | null>(null)
+  const [chunkUploadCounts, setChunkUploadCounts] = useState({ queued: 0, uploading: 0, saved: 0, failed: 0 })
+  const [lastUploadError, setLastUploadError] = useState<string | null>(null)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const screenStreamRef = useRef<MediaStream | null>(null)
@@ -163,6 +172,7 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
   const chunkIndexRef = useRef(0)
   const recordedChunkCountRef = useRef(0)
   const chunkQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const chunkUploadStatesRef = useRef<Map<number, ChunkUploadState>>(new Map())
 
   // Browser support is only known on the client — compute after mount to avoid hydration mismatch.
   useEffect(() => {
@@ -246,22 +256,43 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
     combinedStreamRef.current = null
   }
 
-  async function saveChunkMetadata(chunkIndex: number, bytes: number) {
+  function setChunkUploadState(chunkIndex: number, state: ChunkUploadState) {
+    chunkUploadStatesRef.current.set(chunkIndex, state)
+    const counts = { queued: 0, uploading: 0, saved: 0, failed: 0 }
+    for (const value of chunkUploadStatesRef.current.values()) counts[value] += 1
+    setChunkUploadCounts(counts)
+  }
+
+  async function uploadAndSaveChunk(chunkIndex: number, blob: Blob) {
+    setChunkUploadState(chunkIndex, "queued")
     try {
-      const padded = String(chunkIndex).padStart(3, "0")
+      const sha256 = await calculateSha256(blob)
+
+      setChunkUploadState(chunkIndex, "uploading")
+      const target = await requestVBRChunkUploadUrl(sessionId, {
+        chunk_index: chunkIndex,
+        bytes: blob.size,
+        sha256,
+      })
+
+      await uploadVBRChunkBytes(target.upload_url, blob)
+
       const chunk = await uploadVBRSessionChunk(sessionId, {
         chunk_index: chunkIndex,
-        storage_path: `vbr/sessions/${sessionId}/chunks/${padded}.webm`,
-        bytes,
-        // TODO(T4D): replace this placeholder with a real signed upload + SHA-256 of the chunk bytes.
-        sha256: "0".repeat(64),
+        storage_path: target.storage_path,
+        bytes: blob.size,
+        sha256,
       })
+
+      setChunkUploadState(chunkIndex, "saved")
       recordedChunkCountRef.current += 1
       setRecordedChunkCount(recordedChunkCountRef.current)
-      setLastChunkBytes(chunk.bytes ?? bytes)
+      setLastChunkBytes(chunk.bytes ?? blob.size)
       await refreshSession()
     } catch (err) {
-      setRecordingError(err instanceof Error ? err.message : "Failed to save chunk metadata.")
+      setChunkUploadState(chunkIndex, "failed")
+      const message = err instanceof Error ? err.message : "Failed to upload recording chunk."
+      setLastUploadError(message)
     }
   }
 
@@ -306,14 +337,18 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
       chunkIndexRef.current = 0
       recordedChunkCountRef.current = 0
       chunkQueueRef.current = Promise.resolve()
+      chunkUploadStatesRef.current = new Map()
       setRecordedChunkCount(0)
       setLastChunkBytes(null)
+      setChunkUploadCounts({ queued: 0, uploading: 0, saved: 0, failed: 0 })
+      setLastUploadError(null)
 
       recorder.ondataavailable = (event: BlobEvent) => {
         if (event.data.size > 0) {
           const chunkIndex = chunkIndexRef.current
           chunkIndexRef.current += 1
-          chunkQueueRef.current = chunkQueueRef.current.then(() => saveChunkMetadata(chunkIndex, event.data.size))
+          const blob = event.data
+          chunkQueueRef.current = chunkQueueRef.current.then(() => uploadAndSaveChunk(chunkIndex, blob))
         }
       }
 
@@ -400,6 +435,9 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
         await stopBrowserRecording()
       }
 
+      // Wait for any chunk uploads still in flight before finalizing.
+      await chunkQueueRef.current
+
       if (recordedChunkCountRef.current === 0 && (session?.chunk_count ?? 0) === 0) {
         setFinalizeMessage("No recording chunks captured yet.")
         return
@@ -415,25 +453,6 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
     }
   }
 
-  async function handleSaveTestChunk() {
-    setChunkSaving(true)
-    setChunkError(null)
-    setChunkStatus(null)
-    try {
-      const chunk = await uploadVBRSessionChunk(sessionId, {
-        chunk_index: 0,
-        storage_path: `vbr/sessions/${sessionId}/chunks/000.webm`,
-        bytes: 1024,
-        sha256: "a".repeat(64),
-      })
-      setChunkStatus(`Saved chunk ${chunk.chunk_index} (${chunk.bytes ?? 0} bytes).`)
-      await refreshSession()
-    } catch (err) {
-      setChunkError(err instanceof Error ? err.message : "Failed to save chunk metadata.")
-    } finally {
-      setChunkSaving(false)
-    }
-  }
 
   async function goToQuestion(index: number) {
     if (!session) return
@@ -604,6 +623,13 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
             <div><strong>Chunks captured:</strong> {recordedChunkCount}</div>
             <div><strong>Last chunk size:</strong> {lastChunkBytes !== null ? `${lastChunkBytes} bytes` : "—"}</div>
           </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, fontSize: 12, color: "var(--muted)", marginTop: 8 }}>
+            <div>Queued: {chunkUploadCounts.queued}</div>
+            <div>Uploading: {chunkUploadCounts.uploading}</div>
+            <div>Saved: {chunkUploadCounts.saved}</div>
+            <div>Failed: {chunkUploadCounts.failed}</div>
+          </div>
+          {lastUploadError && <p style={{ color: "var(--rose)", fontSize: 12, marginTop: 8 }}>{lastUploadError}</p>}
           {recordingError && <p style={{ color: "var(--rose)", fontSize: 12, marginTop: 8 }}>{recordingError}</p>}
         </section>
       )}
@@ -654,27 +680,7 @@ export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
         )}
       </section>
 
-      {showDevChunkButton && (
-<section style={cardStyle}>
-        <div style={sectionTitleStyle}>Test only — chunk metadata</div>
-        <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 0 }}>
-          Verifies the frontend can save chunk metadata to the backend. No real video is uploaded.
-        </p>
-        <button
-          type="button"
-          style={isRecording && !chunkSaving ? buttonStyle : disabledButtonStyle}
-          disabled={!isRecording || chunkSaving}
-          onClick={handleSaveTestChunk}
-        >
-          {chunkSaving ? "Saving…" : "Save test chunk metadata"}
-        </button>
-        {!isRecording && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>Start the session to enable this.</p>}
-        {chunkStatus && (
-          <p style={{ fontSize: 12, color: "var(--emerald)", marginTop: 8, fontFamily: "var(--font-mono)" }}>{chunkStatus}</p>
-        )}
-        {chunkError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{chunkError}</p>}
-      </section>
-)}
+      
 
       <section style={cardStyle}>
         <div style={sectionTitleStyle}>Finish</div>

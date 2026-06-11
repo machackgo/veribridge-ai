@@ -21,6 +21,8 @@ from app.api.v1.endpoints.vbr_projects import _advance_project_status, _to_quest
 from app.schemas.vbr_sessions import (
     VBRChunkResponse,
     VBRChunkUploadRequest,
+    VBRChunkUploadUrlRequest,
+    VBRChunkUploadUrlResponse,
     VBRConsentRequest,
     VBRConsentResponse,
     VBRFinalizeRequest,
@@ -32,6 +34,7 @@ from app.schemas.vbr_sessions import (
 from app.services.vbr_question_generation import list_session_questions
 from app.services.vbr_session_recording import (
     count_chunks,
+    create_chunk_upload_target,
     create_recording_consent,
     finalize_session,
     get_owned_vbr_session_or_404,
@@ -146,6 +149,32 @@ def start_session_route(
 
     updated = start_session(db, session)
     return _to_session_response(updated, count_chunks(db, session_id))
+
+
+@router.post(
+    "/{session_id}/chunk-upload-url",
+    response_model=VBRChunkUploadUrlResponse,
+    summary="Request a short-lived upload target for a video chunk",
+)
+def create_chunk_upload_url_route(
+    session_id: str,
+    body: VBRChunkUploadUrlRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRChunkUploadUrlResponse:
+    session, _project = get_owned_vbr_session_or_404(db, session_id, user_id)
+
+    if session.get("status") != "recording":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "vbr_session_not_recording",
+                "message": "Session must be in 'recording' status to request an upload target.",
+            },
+        )
+
+    target = create_chunk_upload_target(db, session_id, body.chunk_index, body.bytes, body.sha256)
+    return VBRChunkUploadUrlResponse(**target)
 
 
 @router.post(

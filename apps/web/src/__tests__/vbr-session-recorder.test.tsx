@@ -6,7 +6,9 @@ import {
   finalizeVBRSession,
   getVBRProject,
   getVBRSession,
+  requestVBRChunkUploadUrl,
   startVBRSession,
+  uploadVBRChunkBytes,
   uploadVBRSessionChunk,
   type VBRSessionDetailResponse,
 } from "@/lib/vbr-api"
@@ -16,10 +18,23 @@ vi.mock("@/lib/vbr-api", () => ({
   getVBRProject: vi.fn(),
   createVBRSessionConsent: vi.fn(),
   startVBRSession: vi.fn(),
+  requestVBRChunkUploadUrl: vi.fn(),
+  uploadVBRChunkBytes: vi.fn(),
   uploadVBRSessionChunk: vi.fn(),
   updateVBRSessionTelemetry: vi.fn(),
   finalizeVBRSession: vi.fn(),
 }))
+
+// SHA-256 of 32 zero-filled "fake" chunk bytes used by the digest mock below.
+const FAKE_CHUNK_SHA256 = "ab".repeat(32)
+
+function makeBlobLike(size: number) {
+  return {
+    size,
+    type: "video/webm",
+    arrayBuffer: () => Promise.resolve(new ArrayBuffer(size)),
+  }
+}
 
 // ── Browser media mocks ──────────────────────────────────────────────────────
 
@@ -172,6 +187,20 @@ beforeEach(() => {
     configurable: true,
     writable: true,
   })
+
+  // jsdom does not implement crypto.subtle — stub a deterministic digest.
+  Object.defineProperty(globalThis.crypto, "subtle", {
+    value: { digest: vi.fn(async () => new Uint8Array(32).fill(0xab).buffer) },
+    configurable: true,
+  })
+
+  vi.mocked(requestVBRChunkUploadUrl).mockResolvedValue({
+    upload_url: "https://storage.example/upload?token=signed",
+    storage_path: "vbr/sessions/session-1/chunks/000.webm",
+    chunk_index: 0,
+    expires_in: 600,
+  })
+  vi.mocked(uploadVBRChunkBytes).mockResolvedValue(undefined)
 })
 
 async function startRecordingSession() {
@@ -325,13 +354,13 @@ describe("VBRSessionRecorder", () => {
     await waitFor(() => expect(screen.getByText("Recording in progress")).toBeInTheDocument())
   })
 
-  it("starts MediaRecorder via getDisplayMedia/getUserMedia after backend start, and saves chunk metadata on dataavailable", async () => {
+  it("starts MediaRecorder via getDisplayMedia/getUserMedia after backend start, and uploads+saves chunk metadata on dataavailable", async () => {
     vi.mocked(uploadVBRSessionChunk).mockResolvedValue({
       id: "chunk-1",
       session_id: "session-1",
       chunk_index: 0,
       bytes: 4096,
-      sha256: "0".repeat(64),
+      sha256: FAKE_CHUNK_SHA256,
       received_at: "2026-06-01T00:00:01Z",
     })
 
@@ -345,22 +374,120 @@ describe("VBRSessionRecorder", () => {
     expect(recorder.state).toBe("recording")
 
     await act(async () => {
-      recorder.ondataavailable?.({ data: { size: 4096 } })
+      recorder.ondataavailable?.({ data: makeBlobLike(4096) })
       await Promise.resolve()
     })
+
+    await waitFor(() =>
+      expect(requestVBRChunkUploadUrl).toHaveBeenCalledWith("session-1", {
+        chunk_index: 0,
+        bytes: 4096,
+        sha256: FAKE_CHUNK_SHA256,
+      })
+    )
+
+    await waitFor(() =>
+      expect(uploadVBRChunkBytes).toHaveBeenCalledWith(
+        "https://storage.example/upload?token=signed",
+        expect.objectContaining({ size: 4096 })
+      )
+    )
 
     await waitFor(() =>
       expect(uploadVBRSessionChunk).toHaveBeenCalledWith("session-1", {
         chunk_index: 0,
         storage_path: "vbr/sessions/session-1/chunks/000.webm",
         bytes: 4096,
-        sha256: "0".repeat(64),
+        sha256: FAKE_CHUNK_SHA256,
       })
     )
 
     const recordingSection = screen.getByTestId("vbr-browser-recording")
     await waitFor(() => expect(recordingSection.textContent).toContain("4096 bytes"))
     expect(recordingSection.textContent).toContain("Chunks captured: 1")
+    expect(recordingSection.textContent).toContain("Saved: 1")
+  })
+
+  it("shows a friendly error when requesting a chunk upload URL fails", async () => {
+    vi.mocked(requestVBRChunkUploadUrl).mockRejectedValue(new Error("Failed to request an upload URL (HTTP 409)."))
+
+    await startRecordingSession()
+
+    await waitFor(() => expect(MockMediaRecorder.instances).toHaveLength(1))
+    const recorder = MockMediaRecorder.instances[0]
+
+    await act(async () => {
+      recorder.ondataavailable?.({ data: makeBlobLike(4096) })
+      await Promise.resolve()
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText("Failed to request an upload URL (HTTP 409).")).toBeInTheDocument()
+    )
+
+    expect(uploadVBRChunkBytes).not.toHaveBeenCalled()
+    expect(uploadVBRSessionChunk).not.toHaveBeenCalled()
+
+    const recordingSection = screen.getByTestId("vbr-browser-recording")
+    expect(recordingSection.textContent).toContain("Failed: 1")
+  })
+
+  it("finalize waits for a pending chunk upload before calling the finalize endpoint", async () => {
+    let resolveUpload: (() => void) | undefined
+    vi.mocked(uploadVBRChunkBytes).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveUpload = () => resolve(undefined)
+        })
+    )
+    vi.mocked(uploadVBRSessionChunk).mockResolvedValue({
+      id: "chunk-1",
+      session_id: "session-1",
+      chunk_index: 0,
+      bytes: 2048,
+      sha256: FAKE_CHUNK_SHA256,
+      received_at: "2026-06-01T00:00:01Z",
+    })
+    vi.mocked(finalizeVBRSession).mockResolvedValue({
+      id: "session-1",
+      project_id: "project-1",
+      attempt_no: 1,
+      status: "uploaded",
+      started_at: "2026-06-01T00:00:00Z",
+      ended_at: "2026-06-01T00:05:00Z",
+      duration_s: 300,
+      webcam_present: false,
+      chunk_count: 1,
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:05:00Z",
+    })
+
+    await startRecordingSession()
+
+    await waitFor(() => expect(MockMediaRecorder.instances).toHaveLength(1))
+    const recorder = MockMediaRecorder.instances[0]
+
+    await act(async () => {
+      recorder.ondataavailable?.({ data: makeBlobLike(2048) })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(uploadVBRChunkBytes).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole("button", { name: "Finalize session" }))
+
+    // While the upload is still pending, finalize must not have been called yet.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(finalizeVBRSession).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveUpload?.()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(uploadVBRSessionChunk).toHaveBeenCalled())
+    await waitFor(() => expect(finalizeVBRSession).toHaveBeenCalledWith("session-1", expect.any(Number)))
   })
 
   it("finalize stops the MediaRecorder, stops media tracks, and calls the finalize endpoint", async () => {
@@ -369,7 +496,7 @@ describe("VBRSessionRecorder", () => {
       session_id: "session-1",
       chunk_index: 0,
       bytes: 2048,
-      sha256: "0".repeat(64),
+      sha256: FAKE_CHUNK_SHA256,
       received_at: "2026-06-01T00:00:01Z",
     })
     vi.mocked(finalizeVBRSession).mockResolvedValue({
@@ -393,7 +520,7 @@ describe("VBRSessionRecorder", () => {
     const recordedTracks = recorder.stream.getTracks()
 
     await act(async () => {
-      recorder.ondataavailable?.({ data: { size: 2048 } })
+      recorder.ondataavailable?.({ data: makeBlobLike(2048) })
       await Promise.resolve()
     })
 

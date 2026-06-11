@@ -1,21 +1,26 @@
-"""Session recording/upload foundation for VBR verification sessions (T4A skeleton).
+"""Session recording/upload foundation for VBR verification sessions (T4A/T4D).
 
-
-MVP scope only: backend metadata endpoints for starting a recording session,
-recording chunk metadata, merging telemetry, and finalizing a session. No
-real Supabase signed upload URLs are minted here.
+T4D adds real chunk upload targets: ``create_chunk_upload_target`` mints a
+short-lived Supabase Storage signed upload URL (when
+``SUPABASE_VBR_MEDIA_BUCKET`` is configured) for a server-computed
+``storage_path``. The browser uploads chunk bytes directly to that URL, then
+calls the existing chunk metadata endpoint, which validates the path matches
+exactly.
 """
 from __future__ import annotations
 
+import logging
 import re
-from pathlib import PurePosixPath
-
 
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException, status
+
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 _SESSIONS_TABLE = "vbr_verification_sessions"
 _CHUNKS_TABLE = "vbr_video_chunks"
@@ -35,7 +40,8 @@ __all__ = [
     "start_session",
     "update_session_telemetry",
     "finalize_session",
-    "chunk_storage_prefix",
+    "chunk_storage_path",
+    "create_chunk_upload_target",
 ]
 
 
@@ -154,17 +160,17 @@ def create_recording_consent(
 # ── Video chunks ─────────────────────────────────────────────────────────────
 
 
-def chunk_storage_prefix(session_id: str) -> str:
-    return f"vbr/sessions/{session_id}/chunks/"
+def chunk_storage_path(session_id: str, chunk_index: int) -> str:
+    """Return the exact, server-controlled object path for a session chunk.
+
+    Clients never choose this path — both the upload-url endpoint and the
+    chunk metadata endpoint derive it from ``session_id``/``chunk_index`` and
+    require an exact match.
+    """
+    return f"vbr/sessions/{session_id}/chunks/{chunk_index:03d}.webm"
 
 
-def validate_chunk_payload(
-    session_id: str,
-    chunk_index: int,
-    storage_path: str,
-    chunk_bytes: int,
-    sha256: str | None = None,
-) -> None:
+def _validate_chunk_basics(chunk_index: int, chunk_bytes: int, sha256: str) -> None:
     if chunk_index < 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -183,37 +189,7 @@ def validate_chunk_payload(
             },
         )
 
-    expected_prefix = chunk_storage_prefix(session_id)
-
-    if "\\" in storage_path or storage_path.startswith("/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "vbr_invalid_chunk_storage_path",
-                "message": "storage_path must be a safe relative object path.",
-            },
-        )
-
-    path = PurePosixPath(storage_path)
-    if ".." in path.parts or "." in path.parts:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "vbr_invalid_chunk_storage_path",
-                "message": "storage_path cannot contain traversal segments.",
-            },
-        )
-
-    if not storage_path.startswith(expected_prefix):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "vbr_invalid_chunk_storage_path",
-                "message": f"storage_path must start with '{expected_prefix}'.",
-            },
-        )
-
-    if sha256 is not None and not _SHA256_RE.fullmatch(sha256):
+    if not _SHA256_RE.fullmatch(sha256 or ""):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
@@ -221,6 +197,108 @@ def validate_chunk_payload(
                 "message": "sha256 must be a 64-character hex digest.",
             },
         )
+
+
+def validate_chunk_payload(
+    session_id: str,
+    chunk_index: int,
+    storage_path: str,
+    chunk_bytes: int,
+    sha256: str,
+) -> None:
+    _validate_chunk_basics(chunk_index, chunk_bytes, sha256)
+
+    expected_path = chunk_storage_path(session_id, chunk_index)
+    if storage_path != expected_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "vbr_invalid_chunk_storage_path",
+                "message": f"storage_path must equal '{expected_path}'.",
+            },
+        )
+
+
+def create_chunk_upload_target(
+    db: Any,
+    session_id: str,
+    chunk_index: int,
+    chunk_bytes: int,
+    sha256: str,
+) -> dict[str, Any]:
+    """Validate a proposed chunk and return a short-lived upload target.
+
+    The returned ``storage_path`` is always the server-computed exact path —
+    the client cannot influence it. ``upload_url`` is a real Supabase Storage
+    signed upload URL when ``SUPABASE_VBR_MEDIA_BUCKET`` is configured and a
+    real Supabase client is in use; otherwise it is a clearly-marked
+    placeholder (see ``_create_signed_upload_url``).
+    """
+    _validate_chunk_basics(chunk_index, chunk_bytes, sha256)
+
+    storage_path = chunk_storage_path(session_id, chunk_index)
+    upload_url = _create_signed_upload_url(db, storage_path)
+
+    return {
+        "upload_url": upload_url,
+        "storage_path": storage_path,
+        "chunk_index": chunk_index,
+        "expires_in": None,
+    }
+
+
+def _create_signed_upload_url(db: Any, storage_path: str) -> str:
+    """Create a real signed upload URL for a private VBR media object.
+
+    Test fake DBs may return a deterministic fake URL. Real service clients must
+    fail closed if storage is not configured or the signed URL response is invalid.
+    """
+    bucket = settings.supabase_vbr_media_bucket
+
+    if isinstance(db, dict):
+        return f"unconfigured://test-vbr-media-bucket/{storage_path}"
+
+    if not bucket:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vbr_media_bucket_not_configured",
+                "message": "Recording upload storage is not configured.",
+            },
+        )
+
+    if not hasattr(db, "storage"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vbr_storage_client_unavailable",
+                "message": "Recording upload storage is unavailable.",
+            },
+        )
+
+    try:
+        signed = db.storage.from_(bucket).create_signed_upload_url(storage_path)
+    except Exception as exc:
+        logger.warning("[VBR] Failed to create signed upload URL for %s: %s", storage_path, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vbr_chunk_upload_url_unavailable",
+                "message": "Could not create an upload target. Please try again.",
+            },
+        ) from exc
+
+    upload_url = signed.get("signed_url") or signed.get("signedUrl")
+    if not upload_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vbr_chunk_upload_url_unavailable",
+                "message": "Could not create an upload target. Please try again.",
+            },
+        )
+
+    return upload_url
 
 def upsert_video_chunk(
     db: Any,

@@ -78,7 +78,17 @@ def _start_session(client: TestClient, session_id: str) -> dict:
 def _chunk_payload(session_id: str, chunk_index: int = 0, **overrides: object) -> dict:
     payload = {
         "chunk_index": chunk_index,
-        "storage_path": f"vbr/sessions/{session_id}/chunks/{chunk_index}.webm",
+        "storage_path": f"vbr/sessions/{session_id}/chunks/{chunk_index:03d}.webm",
+        "bytes": 1024,
+        "sha256": "a" * 64,
+        **overrides,
+    }
+    return payload
+
+
+def _upload_url_payload(chunk_index: int = 0, **overrides: object) -> dict:
+    payload = {
+        "chunk_index": chunk_index,
         "bytes": 1024,
         "sha256": "a" * 64,
         **overrides,
@@ -148,6 +158,75 @@ def test_start_session_succeeds_after_consent_and_sets_recording(client: TestCli
     assert second.json()["detail"]["code"] == "vbr_session_not_startable"
 
 
+def test_chunk_upload_url_requires_owner(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+    _start_session(client, session_id)
+
+    app.dependency_overrides[get_current_user_id] = lambda: OTHER_USER_ID
+    response = client.post(
+        f"/api/v1/student/vbr/sessions/{session_id}/chunk-upload-url",
+        json=_upload_url_payload(),
+    )
+
+    assert response.status_code == 404
+
+
+def test_chunk_upload_url_requires_recording_status(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+
+    response = client.post(
+        f"/api/v1/student/vbr/sessions/{session_id}/chunk-upload-url",
+        json=_upload_url_payload(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "vbr_session_not_recording"
+
+
+def test_chunk_upload_url_rejects_invalid_sha256(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+    _start_session(client, session_id)
+
+    response = client.post(
+        f"/api/v1/student/vbr/sessions/{session_id}/chunk-upload-url",
+        json=_upload_url_payload(sha256="not-a-real-sha"),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "vbr_invalid_chunk_sha256"
+
+
+def test_chunk_upload_url_rejects_oversized_chunk(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+    _start_session(client, session_id)
+
+    response = client.post(
+        f"/api/v1/student/vbr/sessions/{session_id}/chunk-upload-url",
+        json=_upload_url_payload(bytes=25 * 1024 * 1024 + 1),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "vbr_invalid_chunk_size"
+
+
+def test_chunk_upload_url_returns_server_generated_storage_path(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+    _start_session(client, session_id)
+
+    response = client.post(
+        f"/api/v1/student/vbr/sessions/{session_id}/chunk-upload-url",
+        json=_upload_url_payload(chunk_index=2),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["chunk_index"] == 2
+    assert body["storage_path"] == f"vbr/sessions/{session_id}/chunks/002.webm"
+    assert body["expires_in"] is None
+    assert body["upload_url"]
+
+
 def test_chunk_insert_requires_recording_status(client: TestClient) -> None:
     _project_id, session_id = _setup_session(client)
 
@@ -171,6 +250,19 @@ def test_chunk_insert_rejects_oversized_chunk(client: TestClient) -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "vbr_invalid_chunk_size"
+
+
+def test_chunk_insert_rejects_path_for_different_chunk_index(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+    _start_session(client, session_id)
+
+    response = client.post(
+        f"/api/v1/student/vbr/sessions/{session_id}/chunk",
+        json=_chunk_payload(session_id, chunk_index=0, storage_path=f"vbr/sessions/{session_id}/chunks/001.webm"),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "vbr_invalid_chunk_storage_path"
 
 
 def test_chunk_insert_rejects_unsafe_storage_path(client: TestClient) -> None:
