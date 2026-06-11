@@ -32,6 +32,7 @@ from app.api.v1.endpoints import (
     skill_evidence_profile,
     student,
     vbr_projects,
+    vbr_sessions,
     verification_readiness,
     website_evidence_discovery,
     website_proof_artifact_sync,
@@ -75,6 +76,11 @@ api_router.include_router(
     vbr_projects.router,
     prefix="/student/vbr/projects",
     tags=["vbr-projects"],
+)
+api_router.include_router(
+    vbr_sessions.router,
+    prefix="/student/vbr/sessions",
+    tags=["vbr-sessions"],
 )
 api_router.include_router(
     skill_evidence.router,
