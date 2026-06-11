@@ -92,7 +92,6 @@ const buttonStyle: CSSProperties = {
 const primaryButtonStyle: CSSProperties = {
   ...buttonStyle,
   background: "var(--indigo)",
-  borderColor: "var(--indigo)",
   color: "#fff",
 }
 
