@@ -101,3 +101,10 @@ class VBRTranscriptionResponse(BaseModel):
     segment_count: int
     duration_s: float | None = None
     message: str
+
+
+class VBRKeyframeExtractionResponse(BaseModel):
+    session_id: str
+    frame_count: int
+    status: str
+    message: str

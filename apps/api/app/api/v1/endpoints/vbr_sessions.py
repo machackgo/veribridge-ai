@@ -26,6 +26,7 @@ from app.schemas.vbr_sessions import (
     VBRConsentRequest,
     VBRConsentResponse,
     VBRFinalizeRequest,
+    VBRKeyframeExtractionResponse,
     VBRMediaProcessingResponse,
     VBRSessionDetailResponse,
     VBRSessionResponse,
@@ -33,6 +34,7 @@ from app.schemas.vbr_sessions import (
     VBRTelemetryResponse,
     VBRTranscriptionResponse,
 )
+from app.services.vbr_keyframes import extract_keyframes_skeleton
 from app.services.vbr_media_processing import process_uploaded_session_skeleton
 from app.services.vbr_question_generation import list_session_questions
 from app.services.vbr_transcription import transcribe_session_skeleton
@@ -308,3 +310,17 @@ def transcribe_session_route(
 ) -> VBRTranscriptionResponse:
     result = transcribe_session_skeleton(db, session_id, user_id)
     return VBRTranscriptionResponse(**result)
+
+
+@router.post(
+    "/{session_id}/extract-keyframes",
+    response_model=VBRKeyframeExtractionResponse,
+    summary="Extract keyframes from the processed full session video",
+)
+def extract_keyframes_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRKeyframeExtractionResponse:
+    result = extract_keyframes_skeleton(db, session_id, user_id)
+    return VBRKeyframeExtractionResponse(**result)
