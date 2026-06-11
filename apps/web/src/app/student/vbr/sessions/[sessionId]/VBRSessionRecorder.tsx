@@ -1,0 +1,502 @@
+"use client"
+
+import { useEffect, useState, type CSSProperties } from "react"
+import {
+  createVBRSessionConsent,
+  finalizeVBRSession,
+  getVBRProject,
+  getVBRSession,
+  startVBRSession,
+  updateVBRSessionTelemetry,
+  uploadVBRSessionChunk,
+  type VBRProjectResponse,
+  type VBRSessionDetailResponse,
+} from "@/lib/vbr-api"
+
+type PreflightStatus = "idle" | "testing" | "granted" | "denied"
+type PreflightKey = "microphone" | "camera" | "screen"
+
+const PREFLIGHT_LABELS: Record<PreflightKey, string> = {
+  microphone: "Test microphone permission",
+  camera: "Test camera permission",
+  screen: "Test screen share permission",
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  created: "Not started",
+  recording: "Recording in progress",
+  uploaded: "Uploaded",
+}
+
+function formatDuration(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds))
+  const m = Math.floor(safe / 60)
+  const s = safe % 60
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+}
+
+function describeTargetRef(targetRef: Record<string, unknown>): string | null {
+  if (!targetRef || typeof targetRef !== "object") return null
+  if (typeof targetRef.path === "string") return `file: ${targetRef.path}`
+  if (typeof targetRef.commit === "string") return `commit: ${targetRef.commit.slice(0, 7)}`
+  if (typeof targetRef.url === "string") return `url: ${targetRef.url}`
+  return null
+}
+
+const cardStyle: CSSProperties = {
+  border: "1px solid var(--line)",
+  borderRadius: 10,
+  background: "var(--paper)",
+  padding: 16,
+}
+
+const sectionTitleStyle: CSSProperties = {
+  fontSize: 12,
+  fontWeight: 700,
+  color: "var(--ink)",
+  marginBottom: 8,
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+}
+
+const buttonStyle: CSSProperties = {
+  padding: "8px 14px",
+  borderRadius: 8,
+  border: "1px solid var(--line)",
+  background: "var(--bg-2)",
+  color: "var(--ink)",
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: "pointer",
+}
+
+const primaryButtonStyle: CSSProperties = {
+  ...buttonStyle,
+  background: "var(--indigo)",
+  borderColor: "var(--indigo)",
+  color: "#fff",
+}
+
+const disabledButtonStyle: CSSProperties = {
+  ...buttonStyle,
+  opacity: 0.5,
+  cursor: "not-allowed",
+}
+
+const chipStyle: CSSProperties = {
+  display: "inline-block",
+  padding: "2px 8px",
+  borderRadius: 6,
+  border: "1px solid var(--line)",
+  background: "var(--bg-2)",
+  color: "var(--ink-2)",
+  fontSize: 12,
+  fontFamily: "var(--font-mono)",
+}
+
+export function VBRSessionRecorder({ sessionId }: { sessionId: string }) {
+  const [session, setSession] = useState<VBRSessionDetailResponse | null>(null)
+  const [project, setProject] = useState<VBRProjectResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [notFound, setNotFound] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  const [consentGranted, setConsentGranted] = useState(false)
+  const [consentLoading, setConsentLoading] = useState(false)
+  const [consentError, setConsentError] = useState<string | null>(null)
+
+  const [startLoading, setStartLoading] = useState(false)
+  const [startError, setStartError] = useState<string | null>(null)
+
+  const [finalizeLoading, setFinalizeLoading] = useState(false)
+  const [finalizeError, setFinalizeError] = useState<string | null>(null)
+  const [finalizeMessage, setFinalizeMessage] = useState<string | null>(null)
+
+  const [chunkStatus, setChunkStatus] = useState<string | null>(null)
+  const [chunkError, setChunkError] = useState<string | null>(null)
+  const [chunkSaving, setChunkSaving] = useState(false)
+
+  const [telemetryStatus, setTelemetryStatus] = useState<string | null>(null)
+  const [telemetryError, setTelemetryError] = useState<string | null>(null)
+
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
+
+  const [browserSupport, setBrowserSupport] = useState<{ mediaDevices: boolean; mediaRecorder: boolean } | null>(null)
+  const [preflight, setPreflight] = useState<Record<PreflightKey, { status: PreflightStatus; error: string | null }>>({
+    microphone: { status: "idle", error: null },
+    camera: { status: "idle", error: null },
+    screen: { status: "idle", error: null },
+  })
+
+  const [elapsedS, setElapsedS] = useState(0)
+
+  // Browser support is only known on the client — compute after mount to avoid hydration mismatch.
+  useEffect(() => {
+    setBrowserSupport({
+      mediaDevices: typeof navigator !== "undefined" && !!navigator.mediaDevices,
+      mediaRecorder: typeof window !== "undefined" && typeof window.MediaRecorder !== "undefined",
+    })
+  }, [])
+
+  useEffect(() => {
+    let active = true
+
+    async function load() {
+      setLoading(true)
+      setLoadError(null)
+      setNotFound(false)
+      try {
+        const sessionData = await getVBRSession(sessionId)
+        if (!active) return
+        if (!sessionData) {
+          setNotFound(true)
+          return
+        }
+        setSession(sessionData)
+        try {
+          const projectData = await getVBRProject(sessionData.project_id)
+          if (active) setProject(projectData)
+        } catch {
+          // Project title is a nice-to-have — don't fail the whole page if it can't load.
+        }
+      } catch (err) {
+        if (active) setLoadError(err instanceof Error ? err.message : "Failed to load session.")
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+
+    load()
+    return () => {
+      active = false
+    }
+  }, [sessionId])
+
+  useEffect(() => {
+    if (session?.status !== "recording" || !session.started_at) {
+      setElapsedS(session?.duration_s ?? 0)
+      return
+    }
+    const startedAtMs = new Date(session.started_at).getTime()
+    const tick = () => setElapsedS(Math.floor((Date.now() - startedAtMs) / 1000))
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [session?.status, session?.started_at, session?.duration_s])
+
+  async function refreshSession() {
+    try {
+      const updated = await getVBRSession(sessionId)
+      if (updated) setSession(updated)
+    } catch {
+      // Keep showing the last known state if a background refresh fails.
+    }
+  }
+
+  async function handleConsent() {
+    setConsentLoading(true)
+    setConsentError(null)
+    try {
+      await createVBRSessionConsent(sessionId, "recording_v1")
+      setConsentGranted(true)
+    } catch (err) {
+      setConsentError(err instanceof Error ? err.message : "Failed to record consent.")
+    } finally {
+      setConsentLoading(false)
+    }
+  }
+
+  async function handleStart() {
+    setStartLoading(true)
+    setStartError(null)
+    try {
+      const updated = await startVBRSession(sessionId)
+      setSession((prev) => (prev ? { ...prev, ...updated } : prev))
+    } catch (err) {
+      setStartError(err instanceof Error ? err.message : "Failed to start session.")
+    } finally {
+      setStartLoading(false)
+    }
+  }
+
+  async function handleFinalize() {
+    setFinalizeLoading(true)
+    setFinalizeError(null)
+    setFinalizeMessage(null)
+    try {
+      const updated = await finalizeVBRSession(sessionId, elapsedS)
+      setSession((prev) => (prev ? { ...prev, ...updated } : prev))
+      setFinalizeMessage("Session finalized and marked as uploaded.")
+    } catch (err) {
+      setFinalizeError(err instanceof Error ? err.message : "Failed to finalize session.")
+    } finally {
+      setFinalizeLoading(false)
+    }
+  }
+
+  async function handleSaveTestChunk() {
+    setChunkSaving(true)
+    setChunkError(null)
+    setChunkStatus(null)
+    try {
+      const chunk = await uploadVBRSessionChunk(sessionId, {
+        chunk_index: 0,
+        storage_path: `vbr/sessions/${sessionId}/chunks/000.webm`,
+        bytes: 1024,
+        sha256: "a".repeat(64),
+      })
+      setChunkStatus(`Saved chunk ${chunk.chunk_index} (${chunk.bytes ?? 0} bytes).`)
+      await refreshSession()
+    } catch (err) {
+      setChunkError(err instanceof Error ? err.message : "Failed to save chunk metadata.")
+    } finally {
+      setChunkSaving(false)
+    }
+  }
+
+  async function goToQuestion(index: number) {
+    if (!session) return
+    const clamped = Math.max(0, Math.min(session.questions.length - 1, index))
+    if (clamped === currentQuestionIndex) return
+    setCurrentQuestionIndex(clamped)
+
+    const question = session.questions[clamped]
+    if (!question || session.status !== "recording") return
+
+    setTelemetryError(null)
+    setTelemetryStatus("Sending telemetry…")
+    try {
+      await updateVBRSessionTelemetry(sessionId, {
+        events: [{ type: "question_viewed", question_id: question.id, ts: Date.now() }],
+        current_question_id: question.id,
+      })
+      setTelemetryStatus(`Recorded question_viewed for question ${clamped + 1}.`)
+    } catch (err) {
+      setTelemetryStatus(null)
+      setTelemetryError(err instanceof Error ? err.message : "Failed to record telemetry.")
+    }
+  }
+
+  async function runPreflightCheck(key: PreflightKey) {
+    setPreflight((prev) => ({ ...prev, [key]: { status: "testing", error: null } }))
+    try {
+      if (typeof navigator === "undefined" || !navigator.mediaDevices) {
+        throw new Error("This browser does not support media device access.")
+      }
+
+      let stream: MediaStream
+      if (key === "screen") {
+        stream = await navigator.mediaDevices.getDisplayMedia({ video: true })
+      } else if (key === "camera") {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true })
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      }
+      // Stop tracks immediately — this is a permission probe, not a real recording.
+      stream.getTracks().forEach((track) => track.stop())
+      setPreflight((prev) => ({ ...prev, [key]: { status: "granted", error: null } }))
+    } catch (err) {
+      setPreflight((prev) => ({
+        ...prev,
+        [key]: { status: "denied", error: err instanceof Error ? err.message : "Permission denied." },
+      }))
+    }
+  }
+
+  if (loading) {
+    return (
+      <div style={{ padding: 24, fontFamily: "var(--font-sans)" }}>
+        <p style={{ color: "var(--muted)" }}>Loading session…</p>
+      </div>
+    )
+  }
+
+  if (notFound) {
+    return (
+      <div style={{ padding: 24, fontFamily: "var(--font-sans)" }}>
+        <div style={cardStyle}>
+          <p style={{ color: "var(--ink)", fontWeight: 600, margin: 0 }}>Session not found or unavailable.</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (loadError || !session) {
+    return (
+      <div style={{ padding: 24, fontFamily: "var(--font-sans)" }}>
+        <div style={cardStyle}>
+          <p style={{ color: "var(--rose)", fontWeight: 600, margin: 0 }}>
+            {loadError ?? "Something went wrong loading this session."}
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  const currentQuestion = session.questions[currentQuestionIndex] ?? null
+  const isRecording = session.status === "recording"
+  const canStart = consentGranted && session.status === "created" && !startLoading
+
+  return (
+    <div style={{ padding: 24, maxWidth: 760, margin: "0 auto", fontFamily: "var(--font-sans)", display: "grid", gap: 16 }}>
+      <header>
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: "var(--ink)", margin: 0 }}>
+          Verified Build Report — Recording session
+        </h1>
+        {project?.title && <p style={{ color: "var(--muted)", marginTop: 4 }}>{project.title}</p>}
+      </header>
+
+      <section style={cardStyle} data-testid="vbr-session-status">
+        <div style={sectionTitleStyle}>Session status</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 16, fontSize: 13, color: "var(--ink)" }}>
+          <div><strong>Status:</strong> {STATUS_LABELS[session.status] ?? session.status}</div>
+          <div><strong>Attempt:</strong> {session.attempt_no}</div>
+          <div><strong>Chunks recorded:</strong> {session.chunk_count}</div>
+          <div style={{ fontFamily: "var(--font-mono)" }}><strong>Timer:</strong> {formatDuration(elapsedS)}</div>
+        </div>
+      </section>
+
+      <section style={cardStyle}>
+        <div style={sectionTitleStyle}>Consent</div>
+        <p style={{ fontSize: 13, color: "var(--muted)", marginTop: 0 }}>
+          Talk like you are showing a teammate. This session can record your screen, microphone, and optionally your webcam.
+        </p>
+        <button
+          type="button"
+          style={consentGranted ? disabledButtonStyle : primaryButtonStyle}
+          disabled={consentGranted || consentLoading}
+          onClick={handleConsent}
+        >
+          {consentGranted ? "Consent recorded" : consentLoading ? "Recording consent…" : "I consent to record this session"}
+        </button>
+        {consentError && <p style={{ color: "var(--rose)", fontSize: 12, marginTop: 8 }}>{consentError}</p>}
+      </section>
+
+      <section style={cardStyle}>
+        <div style={sectionTitleStyle}>Browser preflight</div>
+        {browserSupport && (
+          <div style={{ fontSize: 13, color: "var(--ink)", marginBottom: 12, display: "grid", gap: 4 }}>
+            <div>{browserSupport.mediaDevices ? "✓" : "✗"} navigator.mediaDevices supported</div>
+            <div>{browserSupport.mediaRecorder ? "✓" : "✗"} MediaRecorder supported</div>
+          </div>
+        )}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+          {(Object.keys(PREFLIGHT_LABELS) as PreflightKey[]).map((key) => {
+            const state = preflight[key]
+            return (
+              <div key={key} style={{ display: "grid", gap: 4 }}>
+                <button
+                  type="button"
+                  style={buttonStyle}
+                  onClick={() => runPreflightCheck(key)}
+                  disabled={state.status === "testing"}
+                >
+                  {PREFLIGHT_LABELS[key]}
+                </button>
+                {state.status === "testing" && <span style={{ fontSize: 12, color: "var(--muted)" }}>Testing…</span>}
+                {state.status === "granted" && <span style={{ fontSize: 12, color: "var(--emerald)" }}>✓ Granted</span>}
+                {state.status === "denied" && (
+                  <span style={{ fontSize: 12, color: "var(--rose)" }}>✗ {state.error ?? "Denied"}</span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </section>
+
+      <section style={cardStyle}>
+        <div style={sectionTitleStyle}>Start recording</div>
+        <button type="button" style={canStart ? primaryButtonStyle : disabledButtonStyle} disabled={!canStart} onClick={handleStart}>
+          {startLoading ? "Starting…" : isRecording ? "Recording started" : "Start recording session"}
+        </button>
+        {!consentGranted && session.status === "created" && (
+          <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>Give consent above to enable this.</p>
+        )}
+        {startError && <p style={{ color: "var(--rose)", fontSize: 12, marginTop: 8 }}>{startError}</p>}
+      </section>
+
+      <section style={cardStyle}>
+        <div style={sectionTitleStyle}>
+          Question {session.questions.length > 0 ? `${currentQuestionIndex + 1} of ${session.questions.length}` : "—"}
+        </div>
+        {currentQuestion ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            <p style={{ fontSize: 14, color: "var(--ink)", margin: 0 }}>{currentQuestion.question_text}</p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {describeTargetRef(currentQuestion.target_ref) && (
+                <span style={chipStyle}>[{describeTargetRef(currentQuestion.target_ref)}]</span>
+              )}
+              {currentQuestion.claim_ids.map((claimId) => (
+                <span key={claimId} style={chipStyle}>[claim {claimId.slice(0, 8)}]</span>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p style={{ fontSize: 13, color: "var(--muted)" }}>No questions available for this session.</p>
+        )}
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <button
+            type="button"
+            style={currentQuestionIndex === 0 ? disabledButtonStyle : buttonStyle}
+            disabled={currentQuestionIndex === 0}
+            onClick={() => goToQuestion(currentQuestionIndex - 1)}
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            style={currentQuestionIndex >= session.questions.length - 1 ? disabledButtonStyle : buttonStyle}
+            disabled={currentQuestionIndex >= session.questions.length - 1}
+            onClick={() => goToQuestion(currentQuestionIndex + 1)}
+          >
+            Next
+          </button>
+        </div>
+        {telemetryStatus && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>{telemetryStatus}</p>}
+        {telemetryError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{telemetryError}</p>}
+        {!isRecording && (
+          <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>
+            Telemetry is only recorded once the session is recording.
+          </p>
+        )}
+      </section>
+
+      <section style={cardStyle}>
+        <div style={sectionTitleStyle}>Test only — chunk metadata</div>
+        <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 0 }}>
+          Verifies the frontend can save chunk metadata to the backend. No real video is uploaded.
+        </p>
+        <button
+          type="button"
+          style={isRecording && !chunkSaving ? buttonStyle : disabledButtonStyle}
+          disabled={!isRecording || chunkSaving}
+          onClick={handleSaveTestChunk}
+        >
+          {chunkSaving ? "Saving…" : "Save test chunk metadata"}
+        </button>
+        {!isRecording && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>Start the session to enable this.</p>}
+        {chunkStatus && (
+          <p style={{ fontSize: 12, color: "var(--emerald)", marginTop: 8, fontFamily: "var(--font-mono)" }}>{chunkStatus}</p>
+        )}
+        {chunkError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{chunkError}</p>}
+      </section>
+
+      <section style={cardStyle}>
+        <div style={sectionTitleStyle}>Finish</div>
+        <button
+          type="button"
+          style={isRecording && !finalizeLoading ? primaryButtonStyle : disabledButtonStyle}
+          disabled={!isRecording || finalizeLoading}
+          onClick={handleFinalize}
+        >
+          {finalizeLoading ? "Finalizing…" : "Finalize session"}
+        </button>
+        {session.status === "uploaded" && (
+          <p style={{ fontSize: 12, color: "var(--emerald)", marginTop: 8 }}>✓ Session uploaded.</p>
+        )}
+        {finalizeMessage && <p style={{ fontSize: 12, color: "var(--emerald)", marginTop: 8 }}>{finalizeMessage}</p>}
+        {finalizeError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{finalizeError}</p>}
+      </section>
+    </div>
+  )
+}
