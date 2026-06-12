@@ -8,14 +8,14 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client"
 type Step = "email" | "otp"
 
 const RESEND_DELAY = 60
-const EDU_PATTERN = /\.edu$/i
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const SMTP_DELIVERY_ERROR_MESSAGE =
   "Verification email could not be sent. For local development, enable demo mode. For production, configure a verified SMTP sender domain."
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function isEduEmail(v: string) {
-  return EDU_PATTERN.test(v.trim())
+function isValidEmail(v: string) {
+  return EMAIL_PATTERN.test(v.trim())
 }
 
 function maskEmail(email: string) {
@@ -159,6 +159,83 @@ function PrimaryButton({
   )
 }
 
+// ── Google sign-in ────────────────────────────────────────────────────────────
+
+function GoogleIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+      <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84c-.21 1.13-.85 2.09-1.81 2.73v2.27h2.92c1.71-1.57 2.69-3.88 2.69-6.64z" />
+      <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.27c-.81.54-1.85.86-3.04.86-2.34 0-4.32-1.58-5.03-3.71H.96v2.33A8.997 8.997 0 0 0 9 18z" />
+      <path fill="#FBBC05" d="M3.97 10.7A5.41 5.41 0 0 1 3.68 9c0-.59.1-1.17.29-1.7V4.97H.96A8.997 8.997 0 0 0 0 9c0 1.45.35 2.83.96 4.03l3.01-2.33z" />
+      <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0 5.48 0 2.44 2.02.96 4.97l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z" />
+    </svg>
+  )
+}
+
+function GoogleButton({
+  onClick,
+  loading,
+  disabled,
+}: {
+  onClick: () => void
+  loading: boolean
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={loading || disabled}
+      data-testid="google-signin-btn"
+      style={{
+        width: "100%",
+        padding: "12px 24px",
+        background: "#fff",
+        color: "var(--ink, #0a0e1a)",
+        border: "1.5px solid #d1d5db",
+        borderRadius: 12,
+        fontSize: 15,
+        fontWeight: 600,
+        cursor: loading || disabled ? "not-allowed" : "pointer",
+        opacity: loading || disabled ? 0.6 : 1,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 10,
+        letterSpacing: "-0.2px",
+        fontFamily: "inherit",
+      }}
+    >
+      {loading ? (
+        <span
+          style={{
+            width: 16,
+            height: 16,
+            borderRadius: "50%",
+            border: "2px solid rgba(67,97,238,0.25)",
+            borderTopColor: "#4361ee",
+            display: "inline-block",
+            animation: "vb-spin 0.7s linear infinite",
+          }}
+        />
+      ) : (
+        <GoogleIcon />
+      )}
+      Continue with Google
+    </button>
+  )
+}
+
+function Divider() {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "20px 0" }}>
+      <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
+      <span style={{ fontSize: 12, color: "#9ca3af" }}>or</span>
+      <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
+    </div>
+  )
+}
+
 // ── Email step ────────────────────────────────────────────────────────────────
 
 function EmailStep({
@@ -167,15 +244,19 @@ function EmailStep({
   onSubmit,
   loading,
   error,
+  onGoogleSignIn,
+  googleLoading,
 }: {
   email: string
   setEmail: (v: string) => void
   onSubmit: (e: React.FormEvent) => void
   loading: boolean
   error: string | null
+  onGoogleSignIn: () => void
+  googleLoading: boolean
 }) {
   return (
-    <form onSubmit={onSubmit} noValidate>
+    <div>
       <h1
         style={{
           fontSize: 24,
@@ -185,7 +266,7 @@ function EmailStep({
           marginBottom: 8,
         }}
       >
-        Sign in with your .edu email
+        Sign in to VeriBridge
       </h1>
       <p
         style={{
@@ -196,62 +277,54 @@ function EmailStep({
           opacity: 0.7,
         }}
       >
-        We&apos;ll send a one-time verification code to your university email.
+        We&apos;ll send a one-time verification code to your email.
       </p>
 
       {error && <ErrorBanner msg={error} />}
 
-      <label
-        htmlFor="email"
-        style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--ink, #0a0e1a)", marginBottom: 6 }}
-      >
-        University email
-      </label>
-      <input
-        id="email"
-        type="email"
-        autoComplete="email"
-        placeholder="you@university.edu"
-        value={email}
-        onChange={e => setEmail(e.target.value)}
-        required
-        data-testid="email-input"
-        style={{
-          width: "100%",
-          padding: "12px 16px",
-          border: "1.5px solid #d1d5db",
-          borderRadius: 10,
-          fontSize: 15,
-          color: "var(--ink, #0a0e1a)",
-          background: "#fff",
-          marginBottom: 20,
-          outline: "none",
-          boxSizing: "border-box",
-          transition: "border-color 150ms ease",
-          fontFamily: "inherit",
-        }}
-        onFocus={e => { e.currentTarget.style.borderColor = "#4361ee" }}
-        onBlur={e => { e.currentTarget.style.borderColor = "#d1d5db" }}
-      />
+      <GoogleButton onClick={onGoogleSignIn} loading={googleLoading} disabled={loading} />
 
-      <PrimaryButton loading={loading}>
-        Send verification code
-      </PrimaryButton>
+      <Divider />
 
-      <p
-        style={{
-          fontSize: 12,
-          color: "#6b7280",
-          textAlign: "center",
-          marginTop: 16,
-          lineHeight: 1.5,
-        }}
-      >
-        VeriBridge is currently available for verified .edu students.
-        <br />
-        No account needed — we verify your email automatically.
-      </p>
-    </form>
+      <form onSubmit={onSubmit} noValidate>
+        <label
+          htmlFor="email"
+          style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--ink, #0a0e1a)", marginBottom: 6 }}
+        >
+          Email address
+        </label>
+        <input
+          id="email"
+          type="email"
+          autoComplete="email"
+          placeholder="you@example.com"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          required
+          data-testid="email-input"
+          style={{
+            width: "100%",
+            padding: "12px 16px",
+            border: "1.5px solid #d1d5db",
+            borderRadius: 10,
+            fontSize: 15,
+            color: "var(--ink, #0a0e1a)",
+            background: "#fff",
+            marginBottom: 20,
+            outline: "none",
+            boxSizing: "border-box",
+            transition: "border-color 150ms ease",
+            fontFamily: "inherit",
+          }}
+          onFocus={e => { e.currentTarget.style.borderColor = "#4361ee" }}
+          onBlur={e => { e.currentTarget.style.borderColor = "#d1d5db" }}
+        />
+
+        <PrimaryButton loading={loading} disabled={googleLoading}>
+          Send verification code
+        </PrimaryButton>
+      </form>
+    </div>
   )
 }
 
@@ -439,6 +512,7 @@ function LoginInner() {
   const [email, setEmail] = useState("")
   const [otp, setOtp] = useState("")
   const [loading, setLoading] = useState(false)
+  const [googleLoading, setGoogleLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [countdown, setCountdown] = useState(0)
 
@@ -488,14 +562,11 @@ function LoginInner() {
     const addr = email.trim().toLowerCase()
 
     if (!addr) {
-      setError("Please enter your university email address.")
+      setError("Please enter your email address.")
       return
     }
-    if (!isEduEmail(addr)) {
-      setError(
-        "VeriBridge is currently available for verified .edu students. " +
-          "Please use your university email address."
-      )
+    if (!isValidEmail(addr)) {
+      setError("Please enter a valid email address.")
       return
     }
 
@@ -564,6 +635,24 @@ function LoginInner() {
     }
   }
 
+  async function handleGoogleSignIn() {
+    setError(null)
+    setGoogleLoading(true)
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(redirectTo || "/dashboard")}`,
+        },
+      })
+      if (error) throw error
+      // On success the browser navigates away to Google; no further action needed here.
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to start Google sign-in. Please try again.")
+      setGoogleLoading(false)
+    }
+  }
+
   function handleChangeEmail() {
     setStep("email")
     setOtp("")
@@ -617,6 +706,8 @@ function LoginInner() {
               onSubmit={handleEmailSubmit}
               loading={loading}
               error={error}
+              onGoogleSignIn={handleGoogleSignIn}
+              googleLoading={googleLoading}
             />
           ) : (
             <OtpStep

@@ -217,11 +217,13 @@ class LiveWebsiteCheckService:
             .maybe_single()
             .execute()
         )
-        if result is None:
+        if result is None or not isinstance(result.data, dict):
             return None
-        proof_data = (result.data or {}).get("proof_data") or {}
+        proof_data = (result.data.get("proof_data") or {})
+        if not isinstance(proof_data, dict):
+            return None
         check = proof_data.get("live_website_check")
-        if check:
+        if check and isinstance(check, dict):
             return {"id": f"pd-{session_id[:8]}", "user_id": user_id, "proof_session_id": session_id, **check}
         return None
 

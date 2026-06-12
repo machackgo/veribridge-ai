@@ -189,6 +189,9 @@ class ExtractedObservations(BaseModel):
     result_event_count: int = 0
     file_upload_count: int = 0
     form_submit_count: int = 0
+    # Domain filtering: rows excluded because they belonged to a different domain.
+    # Safe to surface as "N unrelated browser events filtered" without leaking titles.
+    filtered_unrelated_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +229,14 @@ class VisibleEvidenceSummaryResponse(BaseModel):
     page_context_summary: str | None = None
     events_summary: list[VisibleEvidenceSummaryEvent]
     extracted_observations: ExtractedObservations
+    filtered_unrelated_count: int = Field(
+        default=0,
+        description=(
+            "Number of captured events excluded because they belonged to a domain "
+            "other than the proof target (e.g. Supabase, GitHub, localhost). "
+            "Safe to surface as 'N unrelated browser events filtered'."
+        ),
+    )
     privacy_note: str = (
         "This summary is only visible to the student who owns this session. "
         "Recruiters see only the processed, public-safe workflow analysis summary."

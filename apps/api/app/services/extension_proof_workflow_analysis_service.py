@@ -1688,19 +1688,29 @@ class ExtensionProofWorkflowAnalysisService:
         )
         logger.info("WORKFLOW_ANALYSIS_GENERATING_SUMMARY session=%s", session_id)
 
-        # ── Load visible evidence observations (v4) ────────────────────────
+        # ── Load visible evidence observations (v4 + domain isolation) ────────
+        # Resolve the canonical target domain so unrelated rows (supabase.com,
+        # github.com, localhost veribridge, etc.) are excluded from the
+        # target-website workflow analysis.
         visible_observations = None
         try:
             from app.services.workflow_visible_evidence_service import (
                 WorkflowVisibleEvidenceService,
             )
+            from app.services.proof_target_resolver import resolve_target_domain
             ve_svc = WorkflowVisibleEvidenceService(self._client)
-            obs = ve_svc.get_extracted_observations(user_id, session_id)
+            _session_website_url = session.get("website_url") or ""
+            _target_domain = resolve_target_domain(_session_website_url, proof_data)
+            obs = ve_svc.get_extracted_observations(
+                user_id, session_id, target_domain=_target_domain
+            )
             if obs.visible_evidence_status != "not_captured":
                 visible_observations = obs
                 logger.info(
-                    "WORKFLOW_ANALYSIS_VISIBLE_EVIDENCE_LOADED session=%s status=%s events=%d",
+                    "WORKFLOW_ANALYSIS_VISIBLE_EVIDENCE_LOADED session=%s "
+                    "status=%s events=%d filtered_unrelated=%d target_domain=%r",
                     session_id, obs.visible_evidence_status, obs.event_count,
+                    obs.filtered_unrelated_count, _target_domain,
                 )
         except Exception:
             logger.warning(

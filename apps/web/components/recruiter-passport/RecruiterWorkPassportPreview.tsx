@@ -4863,6 +4863,7 @@ function SafeProofReason({
 }
 
 // Phrases that indicate visual reasoning analyzed the recorder/browser UI instead of target app
+// Keep in sync with backend _RECORDER_UI_PHRASES in website_proof_artifact_sync_service.py
 const RECORDER_UI_PHRASES = [
   "screen recording interface",
   "veribridge ai is open",
@@ -4872,6 +4873,21 @@ const RECORDER_UI_PHRASES = [
   "start screen recording",
   "recording interface",
   "proof builder is open",
+  "live video recording",
+  "stop or send the recording",
+  "recording controls",
+  "recorder controls",
+  "veribridge screen recorder",
+  "veribridge recording interface",
+  "recording active",
+  "stop recording",
+  "send proof",
+  "send recording",
+  "screen recorder overlay",
+  "browser recorder",
+  "extension recorder",
+  "start and stop recording",
+  "showing options to start and stop recording",
 ]
 
 function isRecorderUiObservation(text: string): boolean {
@@ -5394,12 +5410,18 @@ function RecruiterSafeEvidencePipelineViewer({
                 const reasoning = safeStr(art.artifact_data.evidence_reasoning)
                 const backendRecorderUi = art.artifact_data.recorder_ui_detected === true
                 const rawIsRecorderUi = rawObservation ? isRecorderUiObservation(rawObservation) : false
-                const isRecorderUi = backendRecorderUi || rawIsRecorderUi
+                // Also check proof_reason for recorder phrases (defense-in-depth)
+                const proofReasonIsRecorderUi = art.proof_reason ? isRecorderUiObservation(art.proof_reason) : false
+                const isRecorderUi = backendRecorderUi || rawIsRecorderUi || proofReasonIsRecorderUi
                 const { text: filteredObservation, filtered: obsFiltered } = rawObservation
                   ? getRecruiterGradeText(rawObservation, targetDomain)
                   : { text: null, filtered: false }
                 const observation = !isRecorderUi ? (filteredObservation || null) : null
                 const evidenceQuality = safeStr(art.artifact_data.evidence_quality)
+                // Sanitized target-only observation (stored by backend when recorder UI detected)
+                const sanitizedTargetObs = isRecorderUi
+                  ? (safeStr(art.artifact_data.sanitized_visual_summary) || null)
+                  : null
                 const hasDetail = observation || reasoning
                 return (
                   <div key={art.id} data-testid="qwen-artifact-detail" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -5407,30 +5429,60 @@ function RecruiterSafeEvidencePipelineViewer({
                       <span style={{ fontSize: 12, fontWeight: 600, color: C.ink }}>{art.source_title}</span>
                       <EvidenceQualityBadge quality={evidenceQuality ?? undefined} />
                     </div>
-                    <SafeProofReason proofReason={art.proof_reason} targetDomain={targetDomain} />
-                    {isRecorderUi && <RecorderUiGradeNotice />}
-                    {observation && (
-                      <div
-                        data-testid="qwen-visual-observation"
-                        style={{
-                          padding: "8px 10px", background: "#faf5ff",
-                          border: "1px solid #e9d5ff", borderRadius: 6,
-                          fontSize: 11, color: "#6b21a8", lineHeight: 1.5,
-                        }}
-                      >
-                        {observation}
-                      </div>
+                    {isRecorderUi ? (
+                      <>
+                        {/* Show notice first — never render contaminated proof_reason before it */}
+                        <RecorderUiGradeNotice />
+                        {sanitizedTargetObs && sanitizedTargetObs.length > 10 && (
+                          <div
+                            data-testid="qwen-sanitized-target-observation"
+                            style={{
+                              padding: "8px 10px", background: "#f0fdf4",
+                              border: "1px solid #bbf7d0", borderRadius: 6,
+                              fontSize: 11, color: "#166534", lineHeight: 1.5,
+                            }}
+                          >
+                            <strong style={{ color: "#166534" }}>Target app observation (recorder UI excluded):</strong>{" "}
+                            {sanitizedTargetObs}
+                          </div>
+                        )}
+                        {/* evidence_reasoning (from missing_claims) is safe to show — it's not the raw observation */}
+                        {reasoning && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                            <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Model reasoning:</span>
+                            <p data-testid="qwen-evidence-reasoning" style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                              {reasoning}
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <SafeProofReason proofReason={art.proof_reason} targetDomain={targetDomain} />
+                        {observation && (
+                          <div
+                            data-testid="qwen-visual-observation"
+                            style={{
+                              padding: "8px 10px", background: "#faf5ff",
+                              border: "1px solid #e9d5ff", borderRadius: 6,
+                              fontSize: 11, color: "#6b21a8", lineHeight: 1.5,
+                            }}
+                          >
+                            {observation}
+                          </div>
+                        )}
+                        {reasoning && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                            <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Model reasoning:</span>
+                            <p data-testid="qwen-evidence-reasoning" style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                              {reasoning}
+                            </p>
+                          </div>
+                        )}
+                        {obsFiltered && <FilteredNoiseNotice />}
+                        {!hasDetail && <NoDetailData />}
+                      </>
                     )}
-                    {reasoning && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                        <span style={{ fontSize: 10, fontWeight: 600, color: C.muted }}>Model reasoning:</span>
-                        <p data-testid="qwen-evidence-reasoning" style={{ fontSize: 11, color: C.inkSoft, margin: 0, lineHeight: 1.5 }}>
-                          {reasoning}
-                        </p>
-                      </div>
-                    )}
-                    {obsFiltered && !isRecorderUi && <FilteredNoiseNotice />}
-                    {!hasDetail && !isRecorderUi && <NoDetailData />}
                     <ArtifactConfidence score={art.confidence_score} />
                   </div>
                 )

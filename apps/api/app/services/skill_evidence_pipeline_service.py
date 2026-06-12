@@ -40,6 +40,7 @@ _UNSAFE_ARTIFACT_KEYS = frozenset({
     "storage_path", "storage_bucket", "signed_url", "signedUrl",
     "access_token", "service_role_key", "private_url", "download_url",
     "raw_frame_url", "keyframe_url", "screenshot_url",
+    "video_url", "media_storage_path",
 })
 
 # Visibility states that are never shown to recruiters.
@@ -672,11 +673,15 @@ class SkillEvidencePipelineService:
         - Protected pipeline without approval:
             is_locked_for_recruiter=True, generic recruiter_summary,
             no detailed artifact_data exposed.
-        - Public pipeline: full safe payload; private artifacts excluded,
-            protected artifacts shown as locked cards (no detail).
+        - Public (or approved protected) pipeline: full safe payload; private artifacts
+            excluded; public and protected artifacts both show their sanitized data.
+            Artifact-level protected visibility is preserved as a label so the recruiter
+            knows the student controls sharing, but the safe stored data is shown.
 
         Unsafe fields are always stripped: storage_path, signed_url,
         access_token, and similar keys defined in _UNSAFE_ARTIFACT_KEYS.
+        Data stored by the sync service is already sanitized before storage, so it is
+        safe to surface here once the pipeline-level gate (is_locked) allows access.
         """
         is_locked = (
             pipeline.visibility_status == "protected" and not access_approved
@@ -687,10 +692,8 @@ class SkillEvidencePipelineService:
             if art.visibility in _RECRUITER_HIDDEN_VISIBILITIES:
                 continue  # always hide private/locked/unavailable
 
-            art_is_protected = art.visibility == "protected"
-
-            if is_locked or art_is_protected:
-                # Protected artifact or locked pipeline: minimal locked card — no detail
+            if is_locked:
+                # Locked pipeline: minimal card with no detail — pipeline gate blocks all data
                 entry: dict[str, Any] = {
                     "id": art.id,
                     "source_type": art.source_type,
@@ -702,7 +705,7 @@ class SkillEvidencePipelineService:
                     "artifact_data": {},
                 }
             else:
-                # Public artifact in a public (or approved protected) pipeline
+                # Public or approved pipeline: show sanitized data for all visible artifacts
                 safe_data = _strip_unsafe_artifact_data(art.artifact_data)
                 entry = {
                     "id": art.id,

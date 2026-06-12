@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     extension_proof,
     extension_proof_github_analysis,
     extension_proof_workflow_analysis,
+    keyframe_thumbnail,
     live_feedback,
     github_portfolio,
     github_proofs,
@@ -30,6 +31,9 @@ from app.api.v1.endpoints import (
     skill_evidence_timeline,
     skill_evidence_profile,
     student,
+    vbr_projects,
+    vbr_public_report,
+    vbr_sessions,
     verification_readiness,
     website_evidence_discovery,
     website_proof_artifact_sync,
@@ -68,6 +72,21 @@ api_router.include_router(
     work_passport_analytics.router,
     prefix="/student/work-passport",
     tags=["work-passport-analytics"],
+)
+api_router.include_router(
+    vbr_projects.router,
+    prefix="/student/vbr/projects",
+    tags=["vbr-projects"],
+)
+api_router.include_router(
+    vbr_sessions.router,
+    prefix="/student/vbr/sessions",
+    tags=["vbr-sessions"],
+)
+api_router.include_router(
+    vbr_public_report.router,
+    prefix="/public",
+    tags=["vbr-public-report"],
 )
 api_router.include_router(
     skill_evidence.router,
@@ -173,6 +192,11 @@ api_router.include_router(
     workflow_visual_frames.router,
     prefix="/student/extension-proof/sessions",
     tags=["workflow-visual-frames"],
+)
+api_router.include_router(
+    keyframe_thumbnail.router,
+    prefix="/proof",
+    tags=["keyframe-thumbnail"],
 )
 api_router.include_router(
     live_website_check.router,

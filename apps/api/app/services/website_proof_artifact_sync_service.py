@@ -51,6 +51,52 @@ _CATEGORY_MAP: list[tuple[list[str], str]] = [
     (["docker", "devops", "deployment", "kubernetes", "ci", "cloud", "aws", "gcp"], "DevOps"),
 ]
 
+# Terms that signal browser/platform environment noise (not target-app content)
+# Note: "shared pooler" is intentionally omitted — "pooler" already catches it.
+_BACKEND_NOISE_TERMS: frozenset[str] = frozenset({
+    "supabase", "storage", "buckets", "new bucket",
+    "pooler", "maintenance",
+    "us-east", "us-east-1", "eu-west", "eu-west-1",
+    "devtools", "developer tools", "chrome extension",
+    "new tab", "bookmarks", "downloads", "notifications",
+    "terminal",
+})
+
+# Group definitions: if target domain contains any member, all group members are exempt
+_BACKEND_NOISE_GROUPS: list[list[str]] = [
+    ["supabase", "storage", "buckets", "pooler", "maintenance"],
+    ["devtools", "developer tools", "chrome extension", "extensions"],
+    ["new tab", "bookmarks", "downloads", "notifications"],
+]
+
+# Phrases that indicate Qwen analyzed the recorder/browser UI instead of the target app
+_RECORDER_UI_PHRASES: frozenset[str] = frozenset({
+    "screen recording interface",
+    "veribridge ai is open",
+    "recorder tab",
+    "veribridge recorder",
+    "stop & upload",
+    "start screen recording",
+    "recording interface",
+    "proof builder is open",
+    # Exact phrases from the failing Teachable Machine session (added 2026-06-09)
+    "live video recording",
+    "stop or send the recording",
+    "recording controls",
+    "recorder controls",
+    "veribridge screen recorder",
+    "veribridge recording interface",
+    "recording active",
+    "stop recording",
+    "send proof",
+    "send recording",
+    "screen recorder overlay",
+    "browser recorder",
+    "extension recorder",
+    "start and stop recording",
+    "showing options to start and stop recording",
+})
+
 
 def _strip_unsafe(data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k not in _UNSAFE_KEYS}
@@ -60,6 +106,73 @@ def _truncate(text: str | None, max_len: int = 400) -> str:
     if not text:
         return ""
     return str(text)[:max_len]
+
+
+def _extract_domain(url: str) -> str:
+    """Extract hostname from a URL string for noise-filtering context."""
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        return (parsed.netloc or parsed.path).lower()
+    except Exception:
+        return url.split("/")[0].lower()
+
+
+def _term_exempt_for_domain(term: str, domain_lower: str) -> bool:
+    """True if term should be preserved because the target domain is in the same group."""
+    if term in domain_lower:
+        return True
+    for group in _BACKEND_NOISE_GROUPS:
+        if term in group and any(t in domain_lower for t in group):
+            return True
+    return False
+
+
+def _segment_is_noisy(segment: str, domain_lower: str) -> bool:
+    """True if segment is dominated by browser/platform environment noise."""
+    sl = segment.strip().lower()
+    for term in _BACKEND_NOISE_TERMS:
+        if _term_exempt_for_domain(term, domain_lower):
+            continue
+        if term in sl:
+            return True
+    return False
+
+
+def _sanitize_text_segments(text: str, target_domain: str) -> tuple[str, str]:
+    """Filter noise segments from semicolon/newline-separated text.
+
+    Returns (sanitized_text, evidence_quality) where quality is
+    'clean', 'partial', or 'noisy'.
+    """
+    if not text or not text.strip():
+        return "", "clean"
+    domain_lower = target_domain.lower()
+    segments = [s.strip() for s in text.replace("\n", ";").split(";") if s.strip()]
+    if not segments:
+        return "", "clean"
+    kept: list[str] = []
+    dropped = 0
+    for seg in segments:
+        if _segment_is_noisy(seg, domain_lower):
+            dropped += 1
+        else:
+            kept.append(seg)
+    if dropped == 0:
+        quality = "clean"
+    elif kept:
+        quality = "partial"
+    else:
+        quality = "noisy"
+    return "; ".join(kept), quality
+
+
+def _is_recorder_ui_text(text: str) -> bool:
+    """True if text shows Qwen analyzed the recorder/browser UI, not the target app."""
+    lower = text.lower()
+    return any(phrase in lower for phrase in _RECORDER_UI_PHRASES)
 
 
 def _infer_category(skill: str) -> str:
@@ -602,12 +715,16 @@ class WebsiteProofArtifactSyncService:
             and str(sig.get("skill", "")).strip().lower() == skill.strip().lower()
         ]
         ocr_score = 70 if skill_signals else 50
+        target_domain = _extract_domain(str(wf.get("target_website") or ""))
+        sanitized_summary, ocr_quality = _sanitize_text_segments(snippet_summary, target_domain)
         artifact_data = _strip_unsafe({
             "proof_session_id": session_id,
-            "extracted_text_summary": _truncate(snippet_summary, 400),
+            "extracted_text_summary": _truncate(sanitized_summary, 400),
             "matched_ui_labels": (ocr.get("matched_ui_labels") or [])[:10],
             "frame_count": int(ocr.get("frames_analyzed") or 0),
             "score": ocr_score,
+            "evidence_quality": ocr_quality,
+            "target_domain": target_domain or None,
         })
         self._add_artifact(
             user_id,
@@ -646,13 +763,28 @@ class WebsiteProofArtifactSyncService:
         if dom_status == "not_captured":
             return
         observed = wf.get("observed_demonstration") or {}
+        target_domain = _extract_domain(str(wf.get("target_website") or ""))
         dom_summary = ""
         interacted = ""
         state_changes = ""
+        dom_quality = "clean"
         if isinstance(observed, dict):
-            dom_summary     = _truncate(str(observed.get("dom_summary") or ""), 400)
-            interacted      = _truncate(str(observed.get("demonstrated_actions") or ""), 300)
-            state_changes   = _truncate(str(observed.get("state_changes") or ""), 200)
+            raw_dom = str(observed.get("dom_summary") or "")
+            raw_interacted = str(observed.get("demonstrated_actions") or "")
+            raw_state = str(observed.get("state_changes") or "")
+            dom_summary, dom_q = _sanitize_text_segments(raw_dom, target_domain)
+            interacted, int_q = _sanitize_text_segments(raw_interacted, target_domain)
+            state_changes, sc_q = _sanitize_text_segments(raw_state, target_domain)
+            dom_summary = _truncate(dom_summary, 400)
+            interacted = _truncate(interacted, 300)
+            state_changes = _truncate(state_changes, 200)
+            qualities = [q for q in (dom_q, int_q, sc_q) if q != "clean"]
+            if not qualities:
+                dom_quality = "clean"
+            elif all(q == "noisy" for q in qualities):
+                dom_quality = "noisy"
+            else:
+                dom_quality = "partial"
         dom_score = 65 if dom_status == "available" else 45
         artifact_data = _strip_unsafe({
             "proof_session_id": session_id,
@@ -660,6 +792,8 @@ class WebsiteProofArtifactSyncService:
             "interacted_elements_summary": interacted,
             "state_changes_summary": state_changes,
             "score": dom_score,
+            "evidence_quality": dom_quality,
+            "target_domain": target_domain or None,
         })
         self._add_artifact(
             user_id,
@@ -704,12 +838,28 @@ class WebsiteProofArtifactSyncService:
             return
         summary = _truncate(str(vrs.get("summary") or ""), 400)
         confidence = min(90, 50 + frames_analyzed * 15)
+        recorder_ui_detected = _is_recorder_ui_text(summary)
+        target_domain = _extract_domain(str(wf.get("target_website") or ""))
+        qwen_quality = "noisy" if recorder_ui_detected else "clean"
+        # Compute sanitized target-only summary by dropping recorder-contaminated segments
+        if recorder_ui_detected:
+            raw_segs = [s.strip() for s in summary.replace(" | ", ";").replace("\n", ";").split(";") if s.strip()]
+            clean_segs = [s for s in raw_segs if not _is_recorder_ui_text(s)]
+            sanitized_visual_summary = _truncate("; ".join(clean_segs), 400) if clean_segs else ""
+        else:
+            sanitized_visual_summary = ""
         artifact_data = _strip_unsafe({
             "proof_session_id": session_id,
             "visual_observation_summary": summary,
+            "sanitized_visual_summary": sanitized_visual_summary or None,
             "evidence_reasoning": _truncate(str(vrs.get("missing_claims") or ""), 200),
             "confidence": round(confidence / 100.0, 2),
+            "recorder_ui_detected": recorder_ui_detected,
+            "evidence_quality": qwen_quality,
+            "target_domain": target_domain or None,
         })
+        # Never expose raw contaminated Qwen output as proof_reason
+        safe_proof_reason = "" if recorder_ui_detected else _truncate(summary, 200)
         self._add_artifact(
             user_id,
             SkillEvidenceArtifactCreate(
@@ -721,7 +871,7 @@ class WebsiteProofArtifactSyncService:
                 visibility="protected",
                 confidence_score=confidence,
                 relevance_to_skill=f"Qwen visual analysis supports {skill}",
-                proof_reason=_truncate(summary, 200),
+                proof_reason=safe_proof_reason,
                 artifact_data=artifact_data,
             ),
             result,
@@ -749,6 +899,8 @@ class WebsiteProofArtifactSyncService:
             "frame_count": count,
             "visual_summary": _truncate(combined, 400),
             "score": score,
+            "keyframe_image_available": False,
+            "evidence_quality": "partial",
         })
         self._add_artifact(
             user_id,

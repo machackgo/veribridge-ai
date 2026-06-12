@@ -716,6 +716,17 @@ _OPTIONAL_BOOSTER_KEYS: set[EvidenceSourceKey] = {
     "certificate",
 }
 
+# Website-proof core sources: directly reflect what was demonstrated on the target site.
+# A strong core score here must not be dragged down by weak GitHub/transcript evidence.
+_WEBSITE_CORE_KEYS: set[EvidenceSourceKey] = {
+    "website_workflow",
+    "dom_visible_evidence",
+    "video_keyframes",
+    "ocr",
+    "qwen_visual_reasoning",
+    "live_website_check",
+}
+
 
 def _clamp(v: int, lo: int = 0, hi: int = 100) -> int:
     return max(lo, min(hi, v))
@@ -1016,27 +1027,22 @@ class FinalEvidenceEvaluatorService:
             return None
 
     def _load_live_website_check(self, user_id: str, session_id: str) -> dict[str, Any] | None:
-        # In-memory dict store: live-check service keys rows by row id; filter by session+user.
-        if isinstance(self._db, dict):
-            for row in self._db.get(_LW_TABLE, {}).values():
-                if (
-                    str(row.get("proof_session_id")) == session_id
-                    and str(row.get("user_id")) == user_id
-                ):
-                    return row
-            return None
+        """Load live check result from dedicated table OR session proof_data fallback.
+
+        Delegates to LiveWebsiteCheckService.get_latest() which already implements
+        both sources:
+          1. live_website_check_results table
+          2. extension_proof_sessions.proof_data.live_website_check (fallback)
+
+        This ensures the final evaluator never marks live_website_check as not_run
+        when a proof_data live check was completed but the table row is absent
+        (e.g. older sessions where the table insert failed or the migration was
+        not yet applied).
+        """
         try:
-            resp = (
-                self._db.table(_LW_TABLE)
-                .select("*")
-                .eq("user_id", user_id)
-                .eq("proof_session_id", session_id)
-                .order("checked_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            rows = resp.data or []
-            return rows[0] if rows else None
+            from app.services.live_website_check_service import LiveWebsiteCheckService
+            lw_svc = LiveWebsiteCheckService(self._db)
+            return lw_svc.get_latest(user_id, session_id)
         except Exception:
             logger.warning("FinalEvaluator: live website check load failed", exc_info=True)
             return None
@@ -1655,25 +1661,60 @@ class FinalEvidenceEvaluatorService:
     # ── Score combination ─────────────────────────────────────────────────────
 
     def _combine_scores(self, sources: list[EvidenceSourceResult]) -> int:
-        """Weighted average over core sources, with optional sources as bonus only."""
+        """Weighted average over core sources, with optional/supporting sources as bonus only.
+
+        Design goal — Website Proof baseline protection:
+          Adding weak GitHub (third-party repo, low match) or weak transcript
+          should NOT lower a strong website workflow + keyframe + live-check score.
+
+          Implementation:
+          1. Compute full_score: weighted average over all core sources (original behavior).
+          2. Compute website_core_score: weighted average over website-proof-only sources
+             (website_workflow, dom_visible_evidence, video_keyframes, ocr,
+              qwen_visual_reasoning, live_website_check).
+          3. base_score = max(full_score, website_core_score)
+             → If GitHub/transcript are strong  → full_score >= website_core_score → no change.
+             → If GitHub/transcript are weak    → website_core_score protects the floor.
+        """
         run_sources = [s for s in sources if s.status not in ("not_run", "not_available", "not_applicable")]
         core_sources = [s for s in run_sources if s.key not in _OPTIONAL_BOOSTER_KEYS]
         optional_sources = [s for s in run_sources if s.key in _OPTIONAL_BOOSTER_KEYS]
+
         if not core_sources:
             if not optional_sources:
                 return 0
             best_optional = max(s.score or 0 for s in optional_sources)
             return _clamp(min(60, best_optional))
+
+        # ── Full weighted score (all core sources, original behavior) ────────────
         total_weight = sum(s.weight for s in core_sources)
         if total_weight == 0:
             return 0
         weighted_sum = sum((s.score or 0) * s.weight for s in core_sources)
         raw = weighted_sum / total_weight
-        # Bonus if multiple source types agree (breadth bonus up to +5)
         pass_count = sum(1 for s in core_sources if s.status == "pass")
         bonus = min(5, pass_count)
-        base_score = _clamp(int(raw + bonus))
+        full_score = _clamp(int(raw + bonus))
 
+        # ── Website-core baseline (excludes GitHub/transcript) ───────────────────
+        website_core_sources = [s for s in core_sources if s.key in _WEBSITE_CORE_KEYS]
+        if website_core_sources:
+            wc_weight = sum(s.weight for s in website_core_sources)
+            if wc_weight > 0:
+                wc_sum = sum((s.score or 0) * s.weight for s in website_core_sources)
+                wc_raw = wc_sum / wc_weight
+                wc_pass = sum(1 for s in website_core_sources if s.status == "pass")
+                website_core_score = _clamp(int(wc_raw + min(5, wc_pass)))
+            else:
+                website_core_score = 0
+        else:
+            website_core_score = 0
+
+        # Use the better of: combined (all sources) or website-core-only floor.
+        # This prevents weak GitHub/transcript from reducing a strong website proof.
+        base_score = max(full_score, website_core_score)
+
+        # ── Optional booster bonus ───────────────────────────────────────────────
         optional_bonus = 0
         for s in optional_sources:
             if s.status == "pass" and (s.score or 0) >= 80:

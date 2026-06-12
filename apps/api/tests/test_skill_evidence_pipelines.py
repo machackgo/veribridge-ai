@@ -185,6 +185,203 @@ class TestUnsafeArtifactDataStripping:
         assert result == data
 
 
+# ── Sync service sanitization helpers ────────────────────────────────────────
+
+
+class TestSyncServiceSanitization:
+    """Unit tests for evidence sanitization helpers in website_proof_artifact_sync_service."""
+
+    def test_sanitize_clean_text_returns_clean_quality(self):
+        from app.services.website_proof_artifact_sync_service import _sanitize_text_segments
+        text = "WebGL canvas active; Three.js rendering; geometry loaded"
+        sanitized, quality = _sanitize_text_segments(text, "threejs.org")
+        assert quality == "clean"
+        assert "WebGL canvas active" in sanitized
+        assert "Three.js rendering" in sanitized
+
+    def test_sanitize_drops_supabase_segment_for_threejs_target(self):
+        from app.services.website_proof_artifact_sync_service import _sanitize_text_segments
+        text = "Canvas initialized; WebGL enabled; Supabase admin panel"
+        sanitized, quality = _sanitize_text_segments(text, "threejs.org")
+        assert quality == "partial"
+        assert "Canvas initialized" in sanitized
+        assert "Supabase" not in sanitized
+
+    def test_sanitize_drops_maintenance_and_pooler_for_threejs_target(self):
+        from app.services.website_proof_artifact_sync_service import _sanitize_text_segments
+        text = "WebGL context ready; Shared pooler maintenance in; us-east-1"
+        sanitized, quality = _sanitize_text_segments(text, "threejs.org")
+        assert "WebGL context ready" in sanitized
+        assert "maintenance" not in sanitized
+        assert "us-east-1" not in sanitized
+        assert quality in ("partial", "noisy")
+
+    def test_sanitize_all_noisy_returns_noisy_quality(self):
+        from app.services.website_proof_artifact_sync_service import _sanitize_text_segments
+        text = "Supabase admin; Storage buckets; New tab"
+        _, quality = _sanitize_text_segments(text, "threejs.org")
+        assert quality == "noisy"
+
+    def test_sanitize_preserves_supabase_text_for_supabase_target(self):
+        from app.services.website_proof_artifact_sync_service import _sanitize_text_segments
+        text = "Supabase dashboard; Storage buckets; Database table"
+        sanitized, quality = _sanitize_text_segments(text, "supabase.com")
+        assert quality == "clean"
+        assert "Supabase dashboard" in sanitized
+        assert "Storage buckets" in sanitized
+
+    def test_sanitize_preserves_maintenance_for_supabase_target(self):
+        from app.services.website_proof_artifact_sync_service import _sanitize_text_segments
+        text = "Shared pooler maintenance page; Storage bucket list"
+        sanitized, quality = _sanitize_text_segments(text, "supabase.com")
+        assert "maintenance" in sanitized
+        assert "pooler" in sanitized
+
+    def test_is_recorder_ui_detects_screen_recording_phrase(self):
+        from app.services.website_proof_artifact_sync_service import _is_recorder_ui_text
+        assert _is_recorder_ui_text("screen recording interface of VeriBridge AI is open") is True
+
+    def test_is_recorder_ui_detects_recorder_tab_phrase(self):
+        from app.services.website_proof_artifact_sync_service import _is_recorder_ui_text
+        assert _is_recorder_ui_text("The recorder tab shows the upload button") is True
+
+    def test_is_recorder_ui_not_triggered_by_target_content(self):
+        from app.services.website_proof_artifact_sync_service import _is_recorder_ui_text
+        assert _is_recorder_ui_text("Three.js scene with WebGL geometry rendering") is False
+
+    def test_keyframe_artifact_has_keyframe_image_available_false(self):
+        from app.services.website_proof_artifact_sync_service import WebsiteProofArtifactSyncService, SyncResult
+        from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineService
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        db: dict = {
+            "workflow_visual_frame_evidence": {
+                "frame-1": {
+                    "user_id": "u1",
+                    "proof_session_id": "sess-kf-1",
+                    "frame_type": "video_keyframe",
+                    "visual_summary": "3D scene with WebGL geometry",
+                    "timestamp_ms": 1000,
+                },
+            },
+        }
+        pipeline_db: dict = {}
+        svc = WebsiteProofArtifactSyncService(db, pipeline_db)
+        p_svc = SkillEvidencePipelineService(pipeline_db)
+        pipeline = p_svc.upsert_pipeline("u1", SkillEvidencePipelineCreate(skill_name="WebGL"))
+        result = SyncResult(proof_session_id="sess-kf-1", user_id="u1")
+        frames = list(db["workflow_visual_frame_evidence"].values())
+        svc._create_keyframe_artifact("u1", "WebGL", pipeline.id, "sess-kf-1", frames, result)
+        arts = p_svc._list_artifacts_for_pipeline_by_id(pipeline.id)
+        assert len(arts) == 1
+        assert arts[0].artifact_data.get("keyframe_image_available") is False
+
+    def test_keyframe_artifact_has_evidence_quality_partial(self):
+        from app.services.website_proof_artifact_sync_service import WebsiteProofArtifactSyncService, SyncResult
+        from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineService
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        db: dict = {
+            "workflow_visual_frame_evidence": {
+                "frame-2": {
+                    "user_id": "u1",
+                    "proof_session_id": "sess-kf-2",
+                    "frame_type": "video_keyframe",
+                    "visual_summary": "3D mesh rendered",
+                    "timestamp_ms": 2000,
+                },
+            },
+        }
+        pipeline_db: dict = {}
+        svc = WebsiteProofArtifactSyncService(db, pipeline_db)
+        p_svc = SkillEvidencePipelineService(pipeline_db)
+        pipeline = p_svc.upsert_pipeline("u1", SkillEvidencePipelineCreate(skill_name="WebGL"))
+        result = SyncResult(proof_session_id="sess-kf-2", user_id="u1")
+        frames = list(db["workflow_visual_frame_evidence"].values())
+        svc._create_keyframe_artifact("u1", "WebGL", pipeline.id, "sess-kf-2", frames, result)
+        arts = p_svc._list_artifacts_for_pipeline_by_id(pipeline.id)
+        assert arts[0].artifact_data.get("evidence_quality") == "partial"
+
+    def test_qwen_artifact_has_recorder_ui_detected_true_when_applicable(self):
+        from app.services.website_proof_artifact_sync_service import WebsiteProofArtifactSyncService, SyncResult
+        from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineService
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        db: dict = {}
+        pipeline_db: dict = {}
+        svc = WebsiteProofArtifactSyncService(db, pipeline_db)
+        p_svc = SkillEvidencePipelineService(pipeline_db)
+        pipeline = p_svc.upsert_pipeline("u1", SkillEvidencePipelineCreate(skill_name="WebGL"))
+        result = SyncResult(proof_session_id="sess-qwen-1", user_id="u1")
+        wf = {
+            "target_website": "https://threejs.org",
+            "visual_reasoning_summary": {
+                "status": "analyzed",
+                "frames_analyzed": 1,
+                "summary": "screen recording interface of VeriBridge AI is open. Recorder tab visible.",
+            },
+        }
+        svc._create_qwen_artifact("u1", "WebGL", pipeline.id, "sess-qwen-1", wf, result)
+        arts = p_svc._list_artifacts_for_pipeline_by_id(pipeline.id)
+        assert len(arts) == 1
+        assert arts[0].artifact_data.get("recorder_ui_detected") is True
+        assert arts[0].artifact_data.get("evidence_quality") == "noisy"
+
+    def test_qwen_artifact_recorder_ui_false_for_target_app_content(self):
+        from app.services.website_proof_artifact_sync_service import WebsiteProofArtifactSyncService, SyncResult
+        from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineService
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        db: dict = {}
+        pipeline_db: dict = {}
+        svc = WebsiteProofArtifactSyncService(db, pipeline_db)
+        p_svc = SkillEvidencePipelineService(pipeline_db)
+        pipeline = p_svc.upsert_pipeline("u1", SkillEvidencePipelineCreate(skill_name="WebGL"))
+        result = SyncResult(proof_session_id="sess-qwen-2", user_id="u1")
+        wf = {
+            "target_website": "https://threejs.org",
+            "visual_reasoning_summary": {
+                "status": "analyzed",
+                "frames_analyzed": 2,
+                "summary": "Three.js 3D scene rendering a rotating cube using WebGL pipeline.",
+            },
+        }
+        svc._create_qwen_artifact("u1", "WebGL", pipeline.id, "sess-qwen-2", wf, result)
+        arts = p_svc._list_artifacts_for_pipeline_by_id(pipeline.id)
+        assert arts[0].artifact_data.get("recorder_ui_detected") is False
+        assert arts[0].artifact_data.get("evidence_quality") == "clean"
+
+    def test_ocr_artifact_sanitizes_noisy_segments(self):
+        from app.services.website_proof_artifact_sync_service import WebsiteProofArtifactSyncService, SyncResult
+        from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineService
+        from app.schemas.skill_evidence_pipeline import SkillEvidencePipelineCreate
+        db: dict = {}
+        pipeline_db: dict = {}
+        svc = WebsiteProofArtifactSyncService(db, pipeline_db)
+        p_svc = SkillEvidencePipelineService(pipeline_db)
+        pipeline = p_svc.upsert_pipeline("u1", SkillEvidencePipelineCreate(skill_name="WebGL"))
+        result = SyncResult(proof_session_id="sess-ocr-1", user_id="u1")
+        wf = {
+            "target_website": "https://threejs.org",
+            "frame_ocr_evidence_summary": {
+                "has_ocr_evidence": True,
+                "top_ocr_snippets": [
+                    "Canvas initialized; WebGL enabled",
+                    "Supabase admin panel",
+                    "Shared pooler maintenance in; us-east-1",
+                ],
+                "matched_ui_labels": [],
+                "frames_analyzed": 3,
+                "skill_signals": [],
+            },
+        }
+        svc._create_ocr_artifact("u1", "WebGL", pipeline.id, "sess-ocr-1", wf, result)
+        arts = p_svc._list_artifacts_for_pipeline_by_id(pipeline.id)
+        assert len(arts) == 1
+        extracted = arts[0].artifact_data.get("extracted_text_summary", "")
+        assert "Canvas initialized" in extracted
+        assert "WebGL enabled" in extracted
+        assert "Supabase" not in extracted
+        assert "maintenance" not in extracted
+        assert arts[0].artifact_data.get("evidence_quality") in ("partial", "noisy")
+
+
 # ── Phase 3: Service unit tests (dict-mode) ────────────────────────────────────
 
 
@@ -1213,9 +1410,12 @@ class TestRecruiterSafeListService:
         assert "Skill-protected" in names
         assert "Skill-private" not in names
 
-    def test_protected_artifact_data_hidden_in_public_pipeline(
+    def test_protected_artifact_data_shown_in_public_pipeline(
         self, svc: SkillEvidencePipelineService
     ):
+        # Protected artifact visibility is the student's share label, NOT a content gate.
+        # The pipeline-level gate (is_locked) controls data access.
+        # Safe data stored by the sync service must be surfaced in a public pipeline.
         from app.schemas.skill_evidence_pipeline import (
             SkillEvidencePipelineCreate,
             SkillEvidenceArtifactCreate,
@@ -1231,15 +1431,76 @@ class TestRecruiterSafeListService:
             visibility="protected",
             confidence_score=80,
             proof_reason="Explains model selection",
-            artifact_data={"excerpt": "PRIVATE_TRANSCRIPT_TEXT", "ownership_signals": ["explained design"]},
+            artifact_data={"excerpt": "Safe excerpt text", "ownership_signals": ["explained design"]},
         ))
         result = svc.list_recruiter_safe_pipelines(STUDENT_A)
         skill = next(r for r in result if r.skill_name == "ML Skill")
         assert len(skill.artifacts) == 1
         art = skill.artifacts[0]
         assert art["visibility"] == "protected"
-        assert art["artifact_data"] == {}
-        assert "PRIVATE_TRANSCRIPT_TEXT" not in str(art)
+        assert art["artifact_data"]["excerpt"] == "Safe excerpt text"
+        assert art["artifact_data"]["ownership_signals"] == ["explained design"]
+
+    def test_protected_artifact_in_locked_pipeline_stripped(
+        self, svc: SkillEvidencePipelineService
+    ):
+        # Protected pipeline (is_locked=True) still strips all artifact_data regardless
+        # of individual artifact visibility — pipeline gate takes precedence.
+        from app.schemas.skill_evidence_pipeline import (
+            SkillEvidencePipelineCreate,
+            SkillEvidenceArtifactCreate,
+        )
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Locked Skill", visibility_status="protected",
+        ))
+        svc.add_artifact(STUDENT_A, SkillEvidenceArtifactCreate(
+            pipeline_id=pipeline.id,
+            source_type="transcript",
+            source_title="Defense excerpt",
+            project_name="P",
+            visibility="protected",
+            confidence_score=80,
+            proof_reason="Explains model selection",
+            artifact_data={"excerpt": "Safe excerpt text", "ownership_signals": ["explained design"]},
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        skill = next(r for r in result if r.skill_name == "Locked Skill")
+        assert skill.is_locked_for_recruiter is True
+        # Locked pipeline returns no artifacts at all (pipeline-level protection)
+        assert skill.artifacts == []
+
+    def test_unsafe_keys_stripped_from_protected_artifact_in_public_pipeline(
+        self, svc: SkillEvidencePipelineService
+    ):
+        from app.schemas.skill_evidence_pipeline import (
+            SkillEvidencePipelineCreate,
+            SkillEvidenceArtifactCreate,
+        )
+        pipeline = svc.upsert_pipeline(STUDENT_A, SkillEvidencePipelineCreate(
+            skill_name="Safe Skill", visibility_status="public",
+        ))
+        svc.add_artifact(STUDENT_A, SkillEvidenceArtifactCreate(
+            pipeline_id=pipeline.id,
+            source_type="workflow",
+            source_title="recording",
+            project_name="P",
+            visibility="protected",
+            confidence_score=75,
+            proof_reason="Workflow captured",
+            artifact_data={
+                "signed_url": "UNSAFE_SIGNED_URL",
+                "storage_path": "UNSAFE_STORAGE_PATH",
+                "access_token": "UNSAFE_TOKEN",
+                "workflow_summary": "Safe workflow description",
+            },
+        ))
+        result = svc.list_recruiter_safe_pipelines(STUDENT_A)
+        skill = next(r for r in result if r.skill_name == "Safe Skill")
+        art_data = skill.artifacts[0]["artifact_data"]
+        assert "signed_url" not in art_data
+        assert "storage_path" not in art_data
+        assert "access_token" not in art_data
+        assert art_data["workflow_summary"] == "Safe workflow description"
 
     def test_private_artifact_excluded_in_public_pipeline(
         self, svc: SkillEvidencePipelineService
@@ -1493,7 +1754,9 @@ class TestRecruiterSafeListEndpoint:
         assert pub["id"] in art_ids
         assert prv["id"] not in art_ids
 
-    def test_recruiter_safe_protected_artifact_strips_detail(self, client_a: TestClient):
+    def test_recruiter_safe_protected_artifact_shows_safe_data(self, client_a: TestClient):
+        # Protected artifact in a public pipeline: safe stored data is now surfaced.
+        # The pipeline gate (is_locked) controls access; artifact visibility is a label only.
         p = _upsert(client_a, "AI / Machine Learning", visibility_status="public")
         art = _add_artifact(
             client_a, p["id"],
@@ -1501,7 +1764,7 @@ class TestRecruiterSafeListEndpoint:
             source_title="Defense excerpt",
             visibility="protected",
             artifact_data={
-                "excerpt": "PRIVATE_TRANSCRIPT",
+                "excerpt": "Safe excerpt from defense session",
                 "ownership_signals": ["described decisions"],
             },
         )
@@ -1510,8 +1773,36 @@ class TestRecruiterSafeListEndpoint:
         pipeline = next(p for p in r.json() if p["skill_name"] == "AI / Machine Learning")
         protected_art = next((a for a in pipeline["artifacts"] if a["id"] == art["id"]), None)
         assert protected_art is not None
-        assert protected_art["artifact_data"] == {}
-        assert "PRIVATE_TRANSCRIPT" not in r.text
+        assert protected_art["visibility"] == "protected"
+        assert protected_art["artifact_data"]["excerpt"] == "Safe excerpt from defense session"
+        assert protected_art["artifact_data"]["ownership_signals"] == ["described decisions"]
+
+    def test_recruiter_safe_protected_artifact_unsafe_keys_stripped(self, client_a: TestClient):
+        # Even when protected artifact data is surfaced in a public pipeline,
+        # unsafe storage/auth keys must never reach the recruiter.
+        p = _upsert(client_a, "AI / Machine Learning", visibility_status="public")
+        art = _add_artifact(
+            client_a, p["id"],
+            source_type="workflow",
+            source_title="Screen recording",
+            visibility="protected",
+            artifact_data={
+                "signed_url": "UNSAFE_SIGNED_URL",
+                "storage_path": "UNSAFE_STORAGE_PATH",
+                "video_url": "UNSAFE_VIDEO_URL",
+                "workflow_summary": "Safe workflow description",
+            },
+        )
+        r = client_a.get("/api/v1/student/skill-pipelines/recruiter-safe")
+        assert r.status_code == 200
+        pipeline = next(p for p in r.json() if p["skill_name"] == "AI / Machine Learning")
+        protected_art = next((a for a in pipeline["artifacts"] if a["id"] == art["id"]), None)
+        assert protected_art is not None
+        art_data = protected_art["artifact_data"]
+        assert "signed_url" not in art_data
+        assert "storage_path" not in art_data
+        assert "video_url" not in art_data
+        assert art_data["workflow_summary"] == "Safe workflow description"
 
     def test_recruiter_safe_public_github_link_visible(self, client_a: TestClient):
         p = _upsert(client_a, "Code Skill", visibility_status="public")
