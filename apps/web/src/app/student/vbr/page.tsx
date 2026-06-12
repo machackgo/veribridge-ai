@@ -209,7 +209,11 @@ export default function StudentVBRPage() {
             icon="🌐"
             title="Website / Live App Proof"
             description="For deployed apps and live demos. Link a live URL as evidence your project works end to end."
-            action={<span style={comingSoonBadgeStyle}>Coming soon</span>}
+            action={
+              <Link href="/student/proofs/website" style={secondaryLinkStyle}>
+                Add website proof
+              </Link>
+            }
           />
 
           <ProofSourceCard
