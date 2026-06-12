@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import React, { useEffect, useMemo, useReducer, useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import {
@@ -7185,6 +7186,7 @@ export function ExtensionProofPanel({
   onBack: () => void
   onSessionComplete?: () => void
 }) {
+  const router = useRouter()
   const [step, setStep]                 = useState<PanelStep>("form")
   const [form, setForm]                 = useState<FormState>(initialWebsiteProofForm)
   const [session, setSession]           = useState<ExtensionProofSessionResponse | null>(null)
@@ -7199,6 +7201,9 @@ export function ExtensionProofPanel({
   const [analyzeTimedOut, setAnalyzeTimedOut] = useState(false)
   const [profileSyncState, setProfileSyncState] = useState<"idle" | "syncing" | "error">("idle")
   const [profileSyncError, setProfileSyncError] = useState<string | null>(null)
+  const [pendingCompletedAction, setPendingCompletedAction] = useState<
+    "new-website" | "proof-studio" | "dashboard" | null
+  >(null)
   const [websiteProofProgressLifecycle, dispatchWebsiteProofProgress] = useReducer(
     websiteProofProgressReducer,
     "idle" as WebsiteProofProgressLifecycle,
@@ -7265,6 +7270,7 @@ export function ExtensionProofPanel({
     resetWebsiteProofForm()
     setFollowupIntent(null)
     clearFollowUpProofDraft()
+    setPendingCompletedAction(null)
     onBack()
   }
 
@@ -7293,7 +7299,51 @@ export function ExtensionProofPanel({
     try {
       await syncWebsiteProofToSkillGraph(sessionId)
       setProfileSyncState("idle")
-      resetAndBack()
+      resetWebsiteProofForm()
+      setFollowupIntent(null)
+      clearFollowUpProofDraft()
+      router.push("/dashboard/profile")
+    } catch (err) {
+      setProfileSyncState("error")
+      setProfileSyncError(err instanceof Error ? err.message : "Could not save this proof to your profile.")
+    }
+  }
+
+  // Shared by every "What's next?" exit on a completed session, so leaving
+  // the flow or starting another proof can never bypass the Skill Graph
+  // sync for the proof that was just completed.
+  async function handleCompleteAndThen(next: "new-website" | "proof-studio" | "dashboard") {
+    if (!session || session.status !== "completed") {
+      if (next === "new-website") {
+        handleStartNew()
+      } else if (next === "proof-studio") {
+        resetAndBack()
+      } else {
+        router.push("/dashboard/profile")
+      }
+      return
+    }
+    const sessionId = session.id
+    setPendingCompletedAction(next)
+    // Clear the persisted session up front so a failed sync can't leave this
+    // completed session to be restored on the next visit to the page.
+    clearActiveExtensionProofSession()
+    setProfileSyncState("syncing")
+    setProfileSyncError(null)
+    try {
+      await syncWebsiteProofToSkillGraph(sessionId)
+      setProfileSyncState("idle")
+      resetWebsiteProofForm()
+      setFollowupIntent(null)
+      clearFollowUpProofDraft()
+      setPendingCompletedAction(null)
+      if (next === "proof-studio") {
+        onBack()
+      } else if (next === "dashboard") {
+        router.push("/dashboard/profile")
+      }
+      // "new-website": resetWebsiteProofForm() already leaves a blank form
+      // on this page, so there's nothing further to navigate to.
     } catch (err) {
       setProfileSyncState("error")
       setProfileSyncError(err instanceof Error ? err.message : "Could not save this proof to your profile.")
@@ -8765,7 +8815,7 @@ export function ExtensionProofPanel({
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 type="button"
-                onClick={() => void handleDone()}
+                onClick={() => void (pendingCompletedAction ? handleCompleteAndThen(pendingCompletedAction) : handleDone())}
                 style={{ border: "1px solid #dc2626", background: "transparent", color: "#991b1b", borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
               >
                 Retry
@@ -8783,13 +8833,15 @@ export function ExtensionProofPanel({
 
         {/* Actions */}
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <button
-            type="button"
-            onClick={resetAndBack}
-            style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
-          >
-            ← Back
-          </button>
+          {!isCompleted && (
+            <button
+              type="button"
+              onClick={resetAndBack}
+              style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
+            >
+              ← Back
+            </button>
+          )}
 
           {!hasStarted && !isExpired && (
             <button
@@ -8802,7 +8854,7 @@ export function ExtensionProofPanel({
             </button>
           )}
 
-          {(isCompleted || isExpired) && (
+          {isExpired && (
             <div style={{ display: "flex", gap: 10 }}>
               <button
                 type="button"
@@ -8823,6 +8875,39 @@ export function ExtensionProofPanel({
             </div>
           )}
         </div>
+
+        {/* What's next — shown once the proof is complete */}
+        {isCompleted && profileSyncState !== "error" && (
+          <div style={{ border: "1px solid var(--line)", borderRadius: 12, background: "var(--bg-2)", padding: "14px 16px", display: "grid", gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink)" }}>What&apos;s next?</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => void handleCompleteAndThen("new-website")}
+                disabled={profileSyncState === "syncing"}
+                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
+              >
+                {profileSyncState === "syncing" && pendingCompletedAction === "new-website" ? "Saving to profile…" : "Save & add another Website Proof"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCompleteAndThen("proof-studio")}
+                disabled={profileSyncState === "syncing"}
+                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
+              >
+                {profileSyncState === "syncing" && pendingCompletedAction === "proof-studio" ? "Saving to profile…" : "Save & add another type of proof"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCompleteAndThen("dashboard")}
+                disabled={profileSyncState === "syncing"}
+                style={{ border: "1px solid var(--ink)", background: profileSyncState === "syncing" ? "var(--bg-2)" : "var(--ink)", color: profileSyncState === "syncing" ? "var(--muted)" : "#fff", borderRadius: 10, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
+              >
+                {profileSyncState === "syncing" && pendingCompletedAction === "dashboard" ? "Saving to profile…" : "Finish & go to dashboard"}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     )
   }
