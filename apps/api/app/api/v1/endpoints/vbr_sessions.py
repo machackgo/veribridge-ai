@@ -30,6 +30,7 @@ from app.schemas.vbr_sessions import (
     VBRJudgmentResponse,
     VBRKeyframeExtractionResponse,
     VBRMediaProcessingResponse,
+    VBRReportDraftResponse,
     VBRSessionDetailResponse,
     VBRSessionResponse,
     VBRTelemetryRequest,
@@ -41,6 +42,7 @@ from app.services.vbr_judgment import judge_session_skeleton
 from app.services.vbr_keyframes import extract_keyframes_skeleton
 from app.services.vbr_media_processing import process_uploaded_session_skeleton
 from app.services.vbr_question_generation import list_session_questions
+from app.services.vbr_report_draft import generate_report_draft
 from app.services.vbr_transcription import transcribe_session_skeleton
 from app.services.vbr_session_recording import (
     count_chunks,
@@ -356,3 +358,17 @@ def judge_session_route(
 ) -> VBRJudgmentResponse:
     result = judge_session_skeleton(db, session_id, user_id)
     return VBRJudgmentResponse(**result)
+
+
+@router.post(
+    "/{session_id}/draft-report",
+    response_model=VBRReportDraftResponse,
+    summary="Generate a private VBR report draft from confirmed claims and deterministic judgment (no LLM, not published)",
+)
+def draft_report_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRReportDraftResponse:
+    result = generate_report_draft(db, session_id, user_id)
+    return VBRReportDraftResponse(**result)

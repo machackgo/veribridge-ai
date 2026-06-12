@@ -124,3 +124,12 @@ class VBRJudgmentResponse(BaseModel):
     judged_question_count: int
     status: str
     message: str
+
+
+class VBRReportDraftResponse(BaseModel):
+    session_id: str
+    report_id: str
+    status: str
+    claim_count: int
+    evidence_count: int
+    message: str
