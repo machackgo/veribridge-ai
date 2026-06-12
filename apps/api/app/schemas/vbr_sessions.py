@@ -133,3 +133,35 @@ class VBRReportDraftResponse(BaseModel):
     claim_count: int
     evidence_count: int
     message: str
+
+
+class VBRReportReviewResponse(BaseModel):
+    session_id: str
+    report_id: str
+    status: str
+    message: str
+
+
+class VBRReportPublishResponse(BaseModel):
+    session_id: str
+    report_id: str
+    status: str
+    public_token_created: bool
+    message: str
+
+
+class VBRReportUnpublishResponse(BaseModel):
+    session_id: str
+    report_id: str
+    status: str
+    message: str
+
+
+class VBRReportStatusResponse(BaseModel):
+    session_id: str
+    report_id: str
+    status: str
+    has_public_token: bool
+    claim_count: int
+    updated_at: str
+    published_at: str | None = None

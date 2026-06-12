@@ -31,6 +31,10 @@ from app.schemas.vbr_sessions import (
     VBRKeyframeExtractionResponse,
     VBRMediaProcessingResponse,
     VBRReportDraftResponse,
+    VBRReportPublishResponse,
+    VBRReportReviewResponse,
+    VBRReportStatusResponse,
+    VBRReportUnpublishResponse,
     VBRSessionDetailResponse,
     VBRSessionResponse,
     VBRTelemetryRequest,
@@ -43,6 +47,12 @@ from app.services.vbr_keyframes import extract_keyframes_skeleton
 from app.services.vbr_media_processing import process_uploaded_session_skeleton
 from app.services.vbr_question_generation import list_session_questions
 from app.services.vbr_report_draft import generate_report_draft
+from app.services.vbr_report_publish import (
+    get_report_status,
+    publish_report,
+    submit_report_review,
+    unpublish_report,
+)
 from app.services.vbr_transcription import transcribe_session_skeleton
 from app.services.vbr_session_recording import (
     count_chunks,
@@ -372,3 +382,59 @@ def draft_report_route(
 ) -> VBRReportDraftResponse:
     result = generate_report_draft(db, session_id, user_id)
     return VBRReportDraftResponse(**result)
+
+
+@router.post(
+    "/{session_id}/submit-report-review",
+    response_model=VBRReportReviewResponse,
+    summary="Submit a private VBR report draft for review (no public link is created)",
+)
+def submit_report_review_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRReportReviewResponse:
+    result = submit_report_review(db, session_id, user_id)
+    return VBRReportReviewResponse(**result)
+
+
+@router.post(
+    "/{session_id}/publish-report",
+    response_model=VBRReportPublishResponse,
+    summary="Publish a VBR report, minting a public token only at publish time",
+)
+def publish_report_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRReportPublishResponse:
+    result = publish_report(db, session_id, user_id)
+    return VBRReportPublishResponse(**result)
+
+
+@router.post(
+    "/{session_id}/unpublish-report",
+    response_model=VBRReportUnpublishResponse,
+    summary="Unpublish a VBR report and clear its public token",
+)
+def unpublish_report_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRReportUnpublishResponse:
+    result = unpublish_report(db, session_id, user_id)
+    return VBRReportUnpublishResponse(**result)
+
+
+@router.get(
+    "/{session_id}/report-status",
+    response_model=VBRReportStatusResponse,
+    summary="Get a private status summary for this session's VBR report",
+)
+def report_status_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRReportStatusResponse:
+    result = get_report_status(db, session_id, user_id)
+    return VBRReportStatusResponse(**result)
