@@ -144,6 +144,26 @@ export async function getVBRProject(projectId: string): Promise<VBRProjectRespon
   return res.json()
 }
 
+/** List the current user's Verified Build Report projects. */
+export async function listVBRProjects(): Promise<VBRProjectResponse[]> {
+  const res = await fetchAPI("/api/v1/student/vbr/projects")
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load projects (HTTP ${res.status}).`))
+  return res.json()
+}
+
+export type VBRProjectQuestionsResponse = {
+  project_id: string
+  session_id: string | null
+  questions: VBRSessionQuestionResponse[]
+}
+
+/** Get the latest verification session (if any) for a VBR project. */
+export async function getVBRProjectQuestions(projectId: string): Promise<VBRProjectQuestionsResponse> {
+  const res = await fetchAPI(`/api/v1/student/vbr/projects/${encodeURIComponent(projectId)}/questions`)
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load project session (HTTP ${res.status}).`))
+  return res.json()
+}
+
 export async function createVBRSessionConsent(
   sessionId: string,
   textVersion: string = "recording_v1"

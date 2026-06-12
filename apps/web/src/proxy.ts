@@ -4,11 +4,11 @@ import { type NextRequest, NextResponse } from "next/server"
 /**
  * Auth proxy for VeriBridge AI (Next.js 16 "proxy" convention).
  *
- * Protected paths: /dashboard/** and /onboarding
+ * Protected paths: /dashboard/**, /onboarding, /student/**
  *
  * Behaviour:
  *  - Unauthenticated request to protected paths → redirect /login?next=<path>
- *  - Authenticated request to /login → redirect to requested next path or /onboarding
+ *  - Authenticated request to /login → redirect to requested next path or /student/vbr
  *  - All other paths → pass through unchanged
  *
  * Session check uses getSession() (reads JWT from cookie, no extra network
@@ -35,7 +35,8 @@ export async function proxy(request: NextRequest) {
     pathname === "/login" ||
     pathname.startsWith("/auth/") ||
     pathname.startsWith("/recruiter") ||
-    pathname.startsWith("/university")
+    pathname.startsWith("/university") ||
+    pathname.startsWith("/r/")
 
   if (isPublic) {
     // If the user is already logged in, bounce them away from /login
@@ -43,7 +44,7 @@ export async function proxy(request: NextRequest) {
     if (pathname === "/login") {
       const session = await getSessionSafe(request)
       if (session) {
-        const next = request.nextUrl.searchParams.get("next") ?? "/onboarding"
+        const next = request.nextUrl.searchParams.get("next") ?? "/student/vbr"
         const dest = request.nextUrl.clone()
         dest.pathname = next.startsWith("/") ? next : "/dashboard"
         dest.search = ""
