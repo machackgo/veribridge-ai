@@ -7,10 +7,15 @@
 -- overwrite or publish another attempt's report.
 --
 -- Backfills session_id from the existing body->summary->session_id
--- for any pre-existing report rows where that value is a valid uuid.
+-- only when that value is a valid uuid AND matches an existing
+-- vbr_verification_sessions row.
 --
 -- Idempotent: safe to re-run.
 -- ============================================================
+
+alter table public.vbr_reports
+  add column if not exists session_id uuid
+    references public.vbr_verification_sessions (id) on delete set null;
 
 with report_session_backfill as (
   select
@@ -25,16 +30,6 @@ set session_id = b.session_id
 from report_session_backfill b
 join public.vbr_verification_sessions s on s.id = b.session_id
 where r.id = b.id;
-
-
-alter table public.vbr_reports
-  add column if not exists session_id uuid
-    references public.vbr_verification_sessions (id) on delete set null;
-
-update public.vbr_reports
-set session_id = (body #>> '{summary,session_id}')::uuid
-where session_id is null
-  and body #>> '{summary,session_id}' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 
 -- One report row per verification session. Multiple NULLs are allowed by
 -- Postgres unique indexes, so pre-existing rows that could not be backfilled
