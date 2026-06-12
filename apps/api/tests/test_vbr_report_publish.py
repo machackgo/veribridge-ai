@@ -276,8 +276,8 @@ def test_publish_requires_report_body(client: TestClient, mem_store: dict) -> No
 
     response = _publish(client, session_id)
 
-    assert response.status_code == 404
-    assert response.json()["detail"]["code"] == "vbr_report_not_found"
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "vbr_report_body_missing"
 
 
 def test_publish_requires_report_claims(client: TestClient, mem_store: dict) -> None:
@@ -533,6 +533,77 @@ def test_existing_draft_report_flow_still_works(client: TestClient) -> None:
     assert response.json()["status"] == "draft"
 
 
+def _progress_session_to_report_ready(client: TestClient, session_id: str, chunk_count: int = 1) -> None:
+    """Progress an existing 'created' session through to judgment-ready (for /draft-report)."""
+    _start_session(client, session_id)
+    for chunk_index in range(chunk_count):
+        _upload_chunk(client, session_id, chunk_index)
+    _finalize(client, session_id, duration_s=120)
+
+    process_response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/process")
+    assert process_response.status_code == 200, process_response.text
+
+    _transcribe(client, session_id)
+    _extract_keyframes(client, session_id)
+
+    evidence_response = _build_evidence(client, session_id)
+    assert evidence_response.status_code == 200, evidence_response.text
+
+    judge_response = _judge(client, session_id)
+    assert judge_response.status_code == 200, judge_response.text
+
+
+def test_review_publish_status_unpublish_are_scoped_to_exact_session(client: TestClient, mem_store: dict) -> None:
+    project_id, session1_id, report1_id = _setup_draft_report(client)
+
+    # Start a second verification attempt for the same project.
+    questions_response = client.post(f"/api/v1/student/vbr/projects/{project_id}/generate-questions")
+    assert questions_response.status_code == 200, questions_response.text
+    session2_id = questions_response.json()["session_id"]
+    assert session2_id != session1_id
+
+    _progress_session_to_report_ready(client, session2_id)
+    draft2 = _draft_report(client, session2_id)
+    assert draft2.status_code == 200, draft2.text
+    report2_id = draft2.json()["report_id"]
+    assert report2_id != report1_id
+
+    # submit-review/publish operate on session1's report only.
+    review1 = _submit_review(client, session1_id)
+    assert review1.status_code == 200, review1.text
+    assert review1.json()["report_id"] == report1_id
+
+    publish1 = _publish(client, session1_id)
+    assert publish1.status_code == 200, publish1.text
+    assert publish1.json()["report_id"] == report1_id
+
+    # report2 must remain an untouched draft.
+    assert mem_store["vbr_reports"][report2_id]["status"] == "draft"
+    assert mem_store["vbr_reports"][report2_id]["public_token"] is None
+
+    status2 = _report_status(client, session2_id)
+    assert status2.status_code == 200, status2.text
+    body2 = status2.json()
+    assert body2["report_id"] == report2_id
+    assert body2["status"] == "draft"
+    assert body2["has_public_token"] is False
+
+    status1 = _report_status(client, session1_id)
+    assert status1.status_code == 200, status1.text
+    body1 = status1.json()
+    assert body1["report_id"] == report1_id
+    assert body1["status"] == "published"
+    assert body1["has_public_token"] is True
+
+    unpublish1 = _unpublish(client, session1_id)
+    assert unpublish1.status_code == 200, unpublish1.text
+    assert unpublish1.json()["report_id"] == report1_id
+    assert mem_store["vbr_reports"][report1_id]["status"] == "unpublished"
+
+    # report2 still untouched after session1's unpublish.
+    assert mem_store["vbr_reports"][report2_id]["status"] == "draft"
+
+
 def test_publish_report_rejects_latest_report_from_different_session(client: TestClient, mem_store: dict) -> None:
     project_id, session_id = _setup_draft_report(client)[:2]
 
@@ -570,3 +641,54 @@ def test_publish_rejects_camelcase_signed_url_body(client: TestClient, mem_store
 
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "vbr_report_unsafe_body"
+
+
+def test_publish_blocks_second_session_when_project_already_has_published_report(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id, session_one_id, report_one_id = _setup_draft_report(client)
+    _submit_review(client, session_one_id)
+
+    session_two_id = "22222222-2222-4222-8222-222222222222"
+    report_two_id = "33333333-3333-4333-8333-333333333333"
+
+    first_session = mem_store["vbr_verification_sessions"][session_one_id]
+    mem_store["vbr_verification_sessions"][session_two_id] = {
+        **first_session,
+        "id": session_two_id,
+        "project_id": project_id,
+        "status": "processed",
+    }
+
+    report_one = mem_store["vbr_reports"][report_one_id]
+    body_two = dict(report_one["body"])
+    body_two["summary"] = dict(body_two.get("summary") or {})
+    body_two["summary"]["session_id"] = session_two_id
+
+    mem_store["vbr_reports"][report_two_id] = {
+        **report_one,
+        "id": report_two_id,
+        "project_id": project_id,
+        "session_id": session_two_id,
+        "status": "draft",
+        "public_token": None,
+        "published_at": None,
+        "body": body_two,
+    }
+
+    for claim in list(mem_store["vbr_report_claims"].values()):
+        if claim.get("report_id") == report_one_id:
+            mem_store["vbr_report_claims"][f"{report_two_id}-{claim['claim_id']}"] = {
+                **claim,
+                "id": f"{report_two_id}-{claim['claim_id']}",
+                "report_id": report_two_id,
+            }
+
+    response_one_publish = _publish(client, session_one_id)
+    assert response_one_publish.status_code == 200
+
+    _submit_review(client, session_two_id)
+    response_two_publish = _publish(client, session_two_id)
+
+    assert response_two_publish.status_code == 409
+    assert response_two_publish.json()["detail"]["code"] == "vbr_report_already_published"

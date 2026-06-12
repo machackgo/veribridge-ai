@@ -96,9 +96,13 @@ def _get_published_report(db: Any, project_id: str) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
-def _get_latest_report(db: Any, project_id: str) -> dict[str, Any] | None:
+def _get_report_by_session(db: Any, project_id: str, session_id: str) -> dict[str, Any] | None:
     if isinstance(db, dict):
-        rows = [row for row in db.setdefault(_REPORTS_TABLE, {}).values() if row.get("project_id") == project_id]
+        rows = [
+            row
+            for row in db.setdefault(_REPORTS_TABLE, {}).values()
+            if row.get("project_id") == project_id and row.get("session_id") == session_id
+        ]
         rows.sort(key=lambda row: row.get("version", 0), reverse=True)
         return rows[0] if rows else None
 
@@ -106,6 +110,7 @@ def _get_latest_report(db: Any, project_id: str) -> dict[str, Any] | None:
         db.table(_REPORTS_TABLE)
         .select("*")
         .eq("project_id", project_id)
+        .eq("session_id", session_id)
         .order("version", desc=True)
         .limit(1)
         .execute()
@@ -117,7 +122,9 @@ def _get_latest_report(db: Any, project_id: str) -> dict[str, Any] | None:
 # ── Persistence ──────────────────────────────────────────────────────────────
 
 
-def _upsert_report(db: Any, project_id: str, existing_report: dict[str, Any] | None, body: dict[str, Any]) -> dict[str, Any]:
+def _upsert_report(
+    db: Any, project_id: str, session_id: str, existing_report: dict[str, Any] | None, body: dict[str, Any]
+) -> dict[str, Any]:
     now = _now()
 
     if existing_report is not None:
@@ -126,6 +133,7 @@ def _upsert_report(db: Any, project_id: str, existing_report: dict[str, Any] | N
             "status": "draft",
             "public_token": None,
             "published_at": None,
+            "session_id": session_id,
             "updated_at": now,
         }
         if isinstance(db, dict):
@@ -139,6 +147,7 @@ def _upsert_report(db: Any, project_id: str, existing_report: dict[str, Any] | N
     row = {
         "id": str(uuid4()),
         "project_id": project_id,
+        "session_id": session_id,
         "version": 1,
         "body": body,
         "public_token": None,
@@ -285,6 +294,10 @@ def generate_report_draft(db: Any, session_id: str, user_id: str) -> dict[str, A
             },
         )
 
+    # Conservative policy: only one published report per project at a time,
+    # regardless of which session it came from. This avoids two published
+    # reports for the same project being visible at once; a student must
+    # unpublish a prior attempt's report before drafting/publishing a new one.
     published_report = _get_published_report(db, project_id)
     if published_report is not None:
         raise HTTPException(
@@ -295,7 +308,7 @@ def generate_report_draft(db: Any, session_id: str, user_id: str) -> dict[str, A
             },
         )
 
-    existing_report = _get_latest_report(db, project_id)
+    existing_report = _get_report_by_session(db, project_id, session_id)
     claims_by_id = {str(row["id"]): row for row in confirmed_claims}
     claim_judgments = judgment_skeleton.get("claim_judgments") or []
     question_judgments = judgment_skeleton.get("question_judgments") or []
@@ -310,7 +323,7 @@ def generate_report_draft(db: Any, session_id: str, user_id: str) -> dict[str, A
         allowed_evidence_ids,
     )
 
-    report = _upsert_report(db, project_id, existing_report, body)
+    report = _upsert_report(db, project_id, session_id, existing_report, body)
     report_id = str(report["id"])
 
     report_claim_rows = [

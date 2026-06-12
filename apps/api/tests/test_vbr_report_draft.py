@@ -274,6 +274,7 @@ def test_draft_report_creates_report_row(client: TestClient, mem_store: dict) ->
     report_id = body["report_id"]
     report_row = mem_store["vbr_reports"][report_id]
     assert report_row["project_id"] == project_id
+    assert report_row["session_id"] == session_id
     assert report_row["status"] == "draft"
     assert report_row["public_token"] is None
     assert report_row["human_reviewed"] is False
@@ -456,6 +457,7 @@ def test_draft_report_clears_public_token_when_reusing_unpublished_report(client
     mem_store.setdefault("vbr_reports", {})["unpublished-with-token"] = {
         "id": "unpublished-with-token",
         "project_id": project_id,
+        "session_id": session_id,
         "status": "unpublished",
         "public_token": "stale-token",
         "published_at": "2026-01-01T00:00:00Z",
@@ -471,6 +473,62 @@ def test_draft_report_clears_public_token_when_reusing_unpublished_report(client
     assert report["status"] == "draft"
     assert report.get("public_token") is None
     assert report.get("published_at") is None
+
+
+def _progress_session_to_report_ready(client: TestClient, session_id: str, chunk_count: int = 1) -> None:
+    """Progress an existing 'created' session through to judgment-ready (for /draft-report)."""
+    _start_session(client, session_id)
+    for chunk_index in range(chunk_count):
+        _upload_chunk(client, session_id, chunk_index)
+    _finalize(client, session_id, duration_s=120)
+
+    process_response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/process")
+    assert process_response.status_code == 200, process_response.text
+
+    _transcribe(client, session_id)
+    _extract_keyframes(client, session_id)
+
+    evidence_response = _build_evidence(client, session_id)
+    assert evidence_response.status_code == 200, evidence_response.text
+
+    judge_response = _judge(client, session_id)
+    assert judge_response.status_code == 200, judge_response.text
+
+
+def test_draft_report_second_session_does_not_overwrite_first(client: TestClient, mem_store: dict) -> None:
+    project_id, session1_id = _setup_report_ready_session(client)
+
+    first = _draft_report(client, session1_id)
+    assert first.status_code == 200, first.text
+    report1_id = first.json()["report_id"]
+
+    # Start a second verification attempt for the same project.
+    questions_response = client.post(f"/api/v1/student/vbr/projects/{project_id}/generate-questions")
+    assert questions_response.status_code == 200, questions_response.text
+    session2_id = questions_response.json()["session_id"]
+    assert session2_id != session1_id
+
+    _progress_session_to_report_ready(client, session2_id)
+
+    second = _draft_report(client, session2_id)
+    assert second.status_code == 200, second.text
+    report2_id = second.json()["report_id"]
+
+    assert report2_id != report1_id
+
+    report1 = mem_store["vbr_reports"][report1_id]
+    report2 = mem_store["vbr_reports"][report2_id]
+
+    assert report1["session_id"] == session1_id
+    assert report2["session_id"] == session2_id
+    assert report1["body"]["summary"]["session_id"] == session1_id
+    assert report2["body"]["summary"]["session_id"] == session2_id
+
+    # Re-drafting session1's report must still update report1, not report2.
+    redraft1 = _draft_report(client, session1_id)
+    assert redraft1.status_code == 200, redraft1.text
+    assert redraft1.json()["report_id"] == report1_id
+    assert mem_store["vbr_reports"][report2_id]["session_id"] == session2_id
 
 
 def test_draft_report_filters_foreign_evidence_ids_from_judgment_skeleton(

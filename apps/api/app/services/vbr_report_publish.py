@@ -115,13 +115,23 @@ def _body_contains_unsafe_fields(value: Any) -> bool:
 
 
 def _report_matches_session(report: dict[str, Any], session_id: str) -> bool:
+    """Check that ``report`` belongs to ``session_id``.
+
+    The ``session_id`` column is the primary association. ``body.summary.session_id``
+    is checked as defense-in-depth when present: if it disagrees with the
+    session_id column, the report is treated as not belonging to this session.
+    """
+    if str(report.get("session_id") or "") != str(session_id):
+        return False
+
     body = report.get("body") or {}
-    if not isinstance(body, dict):
-        return False
-    summary = body.get("summary") or {}
-    if not isinstance(summary, dict):
-        return False
-    return str(summary.get("session_id") or "") == str(session_id)
+    if isinstance(body, dict):
+        summary = body.get("summary") or {}
+        if isinstance(summary, dict) and summary.get("session_id") is not None:
+            if str(summary.get("session_id")) != str(session_id):
+                return False
+
+    return True
 
 
 def _require_session_report(report: dict[str, Any] | None, session_id: str) -> dict[str, Any]:
@@ -136,9 +146,13 @@ def _require_session_report(report: dict[str, Any] | None, session_id: str) -> d
     return report
 
 
-def _get_latest_report(db: Any, project_id: str) -> dict[str, Any] | None:
+def _get_report_by_session(db: Any, project_id: str, session_id: str) -> dict[str, Any] | None:
     if isinstance(db, dict):
-        rows = [row for row in db.setdefault(_REPORTS_TABLE, {}).values() if row.get("project_id") == project_id]
+        rows = [
+            row
+            for row in db.setdefault(_REPORTS_TABLE, {}).values()
+            if row.get("project_id") == project_id and row.get("session_id") == session_id
+        ]
         rows.sort(key=lambda row: row.get("version", 0), reverse=True)
         return rows[0] if rows else None
 
@@ -146,6 +160,7 @@ def _get_latest_report(db: Any, project_id: str) -> dict[str, Any] | None:
         db.table(_REPORTS_TABLE)
         .select("*")
         .eq("project_id", project_id)
+        .eq("session_id", session_id)
         .order("version", desc=True)
         .limit(1)
         .execute()
@@ -281,7 +296,7 @@ def submit_report_review(db: Any, session_id: str, user_id: str) -> dict[str, An
         )
 
     project_id = str(project["id"])
-    report = _require_session_report(_get_latest_report(db, project_id), session_id)
+    report = _require_session_report(_get_report_by_session(db, project_id, session_id), session_id)
     if report is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -292,6 +307,16 @@ def submit_report_review(db: Any, session_id: str, user_id: str) -> dict[str, An
         )
 
     report_id = str(report["id"])
+    published_report = _get_published_report(db, project_id)
+    if published_report is not None and str(published_report.get("id")) != report_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "vbr_report_already_published",
+                "message": "A published report already exists for this project.",
+            },
+        )
+
     current_status = report.get("status") or "draft"
 
     if current_status == "in_review":
@@ -314,6 +339,29 @@ def submit_report_review(db: Any, session_id: str, user_id: str) -> dict[str, An
     return _review_response(session_id, report_id, updated.get("status") or "in_review")
 
 
+def _get_published_report(db: Any, project_id: str) -> dict[str, Any] | None:
+    if isinstance(db, dict):
+        return next(
+            (
+                row
+                for row in db.setdefault(_REPORTS_TABLE, {}).values()
+                if row.get("project_id") == project_id and row.get("status") == "published"
+            ),
+            None,
+        )
+
+    result = (
+        db.table(_REPORTS_TABLE)
+        .select("*")
+        .eq("project_id", project_id)
+        .eq("status", "published")
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(result, "data", []) or []
+    return rows[0] if rows else None
+
+
 def publish_report(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
     """Publish a private report, minting a public token for the first time.
 
@@ -326,7 +374,7 @@ def publish_report(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
     _session, project = get_owned_vbr_session_or_404(db, session_id, user_id)
 
     project_id = str(project["id"])
-    report = _require_session_report(_get_latest_report(db, project_id), session_id)
+    report = _require_session_report(_get_report_by_session(db, project_id, session_id), session_id)
     if report is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -348,6 +396,16 @@ def publish_report(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
             detail={
                 "code": "vbr_report_not_publishable",
                 "message": "Report must be in 'draft' or 'in_review' status to publish.",
+            },
+        )
+
+    published_report = _get_published_report(db, project_id)
+    if published_report is not None and str(published_report.get("id")) != report_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "vbr_report_already_published",
+                "message": "A published report already exists for this project.",
             },
         )
 
@@ -408,7 +466,7 @@ def unpublish_report(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
     _session, project = get_owned_vbr_session_or_404(db, session_id, user_id)
 
     project_id = str(project["id"])
-    report = _require_session_report(_get_latest_report(db, project_id), session_id)
+    report = _require_session_report(_get_report_by_session(db, project_id, session_id), session_id)
     if report is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -456,7 +514,7 @@ def get_report_status(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
     _session, project = get_owned_vbr_session_or_404(db, session_id, user_id)
 
     project_id = str(project["id"])
-    report = _require_session_report(_get_latest_report(db, project_id), session_id)
+    report = _require_session_report(_get_report_by_session(db, project_id, session_id), session_id)
     if report is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

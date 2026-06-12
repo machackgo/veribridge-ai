@@ -370,6 +370,57 @@ def test_public_report_rejects_supabase_storage_url_values(client: TestClient, m
     assert response.json()["detail"]["code"] == "vbr_public_report_not_found"
 
 
+def _progress_session_to_report_ready(client: TestClient, session_id: str, chunk_count: int = 1) -> None:
+    """Progress an existing 'created' session through to judgment-ready (for /draft-report)."""
+    _start_session(client, session_id)
+    for chunk_index in range(chunk_count):
+        _upload_chunk(client, session_id, chunk_index)
+    _finalize(client, session_id, duration_s=120)
+
+    process_response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/process")
+    assert process_response.status_code == 200, process_response.text
+
+    _transcribe(client, session_id)
+    _extract_keyframes(client, session_id)
+
+    evidence_response = _build_evidence(client, session_id)
+    assert evidence_response.status_code == 200, evidence_response.text
+
+    judge_response = _judge(client, session_id)
+    assert judge_response.status_code == 200, judge_response.text
+
+
+def test_public_report_unaffected_by_second_session_draft(client: TestClient, mem_store: dict) -> None:
+    project_id, session1_id, report1_id, public_token = _setup_published_report(client, mem_store)
+
+    # Start a second verification attempt for the same project while the
+    # first session's report is published.
+    questions_response = client.post(f"/api/v1/student/vbr/projects/{project_id}/generate-questions")
+    assert questions_response.status_code == 200, questions_response.text
+    session2_id = questions_response.json()["session_id"]
+    assert session2_id != session1_id
+
+    _progress_session_to_report_ready(client, session2_id)
+
+    # Drafting session2's report is blocked while a published report exists
+    # for this project (one published report per project policy).
+    draft2 = _draft_report(client, session2_id)
+    assert draft2.status_code == 409
+    assert draft2.json()["detail"]["code"] == "vbr_report_already_published"
+
+    # The first session's public report page is unaffected.
+    response = _get_public_report(client, public_token)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "published"
+
+    # The real session_id column is never returned in the public projection.
+    raw = response.text
+    assert "session_id" not in raw
+    assert session1_id not in raw
+    assert mem_store["vbr_reports"][report1_id]["session_id"] == session1_id
+
+
 def test_public_report_rejects_public_token_inside_body(client: TestClient, mem_store: dict) -> None:
     _project_id, _session_id, _report_id, token = _setup_published_report(client, mem_store)
 
