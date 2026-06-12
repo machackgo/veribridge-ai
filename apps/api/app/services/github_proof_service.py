@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.schemas.github_proof_submission import (
     GitHubProofPublicResponse,
@@ -334,7 +334,7 @@ class GitHubProofService:
         if isinstance(self._client, dict):
             self._client.setdefault(_GITHUB_PROOFS, {})[str(row["id"])] = row
             return row
-        result = self._client.table(_GITHUB_PROOFS).upsert(row).execute()
+        result = self._client.table(_GITHUB_PROOFS).upsert(make_json_safe(row)).execute()
         rows = getattr(result, "data", []) or []
         if not rows:
             raise RuntimeError("github_proof_submissions upsert returned no data.")
@@ -584,6 +584,29 @@ def _normalized_sections(sections: list[str]) -> set[str]:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def make_json_safe(value: Any) -> Any:
+    """Recursively convert non-JSON-serializable values to safe primitives.
+
+    Handles: datetime / date -> isoformat string, UUID -> str,
+    dict -> sanitised dict, list/tuple -> sanitised list.
+
+    supabase-py uses httpx, which calls json.dumps() on request bodies without
+    a custom encoder, so raw datetime objects in upsert payloads raise
+    TypeError: Object of type datetime is not JSON serializable.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: make_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [make_json_safe(item) for item in value]
+    return value
 
 
 def _parse_dt(value: Any) -> datetime | None:

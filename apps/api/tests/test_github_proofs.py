@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
@@ -363,6 +364,50 @@ def test_work_passport_status_includes_github_proof_steps(
     assert "github_proof_added" in payload["completed_steps"]
     assert "github_proof_analyzed" in payload["completed_steps"]
     assert "add_github_proof" not in payload["missing_steps"]
+
+
+def test_submit_github_proof_sends_json_safe_payload_to_supabase() -> None:
+    mock_client = MagicMock()
+    select_result = MagicMock()
+    select_result.data = []
+    mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = select_result
+
+    upsert_result = MagicMock()
+    upsert_result.data = [
+        {
+            "id": str(uuid4()),
+            "user_id": USER_ID,
+            "proof_session_id": None,
+            "repo_url": "https://github.com/example/project",
+            "repo_owner": "example",
+            "repo_name": "project",
+            "default_branch": "main",
+            "visibility": "public",
+            "status": "submitted",
+            "submitted_skill_claims": [],
+            "detected_skills": [],
+            "repo_metadata": {},
+            "analysis_summary": None,
+            "evidence_strength": None,
+            "confidence_score": None,
+            "risk_flags": [],
+            "missing_evidence": [],
+            "public_safe_summary": None,
+            "analysis_snapshot": {},
+            "last_analyzed_at": None,
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+    ]
+    mock_client.table.return_value.upsert.return_value.execute.return_value = upsert_result
+
+    GitHubProofService(mock_client).submit_github_proof(USER_ID, "https://github.com/example/project")
+
+    payload = mock_client.table.return_value.upsert.call_args[0][0]
+    json.dumps(payload)
+    assert isinstance(payload["created_at"], str)
+    assert isinstance(payload["updated_at"], str)
+    assert payload["last_analyzed_at"] is None
 
 
 def test_no_project_specific_hardcoding() -> None:
