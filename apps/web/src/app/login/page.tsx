@@ -506,7 +506,7 @@ function OtpStep({
 function LoginInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const redirectTo = searchParams.get("next") ?? "/onboarding"
+  const redirectTo = searchParams.get("next") ?? "/student/vbr"
 
   const [step, setStep] = useState<Step>("email")
   const [email, setEmail] = useState("")
@@ -602,10 +602,7 @@ function LoginInner() {
       })
       if (error) throw error
       if (data.session) {
-        const onboardingCompleted =
-          window.localStorage.getItem("veribridge:onboarding-completed") === "true"
-        const requestedPath = redirectTo.startsWith("/") ? redirectTo : "/dashboard"
-        const destination = onboardingCompleted ? requestedPath : "/onboarding"
+        const destination = redirectTo.startsWith("/") ? redirectTo : "/student/vbr"
         router.push(destination)
         router.refresh()
       }
@@ -642,7 +639,7 @@ function LoginInner() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(redirectTo || "/dashboard")}`,
+          redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(redirectTo || "/student/vbr")}`,
         },
       })
       if (error) throw error
