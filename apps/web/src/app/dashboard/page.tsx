@@ -1,5 +1,5 @@
-import { StudentOverview } from "../../../components/dashboard/StudentViews";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <StudentOverview />;
+  redirect("/student/vbr");
 }
