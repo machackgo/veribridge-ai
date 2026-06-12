@@ -2,6 +2,8 @@
 
 import { fetchAPI } from "@/lib/api"
 
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+
 /**
  * Client for the Verified Build Report (VBR) session recording endpoints.
  * Chunks are uploaded via a short-lived signed URL (chunk-upload-url), then
