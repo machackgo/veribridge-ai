@@ -95,6 +95,25 @@ export type VBRTelemetryResponse = {
   telemetry: Record<string, unknown>
 }
 
+export type VBRPublicReportClaim = {
+  claim_text: string | null
+  judgment: string | null
+  rationale: string | null
+  evidence_count: number
+}
+
+export type VBRPublicReportResponse = {
+  project_title: string | null
+  repo_full_name: string | null
+  status: string
+  published_at: string | null
+  claim_count: number
+  evidence_count: number | null
+  claims: VBRPublicReportClaim[]
+  methodology: string[]
+  verification_note: string
+}
+
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
     const body = (await res.json()) as { detail?: { message?: string } | string }
@@ -203,4 +222,27 @@ export async function finalizeVBRSession(
   })
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to finalize session (HTTP ${res.status}).`))
   return res.json()
+}
+
+/** Fetch a published VBR report by its public token. No auth required. */
+export async function getPublicVBRReport(
+  publicToken: string,
+): Promise<VBRPublicReportResponse | null> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/public/vbr/reports/${encodeURIComponent(publicToken)}`,
+    {
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+    },
+  )
+
+  if (response.status === 404) {
+    return null
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to load report (HTTP ${response.status}).`)
+  }
+
+  return response.json()
 }
