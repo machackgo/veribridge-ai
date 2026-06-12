@@ -199,7 +199,7 @@ export default function StudentVBRPage() {
             title="GitHub Repository Proof"
             description="For code repositories and commits. Submit a public repo to detect skills from your code."
             action={
-              <Link href="/dashboard/passport/github" style={secondaryLinkStyle}>
+              <Link href="/student/proofs/github" style={secondaryLinkStyle}>
                 Add GitHub proof
               </Link>
             }
