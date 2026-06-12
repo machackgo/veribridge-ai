@@ -68,6 +68,14 @@ class ExtensionProofSessionService:
             data["followup_objective"] = payload.followup_objective
         if payload.proof_attempt_type == "followup":
             data["proof_attempt_type"] = "followup"
+        if payload.website_url:
+            data["website_url"] = payload.website_url
+        if payload.github_url:
+            data["github_url"] = payload.github_url
+        if payload.claimed_skills:
+            data["claimed_skills"] = payload.claimed_skills
+        if payload.proof_objective:
+            data["proof_objective"] = payload.proof_objective
 
         if isinstance(self._client, dict):
             row = {"id": str(uuid4()), "created_at": now, "updated_at": now, **data}

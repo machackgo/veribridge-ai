@@ -908,6 +908,10 @@ export async function createExtensionProofSession(
     followup_target_skill?: string
     followup_objective?: string
     proof_attempt_type?: "original" | "followup"
+    website_url?: string
+    github_url?: string
+    claimed_skills?: string[]
+    proof_objective?: string
   }
 ): Promise<ExtensionProofSessionResponse> {
   const body: Record<string, unknown> = { skill_evidence_id: skillEvidenceId }
@@ -915,6 +919,10 @@ export async function createExtensionProofSession(
   if (opts?.followup_target_skill) body.followup_target_skill = opts.followup_target_skill
   if (opts?.followup_objective) body.followup_objective = opts.followup_objective
   if (opts?.proof_attempt_type) body.proof_attempt_type = opts.proof_attempt_type
+  if (opts?.website_url) body.website_url = opts.website_url
+  if (opts?.github_url) body.github_url = opts.github_url
+  if (opts?.claimed_skills?.length) body.claimed_skills = opts.claimed_skills
+  if (opts?.proof_objective) body.proof_objective = opts.proof_objective
   const res = await fetchAPI("/api/v1/student/extension-proof/sessions", {
     method: "POST",
     body: JSON.stringify(body),
@@ -2811,4 +2819,45 @@ export async function getRecruiterSkillPipelineView(
   } catch {
     return null
   }
+}
+
+/**
+ * Result of syncing a completed Website Proof session into the student's
+ * Skill Graph (skill_evidence_pipelines / skill_evidence_artifacts).
+ */
+export type WebsiteProofSyncResult = {
+  ok: boolean
+  already_synced: boolean
+  skills_synced: string[]
+  pipelines_upserted: number
+  artifacts_created: number
+  artifact_types_created: string[]
+  errors: string[]
+}
+
+/**
+ * Sync a completed Website Proof session into the student's profile / Skill Graph.
+ * Idempotent on the backend — safe to call multiple times for the same session.
+ * Throws an Error with the backend message on failure so callers can show it.
+ */
+export async function syncWebsiteProofToSkillGraph(
+  proofSessionId: string,
+): Promise<WebsiteProofSyncResult> {
+  const res = await fetchAPI(
+    `/api/v1/student/skill-pipelines/from-website-proof/${encodeURIComponent(proofSessionId)}`,
+    { method: "POST" },
+  )
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`
+    try {
+      const body = await res.json()
+      if (body?.detail?.message) message = body.detail.message
+      else if (typeof body?.detail === "string") message = body.detail
+      else if (body?.message) message = body.message
+    } catch {
+      // body not JSON — use status text
+    }
+    throw new Error(message)
+  }
+  return res.json() as Promise<WebsiteProofSyncResult>
 }

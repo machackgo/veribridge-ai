@@ -52,6 +52,7 @@ import {
   type WebsiteEvidenceDiscoveryResponse,
   type DiscoveredEvidenceItem,
   type DiscoveredEvidenceType,
+  syncWebsiteProofToSkillGraph,
 } from "@/lib/api"
 import { VerificationReviewSection, type WebsiteProofReviewSnapshot } from "./verification-review-section"
 import { SequenceAnalysisPanel } from "./sequence-analysis-panel"
@@ -7196,6 +7197,8 @@ export function ExtensionProofPanel({
   const [analyzing, setAnalyzing]       = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
   const [analyzeTimedOut, setAnalyzeTimedOut] = useState(false)
+  const [profileSyncState, setProfileSyncState] = useState<"idle" | "syncing" | "error">("idle")
+  const [profileSyncError, setProfileSyncError] = useState<string | null>(null)
   const [websiteProofProgressLifecycle, dispatchWebsiteProofProgress] = useReducer(
     websiteProofProgressReducer,
     "idle" as WebsiteProofProgressLifecycle,
@@ -7263,6 +7266,38 @@ export function ExtensionProofPanel({
     setFollowupIntent(null)
     clearFollowUpProofDraft()
     onBack()
+  }
+
+  // Reset the flow back to a blank form without navigating away — used by
+  // "Start new Website Proof" on completed/expired/restored session screens.
+  function handleStartNew() {
+    resetWebsiteProofForm()
+    setFollowupIntent(null)
+    clearFollowUpProofDraft()
+  }
+
+  // Sync the completed proof session into the profile/Skill Graph before
+  // leaving the flow. Non-blocking: if the sync fails, the user can retry
+  // or continue without saving rather than getting stuck on this screen.
+  async function handleDone() {
+    if (!session || session.status !== "completed") {
+      resetAndBack()
+      return
+    }
+    const sessionId = session.id
+    // Clear the persisted session up front so a failed sync can't leave this
+    // completed session to be restored on the next visit to the page.
+    clearActiveExtensionProofSession()
+    setProfileSyncState("syncing")
+    setProfileSyncError(null)
+    try {
+      await syncWebsiteProofToSkillGraph(sessionId)
+      setProfileSyncState("idle")
+      resetAndBack()
+    } catch (err) {
+      setProfileSyncState("error")
+      setProfileSyncError(err instanceof Error ? err.message : "Could not save this proof to your profile.")
+    }
   }
 
   // On mount, check for follow-up intent stored by the evidence card
@@ -7996,12 +8031,18 @@ export function ExtensionProofPanel({
         },
       })
       const intentForCreate = followupIntent
-      const sess = await createExtensionProofSession(evidence.id, intentForCreate ? {
-        parent_proof_session_id: intentForCreate.parentSessionId || undefined,
-        followup_target_skill:   intentForCreate.skill || undefined,
-        followup_objective:      intentForCreate.objective || undefined,
-        proof_attempt_type:      "followup",
-      } : undefined)
+      const sess = await createExtensionProofSession(evidence.id, {
+        ...(intentForCreate ? {
+          parent_proof_session_id: intentForCreate.parentSessionId || undefined,
+          followup_target_skill:   intentForCreate.skill || undefined,
+          followup_objective:      intentForCreate.objective || undefined,
+          proof_attempt_type:      "followup" as const,
+        } : {}),
+        website_url:     form.websiteUrl.trim() || undefined,
+        github_url:      form.githubUrl.trim() || undefined,
+        claimed_skills:  parseSkills(),
+        proof_objective: form.proofObjective.trim() || undefined,
+      })
       setFollowupIntent(null)
       clearFollowUpProofDraft()
       setSession(sess)
@@ -8715,6 +8756,31 @@ export function ExtensionProofPanel({
           </div>
         )}
 
+        {/* Profile sync failure — non-blocking, offers retry or skip */}
+        {profileSyncState === "error" && (
+          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 10, padding: "10px 14px", display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#991b1b" }}>
+              Couldn&apos;t save this proof to your profile{profileSyncError ? `: ${profileSyncError}` : "."} Your evidence is still saved — you can retry or continue without updating your profile.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => void handleDone()}
+                style={{ border: "1px solid #dc2626", background: "transparent", color: "#991b1b", borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={resetAndBack}
+                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
+              >
+                Continue without saving
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Actions */}
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <button
@@ -8737,13 +8803,24 @@ export function ExtensionProofPanel({
           )}
 
           {(isCompleted || isExpired) && (
-            <button
-              type="button"
-              onClick={resetAndBack}
-              style={{ border: "1px solid var(--ink)", background: "var(--ink)", color: "#fff", borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}
-            >
-              Done
-            </button>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                type="button"
+                onClick={handleStartNew}
+                disabled={profileSyncState === "syncing"}
+                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "10px 20px", fontWeight: 600, fontSize: 14, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
+              >
+                Start new Website Proof
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDone()}
+                disabled={profileSyncState === "syncing"}
+                style={{ border: "1px solid var(--ink)", background: profileSyncState === "syncing" ? "var(--bg-2)" : "var(--ink)", color: profileSyncState === "syncing" ? "var(--muted)" : "#fff", borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
+              >
+                {profileSyncState === "syncing" ? "Saving to profile…" : "Done"}
+              </button>
+            </div>
           )}
         </div>
       </div>

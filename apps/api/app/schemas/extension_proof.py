@@ -24,6 +24,10 @@ class ExtensionProofSessionCreate(BaseModel):
     followup_target_skill: str | None = Field(default=None, max_length=200)
     followup_objective: str | None = Field(default=None, max_length=1000)
     proof_attempt_type: Literal["original", "followup"] = "original"
+    website_url: str | None = Field(default=None, max_length=1200)
+    github_url: str | None = Field(default=None, max_length=1200)
+    claimed_skills: list[str] | None = None
+    proof_objective: str | None = Field(default=None, max_length=2000)
 
     @field_validator("skill_evidence_id", mode="before")
     @classmethod
