@@ -361,7 +361,7 @@ def publish_report(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
             },
         )
 
-    if _contains_unsafe_fields(body):
+    if _body_contains_unsafe_fields(body):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={

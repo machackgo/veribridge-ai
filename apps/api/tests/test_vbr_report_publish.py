@@ -556,3 +556,17 @@ def test_publish_report_rejects_camelcase_and_storage_url_unsafe_body(client: Te
 
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "vbr_report_unsafe_body"
+
+
+def test_publish_rejects_camelcase_signed_url_body(client: TestClient, mem_store: dict) -> None:
+    _project_id, session_id, report_id = _setup_draft_report(client)
+    _submit_review(client, session_id)
+
+    mem_store["vbr_reports"][report_id]["body"]["claims"][0]["signedUrl"] = (
+        "https://example.supabase.co/storage/v1/object/sign/private/video.webm"
+    )
+
+    response = _publish(client, session_id)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "vbr_report_unsafe_body"
