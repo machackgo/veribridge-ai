@@ -31,18 +31,6 @@ const statusChipStyle: CSSProperties = {
   fontFamily: "var(--font-mono)",
 }
 
-const primaryLinkStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  padding: "10px 18px",
-  borderRadius: 10,
-  background: "var(--indigo)",
-  color: "#fff",
-  fontSize: 14,
-  fontWeight: 600,
-  textDecoration: "none",
-}
-
 const secondaryLinkStyle: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
@@ -170,12 +158,6 @@ export default function StudentVBRPage() {
           </p>
         </div>
       )}
-
-      <div style={{ display: "flex", gap: 12 }}>
-        <Link href="/dashboard" style={primaryLinkStyle}>
-          Go to dashboard
-        </Link>
-      </div>
     </div>
   )
 }
