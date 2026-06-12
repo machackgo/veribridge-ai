@@ -116,3 +116,11 @@ class VBREvidenceBuildResponse(BaseModel):
     source_counts: dict[str, int] = Field(default_factory=dict)
     status: str
     message: str
+
+
+class VBRJudgmentResponse(BaseModel):
+    session_id: str
+    judged_claim_count: int
+    judged_question_count: int
+    status: str
+    message: str

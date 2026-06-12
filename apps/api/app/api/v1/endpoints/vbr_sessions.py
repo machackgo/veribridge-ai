@@ -27,6 +27,7 @@ from app.schemas.vbr_sessions import (
     VBRConsentResponse,
     VBREvidenceBuildResponse,
     VBRFinalizeRequest,
+    VBRJudgmentResponse,
     VBRKeyframeExtractionResponse,
     VBRMediaProcessingResponse,
     VBRSessionDetailResponse,
@@ -36,6 +37,7 @@ from app.schemas.vbr_sessions import (
     VBRTranscriptionResponse,
 )
 from app.services.vbr_evidence_builder import build_session_evidence
+from app.services.vbr_judgment import judge_session_skeleton
 from app.services.vbr_keyframes import extract_keyframes_skeleton
 from app.services.vbr_media_processing import process_uploaded_session_skeleton
 from app.services.vbr_question_generation import list_session_questions
@@ -340,3 +342,17 @@ def build_evidence_route(
 ) -> VBREvidenceBuildResponse:
     result = build_session_evidence(db, session_id, user_id)
     return VBREvidenceBuildResponse(**result)
+
+
+@router.post(
+    "/{session_id}/judge",
+    response_model=VBRJudgmentResponse,
+    summary="Build a deterministic claim/question judgment skeleton (no LLM)",
+)
+def judge_session_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRJudgmentResponse:
+    result = judge_session_skeleton(db, session_id, user_id)
+    return VBRJudgmentResponse(**result)
