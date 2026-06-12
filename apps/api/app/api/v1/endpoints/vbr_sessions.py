@@ -25,6 +25,7 @@ from app.schemas.vbr_sessions import (
     VBRChunkUploadUrlResponse,
     VBRConsentRequest,
     VBRConsentResponse,
+    VBREvidenceBuildResponse,
     VBRFinalizeRequest,
     VBRKeyframeExtractionResponse,
     VBRMediaProcessingResponse,
@@ -34,6 +35,7 @@ from app.schemas.vbr_sessions import (
     VBRTelemetryResponse,
     VBRTranscriptionResponse,
 )
+from app.services.vbr_evidence_builder import build_session_evidence
 from app.services.vbr_keyframes import extract_keyframes_skeleton
 from app.services.vbr_media_processing import process_uploaded_session_skeleton
 from app.services.vbr_question_generation import list_session_questions
@@ -324,3 +326,17 @@ def extract_keyframes_route(
 ) -> VBRKeyframeExtractionResponse:
     result = extract_keyframes_skeleton(db, session_id, user_id)
     return VBRKeyframeExtractionResponse(**result)
+
+
+@router.post(
+    "/{session_id}/build-evidence",
+    response_model=VBREvidenceBuildResponse,
+    summary="Build deterministic evidence items from processed session artifacts",
+)
+def build_evidence_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBREvidenceBuildResponse:
+    result = build_session_evidence(db, session_id, user_id)
+    return VBREvidenceBuildResponse(**result)

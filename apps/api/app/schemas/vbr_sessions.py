@@ -108,3 +108,11 @@ class VBRKeyframeExtractionResponse(BaseModel):
     frame_count: int
     status: str
     message: str
+
+
+class VBREvidenceBuildResponse(BaseModel):
+    session_id: str
+    evidence_count: int
+    source_counts: dict[str, int] = Field(default_factory=dict)
+    status: str
+    message: str
