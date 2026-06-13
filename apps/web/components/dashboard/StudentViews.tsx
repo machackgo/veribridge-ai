@@ -253,7 +253,7 @@ function ScoreRing({ score }: { score: number }) {
    includes the student's full evidence (including protected/private),
    unlike the recruiter-safe endpoint which hides unapproved artifacts. */
 
-type EvidenceCategoryKey = "github" | "document" | "website";
+type EvidenceCategoryKey = "github" | "document" | "website" | "project_defense";
 
 const EVIDENCE_CATEGORY_CONFIG: Record<EvidenceCategoryKey, {
   label: string;
@@ -294,6 +294,16 @@ const EVIDENCE_CATEGORY_CONFIG: Record<EvidenceCategoryKey, {
     color: "var(--indigo)",
     borderC: "color-mix(in srgb,var(--indigo) 22%,transparent)",
     bg: "var(--indigo-soft)",
+  },
+  project_defense: {
+    label: "Project Defense / Process Evidence",
+    icon: "◈",
+    sourceTypes: ["project_defense"],
+    statusLabel: "Process evidence",
+    description: "Manual/video defense explanation saved as supporting process evidence.",
+    color: "var(--violet, #8b5cf6)",
+    borderC: "color-mix(in srgb,var(--violet, #8b5cf6) 22%,transparent)",
+    bg: "var(--violet-soft, rgba(139,92,246,0.08))",
   },
 };
 
@@ -340,6 +350,7 @@ function SkillEvidenceFromProofsPanel() {
     github: { count: 0, skills: new Set(), visibilities: new Set() },
     document: { count: 0, skills: new Set(), visibilities: new Set() },
     website: { count: 0, skills: new Set(), visibilities: new Set() },
+    project_defense: { count: 0, skills: new Set(), visibilities: new Set() },
   };
 
   for (const pipeline of pipelines ?? []) {

@@ -272,4 +272,71 @@ describe("Work Passport — Skill Evidence from Proofs panel", () => {
 
     expect(screen.getByTestId("evidence-meta-document")).toHaveTextContent("2 items · 1 skill")
   })
+
+  // ── Must-fix: Project Defense evidence is its own aggregate category ──
+
+  it("shows a Project Defense category when a pipeline has project_defense evidence", async () => {
+    vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+      makeBackendPipeline({
+        visibility_status: "protected",
+        evidence_sources: [
+          makeEvidenceSource({
+            key: "project_defense",
+            label: "Project Defense",
+            status: "partial",
+            reason: "Project defense explanation for 'Demo App' provides supporting evidence for AI / Machine Learning.",
+          }),
+        ],
+      }),
+    ])
+    await openWorkPassportTab()
+
+    const row = screen.getByTestId("evidence-source-project_defense")
+    expect(row).toHaveTextContent(/Project Defense/i)
+  })
+
+  it("uses conservative supporting/process-evidence copy for Project Defense and does not claim full verification", async () => {
+    vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+      makeBackendPipeline({
+        evidence_sources: [makeEvidenceSource({ key: "project_defense", label: "Project Defense", status: "partial" })],
+      }),
+    ])
+    await openWorkPassportTab()
+
+    const row = screen.getByTestId("evidence-source-project_defense")
+    expect(row.textContent).toMatch(/supporting process evidence/i)
+    expect(row.textContent).not.toMatch(/fully verified/i)
+    expect(screen.getByTestId("evidence-status-project_defense")).not.toHaveTextContent(/verified/i)
+  })
+
+  it("renders Project Defense alongside existing GitHub, Documents, and Website categories", async () => {
+    vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+      makeBackendPipeline({
+        evidence_sources: [
+          makeEvidenceSource({ key: "github" }),
+          makeEvidenceSource({ key: "document", label: "Document", reason: "Uploaded report" }),
+          makeEvidenceSource({ key: "workflow", label: "Workflow recording", reason: "Recorded workflow session" }),
+          makeEvidenceSource({ key: "project_defense", label: "Project Defense", status: "partial" }),
+        ],
+      }),
+    ])
+    await openWorkPassportTab()
+
+    expect(screen.getByTestId("evidence-source-github")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-source-document")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-source-website")).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-source-project_defense")).toBeInTheDocument()
+  })
+
+  it("does not render raw artifact data for Project Defense evidence", async () => {
+    vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+      makeBackendPipeline({
+        evidence_sources: [makeEvidenceSource({ key: "project_defense", label: "Project Defense", status: "partial" })],
+      }),
+    ])
+    await openWorkPassportTab()
+
+    const panel = screen.getByTestId("evidence-from-proofs-panel")
+    expect(panel.textContent).not.toMatch(/transcript|storage_path|signed_url|access_token|artifact_data/i)
+  })
 })
