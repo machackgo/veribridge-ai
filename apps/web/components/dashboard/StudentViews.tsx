@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { DemoToast, useDemoToast } from "../ui/DemoToast";
 import {
   applications,
@@ -14,12 +14,16 @@ import {
 import { StudentProofSubmissionPanel } from "../skill-proof/student-proof-submission-panel";
 import { StudentSkillEvidencePipelines } from "./StudentSkillEvidencePipelines";
 import { EvidenceFlowVisual } from "./EvidenceFlowVisual";
+import {
+  listSkillEvidencePipelines,
+  type BackendSkillPipeline,
+} from "@/lib/api";
 
 /* ── Shared micro-components (minimal, not over-abstracted) ── */
 
-function Mono({ children, style }: { children: ReactNode; style?: React.CSSProperties }) {
+function Mono({ children, style, "data-testid": dataTestId }: { children: ReactNode; style?: React.CSSProperties; "data-testid"?: string }) {
   return (
-    <span style={{ fontFamily: "'JetBrains Mono', monospace", ...style }}>
+    <span data-testid={dataTestId} style={{ fontFamily: "'JetBrains Mono', monospace", ...style }}>
       {children}
     </span>
   );
@@ -236,6 +240,177 @@ function ScoreRing({ score }: { score: number }) {
         }}
       >
         {score}
+      </div>
+    </div>
+  );
+}
+
+/* ── Skill Evidence from Proofs (Work Passport) ──
+   Compact, honest summary of the student's own synced proof evidence
+   grouped by source — GitHub (repo-supported), Documents/Certificates
+   (supporting evidence), and Live Website/Workflow (demonstrated workflow
+   evidence). Powered by the student-owned skill pipelines endpoint, which
+   includes the student's full evidence (including protected/private),
+   unlike the recruiter-safe endpoint which hides unapproved artifacts. */
+
+type EvidenceCategoryKey = "github" | "document" | "website";
+
+const EVIDENCE_CATEGORY_CONFIG: Record<EvidenceCategoryKey, {
+  label: string;
+  icon: string;
+  sourceTypes: string[];
+  statusLabel: string;
+  description: string;
+  color: string;
+  borderC: string;
+  bg: string;
+}> = {
+  github: {
+    label: "GitHub",
+    icon: "◎",
+    sourceTypes: ["github"],
+    statusLabel: "Repo-supported",
+    description: "Repo-supported evidence — checked against your repository's commits and code.",
+    color: "var(--ink)",
+    borderC: "var(--line-2)",
+    bg: "var(--bg-2)",
+  },
+  document: {
+    label: "Documents & Certificates",
+    icon: "◫",
+    sourceTypes: ["document", "documents", "certificate", "certificate_transcript"],
+    statusLabel: "Document-supported",
+    description: "Supporting evidence from uploaded documents and certificates — reviewed but not independently verified.",
+    color: "var(--amber)",
+    borderC: "color-mix(in srgb,var(--amber) 22%,transparent)",
+    bg: "var(--amber-soft)",
+  },
+  website: {
+    label: "Live Website / Workflow",
+    icon: "◉",
+    sourceTypes: ["workflow", "keyframes", "ocr", "dom", "defense", "review", "website", "live_url", "live_website"],
+    statusLabel: "Workflow-demonstrated",
+    description: "Demonstrated workflow evidence from a recorded session of your live, deployed project.",
+    color: "var(--indigo)",
+    borderC: "color-mix(in srgb,var(--indigo) 22%,transparent)",
+    bg: "var(--indigo-soft)",
+  },
+};
+
+function evidenceVisibilityLabel(visibilities: Set<string>): string {
+  if (visibilities.size > 1) return "Mixed visibility";
+  const v = visibilities.values().next().value;
+  if (v === "public") return "Public";
+  if (v === "protected") return "Protected";
+  if (v === "private") return "Private";
+  return v ?? "";
+}
+
+function SkillEvidenceFromProofsPanel() {
+  const [pipelines, setPipelines] = useState<BackendSkillPipeline[] | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    listSkillEvidencePipelines()
+      .then((data) => { if (active) setPipelines(data); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  const wrapperStyle: React.CSSProperties = {
+    background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 16,
+    padding: 20, marginBottom: 16, boxShadow: "0 1px 3px rgba(10,14,26,.04)",
+  };
+
+  if (loading) {
+    return (
+      <div data-testid="evidence-from-proofs-panel" style={wrapperStyle}>
+        <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "-0.01em", color: "var(--ink)", marginBottom: 8 }}>
+          Skill Evidence from Proofs
+        </div>
+        <Mono style={{ fontSize: 12, color: "var(--muted)" }}>Loading synced evidence&hellip;</Mono>
+      </div>
+    );
+  }
+
+  // Aggregate evidence sources across all of the student's own pipelines
+  // into honest evidence categories (counts/visibility only — no raw artifact data).
+  const categoryData: Record<EvidenceCategoryKey, { count: number; skills: Set<string>; visibilities: Set<string> }> = {
+    github: { count: 0, skills: new Set(), visibilities: new Set() },
+    document: { count: 0, skills: new Set(), visibilities: new Set() },
+    website: { count: 0, skills: new Set(), visibilities: new Set() },
+  };
+
+  for (const pipeline of pipelines ?? []) {
+    for (const source of pipeline.evidence_sources ?? []) {
+      for (const key of Object.keys(EVIDENCE_CATEGORY_CONFIG) as EvidenceCategoryKey[]) {
+        if (EVIDENCE_CATEGORY_CONFIG[key].sourceTypes.includes(source.key)) {
+          categoryData[key].count += 1;
+          categoryData[key].skills.add(pipeline.skill_name);
+          categoryData[key].visibilities.add(pipeline.visibility_status);
+        }
+      }
+    }
+  }
+
+  const activeCategories = (Object.keys(EVIDENCE_CATEGORY_CONFIG) as EvidenceCategoryKey[])
+    .filter((key) => categoryData[key].count > 0);
+
+  if (activeCategories.length === 0) {
+    return (
+      <div data-testid="evidence-from-proofs-panel" style={wrapperStyle}>
+        <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "-0.01em", color: "var(--ink)", marginBottom: 8 }}>
+          Skill Evidence from Proofs
+        </div>
+        <Mono style={{ fontSize: 12, color: "var(--muted)" }}>
+          No synced proof evidence yet. Add a GitHub, Website, or Document proof from the Proof Center to populate this section.
+        </Mono>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="evidence-from-proofs-panel" style={wrapperStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "-0.01em", color: "var(--ink)" }}>Skill Evidence from Proofs</div>
+        <Mono style={{ fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--muted)" }}>Synced from saved proofs</Mono>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {activeCategories.map((key) => {
+          const cfg = EVIDENCE_CATEGORY_CONFIG[key];
+          const data = categoryData[key];
+          const visibilityLabel = evidenceVisibilityLabel(data.visibilities);
+          return (
+            <div
+              key={key}
+              data-testid={`evidence-source-${key}`}
+              className="vb-row-item"
+              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 14px", border: "1px solid var(--line)", borderRadius: 10, background: "var(--bg-2)" }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 30, height: 30, borderRadius: 8, background: cfg.bg, display: "grid", placeItems: "center", fontSize: 14, color: cfg.color, border: `1px solid ${cfg.borderC}`, flexShrink: 0 }}>
+                  {cfg.icon}
+                </div>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{cfg.label}</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2, lineHeight: 1.4, maxWidth: 420 }}>{cfg.description}</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
+                <Mono
+                  data-testid={`evidence-status-${key}`}
+                  style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 5, color: cfg.color, background: cfg.bg, border: `1px solid ${cfg.borderC}` }}
+                >
+                  {cfg.statusLabel}
+                </Mono>
+                <Mono data-testid={`evidence-meta-${key}`} style={{ fontSize: 10, color: "var(--muted)" }}>
+                  {data.count} item{data.count !== 1 ? "s" : ""} · {data.skills.size} skill{data.skills.size !== 1 ? "s" : ""} · {visibilityLabel}
+                </Mono>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -1101,6 +1276,9 @@ export function StudentProfileProof() {
               </Btn>
             </div>
           </div>
+
+          {/* Skill Evidence from Proofs — dynamic, synced from saved proofs */}
+          <SkillEvidenceFromProofsPanel />
 
           {/* Privacy tiers */}
           <div className="vb-stagger" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>

@@ -2612,6 +2612,25 @@ export type BackendEvidenceSource = {
   reason: string
 }
 
+/**
+ * Safe, student-facing artifact summary returned alongside each pipeline.
+ * Excludes artifact_data entirely — no raw document text, storage paths,
+ * signed URLs, or tokens. Used to build the artifact inventory in the
+ * student's own Manage Skill Evidence modal (student-owned data, unlike
+ * the recruiter-safe endpoint which hides protected/private artifacts).
+ */
+export type StudentArtifactSummary = {
+  id: string
+  source_type: string
+  source_title: string
+  project_name: string
+  visibility: string
+  confidence_score: number
+  proof_reason: string
+  exact_code_url?: string | null
+  full_file_url?: string | null
+}
+
 export type BackendSkillPipeline = {
   id: string
   student_id: string | null
@@ -2631,6 +2650,7 @@ export type BackendSkillPipeline = {
   visibility_status: "public" | "protected" | "private"
   created_at: string
   updated_at: string
+  artifacts?: StudentArtifactSummary[]
 }
 
 export type BackendSkillArtifact = {

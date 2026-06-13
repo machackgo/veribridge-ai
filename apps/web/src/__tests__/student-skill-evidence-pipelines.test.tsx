@@ -2,13 +2,12 @@ import React from "react"
 import { render, screen, fireEvent, within, waitFor, act } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { StudentSkillEvidencePipelines } from "../../components/dashboard/StudentSkillEvidencePipelines"
-import type { BackendSkillPipeline, RecruiterSafePipelineSummary } from "@/lib/api"
+import type { BackendSkillPipeline, StudentArtifactSummary } from "@/lib/api"
 
 // ── Mock @/lib/api ─────────────────────────────────────────────────────────────
 
 vi.mock("@/lib/api", () => ({
   listSkillEvidencePipelines: vi.fn(),
-  listRecruiterSkillEvidencePipelines: vi.fn(),
   seedMockSkillEvidencePipelines: vi.fn(),
   getSkillEvidencePipeline: vi.fn(),
   getRecruiterSkillPipelineView: vi.fn(),
@@ -17,7 +16,6 @@ vi.mock("@/lib/api", () => ({
 
 import {
   listSkillEvidencePipelines,
-  listRecruiterSkillEvidencePipelines,
   seedMockSkillEvidencePipelines,
   updateSkillPipelineVisibility,
 } from "@/lib/api"
@@ -69,8 +67,6 @@ describe("StudentSkillEvidencePipelines", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(updateSkillPipelineVisibility).mockResolvedValue(null)
-    // Default: recruiter-safe endpoint returns null (backend unavailable in most tests)
-    vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
   })
 
   // ── Loading state ────────────────────────────────────────────────────────────
@@ -738,7 +734,6 @@ describe("StudentSkillEvidencePipelines", () => {
     })
 
     it("private visibility does not appear in recruiter list (client-side filter)", async () => {
-      // listRecruiterSkillEvidencePipelines filters private pipelines client-side
       vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
         makeBackendPipeline({ visibility_status: "private" }),
       ])
@@ -823,41 +818,36 @@ describe("StudentSkillEvidencePipelines", () => {
     })
   })
 
-  // ── Artifact inventory (backend mode) ─────────────────────────────────────────
+  // ── Artifact inventory (backend mode, student-owned data) ─────────────────────
 
   describe("artifact inventory in manage modal", () => {
-    function makeRecruiterPipeline(
-      overrides: Partial<RecruiterSafePipelineSummary> = {},
-    ): RecruiterSafePipelineSummary {
+    function makeArtifact(overrides: Partial<StudentArtifactSummary> = {}): StudentArtifactSummary {
       return {
-        id: "pipeline-uuid-1",
-        skill_name: "AI / Machine Learning",
-        skill_category: "Core ML",
-        confidence_score: 82,
-        support_status: "strongly_supported",
-        evidence_count: 5,
-        strongest_proof: { label: "GitHub", reason: "ML repo" },
-        weakest_proof: { label: "Transcript", reason: "Partial" },
-        missing_evidence: [],
-        next_actions: [],
-        evidence_sources: [],
-        recruiter_summary: "Strong ML foundation.",
-        visibility_status: "public",
-        is_locked_for_recruiter: false,
-        artifacts: [
-          { id: "a1", source_type: "workflow", source_title: "Website Proof", project_name: "ML Demo", visibility: "protected", confidence_score: 80, proof_reason: "Recorded workflow session", artifact_data: {}, exact_code_url: null, full_file_url: null },
-          { id: "a2", source_type: "ocr", source_title: "OCR Keyframe", project_name: "ML Demo", visibility: "protected", confidence_score: 70, proof_reason: "Extracted text from keyframe", artifact_data: {}, exact_code_url: null, full_file_url: null },
-          { id: "a3", source_type: "dom", source_title: "DOM Capture", project_name: "ML Demo", visibility: "protected", confidence_score: 75, proof_reason: "DOM structure captured", artifact_data: {}, exact_code_url: null, full_file_url: null },
-          { id: "a4", source_type: "workflow", source_title: "Website Proof 2", project_name: "ML Demo", visibility: "protected", confidence_score: 82, proof_reason: "Second workflow session", artifact_data: {}, exact_code_url: null, full_file_url: null },
-          { id: "a5", source_type: "transcript", source_title: "Defense Transcript", project_name: "ML Demo", visibility: "protected", confidence_score: 68, proof_reason: "Project defense excerpt", artifact_data: {}, exact_code_url: null, full_file_url: null },
-        ],
+        id: "a1",
+        source_type: "workflow",
+        source_title: "Website Proof",
+        project_name: "ML Demo",
+        visibility: "protected",
+        confidence_score: 80,
+        proof_reason: "Recorded workflow session",
+        exact_code_url: null,
+        full_file_url: null,
         ...overrides,
       }
     }
 
+    const defaultArtifacts: StudentArtifactSummary[] = [
+      makeArtifact({ id: "a1", source_type: "workflow", source_title: "Website Proof", proof_reason: "Recorded workflow session", confidence_score: 80 }),
+      makeArtifact({ id: "a2", source_type: "ocr", source_title: "OCR Keyframe", proof_reason: "Extracted text from keyframe", confidence_score: 70 }),
+      makeArtifact({ id: "a3", source_type: "dom", source_title: "DOM Capture", proof_reason: "DOM structure captured", confidence_score: 75 }),
+      makeArtifact({ id: "a4", source_type: "workflow", source_title: "Website Proof 2", proof_reason: "Second workflow session", confidence_score: 82 }),
+      makeArtifact({ id: "a5", source_type: "transcript", source_title: "Defense Transcript", proof_reason: "Project defense excerpt", confidence_score: 68 }),
+    ]
+
     it("shows artifact inventory section when backend returns artifacts", async () => {
-      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline({ evidence_count: 5 })])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 5, artifacts: defaultArtifacts }),
+      ])
 
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
@@ -870,8 +860,9 @@ describe("StudentSkillEvidencePipelines", () => {
     })
 
     it("shows total artifact count in modal", async () => {
-      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline({ evidence_count: 5 })])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 5, artifacts: defaultArtifacts }),
+      ])
 
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
@@ -881,8 +872,9 @@ describe("StudentSkillEvidencePipelines", () => {
     })
 
     it("shows workflow artifact group", async () => {
-      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 5, artifacts: defaultArtifacts }),
+      ])
 
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
@@ -892,8 +884,9 @@ describe("StudentSkillEvidencePipelines", () => {
     })
 
     it("shows OCR artifact group", async () => {
-      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 5, artifacts: defaultArtifacts }),
+      ])
 
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
@@ -903,8 +896,9 @@ describe("StudentSkillEvidencePipelines", () => {
     })
 
     it("shows DOM artifact group", async () => {
-      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 5, artifacts: defaultArtifacts }),
+      ])
 
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
@@ -914,8 +908,9 @@ describe("StudentSkillEvidencePipelines", () => {
     })
 
     it("shows transcript artifact group", async () => {
-      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 5, artifacts: defaultArtifacts }),
+      ])
 
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
@@ -924,15 +919,67 @@ describe("StudentSkillEvidencePipelines", () => {
       expect(screen.getByTestId("artifact-group-transcript")).toBeInTheDocument()
     })
 
+    it("shows GitHub artifact group", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({
+          evidence_count: 1,
+          artifacts: [
+            makeArtifact({ id: "g1", source_type: "github", source_title: "repo", proof_reason: "Commits reviewed", confidence_score: 85 }),
+          ],
+        }),
+      ])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(screen.getByTestId("artifact-group-github")).toBeInTheDocument()
+      expect(screen.getByTestId("artifact-group-github")).toHaveTextContent("GitHub code evidence")
+    })
+
+    it("shows document artifact group", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({
+          evidence_count: 1,
+          artifacts: [
+            makeArtifact({ id: "d1", source_type: "document", source_title: "Report", proof_reason: "Uploaded report", confidence_score: 60 }),
+          ],
+        }),
+      ])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(screen.getByTestId("artifact-group-document")).toBeInTheDocument()
+      expect(screen.getByTestId("artifact-group-document")).toHaveTextContent("Document evidence")
+    })
+
+    it("shows certificate artifact group with a certificate-specific label", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({
+          evidence_count: 1,
+          artifacts: [
+            makeArtifact({ id: "c1", source_type: "certificate", source_title: "AWS Cloud Practitioner", proof_reason: "Uploaded certificate", confidence_score: 60 }),
+          ],
+        }),
+      ])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      const group = screen.getByTestId("artifact-group-certificate")
+      expect(group).toBeInTheDocument()
+      expect(group).toHaveTextContent("Certificate / transcript evidence")
+    })
+
     it("does not expose unsafe fields in artifact inventory", async () => {
-      const safeArtifact = {
-        id: "a1", source_type: "workflow", source_title: "Safe Proof", project_name: "Demo",
-        visibility: "protected", confidence_score: 80, proof_reason: "Verified session",
-        artifact_data: {}, exact_code_url: null, full_file_url: null,
-      }
-      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline()])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([
-        makeRecruiterPipeline({ artifacts: [safeArtifact] }),
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({
+          evidence_count: 1,
+          artifacts: [makeArtifact({ id: "a1", source_title: "Safe Proof", proof_reason: "Verified session" })],
+        }),
       ])
 
       const { container } = render(<StudentSkillEvidencePipelines />)
@@ -944,7 +991,6 @@ describe("StudentSkillEvidencePipelines", () => {
 
     it("does not show artifact inventory section for fallback mock data", async () => {
       vi.mocked(listSkillEvidencePipelines).mockResolvedValue(null)
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
 
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
@@ -977,31 +1023,14 @@ describe("StudentSkillEvidencePipelines", () => {
         visibility_status: "public",
         created_at: "2025-01-01T00:00:00Z",
         updated_at: "2025-01-01T00:00:00Z",
-      }
-      const webglRecruiterPipeline: RecruiterSafePipelineSummary = {
-        id: "pipeline-webgl-1",
-        skill_name: "WebGL",
-        skill_category: "Graphics",
-        confidence_score: 78,
-        support_status: "strongly_supported",
-        evidence_count: 3,
-        strongest_proof: { label: "Workflow", reason: "3D rendering captured" },
-        weakest_proof: null,
-        missing_evidence: [],
-        next_actions: [],
-        evidence_sources: [],
-        recruiter_summary: "WebGL evidence.",
-        visibility_status: "public",
-        is_locked_for_recruiter: false,
         artifacts: [
-          { id: "w1", source_type: "workflow", source_title: "3D Proof Session", project_name: "WebGL Demo", visibility: "public", confidence_score: 80, proof_reason: "3D rendering observed", artifact_data: {}, exact_code_url: null, full_file_url: null },
-          { id: "w2", source_type: "dom", source_title: "Canvas DOM", project_name: "WebGL Demo", visibility: "public", confidence_score: 75, proof_reason: "Canvas element captured", artifact_data: {}, exact_code_url: null, full_file_url: null },
-          { id: "w3", source_type: "keyframe", source_title: "3D Keyframe", project_name: "WebGL Demo", visibility: "public", confidence_score: 70, proof_reason: "Keyframe from recording", artifact_data: {}, exact_code_url: null, full_file_url: null },
+          makeArtifact({ id: "w1", source_type: "workflow", source_title: "3D Proof Session", project_name: "WebGL Demo", visibility: "public", confidence_score: 80, proof_reason: "3D rendering observed" }),
+          makeArtifact({ id: "w2", source_type: "dom", source_title: "Canvas DOM", project_name: "WebGL Demo", visibility: "public", confidence_score: 75, proof_reason: "Canvas element captured" }),
+          makeArtifact({ id: "w3", source_type: "keyframe", source_title: "3D Keyframe", project_name: "WebGL Demo", visibility: "public", confidence_score: 70, proof_reason: "Keyframe from recording" }),
         ],
       }
 
       vi.mocked(listSkillEvidencePipelines).mockResolvedValue([webglPipeline])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([webglRecruiterPipeline])
 
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId("manage-btn-webgl"))
@@ -1014,12 +1043,9 @@ describe("StudentSkillEvidencePipelines", () => {
       expect(screen.getByTestId("artifact-group-keyframe")).toBeInTheDocument()
     })
 
-    it("protected pipeline still shows artifact count from evidence_count when recruiter-safe returns empty artifacts", async () => {
+    it("protected pipeline still shows artifact count from evidence_count when artifacts not yet synced", async () => {
       vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
-        makeBackendPipeline({ evidence_count: 8, visibility_status: "protected" }),
-      ])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([
-        makeRecruiterPipeline({ artifacts: [], is_locked_for_recruiter: true, visibility_status: "protected" }),
+        makeBackendPipeline({ evidence_count: 8, visibility_status: "protected", artifacts: [] }),
       ])
 
       render(<StudentSkillEvidencePipelines />)
@@ -1033,13 +1059,11 @@ describe("StudentSkillEvidencePipelines", () => {
 
     it("AI/ML with only 2 artifacts shows count 2 not a fake large number", async () => {
       vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
-        makeBackendPipeline({ evidence_count: 2 }),
-      ])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([
-        makeRecruiterPipeline({
+        makeBackendPipeline({
+          evidence_count: 2,
           artifacts: [
-            { id: "b1", source_type: "github", source_title: "GitHub", project_name: "Demo", visibility: "public", confidence_score: 90, proof_reason: "GitHub code", artifact_data: {}, exact_code_url: "https://github.com/example/repo/blob/main/file.py#L1-L10", full_file_url: null },
-            { id: "b2", source_type: "workflow", source_title: "Workflow", project_name: "Demo", visibility: "public", confidence_score: 80, proof_reason: "Workflow", artifact_data: {}, exact_code_url: null, full_file_url: null },
+            makeArtifact({ id: "b1", source_type: "github", source_title: "GitHub", visibility: "public", confidence_score: 90, proof_reason: "GitHub code", exact_code_url: "https://github.com/example/repo/blob/main/file.py#L1-L10" }),
+            makeArtifact({ id: "b2", source_type: "workflow", source_title: "Workflow", visibility: "public", confidence_score: 80, proof_reason: "Workflow" }),
           ],
         }),
       ])
@@ -1055,10 +1079,7 @@ describe("StudentSkillEvidencePipelines", () => {
 
     it("empty artifact state: no inventory section when evidence_count is 0", async () => {
       vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
-        makeBackendPipeline({ evidence_count: 0 }),
-      ])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([
-        makeRecruiterPipeline({ artifacts: [] }),
+        makeBackendPipeline({ evidence_count: 0, artifacts: [] }),
       ])
 
       render(<StudentSkillEvidencePipelines />)
@@ -1070,9 +1091,8 @@ describe("StudentSkillEvidencePipelines", () => {
 
     it("private pipeline shows artifact count with private message when artifacts not available", async () => {
       vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
-        makeBackendPipeline({ evidence_count: 4, visibility_status: "private" }),
+        makeBackendPipeline({ evidence_count: 4, visibility_status: "private", artifacts: [] }),
       ])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([])
 
       render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
@@ -1084,8 +1104,9 @@ describe("StudentSkillEvidencePipelines", () => {
     })
 
     it("does not render unsafe strings in artifact inventory section", async () => {
-      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([makeBackendPipeline({ evidence_count: 5 })])
-      vi.mocked(listRecruiterSkillEvidencePipelines).mockResolvedValue([makeRecruiterPipeline()])
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({ evidence_count: 5, artifacts: defaultArtifacts }),
+      ])
 
       const { container } = render(<StudentSkillEvidencePipelines />)
       await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
@@ -1095,6 +1116,89 @@ describe("StudentSkillEvidencePipelines", () => {
       expect(html).not.toMatch(/storage\.googleapis|supabase\.co\/storage|access_token|signed_url/i)
       expect(html).not.toMatch(/video_url|media_storage_path|raw_full_dom|raw_full_transcript/i)
       expect(html).not.toMatch(/service_role|anon_key|env_secret/i)
+    })
+
+    // ── Must-fix regression: student-owned artifacts must not depend on the ──
+    // ── recruiter-safe endpoint, which hides protected/private artifacts. ────
+
+    it("Manage Skill Evidence modal shows a protected document artifact from student-owned data", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({
+          evidence_count: 1,
+          visibility_status: "protected",
+          artifacts: [
+            makeArtifact({
+              id: "doc1",
+              source_type: "document",
+              source_title: "Transcript PDF",
+              visibility: "protected",
+              proof_reason: "Uploaded transcript document",
+              confidence_score: 65,
+            }),
+          ],
+        }),
+      ])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      const group = screen.getByTestId("artifact-group-document")
+      expect(group).toBeInTheDocument()
+      expect(group).toHaveTextContent("Document evidence")
+      expect(group).toHaveTextContent("protected")
+    })
+
+    it("certificate artifact appears in its own group with the certificate label, even on a protected pipeline", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({
+          evidence_count: 1,
+          visibility_status: "protected",
+          artifacts: [
+            makeArtifact({
+              id: "cert1",
+              source_type: "certificate",
+              source_title: "AWS Cloud Practitioner",
+              visibility: "protected",
+              proof_reason: "Uploaded certificate",
+              confidence_score: 60,
+            }),
+          ],
+        }),
+      ])
+
+      render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      const group = screen.getByTestId("artifact-group-certificate")
+      expect(group).toBeInTheDocument()
+      expect(group).toHaveTextContent("Certificate / transcript evidence")
+    })
+
+    it("does not render raw artifact_data on a protected pipeline's artifacts", async () => {
+      vi.mocked(listSkillEvidencePipelines).mockResolvedValue([
+        makeBackendPipeline({
+          evidence_count: 1,
+          visibility_status: "protected",
+          artifacts: [
+            makeArtifact({
+              id: "doc2",
+              source_type: "document",
+              source_title: "Reference Letter",
+              visibility: "protected",
+              proof_reason: "Uploaded reference letter",
+              confidence_score: 55,
+            }),
+          ],
+        }),
+      ])
+
+      const { container } = render(<StudentSkillEvidencePipelines />)
+      await waitFor(() => screen.getByTestId(`manage-btn-${aiId}`))
+      fireEvent.click(screen.getByTestId(`manage-btn-${aiId}`))
+
+      expect(container.innerHTML).not.toMatch(/artifact_data|extracted_sections|document_title|download_available/i)
     })
   })
 

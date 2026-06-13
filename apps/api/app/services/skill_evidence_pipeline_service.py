@@ -28,6 +28,7 @@ from app.schemas.skill_evidence_pipeline import (
     SkillEvidenceArtifactResponse,
     SkillEvidencePipelineCreate,
     SkillEvidencePipelineResponse,
+    StudentArtifactSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -294,6 +295,26 @@ def _artifact_row_to_response(row: dict[str, Any]) -> SkillEvidenceArtifactRespo
     )
 
 
+def _artifact_response_to_student_summary(art: SkillEvidenceArtifactResponse) -> StudentArtifactSummary:
+    """Build a safe, student-facing artifact summary.
+
+    Excludes artifact_data entirely (no raw document text, storage paths,
+    signed URLs, or tokens) — only the fields needed to group and label
+    artifacts in the student's own Manage Skill Evidence UI.
+    """
+    return StudentArtifactSummary(
+        id=art.id,
+        source_type=art.source_type,
+        source_title=art.source_title,
+        project_name=art.project_name,
+        visibility=art.visibility,
+        confidence_score=art.confidence_score,
+        proof_reason=art.proof_reason,
+        exact_code_url=art.exact_code_url,
+        full_file_url=art.full_file_url,
+    )
+
+
 def _pipeline_row_to_response(row: dict[str, Any]) -> SkillEvidencePipelineResponse:
     return SkillEvidencePipelineResponse(
         id=str(row["id"]),
@@ -375,7 +396,8 @@ class SkillEvidencePipelineService:
     # ── Pipeline operations ───────────────────────────────────────────────────
 
     def list_pipelines_for_student(self, student_id: str) -> list[SkillEvidencePipelineResponse]:
-        """Return all pipelines owned by the student."""
+        """Return all pipelines owned by the student, including a safe
+        summary of each pipeline's own evidence artifacts."""
         if isinstance(self._client, dict):
             rows = self._dict_list_pipelines_for_user(student_id)
         else:
@@ -388,10 +410,15 @@ class SkillEvidencePipelineService:
             )
             rows = getattr(result, "data", []) or []
 
-        return [_pipeline_row_to_response(r) for r in rows]
+        pipelines = [_pipeline_row_to_response(r) for r in rows]
+        for pipeline in pipelines:
+            artifacts = self._list_artifacts_for_pipeline_by_id(pipeline.id)
+            pipeline.artifacts = [_artifact_response_to_student_summary(a) for a in artifacts]
+        return pipelines
 
     def get_pipeline(self, pipeline_id: str, student_id: str) -> SkillEvidencePipelineResponse:
-        """Fetch a single pipeline; raises PipelineNotFoundError if absent."""
+        """Fetch a single pipeline (with its own artifact summaries);
+        raises PipelineNotFoundError if absent."""
         if isinstance(self._client, dict):
             row = self._dict_find_pipeline(pipeline_id)
             if not row or str(row.get("student_id")) != student_id:
@@ -410,7 +437,10 @@ class SkillEvidencePipelineService:
                 raise PipelineNotFoundError(f"Pipeline {pipeline_id} not found")
             row = rows[0]
 
-        return _pipeline_row_to_response(row)
+        pipeline = _pipeline_row_to_response(row)
+        artifacts = self._list_artifacts_for_pipeline_by_id(pipeline.id)
+        pipeline.artifacts = [_artifact_response_to_student_summary(a) for a in artifacts]
+        return pipeline
 
     def upsert_pipeline(
         self,

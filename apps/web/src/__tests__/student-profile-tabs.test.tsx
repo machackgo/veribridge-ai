@@ -28,6 +28,10 @@ vi.mock("../../components/ui/DemoToast", () => ({
   useDemoToast: () => ({ show: vi.fn(), msg: "" }),
 }))
 
+vi.mock("@/lib/api", () => ({
+  listSkillEvidencePipelines: vi.fn().mockResolvedValue(null),
+}))
+
 vi.mock("../../data/mock", () => ({
   student: { score: 82, verifiedSkills: 8, publicProof: 6 },
   skillGaps: [

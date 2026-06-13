@@ -8,12 +8,11 @@ import {
 } from "../recruiter-passport/RecruiterWorkPassportPreview"
 import {
   listSkillEvidencePipelines,
-  listRecruiterSkillEvidencePipelines,
   seedMockSkillEvidencePipelines,
   updateSkillPipelineVisibility,
   type BackendSkillPipeline,
   type BackendEvidenceSource,
-  type RecruiterSafePipelineSummary,
+  type StudentArtifactSummary,
 } from "@/lib/api"
 
 // ── Skill list (mock fallback) ────────────────────────────────────────────────
@@ -100,10 +99,8 @@ function scoreToConfidence(score: number): "high" | "medium" | "low" {
   return "low"
 }
 
-function backendToDisplay(
-  b: BackendSkillPipeline,
-  artifacts?: RecruiterSafePipelineSummary["artifacts"],
-): DisplayPipeline {
+function backendToDisplay(b: BackendSkillPipeline): DisplayPipeline {
+  const artifacts = b.artifacts
   const supportStatusMap: Record<string, string> = {
     strongly_supported: "Strongly supported",
     partially_supported: "Partially supported",
@@ -219,6 +216,7 @@ const SOURCE_TYPE_LABEL: Record<string, string> = {
   qwen: "Visual AI",
   transcript: "Transcript",
   document: "Document",
+  certificate: "Certificate",
 }
 
 const ARTIFACT_GROUP_LABEL: Record<string, string> = {
@@ -231,12 +229,11 @@ const ARTIFACT_GROUP_LABEL: Record<string, string> = {
   keyframe: "Keyframe evidence",
   transcript: "Transcript evidence",
   document: "Document evidence",
+  certificate: "Certificate / transcript evidence",
   review: "Review evidence",
 }
 
-function buildArtifactGroups(
-  artifacts: RecruiterSafePipelineSummary["artifacts"],
-): ArtifactGroup[] {
+function buildArtifactGroups(artifacts: StudentArtifactSummary[]): ArtifactGroup[] {
   const groupMap: Record<string, { count: number; visibility: string; summaries: string[] }> = {}
   for (const art of artifacts) {
     const key = art.source_type
@@ -905,20 +902,10 @@ export function StudentSkillEvidencePipelines() {
   async function loadFromBackend() {
     setLoading(true)
     try {
-      const [data, recruiterData] = await Promise.all([
-        listSkillEvidencePipelines(),
-        listRecruiterSkillEvidencePipelines(),
-      ])
-      // Build artifact map keyed by skill_name from recruiter-safe response
-      const artifactMap = new Map<string, RecruiterSafePipelineSummary["artifacts"]>()
-      if (recruiterData) {
-        for (const p of recruiterData) {
-          artifactMap.set(p.skill_name, p.artifacts)
-        }
-      }
+      const data = await listSkillEvidencePipelines()
 
       if (data && data.length > 0) {
-        const displayed = data.map((p) => backendToDisplay(p, artifactMap.get(p.skill_name)))
+        const displayed = data.map((p) => backendToDisplay(p))
         setPipelines(displayed)
         setUsingFallback(false)
         // Always sync visibility from backend (overrides any stale local state)

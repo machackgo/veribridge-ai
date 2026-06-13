@@ -117,6 +117,24 @@ class SkillEvidencePipelineCreate(BaseModel):
     visibility_status: VisibilityStatus = "public"
 
 
+class StudentArtifactSummary(BaseModel):
+    """Safe, student-facing artifact summary.
+
+    Excludes artifact_data entirely — no raw document text, storage paths,
+    signed URLs, or tokens. Only the fields needed to group and label a
+    student's own evidence artifacts in the Manage Skill Evidence UI.
+    """
+    id: str
+    source_type: str
+    source_title: str
+    project_name: str
+    visibility: str
+    confidence_score: int
+    proof_reason: str
+    exact_code_url: Optional[str] = None
+    full_file_url: Optional[str] = None
+
+
 class SkillEvidencePipelineResponse(BaseModel):
     id: str
     student_id: Optional[str] = None
@@ -136,6 +154,7 @@ class SkillEvidencePipelineResponse(BaseModel):
     visibility_status: str
     created_at: str
     updated_at: str
+    artifacts: list[StudentArtifactSummary] = Field(default_factory=list)
 
 
 # ── Artifact schemas ──────────────────────────────────────────────────────────
