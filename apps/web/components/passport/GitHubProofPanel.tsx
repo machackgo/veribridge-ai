@@ -6,6 +6,7 @@ import {
   submitGitHubProof,
   analyzeGitHubProof,
   archiveGitHubProof,
+  syncGitHubProofToSkillGraph,
   type GitHubProofResponse,
 } from "@/lib/passport-api"
 import {
@@ -44,16 +45,22 @@ function EvidenceStrengthBar({ strength }: { strength: string | null | undefined
   )
 }
 
+type SyncStatus = "syncing" | "saved" | "error"
+
 function GitHubProofCard({
   proof,
   onAnalyze,
   onArchive,
+  onRetrySync,
   loading,
+  syncStatus,
 }: {
   proof: GitHubProofResponse
   onAnalyze: (id: string) => void
   onArchive: (id: string) => void
+  onRetrySync: (id: string) => void
   loading: Record<string, boolean>
+  syncStatus?: SyncStatus
 }) {
   const isAnalyzing = loading[`analyze-${proof.id}`]
   const isArchiving = loading[`archive-${proof.id}`]
@@ -205,6 +212,28 @@ function GitHubProofCard({
             </div>
           )}
 
+          {/* Skill Graph sync status */}
+          {syncStatus === "syncing" && (
+            <Mono style={{ fontSize: 11, color: TOKEN.muted, marginTop: 8, display: "block" }}>
+              Saving to Skill Graph…
+            </Mono>
+          )}
+          {syncStatus === "saved" && (
+            <Mono style={{ fontSize: 11, color: TOKEN.emerald, marginTop: 8, display: "block" }}>
+              ✓ Saved to Skill Graph
+            </Mono>
+          )}
+          {syncStatus === "error" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+              <Mono style={{ fontSize: 11, color: TOKEN.rose }}>
+                Couldn&apos;t save to Skill Graph.
+              </Mono>
+              <Btn size="sm" variant="ghost" onClick={() => onRetrySync(proof.id)}>
+                Retry
+              </Btn>
+            </div>
+          )}
+
           {proof.last_analyzed_at && (
             <Mono style={{ fontSize: 10, color: TOKEN.muted, marginTop: 8, display: "block" }}>
               Last analyzed: {new Date(proof.last_analyzed_at).toLocaleDateString()}
@@ -221,10 +250,14 @@ type SubmitForm = {
   submitted_skill_claims: string
 }
 
+// Proof statuses for which a Skill Graph sync is attempted after analysis.
+const SYNCABLE_STATUSES = new Set(["analyzed", "needs_more_evidence"])
+
 export function GitHubProofPanel({ sessionId }: { sessionId?: string }) {
   const [proofs, setProofs] = useState<GitHubProofResponse[]>([])
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({})
+  const [syncState, setSyncState] = useState<Record<string, SyncStatus>>({})
   const [error, setError] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState<SubmitForm>({ repo_url: "", submitted_skill_claims: "" })
@@ -266,11 +299,28 @@ export function GitHubProofPanel({ sessionId }: { sessionId?: string }) {
     }
   }
 
+  const runSync = async (id: string) => {
+    setSyncState((prev) => ({ ...prev, [id]: "syncing" }))
+    try {
+      const result = await syncGitHubProofToSkillGraph(id)
+      const didSave =
+        result.ok &&
+        (result.already_synced || result.artifacts_created > 0) &&
+        result.errors.length === 0
+      setSyncState((prev) => ({ ...prev, [id]: didSave ? "saved" : "error" }))
+    } catch {
+      setSyncState((prev) => ({ ...prev, [id]: "error" }))
+    }
+  }
+
   const handleAnalyze = async (id: string) => {
     setActionLoading((prev) => ({ ...prev, [`analyze-${id}`]: true }))
     try {
       const updated = await analyzeGitHubProof(id)
       setProofs((prev) => prev.map((p) => (p.id === id ? updated : p)))
+      if (SYNCABLE_STATUSES.has(updated.status)) {
+        void runSync(id)
+      }
     } catch {
       // silently fail — user can retry
     } finally {
@@ -393,7 +443,9 @@ export function GitHubProofPanel({ sessionId }: { sessionId?: string }) {
               proof={p}
               onAnalyze={handleAnalyze}
               onArchive={handleArchive}
+              onRetrySync={runSync}
               loading={actionLoading}
+              syncStatus={syncState[p.id]}
             />
           ))}
         </div>
@@ -414,7 +466,9 @@ export function GitHubProofPanel({ sessionId }: { sessionId?: string }) {
                 proof={p}
                 onAnalyze={handleAnalyze}
                 onArchive={handleArchive}
+                onRetrySync={runSync}
                 loading={actionLoading}
+                syncStatus={syncState[p.id]}
               />
             ))}
           </div>
