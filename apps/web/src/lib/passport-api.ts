@@ -186,6 +186,19 @@ export type GitHubProofResponse = {
   updated_at: string
 }
 
+/**
+ * Result of syncing an analyzed GitHub proof into the student's
+ * Skill Graph (skill_evidence_pipelines / skill_evidence_artifacts).
+ */
+export type GitHubProofSyncResult = {
+  ok: boolean
+  already_synced: boolean
+  skills_synced: string[]
+  pipelines_upserted: number
+  artifacts_created: number
+  errors: string[]
+}
+
 export type GitHubProofPublicResponse = {
   id: string
   proof_session_id?: string | null
@@ -571,6 +584,15 @@ export function analyzeGitHubProof(proofId: string): Promise<GitHubProofResponse
 
 export function archiveGitHubProof(proofId: string): Promise<GitHubProofResponse> {
   return apiJson(`${API}/student/github-proofs/${proofId}/archive`, { method: "POST" })
+}
+
+/**
+ * Sync an analyzed GitHub proof into the student's Skill Graph.
+ * Idempotent on the backend — safe to call multiple times for the same proof.
+ * Throws an Error with the backend message on failure so callers can show it.
+ */
+export function syncGitHubProofToSkillGraph(githubProofId: string): Promise<GitHubProofSyncResult> {
+  return apiJson(`${API}/student/skill-pipelines/from-github-proof/${githubProofId}`, { method: "POST" })
 }
 
 export function getPublicGitHubProofs(publicSlug: string): Promise<GitHubProofPublicResponse[]> {

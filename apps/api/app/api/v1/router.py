@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     extension_proof,
     extension_proof_github_analysis,
     extension_proof_workflow_analysis,
+    github_proof_artifact_sync,
     keyframe_thumbnail,
     live_feedback,
     github_portfolio,
@@ -107,6 +108,11 @@ api_router.include_router(
     website_proof_artifact_sync.router,
     prefix="/student/skill-pipelines",
     tags=["website-proof-artifact-sync"],
+)
+api_router.include_router(
+    github_proof_artifact_sync.router,
+    prefix="/student/skill-pipelines",
+    tags=["github-proof-artifact-sync"],
 )
 api_router.include_router(
     website_verification_runs.router,
