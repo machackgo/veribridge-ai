@@ -148,6 +148,7 @@ def _to_project_response(row: dict[str, Any]) -> VBRProjectResponse:
         status=row.get("status") or "draft",
         created_at=str(row.get("created_at") or ""),
         updated_at=str(row.get("updated_at") or ""),
+        metadata=row.get("metadata") or {},
     )
 
 

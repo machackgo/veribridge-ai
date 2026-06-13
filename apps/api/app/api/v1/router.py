@@ -25,6 +25,7 @@ from app.api.v1.endpoints import (
     optional_evidence,
     permissions,
     project_defense_analysis,
+    project_defense_artifact_sync,
     proof_versioning,
     admin_user_roles,
     recruiter_candidate_comparisons,
@@ -34,6 +35,7 @@ from app.api.v1.endpoints import (
     skill_evidence_timeline,
     skill_evidence_profile,
     student,
+    vbr_project_defense,
     vbr_projects,
     vbr_public_report,
     vbr_sessions,
@@ -87,6 +89,11 @@ api_router.include_router(
     tags=["vbr-sessions"],
 )
 api_router.include_router(
+    vbr_project_defense.router,
+    prefix="/student/vbr",
+    tags=["vbr-project-defense"],
+)
+api_router.include_router(
     vbr_public_report.router,
     prefix="/public",
     tags=["vbr-public-report"],
@@ -120,6 +127,11 @@ api_router.include_router(
     document_proof_artifact_sync.router,
     prefix="/student/skill-pipelines",
     tags=["document-proof-artifact-sync"],
+)
+api_router.include_router(
+    project_defense_artifact_sync.router,
+    prefix="/student/skill-pipelines",
+    tags=["project-defense-artifact-sync"],
 )
 api_router.include_router(
     website_verification_runs.router,

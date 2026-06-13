@@ -52,6 +52,7 @@ export type VBRProjectResponse = {
   status: string
   created_at: string
   updated_at: string
+  metadata?: Record<string, unknown>
 }
 
 export type VBRConsentResponse = {
@@ -243,6 +244,141 @@ export async function finalizeVBRSession(
     body: JSON.stringify({ duration_s: durationS ?? null }),
   })
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to finalize session (HTTP ${res.status}).`))
+  return res.json()
+}
+
+// ─── Project Defense (Phase 1 — individual project defense) ────────────────
+
+export type ProjectDefenseAttachedProofsRequest = {
+  github_proof_id?: string | null
+  website_proof_session_id?: string | null
+  document_evidence_ids?: string[]
+  skill_pipeline_ids?: string[]
+  repo_url?: string | null
+}
+
+export type ProjectDefenseCreateRequest = {
+  title: string
+  description?: string
+  claimed_skills?: string[]
+  student_role?: string
+  repo_url?: string | null
+  attached_proofs?: ProjectDefenseAttachedProofsRequest
+}
+
+export type ProjectDefenseMetadataResponse = {
+  description: string
+  claimed_skills: string[]
+  student_role: string
+  individual_project_only: boolean
+  attached_proofs: Record<string, unknown>
+  phase: string
+}
+
+export type ProjectDefenseCreateResponse = {
+  project: VBRProjectResponse
+  metadata: ProjectDefenseMetadataResponse
+}
+
+export type GenerateDefenseQuestionsResponse = {
+  project_id: string
+  session_id: string
+  status: string
+  questions: VBRSessionQuestionResponse[]
+}
+
+export type DefenseAnswerItem = {
+  question_id?: string | null
+  answer_text?: string
+}
+
+export type SubmitDefenseAnswersRequest = {
+  answers?: DefenseAnswerItem[]
+  combined_text?: string | null
+}
+
+export type DefenseAnalysisResponse = {
+  transcript_summary: string
+  skills_mentioned: string[]
+  skills_explained_well: string[]
+  skills_missing_from_explanation: string[]
+  consistency_with_evidence_score: number
+  explanation_clarity_score: number
+  ownership_signal_score: number
+  technical_depth_score: number
+  overall_defense_score: number
+  risk_flags: string[]
+  recruiter_summary: string
+  recommended_improvements: string[]
+  privacy_scan_status: string
+}
+
+export type SubmitDefenseAnswersResponse = {
+  project_id: string
+  session_id: string
+  transcript_id: string
+  segment_count: number
+  answered_question_count: number
+  analysis: DefenseAnalysisResponse
+}
+
+/**
+ * Result of syncing analyzed Project Defense evidence into the student's
+ * Skill Graph (skill_evidence_pipelines / skill_evidence_artifacts).
+ */
+export type ProjectDefenseSyncResult = {
+  ok: boolean
+  already_synced: boolean
+  skills_synced: string[]
+  pipelines_upserted: number
+  artifacts_created: number
+  errors: string[]
+}
+
+/** Create an individual Project Defense identity and attach existing proof sources. */
+export async function createProjectDefense(
+  body: ProjectDefenseCreateRequest
+): Promise<ProjectDefenseCreateResponse> {
+  const res = await fetchAPI("/api/v1/student/vbr/project-defense", {
+    method: "POST",
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to create project defense (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Generate deterministic defense questions for a Project Defense project. */
+export async function generateDefenseQuestions(projectId: string): Promise<GenerateDefenseQuestionsResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/vbr/projects/${encodeURIComponent(projectId)}/generate-defense-questions`,
+    { method: "POST" }
+  )
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to generate defense questions (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Submit pasted/manual defense answers and run deterministic analysis. */
+export async function submitDefenseAnswers(
+  sessionId: string,
+  body: SubmitDefenseAnswersRequest
+): Promise<SubmitDefenseAnswersResponse> {
+  const res = await fetchAPI(`/api/v1/student/vbr/sessions/${encodeURIComponent(sessionId)}/submit-defense`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to submit defense answers (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/**
+ * Sync analyzed Project Defense evidence into the student's Skill Graph.
+ * Idempotent on the backend — safe to call multiple times for the same session.
+ */
+export async function syncProjectDefenseToSkillGraph(sessionId: string): Promise<ProjectDefenseSyncResult> {
+  const res = await fetchAPI(`/api/v1/student/skill-pipelines/from-project-defense/${encodeURIComponent(sessionId)}`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to save to Skill Graph (HTTP ${res.status}).`))
   return res.json()
 }
 

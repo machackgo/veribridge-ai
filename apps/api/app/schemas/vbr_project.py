@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -22,6 +24,7 @@ class VBRProjectResponse(BaseModel):
     status: str
     created_at: str
     updated_at: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class VBRRepoAnalysisResponse(BaseModel):

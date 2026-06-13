@@ -39,19 +39,6 @@ const statusChipStyle: CSSProperties = {
   fontFamily: "var(--font-mono)",
 }
 
-const primaryLinkStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  padding: "10px 18px",
-  borderRadius: 10,
-  border: "1px solid var(--indigo)",
-  background: "var(--indigo)",
-  color: "#fff",
-  fontSize: 14,
-  fontWeight: 600,
-  textDecoration: "none",
-}
-
 const secondaryLinkStyle: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
@@ -63,19 +50,6 @@ const secondaryLinkStyle: CSSProperties = {
   fontSize: 14,
   fontWeight: 600,
   textDecoration: "none",
-}
-
-const comingSoonBadgeStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  padding: "6px 12px",
-  borderRadius: 8,
-  border: "1px dashed var(--line-strong)",
-  background: "var(--bg-2)",
-  color: "var(--ink-2)",
-  fontSize: 13,
-  fontWeight: 600,
-  opacity: 0.8,
 }
 
 function ProofSourceCard({
@@ -143,7 +117,6 @@ export default function StudentVBRPage() {
     }
   }, [])
 
-  const continueSession = rows?.find((row) => row.sessionId)?.sessionId ?? null
   const loaded = rows !== null && githubProofs !== null
   const hasProofSources = (rows?.length ?? 0) > 0 || (githubProofs?.length ?? 0) > 0
 
@@ -161,8 +134,8 @@ export default function StudentVBRPage() {
         VeriBridge Proof Studio
       </h1>
       <p style={{ fontSize: 15, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 32, opacity: 0.85, maxWidth: 640 }}>
-        Add your proof sources once. VeriBridge will use them to create project reports, skill evidence, and
-        public proof links.
+        Add your proof sources once. VeriBridge will use them to build skill evidence and prepare evidence
+        for future project reports.
       </p>
 
       {error && (
@@ -217,27 +190,23 @@ export default function StudentVBRPage() {
           />
 
           <ProofSourceCard
-            icon="🎥"
-            title="Walkthrough / Verified Build Report"
-            description="Record a short walkthrough of your project and generate a shareable Verified Build Report."
-            action={
-              continueSession ? (
-                <Link href={`/student/vbr/sessions/${continueSession}`} style={primaryLinkStyle}>
-                  Continue recording
-                </Link>
-              ) : (
-                <span style={comingSoonBadgeStyle}>Report generation ready; project creation UI coming next</span>
-              )
-            }
-          />
-
-          <ProofSourceCard
             icon="📄"
             title="Document Proof"
             description="Project reports, certificates, transcripts, and coursework as supporting evidence."
             action={
               <Link href="/student/proofs/documents" style={secondaryLinkStyle}>
                 Add document proof
+              </Link>
+            }
+          />
+
+          <ProofSourceCard
+            icon="🧩"
+            title="Project Defense"
+            description="Create an individual Project Defense by attaching proofs, answering deterministic defense questions, and saving explanation evidence to your Skill Graph."
+            action={
+              <Link href="/student/proofs/project-defense" style={secondaryLinkStyle}>
+                Start project defense
               </Link>
             }
           />
@@ -263,13 +232,13 @@ export default function StudentVBRPage() {
           <span aria-hidden="true">→</span>
           <span style={statusChipStyle}>Detect projects &amp; skills</span>
           <span aria-hidden="true">→</span>
-          <span style={statusChipStyle}>Generate reports</span>
+          <span style={statusChipStyle}>Prepare evidence for reports</span>
           <span aria-hidden="true">→</span>
           <span style={statusChipStyle}>Publish profile</span>
         </div>
         <p style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6, opacity: 0.8, marginTop: 12, marginBottom: 0 }}>
           Add as many proof sources as you have — VeriBridge will use all of them together to build your
-          project reports and skill evidence.
+          skill evidence and prepare evidence for future reports.
         </p>
       </section>
 
@@ -289,43 +258,58 @@ export default function StudentVBRPage() {
               No proof sources added yet
             </h3>
             <p style={{ fontSize: 14, color: "var(--ink-2)", lineHeight: 1.6, opacity: 0.85, marginBottom: 0 }}>
-              Add a GitHub repo, website, or record a project walkthrough above to get started. VeriBridge
-              will use your proof sources to build project reports, skill evidence, and a shareable proof
-              link.
+              Add a GitHub repo, website proof, document proof, or Project Defense to get started. VeriBridge
+              will use your proof sources to build skill evidence.
             </p>
           </div>
         )}
 
         {loaded && hasProofSources && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {rows?.map(({ project, sessionId }) => (
-              <div key={`vbr-${project.id}`} style={cardStyle}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 13, color: "var(--ink-2)", opacity: 0.7, marginBottom: 2 }}>
-                      Walkthrough / Verified Build Report
-                    </div>
-                    <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", marginBottom: 4 }}>
-                      {project.title}
-                    </div>
-                    {project.repo_full_name && (
-                      <div style={{ fontSize: 13, color: "var(--ink-2)", opacity: 0.75 }}>
-                        {project.repo_full_name}
-                      </div>
-                    )}
-                  </div>
-                  <span style={statusChipStyle}>{project.status}</span>
-                </div>
+            {rows?.map(({ project, sessionId }) => {
+              const isProjectDefense = project.metadata?.phase === "project_defense_mvp_v1"
+              const defenseStatus = project.metadata?.project_defense_status
 
-                {sessionId && (
-                  <div style={{ marginTop: 12 }}>
-                    <Link href={`/student/vbr/sessions/${sessionId}`} style={secondaryLinkStyle}>
-                      Continue recording
-                    </Link>
+              return (
+                <div key={`vbr-${project.id}`} style={cardStyle}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 13, color: "var(--ink-2)", opacity: 0.7, marginBottom: 2 }}>
+                        {isProjectDefense ? "Project Defense" : "Walkthrough / Supporting Proof Evidence"}
+                      </div>
+                      <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", marginBottom: 4 }}>
+                        {project.title}
+                      </div>
+                      {project.repo_full_name && (
+                        <div style={{ fontSize: 13, color: "var(--ink-2)", opacity: 0.75 }}>
+                          {project.repo_full_name}
+                        </div>
+                      )}
+                    </div>
+                    <span style={statusChipStyle}>{project.status}</span>
                   </div>
-                )}
-              </div>
-            ))}
+
+                  {isProjectDefense ? (
+                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                      <span style={{ fontSize: 13, color: "var(--ink-2)", opacity: 0.85 }}>
+                        {defenseStatus === "analyzed" ? "Manual defense available" : "Project Defense created"}
+                      </span>
+                      <Link href="/student/proofs/project-defense" style={secondaryLinkStyle}>
+                        View Project Defense
+                      </Link>
+                    </div>
+                  ) : (
+                    sessionId && (
+                      <div style={{ marginTop: 12 }}>
+                        <Link href={`/student/vbr/sessions/${sessionId}`} style={secondaryLinkStyle}>
+                          Continue recording
+                        </Link>
+                      </div>
+                    )
+                  )}
+                </div>
+              )
+            })}
 
             {githubProofs?.map((proof) => (
               <div key={`gh-${proof.id}`} style={cardStyle}>
