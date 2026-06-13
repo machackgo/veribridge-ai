@@ -8,7 +8,7 @@
  * completed final public report, or "fully verified" status.
  */
 
-import { render, screen, fireEvent, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { ProjectDefensePanel } from "../../components/passport/ProjectDefensePanel"
 import type {
@@ -17,6 +17,7 @@ import type {
   ProjectDefenseSyncResult,
   SubmitDefenseAnswersResponse,
   GenerateDefenseQuestionsResponse,
+  VBRSessionDetailResponse,
 } from "@/lib/vbr-api"
 
 vi.mock("@/lib/vbr-api", () => ({
@@ -24,6 +25,8 @@ vi.mock("@/lib/vbr-api", () => ({
   generateDefenseQuestions: vi.fn(),
   submitDefenseAnswers: vi.fn(),
   syncProjectDefenseToSkillGraph: vi.fn(),
+  getVBRSession: vi.fn(),
+  getVBRSessionRecordingReadiness: vi.fn(),
 }))
 
 vi.mock("@/lib/passport-api", () => ({
@@ -42,6 +45,8 @@ import {
   generateDefenseQuestions,
   submitDefenseAnswers,
   syncProjectDefenseToSkillGraph,
+  getVBRSession,
+  getVBRSessionRecordingReadiness,
 } from "@/lib/vbr-api"
 import { listGitHubProofs, listDocumentProofs } from "@/lib/passport-api"
 
@@ -166,6 +171,24 @@ function makeSyncResult(overrides: Partial<ProjectDefenseSyncResult> = {}): Proj
   }
 }
 
+function makeSession(overrides: Partial<VBRSessionDetailResponse> = {}): VBRSessionDetailResponse {
+  return {
+    id: "sess-1",
+    project_id: "proj-1",
+    attempt_no: 1,
+    status: "created",
+    started_at: null,
+    ended_at: null,
+    duration_s: null,
+    webcam_present: false,
+    chunk_count: 0,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    questions: [],
+    ...overrides,
+  }
+}
+
 beforeEach(() => {
   vi.mocked(createProjectDefense).mockReset()
   vi.mocked(generateDefenseQuestions).mockReset()
@@ -173,6 +196,12 @@ beforeEach(() => {
   vi.mocked(syncProjectDefenseToSkillGraph).mockReset()
   vi.mocked(listGitHubProofs).mockReset().mockResolvedValue([])
   vi.mocked(listDocumentProofs).mockReset().mockResolvedValue([])
+  vi.mocked(getVBRSession).mockReset().mockResolvedValue(makeSession())
+  vi.mocked(getVBRSessionRecordingReadiness).mockReset().mockResolvedValue({
+    ready: true,
+    code: null,
+    message: "Recording upload storage is ready.",
+  })
   mockRouterPush.mockReset()
 })
 
@@ -505,5 +534,293 @@ describe("ProjectDefensePanel", () => {
     expect(text).not.toMatch(/portfolio scan/i)
     expect(text).not.toMatch(/whole.?github/i)
     expect(text).not.toMatch(/scan your github account/i)
+  })
+
+  // ── Project Evidence Package — unified evidence workspace ──
+
+  function checklistCard(labelText: string): HTMLElement {
+    const label = screen.getByText(labelText, { selector: "span" })
+    return label.parentElement as HTMLElement
+  }
+
+  it("renders the Project Evidence Package checklist after Project Defense creation", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    expect(await screen.findByText(/project evidence package/i)).toBeInTheDocument()
+
+    expect(within(checklistCard("GitHub Proof")).getByText("Missing")).toBeInTheDocument()
+    expect(within(checklistCard("Documents")).getByText("Missing")).toBeInTheDocument()
+    expect(within(checklistCard("Website Proof")).getByText("Coming next")).toBeInTheDocument()
+    expect(within(checklistCard("Manual Project Defense")).getByText("Missing")).toBeInTheDocument()
+    expect(within(checklistCard("Video Defense")).getByText("Not started")).toBeInTheDocument()
+    expect(within(checklistCard("Skill Graph")).getByText("Not saved")).toBeInTheDocument()
+  })
+
+  it("shows GitHub Proof as attached in the checklist when a repo-wise proof is selected", async () => {
+    vi.mocked(listGitHubProofs).mockResolvedValue([makeGithubProof({ id: "gh-1" })])
+    vi.mocked(createProjectDefense).mockResolvedValue(
+      makeCreated({
+        metadata: {
+          description: "",
+          claimed_skills: ["Python"],
+          student_role: "",
+          individual_project_only: true,
+          phase: "project_defense_mvp_v1",
+          attached_proofs: {
+            github_proof: {
+              github_proof_id: "gh-1",
+              repo_url: "https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud",
+              repo_owner: "machackgo",
+              repo_name: "boston-smart-accident-risk-rerouting-google-cloud",
+              status: "analyzed",
+              detected_skills: ["Python"],
+              public_safe_summary: "GitHub proof summary.",
+            },
+          },
+        },
+      })
+    )
+
+    render(<ProjectDefensePanel />)
+
+    const select = await screen.findByLabelText(/attach a github proof/i)
+    fireEvent.change(select, { target: { value: "gh-1" } })
+
+    fireEvent.change(screen.getByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await screen.findByText(/project evidence package/i)
+    expect(within(checklistCard("GitHub Proof")).getByText("Attached")).toBeInTheDocument()
+  })
+
+  it("labels the manual repo URL fallback clearly in the Project Evidence Package", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    expect(
+      await screen.findByText(/repository url only — no attached github proof: octocat\/hello-world/i)
+    ).toBeInTheDocument()
+  })
+
+  it("shows document proof count and names in the Project Evidence Package", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(
+      makeCreated({
+        metadata: {
+          description: "",
+          claimed_skills: [],
+          student_role: "",
+          individual_project_only: true,
+          phase: "project_defense_mvp_v1",
+          attached_proofs: {
+            documents: [
+              { document_evidence_id: "doc-1", title: "Resume.pdf", source_type: "document", status: "analyzed" },
+              { document_evidence_id: "doc-2", source_type: "document", status: "analyzed" },
+            ],
+          },
+        },
+      })
+    )
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await screen.findByText(/project evidence package/i)
+    expect(within(checklistCard("Documents")).getByText("2 attached")).toBeInTheDocument()
+    expect(await screen.findByText(/documents: resume\.pdf, untitled document/i)).toBeInTheDocument()
+  })
+
+  it("shows a safe 'coming next' placeholder for Website Proof attachment and explains the deferral", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await screen.findByText(/project evidence package/i)
+    expect(within(checklistCard("Website Proof")).getByText("Coming next")).toBeInTheDocument()
+    expect(
+      await screen.findByText(/website proof attachment coming next — website proof sessions are temporary browser sessions/i)
+    ).toBeInTheDocument()
+  })
+
+  it("shows Manual Project Defense as completed after analysis runs", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+    vi.mocked(submitDefenseAnswers).mockResolvedValue(makeSubmitResult())
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await screen.findByText(/project evidence package/i)
+    expect(within(checklistCard("Manual Project Defense")).getByText("Missing")).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    await screen.findByText(/describe the overall architecture/i)
+
+    fireEvent.change(screen.getByPlaceholderText(/explain your project, your role/i), {
+      target: { value: "I built the backend API using Python and FastAPI." },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /analyze my answers/i }))
+
+    await screen.findByText(/overall defense score/i)
+
+    expect(within(checklistCard("Manual Project Defense")).getByText("Completed")).toBeInTheDocument()
+    expect(await screen.findByText(/analysis status: completed/i)).toBeInTheDocument()
+  })
+
+  it("shows Skill Graph as saved after the explicit sync action", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+    vi.mocked(submitDefenseAnswers).mockResolvedValue(makeSubmitResult())
+    vi.mocked(syncProjectDefenseToSkillGraph).mockResolvedValue(makeSyncResult())
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await screen.findByText(/project evidence package/i)
+    expect(within(checklistCard("Skill Graph")).getByText("Not saved")).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    await screen.findByText(/describe the overall architecture/i)
+
+    fireEvent.change(screen.getByPlaceholderText(/explain your project, your role/i), {
+      target: { value: "I built the backend API using Python and FastAPI." },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /analyze my answers/i }))
+    await screen.findByText(/overall defense score/i)
+
+    fireEvent.click(screen.getByRole("button", { name: /save explanation evidence to skill graph/i }))
+    await waitFor(() => expect(syncProjectDefenseToSkillGraph).toHaveBeenCalledWith("sess-1"))
+
+    expect(await within(checklistCard("Skill Graph")).findByText("Saved")).toBeInTheDocument()
+  })
+
+  it("keeps the 'Record defense' action visible after manual analysis and Skill Graph save", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+    vi.mocked(submitDefenseAnswers).mockResolvedValue(makeSubmitResult())
+    vi.mocked(syncProjectDefenseToSkillGraph).mockResolvedValue(makeSyncResult())
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    await screen.findByText(/describe the overall architecture/i)
+
+    expect(await screen.findByRole("button", { name: /record defense/i })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText(/explain your project, your role/i), {
+      target: { value: "I built the backend API using Python and FastAPI." },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /analyze my answers/i }))
+    await screen.findByText(/overall defense score/i)
+
+    // Still visible after manual analysis is complete.
+    expect(screen.getByRole("button", { name: /record defense/i })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /save explanation evidence to skill graph/i }))
+    await waitFor(() => expect(syncProjectDefenseToSkillGraph).toHaveBeenCalledWith("sess-1"))
+
+    // Still visible after the Skill Graph save.
+    const recordButton = screen.getByRole("button", { name: /record defense/i })
+    expect(recordButton).toBeInTheDocument()
+
+    fireEvent.click(recordButton)
+    expect(mockRouterPush).toHaveBeenCalledWith("/student/proofs/project-defense/record/sess-1")
+  })
+
+  it("shows Video Defense as 'Storage not configured' when recording readiness fails, with manual fallback noted", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+    vi.mocked(getVBRSessionRecordingReadiness).mockResolvedValue({
+      ready: false,
+      code: "vbr_media_bucket_not_configured",
+      message: "Recording upload storage is not configured.",
+    })
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+    await screen.findByText(/project evidence package/i)
+
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    await screen.findByText(/describe the overall architecture/i)
+
+    expect(await within(checklistCard("Video Defense")).findByText("Storage not configured")).toBeInTheDocument()
+    expect(
+      await screen.findByText(/video defense: storage not configured — pasting your explanation remains the primary available path/i)
+    ).toBeInTheDocument()
+  })
+
+  it("never renders storage paths, signed URLs, bucket names, or upload tokens in the evidence workspace", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+    vi.mocked(submitDefenseAnswers).mockResolvedValue(makeSubmitResult())
+    vi.mocked(syncProjectDefenseToSkillGraph).mockResolvedValue(makeSyncResult())
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+    await screen.findByText(/project evidence package/i)
+
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    await screen.findByText(/describe the overall architecture/i)
+
+    fireEvent.change(screen.getByPlaceholderText(/explain your project, your role/i), {
+      target: { value: "I built the backend API using Python and FastAPI." },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /analyze my answers/i }))
+    await screen.findByText(/overall defense score/i)
+
+    fireEvent.click(screen.getByRole("button", { name: /save explanation evidence to skill graph/i }))
+    await waitFor(() => expect(syncProjectDefenseToSkillGraph).toHaveBeenCalledWith("sess-1"))
+
+    const text = document.body.textContent ?? ""
+    expect(text).not.toMatch(/storage_path/i)
+    expect(text).not.toMatch(/signed_url/i)
+    expect(text).not.toMatch(/upload_url/i)
+    expect(text).not.toMatch(/bucket/i)
+    expect(text).not.toMatch(/token=/i)
+    expect(text).not.toMatch(/https?:\/\/storage/i)
   })
 })

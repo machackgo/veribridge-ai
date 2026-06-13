@@ -72,6 +72,17 @@ function describeTargetRef(targetRef: Record<string, unknown>): string | null {
   return null
 }
 
+type AttachedProofsSummary = {
+  github_proof?: { repo_url?: string; repo_owner?: string; repo_name?: string; status?: string }
+  documents?: Array<{ title?: string }>
+}
+
+/** Read the safe attached-proofs summary from a Project Defense project's metadata. */
+function getAttachedProofs(project: VBRProjectResponse | null): AttachedProofsSummary {
+  const metadata = project?.metadata as { attached_proofs?: AttachedProofsSummary } | undefined
+  return metadata?.attached_proofs ?? {}
+}
+
 const cardStyle: CSSProperties = {
   border: "1px solid var(--line)",
   borderRadius: 10,
@@ -684,6 +695,36 @@ export function VBRSessionRecorder({
         )}
         {headerCopy.subtitle && <p style={{ color: "var(--muted)", marginTop: 4 }}>{headerCopy.subtitle}</p>}
       </header>
+
+      {variant === "project_defense" && (
+        <section style={cardStyle} data-testid="project-defense-context">
+          <div style={sectionTitleStyle}>Project context</div>
+          {project ? (
+            (() => {
+              const attached = getAttachedProofs(project)
+              const repoLabel = attached.github_proof?.repo_url
+                ? `${attached.github_proof.repo_owner ?? ""}/${attached.github_proof.repo_name ?? ""}`.replace(/^\/|\/$/g, "") +
+                  (attached.github_proof.status ? ` (${attached.github_proof.status})` : "")
+                : project.repo_full_name || project.repo_url || "Repository URL only — no attached GitHub Proof"
+              const documentCount = attached.documents?.length ?? 0
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "var(--ink)" }}>
+                  <div><strong>Project:</strong> {project.title}</div>
+                  <div><strong>Repository:</strong> {repoLabel}</div>
+                  <div><strong>Documents:</strong> {documentCount > 0 ? `${documentCount} attached` : "none attached"}</div>
+                  <div><strong>Website Proof:</strong> not attached — attachment coming next</div>
+                  <div><strong>Defense questions:</strong> {session.questions.length}</div>
+                </div>
+              )
+            })()
+          ) : (
+            <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>Project details unavailable.</p>
+          )}
+          <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, marginBottom: 0 }}>
+            Phase 2A records screen + microphone. Camera is not included yet.
+          </p>
+        </section>
+      )}
 
       <section style={cardStyle} data-testid="vbr-session-status">
         <div style={sectionTitleStyle}>Session status</div>

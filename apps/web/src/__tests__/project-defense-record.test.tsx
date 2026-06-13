@@ -9,13 +9,14 @@
  * pasted-transcript fallback remains reachable.
  */
 
-import { render, screen, fireEvent, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import ProjectDefenseRecordPage from "../app/student/proofs/project-defense/record/[sessionId]/page"
 import {
   getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
+  type VBRProjectResponse,
   type VBRSessionDetailResponse,
 } from "@/lib/vbr-api"
 
@@ -63,6 +64,22 @@ function makeSession(overrides: Partial<VBRSessionDetailResponse> = {}): VBRSess
         created_at: "2026-06-01T00:00:00Z",
       },
     ],
+    ...overrides,
+  }
+}
+
+function makeProject(overrides: Partial<VBRProjectResponse> = {}): VBRProjectResponse {
+  return {
+    id: "proj-1",
+    title: "Skill Evidence Tracker",
+    repo_url: "https://github.com/octocat/Hello-World",
+    repo_full_name: "octocat/Hello-World",
+    deployed_url: null,
+    head_sha: null,
+    status: "draft",
+    created_at: "2026-06-01T00:00:00Z",
+    updated_at: "2026-06-01T00:00:00Z",
+    metadata: {},
     ...overrides,
   }
 }
@@ -213,5 +230,57 @@ describe("ProjectDefenseRecordPage", () => {
     const links = screen.getAllByRole("link", { name: /project defense/i })
     expect(links.length).toBeGreaterThan(0)
     links.forEach((link) => expect(link).toHaveAttribute("href", "/student/proofs/project-defense"))
+  })
+
+  it("shows project context with attached evidence summary and the Phase 2A recording scope", async () => {
+    vi.mocked(getVBRProject).mockResolvedValue(
+      makeProject({
+        metadata: {
+          attached_proofs: {
+            github_proof: {
+              repo_url: "https://github.com/octocat/Hello-World",
+              repo_owner: "octocat",
+              repo_name: "Hello-World",
+              status: "analyzed",
+            },
+            documents: [{ title: "Resume.pdf" }],
+          },
+        },
+      })
+    )
+
+    render(<ProjectDefenseRecordPage />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-session-status")).toBeInTheDocument())
+
+    const context = await screen.findByTestId("project-defense-context")
+    expect(within(context).getByText(/skill evidence tracker/i)).toBeInTheDocument()
+    expect(within(context).getByText(/octocat\/Hello-World \(analyzed\)/i)).toBeInTheDocument()
+    expect(within(context).getByText(/1 attached/i)).toBeInTheDocument()
+    expect(within(context).getByText(/not attached — attachment coming next/i)).toBeInTheDocument()
+    expect(context.textContent).toMatch(/defense questions:\s*1/i)
+    expect(within(context).getByText(/phase 2a records screen \+ microphone\. camera is not included yet\./i)).toBeInTheDocument()
+  })
+
+  it("falls back to the repo URL and a safe placeholder when no GitHub Proof or documents are attached", async () => {
+    vi.mocked(getVBRProject).mockResolvedValue(makeProject({ metadata: {} }))
+
+    render(<ProjectDefenseRecordPage />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-session-status")).toBeInTheDocument())
+
+    const context = await screen.findByTestId("project-defense-context")
+    expect(within(context).getByText(/octocat\/Hello-World/i)).toBeInTheDocument()
+    expect(within(context).getByText(/none attached/i)).toBeInTheDocument()
+  })
+
+  it("shows a safe fallback when project details are unavailable", async () => {
+    render(<ProjectDefenseRecordPage />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-session-status")).toBeInTheDocument())
+
+    const context = screen.getByTestId("project-defense-context")
+    expect(within(context).getByText(/project details unavailable/i)).toBeInTheDocument()
+    expect(within(context).getByText(/phase 2a records screen \+ microphone\. camera is not included yet\./i)).toBeInTheDocument()
   })
 })

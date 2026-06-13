@@ -5,11 +5,14 @@ import { useRouter } from "next/navigation"
 import {
   createProjectDefense,
   generateDefenseQuestions,
+  getVBRSession,
+  getVBRSessionRecordingReadiness,
   submitDefenseAnswers,
   syncProjectDefenseToSkillGraph,
   type DefenseAnalysisResponse,
   type ProjectDefenseCreateResponse,
   type SubmitDefenseAnswersResponse,
+  type VBRRecordingReadinessResponse,
   type VBRSessionQuestionResponse,
 } from "@/lib/vbr-api"
 import {
@@ -74,6 +77,47 @@ function ScoreStat({ label, value }: { label: string; value: number }) {
         <Mono style={{ fontSize: 11, color: TOKEN.inkSoft, fontWeight: 700 }}>{value}/100</Mono>
       </div>
       <ProgressBar value={value} />
+    </div>
+  )
+}
+
+type EvidenceStatusTone = "slate" | "emerald" | "amber"
+
+type VideoDefenseStatus = "not_started" | "checking" | "storage_not_configured" | "ready" | "recorded"
+
+const VIDEO_DEFENSE_STATUS: Record<VideoDefenseStatus, { label: string; tone: EvidenceStatusTone }> = {
+  not_started: { label: "Not started", tone: "slate" },
+  checking: { label: "Checking…", tone: "slate" },
+  storage_not_configured: { label: "Storage not configured", tone: "amber" },
+  ready: { label: "Ready to record", tone: "emerald" },
+  recorded: { label: "Recorded", tone: "emerald" },
+}
+
+function EvidenceStatusCard({
+  label,
+  status,
+  tone,
+}: {
+  label: string
+  status: string
+  tone: EvidenceStatusTone
+}) {
+  return (
+    <div
+      style={{
+        padding: "10px 12px",
+        border: `1px solid ${TOKEN.line}`,
+        borderRadius: 8,
+        background: TOKEN.bg,
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+      }}
+    >
+      <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+        {label}
+      </Mono>
+      <Badge tone={tone}>{status}</Badge>
     </div>
   )
 }
@@ -234,6 +278,29 @@ export function ProjectDefensePanel() {
   const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "saved" | "error">("idle")
   const [syncSkills, setSyncSkills] = useState<string[]>([])
 
+  // Project Evidence Package — Video Defense recording status
+  const [recordingReadiness, setRecordingReadiness] = useState<VBRRecordingReadinessResponse | null>(null)
+  const [recordingChunkCount, setRecordingChunkCount] = useState(0)
+
+  useEffect(() => {
+    if (!sessionId) return
+    let active = true
+    Promise.all([getVBRSessionRecordingReadiness(sessionId), getVBRSession(sessionId)])
+      .then(([readiness, session]) => {
+        if (!active) return
+        setRecordingReadiness(readiness)
+        setRecordingChunkCount(session?.chunk_count ?? 0)
+      })
+      .catch(() => {
+        if (active) {
+          setRecordingReadiness({ ready: false, code: null, message: "Recording status is unavailable." })
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [sessionId])
+
   useEffect(() => {
     // VBR uses the repo-wise GitHub Proof submissions (one proof per repo),
     // not the whole-account/profile GitHub scan.
@@ -347,6 +414,22 @@ export function ProjectDefensePanel() {
       }
     | undefined
   const documentsAttached = attachedSummary["documents"] as Array<{ title?: string }> | undefined
+
+  // Project Evidence Package — derived checklist statuses
+  const githubProofAttached = !!githubAttached?.repo_url
+  const documentsCount = documentsAttached?.length ?? 0
+  const analysisCompleted = !!result
+  const skillGraphSaved = syncStatus === "saved"
+
+  const videoDefenseStatus: VideoDefenseStatus = !sessionId
+    ? "not_started"
+    : recordingReadiness === null
+      ? "checking"
+      : recordingChunkCount > 0
+        ? "recorded"
+        : recordingReadiness.ready
+          ? "ready"
+          : "storage_not_configured"
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -543,6 +626,116 @@ export function ProjectDefensePanel() {
         </Card>
       )}
 
+      {/* Project Evidence Package — unified checklist + attached evidence summary */}
+      {created && (
+        <Card>
+          <CardHeader title="Project Evidence Package" eyebrow="Evidence workspace" icon="🗂️" />
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 10,
+              marginBottom: 14,
+            }}
+          >
+            <EvidenceStatusCard
+              label="GitHub Proof"
+              status={githubProofAttached ? "Attached" : "Missing"}
+              tone={githubProofAttached ? "emerald" : "slate"}
+            />
+            <EvidenceStatusCard
+              label="Documents"
+              status={documentsCount > 0 ? `${documentsCount} attached` : "Missing"}
+              tone={documentsCount > 0 ? "emerald" : "slate"}
+            />
+            <EvidenceStatusCard label="Website Proof" status="Coming next" tone="slate" />
+            <EvidenceStatusCard
+              label="Manual Project Defense"
+              status={analysisCompleted ? "Completed" : "Missing"}
+              tone={analysisCompleted ? "emerald" : "slate"}
+            />
+            <EvidenceStatusCard
+              label="Video Defense"
+              status={VIDEO_DEFENSE_STATUS[videoDefenseStatus].label}
+              tone={VIDEO_DEFENSE_STATUS[videoDefenseStatus].tone}
+            />
+            <EvidenceStatusCard
+              label="Skill Graph"
+              status={skillGraphSaved ? "Saved" : "Not saved"}
+              tone={skillGraphSaved ? "emerald" : "slate"}
+            />
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {githubProofAttached ? (
+              <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+                GitHub Proof:{" "}
+                {githubAttached?.repo_owner && githubAttached?.repo_name
+                  ? `${githubAttached.repo_owner}/${githubAttached.repo_name}`
+                  : githubAttached?.repo_url}
+                {githubAttached?.status ? ` (${githubAttached.status})` : ""}
+              </Mono>
+            ) : (
+              <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+                Repository URL only — no attached GitHub Proof
+                {created.project.repo_full_name ? `: ${created.project.repo_full_name}` : ""}
+              </Mono>
+            )}
+
+            <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+              Documents:{" "}
+              {documentsCount > 0
+                ? documentsAttached!.map((d) => d.title || "Untitled document").join(", ")
+                : "none attached"}
+            </Mono>
+
+            <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+              Defense questions: {questions ? `${questions.length} generated` : "not generated yet"}
+            </Mono>
+
+            <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+              Analysis status: {analysisCompleted ? "completed" : "not yet run"}
+            </Mono>
+
+            <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+              Skill Graph sync: {skillGraphSaved ? "saved" : "not saved"}
+            </Mono>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+                Video Defense: {VIDEO_DEFENSE_STATUS[videoDefenseStatus].label}
+                {videoDefenseStatus === "storage_not_configured" &&
+                  " — pasting your explanation remains the primary available path."}
+              </Mono>
+              {sessionId && (
+                <Btn
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => router.push(`/student/proofs/project-defense/record/${sessionId}`)}
+                >
+                  Record defense
+                </Btn>
+              )}
+            </div>
+          </div>
+
+          <p
+            style={{
+              fontSize: 11,
+              color: TOKEN.muted,
+              margin: "12px 0 0",
+              paddingTop: 10,
+              borderTop: `1px solid ${TOKEN.line}`,
+            }}
+          >
+            Website Proof attachment coming next — website proof sessions are temporary browser sessions
+            without a persisted, ownership-checked record, so they can&apos;t be safely attached to a
+            Project Defense yet.
+          </p>
+        </Card>
+      )}
+
       {/* Step C — Generate questions */}
       {created && !questions && (
         <Card>
@@ -572,17 +765,10 @@ export function ProjectDefensePanel() {
             ))}
           </div>
 
-          <div style={{ marginBottom: 16 }}>
-            <Btn
-              variant="secondary"
-              onClick={() => sessionId && router.push(`/student/proofs/project-defense/record/${sessionId}`)}
-            >
-              Record defense
-            </Btn>
-            <p style={{ fontSize: 12, color: TOKEN.muted, margin: "6px 0 0" }}>
-              Optionally record yourself answering these questions, or paste your explanation below.
-            </p>
-          </div>
+          <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 16px" }}>
+            Optionally record yourself answering these questions using the Record defense action in the
+            Project Evidence Package above, or paste your explanation below.
+          </p>
 
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
             <Btn size="sm" variant={answerMode === "combined" ? "primary" : "secondary"} onClick={() => setAnswerMode("combined")}>
