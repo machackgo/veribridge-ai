@@ -27,6 +27,17 @@ class VBRSessionDetailResponse(VBRSessionResponse):
     questions: list[VBRSessionQuestionResponse] = Field(default_factory=list)
 
 
+class VBRRecordingReadinessResponse(BaseModel):
+    """Safe readiness summary for browser recording — no internal details.
+
+    Never includes bucket names, storage paths, signed URLs, or env values.
+    """
+
+    ready: bool
+    code: str | None = None
+    message: str
+
+
 class VBRConsentRequest(BaseModel):
     text_version: str | None = Field(default=None, min_length=1, max_length=100)
 

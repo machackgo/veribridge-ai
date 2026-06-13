@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react"
 import {
+  cancelVBRSessionRecording,
   createVBRSessionConsent,
   finalizeVBRSession,
   getVBRProject,
   getVBRSession,
+  getVBRSessionRecordingReadiness,
   requestVBRChunkUploadUrl,
   startVBRSession,
   updateVBRSessionTelemetry,
@@ -133,6 +135,18 @@ const PREFLIGHT_LABELS: Record<VBRSessionRecorderVariant, Record<PreflightKey, s
   },
 }
 
+// Which preflight checks are shown per variant. Project Defense Phase 2A
+// recording does not include the camera, so its preflight check is hidden.
+const PREFLIGHT_KEYS: Record<VBRSessionRecorderVariant, PreflightKey[]> = {
+  walkthrough: ["microphone", "camera", "screen"],
+  project_defense: ["microphone", "screen"],
+}
+
+const PREFLIGHT_NOTE: Record<VBRSessionRecorderVariant, string | null> = {
+  walkthrough: null,
+  project_defense: "Camera is optional and not included in this Phase 2A recording.",
+}
+
 const HEADER_COPY: Record<VBRSessionRecorderVariant, { title: string; subtitle: string | null }> = {
   walkthrough: {
     title: "Verified Build Report — Recording session",
@@ -170,6 +184,10 @@ export function VBRSessionRecorder({
 
   const [startLoading, setStartLoading] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+  const [readinessError, setReadinessError] = useState<string | null>(null)
+
+  const [resetLoading, setResetLoading] = useState(false)
+  const [resetError, setResetError] = useState<string | null>(null)
 
   const [finalizeLoading, setFinalizeLoading] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
@@ -363,6 +381,7 @@ export function VBRSessionRecorder({
     setStartLoading(true)
     setStartError(null)
     setRecordingError(null)
+    setReadinessError(null)
 
     try {
       if (
@@ -372,6 +391,26 @@ export function VBRSessionRecorder({
         typeof window.MediaRecorder === "undefined"
       ) {
         setRecordingError("This browser does not support browser-based recording.")
+        return
+      }
+
+      // Check that recording upload storage is ready before requesting any
+      // media permissions — if it isn't, never call getDisplayMedia,
+      // getUserMedia, or startVBRSession.
+      try {
+        const readiness = await getVBRSessionRecordingReadiness(sessionId)
+        if (!readiness.ready) {
+          setReadinessError(
+            `${readiness.message} You can still use the manual transcript fallback.`
+          )
+          return
+        }
+      } catch (err) {
+        setReadinessError(
+          err instanceof Error
+            ? `${err.message} You can still use the manual transcript fallback.`
+            : "Recording upload storage is not configured. You can still use the manual transcript fallback."
+        )
         return
       }
 
@@ -519,6 +558,23 @@ export function VBRSessionRecorder({
   }
 
 
+  async function handleResetRecording() {
+    setResetLoading(true)
+    setResetError(null)
+    try {
+      const updated = await cancelVBRSessionRecording(sessionId)
+      setSession((prev) => (prev ? { ...prev, ...updated } : prev))
+      setRecordingState("inactive")
+      setRecordingError(null)
+      setReadinessError(null)
+      setStartError(null)
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : "Failed to reset the recording session.")
+    } finally {
+      setResetLoading(false)
+    }
+  }
+
   async function goToQuestion(index: number) {
     if (!session) return
     const clamped = Math.max(0, Math.min(session.questions.length - 1, index))
@@ -603,6 +659,19 @@ export function VBRSessionRecorder({
   const canStart = consentGranted && session.status === "created" && !startLoading
   const headerCopy = HEADER_COPY[variant]
   const preflightLabels = PREFLIGHT_LABELS[variant]
+  const preflightKeys = PREFLIGHT_KEYS[variant]
+  const preflightNote = PREFLIGHT_NOTE[variant]
+
+  // The backend session can be left in "recording" with zero uploaded chunks
+  // if the browser recorder never started/stayed running (e.g. a storage
+  // preflight failure after /start, or a stale session from a previous tab).
+  // Offer a recovery action to reset it back to "created".
+  const showResetRecording =
+    isRecording &&
+    recordingState !== "recording" &&
+    recordingState !== "stopping" &&
+    session.chunk_count === 0 &&
+    recordedChunkCount === 0
 
   return (
     <div style={{ padding: 24, maxWidth: 760, margin: "0 auto", fontFamily: "var(--font-sans)", display: "grid", gap: 16 }}>
@@ -650,8 +719,11 @@ export function VBRSessionRecorder({
             <div>{browserSupport.mediaRecorder ? "✓" : "✗"} MediaRecorder supported</div>
           </div>
         )}
+        {preflightNote && (
+          <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 0, marginBottom: 12 }}>{preflightNote}</p>
+        )}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-          {(Object.keys(preflightLabels) as PreflightKey[]).map((key) => {
+          {preflightKeys.map((key) => {
             const state = preflight[key]
             return (
               <div key={key} style={{ display: "grid", gap: 4 }}>
@@ -683,6 +755,24 @@ export function VBRSessionRecorder({
           <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>Give consent above to enable this.</p>
         )}
         {startError && <p style={{ color: "var(--rose)", fontSize: 12, marginTop: 8 }}>{startError}</p>}
+        {readinessError && <p style={{ color: "var(--rose)", fontSize: 12, marginTop: 8 }}>{readinessError}</p>}
+
+        {showResetRecording && (
+          <div style={{ marginTop: 12 }}>
+            <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 0, marginBottom: 8 }}>
+              This session shows recording in progress, but no recording is active in this browser.
+            </p>
+            <button
+              type="button"
+              style={resetLoading ? disabledButtonStyle : buttonStyle}
+              disabled={resetLoading}
+              onClick={handleResetRecording}
+            >
+              {resetLoading ? "Resetting…" : "Reset recording session"}
+            </button>
+            {resetError && <p style={{ color: "var(--rose)", fontSize: 12, marginTop: 8 }}>{resetError}</p>}
+          </div>
+        )}
       </section>
 
       {(isRecording || recordingState !== "inactive" || recordingError) && (

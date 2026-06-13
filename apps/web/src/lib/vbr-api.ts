@@ -98,6 +98,12 @@ export type VBRTelemetryResponse = {
   telemetry: Record<string, unknown>
 }
 
+export type VBRRecordingReadinessResponse = {
+  ready: boolean
+  code: string | null
+  message: string
+}
+
 export type VBRPublicReportClaim = {
   claim_text: string | null
   judgment: string | null
@@ -182,6 +188,22 @@ export async function startVBRSession(sessionId: string): Promise<VBRSessionResp
     method: "POST",
   })
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to start session (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Check whether recording upload storage is ready before requesting media permissions. */
+export async function getVBRSessionRecordingReadiness(sessionId: string): Promise<VBRRecordingReadinessResponse> {
+  const res = await fetchAPI(`/api/v1/student/vbr/sessions/${encodeURIComponent(sessionId)}/recording-readiness`)
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to check recording readiness (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Reset a stuck, zero-chunk "recording" session back to a retryable state. */
+export async function cancelVBRSessionRecording(sessionId: string): Promise<VBRSessionResponse> {
+  const res = await fetchAPI(`/api/v1/student/vbr/sessions/${encodeURIComponent(sessionId)}/cancel-recording`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to reset the recording session (HTTP ${res.status}).`))
   return res.json()
 }
 

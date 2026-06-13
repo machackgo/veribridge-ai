@@ -15,6 +15,7 @@ import ProjectDefenseRecordPage from "../app/student/proofs/project-defense/reco
 import {
   getVBRProject,
   getVBRSession,
+  getVBRSessionRecordingReadiness,
   type VBRSessionDetailResponse,
 } from "@/lib/vbr-api"
 
@@ -23,6 +24,8 @@ vi.mock("@/lib/vbr-api", () => ({
   getVBRProject: vi.fn(),
   createVBRSessionConsent: vi.fn(),
   startVBRSession: vi.fn(),
+  getVBRSessionRecordingReadiness: vi.fn(),
+  cancelVBRSessionRecording: vi.fn(),
   requestVBRChunkUploadUrl: vi.fn(),
   uploadVBRChunkBytes: vi.fn(),
   uploadVBRSessionChunk: vi.fn(),
@@ -67,9 +70,32 @@ function makeSession(overrides: Partial<VBRSessionDetailResponse> = {}): VBRSess
 const getDisplayMedia = vi.fn()
 const getUserMedia = vi.fn()
 
+class MockMediaRecorder {
+  static isTypeSupported = vi.fn(() => true)
+  state: "inactive" | "recording" | "paused" = "inactive"
+  ondataavailable: (() => void) | null = null
+  onstop: (() => void) | null = null
+  onerror: (() => void) | null = null
+  start() {
+    this.state = "recording"
+  }
+  stop() {
+    this.state = "inactive"
+    this.onstop?.()
+  }
+  addEventListener() {
+    // no-op for tests
+  }
+}
+
 beforeEach(() => {
   vi.mocked(getVBRSession).mockReset().mockResolvedValue(makeSession())
   vi.mocked(getVBRProject).mockReset().mockResolvedValue(null)
+  vi.mocked(getVBRSessionRecordingReadiness).mockReset().mockResolvedValue({
+    ready: true,
+    code: null,
+    message: "Recording upload storage is ready.",
+  })
 
   getDisplayMedia.mockReset().mockRejectedValue(new Error("Permission denied"))
   getUserMedia.mockReset().mockRejectedValue(new Error("Permission denied"))
@@ -79,6 +105,7 @@ beforeEach(() => {
     configurable: true,
     writable: true,
   })
+  ;(globalThis as unknown as { MediaRecorder: unknown }).MediaRecorder = MockMediaRecorder
 })
 
 describe("ProjectDefenseRecordPage", () => {
@@ -100,12 +127,13 @@ describe("ProjectDefenseRecordPage", () => {
     expect(text).not.toMatch(/(project|student|skill) (is|are) (now |fully )?verified/i)
   })
 
-  it("presents the camera permission check as optional and does not block recording on it", async () => {
+  it("does not show a camera preflight check and notes camera is not part of Phase 2A recording", async () => {
     render(<ProjectDefenseRecordPage />)
 
     await waitFor(() => expect(screen.getByTestId("vbr-session-status")).toBeInTheDocument())
 
-    expect(screen.getByRole("button", { name: /test camera permission \(optional\)/i })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /test camera permission/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/camera is optional and not included in this phase 2a recording/i)).toBeInTheDocument()
 
     // Recording start is gated on consent, not on any camera permission state.
     const startButton = screen.getByRole("button", { name: /start recording session/i })
@@ -142,6 +170,37 @@ describe("ProjectDefenseRecordPage", () => {
     expect(text).not.toMatch(/signedUrl/)
     expect(text).not.toMatch(/token=/i)
     expect(text).not.toMatch(/\.webm/)
+  })
+
+  it("blocks recording start and shows the manual fallback when recording storage is not ready, without exposing internals", async () => {
+    vi.mocked(getVBRSessionRecordingReadiness).mockResolvedValue({
+      ready: false,
+      code: "vbr_media_bucket_not_configured",
+      message: "Recording upload storage is not configured.",
+    })
+
+    render(<ProjectDefenseRecordPage />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-session-status")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole("button", { name: /i consent to record this session/i }))
+    await waitFor(() => expect(screen.getByRole("button", { name: /start recording session/i })).not.toBeDisabled())
+
+    fireEvent.click(screen.getByRole("button", { name: /start recording session/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText(/Recording upload storage is not configured\./)).toBeInTheDocument()
+    )
+    expect(screen.getByText(/You can still use the manual transcript fallback\./)).toBeInTheDocument()
+
+    expect(getDisplayMedia).not.toHaveBeenCalled()
+    expect(getUserMedia).not.toHaveBeenCalled()
+
+    const text = document.body.textContent ?? ""
+    expect(text).not.toMatch(/vbr\/sessions/)
+    expect(text).not.toMatch(/storage_path/i)
+    expect(text).not.toMatch(/signed_url/i)
+    expect(text).not.toMatch(/bucket/i)
   })
 
   it("keeps the manual pasted-transcript fallback reachable from the recorder", async () => {

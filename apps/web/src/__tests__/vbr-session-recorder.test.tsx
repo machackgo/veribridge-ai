@@ -2,10 +2,12 @@ import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { VBRSessionRecorder } from "../app/student/vbr/sessions/[sessionId]/VBRSessionRecorder"
 import {
+  cancelVBRSessionRecording,
   createVBRSessionConsent,
   finalizeVBRSession,
   getVBRProject,
   getVBRSession,
+  getVBRSessionRecordingReadiness,
   requestVBRChunkUploadUrl,
   startVBRSession,
   uploadVBRChunkBytes,
@@ -18,6 +20,8 @@ vi.mock("@/lib/vbr-api", () => ({
   getVBRProject: vi.fn(),
   createVBRSessionConsent: vi.fn(),
   startVBRSession: vi.fn(),
+  getVBRSessionRecordingReadiness: vi.fn(),
+  cancelVBRSessionRecording: vi.fn(),
   requestVBRChunkUploadUrl: vi.fn(),
   uploadVBRChunkBytes: vi.fn(),
   uploadVBRSessionChunk: vi.fn(),
@@ -206,6 +210,12 @@ beforeEach(() => {
     expires_in: 600,
   })
   vi.mocked(uploadVBRChunkBytes).mockResolvedValue(undefined)
+
+  vi.mocked(getVBRSessionRecordingReadiness).mockResolvedValue({
+    ready: true,
+    code: null,
+    message: "Recording upload storage is ready.",
+  })
 })
 
 async function startRecordingSession(options?: { onBeforeStart?: () => void }) {
@@ -710,5 +720,65 @@ describe("VBRSessionRecorder", () => {
     // is enabled again for a retry.
     await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
     expect(screen.getByText("Not started")).toBeInTheDocument()
+  })
+
+  it("does not request any media permissions or start the session when storage readiness fails", async () => {
+    vi.mocked(getVBRSessionRecordingReadiness).mockResolvedValue({
+      ready: false,
+      code: "vbr_media_bucket_not_configured",
+      message: "Recording upload storage is not configured.",
+    })
+
+    await startRecordingSession()
+
+    await waitFor(() =>
+      expect(screen.getByText(/Recording upload storage is not configured\./)).toBeInTheDocument()
+    )
+
+    expect(getDisplayMedia).not.toHaveBeenCalled()
+    expect(getUserMedia).not.toHaveBeenCalled()
+    expect(startVBRSession).not.toHaveBeenCalled()
+    expect(MockMediaRecorder.instances).toHaveLength(0)
+
+    // Clear, retryable blocking message that mentions the manual fallback.
+    expect(screen.getByText(/You can still use the manual transcript fallback\./)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
+    expect(screen.getByText("Not started")).toBeInTheDocument()
+  })
+
+  it("shows a 'Reset recording session' action when the backend says recording but the browser recorder never started, and resets on click", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "recording", started_at: "2026-06-01T00:00:00Z", chunk_count: 0 })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+    vi.mocked(cancelVBRSessionRecording).mockResolvedValue({
+      id: "session-1",
+      project_id: "project-1",
+      attempt_no: 1,
+      status: "created",
+      started_at: null,
+      ended_at: null,
+      duration_s: null,
+      webcam_present: false,
+      chunk_count: 0,
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:00:01Z",
+    })
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-session-status")).toBeInTheDocument())
+
+    const resetButton = screen.getByRole("button", { name: "Reset recording session" })
+    fireEvent.click(resetButton)
+
+    await waitFor(() => expect(cancelVBRSessionRecording).toHaveBeenCalledWith("session-1"))
+    await waitFor(() => expect(screen.getByText("Not started")).toBeInTheDocument())
+    expect(screen.queryByRole("button", { name: "Reset recording session" })).not.toBeInTheDocument()
+
+    // Session is retryable again — the Start button is still gated on consent
+    // (a fresh page load has no consent yet), but the consent flow is available.
+    expect(screen.getByRole("button", { name: "Start recording session" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "I consent to record this session" })).not.toBeDisabled()
   })
 })

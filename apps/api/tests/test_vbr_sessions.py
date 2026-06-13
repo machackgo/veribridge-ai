@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user_id, get_db
+from app.core.config import settings
 from app.main import app
 
 USER_ID = "00000000-0000-0000-0000-000000000042"
@@ -454,4 +455,196 @@ def test_chunk_rejects_malformed_sha256(client: TestClient) -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "vbr_invalid_chunk_sha256"
+
+
+# ── Recording readiness + cancel-recording (storage preflight/recovery) ─────
+
+
+class _FakeTableQuery:
+    """Minimal Supabase-style query stand-in backed by the in-memory store.
+
+    Supports the ``select().eq().maybe_single().execute()`` and
+    ``update().eq().execute()`` shapes used by
+    ``get_owned_vbr_session_or_404`` / ``_update_session``.
+    """
+
+    def __init__(self, store: dict, table_name: str) -> None:
+        self.store = store
+        self.table_name = table_name
+        self.filters: list[tuple[str, object]] = []
+        self.update_payload: dict | None = None
+        self.return_single = False
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def update(self, payload: dict):
+        self.update_payload = payload
+        return self
+
+    def eq(self, key: str, value: object):
+        self.filters.append((key, value))
+        return self
+
+    def maybe_single(self):
+        self.return_single = True
+        return self
+
+    def limit(self, _count: int):
+        return self
+
+    def execute(self):
+        table = self.store.setdefault(self.table_name, {})
+        rows = list(table.values())
+        for key, value in self.filters:
+            rows = [row for row in rows if str(row.get(key)) == str(value)]
+
+        if self.update_payload is not None:
+            for row in rows:
+                row.update(self.update_payload)
+
+        if self.return_single:
+            data = rows[0] if rows else None
+        else:
+            data = rows
+
+        return type("Result", (), {"data": data})()
+
+
+class _FakeRealDbNoStorage:
+    """Stand-in for a real Supabase client with no ``storage`` attribute."""
+
+    def __init__(self, store: dict) -> None:
+        self._store = store
+
+    def table(self, table_name: str):
+        return _FakeTableQuery(self._store, table_name)
+
+
+def test_recording_readiness_ready_for_default_test_db(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+
+    response = client.get(f"/api/v1/student/vbr/sessions/{session_id}/recording-readiness")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ready": True, "code": None, "message": "Recording upload storage is ready."}
+
+
+def test_recording_readiness_requires_owner(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+
+    app.dependency_overrides[get_current_user_id] = lambda: OTHER_USER_ID
+    response = client.get(f"/api/v1/student/vbr/sessions/{session_id}/recording-readiness")
+
+    assert response.status_code == 404
+
+
+def test_recording_readiness_not_ready_without_configured_bucket(client: TestClient, mem_store: dict) -> None:
+    _project_id, session_id = _setup_session(client)
+
+    app.dependency_overrides[get_db] = lambda: _FakeRealDbNoStorage(mem_store)
+    response = client.get(f"/api/v1/student/vbr/sessions/{session_id}/recording-readiness")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ready"] is False
+    assert body["code"] == "vbr_media_bucket_not_configured"
+    assert body["message"]
+
+
+def test_recording_readiness_response_does_not_leak_storage_details(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _project_id, session_id = _setup_session(client)
+    monkeypatch.setattr(settings, "supabase_vbr_media_bucket", "secret-vbr-media-bucket")
+
+    class _FakeRealDbWithStorage(_FakeRealDbNoStorage):
+        storage = object()
+
+    app.dependency_overrides[get_db] = lambda: _FakeRealDbWithStorage(mem_store)
+    response = client.get(f"/api/v1/student/vbr/sessions/{session_id}/recording-readiness")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body.keys()) == {"ready", "code", "message"}
+    assert body["ready"] is True
+
+    text = response.text
+    assert "secret-vbr-media-bucket" not in text
+    assert "storage_path" not in text
+    assert "signed_url" not in text.lower()
+    assert "vbr/sessions" not in text
+
+
+def test_start_fails_without_mutating_status_when_storage_not_ready(client: TestClient, mem_store: dict) -> None:
+    _project_id, session_id = _setup_session(client)
+    _grant_consent(client, session_id)
+
+    app.dependency_overrides[get_db] = lambda: _FakeRealDbNoStorage(mem_store)
+    response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/start")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "vbr_media_bucket_not_configured"
+
+    session_row = mem_store["vbr_verification_sessions"][session_id]
+    assert session_row["status"] == "created"
+    assert session_row.get("started_at") is None
+
+
+def test_cancel_recording_resets_owned_zero_chunk_session(client: TestClient, mem_store: dict) -> None:
+    _project_id, session_id = _setup_session(client)
+    _start_session(client, session_id)
+
+    response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/cancel-recording")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "created"
+    assert body["started_at"] is None
+
+    session_row = mem_store["vbr_verification_sessions"][session_id]
+    assert session_row["status"] == "created"
+    assert session_row["started_at"] is None
+
+
+def test_cancel_recording_rejects_non_owner(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+    _start_session(client, session_id)
+
+    app.dependency_overrides[get_current_user_id] = lambda: OTHER_USER_ID
+    response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/cancel-recording")
+
+    assert response.status_code == 404
+
+
+def test_cancel_recording_rejects_non_recording_session(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+
+    response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/cancel-recording")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "vbr_session_not_recording"
+
+
+def test_cancel_recording_rejects_session_with_chunks(client: TestClient) -> None:
+    _project_id, session_id = _setup_session(client)
+    _start_session(client, session_id)
+
+    upload_url_response = client.post(
+        f"/api/v1/student/vbr/sessions/{session_id}/chunk-upload-url",
+        json=_upload_url_payload(),
+    )
+    assert upload_url_response.status_code == 200, upload_url_response.text
+    target = upload_url_response.json()
+
+    chunk_response = client.post(
+        f"/api/v1/student/vbr/sessions/{session_id}/chunk",
+        json=_chunk_payload(session_id, storage_path=target["storage_path"]),
+    )
+    assert chunk_response.status_code == 200, chunk_response.text
+
+    response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/cancel-recording")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "vbr_session_has_chunks"
 

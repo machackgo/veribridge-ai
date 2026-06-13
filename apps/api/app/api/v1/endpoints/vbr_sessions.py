@@ -30,6 +30,7 @@ from app.schemas.vbr_sessions import (
     VBRJudgmentResponse,
     VBRKeyframeExtractionResponse,
     VBRMediaProcessingResponse,
+    VBRRecordingReadinessResponse,
     VBRReportDraftResponse,
     VBRReportPublishResponse,
     VBRReportReviewResponse,
@@ -55,6 +56,9 @@ from app.services.vbr_report_publish import (
 )
 from app.services.vbr_transcription import transcribe_session_skeleton
 from app.services.vbr_session_recording import (
+    cancel_recording_session,
+    check_recording_storage_readiness,
+    check_session_recording_readiness,
     count_chunks,
     create_chunk_upload_target,
     create_recording_consent,
@@ -169,8 +173,64 @@ def start_session_route(
             },
         )
 
+    readiness = check_recording_storage_readiness(db)
+    if not readiness["ready"]:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": readiness["code"], "message": readiness["message"]},
+        )
+
     updated = start_session(db, session)
     return _to_session_response(updated, count_chunks(db, session_id))
+
+
+@router.get(
+    "/{session_id}/recording-readiness",
+    response_model=VBRRecordingReadinessResponse,
+    summary="Check whether browser recording can be started for this session",
+)
+def recording_readiness_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRRecordingReadinessResponse:
+    session, _project = get_owned_vbr_session_or_404(db, session_id, user_id)
+    return VBRRecordingReadinessResponse(**check_session_recording_readiness(db, session))
+
+
+@router.post(
+    "/{session_id}/cancel-recording",
+    response_model=VBRSessionResponse,
+    summary="Reset a stuck, zero-chunk recording session back to a retryable state",
+)
+def cancel_recording_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRSessionResponse:
+    session, _project = get_owned_vbr_session_or_404(db, session_id, user_id)
+
+    if session.get("status") != "recording":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "vbr_session_not_recording",
+                "message": "Only sessions in 'recording' status can be reset.",
+            },
+        )
+
+    chunk_count = count_chunks(db, session_id)
+    if chunk_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "vbr_session_has_chunks",
+                "message": "This session already has uploaded chunks and cannot be reset.",
+            },
+        )
+
+    updated = cancel_recording_session(db, session)
+    return _to_session_response(updated, chunk_count)
 
 
 @router.post(

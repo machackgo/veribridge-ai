@@ -42,7 +42,12 @@ __all__ = [
     "finalize_session",
     "chunk_storage_path",
     "create_chunk_upload_target",
+    "check_recording_storage_readiness",
+    "check_session_recording_readiness",
+    "cancel_recording_session",
 ]
+
+_RETRYABLE_RECORDING_STATUSES = {"created", "recording"}
 
 
 def _now() -> str:
@@ -247,34 +252,81 @@ def create_chunk_upload_target(
     }
 
 
+def check_recording_storage_readiness(db: Any) -> dict[str, Any]:
+    """Check whether recording-chunk upload storage is ready to use.
+
+    Returns a small, safe-to-render dict — ``ready``, ``code``, and
+    ``message`` only. Never includes bucket names, storage paths, signed
+    URLs, or other configuration details.
+    """
+    if isinstance(db, dict):
+        return {"ready": True, "code": None, "message": "Recording upload storage is ready."}
+
+    if not settings.supabase_vbr_media_bucket:
+        return {
+            "ready": False,
+            "code": "vbr_media_bucket_not_configured",
+            "message": "Recording upload storage is not configured.",
+        }
+
+    if not hasattr(db, "storage"):
+        return {
+            "ready": False,
+            "code": "vbr_storage_client_unavailable",
+            "message": "Recording upload storage is unavailable.",
+        }
+
+    return {"ready": True, "code": None, "message": "Recording upload storage is ready."}
+
+
+def check_session_recording_readiness(db: Any, session: dict[str, Any]) -> dict[str, Any]:
+    """Check whether ``session`` is currently usable for browser recording.
+
+    Combines the session-status check with ``check_recording_storage_readiness``
+    so the frontend can run a single preflight call before requesting any
+    media permissions.
+    """
+    if session.get("status") not in _RETRYABLE_RECORDING_STATUSES:
+        return {
+            "ready": False,
+            "code": "vbr_session_not_retryable",
+            "message": "This session can no longer be used for recording.",
+        }
+
+    return check_recording_storage_readiness(db)
+
+
+def cancel_recording_session(db: Any, session: dict[str, Any]) -> dict[str, Any]:
+    """Reset a stuck, zero-chunk 'recording' session back to 'created'.
+
+    Callers must already have verified the session is owned by the current
+    user, in 'recording' status, and has zero uploaded chunks.
+    """
+    now = _now()
+    return _update_session(
+        db,
+        str(session["id"]),
+        {"status": "created", "started_at": None, "updated_at": now},
+    )
+
+
 def _create_signed_upload_url(db: Any, storage_path: str) -> str:
     """Create a real signed upload URL for a private VBR media object.
 
     Test fake DBs may return a deterministic fake URL. Real service clients must
     fail closed if storage is not configured or the signed URL response is invalid.
     """
-    bucket = settings.supabase_vbr_media_bucket
-
     if isinstance(db, dict):
         return f"unconfigured://test-vbr-media-bucket/{storage_path}"
 
-    if not bucket:
+    readiness = check_recording_storage_readiness(db)
+    if not readiness["ready"]:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "vbr_media_bucket_not_configured",
-                "message": "Recording upload storage is not configured.",
-            },
+            detail={"code": readiness["code"], "message": readiness["message"]},
         )
 
-    if not hasattr(db, "storage"):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "vbr_storage_client_unavailable",
-                "message": "Recording upload storage is unavailable.",
-            },
-        )
+    bucket = settings.supabase_vbr_media_bucket
 
     try:
         signed = db.storage.from_(bucket).create_signed_upload_url(storage_path)
