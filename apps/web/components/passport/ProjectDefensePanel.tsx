@@ -235,15 +235,19 @@ export function ProjectDefensePanel() {
   const [syncSkills, setSyncSkills] = useState<string[]>([])
 
   useEffect(() => {
+    // VBR uses the repo-wise GitHub Proof submissions (one proof per repo),
+    // not the whole-account/profile GitHub scan.
     Promise.all([listGitHubProofs(), listDocumentProofs()])
       .then(([gh, docs]) => {
-        setGithubProofs(gh.filter((p) => p.status === "analyzed"))
+        setGithubProofs(gh.filter((p) => p.status === "analyzed" || p.status === "needs_more_evidence"))
         setDocumentProofs(docs.filter((d) => d.status === "analyzed"))
       })
       .catch((e: Error) => setLoadError(e.message))
   }, [])
 
   const claimedSkillsList = () => claimedSkills.split(",").map((s) => s.trim()).filter(Boolean)
+
+  const selectedGithubProof = githubProofs?.find((p) => p.id === selectedGithubProofId) ?? null
 
   const toggleDocument = (id: string) => {
     setSelectedDocumentIds((prev) =>
@@ -264,7 +268,7 @@ export function ProjectDefensePanel() {
         description: description.trim(),
         claimed_skills: claimedSkillsList(),
         student_role: studentRole.trim(),
-        repo_url: repoUrl.trim() || null,
+        repo_url: selectedGithubProof ? null : repoUrl.trim() || null,
         attached_proofs: {
           github_proof_id: selectedGithubProofId || null,
           document_evidence_ids: selectedDocumentIds,
@@ -332,7 +336,16 @@ export function ProjectDefensePanel() {
   }
 
   const attachedSummary = created?.metadata.attached_proofs ?? {}
-  const githubAttached = attachedSummary["github_proof"] as { repo_url?: string; detected_skills?: string[] } | undefined
+  const githubAttached = attachedSummary["github_proof"] as
+    | {
+        repo_url?: string
+        repo_owner?: string
+        repo_name?: string
+        status?: string
+        detected_skills?: string[]
+        public_safe_summary?: string
+      }
+    | undefined
   const documentsAttached = attachedSummary["documents"] as Array<{ title?: string }> | undefined
 
   return (
@@ -397,36 +410,58 @@ export function ProjectDefensePanel() {
               />
             </div>
 
-            <div>
-              <label style={labelStyle}>
-                Repository URL {selectedGithubProofId ? "(optional — using selected GitHub proof)" : "*"}
-              </label>
-              <input
-                type="text"
-                placeholder="https://github.com/owner/repo"
-                value={repoUrl}
-                onChange={(e) => setRepoUrl(e.target.value)}
-                style={inputStyle}
-              />
-            </div>
-
             {githubProofs !== null && githubProofs.length > 0 && (
               <div>
-                <label style={labelStyle}>Attach a GitHub proof (optional)</label>
+                <label style={labelStyle} htmlFor="project-defense-github-proof">Attach a GitHub proof (optional)</label>
                 <select
+                  id="project-defense-github-proof"
                   value={selectedGithubProofId}
                   onChange={(e) => setSelectedGithubProofId(e.target.value)}
                   style={inputStyle}
                 >
                   <option value="">— None —</option>
-                  {githubProofs.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.repo_owner ? `${p.repo_owner}/${p.repo_name}` : p.repo_url}
-                    </option>
-                  ))}
+                  {githubProofs.map((p) => {
+                    const repoLabel = p.repo_owner ? `${p.repo_owner}/${p.repo_name}` : p.repo_url
+                    const statusLabel = p.evidence_strength ? `${p.status} · ${p.evidence_strength}` : p.status
+                    return (
+                      <option key={p.id} value={p.id}>
+                        {repoLabel} — {statusLabel}
+                      </option>
+                    )
+                  })}
                 </select>
+                <p style={{ fontSize: 11, color: TOKEN.muted, margin: "4px 0 0" }}>
+                  This is your repo-wise GitHub Proof evidence — analyzed for one specific repository.
+                </p>
               </div>
             )}
+
+            <div>
+              <label style={labelStyle} htmlFor="project-defense-repo-url">
+                {selectedGithubProof
+                  ? "Repository URL (from attached GitHub Proof)"
+                  : "Repository URL without attached GitHub Proof *"}
+              </label>
+              <input
+                id="project-defense-repo-url"
+                type="text"
+                placeholder="https://github.com/owner/repo"
+                value={selectedGithubProof ? selectedGithubProof.repo_url : repoUrl}
+                onChange={(e) => setRepoUrl(e.target.value)}
+                disabled={!!selectedGithubProof}
+                style={
+                  selectedGithubProof
+                    ? { ...inputStyle, background: TOKEN.bg, color: TOKEN.muted }
+                    : inputStyle
+                }
+              />
+              {!selectedGithubProof && (
+                <p style={{ fontSize: 11, color: TOKEN.muted, margin: "4px 0 0" }}>
+                  Without an attached GitHub Proof, this URL is not verified GitHub evidence — it is only
+                  used as the project&apos;s repository reference.
+                </p>
+              )}
+            </div>
 
             {documentProofs !== null && documentProofs.length > 0 && (
               <div>
@@ -477,8 +512,26 @@ export function ProjectDefensePanel() {
               </div>
             )}
             {githubAttached?.repo_url && (
+              <div>
+                <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+                  GitHub proof attached:{" "}
+                  {githubAttached.repo_owner && githubAttached.repo_name
+                    ? `${githubAttached.repo_owner}/${githubAttached.repo_name}`
+                    : githubAttached.repo_url}
+                  {githubAttached.status ? ` (${githubAttached.status})` : ""}
+                </Mono>
+                {githubAttached.detected_skills && githubAttached.detected_skills.length > 0 && (
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 4 }}>
+                    {githubAttached.detected_skills.map((s) => (
+                      <Badge key={s} tone="emerald">{s}</Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {!githubAttached?.repo_url && created.project.repo_full_name && (
               <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
-                GitHub proof attached: {githubAttached.repo_url}
+                Repository URL without attached GitHub Proof — not verified GitHub evidence.
               </Mono>
             )}
             {documentsAttached && documentsAttached.length > 0 && (

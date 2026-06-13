@@ -70,6 +70,27 @@ function makeCreated(overrides: Partial<ProjectDefenseCreateResponse> = {}): Pro
   }
 }
 
+function makeGithubProof(overrides: Partial<import("@/lib/passport-api").GitHubProofResponse> = {}): import("@/lib/passport-api").GitHubProofResponse {
+  return {
+    id: "gh-proof-1",
+    repo_url: "https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud",
+    repo_owner: "machackgo",
+    repo_name: "boston-smart-accident-risk-rerouting-google-cloud",
+    default_branch: "main",
+    visibility: "public",
+    status: "analyzed",
+    submitted_skill_claims: ["Python"],
+    detected_skills: ["Python", "Machine Learning"],
+    evidence_strength: "partial",
+    confidence_score: 72,
+    missing_evidence: [],
+    public_safe_summary: "GitHub proof for machackgo/boston-smart-accident-risk-rerouting-google-cloud is partial evidence with 72/100 confidence.",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  }
+}
+
 function makeQuestions(): GenerateDefenseQuestionsResponse {
   return {
     project_id: "proj-1",
@@ -343,5 +364,146 @@ describe("ProjectDefensePanel", () => {
     // Disclaiming "not fully verified" is fine — overclaiming "is fully verified" is not.
     expect(text).not.toMatch(/\bis fully verified\b/i)
     expect(text).not.toMatch(/(project|student|skill) (is|are) (now |fully )?verified/i)
+  })
+
+  // ── Repo-wise GitHub Proof attachment (VBR uses /student/proofs/github, not whole-account scan) ──
+
+  it("lists repo-wise GitHub Proof submissions in the 'Attach a GitHub proof' dropdown", async () => {
+    vi.mocked(listGitHubProofs).mockResolvedValue([
+      makeGithubProof({ id: "gh-1", repo_owner: "machackgo", repo_name: "boston-smart-accident-risk-rerouting-google-cloud", status: "analyzed", evidence_strength: "partial" }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    const select = await screen.findByLabelText(/attach a github proof/i)
+    expect(select).toBeInTheDocument()
+    expect(screen.getByText(/machackgo\/boston-smart-accident-risk-rerouting-google-cloud — analyzed · partial/i)).toBeInTheDocument()
+  })
+
+  it("attaches the selected repo-wise GitHub proof id and uses its repo URL as the project repo URL", async () => {
+    const proof = makeGithubProof({ id: "gh-1" })
+    vi.mocked(listGitHubProofs).mockResolvedValue([proof])
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    const select = await screen.findByLabelText(/attach a github proof/i)
+    fireEvent.change(select, { target: { value: "gh-1" } })
+
+    // Repo URL field is now derived from the attached proof and disabled.
+    const repoUrlInput = screen.getByLabelText(/repository url \(from attached github proof\)/i) as HTMLInputElement
+    expect(repoUrlInput).toBeDisabled()
+    expect(repoUrlInput.value).toBe(proof.repo_url)
+
+    fireEvent.change(screen.getByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await waitFor(() => expect(createProjectDefense).toHaveBeenCalledTimes(1))
+    const body = vi.mocked(createProjectDefense).mock.calls[0][0]
+    expect(body.attached_proofs?.github_proof_id).toBe("gh-1")
+    expect(body.repo_url).toBeFalsy()
+  })
+
+  it("ignores a stale manual repo URL when a repo-wise GitHub proof is selected afterward", async () => {
+    const proof = makeGithubProof({ id: "gh-1" })
+    vi.mocked(listGitHubProofs).mockResolvedValue([proof])
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    // User types a manual repo URL first.
+    fireEvent.change(screen.getByLabelText(/repository url without attached github proof/i), {
+      target: { value: "https://github.com/someone/stale-repo" },
+    })
+
+    // Then selects a repo-wise GitHub proof.
+    const select = await screen.findByLabelText(/attach a github proof/i)
+    fireEvent.change(select, { target: { value: "gh-1" } })
+
+    const repoUrlInput = screen.getByLabelText(/repository url \(from attached github proof\)/i) as HTMLInputElement
+    expect(repoUrlInput).toBeDisabled()
+    expect(repoUrlInput.value).toBe(proof.repo_url)
+
+    fireEvent.change(screen.getByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await waitFor(() => expect(createProjectDefense).toHaveBeenCalledTimes(1))
+    const body = vi.mocked(createProjectDefense).mock.calls[0][0]
+    expect(body.repo_url).toBeFalsy()
+    expect(body.attached_proofs?.github_proof_id).toBe("gh-1")
+  })
+
+  it("shows the attached repo-wise GitHub proof and its detected skills in the Attached Evidence summary", async () => {
+    vi.mocked(listGitHubProofs).mockResolvedValue([makeGithubProof({ id: "gh-1" })])
+    vi.mocked(createProjectDefense).mockResolvedValue(
+      makeCreated({
+        metadata: {
+          description: "",
+          claimed_skills: ["Python"],
+          student_role: "",
+          individual_project_only: true,
+          phase: "project_defense_mvp_v1",
+          attached_proofs: {
+            github_proof: {
+              github_proof_id: "gh-1",
+              repo_url: "https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud",
+              repo_owner: "machackgo",
+              repo_name: "boston-smart-accident-risk-rerouting-google-cloud",
+              status: "analyzed",
+              detected_skills: ["Python", "Machine Learning"],
+              public_safe_summary: "GitHub proof for machackgo/boston-smart-accident-risk-rerouting-google-cloud is partial evidence with 72/100 confidence.",
+            },
+          },
+        },
+      })
+    )
+
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    const select = await screen.findByLabelText(/attach a github proof/i)
+    fireEvent.change(select, { target: { value: "gh-1" } })
+
+    fireEvent.change(screen.getByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    expect(await screen.findByText(/github proof attached: machackgo\/boston-smart-accident-risk-rerouting-google-cloud \(analyzed\)/i)).toBeInTheDocument()
+    expect(screen.getByText("Machine Learning")).toBeInTheDocument()
+  })
+
+  it("labels a manual repo URL clearly when no GitHub proof is attached", async () => {
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    expect(screen.getByLabelText(/repository url without attached github proof/i)).toBeInTheDocument()
+    expect(screen.getByText(/not verified github evidence/i)).toBeInTheDocument()
+  })
+
+  it("never shows old whole-GitHub / profile scan language", async () => {
+    vi.mocked(listGitHubProofs).mockResolvedValue([makeGithubProof({ id: "gh-1" })])
+
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    const text = document.body.textContent ?? ""
+    expect(text).not.toMatch(/github profile/i)
+    expect(text).not.toMatch(/portfolio scan/i)
+    expect(text).not.toMatch(/whole.?github/i)
+    expect(text).not.toMatch(/scan your github account/i)
   })
 })
