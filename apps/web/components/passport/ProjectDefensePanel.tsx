@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import {
   createProjectDefense,
   generateDefenseQuestions,
@@ -194,6 +195,8 @@ function AnalysisResults({
 }
 
 export function ProjectDefensePanel() {
+  const router = useRouter()
+
   // Step A/B — project identity + attached proofs
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
@@ -514,6 +517,18 @@ export function ProjectDefensePanel() {
             {questions.map((q) => (
               <QuestionCard key={q.id} question={q} />
             ))}
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <Btn
+              variant="secondary"
+              onClick={() => sessionId && router.push(`/student/proofs/project-defense/record/${sessionId}`)}
+            >
+              Record defense
+            </Btn>
+            <p style={{ fontSize: 12, color: TOKEN.muted, margin: "6px 0 0" }}>
+              Optionally record yourself answering these questions, or paste your explanation below.
+            </p>
           </div>
 
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>

@@ -84,6 +84,7 @@ class MockMediaRecorder {
   static instances: MockMediaRecorder[] = []
   static isTypeSupported = vi.fn(() => true)
   static shouldThrowOnConstruct = false
+  static shouldThrowOnStart = false
 
   state: "inactive" | "recording" | "paused" = "inactive"
   ondataavailable: ((event: { data: { size: number } }) => void) | null = null
@@ -103,6 +104,9 @@ class MockMediaRecorder {
   }
 
   start() {
+    if (MockMediaRecorder.shouldThrowOnStart) {
+      throw new Error("Recorder start failed")
+    }
     this.state = "recording"
   }
 
@@ -171,6 +175,7 @@ beforeEach(() => {
 
   MockMediaRecorder.instances = []
   MockMediaRecorder.shouldThrowOnConstruct = false
+  MockMediaRecorder.shouldThrowOnStart = false
   MockMediaRecorder.isTypeSupported = vi.fn(() => true)
   ;(globalThis as unknown as { MediaStream: unknown }).MediaStream = MockMediaStream
   ;(globalThis as unknown as { MediaRecorder: unknown }).MediaRecorder = MockMediaRecorder
@@ -203,7 +208,7 @@ beforeEach(() => {
   vi.mocked(uploadVBRChunkBytes).mockResolvedValue(undefined)
 })
 
-async function startRecordingSession() {
+async function startRecordingSession(options?: { onBeforeStart?: () => void }) {
   const createdSession = makeSession({ status: "created" })
   const recordingSession = makeSession({ status: "recording", started_at: "2026-06-01T00:00:00Z", chunk_count: 1 })
 
@@ -233,6 +238,9 @@ async function startRecordingSession() {
     updated_at: "2026-06-01T00:00:00Z",
   })
 
+  // Allow tests to override the default mocks above before the recording flow runs.
+  options?.onBeforeStart?.()
+
   render(<VBRSessionRecorder sessionId="session-1" />)
 
   await waitFor(() => expect(screen.getByTestId("vbr-session-status")).toBeInTheDocument())
@@ -241,8 +249,6 @@ async function startRecordingSession() {
   await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
 
   fireEvent.click(screen.getByRole("button", { name: "Start recording session" }))
-
-  await waitFor(() => expect(startVBRSession).toHaveBeenCalledWith("session-1"))
 }
 
 describe("VBRSessionRecorder", () => {
@@ -371,7 +377,7 @@ describe("VBRSessionRecorder", () => {
     await waitFor(() => expect(MockMediaRecorder.instances).toHaveLength(1))
 
     const recorder = MockMediaRecorder.instances[0]
-    expect(recorder.state).toBe("recording")
+    await waitFor(() => expect(recorder.state).toBe("recording"))
 
     await act(async () => {
       recorder.ondataavailable?.({ data: makeBlobLike(4096) })
@@ -415,6 +421,7 @@ describe("VBRSessionRecorder", () => {
 
     await waitFor(() => expect(MockMediaRecorder.instances).toHaveLength(1))
     const recorder = MockMediaRecorder.instances[0]
+    await waitFor(() => expect(recorder.state).toBe("recording"))
 
     await act(async () => {
       recorder.ondataavailable?.({ data: makeBlobLike(4096) })
@@ -466,6 +473,7 @@ describe("VBRSessionRecorder", () => {
 
     await waitFor(() => expect(MockMediaRecorder.instances).toHaveLength(1))
     const recorder = MockMediaRecorder.instances[0]
+    await waitFor(() => expect(recorder.state).toBe("recording"))
 
     await act(async () => {
       recorder.ondataavailable?.({ data: makeBlobLike(2048) })
@@ -517,6 +525,7 @@ describe("VBRSessionRecorder", () => {
 
     await waitFor(() => expect(MockMediaRecorder.instances).toHaveLength(1))
     const recorder = MockMediaRecorder.instances[0]
+    await waitFor(() => expect(recorder.state).toBe("recording"))
     const recordedTracks = recorder.stream.getTracks()
 
     await act(async () => {
@@ -547,13 +556,17 @@ describe("VBRSessionRecorder", () => {
 
     expect(MockMediaRecorder.instances).toHaveLength(0)
 
+    // Recorder construction happens before the backend session is started, so
+    // a construction failure must never move the backend session to "recording".
+    expect(startVBRSession).not.toHaveBeenCalled()
+
     const screenStream = (await getDisplayMedia.mock.results[0].value) as MockMediaStream
     const micStream = (await getUserMedia.mock.results[0].value) as MockMediaStream
     screenStream.getTracks().forEach((track) => expect(track.stopped).toBe(true))
     micStream.getTracks().forEach((track) => expect(track.stopped).toBe(true))
   })
 
-  it("shows a friendly error when screen-share permission is denied", async () => {
+  it("shows a friendly error when screen-share permission is denied and does not start the backend session", async () => {
     getDisplayMedia.mockRejectedValueOnce(new Error("Permission denied"))
 
     await startRecordingSession()
@@ -561,5 +574,141 @@ describe("VBRSessionRecorder", () => {
     await waitFor(() => expect(screen.getByText("Permission denied")).toBeInTheDocument())
     expect(getUserMedia).not.toHaveBeenCalled()
     expect(MockMediaRecorder.instances).toHaveLength(0)
+    expect(startVBRSession).not.toHaveBeenCalled()
+  })
+
+  it("leaves the session able to retry start after screen-share permission is denied", async () => {
+    getDisplayMedia.mockRejectedValueOnce(new Error("Permission denied"))
+
+    await startRecordingSession()
+
+    await waitFor(() => expect(screen.getByText("Permission denied")).toBeInTheDocument())
+
+    // The backend session never moved to "recording", so the start button
+    // is enabled again and the status still reads "Not started".
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
+    expect(screen.getByText("Not started")).toBeInTheDocument()
+  })
+
+  it("calls the backend start endpoint only after browser media setup succeeds", async () => {
+    const callOrder: string[] = []
+
+    await startRecordingSession({
+      onBeforeStart: () => {
+        getDisplayMedia.mockImplementation(async () => {
+          callOrder.push("getDisplayMedia")
+          return new MockMediaStream([new MockMediaStreamTrack("video"), new MockMediaStreamTrack("audio")])
+        })
+        getUserMedia.mockImplementation(async () => {
+          callOrder.push("getUserMedia")
+          return new MockMediaStream([new MockMediaStreamTrack("audio")])
+        })
+        vi.mocked(startVBRSession).mockImplementation(async () => {
+          callOrder.push("startVBRSession")
+          return {
+            id: "session-1",
+            project_id: "project-1",
+            attempt_no: 1,
+            status: "recording",
+            started_at: "2026-06-01T00:00:00Z",
+            ended_at: null,
+            duration_s: null,
+            webcam_present: false,
+            chunk_count: 0,
+            created_at: "2026-06-01T00:00:00Z",
+            updated_at: "2026-06-01T00:00:00Z",
+          }
+        })
+      },
+    })
+
+    await waitFor(() => expect(callOrder).toContain("startVBRSession"))
+
+    expect(callOrder.indexOf("getDisplayMedia")).toBeLessThan(callOrder.indexOf("startVBRSession"))
+    expect(callOrder.indexOf("getUserMedia")).toBeLessThan(callOrder.indexOf("startVBRSession"))
+  })
+
+  it("shows a friendly error, leaves the session retryable, and stops acquired tracks when MediaRecorder.start throws", async () => {
+    MockMediaRecorder.shouldThrowOnStart = true
+
+    await startRecordingSession()
+
+    await waitFor(() => expect(MockMediaRecorder.instances).toHaveLength(1))
+    await waitFor(() => expect(screen.getByText("Recorder start failed")).toBeInTheDocument())
+
+    // recorder.start() throwing must prevent the backend session from moving
+    // to "recording" at all.
+    expect(startVBRSession).not.toHaveBeenCalled()
+
+    const screenStream = (await getDisplayMedia.mock.results[0].value) as MockMediaStream
+    const micStream = (await getUserMedia.mock.results[0].value) as MockMediaStream
+    screenStream.getTracks().forEach((track) => expect(track.stopped).toBe(true))
+    micStream.getTracks().forEach((track) => expect(track.stopped).toBe(true))
+
+    // The backend session never moved to "recording", so the start button
+    // is enabled again and the status still reads "Not started".
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
+    expect(screen.getByText("Not started")).toBeInTheDocument()
+  })
+
+  it("calls startVBRSession only after MediaRecorder.start succeeds", async () => {
+    const callOrder: string[] = []
+    const originalStart = MockMediaRecorder.prototype.start
+    vi.spyOn(MockMediaRecorder.prototype, "start").mockImplementation(function (this: MockMediaRecorder, ...args: unknown[]) {
+      callOrder.push("recorder.start")
+      return originalStart.apply(this, args as [])
+    })
+
+    await startRecordingSession({
+      onBeforeStart: () => {
+        vi.mocked(startVBRSession).mockImplementation(async () => {
+          callOrder.push("startVBRSession")
+          return {
+            id: "session-1",
+            project_id: "project-1",
+            attempt_no: 1,
+            status: "recording",
+            started_at: "2026-06-01T00:00:00Z",
+            ended_at: null,
+            duration_s: null,
+            webcam_present: false,
+            chunk_count: 0,
+            created_at: "2026-06-01T00:00:00Z",
+            updated_at: "2026-06-01T00:00:00Z",
+          }
+        })
+      },
+    })
+
+    await waitFor(() => expect(callOrder).toContain("startVBRSession"))
+
+    expect(callOrder).toEqual(["recorder.start", "startVBRSession"])
+  })
+
+  it("stops acquired browser tracks if the backend start call fails after media setup succeeds", async () => {
+    await startRecordingSession({
+      onBeforeStart: () => {
+        vi.mocked(startVBRSession).mockRejectedValue(new Error("Failed to start session (HTTP 500)."))
+      },
+    })
+
+    await waitFor(() => expect(getDisplayMedia).toHaveBeenCalled())
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText("Failed to start session (HTTP 500).")).toBeInTheDocument())
+
+    // The recorder was started locally (before the backend call), but is
+    // stopped again once the backend start fails.
+    expect(MockMediaRecorder.instances).toHaveLength(1)
+    expect(MockMediaRecorder.instances[0].state).toBe("inactive")
+
+    const screenStream = (await getDisplayMedia.mock.results[0].value) as MockMediaStream
+    const micStream = (await getUserMedia.mock.results[0].value) as MockMediaStream
+    screenStream.getTracks().forEach((track) => expect(track.stopped).toBe(true))
+    micStream.getTracks().forEach((track) => expect(track.stopped).toBe(true))
+
+    // The backend session never moved to "recording", so the start button
+    // is enabled again for a retry.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
+    expect(screen.getByText("Not started")).toBeInTheDocument()
   })
 })

@@ -31,6 +31,12 @@ vi.mock("@/lib/passport-api", () => ({
   listDocumentProofs: vi.fn(),
 }))
 
+const mockRouterPush = vi.fn()
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockRouterPush }),
+}))
+
 import {
   createProjectDefense,
   generateDefenseQuestions,
@@ -146,6 +152,7 @@ beforeEach(() => {
   vi.mocked(syncProjectDefenseToSkillGraph).mockReset()
   vi.mocked(listGitHubProofs).mockReset().mockResolvedValue([])
   vi.mocked(listDocumentProofs).mockReset().mockResolvedValue([])
+  mockRouterPush.mockReset()
 })
 
 describe("ProjectDefensePanel", () => {
@@ -235,6 +242,29 @@ describe("ProjectDefensePanel", () => {
 
     await waitFor(() => expect(syncProjectDefenseToSkillGraph).toHaveBeenCalledWith("sess-1"))
     expect(await screen.findByText(/saved as supporting evidence for python, react/i)).toBeInTheDocument()
+  })
+
+  it("shows a 'Record defense' action after questions are generated and routes to the recorder", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    // Before questions are generated, there is no recording action yet.
+    expect(screen.queryByRole("button", { name: /record defense/i })).not.toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    await screen.findByText(/describe the overall architecture/i)
+
+    const recordButton = await screen.findByRole("button", { name: /record defense/i })
+    fireEvent.click(recordButton)
+
+    expect(mockRouterPush).toHaveBeenCalledWith("/student/proofs/project-defense/record/sess-1")
   })
 
   it("submits per-question answers when 'Answer each question' mode is selected", async () => {
