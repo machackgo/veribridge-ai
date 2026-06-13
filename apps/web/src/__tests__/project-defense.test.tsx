@@ -32,6 +32,7 @@ vi.mock("@/lib/vbr-api", () => ({
 vi.mock("@/lib/passport-api", () => ({
   listGitHubProofs: vi.fn(),
   listDocumentProofs: vi.fn(),
+  listWebsiteProofs: vi.fn(),
 }))
 
 const mockRouterPush = vi.fn()
@@ -48,7 +49,7 @@ import {
   getVBRSession,
   getVBRSessionRecordingReadiness,
 } from "@/lib/vbr-api"
-import { listGitHubProofs, listDocumentProofs } from "@/lib/passport-api"
+import { listGitHubProofs, listDocumentProofs, listWebsiteProofs } from "@/lib/passport-api"
 
 function makeCreated(overrides: Partial<ProjectDefenseCreateResponse> = {}): ProjectDefenseCreateResponse {
   return {
@@ -92,6 +93,18 @@ function makeGithubProof(overrides: Partial<import("@/lib/passport-api").GitHubP
     public_safe_summary: "GitHub proof for machackgo/boston-smart-accident-risk-rerouting-google-cloud is partial evidence with 72/100 confidence.",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  }
+}
+
+function makeWebsiteProof(overrides: Partial<import("@/lib/passport-api").WebsiteProofSummaryResponse> = {}): import("@/lib/passport-api").WebsiteProofSummaryResponse {
+  return {
+    proof_session_id: "ws-1",
+    target_website: "http://demo.example.com",
+    evidence_strength_score: 75,
+    workflow_confidence: "high",
+    supported_skills: ["Machine Learning", "React"],
+    created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   }
 }
@@ -196,6 +209,7 @@ beforeEach(() => {
   vi.mocked(syncProjectDefenseToSkillGraph).mockReset()
   vi.mocked(listGitHubProofs).mockReset().mockResolvedValue([])
   vi.mocked(listDocumentProofs).mockReset().mockResolvedValue([])
+  vi.mocked(listWebsiteProofs).mockReset().mockResolvedValue([])
   vi.mocked(getVBRSession).mockReset().mockResolvedValue(makeSession())
   vi.mocked(getVBRSessionRecordingReadiness).mockReset().mockResolvedValue({
     ready: true,
@@ -557,7 +571,7 @@ describe("ProjectDefensePanel", () => {
 
     expect(within(checklistCard("GitHub Proof")).getByText("Missing")).toBeInTheDocument()
     expect(within(checklistCard("Documents")).getByText("Missing")).toBeInTheDocument()
-    expect(within(checklistCard("Website Proof")).getByText("Coming next")).toBeInTheDocument()
+    expect(within(checklistCard("Website Proof")).getByText("Missing")).toBeInTheDocument()
     expect(within(checklistCard("Manual Project Defense")).getByText("Missing")).toBeInTheDocument()
     expect(within(checklistCard("Video Defense")).getByText("Not started")).toBeInTheDocument()
     expect(within(checklistCard("Skill Graph")).getByText("Not saved")).toBeInTheDocument()
@@ -648,8 +662,51 @@ describe("ProjectDefensePanel", () => {
     expect(await screen.findByText(/documents: resume\.pdf, untitled document/i)).toBeInTheDocument()
   })
 
-  it("shows a safe 'coming next' placeholder for Website Proof attachment and explains the deferral", async () => {
+  it("lists existing Website Proofs and lets the student attach one", async () => {
+    vi.mocked(listWebsiteProofs).mockResolvedValue([makeWebsiteProof({ proof_session_id: "ws-1" })])
     vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    const checkbox = await screen.findByLabelText(/demo\.example\.com — high confidence/i)
+    fireEvent.click(checkbox)
+
+    fireEvent.change(screen.getByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await waitFor(() => expect(createProjectDefense).toHaveBeenCalledTimes(1))
+    const body = vi.mocked(createProjectDefense).mock.calls[0][0]
+    expect(body.attached_proofs?.website_proof_session_ids).toEqual(["ws-1"])
+  })
+
+  it("shows website proof count in the checklist when attached, and 'Missing' when not", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(
+      makeCreated({
+        metadata: {
+          description: "",
+          claimed_skills: [],
+          student_role: "",
+          individual_project_only: true,
+          phase: "project_defense_mvp_v1",
+          attached_proofs: {
+            website_proofs: [
+              {
+                proof_session_id: "ws-1",
+                target_website: "http://demo.example.com",
+                evidence_strength_score: 75,
+                workflow_confidence: "high",
+                supported_skills: ["Machine Learning"],
+                created_at: "2026-01-01T00:00:00Z",
+              },
+            ],
+          },
+        },
+      })
+    )
 
     render(<ProjectDefensePanel />)
 
@@ -659,10 +716,51 @@ describe("ProjectDefensePanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
 
     await screen.findByText(/project evidence package/i)
-    expect(within(checklistCard("Website Proof")).getByText("Coming next")).toBeInTheDocument()
-    expect(
-      await screen.findByText(/website proof attachment coming next — website proof sessions are temporary browser sessions/i)
-    ).toBeInTheDocument()
+    expect(within(checklistCard("Website Proof")).getByText("1 attached")).toBeInTheDocument()
+    expect(await screen.findByText(/website proof: http:\/\/demo\.example\.com/i)).toBeInTheDocument()
+  })
+
+  it("never renders raw website proof artifact data (screenshots, storage paths, tokens)", async () => {
+    vi.mocked(listWebsiteProofs).mockResolvedValue([makeWebsiteProof({ proof_session_id: "ws-1" })])
+    vi.mocked(createProjectDefense).mockResolvedValue(
+      makeCreated({
+        metadata: {
+          description: "",
+          claimed_skills: [],
+          student_role: "",
+          individual_project_only: true,
+          phase: "project_defense_mvp_v1",
+          attached_proofs: {
+            website_proofs: [
+              {
+                proof_session_id: "ws-1",
+                target_website: "http://demo.example.com",
+                evidence_strength_score: 75,
+                workflow_confidence: "high",
+                supported_skills: ["Machine Learning"],
+                created_at: "2026-01-01T00:00:00Z",
+              },
+            ],
+          },
+        },
+      })
+    )
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await screen.findByText(/project evidence package/i)
+
+    const text = document.body.textContent ?? ""
+    expect(text).not.toMatch(/storage_path/i)
+    expect(text).not.toMatch(/signed_url/i)
+    expect(text).not.toMatch(/screenshot/i)
+    expect(text).not.toMatch(/token=/i)
+    expect(text).not.toMatch(/proof_session_id/i)
   })
 
   it("shows Manual Project Defense as completed after analysis runs", async () => {

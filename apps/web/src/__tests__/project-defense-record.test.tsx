@@ -256,10 +256,31 @@ describe("ProjectDefenseRecordPage", () => {
     const context = await screen.findByTestId("project-defense-context")
     expect(within(context).getByText(/skill evidence tracker/i)).toBeInTheDocument()
     expect(within(context).getByText(/octocat\/Hello-World \(analyzed\)/i)).toBeInTheDocument()
-    expect(within(context).getByText(/1 attached/i)).toBeInTheDocument()
-    expect(within(context).getByText(/not attached — attachment coming next/i)).toBeInTheDocument()
+    expect(within(context).getAllByText(/1 attached/i).length).toBeGreaterThan(0)
     expect(context.textContent).toMatch(/defense questions:\s*1/i)
     expect(within(context).getByText(/phase 2a records screen \+ microphone\. camera is not included yet\./i)).toBeInTheDocument()
+  })
+
+  it("shows the website proof attached count in project context", async () => {
+    vi.mocked(getVBRProject).mockResolvedValue(
+      makeProject({
+        metadata: {
+          attached_proofs: {
+            documents: [{ title: "Resume.pdf" }],
+            website_proofs: [
+              { target_website: "http://demo.example.com", workflow_confidence: "high" },
+            ],
+          },
+        },
+      })
+    )
+
+    render(<ProjectDefenseRecordPage />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-session-status")).toBeInTheDocument())
+
+    const context = await screen.findByTestId("project-defense-context")
+    expect(context.textContent).toMatch(/website proof:\s*1 attached/i)
   })
 
   it("falls back to the repo URL and a safe placeholder when no GitHub Proof or documents are attached", async () => {
@@ -271,7 +292,7 @@ describe("ProjectDefenseRecordPage", () => {
 
     const context = await screen.findByTestId("project-defense-context")
     expect(within(context).getByText(/octocat\/Hello-World/i)).toBeInTheDocument()
-    expect(within(context).getByText(/none attached/i)).toBeInTheDocument()
+    expect(within(context).getAllByText(/none attached/i).length).toBeGreaterThan(0)
   })
 
   it("shows a safe fallback when project details are unavailable", async () => {

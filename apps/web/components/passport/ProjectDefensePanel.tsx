@@ -18,8 +18,10 @@ import {
 import {
   listDocumentProofs,
   listGitHubProofs,
+  listWebsiteProofs,
   type DocumentProofResponse,
   type GitHubProofResponse,
+  type WebsiteProofSummaryResponse,
 } from "@/lib/passport-api"
 import {
   Badge,
@@ -249,9 +251,11 @@ export function ProjectDefensePanel() {
   const [repoUrl, setRepoUrl] = useState("")
   const [selectedGithubProofId, setSelectedGithubProofId] = useState("")
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([])
+  const [selectedWebsiteProofIds, setSelectedWebsiteProofIds] = useState<string[]>([])
 
   const [githubProofs, setGithubProofs] = useState<GitHubProofResponse[] | null>(null)
   const [documentProofs, setDocumentProofs] = useState<DocumentProofResponse[] | null>(null)
+  const [websiteProofs, setWebsiteProofs] = useState<WebsiteProofSummaryResponse[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [creating, setCreating] = useState(false)
@@ -304,10 +308,11 @@ export function ProjectDefensePanel() {
   useEffect(() => {
     // VBR uses the repo-wise GitHub Proof submissions (one proof per repo),
     // not the whole-account/profile GitHub scan.
-    Promise.all([listGitHubProofs(), listDocumentProofs()])
-      .then(([gh, docs]) => {
+    Promise.all([listGitHubProofs(), listDocumentProofs(), listWebsiteProofs()])
+      .then(([gh, docs, websites]) => {
         setGithubProofs(gh.filter((p) => p.status === "analyzed" || p.status === "needs_more_evidence"))
         setDocumentProofs(docs.filter((d) => d.status === "analyzed"))
+        setWebsiteProofs(websites)
       })
       .catch((e: Error) => setLoadError(e.message))
   }, [])
@@ -318,6 +323,12 @@ export function ProjectDefensePanel() {
 
   const toggleDocument = (id: string) => {
     setSelectedDocumentIds((prev) =>
+      prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id]
+    )
+  }
+
+  const toggleWebsiteProof = (id: string) => {
+    setSelectedWebsiteProofIds((prev) =>
       prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id]
     )
   }
@@ -339,6 +350,7 @@ export function ProjectDefensePanel() {
         attached_proofs: {
           github_proof_id: selectedGithubProofId || null,
           document_evidence_ids: selectedDocumentIds,
+          website_proof_session_ids: selectedWebsiteProofIds,
         },
       })
       setCreated(response)
@@ -414,10 +426,14 @@ export function ProjectDefensePanel() {
       }
     | undefined
   const documentsAttached = attachedSummary["documents"] as Array<{ title?: string }> | undefined
+  const websiteProofsAttached = attachedSummary["website_proofs"] as
+    | Array<{ target_website?: string; workflow_confidence?: string; evidence_strength_score?: number }>
+    | undefined
 
   // Project Evidence Package — derived checklist statuses
   const githubProofAttached = !!githubAttached?.repo_url
   const documentsCount = documentsAttached?.length ?? 0
+  const websiteProofsCount = websiteProofsAttached?.length ?? 0
   const analysisCompleted = !!result
   const skillGraphSaved = syncStatus === "saved"
 
@@ -564,6 +580,27 @@ export function ProjectDefensePanel() {
               </div>
             )}
 
+            {websiteProofs !== null && websiteProofs.length > 0 && (
+              <div>
+                <label style={labelStyle}>Attach website proof (optional)</label>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {websiteProofs.map((w) => (
+                    <label
+                      key={w.proof_session_id}
+                      style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: TOKEN.inkSoft }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedWebsiteProofIds.includes(w.proof_session_id)}
+                        onChange={() => toggleWebsiteProof(w.proof_session_id)}
+                      />
+                      {w.target_website || "Website proof"} — {w.workflow_confidence} confidence
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {createError && (
               <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "8px 10px", borderRadius: 6 }}>
                 {createError}
@@ -622,6 +659,11 @@ export function ProjectDefensePanel() {
                 {documentsAttached.length} document proof{documentsAttached.length === 1 ? "" : "s"} attached
               </Mono>
             )}
+            {websiteProofsAttached && websiteProofsAttached.length > 0 && (
+              <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+                {websiteProofsAttached.length} website proof{websiteProofsAttached.length === 1 ? "" : "s"} attached
+              </Mono>
+            )}
           </div>
         </Card>
       )}
@@ -649,7 +691,11 @@ export function ProjectDefensePanel() {
               status={documentsCount > 0 ? `${documentsCount} attached` : "Missing"}
               tone={documentsCount > 0 ? "emerald" : "slate"}
             />
-            <EvidenceStatusCard label="Website Proof" status="Coming next" tone="slate" />
+            <EvidenceStatusCard
+              label="Website Proof"
+              status={websiteProofsCount > 0 ? `${websiteProofsCount} attached` : "Missing"}
+              tone={websiteProofsCount > 0 ? "emerald" : "slate"}
+            />
             <EvidenceStatusCard
               label="Manual Project Defense"
               status={analysisCompleted ? "Completed" : "Missing"}
@@ -691,6 +737,13 @@ export function ProjectDefensePanel() {
             </Mono>
 
             <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+              Website Proof:{" "}
+              {websiteProofsCount > 0
+                ? websiteProofsAttached!.map((w) => w.target_website || "Website proof").join(", ")
+                : "none attached"}
+            </Mono>
+
+            <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
               Defense questions: {questions ? `${questions.length} generated` : "not generated yet"}
             </Mono>
 
@@ -719,20 +772,6 @@ export function ProjectDefensePanel() {
               )}
             </div>
           </div>
-
-          <p
-            style={{
-              fontSize: 11,
-              color: TOKEN.muted,
-              margin: "12px 0 0",
-              paddingTop: 10,
-              borderTop: `1px solid ${TOKEN.line}`,
-            }}
-          >
-            Website Proof attachment coming next — website proof sessions are temporary browser sessions
-            without a persisted, ownership-checked record, so they can&apos;t be safely attached to a
-            Project Defense yet.
-          </p>
         </Card>
       )}
 
@@ -830,7 +869,7 @@ export function ProjectDefensePanel() {
         />
       )}
 
-      {!created && githubProofs === null && documentProofs === null && !loadError && (
+      {!created && githubProofs === null && documentProofs === null && websiteProofs === null && !loadError && (
         <LoadingState label="Loading your proof sources…" />
       )}
 

@@ -128,6 +128,25 @@ def _seed_document_evidence(mem_store: dict, user_id: str = USER_ID, **overrides
     return doc_id
 
 
+def _seed_workflow_analysis(mem_store: dict, user_id: str = USER_ID, **overrides) -> str:
+    proof_session_id = str(uuid4())
+    now_iso = datetime.now(UTC).isoformat()
+    row = {
+        "id": str(uuid4()),
+        "user_id": user_id,
+        "proof_session_id": proof_session_id,
+        "target_website": "http://demo.example.com",
+        "evidence_strength_score": 75,
+        "workflow_confidence": "high",
+        "supported_skills": ["Machine Learning", "React"],
+        "weakly_supported_skills": ["TypeScript"],
+        "created_at": now_iso,
+    }
+    row.update(overrides)
+    mem_store.setdefault("workflow_analysis_results", {})[row["id"]] = row
+    return str(row["proof_session_id"])
+
+
 def _seed_skill_pipeline(pipeline_db: dict, student_id: str = USER_ID, **overrides) -> str:
     pipeline_id = str(uuid4())
     now_iso = datetime.now(UTC).isoformat()
@@ -327,13 +346,70 @@ def test_generate_defense_questions_references_attached_proofs(client: TestClien
 
 # ── Attached proof ownership gaps (website proof / skill pipelines) ─────────
 
-def test_create_rejects_website_proof_session_id(client: TestClient) -> None:
+def test_create_rejects_unknown_website_proof_session_id(client: TestClient) -> None:
     response = _create_project_defense(
         client,
-        attached_proofs={"website_proof_session_id": "ws-session-1"},
+        attached_proofs={"website_proof_session_ids": [str(uuid4())]},
     )
-    assert response.status_code == 422, response.text
-    assert response.json()["detail"]["code"] == "vbr_website_proof_not_supported"
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"]["code"] == "vbr_website_proof_not_found"
+
+
+def test_create_rejects_other_users_website_proof(client: TestClient, mem_store: dict) -> None:
+    proof_session_id = _seed_workflow_analysis(mem_store, user_id=OTHER_USER_ID)
+
+    response = _create_project_defense(
+        client,
+        attached_proofs={"website_proof_session_ids": [proof_session_id]},
+    )
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"]["code"] == "vbr_website_proof_not_found"
+
+
+def test_create_stores_safe_website_proof_summary(client: TestClient, mem_store: dict) -> None:
+    proof_session_id = _seed_workflow_analysis(mem_store)
+
+    response = _create_project_defense(
+        client,
+        attached_proofs={"website_proof_session_ids": [proof_session_id]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    website_proofs = body["metadata"]["attached_proofs"]["website_proofs"]
+    assert website_proofs == [
+        {
+            "proof_session_id": proof_session_id,
+            "target_website": "http://demo.example.com",
+            "evidence_strength_score": 75,
+            "workflow_confidence": "high",
+            "supported_skills": ["Machine Learning", "React"],
+            "created_at": website_proofs[0]["created_at"],
+        }
+    ]
+
+    # No raw artifact data, screenshots, storage paths, or tokens leak into metadata.
+    serialized = str(body["metadata"])
+    assert "weakly_supported_skills" not in serialized
+    assert "storage_path" not in serialized
+    assert "signed_url" not in serialized
+
+
+def test_generate_defense_questions_references_attached_website_proof(client: TestClient, mem_store: dict) -> None:
+    proof_session_id = _seed_workflow_analysis(mem_store)
+
+    created = _create_project_defense(
+        client,
+        attached_proofs={"website_proof_session_ids": [proof_session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    response = _generate_questions(client, project_id)
+    assert response.status_code == 200, response.text
+    questions = response.json()["questions"]
+
+    kinds = {q["target_ref"].get("kind") for q in questions}
+    assert "live_demo_link" in kinds
 
 
 def test_create_rejects_skill_pipeline_owned_by_other_user(client: TestClient, pipeline_db: dict) -> None:

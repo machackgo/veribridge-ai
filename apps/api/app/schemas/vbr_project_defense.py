@@ -25,7 +25,7 @@ class AttachedProofsRequest(BaseModel):
     """
 
     github_proof_id: str | None = Field(default=None, max_length=64)
-    website_proof_session_id: str | None = Field(default=None, max_length=64)
+    website_proof_session_ids: list[str] = Field(default_factory=list)
     document_evidence_ids: list[str] = Field(default_factory=list)
     skill_pipeline_ids: list[str] = Field(default_factory=list)
     repo_url: str | None = Field(default=None, max_length=500)

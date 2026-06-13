@@ -699,6 +699,25 @@ export function syncDocumentProofToSkillGraph(documentEvidenceId: string): Promi
   return apiJson(`${API}/student/skill-pipelines/from-document-proof/${documentEvidenceId}`, { method: "POST" })
 }
 
+// ─── Website Proofs ────────────────────────────────────────────────────────
+
+/**
+ * Safe summary of a completed Website Proof session — never includes
+ * screenshots, storage paths, signed URLs, tokens, or raw artifact data.
+ */
+export type WebsiteProofSummaryResponse = {
+  proof_session_id: string
+  target_website: string
+  evidence_strength_score: number
+  workflow_confidence: string
+  supported_skills: string[]
+  created_at: string
+}
+
+export function listWebsiteProofs(): Promise<WebsiteProofSummaryResponse[]> {
+  return apiJson(`${API}/student/website-proof/proofs`)
+}
+
 // ─── Notifications ─────────────────────────────────────────────────────────
 
 export function listNotifications(params?: {

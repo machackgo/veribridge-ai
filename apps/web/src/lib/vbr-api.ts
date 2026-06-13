@@ -273,7 +273,7 @@ export async function finalizeVBRSession(
 
 export type ProjectDefenseAttachedProofsRequest = {
   github_proof_id?: string | null
-  website_proof_session_id?: string | null
+  website_proof_session_ids?: string[]
   document_evidence_ids?: string[]
   skill_pipeline_ids?: string[]
   repo_url?: string | null

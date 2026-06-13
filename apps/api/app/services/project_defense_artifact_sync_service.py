@@ -128,8 +128,13 @@ def _safe_attached_proof_refs(attached: dict[str, Any]) -> dict[str, Any]:
     elif attached.get("github_proof_id"):
         refs["github_proof_id"] = attached["github_proof_id"]
 
-    if attached.get("website_proof_session_id"):
-        refs["website_proof_session_id"] = attached["website_proof_session_id"]
+    website_proofs = attached.get("website_proofs")
+    if isinstance(website_proofs, list) and website_proofs:
+        proof_ids = [
+            p.get("proof_session_id") for p in website_proofs if isinstance(p, dict) and p.get("proof_session_id")
+        ]
+        if proof_ids:
+            refs["website_proof_session_ids"] = proof_ids
 
     documents = attached.get("documents")
     if isinstance(documents, list) and documents:

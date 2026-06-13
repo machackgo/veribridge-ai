@@ -32,6 +32,7 @@ from app.services.github_evidence_service import parse_github_repo_url
 from app.services.github_proof_service import GitHubProofNotFoundError, GitHubProofService
 from app.services.optional_evidence_service import OptionalEvidenceService
 from app.services.project_defense_analysis_service import analyze_defense_transcript
+from app.services.website_proof_summary_service import get_website_proof_summary
 from app.services.vbr_question_generation import (
     _create_session,
     _delete_session_questions,
@@ -160,6 +161,24 @@ def _document_summaries(db: Any, user_id: str, document_evidence_ids: list[str])
     return summaries
 
 
+def _website_proof_summaries(db: Any, user_id: str, website_proof_session_ids: list[str]) -> list[dict[str, Any]]:
+    """Return safe summaries for attached Website Proof sessions.
+
+    Raises ``ValueError("website_proof_not_found")`` if any ID is not owned
+    by ``user_id`` (or has no completed analysis).
+    """
+    summaries: list[dict[str, Any]] = []
+    for proof_session_id in website_proof_session_ids:
+        proof_session_id = str(proof_session_id).strip()
+        if not proof_session_id:
+            continue
+        summary = get_website_proof_summary(db, user_id, proof_session_id)
+        if summary is None:
+            raise ValueError("website_proof_not_found")
+        summaries.append(summary)
+    return summaries
+
+
 def create_project_defense(
     db: Any, pipeline_db: Any, user_id: str, body: ProjectDefenseCreateRequest
 ) -> dict[str, Any]:
@@ -168,10 +187,10 @@ def create_project_defense(
     Stores only IDs and safe summaries of attached proofs in
     ``vbr_projects.metadata.attached_proofs`` — never raw proof payloads.
 
-    Raises ``ValueError("website_proof_not_supported")`` if a
-    ``website_proof_session_id`` is provided (not yet ownership-checkable in
-    Phase 1), and ``ValueError("skill_pipeline_not_found")`` if any
-    ``skill_pipeline_ids`` entry is not owned by ``user_id``.
+    Raises ``ValueError("website_proof_not_found")`` if any
+    ``website_proof_session_ids`` entry is not owned by ``user_id``, and
+    ``ValueError("skill_pipeline_not_found")`` if any ``skill_pipeline_ids``
+    entry is not owned by ``user_id``.
     """
     repo_url, github_summary = _resolve_repo_url_and_proof(db, user_id, body)
 
@@ -180,9 +199,8 @@ def create_project_defense(
         raise ValueError("invalid_github_repo_url")
     repo_full_name = f"{repo_ref.owner}/{repo_ref.repo}"
 
-    website_proof_session_id = (body.attached_proofs.website_proof_session_id or "").strip()
-    if website_proof_session_id:
-        raise ValueError("website_proof_not_supported")
+    website_proof_session_ids = _clean_list(body.attached_proofs.website_proof_session_ids)
+    website_proof_summaries = _website_proof_summaries(db, user_id, website_proof_session_ids)
 
     skill_pipeline_ids = _clean_list(body.attached_proofs.skill_pipeline_ids)
     if skill_pipeline_ids:
@@ -195,6 +213,9 @@ def create_project_defense(
         attached_proofs["github_proof"] = github_summary
     elif body.attached_proofs.github_proof_id:
         attached_proofs["github_proof_id"] = body.attached_proofs.github_proof_id
+
+    if website_proof_summaries:
+        attached_proofs["website_proofs"] = website_proof_summaries
 
     if document_summaries:
         attached_proofs["documents"] = document_summaries
@@ -293,7 +314,8 @@ def build_defense_question_specs(project: dict[str, Any]) -> list[dict[str, Any]
                 }
             )
 
-    if isinstance(attached, dict) and attached.get("website_proof_session_id"):
+    website_proofs = attached.get("website_proofs") if isinstance(attached, dict) else None
+    if isinstance(website_proofs, list) and website_proofs:
         specs.append(
             {
                 "question_text": "Show or describe how the live/demo proof for this project connects to your implementation.",

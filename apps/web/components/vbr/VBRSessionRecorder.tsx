@@ -82,6 +82,7 @@ function describeTargetRef(targetRef: Record<string, unknown>): string | null {
 type AttachedProofsSummary = {
   github_proof?: { repo_url?: string; repo_owner?: string; repo_name?: string; status?: string }
   documents?: Array<{ title?: string }>
+  website_proofs?: Array<{ target_website?: string; workflow_confidence?: string }>
 }
 
 /** Read the safe attached-proofs summary from a Project Defense project's metadata. */
@@ -800,12 +801,13 @@ export function VBRSessionRecorder({
                   (attached.github_proof.status ? ` (${attached.github_proof.status})` : "")
                 : project.repo_full_name || project.repo_url || "Repository URL only — no attached GitHub Proof"
               const documentCount = attached.documents?.length ?? 0
+              const websiteProofCount = attached.website_proofs?.length ?? 0
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "var(--ink)" }}>
                   <div><strong>Project:</strong> {project.title}</div>
                   <div><strong>Repository:</strong> {repoLabel}</div>
                   <div><strong>Documents:</strong> {documentCount > 0 ? `${documentCount} attached` : "none attached"}</div>
-                  <div><strong>Website Proof:</strong> not attached — attachment coming next</div>
+                  <div><strong>Website Proof:</strong> {websiteProofCount > 0 ? `${websiteProofCount} attached` : "none attached"}</div>
                   <div><strong>Defense questions:</strong> {session.questions.length}</div>
                 </div>
               )

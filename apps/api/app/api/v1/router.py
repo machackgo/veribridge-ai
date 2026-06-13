@@ -42,6 +42,7 @@ from app.api.v1.endpoints import (
     verification_readiness,
     website_evidence_discovery,
     website_proof_artifact_sync,
+    website_proof_summary,
     workflow_visible_evidence,
     workflow_visual_frames,
     verification_review,
@@ -327,6 +328,11 @@ api_router.include_router(
     website_proof_sessions.router,
     prefix="/student/website-proof/sessions",
     tags=["website-proof-sessions"],
+)
+api_router.include_router(
+    website_proof_summary.router,
+    prefix="/student/website-proof",
+    tags=["website-proof-summary"],
 )
 api_router.include_router(
     debug.router,

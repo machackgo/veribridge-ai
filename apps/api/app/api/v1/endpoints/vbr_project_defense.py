@@ -66,10 +66,10 @@ _CREATE_ERROR_DETAILS: dict[str, tuple[int, str, str]] = {
         "vbr_document_evidence_not_found",
         "One or more attached documents were not found for the current user.",
     ),
-    "website_proof_not_supported": (
-        status.HTTP_422_UNPROCESSABLE_ENTITY,
-        "vbr_website_proof_not_supported",
-        "Attaching a website proof session is not supported in Phase 1. Remove website_proof_session_id and try again.",
+    "website_proof_not_found": (
+        status.HTTP_404_NOT_FOUND,
+        "vbr_website_proof_not_found",
+        "One or more attached Website Proof sessions were not found for the current user.",
     ),
     "skill_pipeline_not_found": (
         status.HTTP_404_NOT_FOUND,
