@@ -233,9 +233,13 @@ export default function StudentVBRPage() {
 
           <ProofSourceCard
             icon="📄"
-            title="Other Proofs"
-            description="Documents, certificates, and coursework as supporting evidence."
-            action={<span style={comingSoonBadgeStyle}>Coming soon</span>}
+            title="Document Proof"
+            description="Project reports, certificates, transcripts, and coursework as supporting evidence."
+            action={
+              <Link href="/student/proofs/documents" style={secondaryLinkStyle}>
+                Add document proof
+              </Link>
+            }
           />
         </div>
       </section>

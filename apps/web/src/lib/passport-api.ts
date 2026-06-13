@@ -599,6 +599,106 @@ export function getPublicGitHubProofs(publicSlug: string): Promise<GitHubProofPu
   return apiJson(`${API}/public/passports/${publicSlug}/github-proofs`)
 }
 
+// ─── Document Proofs ───────────────────────────────────────────────────────
+
+export type DocumentProofSourceType = "document" | "certificate_transcript"
+
+export type DocumentProofResponse = {
+  id: string
+  user_id?: string
+  source_type: DocumentProofSourceType
+  status: string
+  filename?: string | null
+  title?: string | null
+  claimed_skills: string[]
+  description?: string | null
+  analysis_json: Record<string, unknown>
+  evidence_objects: Array<Record<string, unknown>>
+  created_at?: string | null
+}
+
+/**
+ * Result of syncing an analyzed Document Proof into the student's
+ * Skill Graph (skill_evidence_pipelines / skill_evidence_artifacts).
+ */
+export type DocumentProofSyncResult = {
+  ok: boolean
+  already_synced: boolean
+  skills_synced: string[]
+  pipelines_upserted: number
+  artifacts_created: number
+  errors: string[]
+}
+
+export function listDocumentProofs(): Promise<DocumentProofResponse[]> {
+  return apiJson(`${API}/student/document-proofs`)
+}
+
+export function submitDocumentProof(body: {
+  source_type?: DocumentProofSourceType
+  raw_text: string
+  title?: string | null
+  claimed_skills?: string[]
+  description?: string | null
+}): Promise<DocumentProofResponse> {
+  return apiJson(`${API}/student/document-proofs`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  })
+}
+
+/**
+ * Upload a document file (PDF/DOCX/TXT/MD) as standalone supporting evidence.
+ * Throws an Error with the backend message on failure.
+ */
+export async function uploadDocumentProof(
+  file: File,
+  meta?: {
+    title?: string
+    claimed_skills?: string[]
+    description?: string
+    source_type?: DocumentProofSourceType
+  },
+): Promise<DocumentProofResponse> {
+  const supabase = (await import("@/lib/supabase/client")).createSupabaseBrowserClient()
+  const { data: { session } } = await supabase.auth.getSession()
+  const headers: Record<string, string> = {}
+  if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`
+
+  const form = new FormData()
+  form.append("file", file)
+  if (meta?.title) form.append("title", meta.title)
+  if (meta?.claimed_skills?.length) form.append("claimed_skills", meta.claimed_skills.join(","))
+  if (meta?.description) form.append("description", meta.description)
+  if (meta?.source_type) form.append("source_type", meta.source_type)
+
+  const res = await fetch(`${API_BASE_URL}${API}/student/document-proofs/upload`, {
+    method: "POST",
+    body: form,
+    headers,
+  })
+  if (!res.ok) {
+    let message = `Upload failed (HTTP ${res.status}).`
+    try {
+      const body = await res.json()
+      message = body?.detail?.message ?? message
+    } catch {
+      // ignore — use default message
+    }
+    throw new Error(message)
+  }
+  return res.json() as Promise<DocumentProofResponse>
+}
+
+/**
+ * Sync an analyzed Document Proof into the student's Skill Graph.
+ * Idempotent on the backend — safe to call multiple times for the same document.
+ * Throws an Error with the backend message on failure so callers can show it.
+ */
+export function syncDocumentProofToSkillGraph(documentEvidenceId: string): Promise<DocumentProofSyncResult> {
+  return apiJson(`${API}/student/skill-pipelines/from-document-proof/${documentEvidenceId}`, { method: "POST" })
+}
+
 // ─── Notifications ─────────────────────────────────────────────────────────
 
 export function listNotifications(params?: {

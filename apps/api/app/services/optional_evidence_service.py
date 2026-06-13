@@ -9,7 +9,9 @@ from __future__ import annotations
 import io
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal
+from uuid import uuid4
 
 SourceType = Literal["document", "linkedin_profile", "certificate_transcript"]
 
@@ -525,9 +527,32 @@ def analyze_from_extracted_document(
     )
 
 
+class OptionalEvidencePersistError(RuntimeError):
+    """Raised when an optional evidence submission could not be persisted."""
+
+
 class OptionalEvidenceService:
     def __init__(self, db: Any) -> None:
         self._db = db
+
+    def _persist(self, payload: dict[str, Any], *, strict: bool = False) -> dict[str, Any]:
+        if isinstance(self._db, dict):
+            now = datetime.now(UTC).isoformat()
+            row = {"id": str(uuid4()), "created_at": now, "updated_at": now, **payload}
+            self._db.setdefault(_TABLE, {})[row["id"]] = row
+            return row
+        try:
+            resp = self._db.table(_TABLE).insert(payload).execute()
+            rows = resp.data or []
+            if rows:
+                return rows[0]
+        except Exception as exc:
+            if strict:
+                raise OptionalEvidencePersistError(str(exc)) from exc
+            return payload
+        if strict:
+            raise OptionalEvidencePersistError("optional_evidence_submissions insert returned no rows")
+        return payload
 
     def submit_file(
         self,
@@ -536,13 +561,16 @@ class OptionalEvidenceService:
         proof_session_id: str | None,
         file_bytes: bytes,
         filename: str,
+        source_type: SourceType = "document",
+        extra_metadata: dict[str, Any] | None = None,
+        strict: bool = False,
     ) -> dict[str, Any]:
         doc = extract_document_text(file_bytes, filename)
-        analysis = analyze_from_extracted_document(doc, source_type="document")
+        analysis = analyze_from_extracted_document(doc, source_type=source_type)
         payload: dict[str, Any] = {
             "user_id": user_id,
             "proof_session_id": proof_session_id,
-            "source_type": "document",
+            "source_type": source_type,
             "status": analysis.status,
             "file_path": filename,
             "profile_url": None,
@@ -552,15 +580,11 @@ class OptionalEvidenceService:
                 "file_name": doc.file_name,
                 "file_type": doc.file_type,
                 "extracted_text_preview": doc.preview,
+                **(extra_metadata or {}),
             },
             "evidence_objects": analysis.evidence_objects,
         }
-        try:
-            resp = self._db.table(_TABLE).insert(payload).execute()
-            rows = resp.data or []
-            return rows[0] if rows else payload
-        except Exception:
-            return payload
+        return self._persist(payload, strict=strict)
 
     def submit_text(
         self,
@@ -572,6 +596,8 @@ class OptionalEvidenceService:
         profile_url: str | None = None,
         section_label: str | None = None,
         file_path: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+        strict: bool = False,
     ) -> dict[str, Any]:
         analysis = analyze_optional_evidence(
             source_type=source_type,
@@ -588,16 +614,10 @@ class OptionalEvidenceService:
             "profile_url": profile_url,
             "file_path": file_path,
             "raw_text": raw_text or None,
-            "analysis_json": analysis.analysis_json,
+            "analysis_json": {**analysis.analysis_json, **(extra_metadata or {})},
             "evidence_objects": analysis.evidence_objects,
         }
-        try:
-            resp = self._db.table(_TABLE).insert(payload).execute()
-            rows = resp.data or []
-            return rows[0] if rows else payload
-        except Exception:
-            # Tests and local dev can still use the analyzed shape without DB.
-            return payload
+        return self._persist(payload, strict=strict)
 
     def list_for_session(self, *, user_id: str, proof_session_id: str) -> list[dict[str, Any]]:
         try:
@@ -612,3 +632,51 @@ class OptionalEvidenceService:
             return resp.data or []
         except Exception:
             return []
+
+    def list_standalone_for_user(
+        self, *, user_id: str, source_types: tuple[str, ...] | None = None
+    ) -> list[dict[str, Any]]:
+        """List standalone (proof_session_id IS NULL) submissions for a user."""
+        if isinstance(self._db, dict):
+            rows = [
+                row
+                for row in self._db.get(_TABLE, {}).values()
+                if str(row.get("user_id")) == user_id and row.get("proof_session_id") is None
+            ]
+            if source_types:
+                rows = [r for r in rows if r.get("source_type") in source_types]
+            rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+            return rows
+        try:
+            query = (
+                self._db.table(_TABLE)
+                .select("*")
+                .eq("user_id", user_id)
+                .is_("proof_session_id", "null")
+            )
+            if source_types:
+                query = query.in_("source_type", list(source_types))
+            resp = query.order("created_at", desc=True).execute()
+            return resp.data or []
+        except Exception:
+            return []
+
+    def get_by_id(self, *, user_id: str, evidence_id: str) -> dict[str, Any] | None:
+        if isinstance(self._db, dict):
+            row = self._db.get(_TABLE, {}).get(evidence_id)
+            if not row or str(row.get("user_id")) != user_id:
+                return None
+            return row
+        try:
+            resp = (
+                self._db.table(_TABLE)
+                .select("*")
+                .eq("id", evidence_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            rows = resp.data or []
+            return rows[0] if rows else None
+        except Exception:
+            return None

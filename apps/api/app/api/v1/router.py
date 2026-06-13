@@ -6,6 +6,8 @@ from app.api.v1.endpoints import (
     admin_quality_review,
     admin_notifications,
     debug,
+    document_proof_artifact_sync,
+    document_proofs,
     evidence_access_links,
     extension_proof,
     extension_proof_github_analysis,
@@ -115,6 +117,11 @@ api_router.include_router(
     tags=["github-proof-artifact-sync"],
 )
 api_router.include_router(
+    document_proof_artifact_sync.router,
+    prefix="/student/skill-pipelines",
+    tags=["document-proof-artifact-sync"],
+)
+api_router.include_router(
     website_verification_runs.router,
     prefix="/student/skill-evidence",
     tags=["website-verification-runs"],
@@ -163,6 +170,11 @@ api_router.include_router(
     github_proofs.router,
     prefix="/student/github-proofs",
     tags=["github-proofs"],
+)
+api_router.include_router(
+    document_proofs.router,
+    prefix="/student/document-proofs",
+    tags=["document-proofs"],
 )
 api_router.include_router(
     recruiter_candidates.router,
