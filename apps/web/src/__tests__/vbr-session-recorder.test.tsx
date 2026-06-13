@@ -781,4 +781,91 @@ describe("VBRSessionRecorder", () => {
     expect(screen.getByRole("button", { name: "Start recording session" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "I consent to record this session" })).not.toBeDisabled()
   })
+
+  it("exits 'Starting…' and shows a retry/fallback message if the screen-share prompt never resolves", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      // Simulate a screen-share permission picker that never completes.
+      getDisplayMedia.mockImplementation(() => new Promise(() => {}))
+
+      await startRecordingSession()
+
+      await waitFor(() => expect(getDisplayMedia).toHaveBeenCalled())
+      await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument())
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000)
+      })
+
+      await waitFor(() =>
+        expect(
+          screen.getByText("Screen sharing did not start. Please try again or use the manual transcript fallback.")
+        ).toBeInTheDocument()
+      )
+
+      // The "Starting…" timer must not be left running — the Cancel button
+      // disappears and the start button returns to a retryable state.
+      expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
+      await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
+      expect(screen.getByText("Not started")).toBeInTheDocument()
+
+      expect(startVBRSession).not.toHaveBeenCalled()
+      expect(MockMediaRecorder.instances).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("Cancel during 'Starting…' resets the UI, stops acquired tracks, and does not call startVBRSession", async () => {
+    // Simulate a screen-share permission picker that never completes.
+    getDisplayMedia.mockImplementation(() => new Promise(() => {}))
+
+    await startRecordingSession()
+
+    await waitFor(() => expect(getDisplayMedia).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
+    expect(screen.getByText("Not started")).toBeInTheDocument()
+
+    expect(startVBRSession).not.toHaveBeenCalled()
+    expect(cancelVBRSessionRecording).not.toHaveBeenCalled()
+    expect(MockMediaRecorder.instances).toHaveLength(0)
+  })
+
+  it("recovers from 'Starting…' and does not call startVBRSession when getDisplayMedia rejects", async () => {
+    getDisplayMedia.mockRejectedValueOnce(new Error("Permission denied"))
+
+    await startRecordingSession()
+
+    await waitFor(() => expect(screen.getByText("Permission denied")).toBeInTheDocument())
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
+    expect(screen.getByText("Not started")).toBeInTheDocument()
+
+    expect(getUserMedia).not.toHaveBeenCalled()
+    expect(startVBRSession).not.toHaveBeenCalled()
+  })
+
+  it("cleans up screen tracks and does not call startVBRSession when mic acquisition fails after screen is acquired", async () => {
+    getUserMedia.mockRejectedValueOnce(new Error("Microphone permission denied"))
+
+    await startRecordingSession()
+
+    await waitFor(() => expect(getDisplayMedia).toHaveBeenCalled())
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText(/Microphone permission denied/)).toBeInTheDocument())
+
+    const screenStream = (await getDisplayMedia.mock.results[0].value) as MockMediaStream
+    screenStream.getTracks().forEach((track) => expect(track.stopped).toBe(true))
+
+    expect(MockMediaRecorder.instances).toHaveLength(0)
+    expect(startVBRSession).not.toHaveBeenCalled()
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
+    expect(screen.getByText("Not started")).toBeInTheDocument()
+  })
 })

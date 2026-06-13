@@ -41,6 +41,13 @@ const BROWSER_RECORDING_LABELS: Record<BrowserRecordingState, string> = {
 // codec support, so we pick the first one the browser reports as supported.
 const RECORDER_MIME_TYPES = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
 
+// If the browser's screen-share/mic permission flow hasn't resolved within
+// this window, exit the "Starting…" state instead of hanging forever.
+const START_TIMEOUT_MS = 30_000
+
+const START_TIMEOUT_MESSAGE =
+  "Screen sharing did not start. Please try again or use the manual transcript fallback."
+
 function pickRecorderMimeType(): string | undefined {
   const Recorder = typeof window !== "undefined" ? window.MediaRecorder : undefined
   if (!Recorder || typeof Recorder.isTypeSupported !== "function") return undefined
@@ -236,6 +243,11 @@ export function VBRSessionRecorder({
   const chunkQueueRef = useRef<Promise<void>>(Promise.resolve())
   const chunkUploadStatesRef = useRef<Map<number, ChunkUploadState>>(new Map())
 
+  // Tracks the in-flight "Starting…" attempt so a late-resolving permission
+  // prompt (after a timeout or Cancel) can be detected and torn down.
+  const startGenerationRef = useRef(0)
+  const startTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // Browser support is only known on the client — compute after mount to avoid hydration mismatch.
   useEffect(() => {
     setBrowserSupport({
@@ -247,6 +259,11 @@ export function VBRSessionRecorder({
   // Make sure recording never keeps running after the component unmounts (e.g. navigation).
   useEffect(() => {
     return () => {
+      startGenerationRef.current += 1
+      if (startTimeoutRef.current) {
+        clearTimeout(startTimeoutRef.current)
+        startTimeoutRef.current = null
+      }
       const recorder = mediaRecorderRef.current
       if (recorder && recorder.state !== "inactive") {
         recorder.stop()
@@ -316,6 +333,45 @@ export function VBRSessionRecorder({
       ref.current = null
     }
     combinedStreamRef.current = null
+  }
+
+  function clearStartTimeout() {
+    if (startTimeoutRef.current) {
+      clearTimeout(startTimeoutRef.current)
+      startTimeoutRef.current = null
+    }
+  }
+
+  /**
+   * Exit the "Starting…" state: invalidate the in-flight attempt (so a
+   * late-resolving permission prompt is discarded), stop any acquired media
+   * tracks and recorder, and show the given message (or clear it for Cancel).
+   */
+  function abortStart(message: string | null) {
+    startGenerationRef.current += 1
+    clearStartTimeout()
+
+    const recorder = mediaRecorderRef.current
+    if (recorder) {
+      recorder.ondataavailable = null
+      recorder.onerror = null
+      recorder.onstop = null
+      if (recorder.state !== "inactive") {
+        recorder.stop()
+      }
+      mediaRecorderRef.current = null
+    }
+    stopAllStreams()
+
+    setRecordingState("inactive")
+    setStartLoading(false)
+    setRecordingError(message)
+  }
+
+  function handleCancelStart() {
+    abortStart(null)
+    setStartError(null)
+    setReadinessError(null)
   }
 
   function setChunkUploadState(chunkIndex: number, state: ChunkUploadState) {
@@ -394,6 +450,15 @@ export function VBRSessionRecorder({
     setRecordingError(null)
     setReadinessError(null)
 
+    // Guard against the browser's permission flow hanging forever (e.g. the
+    // screen-share picker never resolves under browser automation). If this
+    // attempt is still in "Starting…" when the timer fires, exit cleanly.
+    const myGeneration = ++startGenerationRef.current
+    clearStartTimeout()
+    startTimeoutRef.current = setTimeout(() => {
+      abortStart(START_TIMEOUT_MESSAGE)
+    }, START_TIMEOUT_MS)
+
     try {
       if (
         typeof navigator === "undefined" ||
@@ -410,6 +475,7 @@ export function VBRSessionRecorder({
       // getUserMedia, or startVBRSession.
       try {
         const readiness = await getVBRSessionRecordingReadiness(sessionId)
+        if (startGenerationRef.current !== myGeneration) return
         if (!readiness.ready) {
           setReadinessError(
             `${readiness.message} You can still use the manual transcript fallback.`
@@ -417,6 +483,7 @@ export function VBRSessionRecorder({
           return
         }
       } catch (err) {
+        if (startGenerationRef.current !== myGeneration) return
         setReadinessError(
           err instanceof Error
             ? `${err.message} You can still use the manual transcript fallback.`
@@ -432,25 +499,50 @@ export function VBRSessionRecorder({
       try {
         screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
       } catch (err) {
+        if (startGenerationRef.current !== myGeneration) return
         setRecordingError(err instanceof Error ? err.message : "Screen share permission was denied.")
+        return
+      }
+      if (startGenerationRef.current !== myGeneration) {
+        // Cancelled or timed out while waiting on the screen-share prompt —
+        // stop the stream that just arrived and discard it.
+        screenStream.getTracks().forEach((track) => track.stop())
         return
       }
       screenStreamRef.current = screenStream
 
-      let micStream: MediaStream | null = null
+      let micStream: MediaStream
       try {
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-        micStreamRef.current = micStream
-      } catch {
-        // Mic is optional — recording continues with screen audio only, if any.
+      } catch (err) {
+        // Mic permission failed after the screen was already acquired — clean
+        // up the screen stream too and leave the session retryable.
+        stopAllStreams()
+        if (startGenerationRef.current !== myGeneration) return
+        setRecordingError(
+          err instanceof Error
+            ? `${err.message} Please try again or use the manual transcript fallback.`
+            : "Microphone permission was denied. Please try again or use the manual transcript fallback."
+        )
+        return
       }
+      if (startGenerationRef.current !== myGeneration) {
+        micStream.getTracks().forEach((track) => track.stop())
+        stopAllStreams()
+        return
+      }
+      micStreamRef.current = micStream
+
+      // Both permission prompts have resolved — the rest of the setup is
+      // synchronous/fast, so the "Starting…" timeout no longer applies.
+      clearStartTimeout()
 
       // TODO(T4D): optional webcam capture/PiP is not implemented in T4C.
 
       let recorder: MediaRecorder
       try {
         const tracks: MediaStreamTrack[] = [...screenStream.getVideoTracks()]
-        const audioTrack = micStream?.getAudioTracks()[0] ?? screenStream.getAudioTracks()[0]
+        const audioTrack = micStream.getAudioTracks()[0] ?? screenStream.getAudioTracks()[0]
         if (audioTrack) tracks.push(audioTrack)
 
         const combinedStream = new MediaStream(tracks)
@@ -536,6 +628,7 @@ export function VBRSessionRecorder({
       }
       setSession((prev) => (prev ? { ...prev, ...updated } : prev))
     } finally {
+      clearStartTimeout()
       setStartLoading(false)
     }
   }
@@ -789,9 +882,16 @@ export function VBRSessionRecorder({
 
       <section style={cardStyle}>
         <div style={sectionTitleStyle}>Start recording</div>
-        <button type="button" style={canStart ? primaryButtonStyle : disabledButtonStyle} disabled={!canStart} onClick={handleStart}>
-          {startLoading ? "Starting…" : isRecording ? "Recording started" : "Start recording session"}
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" style={canStart ? primaryButtonStyle : disabledButtonStyle} disabled={!canStart} onClick={handleStart}>
+            {startLoading ? "Starting…" : isRecording ? "Recording started" : "Start recording session"}
+          </button>
+          {startLoading && (
+            <button type="button" style={buttonStyle} onClick={handleCancelStart}>
+              Cancel
+            </button>
+          )}
+        </div>
         {!consentGranted && session.status === "created" && (
           <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>Give consent above to enable this.</p>
         )}
