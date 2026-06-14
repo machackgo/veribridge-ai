@@ -474,6 +474,61 @@ def _update_project_metadata(db: Any, project: dict[str, Any], patch: dict[str, 
     project["metadata"] = metadata
 
 
+_AUTO_TRANSCRIPT_PROVIDERS = {"openai", "local_whisper"}
+
+
+def _get_auto_generated_transcript(
+    db: Any, session_id: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Return an existing auto-generated transcript (and its segments) for ``session_id``.
+
+    Only matches transcripts produced by ``vbr_transcription.transcribe_session``
+    (``provider`` in ``_AUTO_TRANSCRIPT_PROVIDERS``) — never a manually pasted
+    transcript (``provider == "manual"``).
+    """
+    if isinstance(db, dict):
+        transcript = next(
+            (
+                row
+                for row in db.setdefault(_TRANSCRIPTS_TABLE, {}).values()
+                if str(row.get("session_id")) == session_id
+                and row.get("provider") in _AUTO_TRANSCRIPT_PROVIDERS
+            ),
+            None,
+        )
+        if transcript is None or not (transcript.get("full_text") or "").strip():
+            return None
+        transcript_id = str(transcript["id"])
+        segments = [
+            row
+            for row in db.setdefault(_TRANSCRIPT_SEGMENTS_TABLE, {}).values()
+            if str(row.get("transcript_id")) == transcript_id
+        ]
+        return transcript, segments
+
+    result = (
+        db.table(_TRANSCRIPTS_TABLE)
+        .select("*")
+        .eq("session_id", session_id)
+        .maybe_single()
+        .execute()
+    )
+    transcript = getattr(result, "data", None) if result is not None else None
+    if not transcript or transcript.get("provider") not in _AUTO_TRANSCRIPT_PROVIDERS:
+        return None
+    if not (transcript.get("full_text") or "").strip():
+        return None
+
+    seg_result = (
+        db.table(_TRANSCRIPT_SEGMENTS_TABLE)
+        .select("*")
+        .eq("transcript_id", transcript["id"])
+        .execute()
+    )
+    segments = getattr(seg_result, "data", []) or []
+    return transcript, segments
+
+
 def _mark_questions_answered(db: Any, question_ids: set[str]) -> None:
     ids = [qid for qid in question_ids if qid]
     if not ids:
@@ -493,8 +548,11 @@ def submit_defense_answers(
 ) -> dict[str, Any]:
     """Save pasted/manual defense answers as a transcript + segments and analyze.
 
-    Raises ``ValueError("no_answers_provided")`` if neither ``body.answers``
-    nor ``body.combined_text`` contains any non-empty text.
+    If neither ``body.answers`` nor ``body.combined_text`` contains any
+    non-empty text, falls back to an existing auto-generated transcript (from
+    ``vbr_transcription.transcribe_session``) as the analysis source, if one
+    exists. Raises ``ValueError("no_answers_provided")`` if neither manual
+    text nor an auto-generated transcript is available.
     """
     session_id = str(session["id"])
     questions = list_session_questions(db, session_id)
@@ -540,15 +598,19 @@ def submit_defense_answers(
             }
         )
 
-    if not segments:
-        raise ValueError("no_answers_provided")
-
-    full_text = "\n\n".join(text_parts)
-
-    transcript = _upsert_transcript(db, session_id, full_text)
-    transcript_id = str(transcript["id"])
-    saved_segments = _replace_transcript_segments(db, transcript_id, segments)
-    _mark_questions_answered(db, answered_question_ids)
+    if segments:
+        full_text = "\n\n".join(text_parts)
+        transcript = _upsert_transcript(db, session_id, full_text)
+        transcript_id = str(transcript["id"])
+        saved_segments = _replace_transcript_segments(db, transcript_id, segments)
+        _mark_questions_answered(db, answered_question_ids)
+    else:
+        auto = _get_auto_generated_transcript(db, session_id)
+        if auto is None:
+            raise ValueError("no_answers_provided")
+        auto_transcript, saved_segments = auto
+        transcript_id = str(auto_transcript["id"])
+        full_text = auto_transcript.get("full_text") or ""
 
     metadata = project.get("metadata") or {}
     claimed_skills = _clean_list(metadata.get("claimed_skills") or [])

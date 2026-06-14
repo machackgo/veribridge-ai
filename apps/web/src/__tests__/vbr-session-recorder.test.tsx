@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { VBRSessionRecorder } from "../app/student/vbr/sessions/[sessionId]/VBRSessionRecorder"
 import {
@@ -8,8 +8,10 @@ import {
   getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
+  processVBRSession,
   requestVBRChunkUploadUrl,
   startVBRSession,
+  transcribeVBRSession,
   uploadVBRChunkBytes,
   uploadVBRSessionChunk,
   type VBRSessionDetailResponse,
@@ -27,6 +29,8 @@ vi.mock("@/lib/vbr-api", () => ({
   uploadVBRSessionChunk: vi.fn(),
   updateVBRSessionTelemetry: vi.fn(),
   finalizeVBRSession: vi.fn(),
+  processVBRSession: vi.fn(),
+  transcribeVBRSession: vi.fn(),
 }))
 
 // SHA-256 of 32 zero-filled "fake" chunk bytes used by the digest mock below.
@@ -867,5 +871,180 @@ describe("VBRSessionRecorder", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Start recording session" })).not.toBeDisabled())
     expect(screen.getByText("Not started")).toBeInTheDocument()
+  })
+})
+
+describe("Transcript generation", () => {
+  it("does not show the Transcript section before the session is uploaded", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(makeSession({ status: "created" }))
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-session-status")).toBeInTheDocument())
+
+    expect(screen.queryByTestId("vbr-transcript")).not.toBeInTheDocument()
+  })
+
+  it("shows 'Not generated' status and a Generate transcript button after the recording is uploaded", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "uploaded", chunk_count: 1, transcript_status: null })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+
+    const section = screen.getByTestId("vbr-transcript")
+    expect(within(section).getByText(/Not generated/)).toBeInTheDocument()
+    expect(within(section).getByRole("button", { name: "Generate transcript" })).toBeInTheDocument()
+  })
+
+  it("processes then transcribes an uploaded session, and shows the ready status after refresh", async () => {
+    vi.mocked(getVBRSession)
+      .mockResolvedValueOnce(makeSession({ status: "uploaded", chunk_count: 1, transcript_status: null }))
+      .mockResolvedValue(makeSession({ status: "processed", chunk_count: 1, transcript_status: "transcribed" }))
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+    vi.mocked(processVBRSession).mockResolvedValue({
+      session_id: "session-1",
+      status: "processed",
+      chunk_count: 1,
+      total_bytes: 2048,
+      full_video_bytes: 2048,
+      full_video_sha256: "abc123",
+      next_steps: [],
+      message: "Media processed.",
+    })
+    vi.mocked(transcribeVBRSession).mockResolvedValue({
+      session_id: "session-1",
+      status: "transcribed",
+      transcript_id: "transcript-1",
+      segment_count: 2,
+      duration_s: 20,
+      provider: "openai",
+      configured: true,
+      message: "Transcript generated using openai.",
+    })
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate transcript" }))
+
+    await waitFor(() => expect(processVBRSession).toHaveBeenCalledWith("session-1"))
+    await waitFor(() => expect(transcribeVBRSession).toHaveBeenCalledWith("session-1"))
+    await waitFor(() => expect(screen.getByText("Transcript generated using openai.")).toBeInTheDocument())
+
+    const section = screen.getByTestId("vbr-transcript")
+    await waitFor(() => expect(within(section).getByText(/Ready/)).toBeInTheDocument())
+  })
+
+  it("does not call process for a session that is already 'processed'", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: null })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+    vi.mocked(transcribeVBRSession).mockResolvedValue({
+      session_id: "session-1",
+      status: "transcribed",
+      transcript_id: "transcript-1",
+      segment_count: 2,
+      duration_s: 20,
+      provider: "openai",
+      configured: true,
+      message: "Transcript generated using openai.",
+    })
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate transcript" }))
+
+    await waitFor(() => expect(transcribeVBRSession).toHaveBeenCalledWith("session-1"))
+    expect(processVBRSession).not.toHaveBeenCalled()
+  })
+
+  it("shows the manual fallback message when the transcription provider is not configured", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: null })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+    vi.mocked(transcribeVBRSession).mockResolvedValue({
+      session_id: "session-1",
+      status: "not_configured",
+      transcript_id: null,
+      segment_count: 0,
+      duration_s: null,
+      provider: null,
+      configured: false,
+      message: "Transcription provider is not configured. Use manual transcript fallback.",
+    })
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate transcript" }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Transcription provider is not configured. Use manual transcript fallback.")
+      ).toBeInTheDocument()
+    )
+
+    const text = document.body.textContent ?? ""
+    expect(text).not.toMatch(/storage_path/i)
+    expect(text).not.toMatch(/signed/i)
+    expect(text).not.toMatch(/vbr\/sessions/)
+  })
+
+  it("shows an error message if transcript generation fails", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: null })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+    vi.mocked(transcribeVBRSession).mockRejectedValue(new Error("Failed to generate transcript (HTTP 502)."))
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate transcript" }))
+
+    await waitFor(() =>
+      expect(screen.getByText("Failed to generate transcript (HTTP 502).")).toBeInTheDocument()
+    )
+  })
+
+  it("shows only the generic safe message on provider/runtime transcription failure", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: null })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+    // Backend never sends provider/runtime details — only the fixed safe message.
+    vi.mocked(transcribeVBRSession).mockRejectedValue(
+      new Error("Transcription failed. Please try again later or use the manual transcript fallback.")
+    )
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate transcript" }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Transcription failed. Please try again later or use the manual transcript fallback.")
+      ).toBeInTheDocument()
+    )
+
+    const text = document.body.textContent ?? ""
+    expect(text).not.toMatch(/\/Users\//)
+    expect(text).not.toMatch(/ffmpeg/i)
+    expect(text).not.toMatch(/signed_url/i)
+    expect(text).not.toMatch(/storage_path/i)
   })
 })

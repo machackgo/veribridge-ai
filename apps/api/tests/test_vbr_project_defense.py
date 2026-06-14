@@ -533,6 +533,76 @@ def test_submit_defense_marks_project_metadata_analyzed(client: TestClient) -> N
     assert project_after["metadata"]["phase"] == "project_defense_mvp_v1"
 
 
+def test_submit_defense_falls_back_to_auto_generated_transcript(client: TestClient, mem_store: dict) -> None:
+    """If no manual answers/combined_text are provided, but a recording was already
+    transcribed (Transcript Phase 1, provider in {openai, local_whisper}), use that
+    transcript as the Project Defense explanation source.
+    """
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+
+    transcript_id = str(uuid4())
+    mem_store.setdefault("vbr_transcripts", {})[transcript_id] = {
+        "id": transcript_id,
+        "session_id": session_id,
+        "provider": "openai",
+        "language": "en",
+        "full_text": DEFENSE_TRANSCRIPT,
+        "raw": {},
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    mem_store.setdefault("vbr_transcript_segments", {})["seg-1"] = {
+        "id": "seg-1",
+        "transcript_id": transcript_id,
+        "question_id": None,
+        "start_s": 0.0,
+        "end_s": 8.0,
+        "text": "Candidate introduced the project and repository.",
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+
+    response = _submit_defense(client, session_id)
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["project_id"] == project_id
+    assert body["session_id"] == session_id
+    assert body["transcript_id"] == transcript_id
+    assert body["segment_count"] == 1
+
+    # No new transcript row created — the auto-generated one was reused.
+    assert len(mem_store["vbr_transcripts"]) == 1
+
+    analysis = body["analysis"]
+    assert "Python" in analysis["skills_mentioned"]
+    assert "React" in analysis["skills_mentioned"]
+
+
+def test_submit_defense_ignores_manual_provider_transcript_for_fallback(client: TestClient, mem_store: dict) -> None:
+    """A manually-pasted transcript (provider == 'manual') from a *different*
+    submission must not be picked up as an auto-generated fallback source.
+    """
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+
+    transcript_id = str(uuid4())
+    mem_store.setdefault("vbr_transcripts", {})[transcript_id] = {
+        "id": transcript_id,
+        "session_id": session_id,
+        "provider": "manual",
+        "language": "en",
+        "full_text": DEFENSE_TRANSCRIPT,
+        "raw": {},
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+
+    response = _submit_defense(client, session_id)
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "vbr_no_answers_provided"
+
+
 def test_submit_defense_not_found_for_other_user(client: TestClient) -> None:
     created = _create_project_defense(client).json()
     project_id = created["project"]["id"]

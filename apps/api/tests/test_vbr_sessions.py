@@ -539,8 +539,11 @@ def test_recording_readiness_requires_owner(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_recording_readiness_not_ready_without_configured_bucket(client: TestClient, mem_store: dict) -> None:
+def test_recording_readiness_not_ready_without_configured_bucket(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _project_id, session_id = _setup_session(client)
+    monkeypatch.setattr(settings, "supabase_vbr_media_bucket", "")
 
     app.dependency_overrides[get_db] = lambda: _FakeRealDbNoStorage(mem_store)
     response = client.get(f"/api/v1/student/vbr/sessions/{session_id}/recording-readiness")
@@ -576,9 +579,12 @@ def test_recording_readiness_response_does_not_leak_storage_details(
     assert "vbr/sessions" not in text
 
 
-def test_start_fails_without_mutating_status_when_storage_not_ready(client: TestClient, mem_store: dict) -> None:
+def test_start_fails_without_mutating_status_when_storage_not_ready(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _project_id, session_id = _setup_session(client)
     _grant_consent(client, session_id)
+    monkeypatch.setattr(settings, "supabase_vbr_media_bucket", "")
 
     app.dependency_overrides[get_db] = lambda: _FakeRealDbNoStorage(mem_store)
     response = client.post(f"/api/v1/student/vbr/sessions/{session_id}/start")

@@ -36,6 +36,7 @@ export type VBRSessionResponse = {
   chunk_count: number
   created_at: string
   updated_at: string
+  transcript_status?: string | null
 }
 
 export type VBRSessionDetailResponse = VBRSessionResponse & {
@@ -266,6 +267,46 @@ export async function finalizeVBRSession(
     body: JSON.stringify({ duration_s: durationS ?? null }),
   })
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to finalize session (HTTP ${res.status}).`))
+  return res.json()
+}
+
+export type VBRMediaProcessingResponse = {
+  session_id: string
+  status: string
+  chunk_count: number
+  total_bytes: number
+  full_video_bytes: number
+  full_video_sha256: string
+  next_steps: string[]
+  message: string
+}
+
+/** Run media processing (concatenation) for a finalized ("uploaded") session. */
+export async function processVBRSession(sessionId: string): Promise<VBRMediaProcessingResponse> {
+  const res = await fetchAPI(`/api/v1/student/vbr/sessions/${encodeURIComponent(sessionId)}/process`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to process recording (HTTP ${res.status}).`))
+  return res.json()
+}
+
+export type VBRTranscriptionResponse = {
+  session_id: string
+  status: string
+  transcript_id: string | null
+  segment_count: number
+  duration_s: number | null
+  provider: string | null
+  configured: boolean
+  message: string
+}
+
+/** Generate a timestamped transcript for a processed session. */
+export async function transcribeVBRSession(sessionId: string): Promise<VBRTranscriptionResponse> {
+  const res = await fetchAPI(`/api/v1/student/vbr/sessions/${encodeURIComponent(sessionId)}/transcribe`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to generate transcript (HTTP ${res.status}).`))
   return res.json()
 }
 

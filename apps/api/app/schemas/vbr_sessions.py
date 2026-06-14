@@ -21,6 +21,7 @@ class VBRSessionResponse(BaseModel):
     chunk_count: int
     created_at: str
     updated_at: str
+    transcript_status: str | None = None
 
 
 class VBRSessionDetailResponse(VBRSessionResponse):
@@ -108,9 +109,11 @@ class VBRMediaProcessingResponse(BaseModel):
 class VBRTranscriptionResponse(BaseModel):
     session_id: str
     status: str
-    transcript_id: str
-    segment_count: int
+    transcript_id: str | None = None
+    segment_count: int = 0
     duration_s: float | None = None
+    provider: str | None = None
+    configured: bool = True
     message: str
 
 

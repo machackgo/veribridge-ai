@@ -32,6 +32,8 @@ vi.mock("@/lib/vbr-api", () => ({
   uploadVBRSessionChunk: vi.fn(),
   updateVBRSessionTelemetry: vi.fn(),
   finalizeVBRSession: vi.fn(),
+  processVBRSession: vi.fn(),
+  transcribeVBRSession: vi.fn(),
 }))
 
 vi.mock("next/navigation", () => ({
@@ -230,6 +232,27 @@ describe("ProjectDefenseRecordPage", () => {
     const links = screen.getAllByRole("link", { name: /project defense/i })
     expect(links.length).toBeGreaterThan(0)
     links.forEach((link) => expect(link).toHaveAttribute("href", "/student/proofs/project-defense"))
+  })
+
+  it("shows transcript status and a Generate transcript button once the recording is uploaded, with no internals leaked", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(makeSession({ status: "uploaded", chunk_count: 1 }))
+
+    render(<ProjectDefenseRecordPage />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+
+    const section = screen.getByTestId("vbr-transcript")
+    expect(within(section).getByText(/Not generated/)).toBeInTheDocument()
+    expect(within(section).getByRole("button", { name: "Generate transcript" })).toBeInTheDocument()
+
+    // Manual fallback stays reachable even once a recording exists.
+    expect(screen.getByText(/paste your explanation instead/i)).toBeInTheDocument()
+
+    const text = document.body.textContent ?? ""
+    expect(text).not.toMatch(/vbr\/sessions/)
+    expect(text).not.toMatch(/storage_path/i)
+    expect(text).not.toMatch(/signed_url/i)
+    expect(text).not.toMatch(/\.webm/)
   })
 
   it("shows project context with attached evidence summary and the Phase 2A recording scope", async () => {

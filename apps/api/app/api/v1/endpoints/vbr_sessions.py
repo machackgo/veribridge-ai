@@ -54,7 +54,7 @@ from app.services.vbr_report_publish import (
     submit_report_review,
     unpublish_report,
 )
-from app.services.vbr_transcription import transcribe_session_skeleton
+from app.services.vbr_transcription import transcribe_session
 from app.services.vbr_session_recording import (
     cancel_recording_session,
     check_recording_storage_readiness,
@@ -90,6 +90,7 @@ def _to_session_response(row: dict[str, Any], chunk_count: int) -> VBRSessionRes
         chunk_count=chunk_count,
         created_at=str(row.get("created_at") or ""),
         updated_at=str(row.get("updated_at") or ""),
+        transcript_status=((row.get("telemetry") or {}).get("transcript") or {}).get("status"),
     )
 
 
@@ -377,14 +378,14 @@ def process_session_route(
 @router.post(
     "/{session_id}/transcribe",
     response_model=VBRTranscriptionResponse,
-    summary="Run the deterministic transcript-generation skeleton for a processed session",
+    summary="Generate a timestamped transcript for a processed session",
 )
 def transcribe_session_route(
     session_id: str,
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> VBRTranscriptionResponse:
-    result = transcribe_session_skeleton(db, session_id, user_id)
+    result = transcribe_session(db, session_id, user_id)
     return VBRTranscriptionResponse(**result)
 
 

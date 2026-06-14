@@ -1,14 +1,14 @@
-"""VBR transcript-generation skeleton (T5D).
+"""VBR transcript generation (Phase 1).
 
-T5D scope: produce a deterministic transcript skeleton for a session whose
-full video has already been processed (T5C), and store it as
-``vbr_transcripts`` + ``vbr_transcript_segments`` rows. This module does NOT
-download the full video, extract audio, run Whisper/AssemblyAI, or call any
-external transcription provider.
+Generates a timestamped transcript for a processed Project Defense /
+Verified Build Report recording, using the provider-agnostic
+``transcription_service``. Stores results as ``vbr_transcripts`` +
+``vbr_transcript_segments`` rows linked to ``vbr_verification_sessions``.
 
-TODO(T5E/T6): replace ``transcribe_full_video_skeleton`` with a real
-transcription provider call after storage download/audio extraction is
-finalized.
+If no transcription provider is configured, this returns a safe HTTP 200
+response (``status="not_configured"``) so the frontend can show the manual
+transcript fallback instead of failing. No raw video bytes, storage paths,
+or full transcript text are ever included in log messages.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.core.config import settings
 from app.services.vbr_session_recording import get_owned_vbr_session_or_404, get_session
 
 logger = logging.getLogger(__name__)
@@ -29,22 +30,16 @@ logger = logging.getLogger(__name__)
 _SESSIONS_TABLE = "vbr_verification_sessions"
 _TRANSCRIPTS_TABLE = "vbr_transcripts"
 _TRANSCRIPT_SEGMENTS_TABLE = "vbr_transcript_segments"
+_MEDIA_OBJECTS_TABLE = "_vbr_media_objects"
 
-_SKELETON_PROVIDER = "skeleton_fake"
-_SKELETON_LANGUAGE = "en"
-
-# Deterministic skeleton segments. TODO(T5E/T6): replace with real
-# transcription provider output after storage download/audio extraction is
-# finalized.
-_SKELETON_SEGMENTS: list[dict[str, Any]] = [
-    {"start_s": 0.0, "end_s": 8.0, "text": "Candidate introduced the project and repository."},
-    {"start_s": 8.0, "end_s": 20.0, "text": "Candidate explained a key implementation decision."},
-]
+_NOT_CONFIGURED_MESSAGE = "Transcription provider is not configured. Use manual transcript fallback."
+_TRANSCRIPTION_FAILED_MESSAGE = (
+    "Transcription failed. Please try again later or use the manual transcript fallback."
+)
 
 __all__ = [
     "TranscriptResult",
-    "transcribe_full_video_skeleton",
-    "transcribe_session_skeleton",
+    "transcribe_session",
 ]
 
 
@@ -73,27 +68,71 @@ def _update_session(db: Any, session_id: str, updates: dict[str, Any]) -> dict[s
     return rows[0] if rows else {}
 
 
-# ── Transcript provider skeleton ────────────────────────────────────────────
+# ── Full video download (reads media-processing output) ─────────────────────
 
 
-def transcribe_full_video_skeleton(db: Any, session: dict[str, Any]) -> TranscriptResult:
-    """Return a deterministic transcript skeleton for a processed session.
+def _download_full_video_bytes(db: Any, storage_path: str) -> bytes:
+    """Download the processed full-session video's raw bytes from private storage.
 
-    TODO(T5E/T6): replace skeleton with real transcription provider after
-    storage download/audio extraction is finalized. Does not download the
-    full video or call any external transcription API.
+    Fake dict DBs read from ``_vbr_media_objects`` (populated by
+    ``vbr_media_processing.upload_processed_full_video``). Real Supabase
+    clients fail closed with a 503 if the media bucket is not configured or
+    the storage client is unavailable.
     """
-    segments = [dict(segment) for segment in _SKELETON_SEGMENTS]
-    full_text = " ".join(segment["text"] for segment in segments)
-    duration_s = max((segment["end_s"] for segment in segments), default=0.0)
+    if isinstance(db, dict):
+        media_store = db.get(_MEDIA_OBJECTS_TABLE, {})
+        data = media_store.get(storage_path)
+        if data is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "vbr_media_full_video_download_failed",
+                    "message": "Processed full session video could not be loaded.",
+                },
+            )
+        return bytes(data)
 
-    return TranscriptResult(
-        provider=_SKELETON_PROVIDER,
-        language=_SKELETON_LANGUAGE,
-        segments=segments,
-        full_text=full_text,
-        duration_s=duration_s,
-    )
+    bucket = settings.supabase_vbr_media_bucket
+    if not bucket:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vbr_media_bucket_not_configured",
+                "message": "Recording media storage is not configured.",
+            },
+        )
+
+    if not hasattr(db, "storage"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vbr_storage_client_unavailable",
+                "message": "Recording media storage is unavailable.",
+            },
+        )
+
+    try:
+        data = db.storage.from_(bucket).download(storage_path)
+    except Exception as exc:
+        logger.warning("[VBR] Full video download failed (stage=transcription_download)")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "vbr_media_full_video_download_failed",
+                "message": "Processed full session video could not be loaded.",
+            },
+        ) from exc
+
+    if not isinstance(data, (bytes, bytearray)):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "vbr_media_full_video_download_failed",
+                "message": "Processed full session video could not be loaded.",
+            },
+        )
+
+    return bytes(data)
 
 
 # ── Transcript persistence ──────────────────────────────────────────────────
@@ -230,20 +269,36 @@ def _mark_session_transcribed(
     return _update_session(db, session_id, {"telemetry": telemetry, "updated_at": completed_at})
 
 
+def _mark_session_transcript_status(db: Any, session_id: str, status_value: str) -> dict[str, Any]:
+    session = get_session(db, session_id) or {}
+    telemetry = dict(session.get("telemetry") or {})
+    transcript_meta = dict(telemetry.get("transcript") or {})
+
+    updated_at = _now()
+    transcript_meta["status"] = status_value
+    transcript_meta["updated_at"] = updated_at
+    telemetry["transcript"] = transcript_meta
+
+    return _update_session(db, session_id, {"telemetry": telemetry, "updated_at": updated_at})
+
+
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 
-def transcribe_session_skeleton(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
-    """Run the deterministic transcript-generation skeleton for a session.
+def transcribe_session(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
+    """Generate a timestamped transcript for a processed session.
 
     Validates ownership, that the session has been media-processed, and that
-    a processed full-session video exists, then generates and stores a
-    deterministic transcript skeleton. Idempotent: re-running replaces any
-    existing transcript segments rather than duplicating the transcript row.
+    a processed full-session video exists. Downloads the full video and runs
+    it through the configured transcription provider, then stores the result
+    as ``vbr_transcripts`` + ``vbr_transcript_segments`` rows. Idempotent:
+    re-running replaces any existing transcript segments rather than
+    duplicating the transcript row.
 
-    No external transcription provider is called here. No raw video is
-    downloaded. The response never includes storage paths or full transcript
-    text.
+    If no transcription provider is configured, returns HTTP 200 with
+    ``status="not_configured"`` so the frontend can show the manual
+    transcript fallback. The response never includes storage paths or full
+    transcript text.
     """
     session, _project = get_owned_vbr_session_or_404(db, session_id, user_id)
 
@@ -259,7 +314,8 @@ def transcribe_session_skeleton(db: Any, session_id: str, user_id: str) -> dict[
     telemetry = session.get("telemetry") or {}
     media_processing = telemetry.get("media_processing") or {}
     full_video = media_processing.get("full_video") or {}
-    if not full_video.get("storage_path"):
+    storage_path = full_video.get("storage_path")
+    if not storage_path:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
@@ -268,7 +324,51 @@ def transcribe_session_skeleton(db: Any, session_id: str, user_id: str) -> dict[
             },
         )
 
-    result = transcribe_full_video_skeleton(db, session)
+    from app.services.transcription_service import (
+        TranscriptionUnavailableError,
+        transcribe_audio,
+    )
+
+    try:
+        video_bytes = _download_full_video_bytes(db, storage_path)
+        tx_result = transcribe_audio(video_bytes, "full.webm")
+    except TranscriptionUnavailableError:
+        _mark_session_transcript_status(db, session_id, "not_configured")
+        return {
+            "session_id": session_id,
+            "status": "not_configured",
+            "transcript_id": None,
+            "segment_count": 0,
+            "duration_s": None,
+            "provider": None,
+            "configured": False,
+            "message": _NOT_CONFIGURED_MESSAGE,
+        }
+    except RuntimeError as exc:
+        _mark_session_transcript_status(db, session_id, "failed")
+        logger.warning(
+            "[VBR] Transcription failed for session %s "
+            "(stage=transcribe, provider=%s, exc_type=%s)",
+            session_id,
+            settings.transcription_provider,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "vbr_transcription_failed", "message": _TRANSCRIPTION_FAILED_MESSAGE},
+        ) from exc
+
+    language = tx_result.language or "en"
+    segments = [
+        {"start_s": float(seg.start_time), "end_s": float(seg.end_time), "text": seg.text}
+        for seg in tx_result.transcript_segments
+        if seg.text.strip()
+    ]
+    if not segments:
+        fallback_duration = float(session.get("duration_s") or 0.0)
+        segments = [{"start_s": 0.0, "end_s": fallback_duration, "text": tx_result.transcript_text}]
+
+    duration_s = max((segment["end_s"] for segment in segments), default=0.0)
 
     existing = _get_transcript_by_session(db, session_id)
     if existing is not None:
@@ -276,33 +376,44 @@ def transcribe_session_skeleton(db: Any, session_id: str, user_id: str) -> dict[
             db,
             str(existing["id"]),
             {
-                "provider": result.provider,
-                "language": result.language,
-                "full_text": result.full_text,
-                "raw": {"skeleton": True},
+                "provider": tx_result.provider_used,
+                "language": language,
+                "full_text": tx_result.transcript_text,
+                "raw": {},
             },
         )
         _delete_transcript_segments(db, str(existing["id"]))
     else:
         transcript_row = _insert_transcript(
-            db, session_id, result.provider, result.language, result.full_text, {"skeleton": True}
+            db, session_id, tx_result.provider_used, language, tx_result.transcript_text, {}
         )
 
     transcript_id = str(transcript_row["id"])
-    _insert_transcript_segments(db, transcript_id, result.segments)
+    saved_segments = _insert_transcript_segments(db, transcript_id, segments)
+
+    result = TranscriptResult(
+        provider=tx_result.provider_used,
+        language=language,
+        segments=segments,
+        full_text=tx_result.transcript_text,
+        duration_s=duration_s,
+    )
     _mark_session_transcribed(db, session_id, transcript_id, result)
 
     logger.info(
-        "[VBR] Transcript skeleton generated for session %s (segments=%d)",
+        "[VBR] Transcript generated for session %s (provider=%s, segments=%d)",
         session_id,
-        len(result.segments),
+        tx_result.provider_used,
+        len(saved_segments),
     )
 
     return {
         "session_id": session_id,
         "status": "transcribed",
         "transcript_id": transcript_id,
-        "segment_count": len(result.segments),
-        "duration_s": result.duration_s,
-        "message": "Transcript generated using a deterministic skeleton. Real transcription provider integration is not yet implemented.",
+        "segment_count": len(saved_segments),
+        "duration_s": duration_s,
+        "provider": tx_result.provider_used,
+        "configured": True,
+        "message": f"Transcript generated using {tx_result.provider_used}.",
     }

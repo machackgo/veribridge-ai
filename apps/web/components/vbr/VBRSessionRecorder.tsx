@@ -8,8 +8,10 @@ import {
   getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
+  processVBRSession,
   requestVBRChunkUploadUrl,
   startVBRSession,
+  transcribeVBRSession,
   updateVBRSessionTelemetry,
   uploadVBRChunkBytes,
   uploadVBRSessionChunk,
@@ -35,6 +37,13 @@ const BROWSER_RECORDING_LABELS: Record<BrowserRecordingState, string> = {
   recording: "Browser recording active",
   stopping: "Stopping…",
   stopped: "Browser recording stopped",
+}
+
+const TRANSCRIPT_STATUS_LABELS: Record<string, string> = {
+  not_generated: "Not generated",
+  not_configured: "Provider not configured",
+  transcribed: "Ready",
+  failed: "Generation failed",
 }
 
 // Preferred MediaRecorder mimeTypes, in order of preference. Browsers vary in
@@ -211,6 +220,10 @@ export function VBRSessionRecorder({
   const [finalizeLoading, setFinalizeLoading] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   const [finalizeMessage, setFinalizeMessage] = useState<string | null>(null)
+
+  const [transcriptLoading, setTranscriptLoading] = useState(false)
+  const [transcriptError, setTranscriptError] = useState<string | null>(null)
+  const [transcriptMessage, setTranscriptMessage] = useState<string | null>(null)
 
 
   const [telemetryStatus, setTelemetryStatus] = useState<string | null>(null)
@@ -663,6 +676,24 @@ export function VBRSessionRecorder({
   }
 
 
+  async function handleGenerateTranscript() {
+    setTranscriptLoading(true)
+    setTranscriptError(null)
+    setTranscriptMessage(null)
+    try {
+      if (session?.status === "uploaded") {
+        await processVBRSession(sessionId)
+      }
+      const result = await transcribeVBRSession(sessionId)
+      setTranscriptMessage(result.message)
+    } catch (err) {
+      setTranscriptError(err instanceof Error ? err.message : "Failed to generate transcript.")
+    } finally {
+      setTranscriptLoading(false)
+      await refreshSession()
+    }
+  }
+
   async function handleResetRecording() {
     setResetLoading(true)
     setResetError(null)
@@ -1001,6 +1032,31 @@ export function VBRSessionRecorder({
         {finalizeMessage && <p style={{ fontSize: 12, color: "var(--emerald)", marginTop: 8 }}>{finalizeMessage}</p>}
         {finalizeError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{finalizeError}</p>}
       </section>
+
+      {(session.status === "uploaded" || session.status === "processed") && (
+        <section style={cardStyle} data-testid="vbr-transcript">
+          <div style={sectionTitleStyle}>Transcript</div>
+          <p style={{ fontSize: 13, color: "var(--ink)", marginTop: 0 }}>
+            <strong>Status:</strong>{" "}
+            {transcriptLoading
+              ? "Generating…"
+              : TRANSCRIPT_STATUS_LABELS[session.transcript_status ?? "not_generated"] ??
+                TRANSCRIPT_STATUS_LABELS.not_generated}
+          </p>
+          <button
+            type="button"
+            style={transcriptLoading ? disabledButtonStyle : primaryButtonStyle}
+            disabled={transcriptLoading}
+            onClick={handleGenerateTranscript}
+          >
+            {transcriptLoading ? "Generating transcript…" : "Generate transcript"}
+          </button>
+          {transcriptMessage && (
+            <p style={{ fontSize: 12, color: "var(--emerald)", marginTop: 8 }}>{transcriptMessage}</p>
+          )}
+          {transcriptError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{transcriptError}</p>}
+        </section>
+      )}
     </div>
   )
 }
