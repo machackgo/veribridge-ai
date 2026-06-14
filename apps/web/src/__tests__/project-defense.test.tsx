@@ -18,6 +18,7 @@ import type {
   SubmitDefenseAnswersResponse,
   GenerateDefenseQuestionsResponse,
   VBRSessionDetailResponse,
+  VideoEvidenceChip,
 } from "@/lib/vbr-api"
 
 vi.mock("@/lib/vbr-api", () => ({
@@ -168,6 +169,21 @@ function makeSubmitResult(overrides: Partial<SubmitDefenseAnswersResponse> = {})
     segment_count: 1,
     answered_question_count: 0,
     analysis: makeAnalysis(),
+    video_evidence_chips: [],
+    ...overrides,
+  }
+}
+
+function makeVideoEvidenceChip(overrides: Partial<VideoEvidenceChip> = {}): VideoEvidenceChip {
+  return {
+    label: "Video 00:08",
+    timestamp_start_s: 8,
+    timestamp_end_s: 25,
+    short_summary: "I built the backend risk-scoring API using Python and FastAPI.",
+    related_skill: "Python",
+    question_id: null,
+    source: "project_defense_video",
+    source_type: "video_transcript",
     ...overrides,
   }
 }
@@ -198,6 +214,7 @@ function makeSession(overrides: Partial<VBRSessionDetailResponse> = {}): VBRSess
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     questions: [],
+    video_evidence_chips: [],
     ...overrides,
   }
 }
@@ -306,6 +323,120 @@ describe("ProjectDefensePanel", () => {
 
     await waitFor(() => expect(syncProjectDefenseToSkillGraph).toHaveBeenCalledWith("sess-1"))
     expect(await screen.findByText(/saved as supporting evidence for python, react/i)).toBeInTheDocument()
+  })
+
+  it("renders Video Evidence chips with timestamps and related skills when available", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+    vi.mocked(submitDefenseAnswers).mockResolvedValue(
+      makeSubmitResult({
+        video_evidence_chips: [
+          makeVideoEvidenceChip({
+            label: "Video 00:08",
+            short_summary: "Explains the backend risk-scoring API.",
+            related_skill: "Python",
+          }),
+          makeVideoEvidenceChip({
+            label: "Video 00:25",
+            timestamp_start_s: 25,
+            timestamp_end_s: 45,
+            short_summary: "Explains the React dashboard components.",
+            related_skill: "React",
+          }),
+        ],
+      })
+    )
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    await screen.findByText(/describe the overall architecture/i)
+
+    fireEvent.change(
+      screen.getByPlaceholderText(/explain your project, your role/i),
+      { target: { value: "I built the backend API using Python and FastAPI." } }
+    )
+    fireEvent.click(screen.getByRole("button", { name: /analyze my answers/i }))
+
+    expect(await screen.findByText(/video evidence/i)).toBeInTheDocument()
+    const chips = await screen.findAllByTestId("video-evidence-chip")
+    expect(chips).toHaveLength(2)
+    expect(screen.getByText(/video 00:08/i)).toBeInTheDocument()
+    expect(screen.getByText(/explains the backend risk-scoring api/i)).toBeInTheDocument()
+    expect(screen.getByText(/video 00:25/i)).toBeInTheDocument()
+    expect(screen.getByText(/explains the react dashboard components/i)).toBeInTheDocument()
+
+    // Related skill badges are shown alongside each chip.
+    const pythonBadges = screen.getAllByText("Python")
+    expect(pythonBadges.length).toBeGreaterThan(0)
+    expect(screen.getAllByText("React").length).toBeGreaterThan(0)
+  })
+
+  it("shows a 'will appear after transcript analysis' fallback when no video evidence chips exist", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+    vi.mocked(submitDefenseAnswers).mockResolvedValue(makeSubmitResult({ video_evidence_chips: [] }))
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    await screen.findByText(/describe the overall architecture/i)
+
+    fireEvent.change(
+      screen.getByPlaceholderText(/explain your project, your role/i),
+      { target: { value: "I built the backend API using Python and FastAPI." } }
+    )
+    fireEvent.click(screen.getByRole("button", { name: /analyze my answers/i }))
+
+    expect(await screen.findByText(/video evidence/i)).toBeInTheDocument()
+    expect(
+      await screen.findByText(/timestamped evidence will appear after transcript analysis/i)
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("video-evidence-chip")).not.toBeInTheDocument()
+
+    // Manual fallback (save to Skill Graph) remains available.
+    expect(screen.getByRole("button", { name: /save explanation evidence to skill graph/i })).toBeInTheDocument()
+  })
+
+  it("does not render full raw transcript or private fields alongside video evidence chips", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+    vi.mocked(submitDefenseAnswers).mockResolvedValue(
+      makeSubmitResult({
+        video_evidence_chips: [makeVideoEvidenceChip()],
+      })
+    )
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    await screen.findByText(/describe the overall architecture/i)
+
+    fireEvent.change(
+      screen.getByPlaceholderText(/explain your project, your role/i),
+      { target: { value: "I built the backend API using Python and FastAPI." } }
+    )
+    fireEvent.click(screen.getByRole("button", { name: /analyze my answers/i }))
+
+    await screen.findByText(/video evidence/i)
+
+    const bodyText = document.body.textContent ?? ""
+    expect(bodyText).not.toMatch(/storage_path/i)
+    expect(bodyText).not.toMatch(/signed_url/i)
+    expect(bodyText).not.toMatch(/access_token/i)
+    expect(bodyText).not.toMatch(/supabase\.co/i)
   })
 
   it("shows a 'Record defense' action after questions are generated and routes to the recorder", async () => {

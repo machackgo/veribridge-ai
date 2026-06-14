@@ -91,6 +91,7 @@ def _to_session_response(row: dict[str, Any], chunk_count: int) -> VBRSessionRes
         created_at=str(row.get("created_at") or ""),
         updated_at=str(row.get("updated_at") or ""),
         transcript_status=((row.get("telemetry") or {}).get("transcript") or {}).get("status"),
+        video_evidence_chips=(row.get("telemetry") or {}).get("video_evidence_chips") or [],
     )
 
 

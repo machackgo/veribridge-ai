@@ -14,6 +14,7 @@ import {
   type SubmitDefenseAnswersResponse,
   type VBRRecordingReadinessResponse,
   type VBRSessionQuestionResponse,
+  type VideoEvidenceChip,
 } from "@/lib/vbr-api"
 import {
   listDocumentProofs,
@@ -124,13 +125,51 @@ function EvidenceStatusCard({
   )
 }
 
+function VideoEvidenceSection({ chips }: { chips: VideoEvidenceChip[] }) {
+  return (
+    <div>
+      <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
+        Video Evidence
+      </Mono>
+      {chips.length === 0 ? (
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: "4px 0 0" }}>
+          Timestamped evidence will appear after transcript analysis.
+        </p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+          {chips.map((chip, i) => (
+            <div
+              key={`${chip.label}-${i}`}
+              data-testid="video-evidence-chip"
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 8,
+                fontSize: 12,
+                color: TOKEN.inkSoft,
+                lineHeight: 1.4,
+              }}
+            >
+              <Mono style={{ fontSize: 11, color: TOKEN.ink, whiteSpace: "nowrap" }}>{chip.label}</Mono>
+              <span>— {chip.short_summary}</span>
+              {chip.related_skill && <Badge tone="slate">{chip.related_skill}</Badge>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AnalysisResults({
   analysis,
+  videoEvidenceChips,
   syncStatus,
   syncSkills,
   onSync,
 }: {
   analysis: DefenseAnalysisResponse
+  videoEvidenceChips: VideoEvidenceChip[]
   syncStatus: "idle" | "syncing" | "saved" | "error"
   syncSkills: string[]
   onSync: () => void
@@ -212,6 +251,8 @@ function AnalysisResults({
         <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
           Privacy scan: {analysis.privacy_scan_status}
         </Mono>
+
+        <VideoEvidenceSection chips={videoEvidenceChips} />
 
         <div style={{ borderTop: `1px solid ${TOKEN.line}`, paddingTop: 12 }}>
           <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 8px" }}>
@@ -863,6 +904,7 @@ export function ProjectDefensePanel() {
       {result && (
         <AnalysisResults
           analysis={result.analysis}
+          videoEvidenceChips={result.video_evidence_chips}
           syncStatus={syncStatus}
           syncSkills={syncSkills}
           onSync={handleSync}

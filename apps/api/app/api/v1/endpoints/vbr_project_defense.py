@@ -174,4 +174,5 @@ def submit_defense_answers_route(
         segment_count=result["segment_count"],
         answered_question_count=result["answered_question_count"],
         analysis=DefenseAnalysisResponse(**result["analysis"]),
+        video_evidence_chips=result.get("video_evidence_chips", []),
     )

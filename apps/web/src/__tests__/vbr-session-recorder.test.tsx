@@ -174,6 +174,7 @@ function makeSession(overrides: Partial<VBRSessionDetailResponse> = {}): VBRSess
         created_at: "2026-06-01T00:00:00Z",
       },
     ],
+    video_evidence_chips: [],
     ...overrides,
   }
 }
@@ -250,6 +251,7 @@ async function startRecordingSession(options?: { onBeforeStart?: () => void }) {
     chunk_count: 0,
     created_at: "2026-06-01T00:00:00Z",
     updated_at: "2026-06-01T00:00:00Z",
+    video_evidence_chips: [],
   })
 
   // Allow tests to override the default mocks above before the recording flow runs.
@@ -359,6 +361,7 @@ describe("VBRSessionRecorder", () => {
       chunk_count: 0,
       created_at: "2026-06-01T00:00:00Z",
       updated_at: "2026-06-01T00:00:00Z",
+      video_evidence_chips: [],
     })
 
     render(<VBRSessionRecorder sessionId="session-1" />)
@@ -481,6 +484,7 @@ describe("VBRSessionRecorder", () => {
       chunk_count: 1,
       created_at: "2026-06-01T00:00:00Z",
       updated_at: "2026-06-01T00:05:00Z",
+      video_evidence_chips: [],
     })
 
     await startRecordingSession()
@@ -533,6 +537,7 @@ describe("VBRSessionRecorder", () => {
       chunk_count: 1,
       created_at: "2026-06-01T00:00:00Z",
       updated_at: "2026-06-01T00:05:00Z",
+      video_evidence_chips: [],
     })
 
     await startRecordingSession()
@@ -631,6 +636,7 @@ describe("VBRSessionRecorder", () => {
             chunk_count: 0,
             created_at: "2026-06-01T00:00:00Z",
             updated_at: "2026-06-01T00:00:00Z",
+            video_evidence_chips: [],
           }
         })
       },
@@ -689,6 +695,7 @@ describe("VBRSessionRecorder", () => {
             chunk_count: 0,
             created_at: "2026-06-01T00:00:00Z",
             updated_at: "2026-06-01T00:00:00Z",
+            video_evidence_chips: [],
           }
         })
       },
@@ -767,6 +774,7 @@ describe("VBRSessionRecorder", () => {
       chunk_count: 0,
       created_at: "2026-06-01T00:00:00Z",
       updated_at: "2026-06-01T00:00:01Z",
+      video_evidence_chips: [],
     })
 
     render(<VBRSessionRecorder sessionId="session-1" />)
@@ -1046,5 +1054,87 @@ describe("Transcript generation", () => {
     expect(text).not.toMatch(/ffmpeg/i)
     expect(text).not.toMatch(/signed_url/i)
     expect(text).not.toMatch(/storage_path/i)
+  })
+
+  it("shows a timestamped video evidence chip preview once the transcript is ready", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({
+        status: "processed",
+        chunk_count: 1,
+        transcript_status: "transcribed",
+        video_evidence_chips: [
+          {
+            label: "Video 00:08",
+            timestamp_start_s: 8,
+            timestamp_end_s: 25,
+            short_summary: "Explains the backend risk-scoring API.",
+            related_skill: "Python",
+            question_id: null,
+            source: "project_defense_video",
+            source_type: "video_transcript",
+          },
+          {
+            label: "Video 00:25",
+            timestamp_start_s: 25,
+            timestamp_end_s: 45,
+            short_summary: "Explains the React dashboard components.",
+            related_skill: "React",
+            question_id: null,
+            source: "project_defense_video",
+            source_type: "video_transcript",
+          },
+        ],
+      })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-video-evidence-preview")).toBeInTheDocument())
+
+    const chips = screen.getAllByTestId("vbr-video-evidence-chip")
+    expect(chips).toHaveLength(2)
+    expect(within(chips[0]).getByText(/video 00:08/i)).toBeInTheDocument()
+    expect(within(chips[0]).getByText(/explains the backend risk-scoring api/i)).toBeInTheDocument()
+    expect(within(chips[0]).getByText("Python")).toBeInTheDocument()
+    expect(within(chips[1]).getByText(/video 00:25/i)).toBeInTheDocument()
+
+    const text = document.body.textContent ?? ""
+    expect(text).not.toMatch(/storage_path/i)
+    expect(text).not.toMatch(/signed_url/i)
+  })
+
+  it("shows a 'will appear after transcript analysis' fallback when the transcript is ready but no chips exist yet", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({
+        status: "processed",
+        chunk_count: 1,
+        transcript_status: "transcribed",
+        video_evidence_chips: [],
+      })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-video-evidence-preview")).toBeInTheDocument())
+
+    expect(
+      screen.getByText(/timestamped evidence will appear after transcript analysis/i)
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("vbr-video-evidence-chip")).not.toBeInTheDocument()
+  })
+
+  it("does not show the video evidence preview before the transcript is ready", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "uploaded", chunk_count: 1, transcript_status: null })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+
+    expect(screen.queryByTestId("vbr-video-evidence-preview")).not.toBeInTheDocument()
   })
 })

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.schemas.vbr_project import VBRProjectResponse
 from app.schemas.vbr_questions import VBRSessionQuestionResponse
+from app.schemas.vbr_sessions import VideoEvidenceChipResponse
 
 
 class AttachedProofsRequest(BaseModel):
@@ -100,3 +101,4 @@ class SubmitDefenseAnswersResponse(BaseModel):
     segment_count: int
     answered_question_count: int
     analysis: DefenseAnalysisResponse
+    video_evidence_chips: list[VideoEvidenceChipResponse] = Field(default_factory=list)

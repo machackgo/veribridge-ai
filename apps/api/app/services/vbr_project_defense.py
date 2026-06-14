@@ -32,6 +32,7 @@ from app.services.github_evidence_service import parse_github_repo_url
 from app.services.github_proof_service import GitHubProofNotFoundError, GitHubProofService
 from app.services.optional_evidence_service import OptionalEvidenceService
 from app.services.project_defense_analysis_service import analyze_defense_transcript
+from app.services.project_defense_evidence_chips import build_evidence_chips
 from app.services.website_proof_summary_service import get_website_proof_summary
 from app.services.vbr_question_generation import (
     _create_session,
@@ -598,6 +599,12 @@ def submit_defense_answers(
             }
         )
 
+    # Independent of which transcript source feeds the textual analysis
+    # below, video evidence chips are always built from the real,
+    # auto-generated video transcript (with meaningful timestamps) if one
+    # exists — manual-answer segments use synthetic start_s/end_s indices.
+    auto_video_transcript = _get_auto_generated_transcript(db, session_id)
+
     if segments:
         full_text = "\n\n".join(text_parts)
         transcript = _upsert_transcript(db, session_id, full_text)
@@ -605,10 +612,9 @@ def submit_defense_answers(
         saved_segments = _replace_transcript_segments(db, transcript_id, segments)
         _mark_questions_answered(db, answered_question_ids)
     else:
-        auto = _get_auto_generated_transcript(db, session_id)
-        if auto is None:
+        if auto_video_transcript is None:
             raise ValueError("no_answers_provided")
-        auto_transcript, saved_segments = auto
+        auto_transcript, saved_segments = auto_video_transcript
         transcript_id = str(auto_transcript["id"])
         full_text = auto_transcript.get("full_text") or ""
 
@@ -627,7 +633,21 @@ def submit_defense_answers(
     )
     analysis_dict = asdict(analysis_result)
 
-    update_session_telemetry(db, session, {"project_defense_analysis": analysis_dict}, merge=True)
+    telemetry_update: dict[str, Any] = {"project_defense_analysis": analysis_dict}
+    if auto_video_transcript is not None:
+        # A real video transcript is available — (re)compute chips from it.
+        # Note: if this run also persists manual answers (below),
+        # _upsert_transcript may overwrite this transcript's row in place
+        # (same session_id, single transcript per session), so the segments
+        # captured here must be used now rather than re-fetched later.
+        video_evidence_chips = build_evidence_chips(auto_video_transcript[1], claimed_skills, questions)
+        telemetry_update["video_evidence_chips"] = video_evidence_chips
+    else:
+        # No (current) auto-generated video transcript — preserve any
+        # previously computed chips rather than erasing them.
+        video_evidence_chips = list((session.get("telemetry") or {}).get("video_evidence_chips") or [])
+
+    update_session_telemetry(db, session, telemetry_update, merge=True)
     _update_project_metadata(db, project, {"project_defense_status": "analyzed"})
 
     return {
@@ -635,4 +655,5 @@ def submit_defense_answers(
         "segment_count": len(saved_segments),
         "answered_question_count": len(answered_question_ids),
         "analysis": analysis_dict,
+        "video_evidence_chips": video_evidence_chips,
     }

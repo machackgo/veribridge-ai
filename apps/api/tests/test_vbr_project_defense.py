@@ -42,6 +42,43 @@ DEFENSE_TRANSCRIPT = (
 )
 
 
+VIDEO_TRANSCRIPT_SEGMENTS = [
+    {"start_s": 0.0, "end_s": 8.0, "text": "Hi everyone, let me walk through my project."},
+    {
+        "start_s": 8.0,
+        "end_s": 25.0,
+        "text": "I built the backend risk-scoring API using Python and FastAPI with a PostgreSQL database.",
+    },
+    {
+        "start_s": 25.0,
+        "end_s": 45.0,
+        "text": "For the frontend, I used React to build the dashboard components.",
+    },
+    {
+        "start_s": 45.0,
+        "end_s": 60.0,
+        "text": "One limitation of the current version is that it lacks real-time updates.",
+    },
+]
+
+VIDEO_TRANSCRIPT_FULL_TEXT = " ".join(seg["text"] for seg in VIDEO_TRANSCRIPT_SEGMENTS)
+
+
+# A hostile transcript segment a speaker might accidentally read aloud while
+# screen-sharing (storage paths, signed URLs, tokens, local file paths).
+HOSTILE_VIDEO_TRANSCRIPT_SEGMENTS = [
+    {
+        "start_s": 8.0,
+        "end_s": 25.0,
+        "text": (
+            "Python demo storage_path=vbr/sessions/abc123/recording.webm "
+            "signed_url=https://storage.example.co/object/sign/videos/abc?token=eyJxyz "
+            "access_token=shhh123 Authorization: Bearer eyJsecrettoken"
+        ),
+    },
+]
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture()
@@ -172,6 +209,40 @@ def _seed_skill_pipeline(pipeline_db: dict, student_id: str = USER_ID, **overrid
     row.update(overrides)
     pipeline_db.setdefault("skill_evidence_pipelines", {})[pipeline_id] = row
     return pipeline_id
+
+
+def _seed_auto_video_transcript(
+    mem_store: dict, session_id: str, segments: list[dict] = VIDEO_TRANSCRIPT_SEGMENTS
+) -> str:
+    """Seed an auto-generated (provider='openai') video transcript + segments.
+
+    Mirrors the shape produced by ``vbr_transcription.transcribe_session``, so
+    ``_get_auto_generated_transcript`` (and therefore evidence-chip building)
+    picks it up.
+    """
+    transcript_id = str(uuid4())
+    now_iso = datetime.now(UTC).isoformat()
+    mem_store.setdefault("vbr_transcripts", {})[transcript_id] = {
+        "id": transcript_id,
+        "session_id": session_id,
+        "provider": "openai",
+        "language": "en",
+        "full_text": " ".join(seg["text"] for seg in segments),
+        "raw": {},
+        "created_at": now_iso,
+    }
+    for i, seg in enumerate(segments):
+        seg_id = f"seg-{i}"
+        mem_store.setdefault("vbr_transcript_segments", {})[seg_id] = {
+            "id": seg_id,
+            "transcript_id": transcript_id,
+            "question_id": None,
+            "start_s": seg["start_s"],
+            "end_s": seg["end_s"],
+            "text": seg["text"],
+            "created_at": now_iso,
+        }
+    return transcript_id
 
 
 def _generate_questions(client: TestClient, project_id: str):
@@ -611,3 +682,259 @@ def test_submit_defense_not_found_for_other_user(client: TestClient) -> None:
     app.dependency_overrides[get_current_user_id] = lambda: OTHER_USER_ID
     response = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
     assert response.status_code == 404
+
+
+# ── Timestamped video evidence chips (Phase 1.5) ─────────────────────────────
+
+def test_submit_defense_builds_video_evidence_chips_from_transcript_segments(
+    client: TestClient, mem_store: dict
+) -> None:
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    _seed_auto_video_transcript(mem_store, session_id)
+
+    response = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    chips = body["video_evidence_chips"]
+    assert len(chips) == 2
+
+    labels = {chip["label"] for chip in chips}
+    assert labels == {"Video 00:08", "Video 00:25"}
+
+    related_skills = {chip["related_skill"] for chip in chips}
+    assert related_skills == {"Python", "React"}
+
+    for chip in chips:
+        assert chip["source"] == "project_defense_video"
+        assert chip["source_type"] == "video_transcript"
+        assert chip["timestamp_start_s"] >= 0
+        assert chip["timestamp_end_s"] >= chip["timestamp_start_s"]
+
+    # Stored on session telemetry (no migration) for the recording page / Skill Graph sync.
+    session_row = mem_store["vbr_verification_sessions"][session_id]
+    assert session_row["telemetry"]["video_evidence_chips"] == chips
+
+
+def test_submit_defense_without_video_transcript_produces_no_chips_no_error(
+    client: TestClient,
+) -> None:
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+
+    response = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+    assert response.status_code == 200, response.text
+    assert response.json()["video_evidence_chips"] == []
+
+
+def test_video_evidence_chips_are_short_safe_snippets_not_full_transcript(
+    client: TestClient, mem_store: dict
+) -> None:
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    _seed_auto_video_transcript(mem_store, session_id)
+
+    response = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    chips = body["video_evidence_chips"]
+    assert chips
+
+    raw = response.text
+    for chip in chips:
+        assert len(chip["short_summary"]) <= 160
+        assert chip["short_summary"] != VIDEO_TRANSCRIPT_FULL_TEXT
+
+    assert VIDEO_TRANSCRIPT_FULL_TEXT not in raw
+    for unsafe in ("storage_path", "signed_url", "access_token", "vbr/sessions", "full_text"):
+        assert unsafe not in raw
+
+
+def test_video_evidence_chips_sanitize_unsafe_transcript_segment_text(
+    client: TestClient, mem_store: dict
+) -> None:
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    _seed_auto_video_transcript(mem_store, session_id, segments=HOSTILE_VIDEO_TRANSCRIPT_SEGMENTS)
+
+    response = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    chips = body["video_evidence_chips"]
+    assert chips
+    chip = chips[0]
+    assert chip["related_skill"] == "Python"
+
+    unsafe_substrings = (
+        "storage_path",
+        "vbr/sessions",
+        "signed_url",
+        "upload_url",
+        "access_token",
+        "token=",
+        "Bearer",
+        "eyJxyz",
+        "eyJsecrettoken",
+        ".webm",
+    )
+
+    submit_raw = response.text
+    for unsafe in unsafe_substrings:
+        assert unsafe not in submit_raw, f"{unsafe!r} leaked into submit-defense response: {submit_raw}"
+
+    assert "Python" in chip["short_summary"]
+    assert "[redacted]" in chip["short_summary"]
+
+    session_row = mem_store["vbr_verification_sessions"][session_id]
+    telemetry_raw = str(session_row["telemetry"]["video_evidence_chips"])
+    for unsafe in unsafe_substrings:
+        assert unsafe not in telemetry_raw, f"{unsafe!r} leaked into session telemetry: {telemetry_raw}"
+
+    session_response = client.get(f"/api/v1/student/vbr/sessions/{session_id}")
+    assert session_response.status_code == 200, session_response.text
+    session_raw = session_response.text
+    for unsafe in unsafe_substrings:
+        assert unsafe not in session_raw, f"{unsafe!r} leaked into session response: {session_raw}"
+
+
+def test_video_evidence_chips_rerun_is_idempotent(client: TestClient, mem_store: dict) -> None:
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    _seed_auto_video_transcript(mem_store, session_id)
+
+    first = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT).json()
+    second = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT).json()
+
+    assert first["video_evidence_chips"] == second["video_evidence_chips"]
+
+    session_row = mem_store["vbr_verification_sessions"][session_id]
+    assert session_row["telemetry"]["video_evidence_chips"] == first["video_evidence_chips"]
+
+
+def test_vbr_session_response_includes_video_evidence_chips(
+    client: TestClient, mem_store: dict
+) -> None:
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    _seed_auto_video_transcript(mem_store, session_id)
+    _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+
+    session_response = client.get(f"/api/v1/student/vbr/sessions/{session_id}")
+    assert session_response.status_code == 200, session_response.text
+    chips = session_response.json()["video_evidence_chips"]
+    assert len(chips) == 2
+    assert {chip["related_skill"] for chip in chips} == {"Python", "React"}
+
+
+def test_vbr_session_response_has_no_chips_before_analysis(
+    client: TestClient, mem_store: dict
+) -> None:
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    _seed_auto_video_transcript(mem_store, session_id)
+
+    session_response = client.get(f"/api/v1/student/vbr/sessions/{session_id}")
+    assert session_response.status_code == 200, session_response.text
+    assert session_response.json()["video_evidence_chips"] == []
+
+
+def test_build_evidence_chips_maps_to_question_id_when_no_claimed_skill_match() -> None:
+    from app.services.project_defense_evidence_chips import build_evidence_chips
+
+    segments = [
+        {"start_s": 0.0, "end_s": 8.0, "text": "Let's talk about how I deployed this using Docker."},
+        {"start_s": 8.0, "end_s": 20.0, "text": "This part is unrelated to any specific skill."},
+    ]
+    questions = [
+        {"id": "q-docker", "target_ref": {"kind": "skill_link", "skill": "Docker"}},
+    ]
+
+    chips = build_evidence_chips(segments, claimed_skills=["Python"], questions=questions)
+
+    assert len(chips) == 1
+    assert chips[0]["label"] == "Video 00:00"
+    assert chips[0]["related_skill"] == "Docker"
+    assert chips[0]["question_id"] == "q-docker"
+
+
+def test_build_evidence_chips_with_no_segments_returns_empty_list() -> None:
+    from app.services.project_defense_evidence_chips import build_evidence_chips
+
+    assert build_evidence_chips([], claimed_skills=["Python"], questions=[]) == []
+
+
+# ── Evidence chip summary sanitization (privacy fix) ─────────────────────────
+
+def test_sanitize_transcript_text_redacts_unsafe_patterns_but_keeps_useful_words() -> None:
+    from app.services.project_defense_evidence_chips import _sanitize_transcript_text
+
+    text = (
+        "Python demo storage_path=vbr/sessions/abc123/recording.webm "
+        "signed_url=https://storage.example.co/object/sign/videos/abc?token=eyJxyz "
+        "upload_url=https://api.example.com/upload?token=def456 "
+        "access_token=ghijk789 SUPABASE_SERVICE_ROLE_KEY=eyJzdWIiOiJzZXJ2aWNl "
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig "
+        "service_role anon_key=eyJanon123 "
+        "see /Users/student/Videos/demo.mp4 and C:\\Users\\student\\demo.mp4 "
+        "also vbr/sessions/xyz/clip.mp4 and http://example.com/x?y=1 "
+        "for the FastAPI backend risk scoring and geospatial API."
+    )
+
+    sanitized = _sanitize_transcript_text(text)
+
+    for unsafe in (
+        "storage_path",
+        "signed_url",
+        "upload_url",
+        "access_token",
+        "token=",
+        "Bearer",
+        "service_role",
+        "anon_key",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "vbr/sessions",
+        "/Users/",
+        "C:\\Users",
+        ".mp4",
+        ".webm",
+        "http://",
+        "https://",
+        "eyJ",
+    ):
+        assert unsafe not in sanitized, f"{unsafe!r} leaked into sanitized text: {sanitized!r}"
+
+    for safe in ("Python", "demo", "FastAPI", "backend", "risk scoring", "geospatial", "API"):
+        assert safe in sanitized, f"{safe!r} missing from sanitized text: {sanitized!r}"
+
+    assert "[redacted]" in sanitized
+
+
+def test_build_evidence_chips_sanitizes_unsafe_transcript_segment_text() -> None:
+    from app.services.project_defense_evidence_chips import build_evidence_chips
+
+    segments = [
+        {
+            "start_s": 0.0,
+            "end_s": 8.0,
+            "text": (
+                "Python demo storage_path=vbr/sessions/abc "
+                "signed_url=https://storage.example/x?token=abc"
+            ),
+        },
+    ]
+
+    chips = build_evidence_chips(segments, claimed_skills=["Python"], questions=[])
+
+    assert len(chips) == 1
+    summary = chips[0]["short_summary"]
+    assert summary == "Python demo [redacted] [redacted]"
+    for unsafe in ("storage_path", "vbr/sessions", "signed_url", "token=", "https://"):
+        assert unsafe not in summary

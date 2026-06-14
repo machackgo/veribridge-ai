@@ -9,6 +9,24 @@ from pydantic import BaseModel, Field
 from app.schemas.vbr_questions import VBRSessionQuestionResponse
 
 
+class VideoEvidenceChipResponse(BaseModel):
+    """A safe, timestamped reference into a Project Defense video transcript.
+
+    Never includes storage paths, signed URLs, access tokens, or full
+    transcript text — ``short_summary`` is a short snippet of a single
+    transcript segment.
+    """
+
+    label: str
+    timestamp_start_s: float
+    timestamp_end_s: float
+    short_summary: str
+    related_skill: str | None = None
+    question_id: str | None = None
+    source: str = "project_defense_video"
+    source_type: str = "video_transcript"
+
+
 class VBRSessionResponse(BaseModel):
     id: str
     project_id: str
@@ -22,6 +40,7 @@ class VBRSessionResponse(BaseModel):
     created_at: str
     updated_at: str
     transcript_status: str | None = None
+    video_evidence_chips: list[VideoEvidenceChipResponse] = Field(default_factory=list)
 
 
 class VBRSessionDetailResponse(VBRSessionResponse):

@@ -66,6 +66,7 @@ function makeSession(overrides: Partial<VBRSessionDetailResponse> = {}): VBRSess
         created_at: "2026-06-01T00:00:00Z",
       },
     ],
+    video_evidence_chips: [],
     ...overrides,
   }
 }
@@ -253,6 +254,62 @@ describe("ProjectDefenseRecordPage", () => {
     expect(text).not.toMatch(/storage_path/i)
     expect(text).not.toMatch(/signed_url/i)
     expect(text).not.toMatch(/\.webm/)
+  })
+
+  it("shows timestamped video evidence chip preview once the transcript is ready", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({
+        status: "uploaded",
+        chunk_count: 1,
+        transcript_status: "transcribed",
+        video_evidence_chips: [
+          {
+            label: "Video 00:08",
+            timestamp_start_s: 8,
+            timestamp_end_s: 25,
+            short_summary: "Explains the backend risk-scoring API.",
+            related_skill: "Python",
+            question_id: null,
+            source: "project_defense_video",
+            source_type: "video_transcript",
+          },
+        ],
+      })
+    )
+
+    render(<ProjectDefenseRecordPage />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-video-evidence-preview")).toBeInTheDocument())
+
+    const chips = screen.getAllByTestId("vbr-video-evidence-chip")
+    expect(chips).toHaveLength(1)
+    expect(within(chips[0]).getByText(/video 00:08/i)).toBeInTheDocument()
+    expect(within(chips[0]).getByText(/explains the backend risk-scoring api/i)).toBeInTheDocument()
+    expect(within(chips[0]).getByText("Python")).toBeInTheDocument()
+
+    const text = document.body.textContent ?? ""
+    expect(text).not.toMatch(/storage_path/i)
+    expect(text).not.toMatch(/signed_url/i)
+  })
+
+  it("shows a 'will appear after transcript analysis' fallback when the transcript is ready but no chips exist yet", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({
+        status: "uploaded",
+        chunk_count: 1,
+        transcript_status: "transcribed",
+        video_evidence_chips: [],
+      })
+    )
+
+    render(<ProjectDefenseRecordPage />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-video-evidence-preview")).toBeInTheDocument())
+
+    expect(
+      screen.getByText(/timestamped evidence will appear after transcript analysis/i)
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("vbr-video-evidence-chip")).not.toBeInTheDocument()
   })
 
   it("shows project context with attached evidence summary and the Phase 2A recording scope", async () => {

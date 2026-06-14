@@ -1055,6 +1055,31 @@ export function VBRSessionRecorder({
             <p style={{ fontSize: 12, color: "var(--emerald)", marginTop: 8 }}>{transcriptMessage}</p>
           )}
           {transcriptError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{transcriptError}</p>}
+
+          {session.transcript_status === "transcribed" && (
+            <div style={{ marginTop: 12 }} data-testid="vbr-video-evidence-preview">
+              <div style={{ ...sectionTitleStyle, marginBottom: 6 }}>Video evidence</div>
+              {session.video_evidence_chips.length === 0 ? (
+                <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>
+                  Timestamped evidence will appear after transcript analysis.
+                </p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {session.video_evidence_chips.map((chip, i) => (
+                    <div
+                      key={`${chip.label}-${i}`}
+                      data-testid="vbr-video-evidence-chip"
+                      style={{ fontSize: 12, color: "var(--ink-2)", display: "flex", alignItems: "baseline", gap: 8 }}
+                    >
+                      <span style={chipStyle}>{chip.label}</span>
+                      <span>{chip.short_summary}</span>
+                      {chip.related_skill && <span style={chipStyle}>{chip.related_skill}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
     </div>

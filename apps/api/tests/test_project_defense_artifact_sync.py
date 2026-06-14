@@ -39,6 +39,38 @@ DEFENSE_TRANSCRIPT = (
 )
 
 
+VIDEO_TRANSCRIPT_SEGMENTS = [
+    {"start_s": 0.0, "end_s": 8.0, "text": "Hi everyone, let me walk through my project."},
+    {
+        "start_s": 8.0,
+        "end_s": 25.0,
+        "text": "I built the backend risk-scoring API using Python and FastAPI with a PostgreSQL database.",
+    },
+    {
+        "start_s": 25.0,
+        "end_s": 45.0,
+        "text": "For the frontend, I used React to build the dashboard components.",
+    },
+]
+
+VIDEO_TRANSCRIPT_FULL_TEXT = " ".join(seg["text"] for seg in VIDEO_TRANSCRIPT_SEGMENTS)
+
+
+# A hostile transcript segment a speaker might accidentally read aloud while
+# screen-sharing (storage paths, signed URLs, tokens, local file paths).
+HOSTILE_VIDEO_TRANSCRIPT_SEGMENTS = [
+    {
+        "start_s": 8.0,
+        "end_s": 25.0,
+        "text": (
+            "Python demo storage_path=vbr/sessions/abc123/recording.webm "
+            "signed_url=https://storage.example.co/object/sign/videos/abc?token=eyJxyz "
+            "access_token=shhh123 Authorization: Bearer eyJsecrettoken"
+        ),
+    },
+]
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture()
@@ -123,6 +155,35 @@ def _seed_document_evidence(mem_store: dict, user_id: str = USER_ID, **overrides
     row.update(overrides)
     mem_store.setdefault("optional_evidence_submissions", {})[doc_id] = row
     return doc_id
+
+
+def _seed_auto_video_transcript(
+    mem_store: dict, session_id: str, segments: list[dict] = VIDEO_TRANSCRIPT_SEGMENTS
+) -> str:
+    """Seed an auto-generated (provider='openai') video transcript + segments."""
+    transcript_id = str(uuid4())
+    now_iso = datetime.now(UTC).isoformat()
+    mem_store.setdefault("vbr_transcripts", {})[transcript_id] = {
+        "id": transcript_id,
+        "session_id": session_id,
+        "provider": "openai",
+        "language": "en",
+        "full_text": " ".join(seg["text"] for seg in segments),
+        "raw": {},
+        "created_at": now_iso,
+    }
+    for i, seg in enumerate(segments):
+        seg_id = f"seg-{i}"
+        mem_store.setdefault("vbr_transcript_segments", {})[seg_id] = {
+            "id": seg_id,
+            "transcript_id": transcript_id,
+            "question_id": None,
+            "start_s": seg["start_s"],
+            "end_s": seg["end_s"],
+            "text": seg["text"],
+            "created_at": now_iso,
+        }
+    return transcript_id
 
 
 def _generate_questions(client: TestClient, project_id: str):
@@ -292,3 +353,125 @@ def test_sync_not_found_for_other_user(client: TestClient, mem_store: dict) -> N
     response = _sync(client, session_id)
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "project_defense_session_not_found"
+
+
+# ── Video evidence chip references (Phase 1.5) ───────────────────────────────
+
+def test_sync_includes_safe_video_evidence_chip_refs(client: TestClient, mem_store: dict, pipeline_db: dict) -> None:
+    from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineService
+
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    _seed_auto_video_transcript(mem_store, session_id)
+    _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+
+    response = _sync(client, session_id)
+    assert response.status_code == 200, response.text
+
+    pipeline_svc = SkillEvidencePipelineService(pipeline_db)
+    pipelines = pipeline_svc.list_pipelines_for_student(USER_ID)
+    assert {p.skill_name for p in pipelines} == {"Python", "React"}
+
+    for pipeline in pipelines:
+        artifacts = pipeline_svc.list_artifacts_for_pipeline(pipeline.id, USER_ID)
+        artifact = next(a for a in artifacts if a.artifact_data.get("kind") == "project_defense")
+        chips = artifact.artifact_data["video_evidence_chips"]
+
+        assert len(chips) == 1
+        chip = chips[0]
+        assert chip["related_skill"] == pipeline.skill_name
+        assert chip["source"] == "project_defense_video"
+        assert chip["source_type"] == "video_transcript"
+
+        for unsafe_key in ("storage_path", "signed_url", "access_token", "telemetry", "metadata"):
+            assert unsafe_key not in chip
+
+        assert len(chip["short_summary"]) <= 160
+        assert chip["short_summary"] != VIDEO_TRANSCRIPT_FULL_TEXT
+        assert VIDEO_TRANSCRIPT_FULL_TEXT not in str(artifact.artifact_data)
+
+
+def test_sync_video_evidence_chip_refs_idempotent_on_rerun(client: TestClient, mem_store: dict, pipeline_db: dict) -> None:
+    from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineService
+
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    _seed_auto_video_transcript(mem_store, session_id)
+    _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+
+    _sync(client, session_id)
+    second = _sync(client, session_id).json()
+    assert second["already_synced"] is True
+
+    pipeline_svc = SkillEvidencePipelineService(pipeline_db)
+    pipelines = pipeline_svc.list_pipelines_for_student(USER_ID)
+    for pipeline in pipelines:
+        artifacts = pipeline_svc.list_artifacts_for_pipeline(pipeline.id, USER_ID)
+        project_defense_artifacts = [a for a in artifacts if a.artifact_data.get("kind") == "project_defense"]
+        assert len(project_defense_artifacts) == 1
+        assert len(project_defense_artifacts[0].artifact_data["video_evidence_chips"]) == 1
+
+
+def test_sync_without_video_transcript_has_empty_chip_refs(client: TestClient, mem_store: dict, pipeline_db: dict) -> None:
+    from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineService
+
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+
+    response = _sync(client, session_id)
+    assert response.status_code == 200, response.text
+
+    pipeline_svc = SkillEvidencePipelineService(pipeline_db)
+    pipelines = pipeline_svc.list_pipelines_for_student(USER_ID)
+    for pipeline in pipelines:
+        artifacts = pipeline_svc.list_artifacts_for_pipeline(pipeline.id, USER_ID)
+        artifact = next(a for a in artifacts if a.artifact_data.get("kind") == "project_defense")
+        assert artifact.artifact_data["video_evidence_chips"] == []
+
+
+def test_sync_sanitizes_unsafe_transcript_text_in_video_evidence_chip_refs(
+    client: TestClient, mem_store: dict, pipeline_db: dict
+) -> None:
+    from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineService
+
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    _seed_auto_video_transcript(mem_store, session_id, segments=HOSTILE_VIDEO_TRANSCRIPT_SEGMENTS)
+    _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+
+    response = _sync(client, session_id)
+    assert response.status_code == 200, response.text
+
+    pipeline_svc = SkillEvidencePipelineService(pipeline_db)
+    pipelines = pipeline_svc.list_pipelines_for_student(USER_ID)
+    python_pipeline = next(p for p in pipelines if p.skill_name == "Python")
+
+    artifacts = pipeline_svc.list_artifacts_for_pipeline(python_pipeline.id, USER_ID)
+    artifact = next(a for a in artifacts if a.artifact_data.get("kind") == "project_defense")
+    chips = artifact.artifact_data["video_evidence_chips"]
+    assert len(chips) == 1
+
+    summary = chips[0]["short_summary"]
+    artifact_dump = str(artifact.artifact_data)
+    for unsafe in (
+        "storage_path",
+        "vbr/sessions",
+        "signed_url",
+        "upload_url",
+        "access_token",
+        "token=",
+        "Bearer",
+        "eyJxyz",
+        "eyJsecrettoken",
+        ".webm",
+    ):
+        assert unsafe not in summary, f"{unsafe!r} leaked into chip short_summary: {summary!r}"
+        assert unsafe not in artifact_dump, f"{unsafe!r} leaked into artifact_data: {artifact_dump!r}"
+
+    assert "Python" in summary
+    assert "[redacted]" in summary

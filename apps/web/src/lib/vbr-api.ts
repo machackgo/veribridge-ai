@@ -24,6 +24,23 @@ export type VBRSessionQuestionResponse = {
   created_at: string
 }
 
+/**
+ * A safe, timestamped reference into a Project Defense video transcript.
+ * Never includes storage paths, signed URLs, access tokens, or full
+ * transcript text — `short_summary` is a short snippet of a single
+ * transcript segment.
+ */
+export type VideoEvidenceChip = {
+  label: string
+  timestamp_start_s: number
+  timestamp_end_s: number
+  short_summary: string
+  related_skill?: string | null
+  question_id?: string | null
+  source: string
+  source_type: string
+}
+
 export type VBRSessionResponse = {
   id: string
   project_id: string
@@ -37,6 +54,7 @@ export type VBRSessionResponse = {
   created_at: string
   updated_at: string
   transcript_status?: string | null
+  video_evidence_chips: VideoEvidenceChip[]
 }
 
 export type VBRSessionDetailResponse = VBRSessionResponse & {
@@ -383,6 +401,7 @@ export type SubmitDefenseAnswersResponse = {
   segment_count: number
   answered_question_count: number
   analysis: DefenseAnalysisResponse
+  video_evidence_chips: VideoEvidenceChip[]
 }
 
 /**

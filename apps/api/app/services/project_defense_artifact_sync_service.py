@@ -51,6 +51,9 @@ _SUPPORT_RANK = {"needs_review": 0, "partially_supported": 1, "strongly_supporte
 # so it can never push a skill into "strongly_supported" territory on its own.
 _CONFIDENCE_CAP = 50
 
+# Max safe video evidence chip references included per skill in artifact_data.
+_MAX_VIDEO_CHIPS_PER_SKILL = 3
+
 # Keys that must never appear in artifact_data (defensive — the artifact_data
 # below only constructs a safe allowlist, but this guards against accidental leaks).
 _UNSAFE_KEYS = frozenset({
@@ -108,6 +111,20 @@ def _transcript_excerpt(db: Any, session_id: str, max_len: int = 300) -> str:
 
     text = str((row or {}).get("full_text") or "")
     return _truncate(text, max_len)
+
+
+def _video_evidence_chip_refs_for_skill(all_chips: list[Any], skill: str) -> list[dict[str, Any]]:
+    """Return safe video evidence chip references related to ``skill``.
+
+    Each chip is already a safe projection (label, timestamps, short
+    snippet, source) built by ``project_defense_evidence_chips`` — never the
+    full transcript, storage paths, or signed URLs.
+    """
+    matched = [
+        chip for chip in (all_chips or [])
+        if isinstance(chip, dict) and chip.get("related_skill") == skill
+    ]
+    return matched[:_MAX_VIDEO_CHIPS_PER_SKILL]
 
 
 def _answered_question_count(db: Any, session_id: str) -> int:
@@ -372,6 +389,7 @@ class ProjectDefenseArtifactSyncService:
         project_title = _truncate(project.get("title") or "this project", 200)
         transcript_excerpt = _transcript_excerpt(self._db, session_id)
         answered_question_count = _answered_question_count(self._db, session_id)
+        all_video_chips = telemetry.get("video_evidence_chips") or []
         attached_proof_refs = _safe_attached_proof_refs(metadata.get("attached_proofs") or {})
         ownership_signals = _ownership_signals(analysis)
         technical_depth_signals = _technical_depth_signals(analysis)
@@ -400,6 +418,7 @@ class ProjectDefenseArtifactSyncService:
                     "attached_proof_refs": attached_proof_refs,
                     "answered_question_count": answered_question_count,
                     "matched_skills": [skill],
+                    "video_evidence_chips": _video_evidence_chip_refs_for_skill(all_video_chips, skill),
                 })
 
                 self._pipeline_svc.add_artifact(
