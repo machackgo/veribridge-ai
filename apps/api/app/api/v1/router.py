@@ -37,6 +37,7 @@ from app.api.v1.endpoints import (
     student,
     vbr_project_defense,
     vbr_projects,
+    vbr_public_project_report,
     vbr_public_report,
     vbr_sessions,
     verification_readiness,
@@ -98,6 +99,11 @@ api_router.include_router(
     vbr_public_report.router,
     prefix="/public",
     tags=["vbr-public-report"],
+)
+api_router.include_router(
+    vbr_public_project_report.router,
+    prefix="/public",
+    tags=["vbr-public-project-report"],
 )
 api_router.include_router(
     skill_evidence.router,

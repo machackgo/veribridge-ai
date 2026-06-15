@@ -7,16 +7,39 @@
  * only" notice. Never renders raw transcript text or private fields.
  */
 
-import { render, screen } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { ProjectReportView } from "../app/student/vbr/projects/[projectId]/report/ProjectReportView"
 import type { VBRStudentProjectReportResponse } from "@/lib/vbr-api"
 
 vi.mock("@/lib/vbr-api", () => ({
   getVBRProjectReport: vi.fn(),
+  getVBRProjectReportPublishStatus: vi.fn(),
+  publishVBRProjectReport: vi.fn(),
+  unpublishVBRProjectReport: vi.fn(),
 }))
 
-import { getVBRProjectReport } from "@/lib/vbr-api"
+import {
+  getVBRProjectReport,
+  getVBRProjectReportPublishStatus,
+  publishVBRProjectReport,
+  unpublishVBRProjectReport,
+  type ProjectReportPublishStatus,
+} from "@/lib/vbr-api"
+
+function unpublishedStatus(): ProjectReportPublishStatus {
+  return { project_id: "proj-1", is_public: false, public_token: null, public_path: null, published_at: null }
+}
+
+function publishedStatus(token = "tok-abc123"): ProjectReportPublishStatus {
+  return {
+    project_id: "proj-1",
+    is_public: true,
+    public_token: token,
+    public_path: `/vbr/report/${token}`,
+    published_at: "2026-01-02T00:00:00Z",
+  }
+}
 
 function makeReport(overrides: Partial<VBRStudentProjectReportResponse> = {}): VBRStudentProjectReportResponse {
   return {
@@ -67,6 +90,11 @@ function makeReport(overrides: Partial<VBRStudentProjectReportResponse> = {}): V
 
 beforeEach(() => {
   vi.mocked(getVBRProjectReport).mockReset()
+  vi.mocked(getVBRProjectReportPublishStatus).mockReset()
+  vi.mocked(publishVBRProjectReport).mockReset()
+  vi.mocked(unpublishVBRProjectReport).mockReset()
+  // Default: report has no public link yet.
+  vi.mocked(getVBRProjectReportPublishStatus).mockResolvedValue(unpublishedStatus())
 })
 
 describe("ProjectReportView", () => {
@@ -260,5 +288,46 @@ describe("ProjectReportView", () => {
     expect(screen.getAllByText("Supporting evidence").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Needs review").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Evidence observed").length).toBeGreaterThan(0)
+  })
+})
+
+describe("ProjectReportView — recruiter-safe publish controls", () => {
+  it("shows the publish control in student-preview state by default", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(makeReport())
+
+    render(<ProjectReportView projectId="proj-1" />)
+
+    expect(await screen.findByTestId("publish-controls")).toBeInTheDocument()
+    expect(await screen.findByTestId("student-preview-badge")).toBeInTheDocument()
+    expect(screen.getByTestId("publish-link-button")).toHaveTextContent(/publish recruiter-safe link/i)
+    expect(screen.queryByTestId("public-link-url")).not.toBeInTheDocument()
+  })
+
+  it("renders the public-link-active state with copy and unpublish controls", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(makeReport())
+    vi.mocked(getVBRProjectReportPublishStatus).mockResolvedValue(publishedStatus("tok-xyz"))
+
+    render(<ProjectReportView projectId="proj-1" />)
+
+    expect(await screen.findByTestId("public-link-active-badge")).toBeInTheDocument()
+    const url = screen.getByTestId("public-link-url")
+    expect(url.textContent).toContain("/vbr/report/tok-xyz")
+    expect(screen.getByTestId("copy-link-button")).toBeInTheDocument()
+    expect(screen.getByTestId("unpublish-link-button")).toBeInTheDocument()
+    expect(screen.queryByTestId("publish-link-button")).not.toBeInTheDocument()
+  })
+
+  it("publishes when the publish button is clicked and reveals the link", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(makeReport())
+    vi.mocked(publishVBRProjectReport).mockResolvedValue(publishedStatus("tok-new"))
+
+    render(<ProjectReportView projectId="proj-1" />)
+
+    const publishBtn = await screen.findByTestId("publish-link-button")
+    fireEvent.click(publishBtn)
+
+    await waitFor(() => expect(screen.getByTestId("public-link-url")).toBeInTheDocument())
+    expect(vi.mocked(publishVBRProjectReport)).toHaveBeenCalledWith("proj-1")
+    expect(screen.getByTestId("public-link-url").textContent).toContain("/vbr/report/tok-new")
   })
 })

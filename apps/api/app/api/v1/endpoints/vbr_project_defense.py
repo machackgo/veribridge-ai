@@ -35,11 +35,17 @@ from app.schemas.vbr_project_defense import (
     SubmitDefenseAnswersRequest,
     SubmitDefenseAnswersResponse,
 )
+from app.schemas.vbr_public_project_report import ProjectReportPublishStatusResponse
 from app.schemas.vbr_student_report import VBRStudentProjectReportResponse
 from app.services.vbr_project_defense import (
     create_project_defense,
     generate_defense_questions,
     submit_defense_answers,
+)
+from app.services.vbr_public_project_report import (
+    get_project_report_publish_status,
+    publish_project_report,
+    unpublish_project_report,
 )
 from app.services.vbr_session_recording import get_owned_vbr_session_or_404
 from app.services.vbr_student_report import build_student_vbr_report
@@ -194,3 +200,45 @@ def get_student_vbr_report_route(
     project = get_owned_vbr_project_or_404(db, project_id, user_id)
     report = build_student_vbr_report(db, pipeline_db, project, user_id)
     return VBRStudentProjectReportResponse(**report)
+
+
+@router.post(
+    "/projects/{project_id}/public-report",
+    response_model=ProjectReportPublishStatusResponse,
+    summary="Publish a recruiter-safe public link for this project's VBR report",
+)
+def publish_project_report_route(
+    project_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> ProjectReportPublishStatusResponse:
+    result = publish_project_report(db, project_id, user_id)
+    return ProjectReportPublishStatusResponse(**result)
+
+
+@router.delete(
+    "/projects/{project_id}/public-report",
+    response_model=ProjectReportPublishStatusResponse,
+    summary="Revoke the recruiter-safe public link for this project's VBR report",
+)
+def unpublish_project_report_route(
+    project_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> ProjectReportPublishStatusResponse:
+    result = unpublish_project_report(db, project_id, user_id)
+    return ProjectReportPublishStatusResponse(**result)
+
+
+@router.get(
+    "/projects/{project_id}/public-report/status",
+    response_model=ProjectReportPublishStatusResponse,
+    summary="Get the publish status of this project's recruiter-safe public link",
+)
+def get_project_report_publish_status_route(
+    project_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> ProjectReportPublishStatusResponse:
+    result = get_project_report_publish_status(db, project_id, user_id)
+    return ProjectReportPublishStatusResponse(**result)

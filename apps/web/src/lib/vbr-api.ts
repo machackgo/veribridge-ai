@@ -589,6 +589,113 @@ export async function getPublicVBRReport(
   publicToken: string,
 ): Promise<VBRPublicReportResponse | null> {
   const response = await fetch(
+    `${API_BASE}/api/v1/public/vbr/legacy-reports/${encodeURIComponent(publicToken)}`,
+    {
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+    },
+  )
+
+  if (response.status === 404) {
+    return null
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to load report (HTTP ${response.status}).`)
+  }
+
+  return response.json()
+}
+
+// ─── Public recruiter-safe VBR project report link (v1) ─────────────────────
+
+/**
+ * Owner-only publish status for a project's recruiter-safe public link.
+ * `public_token` is the owner's own token (used to build the shareable link)
+ * and is only ever returned to the authenticated owner.
+ */
+export type ProjectReportPublishStatus = {
+  project_id: string
+  is_public: boolean
+  public_token: string | null
+  public_path: string | null
+  published_at: string | null
+}
+
+/** A sanitized, timestamped public video evidence chip (no internal ids). */
+export type PublicVideoEvidenceChip = {
+  label: string
+  timestamp_start_s: number
+  timestamp_end_s: number
+  short_summary: string
+  related_skill?: string | null
+  source: string
+  source_type: string
+}
+
+/**
+ * Public recruiter-safe Verified Build Report for one project. Read-only, no
+ * login required, and never includes numeric trust scores, internal IDs, the
+ * student's email, or raw/private evidence.
+ */
+export type PublicVBRProjectReport = {
+  report_title: string
+  project_title: string
+  candidate_display_name: string | null
+  project_summary: string
+  student_role: string
+  repo_full_name: string | null
+  claimed_skills: string[]
+
+  evidence_package: VBRReportEvidencePackageSummary
+
+  github_proof: VBRReportGitHubProofSummary | null
+  documents: VBRReportDocumentSummary[]
+  website_proofs: VBRReportWebsiteProofSummary[]
+
+  project_defense_analysis: VBRReportProjectDefenseAnalysis | null
+  skill_evidence: VBRReportSkillEvidenceRow[]
+  video_evidence_chips: PublicVideoEvidenceChip[]
+
+  limitations: string[]
+
+  published_at: string | null
+  generated_at: string
+  verification_note: string
+}
+
+/** Get the publish status of a project's recruiter-safe public link. */
+export async function getVBRProjectReportPublishStatus(
+  projectId: string,
+): Promise<ProjectReportPublishStatus> {
+  const res = await fetchAPI(`/api/v1/student/vbr/projects/${encodeURIComponent(projectId)}/public-report/status`)
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load publish status (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Publish (or re-fetch) the recruiter-safe public link for a project's report. */
+export async function publishVBRProjectReport(projectId: string): Promise<ProjectReportPublishStatus> {
+  const res = await fetchAPI(`/api/v1/student/vbr/projects/${encodeURIComponent(projectId)}/public-report`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to publish link (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Revoke the recruiter-safe public link for a project's report. */
+export async function unpublishVBRProjectReport(projectId: string): Promise<ProjectReportPublishStatus> {
+  const res = await fetchAPI(`/api/v1/student/vbr/projects/${encodeURIComponent(projectId)}/public-report`, {
+    method: "DELETE",
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to unpublish link (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Fetch a published recruiter-safe VBR project report by its public token. No auth required. */
+export async function getPublicVBRProjectReport(
+  publicToken: string,
+): Promise<PublicVBRProjectReport | null> {
+  const response = await fetch(
     `${API_BASE}/api/v1/public/vbr/reports/${encodeURIComponent(publicToken)}`,
     {
       headers: { "Content-Type": "application/json" },

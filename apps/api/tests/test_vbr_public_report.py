@@ -211,7 +211,7 @@ def _setup_published_report(client: TestClient, mem_store: dict, chunk_count: in
 
 
 def _get_public_report(client: TestClient, public_token: str):
-    return client.get(f"/api/v1/public/vbr/reports/{public_token}")
+    return client.get(f"/api/v1/public/vbr/legacy-reports/{public_token}")
 
 
 # ── public report read ───────────────────────────────────────────────────────
@@ -238,7 +238,7 @@ def test_public_report_does_not_require_auth(client: TestClient, mem_store: dict
     # must not depend on get_current_user_id.
     del app.dependency_overrides[get_current_user_id]
 
-    response = client.get(f"/api/v1/public/vbr/reports/{public_token}")
+    response = client.get(f"/api/v1/public/vbr/legacy-reports/{public_token}")
 
     assert response.status_code == 200, response.text
 
@@ -350,7 +350,7 @@ def test_public_report_rejects_camelcase_unsafe_keys(client: TestClient, mem_sto
     report = next(row for row in mem_store["vbr_reports"].values() if row.get("public_token") == token)
     report["body"]["claims"][0]["signedUrl"] = "https://example.com/private"
 
-    response = client.get(f"/api/v1/public/vbr/reports/{token}")
+    response = client.get(f"/api/v1/public/vbr/legacy-reports/{token}")
 
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "vbr_public_report_not_found"
@@ -364,7 +364,7 @@ def test_public_report_rejects_supabase_storage_url_values(client: TestClient, m
         "https://example.supabase.co/storage/v1/object/sign/private/video.webm"
     )
 
-    response = client.get(f"/api/v1/public/vbr/reports/{token}")
+    response = client.get(f"/api/v1/public/vbr/legacy-reports/{token}")
 
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "vbr_public_report_not_found"
@@ -427,7 +427,7 @@ def test_public_report_rejects_public_token_inside_body(client: TestClient, mem_
     report = next(row for row in mem_store["vbr_reports"].values() if row.get("public_token") == token)
     report["body"]["summary"]["publicToken"] = "should-not-be-public-body"
 
-    response = client.get(f"/api/v1/public/vbr/reports/{token}")
+    response = client.get(f"/api/v1/public/vbr/legacy-reports/{token}")
 
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "vbr_public_report_not_found"

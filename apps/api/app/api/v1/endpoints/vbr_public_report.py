@@ -18,7 +18,7 @@ router = APIRouter()
 
 
 @router.get(
-    "/vbr/reports/{public_token}",
+    "/vbr/legacy-reports/{public_token}",
     response_model=VBRPublicReportResponse,
     summary="Get a published Verified Build Report by its public token (no auth required)",
 )

@@ -1,9 +1,13 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState, type CSSProperties } from "react"
 import Link from "next/link"
 import {
   getVBRProjectReport,
+  getVBRProjectReportPublishStatus,
+  publishVBRProjectReport,
+  unpublishVBRProjectReport,
+  type ProjectReportPublishStatus,
   type VBRReportSkillEvidenceRow,
   type VBRStudentProjectReportResponse,
   type VideoEvidenceChip,
@@ -74,6 +78,151 @@ function AnalysisAssessment({ label, value }: { label: string; value: string }) 
   )
 }
 
+function PublishControls({ projectId }: { projectId: string }) {
+  const [status, setStatus] = useState<ProjectReportPublishStatus | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  // Once a publish/unpublish action runs, ignore any still-in-flight initial
+  // status fetch so it cannot clobber the newer result.
+  const actedRef = useRef(false)
+
+  useEffect(() => {
+    getVBRProjectReportPublishStatus(projectId)
+      .then((s) => {
+        if (!actedRef.current) setStatus(s)
+      })
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Failed to load publish status."))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId])
+
+  const isPublic = Boolean(status?.is_public && status?.public_token)
+  const publicUrl =
+    isPublic && status?.public_token
+      ? `${typeof window !== "undefined" ? window.location.origin : ""}/vbr/report/${status.public_token}`
+      : ""
+
+  const run = (action: () => Promise<ProjectReportPublishStatus>) => {
+    actedRef.current = true
+    setBusy(true)
+    setError(null)
+    setCopied(false)
+    action()
+      .then(setStatus)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Action failed."))
+      .finally(() => setBusy(false))
+  }
+
+  const copyLink = () => {
+    if (!publicUrl) return
+    void navigator.clipboard?.writeText(publicUrl)
+    setCopied(true)
+  }
+
+  return (
+    <Card>
+      <div data-testid="publish-controls" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <CardHeader title="Recruiter-Safe Public Link" eyebrow="Share with recruiters" icon="🔗" />
+          {isPublic ? (
+            <span data-testid="public-link-active-badge">
+              <Badge tone="emerald">Public link active</Badge>
+            </span>
+          ) : (
+            <span data-testid="student-preview-badge">
+              <Badge tone="slate">Student preview</Badge>
+            </span>
+          )}
+        </div>
+
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          Publishing creates a read-only link recruiters can open without logging in. It shows only recruiter-safe
+          evidence summaries — never your raw evidence, private files, or numeric scores. You can unpublish at any time.
+        </p>
+
+        {error && (
+          <p data-testid="publish-error" style={{ fontSize: 12, color: TOKEN.rose ?? "#be123c", margin: 0 }}>
+            {error}
+          </p>
+        )}
+
+        {isPublic ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div
+              data-testid="public-link-url"
+              style={{
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 12,
+                color: TOKEN.ink,
+                padding: "8px 10px",
+                background: TOKEN.bg,
+                border: `1px solid ${TOKEN.line}`,
+                borderRadius: 8,
+                wordBreak: "break-all",
+              }}
+            >
+              {publicUrl}
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                data-testid="copy-link-button"
+                onClick={copyLink}
+                style={primaryBtnStyle}
+              >
+                {copied ? "Copied!" : "Copy public link"}
+              </button>
+              <button
+                type="button"
+                data-testid="unpublish-link-button"
+                disabled={busy}
+                onClick={() => run(() => unpublishVBRProjectReport(projectId))}
+                style={secondaryBtnStyle}
+              >
+                {busy ? "Working…" : "Unpublish link"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <button
+              type="button"
+              data-testid="publish-link-button"
+              disabled={busy}
+              onClick={() => run(() => publishVBRProjectReport(projectId))}
+              style={primaryBtnStyle}
+            >
+              {busy ? "Publishing…" : "Publish recruiter-safe link"}
+            </button>
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+const primaryBtnStyle: CSSProperties = {
+  padding: "8px 14px",
+  borderRadius: 8,
+  border: "none",
+  background: TOKEN.indigo,
+  color: "#fff",
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: "pointer",
+}
+
+const secondaryBtnStyle: CSSProperties = {
+  padding: "8px 14px",
+  borderRadius: 8,
+  border: `1px solid ${TOKEN.line}`,
+  background: "#fff",
+  color: TOKEN.inkSoft,
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: "pointer",
+}
+
 export function ProjectReportView({ projectId }: { projectId: string }) {
   const [report, setReport] = useState<VBRStudentProjectReportResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -121,6 +270,9 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
       >
         {report.note}
       </div>
+
+      {/* Recruiter-safe public link controls */}
+      <PublishControls projectId={projectId} />
 
       {/* Project summary */}
       <Card>
