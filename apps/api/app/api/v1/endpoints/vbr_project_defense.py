@@ -35,12 +35,14 @@ from app.schemas.vbr_project_defense import (
     SubmitDefenseAnswersRequest,
     SubmitDefenseAnswersResponse,
 )
+from app.schemas.vbr_student_report import VBRStudentProjectReportResponse
 from app.services.vbr_project_defense import (
     create_project_defense,
     generate_defense_questions,
     submit_defense_answers,
 )
 from app.services.vbr_session_recording import get_owned_vbr_session_or_404
+from app.services.vbr_student_report import build_student_vbr_report
 
 router = APIRouter()
 
@@ -176,3 +178,19 @@ def submit_defense_answers_route(
         analysis=DefenseAnalysisResponse(**result["analysis"]),
         video_evidence_chips=result.get("video_evidence_chips", []),
     )
+
+
+@router.get(
+    "/projects/{project_id}/report",
+    response_model=VBRStudentProjectReportResponse,
+    summary="Get a private student preview of the Final VBR Report for a project",
+)
+def get_student_vbr_report_route(
+    project_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> VBRStudentProjectReportResponse:
+    project = get_owned_vbr_project_or_404(db, project_id, user_id)
+    report = build_student_vbr_report(db, pipeline_db, project, user_id)
+    return VBRStudentProjectReportResponse(**report)

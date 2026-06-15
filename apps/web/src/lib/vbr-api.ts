@@ -464,6 +464,126 @@ export async function syncProjectDefenseToSkillGraph(sessionId: string): Promise
   return res.json()
 }
 
+// ─── Final VBR Report v1 (student preview) ──────────────────────────────────
+
+export type VBRReportGitHubProofSummary = {
+  repo_url: string | null
+  repo_owner: string | null
+  repo_name: string | null
+  status: string | null
+  detected_skills: string[]
+  public_safe_summary: string
+}
+
+export type VBRReportDocumentSummary = {
+  title: string
+  source_type: string | null
+  status: string | null
+}
+
+export type VBRReportWebsiteProofSummary = {
+  target_website: string
+  evidence_strength: string
+  workflow_confidence: string
+  supported_skills: string[]
+}
+
+export type VBRReportEvidencePackageSummary = {
+  github_proof_attached: boolean
+  documents_count: number
+  website_proofs_count: number
+  project_defense_completed: boolean
+  video_defense_recorded: boolean
+  video_evidence_chip_count: number
+}
+
+export type VBRReportQuestionSummary = {
+  id: string
+  question_text: string
+  kind: string | null
+  skill: string | null
+  answered: boolean
+}
+
+/**
+ * A single row in the skill evidence table. ``status`` is always a
+ * qualitative label — never a numeric trust/confidence score.
+ */
+export type VBRReportSkillEvidenceRow = {
+  skill: string
+  status: "Demonstrated" | "Partially demonstrated" | "Supporting evidence" | "Needs review" | "Not assessed" | string
+  evidence_chip_count: number
+  notes: string
+}
+
+/**
+ * Report-safe summary of the Project Defense analysis. Numeric analysis
+ * scores (overall/clarity/ownership/depth/consistency) are never included —
+ * each is mapped to a qualitative label
+ * ("Demonstrated" / "Partially demonstrated" / "Supporting evidence" /
+ * "Needs review" / "Not assessed").
+ */
+export type VBRReportProjectDefenseAnalysis = {
+  transcript_summary: string
+  skills_mentioned: string[]
+  skills_explained_well: string[]
+  skills_missing_from_explanation: string[]
+  overall_assessment: string
+  explanation_clarity: string
+  ownership_signal: string
+  technical_depth: string
+  consistency_with_evidence: string
+  risk_flags: string[]
+  recruiter_summary: string
+  recommended_improvements: string[]
+  privacy_scan_status: string
+}
+
+/**
+ * Private, student-owned preview of the Final VBR Report (v1) evidence
+ * package for a Project Defense project. This is NOT the public tokenized
+ * recruiter report — `public_recruiter_sharing_enabled` is always `false`.
+ */
+export type VBRStudentProjectReportResponse = {
+  project_id: string
+  project_title: string
+  project_description: string
+  repo_url: string
+  repo_full_name: string | null
+  student_role: string
+  claimed_skills: string[]
+  project_status: string
+  session_id: string | null
+  generated_at: string
+
+  evidence_package: VBRReportEvidencePackageSummary
+
+  github_proof: VBRReportGitHubProofSummary | null
+  documents: VBRReportDocumentSummary[]
+  website_proofs: VBRReportWebsiteProofSummary[]
+
+  project_defense_analysis: VBRReportProjectDefenseAnalysis | null
+  defense_questions: VBRReportQuestionSummary[]
+  video_evidence_chips: VideoEvidenceChip[]
+
+  skill_evidence: VBRReportSkillEvidenceRow[]
+
+  limitations: string[]
+  next_actions: string[]
+
+  preview_only: boolean
+  public_recruiter_sharing_enabled: boolean
+  note: string
+}
+
+/** Get the private, student-owned Final VBR Report preview for a project. */
+export async function getVBRProjectReport(projectId: string): Promise<VBRStudentProjectReportResponse | null> {
+  const res = await fetchAPI(`/api/v1/student/vbr/projects/${encodeURIComponent(projectId)}/report`)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load report (HTTP ${res.status}).`))
+  return res.json()
+}
+
 /** Fetch a published VBR report by its public token. No auth required. */
 export async function getPublicVBRReport(
   publicToken: string,

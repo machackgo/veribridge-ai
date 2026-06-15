@@ -91,7 +91,7 @@ export function CardHeader({
   )
 }
 
-type BadgeTone = "slate" | "emerald" | "indigo" | "amber" | "rose" | "purple" | "sky"
+export type BadgeTone = "slate" | "emerald" | "indigo" | "amber" | "rose" | "purple" | "sky"
 
 const BADGE_STYLES: Record<BadgeTone, { bg: string; color: string; border: string }> = {
   slate: { bg: "#f8fafc", color: "#475569", border: "#e2e8f0" },

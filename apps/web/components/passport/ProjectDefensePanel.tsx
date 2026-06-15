@@ -712,7 +712,20 @@ export function ProjectDefensePanel() {
       {/* Project Evidence Package — unified checklist + attached evidence summary */}
       {created && (
         <Card>
-          <CardHeader title="Project Evidence Package" eyebrow="Evidence workspace" icon="🗂️" />
+          <CardHeader
+            title="Project Evidence Package"
+            eyebrow="Evidence workspace"
+            icon="🗂️"
+            action={
+              <Btn
+                size="sm"
+                variant="secondary"
+                onClick={() => router.push(`/student/vbr/projects/${created.project.id}/report`)}
+              >
+                View VBR report preview
+              </Btn>
+            }
+          />
 
           <div
             style={{

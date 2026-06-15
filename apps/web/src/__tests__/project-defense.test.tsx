@@ -708,6 +708,22 @@ describe("ProjectDefensePanel", () => {
     expect(within(checklistCard("Skill Graph")).getByText("Not saved")).toBeInTheDocument()
   })
 
+  it("shows a 'View VBR report preview' button after Project Defense creation and routes to the report", async () => {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    const reportButton = await screen.findByRole("button", { name: /view vbr report preview/i })
+    fireEvent.click(reportButton)
+
+    expect(mockRouterPush).toHaveBeenCalledWith("/student/vbr/projects/proj-1/report")
+  })
+
   it("shows GitHub Proof as attached in the checklist when a repo-wise proof is selected", async () => {
     vi.mocked(listGitHubProofs).mockResolvedValue([makeGithubProof({ id: "gh-1" })])
     vi.mocked(createProjectDefense).mockResolvedValue(
