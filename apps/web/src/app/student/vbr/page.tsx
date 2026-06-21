@@ -133,10 +133,16 @@ export default function StudentVBRPage() {
       >
         VeriBridge Proof Studio
       </h1>
-      <p style={{ fontSize: 15, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 32, opacity: 0.85, maxWidth: 640 }}>
+      <p style={{ fontSize: 15, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 20, opacity: 0.85, maxWidth: 640 }}>
         Add your proof sources once. VeriBridge will use them to build skill evidence and prepare evidence
         for future project reports.
       </p>
+
+      <div style={{ marginBottom: 32 }}>
+        <Link href="/student/vbr/passport" style={{ ...secondaryLinkStyle, fontWeight: 700 }}>
+          🪪 View your Verified Work Passport
+        </Link>
+      </div>
 
       {error && (
         <div

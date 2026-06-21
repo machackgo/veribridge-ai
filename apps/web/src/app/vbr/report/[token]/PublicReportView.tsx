@@ -338,16 +338,16 @@ export function PublicReportView({ token }: { token: string }) {
           </p>
           <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
             <a
-              href="/"
+              href="/recruiters"
               style={{ padding: "8px 14px", borderRadius: 8, background: TOKEN.indigo, color: "#fff", fontSize: 13, fontWeight: 600, textDecoration: "none" }}
             >
               Request a VBR from your candidates
             </a>
             <a
-              href="/"
+              href="/recruiters"
               style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${TOKEN.line}`, background: "#fff", color: TOKEN.inkSoft, fontSize: 13, fontWeight: 600, textDecoration: "none" }}
             >
-              Learn about VeriBridge
+              See how VeriBridge works
             </a>
           </div>
         </div>

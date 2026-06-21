@@ -40,6 +40,7 @@ from app.api.v1.endpoints import (
     vbr_public_project_report,
     vbr_public_report,
     vbr_sessions,
+    vbr_work_passport,
     verification_readiness,
     website_evidence_discovery,
     website_proof_artifact_sync,
@@ -94,6 +95,16 @@ api_router.include_router(
     vbr_project_defense.router,
     prefix="/student/vbr",
     tags=["vbr-project-defense"],
+)
+api_router.include_router(
+    vbr_work_passport.student_router,
+    prefix="/student/vbr",
+    tags=["vbr-work-passport"],
+)
+api_router.include_router(
+    vbr_work_passport.public_router,
+    prefix="/public",
+    tags=["vbr-work-passport"],
 )
 api_router.include_router(
     vbr_public_report.router,

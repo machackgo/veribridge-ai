@@ -713,3 +713,153 @@ export async function getPublicVBRProjectReport(
 
   return response.json()
 }
+
+// ─── Verified Work Passport v1 ──────────────────────────────────────────────
+
+/**
+ * Owner-only publish status for the student's public Work Passport.
+ * `public_slug` / `public_path` are only ever returned to the owner, and only
+ * while the passport is published.
+ */
+export type WorkPassportStatus = {
+  is_published: boolean
+  public_slug: string | null
+  public_path: string | null
+  published_at: string | null
+  headline: string
+  summary: string
+}
+
+/** A grouped, evidence-backed skill. `status` is always a qualitative label. */
+export type PassportSkillSummary = {
+  skill: string
+  status: string
+  evidence_chip_count: number
+  project_count: number
+}
+
+/** Owner-only publish status for one project's recruiter link. */
+export type PassportProjectReportStatus = {
+  is_public: boolean
+  public_token: string | null
+  public_path: string | null
+  published_at: string | null
+}
+
+/** Owner-only project evidence card in the private passport. */
+export type PassportProjectSummary = {
+  project_id: string
+  project_title: string
+  project_summary: string
+  repo_full_name: string | null
+  claimed_skills: string[]
+  evidence_sources: string[]
+  evidence_package: VBRReportEvidencePackageSummary
+  report: PassportProjectReportStatus
+}
+
+/** The owner-only private Work Passport (full evidence wallet). */
+export type PrivateWorkPassport = {
+  candidate_display_name: string | null
+  headline: string
+  summary: string
+  is_published: boolean
+  public_slug: string | null
+  public_path: string | null
+  published_at: string | null
+  skills: PassportSkillSummary[]
+  projects: PassportProjectSummary[]
+  evidence_source_counts: Record<string, number>
+  project_count: number
+  published_report_count: number
+  limitations: string[]
+  generated_at: string
+}
+
+/** A public top-skill row — qualitative label only. */
+export type PublicPassportSkill = {
+  skill: string
+  status: string
+}
+
+/** A public featured project — links to its public VBR report. */
+export type PublicPassportProject = {
+  project_title: string
+  project_summary: string
+  claimed_skills: string[]
+  evidence_sources: string[]
+  public_report_path: string
+  published_at: string | null
+}
+
+/**
+ * The recruiter-safe public Work Passport. Never includes the candidate's
+ * email, auth id, internal project/session ids, raw evidence, or numeric
+ * trust scores.
+ */
+export type PublicWorkPassport = {
+  candidate_display_name: string | null
+  headline: string
+  summary: string
+  top_skills: PublicPassportSkill[]
+  featured_projects: PublicPassportProject[]
+  evidence_source_counts: Record<string, number>
+  featured_project_count: number
+  limitations: string[]
+  published_at: string | null
+  generated_at: string
+  verification_note: string
+}
+
+/** Get the current user's private Verified Work Passport. */
+export async function getPrivateWorkPassport(): Promise<PrivateWorkPassport> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport")
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load passport (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Get the publish status of the current user's Work Passport. */
+export async function getWorkPassportStatus(): Promise<WorkPassportStatus> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/status")
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load passport status (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Publish (or re-publish) the current user's public Work Passport. */
+export async function publishWorkPassport(
+  body?: { headline?: string; summary?: string },
+): Promise<WorkPassportStatus> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/publish", {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to publish passport (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Hide the current user's public Work Passport. */
+export async function unpublishWorkPassport(): Promise<WorkPassportStatus> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/unpublish", { method: "POST" })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to unpublish passport (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Fetch a published recruiter-safe public Work Passport by its slug. No auth required. */
+export async function getPublicWorkPassportBySlug(
+  slug: string,
+): Promise<PublicWorkPassport | null> {
+  const response = await fetch(`${API_BASE}/api/v1/public/p/${encodeURIComponent(slug)}`, {
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+  })
+
+  if (response.status === 404) {
+    return null
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to load passport (HTTP ${response.status}).`)
+  }
+
+  return response.json()
+}
