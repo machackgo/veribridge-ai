@@ -67,6 +67,8 @@ class PublicVBRProjectReportResponse(BaseModel):
     project_summary: str = ""
     student_role: str = ""
     repo_full_name: str | None = None
+    # A public deployed app URL, when the candidate provided one. Safe to link.
+    deployed_url: str | None = None
     claimed_skills: list[str] = Field(default_factory=list)
 
     evidence_package: VBRReportEvidencePackageSummary

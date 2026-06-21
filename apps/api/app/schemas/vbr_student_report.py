@@ -27,6 +27,9 @@ class VBRReportGitHubProofSummary(BaseModel):
     status: str | None = None
     detected_skills: list[str] = Field(default_factory=list)
     public_safe_summary: str = ""
+    # Only true when the repo is a public GitHub repo, so the UI may surface a
+    # direct "View repository" link. Private repos are never linked.
+    repo_is_public: bool = False
 
 
 class VBRReportDocumentSummary(BaseModel):
@@ -100,6 +103,8 @@ class VBRStudentProjectReportResponse(BaseModel):
     project_description: str = ""
     repo_url: str = ""
     repo_full_name: str | None = None
+    # A public deployed app URL, when the candidate provided one. Safe to link.
+    deployed_url: str | None = None
     student_role: str = ""
     claimed_skills: list[str] = Field(default_factory=list)
     project_status: str = "draft"

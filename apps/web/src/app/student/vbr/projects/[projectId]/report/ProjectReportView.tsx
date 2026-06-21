@@ -301,6 +301,9 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
         <Badge tone="slate">Project status: {report.project_status.replace(/_/g, " ")}</Badge>
       </Card>
 
+      {/* Direct safe links */}
+      <SafeLinksCard report={report} />
+
       {/* Evidence package summary */}
       <Card>
         <CardHeader title="Evidence Package Summary" eyebrow="Overview" icon="🗂️" />
@@ -524,6 +527,57 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
         </Link>
       </p>
     </div>
+  )
+}
+
+const safeLinkStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: `1px solid ${TOKEN.line}`,
+  background: "#fff",
+  color: TOKEN.indigo,
+  fontSize: 13,
+  fontWeight: 600,
+  textDecoration: "none",
+}
+
+/**
+ * Direct, recruiter-safe outbound links: a public GitHub repo (only when known
+ * public), a public deployed app URL, and live website-proof targets. Never
+ * links raw private docs, transcripts, signed URLs, or storage paths.
+ */
+function SafeLinksCard({ report }: { report: VBRStudentProjectReportResponse }) {
+  const repoUrl = report.github_proof?.repo_is_public ? report.github_proof.repo_url : null
+  const deployedUrl = report.deployed_url || null
+  const websiteTargets = report.website_proofs
+    .map((w) => w.target_website)
+    .filter((u): u is string => Boolean(u && /^https?:\/\//i.test(u)))
+  const liveLinks = Array.from(new Set([deployedUrl, ...websiteTargets].filter(Boolean) as string[]))
+
+  if (!repoUrl && liveLinks.length === 0) return null
+
+  return (
+    <Card>
+      <CardHeader title="Direct Links" eyebrow="Verify it yourself" icon="🔗" />
+      <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
+        Public sources you can open directly. Private evidence (raw documents, transcripts, and recordings) is never linked.
+      </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {repoUrl && (
+          <a data-testid="safe-repo-link" href={repoUrl} target="_blank" rel="noreferrer" style={safeLinkStyle}>
+            🐙 View public repository
+          </a>
+        )}
+        {liveLinks.map((url) => (
+          <a key={url} data-testid="safe-live-link" href={url} target="_blank" rel="noreferrer" style={safeLinkStyle}>
+            🌐 Open live site
+          </a>
+        ))}
+      </div>
+    </Card>
   )
 }
 

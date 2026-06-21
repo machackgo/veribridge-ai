@@ -465,6 +465,7 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         "project_summary": report.get("project_description") or "",
         "student_role": report.get("student_role") or "",
         "repo_full_name": report.get("repo_full_name"),
+        "deployed_url": report.get("deployed_url") or None,
         "claimed_skills": list(report.get("claimed_skills") or []),
         "evidence_package": report.get("evidence_package") or {},
         "github_proof": _public_github_proof(report.get("github_proof")),

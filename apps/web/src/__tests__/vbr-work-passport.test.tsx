@@ -36,8 +36,8 @@ function makePassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWork
     public_path: null,
     published_at: null,
     skills: [
-      { skill: "Python", status: "Demonstrated", evidence_chip_count: 2, project_count: 1 },
-      { skill: "React", status: "Partially demonstrated", evidence_chip_count: 1, project_count: 1 },
+      { skill: "Python", status: "Demonstrated", evidence_chip_count: 2, project_count: 1, evidence_sources: ["GitHub Proof"], projects: [], evidence_chips: [], notes: "", limitations: [] },
+      { skill: "React", status: "Partially demonstrated", evidence_chip_count: 1, project_count: 1, evidence_sources: [], projects: [], evidence_chips: [], notes: "", limitations: [] },
     ],
     projects: [
       {
@@ -55,6 +55,7 @@ function makePassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWork
           video_defense_recorded: true,
           video_evidence_chip_count: 1,
         },
+        attempt_count: 1,
         report: { is_public: false, public_token: null, public_path: null, published_at: null },
       },
     ],
@@ -100,6 +101,60 @@ describe("PrivatePassportView", () => {
     expect(screen.getAllByTestId("evidence-source-count").length).toBeGreaterThan(0)
     expect(screen.getAllByTestId("passport-skill")).toHaveLength(2)
     expect(screen.getByText("Python")).toBeInTheDocument()
+  })
+
+  it("shows a merged-attempts badge when duplicate evidence is grouped into one card", async () => {
+    const base = makePassport()
+    const p = makePassport({
+      projects: [{ ...base.projects[0], attempt_count: 9 }],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-project-card")
+    // One card, not nine, with a badge surfacing the merged attempt count.
+    expect(screen.getAllByTestId("passport-project-card")).toHaveLength(1)
+    expect(screen.getByTestId("attempt-count-badge")).toHaveTextContent("9 attempts merged")
+  })
+
+  it("expands a skill to show safe drilldown detail with a report preview link", async () => {
+    const base = makePassport()
+    const p = makePassport({
+      skills: [
+        {
+          ...base.skills[0],
+          evidence_sources: ["GitHub Proof", "Project Defense"],
+          notes: "Explained clearly during the Project Defense.",
+          projects: [
+            {
+              project_title: "Skill Evidence Tracker",
+              project_id: "proj-1",
+              evidence_sources: ["GitHub Proof"],
+              report_is_public: false,
+              public_report_path: null,
+            },
+          ],
+          evidence_chips: [{ label: "00:42", short_summary: "Walks through the risk scoring function.", source: "project_defense_video" }],
+          limitations: [],
+        },
+        base.skills[1],
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-header")
+
+    // Detail hidden until expanded.
+    expect(screen.queryByTestId("skill-detail")).not.toBeInTheDocument()
+    fireEvent.click(screen.getAllByTestId("skill-expand-toggle")[0])
+
+    const detail = await screen.findByTestId("skill-detail")
+    expect(detail).toHaveTextContent("Explained clearly during the Project Defense.")
+    expect(screen.getByTestId("skill-project-ref")).toBeInTheDocument()
+    expect(detail).toHaveTextContent("Walks through the risk scoring function.")
   })
 
   it("renders project report actions including publish when no report exists", async () => {

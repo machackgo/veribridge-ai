@@ -205,21 +205,127 @@ function PassportPublishControls({
 }
 
 function SkillRow({ skill }: { skill: PassportSkillSummary }) {
+  const [open, setOpen] = useState(false)
+  const hasDetail =
+    skill.projects.length > 0 ||
+    skill.evidence_sources.length > 0 ||
+    skill.evidence_chips.length > 0 ||
+    Boolean(skill.notes)
+
   return (
-    <div
-      data-testid="passport-skill"
-      style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between", flexWrap: "wrap" }}
-    >
-      <span style={{ fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>{skill.skill}</span>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        {skill.evidence_chip_count > 0 && (
-          <Mono style={{ fontSize: 11, color: TOKEN.muted }}>{skill.evidence_chip_count} chips</Mono>
-        )}
-        <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
-          {skill.project_count} {skill.project_count === 1 ? "project" : "projects"}
-        </Mono>
-        <Badge tone={QUALITATIVE_LABEL_TONE[skill.status] ?? "slate"}>{skill.status}</Badge>
-      </div>
+    <div data-testid="passport-skill" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <button
+        type="button"
+        data-testid="skill-expand-toggle"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        disabled={!hasDetail}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          background: "none",
+          border: "none",
+          padding: 0,
+          cursor: hasDetail ? "pointer" : "default",
+          width: "100%",
+          textAlign: "left",
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>
+          {hasDetail && <span style={{ color: TOKEN.muted, marginRight: 6 }}>{open ? "▾" : "▸"}</span>}
+          {skill.skill}
+        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {skill.evidence_chip_count > 0 && (
+            <Mono style={{ fontSize: 11, color: TOKEN.muted }}>{skill.evidence_chip_count} chips</Mono>
+          )}
+          <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+            {skill.project_count} {skill.project_count === 1 ? "project" : "projects"}
+          </Mono>
+          <Badge tone={QUALITATIVE_LABEL_TONE[skill.status] ?? "slate"}>{skill.status}</Badge>
+        </div>
+      </button>
+
+      {open && hasDetail && (
+        <div
+          data-testid="skill-detail"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            padding: "10px 12px",
+            background: TOKEN.bg,
+            border: `1px solid ${TOKEN.line}`,
+            borderRadius: 8,
+          }}
+        >
+          {skill.evidence_sources.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {skill.evidence_sources.map((src) => (
+                <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
+                  {src}
+                </Badge>
+              ))}
+            </div>
+          )}
+
+          {skill.notes && (
+            <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{skill.notes}</p>
+          )}
+
+          {skill.projects.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                Related projects
+              </Mono>
+              {skill.projects.map((p, i) => (
+                <div
+                  key={`${p.project_title}-${i}`}
+                  data-testid="skill-project-ref"
+                  style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+                >
+                  <span style={{ fontSize: 12, color: TOKEN.ink, fontWeight: 600 }}>{p.project_title}</span>
+                  {p.project_id && (
+                    <Link
+                      href={`/student/vbr/projects/${p.project_id}/report`}
+                      style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}
+                    >
+                      View report preview →
+                    </Link>
+                  )}
+                  {p.report_is_public && <Badge tone="emerald">Public report</Badge>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {skill.evidence_chips.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                Evidence snippets
+              </Mono>
+              {skill.evidence_chips.map((c, i) => (
+                <div key={`${c.label}-${i}`} style={{ fontSize: 12, color: TOKEN.inkSoft }}>
+                  <Mono style={{ fontSize: 11, color: TOKEN.ink }}>{c.label}</Mono> — {c.short_summary}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {skill.limitations.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 16 }}>
+              {skill.limitations.map((line, i) => (
+                <li key={i} style={{ fontSize: 11, color: TOKEN.muted }}>
+                  {line}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -261,11 +367,18 @@ function ProjectCard({ project }: { project: PassportProjectSummary }) {
               <Mono style={{ fontSize: 11, color: TOKEN.muted }}>{project.repo_full_name}</Mono>
             )}
           </div>
-          {isPublic ? (
-            <Badge tone="emerald">Report public</Badge>
-          ) : (
-            <Badge tone="slate">Report private</Badge>
-          )}
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            {project.attempt_count > 1 && (
+              <span data-testid="attempt-count-badge" title="Evidence from multiple Project Defense attempts is merged into one card">
+                <Badge tone="slate">{project.attempt_count} attempts merged</Badge>
+              </span>
+            )}
+            {isPublic ? (
+              <Badge tone="emerald">Report public</Badge>
+            ) : (
+              <Badge tone="slate">Report private</Badge>
+            )}
+          </div>
         </div>
 
         {project.project_summary && (

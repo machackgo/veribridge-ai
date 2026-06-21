@@ -44,6 +44,34 @@ class WorkPassportStatusResponse(BaseModel):
 # ── Shared evidence-summary models ───────────────────────────────────────────
 
 
+class PassportSkillEvidenceChip(BaseModel):
+    """A sanitized skill-evidence snippet (no timestamps tied to raw media,
+    no storage paths). Used in the skill drilldown."""
+
+    label: str = ""
+    short_summary: str = ""
+    source: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class PassportSkillProjectRef(BaseModel):
+    """A project that supports a skill, as shown in the skill drilldown.
+
+    ``project_id`` is owner-only (used to link to the private report preview)
+    and is omitted from the public projection. ``public_report_path`` is the
+    recruiter-safe link, present only when the project's report is published.
+    """
+
+    project_title: str = ""
+    project_id: str | None = None
+    evidence_sources: list[str] = Field(default_factory=list)
+    report_is_public: bool = False
+    public_report_path: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class PassportSkillSummary(BaseModel):
     """A grouped, evidence-backed skill. ``status`` is always a qualitative
     label — never a numeric trust/confidence score."""
@@ -52,15 +80,38 @@ class PassportSkillSummary(BaseModel):
     status: str
     evidence_chip_count: int = 0
     project_count: int = 1
+    # Skill drilldown detail (safe, qualitative-only).
+    evidence_sources: list[str] = Field(default_factory=list)
+    projects: list[PassportSkillProjectRef] = Field(default_factory=list)
+    evidence_chips: list[PassportSkillEvidenceChip] = Field(default_factory=list)
+    notes: str = ""
+    limitations: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class PublicPassportSkillProjectRef(BaseModel):
+    """A published project supporting a public skill — no internal ids."""
+
+    project_title: str = ""
+    evidence_sources: list[str] = Field(default_factory=list)
+    public_report_path: str
 
     model_config = {"extra": "forbid"}
 
 
 class PublicPassportSkill(BaseModel):
-    """Public top-skill row — qualitative label only, no counts."""
+    """Public top-skill row — qualitative label only, no counts.
+
+    Drilldown detail is sourced ONLY from published public reports.
+    """
 
     skill: str
     status: str
+    evidence_sources: list[str] = Field(default_factory=list)
+    projects: list[PublicPassportSkillProjectRef] = Field(default_factory=list)
+    evidence_chips: list[PassportSkillEvidenceChip] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -86,6 +137,9 @@ class PassportProjectSummary(BaseModel):
     claimed_skills: list[str] = Field(default_factory=list)
     evidence_sources: list[str] = Field(default_factory=list)
     evidence_package: dict = Field(default_factory=dict)
+    # How many underlying evidence attempts (duplicate rows) merged into this
+    # card. 1 when the project is a single row.
+    attempt_count: int = 1
     report: PassportProjectReportStatus
 
     model_config = {"extra": "forbid"}
@@ -150,7 +204,10 @@ class PublicWorkPassportResponse(BaseModel):
 __all__ = [
     "PublishPassportRequest",
     "WorkPassportStatusResponse",
+    "PassportSkillEvidenceChip",
+    "PassportSkillProjectRef",
     "PassportSkillSummary",
+    "PublicPassportSkillProjectRef",
     "PublicPassportSkill",
     "PassportProjectReportStatus",
     "PassportProjectSummary",

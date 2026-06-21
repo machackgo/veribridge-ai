@@ -184,6 +184,25 @@ def test_public_token_returns_report_without_auth(client: TestClient) -> None:
     assert body["published_at"]
 
 
+def test_public_report_exposes_safe_links_only(client: TestClient, mem_store: dict) -> None:
+    project_id = _make_full_project(client, mem_store)
+    token = _publish(client, project_id).json()["public_token"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, token).json()
+
+    # The deployed_url field is always present (None when not provided).
+    assert "deployed_url" in body
+    # A public github proof is flagged so the UI may surface a direct repo link.
+    assert body["github_proof"] is not None
+    assert body["github_proof"]["repo_is_public"] is True
+    assert body["github_proof"]["repo_url"].startswith("https://github.com/")
+    # Still no raw private fields leak alongside the safe link.
+    raw = str(body).lower()
+    assert "should-never-leak" not in raw
+    assert "storage_path" not in raw
+
+
 def test_invalid_token_returns_404(client: TestClient) -> None:
     assert _get_public(client, "definitely-not-a-real-token").status_code == 404
 

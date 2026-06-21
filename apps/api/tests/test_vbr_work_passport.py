@@ -158,6 +158,45 @@ def test_private_passport_groups_skills_and_projects(client: TestClient, mem_sto
         }
 
 
+def test_private_passport_groups_duplicate_project_rows(client: TestClient, mem_store: dict) -> None:
+    # Three Project Defense rows for the SAME repo (e.g. repeated attempts).
+    # The passport must collapse them into ONE evidence card, not three.
+    p1 = _make_full_project(client, mem_store)
+    _make_full_project(client, mem_store)
+    _make_full_project(client, mem_store)
+
+    body = _get_private(client).json()
+    assert body["project_count"] == 1
+    assert len(body["projects"]) == 1
+    card = body["projects"][0]
+    assert card["attempt_count"] == 3
+    # Evidence badges are unioned onto the single card (no duplicate cards).
+    assert "GitHub Proof" in card["evidence_sources"]
+    assert "Project Defense" in card["evidence_sources"]
+    # Skills aggregate over distinct projects, so each appears once.
+    skill_names = [s["skill"] for s in body["skills"]]
+    assert len(skill_names) == len(set(skill_names))
+
+    # Publishing one duplicate's report surfaces the published status on the card.
+    _publish_project_report(client, p1)
+    card = _get_private(client).json()["projects"][0]
+    assert card["report"]["is_public"] is True
+
+
+def test_public_passport_collapses_duplicate_published_reports(client: TestClient, mem_store: dict) -> None:
+    # Two duplicate rows of the same project, both with published reports, must
+    # appear as a SINGLE featured card on the public passport.
+    p1 = _make_full_project(client, mem_store)
+    p2 = _make_full_project(client, mem_store)
+    _publish_project_report(client, p1)
+    _publish_project_report(client, p2)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+    assert body["featured_project_count"] == 1
+
+
 def test_private_passport_is_owner_scoped(client: TestClient) -> None:
     _create_project_defense(client)
 
@@ -176,6 +215,41 @@ def test_private_passport_shows_published_report_action(client: TestClient, mem_
     proj = body["projects"][0]
     assert proj["report"]["is_public"] is True
     assert proj["report"]["public_path"].startswith("/vbr/report/")
+
+
+def test_private_skill_drilldown_has_safe_detail(client: TestClient, mem_store: dict) -> None:
+    project_id = _make_full_project(client, mem_store)
+    body = _get_private(client).json()
+    assert body["skills"]
+    skill = body["skills"][0]
+    # Drilldown detail is present and references the owner's project for linking.
+    assert "evidence_sources" in skill
+    assert skill["projects"]
+    ref = skill["projects"][0]
+    assert ref["project_id"] == project_id  # owner-only, used for the report preview link
+    for chip in skill["evidence_chips"]:
+        assert set(chip.keys()) == {"label", "short_summary", "source"}
+
+
+def test_public_skill_drilldown_excludes_private_and_unpublished(client: TestClient, mem_store: dict) -> None:
+    published = _make_full_project(client, mem_store)
+    # A second project with NO published report — its evidence must not surface.
+    _make_full_project(client, mem_store)
+    _publish_project_report(client, published)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+    assert body["top_skills"]
+    serialized = str(body["top_skills"])
+    # No owner-only project ids leak into the public skill drilldown.
+    assert "project_id" not in serialized
+    assert USER_ID not in serialized
+    for skill in body["top_skills"]:
+        # Every linked project is a published public report path only.
+        for ref in skill["projects"]:
+            assert ref["public_report_path"].startswith("/vbr/report/")
+            assert "project_id" not in ref
 
 
 # ── Publish / status ownership ────────────────────────────────────────────────

@@ -9,7 +9,7 @@
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { render, screen } from "@testing-library/react"
+import { render, screen, fireEvent } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PublicPassportView } from "../app/p/[slug]/PublicPassportView"
 import LegacyPublicPassportPage from "../app/passport/[slug]/page"
@@ -33,8 +33,8 @@ function makePublicPassport(overrides: Partial<PublicWorkPassport> = {}): Public
     headline: "Full-stack builder",
     summary: "I ship and defend real projects.",
     top_skills: [
-      { skill: "Python", status: "Demonstrated" },
-      { skill: "React", status: "Partially demonstrated" },
+      { skill: "Python", status: "Demonstrated", evidence_sources: ["GitHub Proof"], projects: [], evidence_chips: [], limitations: [] },
+      { skill: "React", status: "Partially demonstrated", evidence_sources: [], projects: [], evidence_chips: [], limitations: [] },
     ],
     featured_projects: [
       {
@@ -80,6 +80,42 @@ describe("PublicPassportView", () => {
     expect(screen.getByTestId("public-passport-cta")).toBeInTheDocument()
   })
 
+  it("expands a public skill to show only published-report drilldown detail", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        top_skills: [
+          {
+            skill: "Python",
+            status: "Demonstrated",
+            evidence_sources: ["GitHub Proof", "Project Defense"],
+            projects: [
+              {
+                project_title: "Skill Evidence Tracker",
+                evidence_sources: ["GitHub Proof"],
+                public_report_path: "/vbr/report/tok-abc",
+              },
+            ],
+            evidence_chips: [],
+            limitations: [],
+          },
+        ],
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.queryByTestId("public-skill-detail")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
+
+    const detail = await screen.findByTestId("public-skill-detail")
+    const ref = screen.getByTestId("public-skill-project-ref")
+    expect(ref).toHaveTextContent("Skill Evidence Tracker")
+    // The only outbound link is the public report path — never an internal id.
+    expect(detail.querySelector("a")).toHaveAttribute("href", "/vbr/report/tok-abc")
+    expect(detail.textContent).not.toContain("project_id")
+  })
+
   it("renders the not-found empty state safely", async () => {
     vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(null)
 
@@ -115,7 +151,12 @@ describe("PublicPassportView", () => {
     expect(screen.queryByTestId("publish-passport-button")).not.toBeInTheDocument()
     expect(screen.queryByTestId("unpublish-passport-button")).not.toBeInTheDocument()
     expect(screen.queryByTestId("publish-report-button")).not.toBeInTheDocument()
-    expect(screen.queryByRole("button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("copy-passport-link-button")).not.toBeInTheDocument()
+    // The only buttons allowed on the public passport are read-only skill
+    // expand/collapse toggles — never any mutating edit control.
+    for (const btn of screen.queryAllByRole("button")) {
+      expect(btn).toHaveAttribute("data-testid", "public-skill-expand-toggle")
+    }
   })
 
   it("never renders raw/private fields, numeric scores, /100, percentages, or 'fully verified'", async () => {

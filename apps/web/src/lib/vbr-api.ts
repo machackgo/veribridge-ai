@@ -473,6 +473,8 @@ export type VBRReportGitHubProofSummary = {
   status: string | null
   detected_skills: string[]
   public_safe_summary: string
+  /** True only when the repo is a known public GitHub repo (safe to link). */
+  repo_is_public?: boolean
 }
 
 export type VBRReportDocumentSummary = {
@@ -555,6 +557,7 @@ export type VBRStudentProjectReportResponse = {
   project_status: string
   session_id: string | null
   generated_at: string
+  deployed_url?: string | null
 
   evidence_package: VBRReportEvidencePackageSummary
 
@@ -645,6 +648,7 @@ export type PublicVBRProjectReport = {
   project_summary: string
   student_role: string
   repo_full_name: string | null
+  deployed_url?: string | null
   claimed_skills: string[]
 
   evidence_package: VBRReportEvidencePackageSummary
@@ -730,12 +734,33 @@ export type WorkPassportStatus = {
   summary: string
 }
 
+/** A sanitized skill-evidence snippet shown in the skill drilldown. */
+export type PassportSkillEvidenceChip = {
+  label: string
+  short_summary: string
+  source: string
+}
+
+/** A project supporting a skill (private drilldown — owner-only project_id). */
+export type PassportSkillProjectRef = {
+  project_title: string
+  project_id?: string | null
+  evidence_sources: string[]
+  report_is_public: boolean
+  public_report_path: string | null
+}
+
 /** A grouped, evidence-backed skill. `status` is always a qualitative label. */
 export type PassportSkillSummary = {
   skill: string
   status: string
   evidence_chip_count: number
   project_count: number
+  evidence_sources: string[]
+  projects: PassportSkillProjectRef[]
+  evidence_chips: PassportSkillEvidenceChip[]
+  notes: string
+  limitations: string[]
 }
 
 /** Owner-only publish status for one project's recruiter link. */
@@ -755,6 +780,8 @@ export type PassportProjectSummary = {
   claimed_skills: string[]
   evidence_sources: string[]
   evidence_package: VBRReportEvidencePackageSummary
+  /** How many duplicate evidence attempts merged into this card (≥1). */
+  attempt_count: number
   report: PassportProjectReportStatus
 }
 
@@ -776,10 +803,21 @@ export type PrivateWorkPassport = {
   generated_at: string
 }
 
-/** A public top-skill row — qualitative label only. */
+/** A published project supporting a public skill — no internal ids. */
+export type PublicPassportSkillProjectRef = {
+  project_title: string
+  evidence_sources: string[]
+  public_report_path: string
+}
+
+/** A public top-skill row — qualitative label only, with a safe drilldown. */
 export type PublicPassportSkill = {
   skill: string
   status: string
+  evidence_sources: string[]
+  projects: PublicPassportSkillProjectRef[]
+  evidence_chips: PassportSkillEvidenceChip[]
+  limitations: string[]
 }
 
 /** A public featured project — links to its public VBR report. */

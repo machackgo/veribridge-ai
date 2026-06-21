@@ -37,13 +37,119 @@ const SOURCE_TONE: Record<string, BadgeTone> = {
 }
 
 function SkillChip({ skill }: { skill: PublicPassportSkill }) {
-  return (
-    <div
-      data-testid="public-passport-skill"
-      style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" }}
-    >
-      <span style={{ fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>{skill.skill}</span>
+  const [open, setOpen] = useState(false)
+  const hasDetail =
+    skill.projects.length > 0 || skill.evidence_sources.length > 0 || skill.evidence_chips.length > 0
+
+  const headerStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    justifyContent: "space-between",
+    background: "none",
+    border: "none",
+    padding: 0,
+    width: "100%",
+    textAlign: "left" as const,
+  }
+  const headerInner = (
+    <>
+      <span style={{ fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>
+        {hasDetail && <span style={{ color: TOKEN.muted, marginRight: 6 }}>{open ? "▾" : "▸"}</span>}
+        {skill.skill}
+      </span>
       <Badge tone={QUALITATIVE_LABEL_TONE[skill.status] ?? "slate"}>{skill.status}</Badge>
+    </>
+  )
+
+  return (
+    <div data-testid="public-passport-skill" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {/* Skills with no safe drilldown stay non-interactive so the public
+          passport exposes no buttons beyond intentional expand toggles. */}
+      {hasDetail ? (
+        <button
+          type="button"
+          data-testid="public-skill-expand-toggle"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          style={{ ...headerStyle, cursor: "pointer" }}
+        >
+          {headerInner}
+        </button>
+      ) : (
+        <div style={headerStyle}>{headerInner}</div>
+      )}
+
+      {open && hasDetail && (
+        <div
+          data-testid="public-skill-detail"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            padding: "10px 12px",
+            background: TOKEN.bg,
+            border: `1px solid ${TOKEN.line}`,
+            borderRadius: 8,
+          }}
+        >
+          {skill.evidence_sources.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {skill.evidence_sources.map((src) => (
+                <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
+                  {src}
+                </Badge>
+              ))}
+            </div>
+          )}
+
+          {skill.projects.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                Evidenced in
+              </Mono>
+              {skill.projects.map((p, i) => (
+                <div
+                  key={`${p.project_title}-${i}`}
+                  data-testid="public-skill-project-ref"
+                  style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+                >
+                  <span style={{ fontSize: 12, color: TOKEN.ink, fontWeight: 600 }}>{p.project_title}</span>
+                  <a
+                    href={p.public_report_path}
+                    style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}
+                  >
+                    View report →
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {skill.evidence_chips.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                Evidence snippets
+              </Mono>
+              {skill.evidence_chips.map((c, i) => (
+                <div key={`${c.label}-${i}`} style={{ fontSize: 12, color: TOKEN.inkSoft }}>
+                  <Mono style={{ fontSize: 11, color: TOKEN.ink }}>{c.label}</Mono> — {c.short_summary}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {skill.limitations.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 16 }}>
+              {skill.limitations.map((line, i) => (
+                <li key={i} style={{ fontSize: 11, color: TOKEN.muted }}>
+                  {line}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   )
 }

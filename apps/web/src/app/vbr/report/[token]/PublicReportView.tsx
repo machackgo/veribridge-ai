@@ -61,6 +61,57 @@ function Assessment({ label, value }: { label: string; value: string }) {
   )
 }
 
+const safeLinkStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: `1px solid ${TOKEN.line}`,
+  background: "#fff",
+  color: TOKEN.indigo,
+  fontSize: 13,
+  fontWeight: 600,
+  textDecoration: "none",
+} as const
+
+/**
+ * Recruiter-safe outbound links: a public GitHub repo (only when known public)
+ * and live website-proof / deployed targets. Never links private evidence.
+ */
+function SafeLinksCard({ report }: { report: PublicVBRProjectReport }) {
+  const repoUrl = report.github_proof?.repo_is_public ? report.github_proof.repo_url : null
+  const websiteTargets = report.website_proofs
+    .map((w) => w.target_website)
+    .filter((u): u is string => Boolean(u && /^https?:\/\//i.test(u)))
+  const liveLinks = Array.from(
+    new Set([report.deployed_url || null, ...websiteTargets].filter(Boolean) as string[]),
+  )
+
+  if (!repoUrl && liveLinks.length === 0) return null
+
+  return (
+    <Card>
+      <CardHeader title="Direct Links" eyebrow="Verify it yourself" icon="🔗" />
+      <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
+        Public sources you can open directly. Private evidence (raw documents, transcripts, and recordings) is never linked.
+      </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {repoUrl && (
+          <a data-testid="public-safe-repo-link" href={repoUrl} target="_blank" rel="noreferrer" style={safeLinkStyle}>
+            🐙 View public repository
+          </a>
+        )}
+        {liveLinks.map((url) => (
+          <a key={url} data-testid="public-safe-live-link" href={url} target="_blank" rel="noreferrer" style={safeLinkStyle}>
+            🌐 Open live site
+          </a>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
 function EvidenceStat({ label, value, tone }: { label: string; value: string; tone: BadgeTone }) {
   return (
     <div
@@ -173,6 +224,9 @@ export function PublicReportView({ token }: { token: string }) {
           ))}
         </div>
       </Card>
+
+      {/* Direct safe links */}
+      <SafeLinksCard report={report} />
 
       {/* Evidence package summary */}
       <Card>

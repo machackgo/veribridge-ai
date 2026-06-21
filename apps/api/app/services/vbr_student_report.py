@@ -203,6 +203,45 @@ def _skill_evidence_row(
     }
 
 
+_GITHUB_PROOFS_TABLE = "github_proof_submissions"
+
+
+def _repo_is_public(db: Any, github_proof: dict[str, Any] | None) -> bool:
+    """Best-effort: True only when the linked GitHub repo is known to be public.
+
+    Reads ``visibility`` from the github_proof_submissions row when a proof id is
+    present. Any uncertainty (missing id, lookup error, non-public value) returns
+    False so a private repo is never advertised as a public, linkable URL.
+    """
+    if not isinstance(github_proof, dict):
+        return False
+    # Visibility may already be inlined on the attached proof.
+    inline = str(github_proof.get("visibility") or "").strip().lower()
+    if inline:
+        return inline == "public"
+    proof_id = github_proof.get("github_proof_id") or github_proof.get("id")
+    if not proof_id:
+        return False
+    try:
+        if isinstance(db, dict):
+            row = db.get(_GITHUB_PROOFS_TABLE, {}).get(str(proof_id))
+        else:
+            result = (
+                db.table(_GITHUB_PROOFS_TABLE)
+                .select("visibility")
+                .eq("id", str(proof_id))
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+            row = rows[0] if rows else None
+    except Exception:  # pragma: no cover - visibility is best-effort
+        return False
+    if not isinstance(row, dict):
+        return False
+    return str(row.get("visibility") or "").strip().lower() == "public"
+
+
 def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any], user_id: str) -> dict[str, Any]:
     """Build the safe, student-owned VBR report preview for ``project``.
 
@@ -354,6 +393,7 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
         "project_description": metadata.get("description") or "",
         "repo_url": project.get("repo_url") or "",
         "repo_full_name": project.get("repo_full_name"),
+        "deployed_url": project.get("deployed_url") or None,
         "student_role": metadata.get("student_role") or "",
         "claimed_skills": claimed_skills,
         "project_status": project.get("status") or "draft",
@@ -375,6 +415,7 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
                 "status": github_proof.get("status"),
                 "detected_skills": [str(s) for s in (github_proof.get("detected_skills") or [])],
                 "public_safe_summary": str(github_proof.get("public_safe_summary") or ""),
+                "repo_is_public": _repo_is_public(db, github_proof),
             }
             if github_proof is not None
             else None
