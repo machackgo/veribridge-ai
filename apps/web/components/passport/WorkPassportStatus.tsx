@@ -110,7 +110,7 @@ export function WorkPassportStatusPanel({ sessionId }: { sessionId: string }) {
             </Mono>
             {data.public_slug && (
               <Link
-                href={`/passport/${data.public_slug}`}
+                href={`/p/${data.public_slug}`}
                 style={{ fontSize: 12, color: "#818cf8", textDecoration: "none", fontWeight: 600 }}
                 target="_blank"
               >

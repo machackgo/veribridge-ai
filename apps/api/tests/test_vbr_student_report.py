@@ -262,7 +262,7 @@ def test_report_includes_project_defense_analysis_and_skill_evidence(client: Tes
     assert "Project Defense has not been analyzed yet." not in body["limitations"]
     # Always present — Project Defense is process/explanation evidence.
     assert any("process and explanation" in note for note in body["limitations"])
-    assert any("public recruiter sharing is not enabled" in note.lower() for note in body["limitations"])
+    assert any("private by default" in note.lower() for note in body["limitations"])
 
 
 # ── Video evidence chips ──────────────────────────────────────────────────────

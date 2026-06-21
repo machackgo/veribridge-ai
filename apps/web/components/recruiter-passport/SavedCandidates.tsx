@@ -223,7 +223,7 @@ function CandidateCard({
         {/* Actions */}
         <div style={{ flexShrink: 0, display: "flex", gap: 6, flexDirection: "column" }}>
           {saved.public_slug && (
-            <Link href={`/passport/${saved.public_slug}`} target="_blank">
+            <Link href={`/p/${saved.public_slug}`} target="_blank">
               <Btn size="sm" variant="secondary">View passport</Btn>
             </Link>
           )}

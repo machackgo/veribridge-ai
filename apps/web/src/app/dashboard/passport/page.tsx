@@ -86,14 +86,14 @@ function PassportManagementCard({
             <span style={{ fontWeight: 700, fontSize: 14, color: "#065f46" }}>Work Passport Active</span>
           </div>
           <p style={{ fontSize: 12, color: "#065f46", margin: 0 }}>
-            Public URL: <Mono style={{ fontWeight: 700 }}>/passport/{passport.public_slug}</Mono>
+            Public URL: <Mono style={{ fontWeight: 700 }}>/p/{passport.public_slug}</Mono>
           </p>
           {passport.field && (
             <p style={{ fontSize: 11, color: "#047857", margin: "2px 0 0" }}>Field: {passport.field}</p>
           )}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <Link href={`/passport/${passport.public_slug}`} target="_blank">
+          <Link href={`/p/${passport.public_slug}`} target="_blank">
             <Btn variant="secondary" size="sm">View public page</Btn>
           </Link>
         </div>
@@ -125,7 +125,7 @@ export default function WorkPassportPage() {
         description="A centralized view of your proof evidence, skill verification status, and recruiter access controls."
         action={
           passport && sessionId ? (
-            <Link href={`/passport/${passport.public_slug}`} target="_blank">
+            <Link href={`/p/${passport.public_slug}`} target="_blank">
               <Btn variant="primary">View public passport</Btn>
             </Link>
           ) : undefined

@@ -326,7 +326,10 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
         "Project Defense reflects the student's own process and explanation of their work — "
         "it is not independent proof of code authorship."
     )
-    limitations.append("This is a private student preview — public recruiter sharing is not enabled for this report yet.")
+    limitations.append(
+        "This preview is private by default — it becomes recruiter-visible only for the "
+        "project reports you choose to publish."
+    )
 
     # ── Next actions ─────────────────────────────────────────────────────────
     next_actions: list[str] = []

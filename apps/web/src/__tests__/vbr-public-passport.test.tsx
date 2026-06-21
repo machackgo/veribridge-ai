@@ -7,14 +7,23 @@
  * scores, /100 bars, score wording, percentages, and "fully verified".
  */
 
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { render, screen } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PublicPassportView } from "../app/p/[slug]/PublicPassportView"
+import LegacyPublicPassportPage from "../app/passport/[slug]/page"
 import type { PublicWorkPassport } from "@/lib/vbr-api"
 
 vi.mock("@/lib/vbr-api", () => ({
   getPublicWorkPassportBySlug: vi.fn(),
 }))
+
+vi.mock("next/navigation", () => ({
+  redirect: vi.fn(),
+}))
+
+import { redirect } from "next/navigation"
 
 import { getPublicWorkPassportBySlug } from "@/lib/vbr-api"
 
@@ -137,5 +146,31 @@ describe("PublicPassportView", () => {
     // Qualitative labels render instead.
     expect(screen.getByText("Demonstrated")).toBeInTheDocument()
     expect(screen.getByText("Partially demonstrated")).toBeInTheDocument()
+  })
+})
+
+describe("Canonical public passport route", () => {
+  it("legacy /passport/[slug] redirects to the canonical /p/[slug] route", async () => {
+    vi.mocked(redirect).mockClear()
+
+    await LegacyPublicPassportPage({ params: Promise.resolve({ slug: "abc123" }) })
+
+    expect(redirect).toHaveBeenCalledWith("/p/abc123")
+  })
+
+  it("MVP surfaces link to /p/[slug], never the legacy /passport/[slug] route", () => {
+    const surfaces = [
+      "src/app/dashboard/passport/page.tsx",
+      "components/passport/WorkPassportStatus.tsx",
+      "components/recruiter-passport/SavedCandidates.tsx",
+    ]
+
+    for (const rel of surfaces) {
+      const src = readFileSync(join(process.cwd(), rel), "utf8")
+      // Links to the public passport now point at the canonical /p/<slug> route…
+      expect(src).toMatch(/\/p\/\$\{/)
+      // …and no longer build a legacy /passport/<slug> public link.
+      expect(src).not.toMatch(/\/passport\/\$\{/)
+    }
   })
 })

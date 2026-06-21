@@ -15,7 +15,7 @@ export default function Page() {
       <PageHeader
         eyebrow="Final VBR Report · v1"
         title="VBR Report Preview"
-        description="A private preview of the evidence package collected for this project — for you, the student. Public recruiter sharing is not enabled yet."
+        description="A private preview of the evidence package collected for this project — for you, the student. It stays private until you publish a recruiter-safe link below."
       />
       <ProjectReportView projectId={projectId} />
     </div>

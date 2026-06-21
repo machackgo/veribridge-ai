@@ -125,7 +125,8 @@ class VBRStudentProjectReportResponse(BaseModel):
     public_recruiter_sharing_enabled: bool = False
     note: str = (
         "This is a student preview of the evidence package collected for this project. "
-        "It is not a public recruiter report — public recruiter sharing is not enabled yet."
+        "It is private by default — use the controls below to publish a recruiter-safe "
+        "link when you're ready to share."
     )
 
     model_config = {"extra": "forbid"}

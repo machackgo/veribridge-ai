@@ -78,12 +78,12 @@ function makeReport(overrides: Partial<VBRStudentProjectReportResponse> = {}): V
       "No document proof attached.",
       "Project Defense has not been analyzed yet.",
       "Project Defense reflects the student's own process and explanation of their work — it is not independent proof of code authorship.",
-      "This is a private student preview — public recruiter sharing is not enabled for this report yet.",
+      "This preview is private by default — it becomes recruiter-visible only for the project reports you choose to publish.",
     ],
     next_actions: ["Generate Project Defense questions for this project."],
     preview_only: true,
     public_recruiter_sharing_enabled: false,
-    note: "This is a student preview of the evidence package collected for this project. It is not a public recruiter report — public recruiter sharing is not enabled yet.",
+    note: "This is a student preview of the evidence package collected for this project. It is private by default — use the controls below to publish a recruiter-safe link when you're ready to share.",
     ...overrides,
   }
 }
@@ -117,7 +117,7 @@ describe("ProjectReportView", () => {
 
     const notice = await screen.findByTestId("report-preview-notice")
     expect(notice.textContent).toMatch(/student preview/i)
-    expect(notice.textContent).toMatch(/public recruiter sharing is not enabled/i)
+    expect(notice.textContent).toMatch(/private by default/i)
     expect(screen.queryByText(/fully verified/i)).not.toBeInTheDocument()
   })
 
