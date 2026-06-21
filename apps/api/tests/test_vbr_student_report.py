@@ -166,6 +166,9 @@ def test_report_includes_github_document_website_summaries(client: TestClient, m
     assert github_proof["repo_name"] == "Hello-World"
     assert github_proof["detected_skills"] == ["Python", "React"]
     assert "octocat/Hello-World" in github_proof["public_safe_summary"]
+    assert "72/100" not in github_proof["public_safe_summary"]
+    assert "confidence" not in github_proof["public_safe_summary"].lower()
+    assert "with." not in github_proof["public_safe_summary"]
     # No raw GitHub snapshot / internal IDs in the safe summary.
     assert "github_proof_id" not in github_proof
     assert "repo_metadata" not in github_proof

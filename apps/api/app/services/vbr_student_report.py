@@ -26,6 +26,7 @@ process/explanation evidence, not independent proof of authorship.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -204,6 +205,24 @@ def _skill_evidence_row(
 
 
 _GITHUB_PROOFS_TABLE = "github_proof_submissions"
+
+_SCORE_PHRASE_RE = re.compile(
+    r"\s+with\s+\d{1,3}\s*/\s*100\s+confidence\b",
+    re.IGNORECASE,
+)
+_SCORE_FRAGMENT_RE = re.compile(
+    r"\b\d{1,3}\s*/\s*100\b|\b\d{1,3}\s*%\b|\bconfidence\b",
+    re.IGNORECASE,
+)
+
+
+def _scrub_score_fragments(value: str) -> str:
+    """Remove score-like fragments from report summaries."""
+    scrubbed = _SCORE_PHRASE_RE.sub("", value or "")
+    scrubbed = _SCORE_FRAGMENT_RE.sub("", scrubbed)
+    scrubbed = re.sub(r"\s{2,}", " ", scrubbed)
+    scrubbed = re.sub(r"\s+([.,;:])", r"\1", scrubbed)
+    return scrubbed.strip()
 
 
 def _repo_is_public(db: Any, github_proof: dict[str, Any] | None) -> bool:
@@ -414,7 +433,9 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
                 "repo_name": github_proof.get("repo_name"),
                 "status": github_proof.get("status"),
                 "detected_skills": [str(s) for s in (github_proof.get("detected_skills") or [])],
-                "public_safe_summary": str(github_proof.get("public_safe_summary") or ""),
+                "public_safe_summary": _scrub_score_fragments(
+                    str(github_proof.get("public_safe_summary") or "")
+                ),
                 "repo_is_public": _repo_is_public(db, github_proof),
             }
             if github_proof is not None
