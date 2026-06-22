@@ -1068,4 +1068,164 @@ describe("ProjectDefensePanel", () => {
     expect(text).not.toMatch(/token=/i)
     expect(text).not.toMatch(/https?:\/\/storage/i)
   })
+
+  // ── Website Proof recommendation UX (deterministic matching) ──────────────
+
+  it("shows a matching saved Website Proof under 'Recommended Website Proofs' for the project", async () => {
+    vi.mocked(listWebsiteProofs).mockResolvedValue([
+      makeWebsiteProof({
+        proof_session_id: "ws-boston",
+        target_website: "https://boston-smart-accident.vercel.app",
+        supported_skills: ["Machine Learning"],
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Boston Smart Accident Risk Rerouting" },
+    })
+
+    expect(await screen.findByText(/recommended website proofs/i)).toBeInTheDocument()
+    const recommendedRow = await screen.findByLabelText(/boston-smart-accident\.vercel\.app/i)
+    expect(within(recommendedRow.closest("label") as HTMLElement).getByText("Recommended")).toBeInTheDocument()
+  })
+
+  it("collapses an unrelated saved Website Proof under 'Browse all saved Website Proofs' when a match exists", async () => {
+    vi.mocked(listWebsiteProofs).mockResolvedValue([
+      makeWebsiteProof({
+        proof_session_id: "ws-boston",
+        target_website: "https://boston-smart-accident.vercel.app",
+        supported_skills: ["Machine Learning"],
+      }),
+      makeWebsiteProof({
+        proof_session_id: "ws-three",
+        target_website: "https://threejs.org",
+        supported_skills: ["JavaScript"],
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Boston Smart Accident Risk Rerouting" },
+    })
+
+    await screen.findByText(/recommended website proofs/i)
+    // The generic threejs.org proof is not promoted as a recommendation; it lives
+    // in the collapsed "Browse all saved Website Proofs" section.
+    const browse = screen.getByText(/browse all saved website proofs/i)
+    const details = browse.closest("details") as HTMLDetailsElement
+    expect(details).toBeTruthy()
+    expect(details.open).toBe(false)
+    expect(within(details).getByLabelText(/threejs\.org/i)).toBeInTheDocument()
+  })
+
+  it("shows an honest empty state when no saved Website Proof matches the project", async () => {
+    vi.mocked(listWebsiteProofs).mockResolvedValue([
+      makeWebsiteProof({
+        proof_session_id: "ws-three",
+        target_website: "https://threejs.org",
+        supported_skills: ["JavaScript"],
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Boston Smart Accident Risk Rerouting" },
+    })
+
+    expect(await screen.findByText(/no matching website proof found for this project/i)).toBeInTheDocument()
+    expect(screen.queryByText(/recommended website proofs/i)).not.toBeInTheDocument()
+  })
+
+  it("offers an 'Add a new Website Proof' link pointing to /student/proofs/website", async () => {
+    vi.mocked(listWebsiteProofs).mockResolvedValue([makeWebsiteProof({ proof_session_id: "ws-1" })])
+
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    const link = await screen.findByRole("link", { name: /add a new website proof/i })
+    expect(link.getAttribute("href")).toMatch(/^\/student\/proofs\/website/)
+  })
+
+  it("submits a selected recommended Website Proof id with the project defense", async () => {
+    vi.mocked(listWebsiteProofs).mockResolvedValue([
+      makeWebsiteProof({
+        proof_session_id: "ws-boston",
+        target_website: "https://boston-smart-accident.vercel.app",
+        supported_skills: ["Machine Learning"],
+      }),
+    ])
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Boston Smart Accident Risk Rerouting" },
+    })
+
+    const recommendedRow = await screen.findByLabelText(/boston-smart-accident\.vercel\.app/i)
+    fireEvent.click(recommendedRow)
+
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await waitFor(() => expect(createProjectDefense).toHaveBeenCalledTimes(1))
+    const body = vi.mocked(createProjectDefense).mock.calls[0][0]
+    expect(body.attached_proofs?.website_proof_session_ids).toEqual(["ws-boston"])
+  })
+
+  it("renders the Website Proof section with an empty state and an add path when zero proofs are saved", async () => {
+    vi.mocked(listWebsiteProofs).mockResolvedValue([])
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+    render(<ProjectDefensePanel />)
+
+    // The optional Website Proof section still renders for a student with no
+    // saved proofs (previously it was hidden entirely on an empty list).
+    expect(await screen.findByText(/attach website proof \(optional\)/i)).toBeInTheDocument()
+
+    // Honest empty state — and no recommendations, since there are no proofs.
+    expect(screen.getByText(/no matching website proof found/i)).toBeInTheDocument()
+    expect(screen.queryByText(/recommended website proofs/i)).not.toBeInTheDocument()
+
+    // The "Add a new Website Proof" path is offered and points to /student/proofs/website.
+    const link = screen.getByRole("link", { name: /add a new website proof/i })
+    expect(link.getAttribute("href")).toMatch(/^\/student\/proofs\/website/)
+
+    // The student can still submit a project defense without selecting a Website Proof.
+    fireEvent.change(screen.getByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await waitFor(() => expect(createProjectDefense).toHaveBeenCalledTimes(1))
+    const body = vi.mocked(createProjectDefense).mock.calls[0][0]
+    expect(body.attached_proofs?.website_proof_session_ids).toEqual([])
+  })
+
+  it("does not render a large saved Website Proof list as one huge list by default", async () => {
+    const many = Array.from({ length: 12 }, (_, i) =>
+      makeWebsiteProof({
+        proof_session_id: `ws-${i}`,
+        target_website: `https://unrelated-${i}.example.com`,
+        supported_skills: ["Design"],
+      }),
+    )
+    vi.mocked(listWebsiteProofs).mockResolvedValue(many)
+
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    // None match an empty project → all collapsed behind a single details element,
+    // not rendered as 12 always-visible checkboxes.
+    const browse = await screen.findByText(/browse all saved website proofs \(12\)/i)
+    const details = browse.closest("details") as HTMLDetailsElement
+    expect(details.open).toBe(false)
+    // A search box is available to narrow large lists.
+    expect(screen.getByLabelText(/search saved website proofs/i)).toBeInTheDocument()
+  })
 })

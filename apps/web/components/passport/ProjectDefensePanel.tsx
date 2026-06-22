@@ -1,6 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   createProjectDefense,
@@ -278,6 +279,316 @@ function AnalysisResults({
         </div>
       </div>
     </Card>
+  )
+}
+
+// ── Website Proof recommendation (deterministic, no AI) ──────────────────────
+//
+// Saved Website Proofs live at the account level, so a student's Project Defense
+// form would otherwise dump every unrelated proof (threejs.org, tensorflow.org,
+// generic docs) as if they were all recommendations. We rank saved proofs
+// against the project the student is actually describing using simple word/URL
+// overlap, and deprioritise generic doc/playground sites unless the project
+// explicitly names them.
+
+export type WebsiteProofMatchTier = "recommended" | "possible" | "other"
+
+export type WebsiteProofMatchContext = {
+  title: string
+  description: string
+  repoUrl: string
+  studentRole: string
+  claimedSkills: string[]
+}
+
+export type RankedWebsiteProof = {
+  proof: WebsiteProofSummaryResponse
+  tier: WebsiteProofMatchTier
+  score: number
+}
+
+// Generic docs / playgrounds that are almost never the student's own project.
+// Only treated as relevant when the project explicitly names the tool.
+const GENERIC_WEBSITE_PROOF_DOMAINS = new Set([
+  "threejs.org",
+  "tensorflow.org",
+  "playground.tensorflow.org",
+  "ml5js.org",
+  "observablehq.com",
+  "p5js.org",
+])
+
+const STOP_DOMAIN_TOKENS = new Set([
+  "com", "org", "net", "io", "dev", "app", "www", "co", "ai", "xyz",
+  "github", "vercel", "netlify", "pages", "herokuapp", "web",
+])
+
+function proofWords(text: string): string[] {
+  return (text || "").toLowerCase().match(/[a-z0-9]+/g)?.filter((w) => w.length >= 3) ?? []
+}
+
+function proofDomainOf(url: string): string {
+  const raw = (url || "").trim()
+  try {
+    return new URL(raw).hostname.replace(/^www\./, "").toLowerCase()
+  } catch {
+    return raw
+      .toLowerCase()
+      .replace(/^https?:\/\//, "")
+      .replace(/^www\./, "")
+      .split("/")[0]
+  }
+}
+
+/**
+ * Rank saved Website Proofs against the project the student is describing.
+ * Deterministic word/URL overlap only — never an AI/network call. Deduplicates
+ * proofs that share the same normalized target URL (keeping the strongest).
+ */
+export function rankWebsiteProofs(
+  proofs: WebsiteProofSummaryResponse[],
+  context: WebsiteProofMatchContext,
+): RankedWebsiteProof[] {
+  // Deduplicate repeated URLs — keep the highest evidence-strength session.
+  const byUrl = new Map<string, WebsiteProofSummaryResponse>()
+  for (const proof of proofs) {
+    const key = proofDomainOf(proof.target_website) + "|" + (proof.target_website || "").trim().toLowerCase()
+    const existing = byUrl.get(key)
+    if (!existing || (proof.evidence_strength_score ?? 0) > (existing.evidence_strength_score ?? 0)) {
+      byUrl.set(key, proof)
+    }
+  }
+
+  const projectTokens = new Set(
+    proofWords(
+      [context.title, context.description, context.repoUrl, context.studentRole, context.claimedSkills.join(" ")].join(
+        " ",
+      ),
+    ),
+  )
+  const claimedSkillTokens = new Set(context.claimedSkills.flatMap((s) => proofWords(s)))
+
+  const ranked = Array.from(byUrl.values()).map((proof): RankedWebsiteProof => {
+    let score = 0
+
+    // Skill overlap between the proof's supported skills and claimed skills.
+    for (const skill of proof.supported_skills ?? []) {
+      const skillWords = proofWords(skill)
+      if (skillWords.some((w) => claimedSkillTokens.has(w) || projectTokens.has(w))) score += 3
+    }
+
+    const domain = proofDomainOf(proof.target_website)
+    const domainTokens = proofWords(domain).filter((w) => !STOP_DOMAIN_TOKENS.has(w))
+    const isGeneric = GENERIC_WEBSITE_PROOF_DOMAINS.has(domain)
+    let domainNamed = false
+    for (const token of domainTokens) {
+      if (projectTokens.has(token)) {
+        score += 2
+        domainNamed = true
+      }
+    }
+
+    // Project keywords appearing anywhere in the target URL (repo/deploy name).
+    const url = (proof.target_website || "").toLowerCase()
+    for (const token of projectTokens) {
+      if (token.length >= 4 && url.includes(token)) score += 1
+    }
+
+    // Generic docs/playgrounds only count if the project explicitly names them.
+    if (isGeneric && !domainNamed) score = 0
+
+    const tier: WebsiteProofMatchTier = score >= 3 ? "recommended" : score >= 1 ? "possible" : "other"
+    return { proof, tier, score }
+  })
+
+  ranked.sort(
+    (a, b) => b.score - a.score || (b.proof.evidence_strength_score ?? 0) - (a.proof.evidence_strength_score ?? 0),
+  )
+  return ranked
+}
+
+const WEBSITE_PROOF_NEW_PATH = "/student/proofs/website"
+
+const TIER_BADGE: Record<WebsiteProofMatchTier, { label: string; tone: "emerald" | "amber" | "slate" }> = {
+  recommended: { label: "Recommended", tone: "emerald" },
+  possible: { label: "Possible match", tone: "amber" },
+  other: { label: "Other saved website proof", tone: "slate" },
+}
+
+function WebsiteProofRow({
+  ranked,
+  selected,
+  onToggle,
+}: {
+  ranked: RankedWebsiteProof
+  selected: boolean
+  onToggle: (id: string) => void
+}) {
+  const { proof, tier } = ranked
+  return (
+    <label
+      style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: TOKEN.inkSoft }}
+    >
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={() => onToggle(proof.proof_session_id)}
+      />
+      <span>
+        {proof.target_website || "Website proof"} — {proof.workflow_confidence} confidence
+      </span>
+      <Badge tone={TIER_BADGE[tier].tone}>{TIER_BADGE[tier].label}</Badge>
+    </label>
+  )
+}
+
+function WebsiteProofSelector({
+  proofs,
+  selectedIds,
+  onToggle,
+  context,
+}: {
+  proofs: WebsiteProofSummaryResponse[]
+  selectedIds: string[]
+  onToggle: (id: string) => void
+  context: WebsiteProofMatchContext
+}) {
+  const [search, setSearch] = useState("")
+  const ranked = useMemo(() => rankWebsiteProofs(proofs, context), [proofs, context])
+
+  const query = search.trim().toLowerCase()
+  const filtered = query
+    ? ranked.filter((r) => {
+        const url = (r.proof.target_website || "").toLowerCase()
+        const skills = (r.proof.supported_skills ?? []).join(" ").toLowerCase()
+        return url.includes(query) || skills.includes(query)
+      })
+    : ranked
+
+  const recommended = filtered.filter((r) => r.tier === "recommended")
+  const possible = filtered.filter((r) => r.tier === "possible")
+  const other = filtered.filter((r) => r.tier === "other")
+  const top = [...recommended, ...possible]
+
+  const addHref =
+    `${WEBSITE_PROOF_NEW_PATH}?from=project-defense` +
+    (context.title ? `&title=${encodeURIComponent(context.title)}` : "") +
+    (context.repoUrl ? `&repo=${encodeURIComponent(context.repoUrl)}` : "")
+
+  // With many saved proofs, the unranked "other" list is collapsed by default so
+  // the student isn't shown one giant confusing list.
+  const collapseOtherByDefault = ranked.length > 8 || top.length > 0
+
+  return (
+    <div>
+      <label style={labelStyle}>Attach website proof (optional)</label>
+      <p style={{ fontSize: 11, color: TOKEN.muted, margin: "0 0 8px" }}>
+        Attach a recommended saved proof, continue without one, or add a new Website Proof for this
+        project. These are saved Website Proof sessions — they are not re-verified here.
+      </p>
+
+      {proofs.length >= 5 && (
+        <input
+          type="text"
+          aria-label="Search saved website proofs by URL or skill"
+          placeholder="Search saved website proofs by URL or skill…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ ...inputStyle, marginBottom: 10 }}
+        />
+      )}
+
+      {top.length > 0 ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {recommended.length > 0 && (
+            <div>
+              <Mono
+                style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}
+              >
+                Recommended Website Proofs
+              </Mono>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+                {recommended.map((r) => (
+                  <WebsiteProofRow
+                    key={r.proof.proof_session_id}
+                    ranked={r}
+                    selected={selectedIds.includes(r.proof.proof_session_id)}
+                    onToggle={onToggle}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          {possible.length > 0 && (
+            <div>
+              <Mono
+                style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}
+              >
+                Possible matches
+              </Mono>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+                {possible.map((r) => (
+                  <WebsiteProofRow
+                    key={r.proof.proof_session_id}
+                    ranked={r}
+                    selected={selectedIds.includes(r.proof.proof_session_id)}
+                    onToggle={onToggle}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        !query && (
+          <p
+            style={{
+              fontSize: 12,
+              color: TOKEN.inkSoft,
+              background: TOKEN.bg,
+              border: `1px solid ${TOKEN.line}`,
+              borderRadius: 6,
+              padding: "8px 10px",
+              margin: "0 0 4px",
+            }}
+          >
+            No matching Website Proof found for this project. You can continue without one or add a new
+            Website Proof.
+          </p>
+        )
+      )}
+
+      {query && filtered.length === 0 && (
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: "4px 0" }}>
+          No saved Website Proof matches “{search.trim()}”.
+        </p>
+      )}
+
+      {other.length > 0 && (
+        <details open={!collapseOtherByDefault} style={{ marginTop: 10 }}>
+          <summary style={{ fontSize: 12, color: TOKEN.indigo, cursor: "pointer" }}>
+            Browse all saved Website Proofs ({other.length})
+          </summary>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+            {other.map((r) => (
+              <WebsiteProofRow
+                key={r.proof.proof_session_id}
+                ranked={r}
+                selected={selectedIds.includes(r.proof.proof_session_id)}
+                onToggle={onToggle}
+              />
+            ))}
+          </div>
+        </details>
+      )}
+
+      <p style={{ fontSize: 12, color: TOKEN.muted, margin: "10px 0 0" }}>
+        No relevant website proof?{" "}
+        <Link href={addHref} style={{ color: TOKEN.indigo, textDecoration: "none", fontWeight: 600 }}>
+          Add a new Website Proof
+        </Link>
+      </p>
+    </div>
   )
 }
 
@@ -621,25 +932,22 @@ export function ProjectDefensePanel() {
               </div>
             )}
 
-            {websiteProofs !== null && websiteProofs.length > 0 && (
-              <div>
-                <label style={labelStyle}>Attach website proof (optional)</label>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {websiteProofs.map((w) => (
-                    <label
-                      key={w.proof_session_id}
-                      style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: TOKEN.inkSoft }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedWebsiteProofIds.includes(w.proof_session_id)}
-                        onChange={() => toggleWebsiteProof(w.proof_session_id)}
-                      />
-                      {w.target_website || "Website proof"} — {w.workflow_confidence} confidence
-                    </label>
-                  ))}
-                </div>
-              </div>
+            {/* Render once website proofs have finished loading, including the
+                empty array — the selector shows its own "no matching proof"
+                empty state and the optional "Add a new Website Proof" path. */}
+            {websiteProofs !== null && (
+              <WebsiteProofSelector
+                proofs={websiteProofs}
+                selectedIds={selectedWebsiteProofIds}
+                onToggle={toggleWebsiteProof}
+                context={{
+                  title,
+                  description,
+                  repoUrl: selectedGithubProof ? selectedGithubProof.repo_url : repoUrl,
+                  studentRole,
+                  claimedSkills: claimedSkillsList(),
+                }}
+              />
             )}
 
             {createError && (
