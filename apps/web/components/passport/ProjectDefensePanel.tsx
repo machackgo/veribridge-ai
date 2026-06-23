@@ -742,6 +742,23 @@ export type RankedDocumentProof = {
   matched: string[]
 }
 
+// Document Proof matching needs a stricter generic vocabulary than Website Proof
+// matching. Almost every browser/frontend project shares words like "javascript",
+// "browser", "frontend", "web", "demo", "interactive" — and document titles like
+// "Three.js Interactive 3D Website Demo Explanation" are full of them. If that
+// generic overlap could recommend, a Three.js explainer would be wrongly promoted
+// for an unrelated Teachable Machine project. On top of the shared GENERIC_TOKENS
+// we strip these extra web/frontend/boilerplate words (and the bare "model",
+// which Three.js "3D model" docs and ML "model training" projects both use), so
+// only strong project-specific tokens can drive a Document Proof recommendation.
+const DOCUMENT_GENERIC_TOKENS = new Set<string>([
+  ...GENERIC_TOKENS,
+  "javascript", "browser", "browsers", "frontend", "development", "interactive",
+  "interface", "ui", "web", "website", "demo", "api", "apis", "project", "app",
+  "application", "proof", "document", "explanation", "report", "skill", "skills",
+  "model", "models",
+])
+
 /** Project-specific tokens from a document's safe metadata only. */
 function documentSpecificTokens(doc: DocumentProofResponse): Set<string> {
   const words = proofWords(
@@ -752,21 +769,36 @@ function documentSpecificTokens(doc: DocumentProofResponse): Set<string> {
 
 /**
  * Rank saved Document Proofs against the project being described. Deterministic
- * project-keyword overlap only (generic words/skills stripped, so generic skill
- * overlap alone never recommends a document). Reads safe metadata only.
+ * project-keyword overlap only. Two token sets are used: a broad set (generic
+ * words stripped) for display/search, and a strong set that additionally drops
+ * generic web/frontend boilerplate (javascript, browser, frontend, web, demo,
+ * interactive, …) via DOCUMENT_GENERIC_TOKENS. A document is Recommended only
+ * when it shares at least one strong project-specific token — so generic
+ * web/frontend skill overlap alone (e.g. a Three.js doc vs a Teachable Machine
+ * project both naming "JavaScript"/"frontend") never promotes a document.
+ * Reads safe metadata only.
  */
 export function rankDocumentProofs(
   docs: DocumentProofResponse[],
   context: WebsiteProofMatchContext,
 ): RankedDocumentProof[] {
+  // Broad tokens (display/search) and strong tokens (drive the recommendation).
   const projectTokens = projectSpecificTokens(context)
+  const strongProjectTokens = new Set(
+    Array.from(projectTokens).filter((w) => !DOCUMENT_GENERIC_TOKENS.has(w)),
+  )
+
   const ranked = docs.map((doc): RankedDocumentProof => {
     const matched: string[] = []
+    const strongMatched: string[] = []
     for (const token of documentSpecificTokens(doc)) {
       if (projectTokens.has(token) && !matched.includes(token)) matched.push(token)
+      if (strongProjectTokens.has(token) && !strongMatched.includes(token)) strongMatched.push(token)
     }
-    const tier: DocumentProofMatchTier = matched.length >= 1 ? "recommended" : "other"
-    return { doc, tier, score: matched.length, matched }
+    // Require at least one strong project-specific overlap to recommend. Generic
+    // overlap (kept in `matched` for ordering only) never sets the tier.
+    const tier: DocumentProofMatchTier = strongMatched.length >= 1 ? "recommended" : "other"
+    return { doc, tier, score: strongMatched.length * 10 + matched.length, matched }
   })
   ranked.sort((a, b) => b.score - a.score)
   return ranked

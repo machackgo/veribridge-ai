@@ -1339,6 +1339,115 @@ describe("ProjectDefensePanel", () => {
     expect(within(details).getByLabelText(/boston accident risk rerouting report/i)).toBeInTheDocument()
   })
 
+  it("does not recommend a Three.js document for a Teachable Machine project — generic web/frontend overlap is filtered, doc collapses under 'Browse all'", async () => {
+    // Regression: a Teachable Machine project and a Three.js document overlap only
+    // on generic web/frontend tokens (javascript, frontend, interactive, web,
+    // demo). That overlap must NOT promote the unrelated Three.js doc.
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeDocumentProof({
+        id: "doc-three",
+        title: "Three.js Interactive 3D Website Demo Explanation",
+        filename: "threejs-demo.pdf",
+        claimed_skills: ["JavaScript", "Frontend Development", "WebGL"],
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Teachable Machine Image Classification Demo" },
+    })
+    fireEvent.change(screen.getByPlaceholderText(/what does this project do/i), {
+      target: {
+        value:
+          "A browser-based machine learning demo using Google Teachable Machine concepts to train and test a simple image classification model.",
+      },
+    })
+    fireEvent.change(screen.getByPlaceholderText(/python, react, postgresql/i), {
+      target: {
+        value:
+          "Machine Learning, Image Classification, Teachable Machine, JavaScript, Browser APIs, Model Training, Frontend Development",
+      },
+    })
+
+    // Honest empty state — no recommendation from generic overlap alone.
+    expect(await screen.findByText(/no matching document proof found/i)).toBeInTheDocument()
+    expect(screen.queryByText(/recommended document proofs/i)).not.toBeInTheDocument()
+
+    // The Three.js doc stays available, collapsed under "Browse all" for manual override.
+    const browse = screen.getByText(/browse all saved document proofs/i)
+    const details = browse.closest("details") as HTMLDetailsElement
+    expect(details.open).toBe(false)
+    expect(
+      within(details).getByLabelText(/three\.js interactive 3d website demo explanation/i),
+    ).toBeInTheDocument()
+  })
+
+  it("recommends a matching Teachable Machine document for a Teachable Machine project", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeDocumentProof({
+        id: "doc-teachable",
+        title: "Teachable Machine Image Classification Notes",
+        filename: "teachable-machine-notes.pdf",
+        claimed_skills: ["Image Classification"],
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Teachable Machine Image Classification Demo" },
+    })
+
+    expect(await screen.findByText(/recommended document proofs/i)).toBeInTheDocument()
+    expect(
+      await screen.findByLabelText(/teachable machine image classification notes/i),
+    ).toBeInTheDocument()
+  })
+
+  it("recommends a Three.js document for a Three.js project", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeDocumentProof({
+        id: "doc-three",
+        title: "Three.js Renderer Design Notes",
+        filename: "threejs-notes.pdf",
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Three.js Interactive 3D Website Demo" },
+    })
+
+    expect(await screen.findByText(/recommended document proofs/i)).toBeInTheDocument()
+    expect(await screen.findByLabelText(/three\.js renderer design notes/i)).toBeInTheDocument()
+  })
+
+  it("does not recommend a document that shares only generic web/frontend skills", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeDocumentProof({
+        id: "doc-generic",
+        title: "Frontend Web App Notes",
+        filename: "frontend-notes.pdf",
+        claimed_skills: ["JavaScript", "Frontend Development", "Web", "Browser APIs"],
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Teachable Machine Image Classification Demo" },
+    })
+    fireEvent.change(screen.getByPlaceholderText(/python, react, postgresql/i), {
+      target: { value: "JavaScript, Frontend Development, Web, Browser APIs" },
+    })
+
+    // Only generic web/frontend tokens are shared → no recommendation.
+    expect(await screen.findByText(/no matching document proof found/i)).toBeInTheDocument()
+    expect(screen.queryByText(/recommended document proofs/i)).not.toBeInTheDocument()
+  })
+
   it("offers an 'Add a new Document Proof' link pointing to /student/proofs/documents with a returnTo", async () => {
     vi.mocked(listDocumentProofs).mockResolvedValue([makeDocumentProof()])
 
