@@ -57,6 +57,12 @@ import {
   listWebsiteProofs,
   recommendWebsiteProofs,
 } from "@/lib/passport-api"
+import {
+  clearProjectDefenseDraft,
+  readProjectDefenseDraft,
+  saveProjectDefenseDraft,
+} from "../../components/passport/project-defense-draft"
+import { safeReturnTo } from "../../components/passport/safe-return"
 
 function makeCreated(overrides: Partial<ProjectDefenseCreateResponse> = {}): ProjectDefenseCreateResponse {
   return {
@@ -244,6 +250,9 @@ beforeEach(() => {
     message: "Recording upload storage is ready.",
   })
   mockRouterPush.mockReset()
+  // The panel now persists a draft to sessionStorage on every change; clear it
+  // between tests so a draft from one test never rehydrates the next one's form.
+  clearProjectDefenseDraft()
 })
 
 describe("ProjectDefensePanel", () => {
@@ -1330,7 +1339,7 @@ describe("ProjectDefensePanel", () => {
     expect(within(details).getByLabelText(/boston accident risk rerouting report/i)).toBeInTheDocument()
   })
 
-  it("offers an 'Add a new Document Proof' link pointing to /student/proofs/documents", async () => {
+  it("offers an 'Add a new Document Proof' link pointing to /student/proofs/documents with a returnTo", async () => {
     vi.mocked(listDocumentProofs).mockResolvedValue([makeDocumentProof()])
 
     render(<ProjectDefensePanel />)
@@ -1338,7 +1347,90 @@ describe("ProjectDefensePanel", () => {
     await screen.findByPlaceholderText(/skill evidence tracker/i)
 
     const link = await screen.findByRole("link", { name: /add a new document proof/i })
-    expect(link.getAttribute("href")).toBe("/student/proofs/documents")
+    expect(link.getAttribute("href")).toBe(
+      "/student/proofs/documents?returnTo=/student/proofs/project-defense",
+    )
+  })
+
+  it("offers an 'Add a new Website Proof' link that returns to Project Defense", async () => {
+    vi.mocked(listWebsiteProofs).mockResolvedValue([makeWebsiteProof({ proof_session_id: "ws-1" })])
+
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    const link = await screen.findByRole("link", { name: /add a new website proof/i })
+    const href = link.getAttribute("href") ?? ""
+    expect(href).toMatch(/^\/student\/proofs\/website/)
+    expect(href).toContain("returnTo=/student/proofs/project-defense")
+  })
+
+  // ── Document Proof selector: no project context yet ──────────────────────────
+
+  it("does not show saved document checkboxes or a 'no match' message before project details exist", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeDocumentProof({
+        id: "doc-boston-1",
+        title: "Boston Smart Accident Risk Rerouting Project Report",
+        filename: "boston-report-1.pdf",
+      }),
+      makeDocumentProof({
+        id: "doc-boston-2",
+        title: "Boston Smart Accident Risk Rerouting Project Report",
+        filename: "boston-report-2.pdf",
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    // Guidance is shown instead of recommendations or a premature empty state.
+    expect(
+      await screen.findByText(/add project details to find matching document proofs/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/no matching document proof found/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/recommended document proofs/i)).not.toBeInTheDocument()
+
+    // "Browse all saved Document Proofs" exists but is collapsed by default.
+    const browse = screen.getByText(/browse all saved document proofs \(2\)/i)
+    const details = browse.closest("details") as HTMLDetailsElement
+    expect(details).toBeTruthy()
+    expect(details.open).toBe(false)
+
+    // The Boston documents are not shown directly — they only live inside the
+    // collapsed "Browse all" section, never as default-visible checkboxes.
+    const bostonRows = screen.getAllByLabelText(/boston smart accident risk rerouting project report/i)
+    expect(bostonRows).toHaveLength(2)
+    bostonRows.forEach((row) => expect(details.contains(row)).toBe(true))
+  })
+
+  it("recommends matching documents once enough project context is entered", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeDocumentProof({
+        id: "doc-boston",
+        title: "Boston Accident Risk Rerouting Report",
+        filename: "boston-rerouting.pdf",
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    // Before context: guidance only.
+    expect(
+      await screen.findByText(/add project details to find matching document proofs/i),
+    ).toBeInTheDocument()
+
+    // Entering a real project title is enough context to attempt matching.
+    fireEvent.change(screen.getByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Boston Smart Accident Risk Rerouting" },
+    })
+
+    expect(await screen.findByText(/recommended document proofs/i)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/add project details to find matching document proofs/i),
+    ).not.toBeInTheDocument()
+    expect(
+      await screen.findByLabelText(/boston accident risk rerouting report/i),
+    ).toBeInTheDocument()
   })
 
   it("can submit a project defense with no website proof and no document proof", async () => {
@@ -1348,8 +1440,11 @@ describe("ProjectDefensePanel", () => {
 
     render(<ProjectDefensePanel />)
 
-    // Both optional sections render their honest empty states.
-    expect(await screen.findByText(/no matching document proof found/i)).toBeInTheDocument()
+    // Before context the document section shows guidance; the website section
+    // shows its honest empty state. Neither blocks submission.
+    expect(
+      await screen.findByText(/add project details to find matching document proofs/i),
+    ).toBeInTheDocument()
     expect(screen.getByText(/no matching website proof found/i)).toBeInTheDocument()
 
     fireEvent.change(screen.getByPlaceholderText(/skill evidence tracker/i), {
@@ -1399,4 +1494,224 @@ describe("ProjectDefensePanel", () => {
     const row = await screen.findByLabelText(/opaque-deploy-xyz\.example\.com/i)
     expect(within(row.closest("label") as HTMLElement).getByText("Recommended")).toBeInTheDocument()
   })
+
+  // ── Draft persistence: leave to add a proof and come back ──────────────────
+  //
+  // Filling the Project Defense form then leaving to add a Document/Website Proof
+  // is a full route change that unmounts the panel. Without persistence the form
+  // is lost on return. These cover the sessionStorage draft round-trip.
+
+  describe("Project Defense draft persistence", () => {
+    function makeDocumentProof(
+      overrides: Partial<import("@/lib/passport-api").DocumentProofResponse> = {},
+    ): import("@/lib/passport-api").DocumentProofResponse {
+      return {
+        id: "doc-1",
+        source_type: "document",
+        status: "analyzed",
+        filename: "doc.pdf",
+        title: "Untitled document",
+        claimed_skills: [],
+        description: "",
+        analysis_json: {},
+        evidence_objects: [],
+        created_at: "2026-01-01T00:00:00Z",
+        ...overrides,
+      } as import("@/lib/passport-api").DocumentProofResponse
+    }
+
+    beforeEach(() => {
+      // Isolate each draft test from any leaked sessionStorage state.
+      clearProjectDefenseDraft()
+    })
+
+    it("saves a draft before navigating away to add a Document Proof", async () => {
+      vi.mocked(listDocumentProofs).mockResolvedValue([makeDocumentProof()])
+
+      render(<ProjectDefensePanel />)
+
+      fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+        target: { value: "Three.js Interactive 3D Website Demo" },
+      })
+      fireEvent.change(screen.getByPlaceholderText(/what does this project do/i), {
+        target: { value: "A 3D scene rendered with three.js." },
+      })
+      fireEvent.change(screen.getByPlaceholderText(/python, react, postgresql/i), {
+        target: { value: "JavaScript, WebGL" },
+      })
+      fireEvent.change(screen.getByPlaceholderText(/what part of this project did you build/i), {
+        target: { value: "I built the renderer." },
+      })
+
+      // The draft is persisted on change, so it is already saved by the time the
+      // student clicks "Add a new Document Proof" (a real route change).
+      await waitFor(() => {
+        const draft = readProjectDefenseDraft()
+        expect(draft?.projectTitle).toBe("Three.js Interactive 3D Website Demo")
+      })
+      const draft = readProjectDefenseDraft()
+      expect(draft?.description).toBe("A 3D scene rendered with three.js.")
+      expect(draft?.claimedSkills).toBe("JavaScript, WebGL")
+      expect(draft?.roleContribution).toBe("I built the renderer.")
+
+      const link = screen.getByRole("link", { name: /add a new document proof/i })
+      expect(link.getAttribute("href")).toBe(
+        "/student/proofs/documents?returnTo=/student/proofs/project-defense",
+      )
+    })
+
+    it("restores the saved draft fields when the panel remounts", async () => {
+      saveProjectDefenseDraft({
+        projectTitle: "Three.js Interactive 3D Website Demo",
+        description: "A 3D scene rendered with three.js.",
+        claimedSkills: "JavaScript, WebGL",
+        roleContribution: "I built the renderer.",
+        repositoryUrl: "https://github.com/me/three-demo",
+        selectedGithubProofId: "",
+        selectedDocumentIds: [],
+        selectedWebsiteProofIds: [],
+      })
+
+      render(<ProjectDefensePanel />)
+
+      const titleInput = (await screen.findByPlaceholderText(/skill evidence tracker/i)) as HTMLInputElement
+      await waitFor(() => expect(titleInput.value).toBe("Three.js Interactive 3D Website Demo"))
+      expect((screen.getByPlaceholderText(/what does this project do/i) as HTMLTextAreaElement).value).toBe(
+        "A 3D scene rendered with three.js.",
+      )
+      expect((screen.getByPlaceholderText(/python, react, postgresql/i) as HTMLInputElement).value).toBe(
+        "JavaScript, WebGL",
+      )
+      expect(
+        (screen.getByPlaceholderText(/what part of this project did you build/i) as HTMLTextAreaElement).value,
+      ).toBe("I built the renderer.")
+      expect(
+        (screen.getByLabelText(/repository url without attached github proof/i) as HTMLInputElement).value,
+      ).toBe("https://github.com/me/three-demo")
+    })
+
+    it("recommends a newly added matching document once the restored Three.js context recomputes", async () => {
+      // Student returns from adding a Three.js document — it is now in the saved
+      // list, and the restored project context recommends it.
+      saveProjectDefenseDraft({
+        ...emptyDraft(),
+        projectTitle: "Three.js Interactive 3D Website Demo",
+      })
+      vi.mocked(listDocumentProofs).mockResolvedValue([
+        makeDocumentProof({
+          id: "doc-three",
+          title: "Three.js Renderer Design Notes",
+          filename: "threejs-notes.pdf",
+        }),
+      ])
+
+      render(<ProjectDefensePanel />)
+
+      expect(await screen.findByText(/recommended document proofs/i)).toBeInTheDocument()
+      expect(
+        await screen.findByLabelText(/three\.js renderer design notes/i),
+      ).toBeInTheDocument()
+    })
+
+    it("keeps a restored Website Proof selection checked when it is still available", async () => {
+      saveProjectDefenseDraft({
+        ...emptyDraft(),
+        projectTitle: "Boston Smart Accident Risk Rerouting",
+        selectedWebsiteProofIds: ["ws-boston"],
+      })
+      vi.mocked(listWebsiteProofs).mockResolvedValue([
+        makeWebsiteProof({
+          proof_session_id: "ws-boston",
+          target_website: "https://boston-smart-accident.vercel.app",
+          supported_skills: ["Machine Learning"],
+        }),
+      ])
+
+      render(<ProjectDefensePanel />)
+
+      const row = (await screen.findByLabelText(/boston-smart-accident\.vercel\.app/i)) as HTMLInputElement
+      await waitFor(() => expect(row.checked).toBe(true))
+    })
+
+    it("does not surface saved documents directly on an empty (no draft) form", async () => {
+      vi.mocked(listDocumentProofs).mockResolvedValue([
+        makeDocumentProof({ id: "doc-boston", title: "Boston Accident Risk Rerouting Report" }),
+      ])
+
+      render(<ProjectDefensePanel />)
+
+      // No draft, empty form → guidance, saved docs collapsed under "Browse all".
+      expect(
+        await screen.findByText(/add project details to find matching document proofs/i),
+      ).toBeInTheDocument()
+      expect(screen.queryByText(/recommended document proofs/i)).not.toBeInTheDocument()
+      const browse = screen.getByText(/browse all saved document proofs/i)
+      expect((browse.closest("details") as HTMLDetailsElement).open).toBe(false)
+    })
+
+    it("clears the saved draft after a successful Project Defense creation", async () => {
+      vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+      render(<ProjectDefensePanel />)
+
+      fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+        target: { value: "Skill Evidence Tracker" },
+      })
+      await waitFor(() => expect(readProjectDefenseDraft()).not.toBeNull())
+
+      fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+      await waitFor(() => expect(createProjectDefense).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(readProjectDefenseDraft()).toBeNull())
+    })
+
+    it("clears the draft and resets the form when 'Clear draft' is used", async () => {
+      render(<ProjectDefensePanel />)
+
+      const titleInput = (await screen.findByPlaceholderText(/skill evidence tracker/i)) as HTMLInputElement
+      fireEvent.change(titleInput, { target: { value: "Scratch project" } })
+      await waitFor(() => expect(readProjectDefenseDraft()).not.toBeNull())
+
+      fireEvent.click(screen.getByRole("button", { name: /clear draft/i }))
+
+      expect(titleInput.value).toBe("")
+      await waitFor(() => expect(readProjectDefenseDraft()).toBeNull())
+    })
+
+    it("the Website Proof add link returns to Project Defense (draft preserved across it)", async () => {
+      vi.mocked(listWebsiteProofs).mockResolvedValue([makeWebsiteProof({ proof_session_id: "ws-1" })])
+
+      render(<ProjectDefensePanel />)
+
+      fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+        target: { value: "Boston Smart Accident Risk Rerouting" },
+      })
+      await waitFor(() => expect(readProjectDefenseDraft()?.projectTitle).toBe("Boston Smart Accident Risk Rerouting"))
+
+      const link = screen.getByRole("link", { name: /add a new website proof/i })
+      const href = link.getAttribute("href") ?? ""
+      expect(href).toMatch(/^\/student\/proofs\/website/)
+      expect(href).toContain("returnTo=/student/proofs/project-defense")
+    })
+
+    it("still ignores an unsafe external returnTo", () => {
+      expect(safeReturnTo("https://evil.com/steal")).toBeNull()
+      expect(safeReturnTo("//evil.com")).toBeNull()
+      expect(safeReturnTo("javascript:alert(1)")).toBeNull()
+      expect(safeReturnTo("/student/proofs/project-defense")).toBe("/student/proofs/project-defense")
+    })
+  })
 })
+
+function emptyDraft() {
+  return {
+    projectTitle: "",
+    description: "",
+    claimedSkills: "",
+    roleContribution: "",
+    repositoryUrl: "",
+    selectedGithubProofId: "",
+    selectedDocumentIds: [] as string[],
+    selectedWebsiteProofIds: [] as string[],
+  }
+}

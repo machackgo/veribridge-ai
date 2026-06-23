@@ -4,6 +4,12 @@ import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
+  clearProjectDefenseDraft,
+  readProjectDefenseDraft,
+  saveProjectDefenseDraft,
+  type ProjectDefenseDraft,
+} from "./project-defense-draft"
+import {
   createProjectDefense,
   generateDefenseQuestions,
   getVBRSession,
@@ -372,6 +378,22 @@ function projectSpecificTokens(context: WebsiteProofMatchContext): Set<string> {
   return new Set(words.filter((w) => !GENERIC_TOKENS.has(w)))
 }
 
+/**
+ * Does the form have enough project-specific input to attempt proof matching?
+ *
+ * Saved Document Proofs live at the account level, so before the student has
+ * described their project we have no meaningful basis to recommend (or to claim
+ * "no match"). We require at least one project-specific signal: a real title, a
+ * non-trivial description, a repo URL, or at least one non-generic claimed skill.
+ */
+export function hasEnoughProjectContext(context: WebsiteProofMatchContext): boolean {
+  if (context.title.trim().length > 2) return true
+  if (context.description.trim().length > 8) return true
+  if (context.repoUrl.trim().length > 8) return true
+  const skillTokens = proofWords(context.claimedSkills.join(" ")).filter((w) => !GENERIC_TOKENS.has(w))
+  return skillTokens.length > 0
+}
+
 function proofDomainOf(url: string): string {
   const raw = (url || "").trim()
   try {
@@ -469,6 +491,10 @@ function rankedFromBackend(groups: WebsiteProofRecommendationResponse): RankedWe
 }
 
 const WEBSITE_PROOF_NEW_PATH = "/student/proofs/website"
+
+// Where the proof-studio pages send the student back to after they add a new
+// proof. Passed as a safe internal `returnTo` query param (validated on arrival).
+const PROJECT_DEFENSE_RETURN_PATH = "/student/proofs/project-defense"
 
 const TIER_BADGE: Record<WebsiteProofMatchTier, { label: string; tone: "emerald" | "amber" | "slate" }> = {
   recommended: { label: "Recommended", tone: "emerald" },
@@ -574,7 +600,7 @@ function WebsiteProofSelector({
   const top = [...recommended, ...possible]
 
   const addHref =
-    `${WEBSITE_PROOF_NEW_PATH}?from=project-defense` +
+    `${WEBSITE_PROOF_NEW_PATH}?returnTo=${PROJECT_DEFENSE_RETURN_PATH}&from=project-defense` +
     (context.title ? `&title=${encodeURIComponent(context.title)}` : "") +
     (context.repoUrl ? `&repo=${encodeURIComponent(context.repoUrl)}` : "")
 
@@ -778,6 +804,16 @@ function DocumentProofSelector({
   const recommended = ranked.filter((r) => r.tier === "recommended")
   const other = ranked.filter((r) => r.tier === "other")
 
+  // Until the student has described their project, we have no meaningful basis to
+  // recommend documents or to claim "no match". Without enough context we keep
+  // every saved document collapsed behind "Browse all" and show only guidance —
+  // so unrelated saved documents never look hardcoded/random on a blank form.
+  const hasContext = hasEnoughProjectContext(context)
+
+  // Add-new link carries a safe internal returnTo so the student lands back on
+  // Project Defense after creating a Document Proof.
+  const addHref = `${DOCUMENT_PROOF_NEW_PATH}?returnTo=${PROJECT_DEFENSE_RETURN_PATH}`
+
   return (
     <div>
       <label style={labelStyle}>Attach document proof (optional)</label>
@@ -786,7 +822,21 @@ function DocumentProofSelector({
         project. Document proof is optional.
       </p>
 
-      {recommended.length > 0 ? (
+      {!hasContext ? (
+        <p
+          style={{
+            fontSize: 12,
+            color: TOKEN.inkSoft,
+            background: TOKEN.bg,
+            border: `1px solid ${TOKEN.line}`,
+            borderRadius: 6,
+            padding: "8px 10px",
+            margin: "0 0 4px",
+          }}
+        >
+          Add project details to find matching Document Proofs.
+        </p>
+      ) : recommended.length > 0 ? (
         <div>
           <Mono
             style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}
@@ -823,7 +873,8 @@ function DocumentProofSelector({
 
       {other.length > 0 && (
         // Other saved documents are always collapsed so the selector never looks
-        // like a hardcoded dump of every saved document.
+        // like a hardcoded dump of every saved document. Before there is enough
+        // project context, every saved document lives here (collapsed).
         <details style={{ marginTop: 10 }}>
           <summary style={{ fontSize: 12, color: TOKEN.indigo, cursor: "pointer" }}>
             Browse all saved Document Proofs ({other.length})
@@ -844,7 +895,7 @@ function DocumentProofSelector({
       <p style={{ fontSize: 12, color: TOKEN.muted, margin: "10px 0 0" }}>
         No relevant document proof?{" "}
         <Link
-          href={DOCUMENT_PROOF_NEW_PATH}
+          href={addHref}
           style={{ color: TOKEN.indigo, textDecoration: "none", fontWeight: 600 }}
         >
           Add a new Document Proof
@@ -866,6 +917,12 @@ export function ProjectDefensePanel() {
   const [selectedGithubProofId, setSelectedGithubProofId] = useState("")
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([])
   const [selectedWebsiteProofIds, setSelectedWebsiteProofIds] = useState<string[]>([])
+
+  // Draft restore — when the student leaves to add a Document/Website Proof and
+  // returns, the form is rehydrated from sessionStorage. `hydrated` gates the
+  // save effect so it never overwrites a saved draft with the empty initial
+  // state on first mount (before restoration has run).
+  const [hydrated, setHydrated] = useState(false)
 
   const [githubProofs, setGithubProofs] = useState<GitHubProofResponse[] | null>(null)
   const [documentProofs, setDocumentProofs] = useState<DocumentProofResponse[] | null>(null)
@@ -931,7 +988,78 @@ export function ProjectDefensePanel() {
       .catch((e: Error) => setLoadError(e.message))
   }, [])
 
+  // Restore a saved draft once on mount (browser-only). Selected proof IDs are
+  // kept even if the matching proof isn't in the freshly loaded list yet — the
+  // checkbox simply re-checks once that proof renders.
+  useEffect(() => {
+    const draft = readProjectDefenseDraft()
+    if (draft) {
+      setTitle(draft.projectTitle)
+      setDescription(draft.description)
+      setClaimedSkills(draft.claimedSkills)
+      setStudentRole(draft.roleContribution)
+      setRepoUrl(draft.repositoryUrl)
+      setSelectedGithubProofId(draft.selectedGithubProofId)
+      setSelectedDocumentIds(draft.selectedDocumentIds)
+      setSelectedWebsiteProofIds(draft.selectedWebsiteProofIds)
+    }
+    setHydrated(true)
+  }, [])
+
+  // Persist the draft on every form change so leaving to add a Document/Website
+  // Proof (a full route change) never loses the entered details. Only safe form
+  // values + selected IDs are stored. Skipped until hydration completes, and not
+  // re-saved once the defense is created (the form is gone and the draft cleared).
+  useEffect(() => {
+    if (!hydrated || created) return
+    const draft: ProjectDefenseDraft = {
+      projectTitle: title,
+      description,
+      claimedSkills,
+      roleContribution: studentRole,
+      repositoryUrl: repoUrl,
+      selectedGithubProofId,
+      selectedDocumentIds,
+      selectedWebsiteProofIds,
+    }
+    saveProjectDefenseDraft(draft)
+  }, [
+    hydrated,
+    created,
+    title,
+    description,
+    claimedSkills,
+    studentRole,
+    repoUrl,
+    selectedGithubProofId,
+    selectedDocumentIds,
+    selectedWebsiteProofIds,
+  ])
+
   const claimedSkillsList = () => claimedSkills.split(",").map((s) => s.trim()).filter(Boolean)
+
+  const hasDraftContent =
+    !!title.trim() ||
+    !!description.trim() ||
+    !!claimedSkills.trim() ||
+    !!studentRole.trim() ||
+    !!repoUrl.trim() ||
+    !!selectedGithubProofId ||
+    selectedDocumentIds.length > 0 ||
+    selectedWebsiteProofIds.length > 0
+
+  const handleClearDraft = () => {
+    clearProjectDefenseDraft()
+    setTitle("")
+    setDescription("")
+    setClaimedSkills("")
+    setStudentRole("")
+    setRepoUrl("")
+    setSelectedGithubProofId("")
+    setSelectedDocumentIds([])
+    setSelectedWebsiteProofIds([])
+    setCreateError(null)
+  }
 
   const selectedGithubProof = githubProofs?.find((p) => p.id === selectedGithubProofId) ?? null
 
@@ -968,6 +1096,8 @@ export function ProjectDefensePanel() {
         },
       })
       setCreated(response)
+      // The defense now exists — the working draft has served its purpose.
+      clearProjectDefenseDraft()
     } catch (e: unknown) {
       setCreateError(e instanceof Error ? e.message : "Failed to create project defense.")
     } finally {
@@ -1220,10 +1350,15 @@ export function ProjectDefensePanel() {
               </p>
             )}
 
-            <div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <Btn variant="primary" onClick={handleCreate} disabled={creating}>
                 {creating ? "Creating…" : "Create project defense"}
               </Btn>
+              {hasDraftContent && (
+                <Btn variant="secondary" onClick={handleClearDraft} disabled={creating}>
+                  Clear draft
+                </Btn>
+              )}
             </div>
           </div>
         </Card>

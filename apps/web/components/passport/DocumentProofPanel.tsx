@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import {
   listDocumentProofs,
   submitDocumentProof,
@@ -9,6 +10,7 @@ import {
   type DocumentProofResponse,
   type DocumentProofSourceType,
 } from "@/lib/passport-api"
+import { readReturnToFromLocation } from "./safe-return"
 import {
   Badge,
   Btn,
@@ -148,6 +150,11 @@ function DocumentProofCard({
 type Mode = "paste" | "upload"
 
 export function DocumentProofPanel() {
+  const router = useRouter()
+  // A safe internal path (e.g. from Project Defense) to return to after a
+  // successful submission. Validated to /student/ paths only — never external.
+  const [returnTo] = useState<string | null>(() => readReturnToFromLocation())
+
   const [proofs, setProofs] = useState<DocumentProofResponse[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -235,6 +242,9 @@ export function DocumentProofPanel() {
       setProofs((prev) => [proof, ...prev])
       resetForm()
       setShowForm(false)
+      // If the student came from another proof-studio flow (e.g. Project
+      // Defense) via a safe internal returnTo, send them back there.
+      if (returnTo) router.push(returnTo)
     } catch (e: unknown) {
       setSubmitError(e instanceof Error ? e.message : "Submission failed")
     } finally {

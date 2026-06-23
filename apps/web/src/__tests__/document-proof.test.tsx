@@ -20,6 +20,11 @@ vi.mock("@/lib/passport-api", () => ({
   syncDocumentProofToSkillGraph: vi.fn(),
 }))
 
+const mockRouterPush = vi.fn()
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockRouterPush }),
+}))
+
 import {
   listDocumentProofs,
   submitDocumentProof,
@@ -58,6 +63,9 @@ beforeEach(() => {
   vi.mocked(listDocumentProofs).mockReset()
   vi.mocked(submitDocumentProof).mockReset()
   vi.mocked(syncDocumentProofToSkillGraph).mockReset()
+  mockRouterPush.mockReset()
+  // Reset the URL so a returnTo from one test never leaks into another.
+  window.history.replaceState({}, "", "/student/proofs/documents")
 })
 
 describe("DocumentProofPanel", () => {
@@ -154,5 +162,63 @@ describe("DocumentProofPanel", () => {
 
     expect(screen.queryByText(longSnippet)).not.toBeInTheDocument()
     expect(screen.getByText(/A{160}…/)).toBeInTheDocument()
+  })
+
+  // ── returnTo flow (Project Defense → Add Document Proof → back) ──────────────
+
+  it("redirects to a safe internal returnTo after a successful submission", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/student/proofs/documents?returnTo=/student/proofs/project-defense",
+    )
+    vi.mocked(listDocumentProofs).mockResolvedValue([])
+    vi.mocked(submitDocumentProof).mockResolvedValue(makeProof({ id: "doc-new", status: "analyzed" }))
+
+    render(<DocumentProofPanel />)
+
+    fireEvent.click(await screen.findByRole("button", { name: /add document/i }))
+    fireEvent.change(screen.getByPlaceholderText(/paste your project report/i), {
+      target: { value: "For this project I implemented FastAPI to serve the application." },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /^submit$/i }))
+
+    await waitFor(() => expect(submitDocumentProof).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(mockRouterPush).toHaveBeenCalledWith("/student/proofs/project-defense"),
+    )
+  })
+
+  it("ignores an unsafe external returnTo and does not redirect to it", async () => {
+    window.history.replaceState({}, "", "/student/proofs/documents?returnTo=https://evil.com")
+    vi.mocked(listDocumentProofs).mockResolvedValue([])
+    vi.mocked(submitDocumentProof).mockResolvedValue(makeProof({ id: "doc-new", status: "analyzed" }))
+
+    render(<DocumentProofPanel />)
+
+    fireEvent.click(await screen.findByRole("button", { name: /add document/i }))
+    fireEvent.change(screen.getByPlaceholderText(/paste your project report/i), {
+      target: { value: "For this project I implemented FastAPI to serve the application." },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /^submit$/i }))
+
+    await waitFor(() => expect(submitDocumentProof).toHaveBeenCalled())
+    expect(mockRouterPush).not.toHaveBeenCalled()
+  })
+
+  it("does not redirect when there is no returnTo", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([])
+    vi.mocked(submitDocumentProof).mockResolvedValue(makeProof({ id: "doc-new", status: "analyzed" }))
+
+    render(<DocumentProofPanel />)
+
+    fireEvent.click(await screen.findByRole("button", { name: /add document/i }))
+    fireEvent.change(screen.getByPlaceholderText(/paste your project report/i), {
+      target: { value: "For this project I implemented FastAPI to serve the application." },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /^submit$/i }))
+
+    await waitFor(() => expect(submitDocumentProof).toHaveBeenCalled())
+    expect(mockRouterPush).not.toHaveBeenCalled()
   })
 })

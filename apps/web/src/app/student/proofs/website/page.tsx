@@ -1,10 +1,15 @@
 "use client"
 
+import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { ExtensionProofPanel } from "../../../../../components/skill-proof/extension-proof-panel"
+import { readReturnToFromLocation } from "../../../../../components/passport/safe-return"
 
 export default function WebsiteProofPage() {
   const router = useRouter()
+  // When sent here from another proof-studio flow (e.g. Project Defense) with a
+  // safe internal returnTo, the Back action returns there instead of the studio.
+  const [returnTo] = useState<string | null>(() => readReturnToFromLocation())
 
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "48px 24px" }}>
@@ -24,7 +29,7 @@ export default function WebsiteProofPage() {
         UI behavior, and workflow proof.
       </p>
 
-      <ExtensionProofPanel onBack={() => router.push("/student/vbr")} />
+      <ExtensionProofPanel onBack={() => router.push(returnTo ?? "/student/vbr")} />
     </div>
   )
 }
