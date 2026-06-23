@@ -34,6 +34,7 @@ vi.mock("@/lib/passport-api", () => ({
   listGitHubProofs: vi.fn(),
   listDocumentProofs: vi.fn(),
   listWebsiteProofs: vi.fn(),
+  recommendWebsiteProofs: vi.fn(),
 }))
 
 const mockRouterPush = vi.fn()
@@ -50,7 +51,12 @@ import {
   getVBRSession,
   getVBRSessionRecordingReadiness,
 } from "@/lib/vbr-api"
-import { listGitHubProofs, listDocumentProofs, listWebsiteProofs } from "@/lib/passport-api"
+import {
+  listGitHubProofs,
+  listDocumentProofs,
+  listWebsiteProofs,
+  recommendWebsiteProofs,
+} from "@/lib/passport-api"
 
 function makeCreated(overrides: Partial<ProjectDefenseCreateResponse> = {}): ProjectDefenseCreateResponse {
   return {
@@ -227,6 +233,10 @@ beforeEach(() => {
   vi.mocked(listGitHubProofs).mockReset().mockResolvedValue([])
   vi.mocked(listDocumentProofs).mockReset().mockResolvedValue([])
   vi.mocked(listWebsiteProofs).mockReset().mockResolvedValue([])
+  // By default the backend recommendation endpoint is unavailable, so the panel
+  // falls back to its deterministic local ranking (exercised by these tests).
+  // A dedicated test below verifies the backend-groups path.
+  vi.mocked(recommendWebsiteProofs).mockReset().mockRejectedValue(new Error("no backend"))
   vi.mocked(getVBRSession).mockReset().mockResolvedValue(makeSession())
   vi.mocked(getVBRSessionRecordingReadiness).mockReset().mockResolvedValue({
     ready: true,
@@ -1227,5 +1237,42 @@ describe("ProjectDefensePanel", () => {
     expect(details.open).toBe(false)
     // A search box is available to narrow large lists.
     expect(screen.getByLabelText(/search saved website proofs/i)).toBeInTheDocument()
+  })
+
+  it("uses backend recommendation groups when the recommendations endpoint is available", async () => {
+    // The local heuristic would rank this proof as 'other' (no project keyword
+    // overlap), but the backend authoritatively groups it as recommended — the
+    // panel must honor the backend grouping.
+    vi.mocked(listWebsiteProofs).mockResolvedValue([
+      makeWebsiteProof({ proof_session_id: "ws-srv", target_website: "https://opaque-deploy-xyz.example.com" }),
+    ])
+    vi.mocked(recommendWebsiteProofs).mockResolvedValue({
+      recommended_website_proofs: [
+        {
+          proof_session_id: "ws-srv",
+          target_website: "https://opaque-deploy-xyz.example.com",
+          evidence_strength_score: 80,
+          workflow_confidence: "high",
+          supported_skills: ["Machine Learning"],
+          created_at: "2026-01-01T00:00:00Z",
+          match_label: "recommended",
+          match_reason: "Matches project keywords: boston",
+        },
+      ],
+      possible_website_proofs: [],
+      other_website_proofs: [],
+      has_strong_match: true,
+    })
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Boston Smart Accident Risk Rerouting" },
+    })
+
+    await waitFor(() => expect(recommendWebsiteProofs).toHaveBeenCalled())
+    expect(await screen.findByText(/recommended website proofs/i)).toBeInTheDocument()
+    const row = await screen.findByLabelText(/opaque-deploy-xyz\.example\.com/i)
+    expect(within(row.closest("label") as HTMLElement).getByText("Recommended")).toBeInTheDocument()
   })
 })

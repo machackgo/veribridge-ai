@@ -43,3 +43,33 @@ class WebsiteProofSummaryResponse(BaseModel):
     workflow_confidence: str = "insufficient"
     supported_skills: list[str] = Field(default_factory=list)
     created_at: str = ""
+
+
+class WebsiteProofRecommendationRequest(BaseModel):
+    """Safe project context for ranking saved Website Proofs (no private data)."""
+
+    project_title: str = ""
+    project_description: str = ""
+    repo_url: str = ""
+    claimed_skills: list[str] = Field(default_factory=list)
+
+
+class RecommendedWebsiteProofResponse(WebsiteProofSummaryResponse):
+    """A safe Website Proof summary plus its deterministic match grouping."""
+
+    match_label: str = "other"
+    match_reason: str = ""
+
+
+class WebsiteProofRecommendationResponse(BaseModel):
+    """Grouped, recruiter-safe Website Proof recommendations for a project.
+
+    Each group contains only safe summary fields plus a derived match label /
+    reason — never screenshots, storage paths, signed URLs, tokens, or raw
+    artifact data.
+    """
+
+    recommended_website_proofs: list[RecommendedWebsiteProofResponse] = Field(default_factory=list)
+    possible_website_proofs: list[RecommendedWebsiteProofResponse] = Field(default_factory=list)
+    other_website_proofs: list[RecommendedWebsiteProofResponse] = Field(default_factory=list)
+    has_strong_match: bool = False

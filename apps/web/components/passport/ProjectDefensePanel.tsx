@@ -21,8 +21,11 @@ import {
   listDocumentProofs,
   listGitHubProofs,
   listWebsiteProofs,
+  recommendWebsiteProofs,
   type DocumentProofResponse,
   type GitHubProofResponse,
+  type RecommendedWebsiteProofResponse,
+  type WebsiteProofRecommendationResponse,
   type WebsiteProofSummaryResponse,
 } from "@/lib/passport-api"
 import {
@@ -310,6 +313,8 @@ export type RankedWebsiteProof = {
 // Generic docs / playgrounds that are almost never the student's own project.
 // Only treated as relevant when the project explicitly names the tool.
 const GENERIC_WEBSITE_PROOF_DOMAINS = new Set([
+  "teachablemachine.withgoogle.com",
+  "vega.github.io",
   "threejs.org",
   "tensorflow.org",
   "playground.tensorflow.org",
@@ -320,11 +325,38 @@ const GENERIC_WEBSITE_PROOF_DOMAINS = new Set([
 
 const STOP_DOMAIN_TOKENS = new Set([
   "com", "org", "net", "io", "dev", "app", "www", "co", "ai", "xyz",
-  "github", "vercel", "netlify", "pages", "herokuapp", "web",
+  "github", "gitlab", "bitbucket", "vercel", "netlify", "pages", "herokuapp",
+  "web", "withgoogle", "firebaseapp", "render", "fly",
+])
+
+// Generic words that, on their own, carry no project-specific signal. Generic
+// skill overlap (e.g. "Machine Learning", "API") must never promote a saved
+// Website Proof to a recommended/possible match — only project-specific
+// keywords from the title/description/repo do. Mirrors the backend vocabulary.
+const GENERIC_TOKENS = new Set([
+  "website", "proof", "app", "apps", "demo", "project", "projects", "data",
+  "api", "apis", "cloud", "google", "machine", "learning", "analysis",
+  "high", "medium", "low", "confidence", "web", "site", "online", "platform",
+  "tool", "tools", "system", "systems", "application",
+  "the", "and", "for", "with", "that", "this", "you", "your", "its", "not",
+  "only", "but", "use", "uses", "using", "used", "into", "instead", "than",
+  "then", "over", "more", "are", "was", "were", "has", "have", "had", "their",
+  "them", "they", "can", "will", "just", "also", "such", "like", "via", "per",
+  "etc", "from", "out", "our",
 ])
 
 function proofWords(text: string): string[] {
   return (text || "").toLowerCase().match(/[a-z0-9]+/g)?.filter((w) => w.length >= 3) ?? []
+}
+
+/** Project-specific tokens — generic words stripped so they can't drive matches. */
+function projectSpecificTokens(context: WebsiteProofMatchContext): Set<string> {
+  const words = proofWords(
+    [context.title, context.description, context.repoUrl, context.studentRole, context.claimedSkills.join(" ")].join(
+      " ",
+    ),
+  )
+  return new Set(words.filter((w) => !GENERIC_TOKENS.has(w)))
 }
 
 function proofDomainOf(url: string): string {
@@ -359,52 +391,68 @@ export function rankWebsiteProofs(
     }
   }
 
-  const projectTokens = new Set(
-    proofWords(
-      [context.title, context.description, context.repoUrl, context.studentRole, context.claimedSkills.join(" ")].join(
-        " ",
-      ),
-    ),
-  )
-  const claimedSkillTokens = new Set(context.claimedSkills.flatMap((s) => proofWords(s)))
+  // Project-specific keywords only. Generic words (incl. generic skills) are
+  // stripped, so generic skill overlap alone can never promote a proof.
+  const projectTokens = projectSpecificTokens(context)
 
   const ranked = Array.from(byUrl.values()).map((proof): RankedWebsiteProof => {
-    let score = 0
-
-    // Skill overlap between the proof's supported skills and claimed skills.
-    for (const skill of proof.supported_skills ?? []) {
-      const skillWords = proofWords(skill)
-      if (skillWords.some((w) => claimedSkillTokens.has(w) || projectTokens.has(w))) score += 3
-    }
+    let projectScore = 0
+    const matched = new Set<string>()
 
     const domain = proofDomainOf(proof.target_website)
-    const domainTokens = proofWords(domain).filter((w) => !STOP_DOMAIN_TOKENS.has(w))
+    const url = (proof.target_website || "").toLowerCase()
     const isGeneric = GENERIC_WEBSITE_PROOF_DOMAINS.has(domain)
-    let domainNamed = false
+
+    // Project-specific keyword appearing as a domain label — strongest signal.
+    const domainTokens = proofWords(domain).filter(
+      (w) => !STOP_DOMAIN_TOKENS.has(w) && !GENERIC_TOKENS.has(w),
+    )
     for (const token of domainTokens) {
-      if (projectTokens.has(token)) {
-        score += 2
-        domainNamed = true
+      if (projectTokens.has(token) && !matched.has(token)) {
+        projectScore += 2
+        matched.add(token)
       }
     }
 
-    // Project keywords appearing anywhere in the target URL (repo/deploy name).
-    const url = (proof.target_website || "").toLowerCase()
+    // Project-specific keyword appearing anywhere in the URL (repo/deploy name).
     for (const token of projectTokens) {
-      if (token.length >= 4 && url.includes(token)) score += 1
+      if (token.length >= 4 && url.includes(token) && !matched.has(token)) {
+        projectScore += 1
+        matched.add(token)
+      }
     }
 
-    // Generic docs/playgrounds only count if the project explicitly names them.
-    if (isGeneric && !domainNamed) score = 0
+    // Known docs/playgrounds only count when the project clearly names them.
+    if (isGeneric && projectScore < 2) projectScore = 0
 
-    const tier: WebsiteProofMatchTier = score >= 3 ? "recommended" : score >= 1 ? "possible" : "other"
-    return { proof, tier, score }
+    // Skill overlap is a tiebreaker for ordering only — it never sets the tier.
+    let skillOverlap = 0
+    for (const skill of proof.supported_skills ?? []) {
+      const skillWords = proofWords(skill).filter((w) => !GENERIC_TOKENS.has(w))
+      if (skillWords.some((w) => projectTokens.has(w))) skillOverlap += 1
+    }
+
+    const tier: WebsiteProofMatchTier =
+      projectScore >= 2 ? "recommended" : projectScore === 1 ? "possible" : "other"
+    return { proof, tier, score: projectScore * 10 + skillOverlap }
   })
 
   ranked.sort(
     (a, b) => b.score - a.score || (b.proof.evidence_strength_score ?? 0) - (a.proof.evidence_strength_score ?? 0),
   )
   return ranked
+}
+
+/** Map backend recommendation groups into the local RankedWebsiteProof shape. */
+function rankedFromBackend(groups: WebsiteProofRecommendationResponse): RankedWebsiteProof[] {
+  const out: RankedWebsiteProof[] = []
+  const push = (rows: RecommendedWebsiteProofResponse[], tier: WebsiteProofMatchTier, base: number) => {
+    rows.forEach((proof, i) => out.push({ proof, tier, score: base - i }))
+  }
+  push(groups.recommended_website_proofs, "recommended", 300)
+  push(groups.possible_website_proofs, "possible", 200)
+  push(groups.other_website_proofs, "other", 100)
+  return out
 }
 
 const WEBSITE_PROOF_NEW_PATH = "/student/proofs/website"
@@ -454,7 +502,49 @@ function WebsiteProofSelector({
   context: WebsiteProofMatchContext
 }) {
   const [search, setSearch] = useState("")
-  const ranked = useMemo(() => rankWebsiteProofs(proofs, context), [proofs, context])
+
+  // Deterministic local ranking — used immediately and as the fallback when the
+  // backend recommendation endpoint is unavailable.
+  const localRanked = useMemo(() => rankWebsiteProofs(proofs, context), [proofs, context])
+
+  // Backend-supported recommendation groups (authoritative when available).
+  const [backendRanked, setBackendRanked] = useState<RankedWebsiteProof[] | null>(null)
+  const contextKey = JSON.stringify({
+    t: context.title,
+    d: context.description,
+    r: context.repoUrl,
+    s: context.claimedSkills,
+  })
+
+  useEffect(() => {
+    if (typeof recommendWebsiteProofs !== "function" || proofs.length === 0) {
+      setBackendRanked(null)
+      return
+    }
+    let active = true
+    const handle = setTimeout(() => {
+      recommendWebsiteProofs({
+        project_title: context.title,
+        project_description: context.description,
+        repo_url: context.repoUrl,
+        claimed_skills: context.claimedSkills,
+      })
+        .then((groups: WebsiteProofRecommendationResponse) => {
+          if (active) setBackendRanked(rankedFromBackend(groups))
+        })
+        .catch(() => {
+          if (active) setBackendRanked(null)
+        })
+    }, 300)
+    return () => {
+      active = false
+      clearTimeout(handle)
+    }
+    // contextKey captures the safe project fields the backend ranks against.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contextKey, proofs])
+
+  const ranked = backendRanked ?? localRanked
 
   const query = search.trim().toLowerCase()
   const filtered = query

@@ -718,6 +718,41 @@ export function listWebsiteProofs(): Promise<WebsiteProofSummaryResponse[]> {
   return apiJson(`${API}/student/website-proof/proofs`)
 }
 
+/** Safe project context used to rank saved Website Proofs deterministically. */
+export type WebsiteProofRecommendationRequest = {
+  project_title?: string
+  project_description?: string
+  repo_url?: string
+  claimed_skills?: string[]
+}
+
+/** A safe Website Proof summary plus its deterministic match grouping. */
+export type RecommendedWebsiteProofResponse = WebsiteProofSummaryResponse & {
+  match_label: "recommended" | "possible" | "other"
+  match_reason: string
+}
+
+export type WebsiteProofRecommendationResponse = {
+  recommended_website_proofs: RecommendedWebsiteProofResponse[]
+  possible_website_proofs: RecommendedWebsiteProofResponse[]
+  other_website_proofs: RecommendedWebsiteProofResponse[]
+  has_strong_match: boolean
+}
+
+/**
+ * Backend-supported, deterministic Website Proof recommendations for a Project
+ * Defense. Owner-scoped; returns only safe summary + match fields.
+ */
+export function recommendWebsiteProofs(
+  body: WebsiteProofRecommendationRequest,
+): Promise<WebsiteProofRecommendationResponse> {
+  return apiJson(`${API}/student/website-proof/recommendations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+}
+
 // ─── Notifications ─────────────────────────────────────────────────────────
 
 export function listNotifications(params?: {
