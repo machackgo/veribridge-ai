@@ -345,8 +345,21 @@ const GENERIC_TOKENS = new Set([
   "etc", "from", "out", "our",
 ])
 
+// Library "dot-suffix" spellings (three.js, d3.js, node.ts, …) collapse their
+// leading dot so "Three.js", "three.js", "threejs" and the "threejs" label in
+// threejs.org all normalise to the same token. Mirrors the backend so a Three.js
+// project recommends its threejs.org Website Proof. Real domain separators
+// (".org", ".com") are left intact.
+const LIB_SUFFIX_RE = /\.(js|jsx|mjs|cjs|ts|tsx)\b/g
+
 function proofWords(text: string): string[] {
-  return (text || "").toLowerCase().match(/[a-z0-9]+/g)?.filter((w) => w.length >= 3) ?? []
+  return (
+    (text || "")
+      .toLowerCase()
+      .replace(LIB_SUFFIX_RE, "$1")
+      .match(/[a-z0-9]+/g)
+      ?.filter((w) => w.length >= 3) ?? []
+  )
 }
 
 /** Project-specific tokens — generic words stripped so they can't drive matches. */
@@ -682,6 +695,165 @@ function WebsiteProofSelector({
   )
 }
 
+// ── Document Proof recommendation (deterministic, no AI) ─────────────────────
+//
+// Saved Document Proofs also live at the account level, so the Project Defense
+// form previously dumped every saved document as a flat list — which looked
+// hardcoded (e.g. always the Boston documents) regardless of the project being
+// defended. We group them like Website Proofs: documents whose safe metadata
+// (title / filename / description / claimed skills) shares a project-specific
+// keyword are Recommended; the rest collapse under "Browse all". Only safe
+// summary fields are read — never raw document text, files, or storage paths.
+
+const DOCUMENT_PROOF_NEW_PATH = "/student/proofs/documents"
+
+export type DocumentProofMatchTier = "recommended" | "other"
+
+export type RankedDocumentProof = {
+  doc: DocumentProofResponse
+  tier: DocumentProofMatchTier
+  score: number
+  matched: string[]
+}
+
+/** Project-specific tokens from a document's safe metadata only. */
+function documentSpecificTokens(doc: DocumentProofResponse): Set<string> {
+  const words = proofWords(
+    [doc.title ?? "", doc.filename ?? "", doc.description ?? "", (doc.claimed_skills ?? []).join(" ")].join(" "),
+  )
+  return new Set(words.filter((w) => !GENERIC_TOKENS.has(w)))
+}
+
+/**
+ * Rank saved Document Proofs against the project being described. Deterministic
+ * project-keyword overlap only (generic words/skills stripped, so generic skill
+ * overlap alone never recommends a document). Reads safe metadata only.
+ */
+export function rankDocumentProofs(
+  docs: DocumentProofResponse[],
+  context: WebsiteProofMatchContext,
+): RankedDocumentProof[] {
+  const projectTokens = projectSpecificTokens(context)
+  const ranked = docs.map((doc): RankedDocumentProof => {
+    const matched: string[] = []
+    for (const token of documentSpecificTokens(doc)) {
+      if (projectTokens.has(token) && !matched.includes(token)) matched.push(token)
+    }
+    const tier: DocumentProofMatchTier = matched.length >= 1 ? "recommended" : "other"
+    return { doc, tier, score: matched.length, matched }
+  })
+  ranked.sort((a, b) => b.score - a.score)
+  return ranked
+}
+
+function DocumentProofRow({
+  doc,
+  selected,
+  onToggle,
+}: {
+  doc: DocumentProofResponse
+  selected: boolean
+  onToggle: (id: string) => void
+}) {
+  return (
+    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: TOKEN.inkSoft }}>
+      <input type="checkbox" checked={selected} onChange={() => onToggle(doc.id)} />
+      {doc.title || doc.filename || "Untitled document"}
+    </label>
+  )
+}
+
+function DocumentProofSelector({
+  docs,
+  selectedIds,
+  onToggle,
+  context,
+}: {
+  docs: DocumentProofResponse[]
+  selectedIds: string[]
+  onToggle: (id: string) => void
+  context: WebsiteProofMatchContext
+}) {
+  const ranked = useMemo(() => rankDocumentProofs(docs, context), [docs, context])
+  const recommended = ranked.filter((r) => r.tier === "recommended")
+  const other = ranked.filter((r) => r.tier === "other")
+
+  return (
+    <div>
+      <label style={labelStyle}>Attach document proof (optional)</label>
+      <p style={{ fontSize: 11, color: TOKEN.muted, margin: "0 0 8px" }}>
+        Attach a recommended saved document, continue without one, or add a new Document Proof for this
+        project. Document proof is optional.
+      </p>
+
+      {recommended.length > 0 ? (
+        <div>
+          <Mono
+            style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}
+          >
+            Recommended Document Proofs
+          </Mono>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+            {recommended.map((r) => (
+              <DocumentProofRow
+                key={r.doc.id}
+                doc={r.doc}
+                selected={selectedIds.includes(r.doc.id)}
+                onToggle={onToggle}
+              />
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p
+          style={{
+            fontSize: 12,
+            color: TOKEN.inkSoft,
+            background: TOKEN.bg,
+            border: `1px solid ${TOKEN.line}`,
+            borderRadius: 6,
+            padding: "8px 10px",
+            margin: "0 0 4px",
+          }}
+        >
+          No matching Document Proof found for this project. Document proof is optional — you can
+          continue without one or add a new Document Proof.
+        </p>
+      )}
+
+      {other.length > 0 && (
+        // Other saved documents are always collapsed so the selector never looks
+        // like a hardcoded dump of every saved document.
+        <details style={{ marginTop: 10 }}>
+          <summary style={{ fontSize: 12, color: TOKEN.indigo, cursor: "pointer" }}>
+            Browse all saved Document Proofs ({other.length})
+          </summary>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+            {other.map((r) => (
+              <DocumentProofRow
+                key={r.doc.id}
+                doc={r.doc}
+                selected={selectedIds.includes(r.doc.id)}
+                onToggle={onToggle}
+              />
+            ))}
+          </div>
+        </details>
+      )}
+
+      <p style={{ fontSize: 12, color: TOKEN.muted, margin: "10px 0 0" }}>
+        No relevant document proof?{" "}
+        <Link
+          href={DOCUMENT_PROOF_NEW_PATH}
+          style={{ color: TOKEN.indigo, textDecoration: "none", fontWeight: 600 }}
+        >
+          Add a new Document Proof
+        </Link>
+      </p>
+    </div>
+  )
+}
+
 export function ProjectDefensePanel() {
   const router = useRouter()
 
@@ -1004,22 +1176,24 @@ export function ProjectDefensePanel() {
               )}
             </div>
 
-            {documentProofs !== null && documentProofs.length > 0 && (
-              <div>
-                <label style={labelStyle}>Attach document proof (optional)</label>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {documentProofs.map((d) => (
-                    <label key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: TOKEN.inkSoft }}>
-                      <input
-                        type="checkbox"
-                        checked={selectedDocumentIds.includes(d.id)}
-                        onChange={() => toggleDocument(d.id)}
-                      />
-                      {d.title || d.filename || "Untitled document"}
-                    </label>
-                  ))}
-                </div>
-              </div>
+            {/* Render once document proofs have finished loading, including the
+                empty array — the selector shows its own grouping, an honest
+                "no matching proof" empty state, and the "Add a new Document
+                Proof" path. Documents are recommended only when their safe
+                metadata matches the project, so the list never looks hardcoded. */}
+            {documentProofs !== null && (
+              <DocumentProofSelector
+                docs={documentProofs}
+                selectedIds={selectedDocumentIds}
+                onToggle={toggleDocument}
+                context={{
+                  title,
+                  description,
+                  repoUrl: selectedGithubProof ? selectedGithubProof.repo_url : repoUrl,
+                  studentRole,
+                  claimedSkills: claimedSkillsList(),
+                }}
+              />
             )}
 
             {/* Render once website proofs have finished loading, including the

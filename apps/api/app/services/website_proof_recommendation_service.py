@@ -14,6 +14,9 @@ Design constraints (intentional):
     raw artifact_data, or provider payloads.
 
 Matching rules:
+  - Tokens are normalised so library "dot-suffix" spellings collapse: "Three.js",
+    "three.js" and "threejs" (and the "threejs" label in threejs.org) all become
+    the same token, so a Three.js project recommends its threejs.org proof.
   - Generic words (website, proof, app, demo, project, data, api, cloud,
     google, machine, learning, analysis, high/medium/low, confidence, common
     English stopwords) are ignored — they carry no project signal.
@@ -79,11 +82,20 @@ _GENERIC_WEBSITE_PROOF_DOMAINS: frozenset[str] = frozenset(
     }
 )
 
+# Library "dot-suffix" spellings (three.js, d3.js, node.js, next.ts, …) collapse
+# their leading dot so the conventional no-dot spelling and the dotted spelling
+# normalise to the same token. This makes "Three.js", "three.js", "threejs" and
+# the domain label "threejs" (from threejs.org) all tokenise to "threejs", which
+# is what lets a Three.js project recommend its threejs.org Website Proof. The
+# real domain separators (".org", ".com", …) are untouched.
+_LIB_SUFFIX_RE = re.compile(r"\.(js|jsx|mjs|cjs|ts|tsx)\b")
+
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
 
 def _words(text: str) -> list[str]:
-    return [w for w in _WORD_RE.findall((text or "").lower()) if len(w) >= 3]
+    normalized = _LIB_SUFFIX_RE.sub(r"\1", (text or "").lower())
+    return [w for w in _WORD_RE.findall(normalized) if len(w) >= 3]
 
 
 def _domain_of(url: str) -> str:

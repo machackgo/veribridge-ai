@@ -1239,6 +1239,130 @@ describe("ProjectDefensePanel", () => {
     expect(screen.getByLabelText(/search saved website proofs/i)).toBeInTheDocument()
   })
 
+  it("recommends threejs.org for a Three.js project (local heuristic normalization)", async () => {
+    // Backend recommendation endpoint is unavailable in beforeEach, so this
+    // exercises the local heuristic — which must normalize "Three.js" / "three.js"
+    // / "threejs" / "threejs.org" to the same token and recommend the proof.
+    vi.mocked(listWebsiteProofs).mockResolvedValue([
+      makeWebsiteProof({
+        proof_session_id: "ws-three",
+        target_website: "https://threejs.org",
+        supported_skills: ["JavaScript", "WebGL"],
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Three.js Interactive 3D Website Demo" },
+    })
+
+    expect(await screen.findByText(/recommended website proofs/i)).toBeInTheDocument()
+    const row = await screen.findByLabelText(/threejs\.org/i)
+    expect(within(row.closest("label") as HTMLElement).getByText("Recommended")).toBeInTheDocument()
+  })
+
+  // ── Document Proof recommendation UX (deterministic grouping) ──────────────
+
+  function makeDocumentProof(
+    overrides: Partial<import("@/lib/passport-api").DocumentProofResponse> = {},
+  ): import("@/lib/passport-api").DocumentProofResponse {
+    return {
+      id: "doc-1",
+      source_type: "document",
+      status: "analyzed",
+      filename: "doc.pdf",
+      title: "Untitled document",
+      claimed_skills: [],
+      description: "",
+      analysis_json: {},
+      evidence_objects: [],
+      created_at: "2026-01-01T00:00:00Z",
+      ...overrides,
+    } as import("@/lib/passport-api").DocumentProofResponse
+  }
+
+  it("recommends a Boston document for a Boston project", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeDocumentProof({
+        id: "doc-boston",
+        title: "Boston Accident Risk Rerouting Report",
+        filename: "boston-rerouting.pdf",
+        claimed_skills: ["Python"],
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Boston Smart Accident Risk Rerouting" },
+    })
+
+    expect(await screen.findByText(/recommended document proofs/i)).toBeInTheDocument()
+    const row = await screen.findByLabelText(/boston accident risk rerouting report/i)
+    expect(row).toBeInTheDocument()
+  })
+
+  it("does not recommend a Boston document for a Three.js project — it collapses under 'Browse all'", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeDocumentProof({
+        id: "doc-boston",
+        title: "Boston Accident Risk Rerouting Report",
+        filename: "boston-rerouting.pdf",
+        claimed_skills: ["Python"],
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Three.js Interactive 3D Website Demo" },
+    })
+
+    // No recommendation for an unrelated Boston doc — honest empty state instead.
+    expect(await screen.findByText(/no matching document proof found/i)).toBeInTheDocument()
+    expect(screen.queryByText(/recommended document proofs/i)).not.toBeInTheDocument()
+
+    // The Boston doc is still browseable, collapsed under "Browse all".
+    const browse = screen.getByText(/browse all saved document proofs/i)
+    const details = browse.closest("details") as HTMLDetailsElement
+    expect(details.open).toBe(false)
+    expect(within(details).getByLabelText(/boston accident risk rerouting report/i)).toBeInTheDocument()
+  })
+
+  it("offers an 'Add a new Document Proof' link pointing to /student/proofs/documents", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([makeDocumentProof()])
+
+    render(<ProjectDefensePanel />)
+
+    await screen.findByPlaceholderText(/skill evidence tracker/i)
+
+    const link = await screen.findByRole("link", { name: /add a new document proof/i })
+    expect(link.getAttribute("href")).toBe("/student/proofs/documents")
+  })
+
+  it("can submit a project defense with no website proof and no document proof", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([])
+    vi.mocked(listWebsiteProofs).mockResolvedValue([])
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+
+    render(<ProjectDefensePanel />)
+
+    // Both optional sections render their honest empty states.
+    expect(await screen.findByText(/no matching document proof found/i)).toBeInTheDocument()
+    expect(screen.getByText(/no matching website proof found/i)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+
+    await waitFor(() => expect(createProjectDefense).toHaveBeenCalledTimes(1))
+    const body = vi.mocked(createProjectDefense).mock.calls[0][0]
+    expect(body.attached_proofs?.website_proof_session_ids).toEqual([])
+    expect(body.attached_proofs?.document_evidence_ids).toEqual([])
+  })
+
   it("uses backend recommendation groups when the recommendations endpoint is available", async () => {
     // The local heuristic would rank this proof as 'other' (no project keyword
     // overlap), but the backend authoritatively groups it as recommended — the
