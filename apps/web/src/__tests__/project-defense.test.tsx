@@ -1383,6 +1383,59 @@ describe("ProjectDefensePanel", () => {
     ).toBeInTheDocument()
   })
 
+  it("does not recommend a real-like Three.js document for the manual Teachable Machine project (entity gating)", async () => {
+    // Real browser regression: the Three.js document is full of generic
+    // web/frontend words (browser, frontend, interactive, web, demo, 3D model,
+    // Model Visualization) that overlap the Teachable Machine project's manual
+    // fields — but it carries no Teachable Machine family evidence, so it must
+    // NOT be promoted to "Recommended". It stays available under "Browse all".
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeDocumentProof({
+        id: "doc-three",
+        title: "Three.js Interactive 3D Website Demo Explanation",
+        filename: "threejs-demo.pdf",
+        description:
+          "A browser-based, frontend, interactive web demo. Renders a 3D model in the browser.",
+        claimed_skills: ["JavaScript", "Browser APIs", "Frontend Development", "Model Visualization"],
+      }),
+    ])
+
+    render(<ProjectDefensePanel />)
+
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Teachable Machine Image Classification Demo" },
+    })
+    fireEvent.change(screen.getByPlaceholderText(/what does this project do/i), {
+      target: {
+        value:
+          "A browser-based machine learning demo using Google Teachable Machine concepts to train and test a simple image classification model. The project demonstrates how users can collect examples, train a lightweight model, and run predictions directly through a web interface.",
+      },
+    })
+    fireEvent.change(screen.getByPlaceholderText(/python, react, postgresql/i), {
+      target: {
+        value:
+          "Machine Learning, Image Classification, Teachable Machine, JavaScript, Browser APIs, Model Training, Frontend Development",
+      },
+    })
+
+    // Three.js doc is NOT promoted; the honest "no matching" empty state shows
+    // because there is no Teachable Machine document to recommend.
+    expect(await screen.findByText(/no matching document proof found/i)).toBeInTheDocument()
+    expect(screen.queryByText(/recommended document proofs/i)).not.toBeInTheDocument()
+
+    // The Three.js doc remains available for manual override, collapsed under
+    // "Browse all saved Document Proofs".
+    const browse = screen.getByText(/browse all saved document proofs/i)
+    const details = browse.closest("details") as HTMLDetailsElement
+    expect(details.open).toBe(false)
+    const threeRow = within(details).getByLabelText(
+      /three\.js interactive 3d website demo explanation/i,
+    )
+    expect(threeRow).toBeInTheDocument()
+    // And it is not inside any "Recommended Document Proofs" group.
+    expect(screen.queryByText(/recommended document proofs/i)).not.toBeInTheDocument()
+  })
+
   it("recommends a matching Teachable Machine document for a Teachable Machine project", async () => {
     vi.mocked(listDocumentProofs).mockResolvedValue([
       makeDocumentProof({

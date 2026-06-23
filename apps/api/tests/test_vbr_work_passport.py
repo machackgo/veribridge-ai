@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user_id, get_db, get_pipeline_db
 from app.main import app
+from app.services.safe_public_url import is_safe_public_url
 
 from tests.test_vbr_project_defense import (
     DEFENSE_TRANSCRIPT,
@@ -252,6 +253,47 @@ def test_public_skill_drilldown_excludes_private_and_unpublished(client: TestCli
             assert "project_id" not in ref
 
 
+def test_public_skill_drilldown_document_traces_are_safe_and_consistent(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Published report-backed document traces appear in the public passport
+    drilldown only for the skill they were matched to, and stay safe."""
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Python", "confidence": "high", "snippet": "leak-me-not"}],
+    )
+    project_id = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()["project"]["id"]
+    _publish_project_report(client, project_id)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    response = _get_public(client, slug)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    skills = {s["skill"]: s for s in body["top_skills"]}
+
+    # Python carries a safe, conservative Document Proof trace for itself only.
+    py_doc_traces = [
+        t for t in skills["Python"]["evidence_traces"] if t["source_type"] == "Document Proof"
+    ]
+    assert py_doc_traces
+    for trace in py_doc_traces:
+        assert trace["is_publicly_openable"] is False
+        assert trace["public_url"] is None
+        assert trace["skill_names"] == ["Python"]
+
+    # React was never matched by the document → no Document Proof trace claims it.
+    react = skills.get("React")
+    if react is not None:
+        assert all(
+            t["source_type"] != "Document Proof" for t in react["evidence_traces"]
+        )
+
+    assert "leak-me-not" not in response.text
+
+
 # ── Publish / status ownership ────────────────────────────────────────────────
 
 def test_status_unpublished_by_default(client: TestClient) -> None:
@@ -437,3 +479,58 @@ def test_migration_has_no_anonymous_select_policy(migration_052_sql: str) -> Non
 def test_migration_preserves_slug_unique_index(migration_052_sql: str) -> None:
     # RLS additions must not drop the existing public_slug uniqueness guard.
     assert "vbr_work_passports_public_slug_unique_idx" in migration_052_sql
+
+
+# ── Evidence traceability aggregation ────────────────────────────────────────
+
+def test_private_passport_skill_drilldown_includes_evidence_traces(client: TestClient, mem_store: dict) -> None:
+    _make_full_project(client, mem_store)
+    body = _get_private(client).json()
+
+    assert body["skills"]
+    traced = [s for s in body["skills"] if s.get("evidence_traces")]
+    assert traced, "expected at least one skill with aggregated evidence traces"
+    skill = traced[0]
+    source_types = {t["source_type"] for t in skill["evidence_traces"]}
+    assert source_types & {"GitHub Proof", "Document Proof", "Project Defense", "Video Evidence"}
+    for trace in skill["evidence_traces"]:
+        # Trace fields are safe — no raw evidence, storage paths, or media URLs.
+        assert "trace_id" in trace and "source_type" in trace
+        assert ".webm" not in str(trace) and "storage_path" not in str(trace)
+
+
+def test_public_passport_skill_traces_are_published_only(client: TestClient, mem_store: dict) -> None:
+    published = _make_full_project(client, mem_store)
+    # A second project with NO published report — its evidence must never surface.
+    _make_full_project(client, mem_store)
+    _publish_project_report(client, published)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+
+    assert body["top_skills"]
+    traced = [s for s in body["top_skills"] if s.get("evidence_traces")]
+    assert traced, "expected published-report-backed evidence traces in public passport"
+    serialized = str(body["top_skills"])
+    # No owner-only ids / private fields leak into public traces.
+    assert "project_id" not in serialized
+    assert USER_ID not in serialized
+    for skill in body["top_skills"]:
+        for trace in skill.get("evidence_traces") or []:
+            # Any direct link in a public trace must be a safe public URL.
+            if trace.get("public_url"):
+                assert is_safe_public_url(trace["public_url"])
+            assert ".webm" not in str(trace)
+
+
+def test_unpublished_project_traces_absent_from_public_passport(client: TestClient, mem_store: dict) -> None:
+    # Only an unpublished project exists → the public passport features nothing,
+    # and therefore exposes no evidence traces at all.
+    _make_full_project(client, mem_store)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+    assert body["featured_project_count"] == 0
+    assert all(not s.get("evidence_traces") for s in body["top_skills"])

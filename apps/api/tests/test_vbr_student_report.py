@@ -195,6 +195,48 @@ def test_report_includes_github_document_website_summaries(client: TestClient, m
     assert "No document proof attached." not in body["limitations"]
 
 
+def test_report_skill_matrix_maps_skills_to_evidence_sources(client: TestClient, mem_store: dict) -> None:
+    """Each skill row carries the canonical evidence-source labels that support
+    it (GitHub / Website / Project Defense / Video) — never numeric scores."""
+    github_proof_id = _seed_github_proof(mem_store)  # detects Python + React
+    website_proof_session_id = _seed_workflow_analysis(mem_store)  # supports React
+
+    created = _create_project_defense(
+        client,
+        attached_proofs={
+            "github_proof_id": github_proof_id,
+            "website_proof_session_ids": [website_proof_session_id],
+        },
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    rows = {row["skill"]: row for row in body["skill_evidence"]}
+
+    # Python is detected by the GitHub Proof only.
+    assert rows["Python"]["supporting_sources"] == ["GitHub Proof"]
+    # React is detected by GitHub Proof and supported by the Website Proof,
+    # in canonical (GitHub → Website) order.
+    assert rows["React"]["supporting_sources"] == ["GitHub Proof", "Website Proof"]
+
+    # Supporting-source labels carry no numeric score fragments.
+    for row in body["skill_evidence"]:
+        for src in row["supporting_sources"]:
+            assert "/100" not in src and "%" not in src
+        assert isinstance(row["limitations"], list)
+
+
+def test_report_unevidenced_skill_carries_honest_limitation(client: TestClient) -> None:
+    """A skill with no reviewed evidence is flagged as a pending claim, not proof."""
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    body = _get_report(client, project_id).json()
+
+    for row in body["skill_evidence"]:
+        assert row["status"] == "Not assessed"
+        assert row["supporting_sources"] == []
+        assert any("pending more proof" in line for line in row["limitations"])
+
+
 # ── Project Defense analysis + skill evidence table ─────────────────────────
 
 def test_report_includes_project_defense_analysis_and_skill_evidence(client: TestClient) -> None:
@@ -423,3 +465,217 @@ def test_report_does_not_leak_unsafe_fields(client: TestClient, mem_store: dict)
 
     # Full raw transcript text must never appear verbatim.
     assert DEFENSE_TRANSCRIPT not in raw
+
+
+# ── Evidence traceability (claim → evidence → source) ────────────────────────
+
+def _full_evidence_project(client: TestClient, mem_store: dict) -> str:
+    """A project with GitHub + document + website proof, analysis, and video."""
+    github_proof_id = _seed_github_proof(mem_store)
+    document_id = _seed_document_evidence(mem_store)
+    website_proof_session_id = _seed_workflow_analysis(mem_store)
+
+    created = _create_project_defense(
+        client,
+        attached_proofs={
+            "github_proof_id": github_proof_id,
+            "document_evidence_ids": [document_id],
+            "website_proof_session_ids": [website_proof_session_id],
+        },
+    ).json()
+    project_id = created["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+
+    chunk_id = str(uuid4())
+    mem_store.setdefault("vbr_video_chunks", {})[chunk_id] = {
+        "id": chunk_id,
+        "session_id": session_id,
+        "chunk_index": 0,
+        "bytes": 1024,
+        "sha256": "deadbeef",
+    }
+    _seed_auto_video_transcript(mem_store, session_id, VIDEO_TRANSCRIPT_SEGMENTS)
+    _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+    return project_id
+
+
+def test_student_report_includes_evidence_traces_per_skill(client: TestClient, mem_store: dict) -> None:
+    project_id = _full_evidence_project(client, mem_store)
+    body = _get_report(client, project_id).json()
+
+    traces = body["evidence_traces"]
+    assert traces, "expected evidence traces to be generated"
+    source_types = {t["source_type"] for t in traces}
+    # Every evidence source is represented as a concrete trace.
+    assert {"GitHub Proof", "Document Proof", "Website Proof", "Project Defense", "Video Evidence"} <= source_types
+
+    trace_ids = {t["trace_id"] for t in traces}
+    # Each skill row carries a justification, a recruiter-verify line, and trace ids.
+    for row in body["skill_evidence"]:
+        assert row["why_this_status"], f"missing why_this_status for {row['skill']}"
+        assert row["recruiter_can_verify"]
+        for tid in row["evidence_traces"]:
+            assert tid in trace_ids, f"skill {row['skill']} references unknown trace {tid}"
+
+    # At least one skill is actually backed by traceable evidence.
+    assert any(row["evidence_traces"] for row in body["skill_evidence"])
+
+
+def test_github_trace_is_publicly_openable_with_safe_url(client: TestClient, mem_store: dict) -> None:
+    project_id = _full_evidence_project(client, mem_store)
+    body = _get_report(client, project_id).json()
+
+    gh = next(t for t in body["evidence_traces"] if t["source_type"] == "GitHub Proof")
+    assert gh["is_publicly_openable"] is True
+    assert gh["public_url"].startswith("https://github.com/")
+    assert gh["public_url_label"] == "View public repository"
+    assert gh["evidence_anchor"] == "github-proof"
+    assert "Python" in gh["skill_names"]
+
+
+def test_document_trace_is_safe_and_not_publicly_openable(client: TestClient, mem_store: dict) -> None:
+    project_id = _full_evidence_project(client, mem_store)
+    body = _get_report(client, project_id).json()
+
+    doc = next(t for t in body["evidence_traces"] if t["source_type"] == "Document Proof")
+    # No raw document, no public download link — only a safe summary + note.
+    assert doc["is_publicly_openable"] is False
+    assert doc["public_url"] is None
+    assert doc["private_evidence_note"]
+    assert "evidence vault" in doc["private_evidence_note"].lower()
+    assert doc["safe_summary"]
+
+
+def test_project_defense_answer_creates_process_evidence_trace(client: TestClient, mem_store: dict) -> None:
+    project_id = _full_evidence_project(client, mem_store)
+    body = _get_report(client, project_id).json()
+
+    defense_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Project Defense"]
+    assert defense_traces
+    assert all(t["is_publicly_openable"] is False for t in defense_traces)
+    assert any("self-explanation" in t["limitation"].lower() for t in defense_traces)
+
+
+def test_video_chip_trace_carries_timestamp(client: TestClient, mem_store: dict) -> None:
+    project_id = _full_evidence_project(client, mem_store)
+    body = _get_report(client, project_id).json()
+
+    video_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Video Evidence"]
+    assert video_traces
+    assert all(t["timestamp"] for t in video_traces)
+    assert all(t["trace_id"].startswith("video-chip-") for t in video_traces)
+
+
+def test_traces_never_leak_raw_or_score_content(client: TestClient, mem_store: dict) -> None:
+    project_id = _full_evidence_project(client, mem_store)
+    raw = _get_report(client, project_id).text
+    assert DEFENSE_TRANSCRIPT not in raw
+    for unsafe in ["storage_path", "signed_url", ".webm", ".mp4", "/100", "fully verified"]:
+        assert unsafe not in raw, f"unsafe fragment leaked into report traces: {unsafe!r}"
+
+
+def test_missing_website_and_video_render_honest_limitations(client: TestClient) -> None:
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    body = _get_report(client, project_id).json()
+    assert "Website proof not attached." in body["limitations"]
+    assert "Video defense not recorded yet." in body["limitations"]
+
+
+# ── Document Proof traceability consistency (must-fix) ───────────────────────
+
+
+def _rows_by_skill(body: dict) -> dict[str, dict]:
+    return {row["skill"]: row for row in body["skill_evidence"]}
+
+
+def test_document_with_explicit_skill_is_consistent_supporting_evidence(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A document the analyzer matched to a skill becomes conservative Document
+    Proof for ONLY that skill: the matrix row lists Document Proof, carries a
+    matching trace, and is never marked 'no evidence reviewed'."""
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Python", "confidence": "high", "snippet": "irrelevant"}],
+    )
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    rows = _rows_by_skill(body)
+
+    # Python was explicitly matched → Document Proof, conservative status.
+    py = rows["Python"]
+    assert "Document Proof" in py["supporting_sources"]
+    assert py["status"] == "Supporting evidence"
+    assert py["notes"] != "No evidence has been reviewed for this skill yet."
+    assert not any("pending more proof" in lim for lim in py["limitations"])
+
+    # The document trace claims exactly Python (never every claimed skill).
+    doc_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Document Proof"]
+    assert doc_traces
+    assert all(t["skill_names"] == ["Python"] for t in doc_traces)
+
+    # React was NOT matched by the document → no Document Proof for it.
+    react = rows["React"]
+    assert "Document Proof" not in react["supporting_sources"]
+
+
+def test_document_without_explicit_skills_is_project_level_only(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A document with no analyzer-matched skills is project-level context: it is
+    never mapped to a claimed skill, and unevidenced skills stay honest."""
+    document_id = _seed_document_evidence(mem_store)  # no evidence_objects
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    rows = _rows_by_skill(body)
+
+    # No skill gets a fake per-skill Document Proof.
+    for row in rows.values():
+        assert "Document Proof" not in row["supporting_sources"]
+        assert row["status"] == "Not assessed"
+
+    # The document still appears, but as a project-level trace (no skills) with an
+    # honest project-level limitation.
+    doc_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Document Proof"]
+    assert doc_traces
+    assert all(t["skill_names"] == [] for t in doc_traces)
+    assert all("not mapped to specific skills" in t["limitation"] for t in doc_traces)
+
+
+def test_document_proof_trace_and_row_never_disagree(client: TestClient, mem_store: dict) -> None:
+    """Invariant: for every skill row, a Document Proof trace claims it iff the
+    row lists Document Proof in supporting_sources — no one-directional drift."""
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "React", "confidence": "medium"}],
+    )
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    traces_by_id = {t["trace_id"]: t for t in body["evidence_traces"]}
+
+    for row in body["skill_evidence"]:
+        skill_l = row["skill"].lower()
+        row_has_doc = "Document Proof" in row["supporting_sources"]
+        trace_claims_skill = any(
+            traces_by_id[tid]["source_type"] == "Document Proof"
+            and skill_l in {s.lower() for s in traces_by_id[tid]["skill_names"]}
+            for tid in row["evidence_traces"]
+        )
+        assert row_has_doc == trace_claims_skill, (
+            f"Document Proof mismatch for {row['skill']!r}: "
+            f"row={row_has_doc} trace={trace_claims_skill}"
+        )
+        if not row_has_doc:
+            assert "no evidence reviewed" not in row["notes"].lower() or row["status"] == "Not assessed"

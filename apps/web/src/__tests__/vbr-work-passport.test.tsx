@@ -10,7 +10,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
 import type { PrivateWorkPassport, WorkPassportStatus } from "@/lib/vbr-api"
 
-vi.mock("@/lib/vbr-api", () => ({
+vi.mock("@/lib/vbr-api", async (importActual) => ({
+  ...(await importActual<typeof import("@/lib/vbr-api")>()),
   getPrivateWorkPassport: vi.fn(),
   getWorkPassportStatus: vi.fn(),
   publishWorkPassport: vi.fn(),
@@ -155,6 +156,71 @@ describe("PrivatePassportView", () => {
     expect(detail).toHaveTextContent("Explained clearly during the Project Defense.")
     expect(screen.getByTestId("skill-project-ref")).toBeInTheDocument()
     expect(detail).toHaveTextContent("Walks through the risk scoring function.")
+  })
+
+  it("shows aggregated evidence traces in the private skill drilldown", async () => {
+    const base = makePassport()
+    const p = makePassport({
+      skills: [
+        {
+          ...base.skills[0],
+          evidence_sources: ["GitHub Proof", "Document Proof"],
+          notes: "Backed by repository and document evidence.",
+          projects: [
+            { project_title: "Skill Evidence Tracker", project_id: "proj-1", evidence_sources: ["GitHub Proof"], report_is_public: false, public_report_path: null },
+          ],
+          evidence_chips: [],
+          evidence_traces: [
+            {
+              trace_id: "github-proof",
+              source_type: "GitHub Proof",
+              source_title: "octocat/Hello-World",
+              skill_names: ["Python"],
+              qualitative_status: "Supporting evidence",
+              safe_summary: "Repository analyzed.",
+              safe_detail: "Static analysis.",
+              evidence_anchor: "github-proof",
+              public_url: "https://github.com/octocat/Hello-World",
+              public_url_label: "View public repository",
+              timestamp: null,
+              limitation: "Not sole authorship.",
+              is_publicly_openable: true,
+              private_evidence_note: null,
+            },
+            {
+              trace_id: "document-proof-1",
+              source_type: "Document Proof",
+              source_title: "Final Year Project Report",
+              skill_names: ["Python"],
+              qualitative_status: "Supporting evidence",
+              safe_summary: "A supporting document.",
+              safe_detail: "Written context.",
+              evidence_anchor: "document-proof-1",
+              public_url: null,
+              public_url_label: null,
+              timestamp: null,
+              limitation: "Original private document is not publicly exposed.",
+              is_publicly_openable: false,
+              private_evidence_note: "Private document retained in student evidence vault; only a safe summary is shown.",
+            },
+          ],
+          limitations: [],
+        },
+        base.skills[1],
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-header")
+    fireEvent.click(screen.getAllByTestId("skill-expand-toggle")[0])
+
+    const detail = await screen.findByTestId("skill-detail")
+    expect(detail.querySelector('[data-testid="evidence-traceability"]')).toBeTruthy()
+    expect(screen.getAllByTestId("evidence-trace").length).toBe(2)
+    expect(screen.getByTestId("evidence-trace-link")).toHaveAttribute("href", "https://github.com/octocat/Hello-World")
+    expect(screen.getByTestId("evidence-trace-private-note").textContent).toContain("evidence vault")
   })
 
   it("renders project report actions including publish when no report exists", async () => {

@@ -39,13 +39,16 @@ export function Card({
   children,
   style,
   className,
+  id,
 }: {
   children: ReactNode
   style?: React.CSSProperties
   className?: string
+  id?: string
 }) {
   return (
     <div
+      id={id}
       className={className}
       style={{
         background: TOKEN.paper,

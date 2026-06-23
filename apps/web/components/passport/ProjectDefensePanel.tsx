@@ -767,38 +767,126 @@ function documentSpecificTokens(doc: DocumentProofResponse): Set<string> {
   return new Set(words.filter((w) => !GENERIC_TOKENS.has(w)))
 }
 
+// ── Project-family / entity gating ───────────────────────────────────────────
+//
+// Recommending a document on a single shared "strong" token is too broad: a
+// Three.js explainer and a Teachable Machine project can coincidentally share
+// one specific token (e.g. "visualization", "training", "classification") and
+// the unrelated document gets promoted. Instead we detect the *project family* —
+// the distinctive tool/entity the project is actually about — and only recommend
+// documents from the same family, or (when no family is clear) documents with
+// several specific overlaps. Single coincidental overlap never recommends.
+
+type ProjectFamily = "teachable" | "threejs" | "boston"
+
+type FamilyTiers = { strong: readonly string[]; support: readonly string[] }
+
+// `strong` tokens are distinctive entity markers that identify the family on
+// their own. `support` tokens are family-associated terms that only count when
+// paired (two of them, or alongside a strong marker) — so a single "training" /
+// "classification" / "image" / "3d" overlap can never decide a family or a
+// recommendation. Generic ML/web words (machine, learning, model, javascript,
+// browser, frontend, web, demo, interactive, …) are intentionally absent: they
+// describe almost every browser-ML or 3D project and must never gate a family.
+const PROJECT_FAMILIES: Record<ProjectFamily, FamilyTiers> = {
+  teachable: {
+    strong: ["teachable", "teachablemachine", "googlecreativelab", "googlecreative", "classifier"],
+    support: ["classification", "classify", "predict", "prediction", "predictions", "train", "training", "image"],
+  },
+  threejs: {
+    strong: ["threejs", "webgl", "renderer", "geometry", "scene"],
+    support: ["3d", "camera", "material", "lighting", "visualization", "graphics"],
+  },
+  boston: {
+    strong: ["boston", "mbta", "reroute", "rerouting"],
+    support: ["route", "routing", "traffic", "accident", "transit", "commute", "commuter"],
+  },
+}
+
+const FAMILY_KEYS = Object.keys(PROJECT_FAMILIES) as ProjectFamily[]
+
+/** Count distinctive (strong) and supporting family tokens present in a token set. */
+function familyEvidence(tokens: Set<string>, fam: ProjectFamily): { strong: number; support: number } {
+  const tiers = PROJECT_FAMILIES[fam]
+  let strong = 0
+  let support = 0
+  for (const t of tiers.strong) if (tokens.has(t)) strong += 1
+  for (const t of tiers.support) if (tokens.has(t)) support += 1
+  return { strong, support }
+}
+
+/**
+ * The distinctive tool/entity the project is about, or null when none is clear.
+ * A family is "clear" only with a distinctive marker (strong, worth 2) or two
+ * supporting terms (worth 1 each) — never a single supporting term alone.
+ */
+export function detectProjectFamily(context: WebsiteProofMatchContext): ProjectFamily | null {
+  const tokens = projectSpecificTokens(context)
+  let best: ProjectFamily | null = null
+  let bestScore = 0
+  for (const fam of FAMILY_KEYS) {
+    const { strong, support } = familyEvidence(tokens, fam)
+    const score = strong * 2 + support
+    if (score >= 2 && score > bestScore) {
+      best = fam
+      bestScore = score
+    }
+  }
+  return best
+}
+
+/**
+ * Does a document carry evidence of the given project family? Requires one
+ * distinctive family marker, or two supporting family terms — so a single
+ * supporting overlap (e.g. only "classification"/"training"/"image") never
+ * counts as same-family evidence.
+ */
+function documentMatchesFamily(tokens: Set<string>, fam: ProjectFamily): boolean {
+  const { strong, support } = familyEvidence(tokens, fam)
+  return strong >= 1 || support >= 2
+}
+
 /**
  * Rank saved Document Proofs against the project being described. Deterministic
- * project-keyword overlap only. Two token sets are used: a broad set (generic
- * words stripped) for display/search, and a strong set that additionally drops
- * generic web/frontend boilerplate (javascript, browser, frontend, web, demo,
- * interactive, …) via DOCUMENT_GENERIC_TOKENS. A document is Recommended only
- * when it shares at least one strong project-specific token — so generic
- * web/frontend skill overlap alone (e.g. a Three.js doc vs a Teachable Machine
- * project both naming "JavaScript"/"frontend") never promotes a document.
- * Reads safe metadata only.
+ * project-keyword overlap only, gated by project family/entity. A document is
+ * Recommended only when either:
+ *   1. the project has a clear family (Teachable Machine, Three.js, Boston/…)
+ *      and the document carries same-family evidence; or
+ *   2. no family is detected and the document shares ≥2 strong project-specific
+ *      tokens (generic web/frontend boilerplate stripped via DOCUMENT_GENERIC_TOKENS).
+ * A single shared token never recommends, so generic or coincidental overlap
+ * (a Three.js explainer vs a Teachable Machine project) stays out of the
+ * recommendations and remains available under "Browse all". Reads safe metadata
+ * only — never raw document text, files, or storage paths.
  */
 export function rankDocumentProofs(
   docs: DocumentProofResponse[],
   context: WebsiteProofMatchContext,
 ): RankedDocumentProof[] {
-  // Broad tokens (display/search) and strong tokens (drive the recommendation).
+  // Broad tokens (display/search) and strong tokens (drive the overlap path).
   const projectTokens = projectSpecificTokens(context)
   const strongProjectTokens = new Set(
     Array.from(projectTokens).filter((w) => !DOCUMENT_GENERIC_TOKENS.has(w)),
   )
+  const family = detectProjectFamily(context)
 
   const ranked = docs.map((doc): RankedDocumentProof => {
+    const docTokens = documentSpecificTokens(doc)
     const matched: string[] = []
     const strongMatched: string[] = []
-    for (const token of documentSpecificTokens(doc)) {
+    for (const token of docTokens) {
       if (projectTokens.has(token) && !matched.includes(token)) matched.push(token)
       if (strongProjectTokens.has(token) && !strongMatched.includes(token)) strongMatched.push(token)
     }
-    // Require at least one strong project-specific overlap to recommend. Generic
-    // overlap (kept in `matched` for ordering only) never sets the tier.
-    const tier: DocumentProofMatchTier = strongMatched.length >= 1 ? "recommended" : "other"
-    return { doc, tier, score: strongMatched.length * 10 + matched.length, matched }
+
+    // Project-family/entity gating: same-family evidence, or ≥2 specific overlaps
+    // when no family is clear. A lone overlap never promotes an unrelated doc.
+    const familyMatch = family !== null && documentMatchesFamily(docTokens, family)
+    const enoughSpecificOverlap = strongMatched.length >= 2
+    const tier: DocumentProofMatchTier = familyMatch || enoughSpecificOverlap ? "recommended" : "other"
+
+    const score = (familyMatch ? 100 : 0) + strongMatched.length * 10 + matched.length
+    return { doc, tier, score, matched }
   })
   ranked.sort((a, b) => b.score - a.score)
   return ranked

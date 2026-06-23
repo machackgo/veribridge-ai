@@ -502,3 +502,364 @@ def test_public_report_scrubs_score_strings_across_all_fields(
     assert body["github_proof"]["public_safe_summary"].strip()
     assert body["candidate_display_name"] == "Top candidate"
     assert "private@example.com" not in raw
+
+
+# ── Direct verification link safety gate (must-fix) ──────────────────────────
+
+
+def _minimal_report(**overrides) -> dict:
+    """A small student-report-shaped payload for direct-link safety tests."""
+    base = {
+        "project_title": "Demo Project",
+        "project_description": "",
+        "student_role": "",
+        "repo_full_name": "octocat/Hello-World",
+        "deployed_url": None,
+        "claimed_skills": [],
+        "evidence_package": {
+            "github_proof_attached": False,
+            "documents_count": 0,
+            "website_proofs_count": 0,
+            "project_defense_completed": False,
+            "video_defense_recorded": False,
+            "video_evidence_chip_count": 0,
+        },
+        "github_proof": None,
+        "documents": [],
+        "website_proofs": [],
+        "project_defense_analysis": None,
+        "skill_evidence": [],
+        "video_evidence_chips": [],
+        "limitations": [],
+        "generated_at": "2026-01-02T00:00:00Z",
+    }
+    base.update(overrides)
+    return base
+
+
+def _publish_and_get_with_report(client, mem_store, monkeypatch, report):
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    token = _publish(client, project_id).json()["public_token"]
+    monkeypatch.setattr(
+        "app.services.vbr_public_project_report.build_student_vbr_report",
+        lambda *args, **kwargs: report,
+    )
+    app.dependency_overrides.pop(get_current_user_id, None)
+    return _get_public(client, token)
+
+
+@pytest.mark.parametrize(
+    "unsafe_url",
+    [
+        "http://localhost:3000",
+        "http://127.0.0.1:8000",
+        "http://192.168.1.10/app",
+        "http://10.0.0.5",
+        "http://172.16.0.4/dashboard",
+        "http://169.254.1.1",
+        "https://staging.internal/app",
+        "https://dev.local",
+        "http://intranet/app",
+        "file:///etc/passwd",
+        "data:text/html,<script>alert(1)</script>",
+        "blob:https://example.com/uuid",
+        "javascript:alert(1)",
+    ],
+)
+def test_public_report_omits_unsafe_deployed_url(
+    client: TestClient, mem_store: dict, monkeypatch, unsafe_url: str
+) -> None:
+    response = _publish_and_get_with_report(
+        client, mem_store, monkeypatch, _minimal_report(deployed_url=unsafe_url)
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    # The unsafe direct link is dropped, never echoed back as the raw URL.
+    assert body["deployed_url"] is None
+    assert unsafe_url not in response.text
+    # The omission is reflected honestly in limitations.
+    assert any("private or internal" in line.lower() for line in body["limitations"])
+
+
+def test_public_report_keeps_safe_public_deployed_url(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    response = _publish_and_get_with_report(
+        client, mem_store, monkeypatch, _minimal_report(deployed_url="https://threejs.org")
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["deployed_url"] == "https://threejs.org"
+    # No spurious omission limitation when every link is public-safe.
+    assert not any("private or internal" in line.lower() for line in body["limitations"])
+
+
+def test_public_report_keeps_safe_public_github_repo_link(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    report = _minimal_report(
+        github_proof={
+            "repo_url": "https://github.com/octocat/Hello-World",
+            "repo_owner": "octocat",
+            "repo_name": "Hello-World",
+            "status": "analyzed",
+            "detected_skills": ["Python"],
+            "public_safe_summary": "Public repo evidence observed.",
+            "repo_is_public": True,
+        }
+    )
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["github_proof"]["repo_url"] == "https://github.com/octocat/Hello-World"
+    assert body["github_proof"]["repo_is_public"] is True
+
+
+def test_public_report_drops_repo_link_when_repo_url_not_public(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    report = _minimal_report(
+        github_proof={
+            "repo_url": "http://localhost:8080/repo",
+            "repo_owner": "octocat",
+            "repo_name": "Hello-World",
+            "status": "analyzed",
+            "detected_skills": ["Python"],
+            "public_safe_summary": "Repo evidence observed.",
+            "repo_is_public": True,
+        }
+    )
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Flagged "public" but the URL is not public-safe → never advertised as linkable.
+    assert body["github_proof"]["repo_is_public"] is False
+
+
+def test_public_report_blanks_unsafe_website_targets_but_keeps_safe_ones(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    report = _minimal_report(
+        website_proofs=[
+            {
+                "target_website": "https://threejs.org",
+                "evidence_strength": "Evidence observed",
+                "workflow_confidence": "high",
+                "supported_skills": ["React"],
+            },
+            {
+                "target_website": "http://192.168.1.50/app",
+                "evidence_strength": "Supporting evidence",
+                "workflow_confidence": "medium",
+                "supported_skills": ["Node"],
+            },
+        ]
+    )
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    proofs = body["website_proofs"]
+    assert len(proofs) == 2
+    # The public target survives; the private one is blanked (never echoed raw).
+    assert proofs[0]["target_website"] == "https://threejs.org"
+    assert proofs[1]["target_website"] == ""
+    assert "192.168.1.50" not in response.text
+    # Qualitative evidence on the omitted-link proof is preserved.
+    assert proofs[1]["evidence_strength"] == "Supporting evidence"
+    assert proofs[1]["supported_skills"] == ["Node"]
+    assert any("private or internal" in line.lower() for line in body["limitations"])
+
+
+def test_public_report_returns_no_unsafe_raw_url_anywhere(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    report = _minimal_report(
+        deployed_url="http://localhost:3000",
+        website_proofs=[
+            {
+                "target_website": "http://10.0.0.5/internal",
+                "evidence_strength": "Supporting evidence",
+                "workflow_confidence": "low",
+                "supported_skills": [],
+            }
+        ],
+        github_proof={
+            "repo_url": "file:///private/repo",
+            "repo_owner": None,
+            "repo_name": None,
+            "status": "analyzed",
+            "detected_skills": [],
+            "public_safe_summary": "Repo evidence observed.",
+            "repo_is_public": True,
+        },
+    )
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    raw = response.text
+    for unsafe in ["localhost:3000", "10.0.0.5", "file://"]:
+        assert unsafe not in raw, f"Unsafe raw URL leaked into public report: {unsafe!r}"
+    assert response.json()["github_proof"]["repo_is_public"] is False
+
+
+def test_public_report_links_back_to_published_passport(client: TestClient, mem_store: dict) -> None:
+    """The public report links back to the candidate's Work Passport — but only
+    once that passport is itself published, never to a private passport."""
+    from app.services.vbr_work_passport_service import publish_passport
+
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    token = _publish(client, project_id).json()["public_token"]
+    app.dependency_overrides.pop(get_current_user_id, None)
+
+    # No passport published yet → no backlink.
+    body = _get_public(client, token).json()
+    assert body["public_passport_path"] is None
+
+    # Publish the passport, then the report links back to /p/{slug}.
+    status = publish_passport(mem_store, USER_ID)
+    slug = status["public_slug"]
+    assert slug
+    body = _get_public(client, token).json()
+    assert body["public_passport_path"] == f"/p/{slug}"
+
+
+# ── Evidence traceability (public projection) ────────────────────────────────
+
+def test_public_report_includes_evidence_traces_per_skill(client: TestClient, mem_store: dict) -> None:
+    project_id = _make_full_project(client, mem_store)
+    token = _publish(client, project_id).json()["public_token"]
+    app.dependency_overrides.pop(get_current_user_id, None)
+
+    body = _get_public(client, token).json()
+    traces = body["evidence_traces"]
+    assert traces
+    source_types = {t["source_type"] for t in traces}
+    assert {"GitHub Proof", "Document Proof", "Project Defense"} <= source_types
+
+    trace_ids = {t["trace_id"] for t in traces}
+    # Every supported skill row references concrete, resolvable traces.
+    assert any(row["evidence_traces"] for row in body["skill_evidence"])
+    for row in body["skill_evidence"]:
+        assert row["why_this_status"]
+        for tid in row["evidence_traces"]:
+            assert tid in trace_ids
+
+
+def test_public_report_trace_links_are_safe_public_only(client: TestClient, mem_store: dict, monkeypatch) -> None:
+    """A trace with an unsafe public_url is never advertised as openable."""
+    report = _minimal_report(
+        github_proof={
+            "repo_url": "https://github.com/octocat/Hello-World",
+            "repo_owner": "octocat",
+            "repo_name": "Hello-World",
+            "status": "analyzed",
+            "detected_skills": ["Python"],
+            "public_safe_summary": "Public repo evidence observed.",
+            "repo_is_public": True,
+        },
+        claimed_skills=["Python"],
+        evidence_traces=[
+            {
+                "trace_id": "github-proof",
+                "source_type": "GitHub Proof",
+                "source_title": "octocat/Hello-World",
+                "skill_names": ["Python"],
+                "qualitative_status": "Supporting evidence",
+                "safe_summary": "Repo analyzed.",
+                "safe_detail": "Static analysis.",
+                "evidence_anchor": "github-proof",
+                "public_url": "https://github.com/octocat/Hello-World",
+                "public_url_label": "View public repository",
+                "timestamp": None,
+                "limitation": "Not sole authorship.",
+                "is_publicly_openable": True,
+                "private_evidence_note": None,
+            },
+            {
+                "trace_id": "website-proof-1",
+                "source_type": "Website Proof",
+                "source_title": "http://localhost:3000",
+                "skill_names": ["Python"],
+                "qualitative_status": "Supporting evidence",
+                "safe_summary": "Local deploy.",
+                "safe_detail": "Checked.",
+                "evidence_anchor": "website-proof-1",
+                "public_url": "http://localhost:3000",
+                "public_url_label": "Open live website",
+                "timestamp": None,
+                "limitation": "Check time only.",
+                "is_publicly_openable": True,
+                "private_evidence_note": None,
+            },
+        ],
+    )
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    traces = {t["trace_id"]: t for t in body["evidence_traces"]}
+
+    # Safe github link survives and is openable.
+    assert traces["github-proof"]["is_publicly_openable"] is True
+    assert traces["github-proof"]["public_url"] == "https://github.com/octocat/Hello-World"
+    # Unsafe localhost link is dropped, never echoed, and marked not openable.
+    assert traces["website-proof-1"]["is_publicly_openable"] is False
+    assert traces["website-proof-1"]["public_url"] is None
+    assert traces["website-proof-1"]["private_evidence_note"]
+    assert "localhost:3000" not in response.text
+
+
+def test_public_report_traces_have_no_score_language(client: TestClient, mem_store: dict) -> None:
+    project_id = _make_full_project(client, mem_store)
+    token = _publish(client, project_id).json()["public_token"]
+    app.dependency_overrides.pop(get_current_user_id, None)
+    raw = _get_public(client, token).text.lower()
+    for forbidden in ["/100", "trust score", "fully verified"]:
+        assert forbidden not in raw, f"score-like fragment leaked into public traces: {forbidden!r}"
+
+
+def test_public_report_document_proof_is_consistent_and_safe(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The public projection keeps the same Document Proof consistency as the
+    student report and never leaks raw document content."""
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Python", "confidence": "high", "snippet": "raw-doc-text-should-never-leak"}],
+    )
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+    token = _publish(client, project_id).json()["public_token"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    response = _get_public(client, token)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    raw = response.text
+
+    rows = {row["skill"]: row for row in body["skill_evidence"]}
+    assert "Document Proof" in rows["Python"]["supporting_sources"]
+    assert "Document Proof" not in rows["React"]["supporting_sources"]
+
+    # Public document traces stay safe/conservative: never openable, never raw.
+    doc_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Document Proof"]
+    assert doc_traces
+    for trace in doc_traces:
+        assert trace["is_publicly_openable"] is False
+        assert trace["public_url"] is None
+        assert trace["private_evidence_note"]
+        assert trace["skill_names"] == ["Python"]
+    assert "raw-doc-text-should-never-leak" not in raw
+
+    # Invariant survives the public projection.
+    traces_by_id = {t["trace_id"]: t for t in body["evidence_traces"]}
+    for row in body["skill_evidence"]:
+        skill_l = row["skill"].lower()
+        row_has_doc = "Document Proof" in row["supporting_sources"]
+        trace_claims = any(
+            traces_by_id[tid]["source_type"] == "Document Proof"
+            and skill_l in {s.lower() for s in traces_by_id[tid]["skill_names"]}
+            for tid in row.get("evidence_traces", [])
+        )
+        assert row_has_doc == trace_claims

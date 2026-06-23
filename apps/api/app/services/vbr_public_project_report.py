@@ -41,17 +41,20 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from app.api.v1.endpoints.vbr_projects import get_owned_vbr_project_or_404
+from app.services.safe_public_url import is_safe_public_url
 from app.services.vbr_student_report import build_student_vbr_report
 
 logger = logging.getLogger(__name__)
 
 _PROJECTS_TABLE = "vbr_projects"
 _USERS_TABLE = "users"
+_PASSPORTS_TABLE = "vbr_work_passports"
 
 _TOKEN_GENERATION_ATTEMPTS = 5
 
 _REPORT_TITLE = "Verified Build Report"
 _PUBLIC_PATH_PREFIX = "/vbr/report/"
+_PASSPORT_PATH_PREFIX = "/p/"
 
 _VERIFICATION_NOTE = (
     "This is an evidence-backed Verified Build Report shared by the candidate. "
@@ -220,6 +223,48 @@ def _generate_token(db: Any) -> str:
             "message": "Could not generate a unique public link. Please try again.",
         },
     )
+
+
+def _lookup_public_passport_path(db: Any, user_id: str) -> str | None:
+    """Best-effort recruiter-safe link back to the owner's *published* passport.
+
+    Returns ``/p/{slug}`` only when the owner has an actively published Work
+    Passport with a slug; any uncertainty (no passport, unpublished, missing
+    slug, lookup error) returns ``None`` so a private passport is never linked.
+    Kept inline (rather than importing the passport service) to avoid a circular
+    import — ``vbr_work_passport_service`` already imports from this module.
+    """
+    if not user_id:
+        return None
+    try:
+        if isinstance(db, dict):
+            row = next(
+                (
+                    r
+                    for r in db.setdefault(_PASSPORTS_TABLE, {}).values()
+                    if str(r.get("user_id")) == str(user_id)
+                ),
+                None,
+            )
+        else:
+            result = (
+                db.table(_PASSPORTS_TABLE)
+                .select("public_slug,is_published")
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+            row = rows[0] if rows else None
+    except Exception:  # pragma: no cover - passport backlink is optional
+        return None
+
+    if not isinstance(row, dict) or not row.get("is_published"):
+        return None
+    slug = row.get("public_slug")
+    if isinstance(slug, str) and slug.strip():
+        return f"{_PASSPORT_PATH_PREFIX}{slug.strip()}"
+    return None
 
 
 def _lookup_display_name(db: Any, user_id: str) -> str | None:
@@ -423,12 +468,74 @@ def _scrub_public_report(value: Any) -> Any:
     return value
 
 
+# Generic, non-leaking limitation appended when a direct verification link was
+# dropped because its target was not safely public (never reveals the raw URL).
+_OMITTED_LINK_LIMITATION = (
+    "One or more direct verification links were private or internal and have been "
+    "omitted from this public report."
+)
+
+
 def _public_github_proof(github_proof: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(github_proof, dict):
         return None
     scrubbed = dict(github_proof)
     scrubbed["public_safe_summary"] = _scrub_numeric_scores(github_proof.get("public_safe_summary") or "")
+    # A repo URL is only kept (and only advertised as directly linkable) when it
+    # is a public-safe http(s) target — never echo a private/internal raw URL.
+    repo_url = github_proof.get("repo_url")
+    repo_url_is_safe = is_safe_public_url(repo_url)
+    scrubbed["repo_url"] = repo_url if repo_url_is_safe else None
+    scrubbed["repo_is_public"] = bool(github_proof.get("repo_is_public")) and repo_url_is_safe
     return scrubbed
+
+
+def _public_website_proofs(proofs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    """Project website proofs, blanking any non-public ``target_website``.
+
+    Returns the safe proofs plus a flag indicating whether at least one target
+    URL was omitted, so limitations can honestly reflect the omission. The
+    qualitative evidence (strength, confidence, skills) is always preserved —
+    only the raw direct link is dropped when it is not public-safe.
+    """
+    safe: list[dict[str, Any]] = []
+    omitted = False
+    for proof in proofs:
+        if not isinstance(proof, dict):
+            continue
+        row = dict(proof)
+        target = row.get("target_website") or ""
+        if target and not is_safe_public_url(target):
+            row["target_website"] = ""  # never echo a raw private/internal URL
+            omitted = True
+        safe.append(row)
+    return safe, omitted
+
+
+def _public_evidence_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Re-gate each evidence trace's direct link before it reaches recruiters.
+
+    The student-report builder already drops non-public links, but the public
+    surface re-verifies every ``public_url`` through the safe-public-url helper
+    (defence in depth) so an unsafe link can never be advertised as openable.
+    """
+    safe: list[dict[str, Any]] = []
+    for trace in traces:
+        if not isinstance(trace, dict):
+            continue
+        row = dict(trace)
+        if not is_safe_public_url(row.get("public_url")):
+            row["public_url"] = None
+            row["public_url_label"] = None
+            row["is_publicly_openable"] = False
+            if not row.get("private_evidence_note"):
+                row["private_evidence_note"] = "A direct link was omitted because it was private or internal."
+        # Never echo a raw private/internal URL in the human-readable title.
+        title = str(row.get("source_title") or "")
+        if "://" in title and not is_safe_public_url(title):
+            row["source_title"] = str(row.get("source_type") or "Evidence source")
+        safe.append(row)
+    return safe
 
 
 def _public_limitations(limitations: list[str]) -> list[str]:
@@ -458,6 +565,20 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     owner_id = str(project.get("user_id") or "")
     report = build_student_vbr_report(db, pipeline_db, project, owner_id)
 
+    # ── Direct verification links: public-safe gate (must-fix) ───────────────
+    # Only genuinely public http(s) targets may be linked from an anonymous
+    # recruiter view. Unsafe targets (localhost, private/internal hosts, private
+    # IPs, file/data/blob/javascript, storage/signed URLs) are dropped here so
+    # the raw URL never reaches the response JSON.
+    raw_deployed_url = report.get("deployed_url") or None
+    deployed_url = raw_deployed_url if is_safe_public_url(raw_deployed_url) else None
+    website_proofs, website_link_omitted = _public_website_proofs(report.get("website_proofs") or [])
+    deployed_link_omitted = bool(raw_deployed_url) and deployed_url is None
+
+    limitations = _public_limitations(report.get("limitations") or [])
+    if (deployed_link_omitted or website_link_omitted) and _OMITTED_LINK_LIMITATION not in limitations:
+        limitations.append(_OMITTED_LINK_LIMITATION)
+
     public = {
         "report_title": _REPORT_TITLE,
         "project_title": report.get("project_title") or "",
@@ -465,18 +586,20 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         "project_summary": report.get("project_description") or "",
         "student_role": report.get("student_role") or "",
         "repo_full_name": report.get("repo_full_name"),
-        "deployed_url": report.get("deployed_url") or None,
+        "deployed_url": deployed_url,
         "claimed_skills": list(report.get("claimed_skills") or []),
         "evidence_package": report.get("evidence_package") or {},
         "github_proof": _public_github_proof(report.get("github_proof")),
         "documents": list(report.get("documents") or []),
-        "website_proofs": list(report.get("website_proofs") or []),
+        "website_proofs": website_proofs,
         "project_defense_analysis": report.get("project_defense_analysis"),
         "skill_evidence": list(report.get("skill_evidence") or []),
+        "evidence_traces": _public_evidence_traces(report.get("evidence_traces") or []),
         "video_evidence_chips": _sanitize_video_chips(report.get("video_evidence_chips") or []),
-        "limitations": _public_limitations(report.get("limitations") or []),
+        "limitations": limitations,
         "published_at": project.get("public_report_published_at"),
         "generated_at": report.get("generated_at"),
+        "public_passport_path": _lookup_public_passport_path(db, owner_id),
         "verification_note": _VERIFICATION_NOTE,
     }
 

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from app.schemas.vbr_student_report import VBREvidenceTrace
+
 
 # ── Owner-only publish controls ──────────────────────────────────────────────
 
@@ -84,6 +86,8 @@ class PassportSkillSummary(BaseModel):
     evidence_sources: list[str] = Field(default_factory=list)
     projects: list[PassportSkillProjectRef] = Field(default_factory=list)
     evidence_chips: list[PassportSkillEvidenceChip] = Field(default_factory=list)
+    # Aggregated claim→evidence traces across this candidate's projects.
+    evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
     notes: str = ""
     limitations: list[str] = Field(default_factory=list)
 
@@ -111,6 +115,8 @@ class PublicPassportSkill(BaseModel):
     evidence_sources: list[str] = Field(default_factory=list)
     projects: list[PublicPassportSkillProjectRef] = Field(default_factory=list)
     evidence_chips: list[PassportSkillEvidenceChip] = Field(default_factory=list)
+    # Claim→evidence traces sourced ONLY from published public reports.
+    evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}

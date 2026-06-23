@@ -5,8 +5,10 @@ import Link from "next/link"
 import {
   getVBRProjectReport,
   getVBRProjectReportPublishStatus,
+  isSafePublicUrl,
   publishVBRProjectReport,
   unpublishVBRProjectReport,
+  type EvidenceTrace,
   type ProjectReportPublishStatus,
   type VBRReportSkillEvidenceRow,
   type VBRStudentProjectReportResponse,
@@ -22,6 +24,7 @@ import {
   TOKEN,
   type BadgeTone,
 } from "../../../../../../../components/passport/shared"
+import { EvidenceTraceList } from "../../../../../../../components/passport/EvidenceTrace"
 
 const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   Demonstrated: "emerald",
@@ -33,6 +36,15 @@ const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
 }
 
 const SKILL_STATUS_TONE = QUALITATIVE_LABEL_TONE
+
+const SOURCE_TONE: Record<string, BadgeTone> = {
+  "GitHub Proof": "indigo",
+  "Document Proof": "sky",
+  "Website Proof": "purple",
+  "Project Defense": "emerald",
+  "Video Evidence": "amber",
+  "VBR Report": "emerald",
+}
 
 function VideoChip({ chip }: { chip: VideoEvidenceChip }) {
   return (
@@ -54,17 +66,60 @@ function VideoChip({ chip }: { chip: VideoEvidenceChip }) {
   )
 }
 
-function SkillEvidenceRow({ row }: { row: VBRReportSkillEvidenceRow }) {
+function SkillEvidenceRow({ row, tracesById }: { row: VBRReportSkillEvidenceRow; tracesById: Map<string, EvidenceTrace> }) {
+  const sources = row.supporting_sources ?? []
+  const limitations = row.limitations ?? []
+  const traceRefs = (row.evidence_traces ?? [])
+    .map((id) => tracesById.get(id))
+    .filter((t): t is EvidenceTrace => Boolean(t))
   return (
     <tr data-testid="skill-evidence-row">
-      <td style={{ padding: "8px 10px", fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>{row.skill}</td>
-      <td style={{ padding: "8px 10px" }}>
+      <td style={{ padding: "8px 10px", fontSize: 13, fontWeight: 600, color: TOKEN.ink, verticalAlign: "top" }}>{row.skill}</td>
+      <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
         <Badge tone={SKILL_STATUS_TONE[row.status] ?? "slate"}>{row.status}</Badge>
       </td>
-      <td style={{ padding: "8px 10px", fontSize: 12, color: TOKEN.muted, textAlign: "center" }}>
+      <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+        {sources.length > 0 ? (
+          <div data-testid="skill-supporting-sources" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {sources.map((src) => (
+              <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
+                {src}
+              </Badge>
+            ))}
+          </div>
+        ) : (
+          <span style={{ fontSize: 12, color: TOKEN.muted }}>—</span>
+        )}
+        {traceRefs.length > 0 && (
+          <div data-testid="skill-trace-links" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+            {traceRefs.map((t) => (
+              <a key={t.trace_id} href={`#${t.evidence_anchor}`} style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}>
+                {t.source_type} →
+              </a>
+            ))}
+          </div>
+        )}
+      </td>
+      <td style={{ padding: "8px 10px", fontSize: 12, color: TOKEN.muted, textAlign: "center", verticalAlign: "top" }}>
         {row.evidence_chip_count}
       </td>
-      <td style={{ padding: "8px 10px", fontSize: 12, color: TOKEN.muted }}>{row.notes}</td>
+      <td style={{ padding: "8px 10px", fontSize: 12, color: TOKEN.muted, verticalAlign: "top" }}>
+        {row.why_this_status ? <span data-testid="skill-why">{row.why_this_status}</span> : row.notes}
+        {row.recruiter_can_verify && (
+          <div data-testid="skill-verify" style={{ marginTop: 4, fontStyle: "italic" }}>
+            {row.recruiter_can_verify}
+          </div>
+        )}
+        {limitations.length > 0 && (
+          <ul data-testid="skill-limitations" style={{ margin: "4px 0 0", paddingLeft: 16 }}>
+            {limitations.map((line, i) => (
+              <li key={i} style={{ fontSize: 11, color: TOKEN.muted }}>
+                {line}
+              </li>
+            ))}
+          </ul>
+        )}
+      </td>
     </tr>
   )
 }
@@ -253,6 +308,8 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
 
   const analysis = report.project_defense_analysis
   const pkg = report.evidence_package
+  const evidenceTraces = report.evidence_traces ?? []
+  const tracesById = new Map(evidenceTraces.map((t) => [t.trace_id, t]))
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -301,6 +358,35 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
         <Badge tone="slate">Project status: {report.project_status.replace(/_/g, " ")}</Badge>
       </Card>
 
+      {/* In-page navigation to evidence sections */}
+      <nav data-testid="report-jump-nav" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {[
+          { href: "#github-proof", label: "GitHub Proof" },
+          { href: "#documents", label: "Documents" },
+          { href: "#website-proof", label: "Website Proof" },
+          { href: "#project-defense", label: "Project Defense" },
+          { href: "#skill-evidence", label: "Skill Evidence" },
+          { href: "#limitations", label: "Limitations" },
+        ].map((item) => (
+          <a
+            key={item.href}
+            href={item.href}
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: TOKEN.indigo,
+              textDecoration: "none",
+              padding: "4px 10px",
+              borderRadius: 999,
+              border: `1px solid ${TOKEN.line}`,
+              background: "#fff",
+            }}
+          >
+            {item.label}
+          </a>
+        ))}
+      </nav>
+
       {/* Direct safe links */}
       <SafeLinksCard report={report} />
 
@@ -324,10 +410,10 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
       </Card>
 
       {/* Evidence by source */}
-      <Card>
+      <Card id="evidence-by-source">
         <CardHeader title="Evidence by Source" eyebrow="Attached proof" icon="📎" />
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div>
+          <div id="github-proof">
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
               GitHub Proof
             </Mono>
@@ -359,7 +445,7 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             )}
           </div>
 
-          <div>
+          <div id="documents">
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
               Document Proof
             </Mono>
@@ -378,7 +464,7 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             )}
           </div>
 
-          <div>
+          <div id="website-proof">
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
               Website Proof
             </Mono>
@@ -399,7 +485,7 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             )}
           </div>
 
-          <div>
+          <div id="project-defense">
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
               Manual / Video Project Defense
             </Mono>
@@ -455,8 +541,8 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
       </Card>
 
       {/* Skill-level evidence table */}
-      <Card>
-        <CardHeader title="Skill-Level Evidence" eyebrow="Claimed skills" icon="🧩" />
+      <Card id="skill-evidence">
+        <CardHeader title="Skill Evidence Matrix" eyebrow="Claimed skills → evidence" icon="🧩" />
         {report.skill_evidence.length === 0 ? (
           <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>No claimed skills recorded for this project.</p>
         ) : (
@@ -465,18 +551,31 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
               <tr style={{ borderBottom: `1px solid ${TOKEN.line}`, textAlign: "left" }}>
                 <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Skill</th>
                 <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Status</th>
+                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Supporting evidence</th>
                 <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em", textAlign: "center" }}>Chips</th>
                 <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Notes</th>
               </tr>
             </thead>
             <tbody>
               {report.skill_evidence.map((row) => (
-                <SkillEvidenceRow key={row.skill} row={row} />
+                <SkillEvidenceRow key={row.skill} row={row} tracesById={tracesById} />
               ))}
             </tbody>
           </table>
         )}
       </Card>
+
+      {/* Evidence Traceability — concrete claim → evidence audit trail */}
+      {evidenceTraces.length > 0 && (
+        <Card id="evidence-traceability">
+          <CardHeader title="Evidence Traceability" eyebrow="Claim → evidence → source" icon="🔍" />
+          <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
+            Each item is a concrete evidence source behind your claimed skills. Public sources link directly; private
+            evidence is summarized and never exposed as raw files.
+          </p>
+          <EvidenceTraceList traces={evidenceTraces} />
+        </Card>
+      )}
 
       {/* Defense questions */}
       {report.defense_questions.length > 0 && (
@@ -496,7 +595,7 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
       )}
 
       {/* Limitations */}
-      <Card>
+      <Card id="limitations">
         <CardHeader title="Limitations / Not Assessed" eyebrow="Be honest" icon="⚠️" />
         <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
           {report.limitations.map((line, i) => (
@@ -550,12 +649,13 @@ const safeLinkStyle: CSSProperties = {
  * links raw private docs, transcripts, signed URLs, or storage paths.
  */
 function SafeLinksCard({ report }: { report: VBRStudentProjectReportResponse }) {
-  const repoUrl = report.github_proof?.repo_is_public ? report.github_proof.repo_url : null
-  const deployedUrl = report.deployed_url || null
-  const websiteTargets = report.website_proofs
-    .map((w) => w.target_website)
-    .filter((u): u is string => Boolean(u && /^https?:\/\//i.test(u)))
-  const liveLinks = Array.from(new Set([deployedUrl, ...websiteTargets].filter(Boolean) as string[]))
+  // Defence in depth: only ever render links whose target is public-safe.
+  const repoUrl =
+    report.github_proof?.repo_is_public && isSafePublicUrl(report.github_proof.repo_url)
+      ? report.github_proof.repo_url
+      : null
+  const websiteTargets = report.website_proofs.map((w) => w.target_website).filter(isSafePublicUrl)
+  const liveLinks = Array.from(new Set([report.deployed_url, ...websiteTargets].filter(isSafePublicUrl) as string[]))
 
   if (!repoUrl && liveLinks.length === 0) return null
 

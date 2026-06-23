@@ -15,7 +15,8 @@ import { PublicPassportView } from "../app/p/[slug]/PublicPassportView"
 import LegacyPublicPassportPage from "../app/passport/[slug]/page"
 import type { PublicWorkPassport } from "@/lib/vbr-api"
 
-vi.mock("@/lib/vbr-api", () => ({
+vi.mock("@/lib/vbr-api", async (importActual) => ({
+  ...(await importActual<typeof import("@/lib/vbr-api")>()),
   getPublicWorkPassportBySlug: vi.fn(),
 }))
 
@@ -113,6 +114,52 @@ describe("PublicPassportView", () => {
     expect(ref).toHaveTextContent("Skill Evidence Tracker")
     // The only outbound link is the public report path — never an internal id.
     expect(detail.querySelector("a")).toHaveAttribute("href", "/vbr/report/tok-abc")
+    expect(detail.textContent).not.toContain("project_id")
+  })
+
+  it("shows published-report-backed evidence traces in the skill drilldown", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        top_skills: [
+          {
+            skill: "Python",
+            status: "Demonstrated",
+            evidence_sources: ["GitHub Proof"],
+            projects: [
+              { project_title: "Skill Evidence Tracker", evidence_sources: ["GitHub Proof"], public_report_path: "/vbr/report/tok-abc" },
+            ],
+            evidence_chips: [],
+            limitations: [],
+            evidence_traces: [
+              {
+                trace_id: "github-proof",
+                source_type: "GitHub Proof",
+                source_title: "octocat/Hello-World",
+                skill_names: ["Python"],
+                qualitative_status: "Supporting evidence",
+                safe_summary: "Repository analyzed.",
+                safe_detail: "Static analysis.",
+                evidence_anchor: "github-proof",
+                public_url: "https://github.com/octocat/Hello-World",
+                public_url_label: "View public repository",
+                timestamp: null,
+                limitation: "Not sole authorship.",
+                is_publicly_openable: true,
+                private_evidence_note: null,
+              },
+            ],
+          },
+        ],
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+    fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
+
+    const detail = await screen.findByTestId("public-skill-detail")
+    expect(detail.querySelector('[data-testid="evidence-traceability"]')).toBeTruthy()
+    expect(screen.getByTestId("evidence-trace-link")).toHaveAttribute("href", "https://github.com/octocat/Hello-World")
     expect(detail.textContent).not.toContain("project_id")
   })
 

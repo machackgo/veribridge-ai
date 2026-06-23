@@ -336,8 +336,33 @@ def test_create_stores_safe_document_summary(client: TestClient, mem_store: dict
             "title": "Final Year Project Report",
             "source_type": "document",
             "status": "analyzed",
+            # No structured evidence_objects → no analyzer-matched skills, so the
+            # document is stored as project-level context (empty skills list).
+            "skills": [],
         }
     ]
+
+
+def test_create_stores_safe_document_matched_skills(client: TestClient, mem_store: dict) -> None:
+    """When the analyzer matched skills in a document, only those safe skill
+    names (never raw snippets) are persisted for per-skill report mapping."""
+    doc_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Python", "confidence": "high", "snippet": "raw text should never persist"},
+            {"skill_name": "Python", "confidence": "low"},  # duplicate is deduped
+            {"skill_name": "React", "confidence": "medium"},
+        ],
+    )
+
+    response = _create_project_defense(
+        client,
+        attached_proofs={"document_evidence_ids": [doc_id]},
+    )
+    assert response.status_code == 201, response.text
+    documents = response.json()["metadata"]["attached_proofs"]["documents"]
+    assert documents[0]["skills"] == ["Python", "React"]
+    assert "raw text should never persist" not in response.text
 
 
 def test_create_rejects_unknown_document_evidence(client: TestClient) -> None:

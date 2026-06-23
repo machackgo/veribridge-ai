@@ -40,12 +40,15 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.services.safe_public_url import is_safe_public_url
 from app.services.vbr_public_project_report import (
     _contains_unsafe_fields,
     _lookup_display_name,
     _scrub_public_report,
 )
 from app.services.vbr_student_report import build_student_vbr_report
+
+_MAX_SKILL_TRACES = 8
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +314,13 @@ def _aggregate_skills_with_detail(
 
     for summary, report in cards:
         proj_sources = list(summary.get("evidence_sources") or [])
+        # Index this project's evidence traces so each skill row can pull the
+        # concrete traces it references (claim → evidence audit trail).
+        report_traces = {
+            str(t.get("trace_id")): t
+            for t in (report.get("evidence_traces") or [])
+            if isinstance(t, dict)
+        }
         if public:
             public_report_path = summary.get("public_report_path")
             is_public = True
@@ -340,6 +350,7 @@ def _aggregate_skills_with_detail(
                     "evidence_sources": [],
                     "projects": [],
                     "evidence_chips": [],
+                    "evidence_traces": [],
                     "notes": notes,
                     "limitations": [],
                     "_seen_projects": set(),
@@ -372,6 +383,12 @@ def _aggregate_skills_with_detail(
 
             entry["evidence_chips"].extend(_sanitize_skill_chips(report, skill))
 
+            # Pull the concrete evidence traces this skill row references.
+            for trace_id in row.get("evidence_traces") or []:
+                trace = report_traces.get(str(trace_id))
+                if trace is not None:
+                    entry["evidence_traces"].append(trace)
+
     skills: list[dict[str, Any]] = []
     for entry in by_skill.values():
         entry.pop("_seen_projects", None)
@@ -385,6 +402,20 @@ def _aggregate_skills_with_detail(
             seen.add(ck)
             deduped.append(chip)
         entry["evidence_chips"] = deduped[:6]
+        # Dedupe evidence traces across projects (same source can recur) and cap.
+        seen_traces: set[tuple[str, str, str]] = set()
+        deduped_traces: list[dict[str, Any]] = []
+        for trace in entry["evidence_traces"]:
+            tk = (
+                str(trace.get("source_type")),
+                str(trace.get("source_title")),
+                str(trace.get("safe_summary")),
+            )
+            if tk in seen_traces:
+                continue
+            seen_traces.add(tk)
+            deduped_traces.append(trace)
+        entry["evidence_traces"] = deduped_traces[:_MAX_SKILL_TRACES]
         if entry["status"] in {"Needs review", "Not assessed"}:
             entry["limitations"].append(
                 "This skill is not yet strongly evidenced — treat it as a claim pending more proof."
@@ -399,6 +430,21 @@ def _aggregate_skills_with_detail(
         )
     )
     return skills
+
+
+def _public_safe_trace(trace: dict[str, Any]) -> dict[str, Any]:
+    """Re-gate a trace's direct link for the public passport (defence in depth)."""
+    row = dict(trace)
+    if not is_safe_public_url(row.get("public_url")):
+        row["public_url"] = None
+        row["public_url_label"] = None
+        row["is_publicly_openable"] = False
+        if not row.get("private_evidence_note"):
+            row["private_evidence_note"] = "A direct link was omitted because it was private or internal."
+    title = str(row.get("source_title") or "")
+    if "://" in title and not is_safe_public_url(title):
+        row["source_title"] = str(row.get("source_type") or "Evidence source")
+    return row
 
 
 def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
@@ -418,6 +464,7 @@ def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
             if ref.get("public_report_path")
         ],
         "evidence_chips": list(entry.get("evidence_chips") or []),
+        "evidence_traces": [_public_safe_trace(t) for t in entry.get("evidence_traces") or []],
         "limitations": list(entry.get("limitations") or []),
     }
 

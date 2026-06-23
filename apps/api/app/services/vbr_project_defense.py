@@ -134,6 +134,27 @@ def _validate_skill_pipeline_ownership(pipeline_db: Any, user_id: str, skill_pip
             raise ValueError("skill_pipeline_not_found") from exc
 
 
+def _safe_document_skills(row: dict[str, Any]) -> list[str]:
+    """Safe, deduped skill names a document *explicitly* evidences.
+
+    Read only from the analyzer's structured ``evidence_objects`` (skill names
+    only — never raw snippets, page text, file paths, or numeric scores). When a
+    document has no structured skill evidence this returns ``[]`` so the report
+    treats it as project-level context rather than per-skill proof.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in row.get("evidence_objects") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("skill_name") or "").strip()
+        key = name.lower()
+        if name and key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out
+
+
 def _document_summaries(db: Any, user_id: str, document_evidence_ids: list[str]) -> list[dict[str, Any]]:
     """Return safe summaries for attached document proofs.
 
@@ -157,6 +178,10 @@ def _document_summaries(db: Any, user_id: str, document_evidence_ids: list[str])
                 "title": _truncate(str(title), 120),
                 "source_type": row.get("source_type"),
                 "status": row.get("status"),
+                # Safe skill names the analyzer matched in this document. Used by
+                # the report to map the document to ONLY these skills (never to
+                # every claimed skill); empty ⇒ project-level evidence.
+                "skills": _safe_document_skills(row),
             }
         )
     return summaries

@@ -12,6 +12,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from app.schemas.vbr_student_report import (
+    VBREvidenceTrace,
     VBRReportDocumentSummary,
     VBRReportEvidencePackageSummary,
     VBRReportGitHubProofSummary,
@@ -79,12 +80,17 @@ class PublicVBRProjectReportResponse(BaseModel):
 
     project_defense_analysis: VBRReportProjectDefenseAnalysis | None = None
     skill_evidence: list[VBRReportSkillEvidenceRow] = Field(default_factory=list)
+    # Recruiter-safe claim→evidence audit trail referenced by the skill matrix.
+    evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
     video_evidence_chips: list[PublicVideoEvidenceChip] = Field(default_factory=list)
 
     limitations: list[str] = Field(default_factory=list)
 
     published_at: str | None = None
     generated_at: str = ""
+    # Recruiter-safe link back to the candidate's published Work Passport
+    # (`/p/{slug}`), or None when the passport is private/unpublished.
+    public_passport_path: str | None = None
     verification_note: str = ""
 
     model_config = {"extra": "forbid"}

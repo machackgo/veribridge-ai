@@ -30,6 +30,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from app.services.safe_public_url import is_safe_public_url
 from app.services.skill_evidence_pipeline_service import (
     PipelineNotFoundError,
     SkillEvidencePipelineService,
@@ -64,6 +65,21 @@ _PIPELINE_SUPPORT_STATUS_LABELS: dict[str, tuple[str, str]] = {
 
 # Qualitative label for Website Proof "evidence strength" — never a numeric score.
 _EVIDENCE_OBSERVED = "Evidence observed"
+
+# Canonical recruiter-facing evidence-source labels. Kept identical to the
+# Work Passport badge set so a skill's supporting sources read the same across
+# the per-project report, the public report, and the passport drilldowns.
+_SRC_GITHUB = "GitHub Proof"
+_SRC_DOCUMENT = "Document Proof"
+_SRC_WEBSITE = "Website Proof"
+_SRC_DEFENSE = "Project Defense"
+_SRC_VIDEO = "Video Evidence"
+
+# A skill with no strong evidence carries this honest, recruiter-safe note so
+# the matrix never overstates a claim.
+_SKILL_UNEVIDENCED_LIMITATION = (
+    "Not yet strongly evidenced — treat as a claim pending more proof."
+)
 
 
 def _defense_area_label(score: int) -> str:
@@ -163,10 +179,15 @@ def _skill_evidence_row(
     analysis: dict[str, Any] | None,
     github_detected_skills: set[str],
     website_supported_skills: set[str],
+    document_supported_skills: set[str],
     pipeline_lookup: dict[str, dict[str, Any]],
     video_chips: list[dict[str, Any]],
 ) -> dict[str, Any]:
     candidates: list[tuple[str, str]] = []
+    # Canonical source labels that contributed evidence for this skill, in a
+    # stable recruiter-facing order. Used to render the per-skill "supporting
+    # evidence" chips in the skill evidence matrix.
+    supporting_sources: list[str] = []
     normalized = _norm(skill)
 
     if analysis is not None:
@@ -174,16 +195,30 @@ def _skill_evidence_row(
         mentioned = {_norm(s) for s in analysis.get("skills_mentioned") or []}
         if normalized in explained_well:
             candidates.append((_DEMONSTRATED, "Explained clearly during the Project Defense."))
+            supporting_sources.append(_SRC_DEFENSE)
         elif normalized in mentioned:
             candidates.append(
                 (_PARTIALLY_DEMONSTRATED, "Mentioned during the Project Defense but not fully explained.")
             )
+            supporting_sources.append(_SRC_DEFENSE)
 
     if normalized in github_detected_skills:
         candidates.append((_SUPPORTING_EVIDENCE, "Detected in the attached GitHub Proof."))
+        supporting_sources.append(_SRC_GITHUB)
 
     if normalized in website_supported_skills:
         candidates.append((_SUPPORTING_EVIDENCE, "Supported by the attached Website Proof."))
+        supporting_sources.append(_SRC_WEBSITE)
+
+    # Document Proof is conservative supporting evidence and is only attached to a
+    # skill the analyzer explicitly matched in the document (never to every
+    # claimed skill). Keeping this in lockstep with the document evidence trace
+    # guarantees the matrix row and the trace agree.
+    if normalized in document_supported_skills:
+        candidates.append(
+            (_SUPPORTING_EVIDENCE, "Supported by an attached Document Proof referencing this skill.")
+        )
+        supporting_sources.append(_SRC_DOCUMENT)
 
     pipeline = pipeline_lookup.get(normalized)
     if pipeline is not None:
@@ -195,12 +230,32 @@ def _skill_evidence_row(
     if not candidates:
         candidates.append((_NOT_ASSESSED, "No evidence has been reviewed for this skill yet."))
 
+    chip_count = _evidence_chip_count_for_skill(skill, video_chips)
+    if chip_count > 0 and _SRC_VIDEO not in supporting_sources:
+        supporting_sources.append(_SRC_VIDEO)
+
     best_status, best_note = min(candidates, key=lambda c: _STATUS_RANK[c[0]])
+
+    # Per-skill limitations keep the matrix honest: a weakly evidenced skill is
+    # flagged as a pending claim rather than presented as proven.
+    limitations: list[str] = []
+    if best_status in {_NEEDS_REVIEW, _NOT_ASSESSED}:
+        limitations.append(_SKILL_UNEVIDENCED_LIMITATION)
+
+    # De-dupe while preserving the canonical order above.
+    ordered_sources = [
+        src
+        for src in (_SRC_GITHUB, _SRC_WEBSITE, _SRC_DEFENSE, _SRC_VIDEO, _SRC_DOCUMENT)
+        if src in supporting_sources
+    ]
+
     return {
         "skill": skill,
         "status": best_status,
-        "evidence_chip_count": _evidence_chip_count_for_skill(skill, video_chips),
+        "evidence_chip_count": chip_count,
         "notes": best_note,
+        "supporting_sources": ordered_sources,
+        "limitations": limitations,
     }
 
 
@@ -261,6 +316,324 @@ def _repo_is_public(db: Any, github_proof: dict[str, Any] | None) -> bool:
     return str(row.get("visibility") or "").strip().lower() == "public"
 
 
+# ── Evidence traceability (claim → evidence → source → safe link) ────────────
+#
+# Each evidence trace ties one concrete, already-sanitized evidence source to
+# the skills it supports, with a safe explanation, an in-page anchor, and — only
+# when the target is genuinely public — a directly-openable link. Traces are the
+# recruiter-readable audit trail behind the qualitative skill labels. They are
+# built ONLY from summary fields (never raw transcripts/docs/snapshots/media).
+
+_PRIVATE_DOC_NOTE = "Private document retained in student evidence vault; only a safe summary is shown."
+_DOC_LIMITATION = (
+    "Recruiter can see the summarized evidence; the original private document is not publicly exposed."
+)
+# Used when a document was attached but the analyzer matched no specific skill in
+# it: it is shown as project-level context only and never implies a skill claim.
+_DOC_PROJECT_LIMITATION = (
+    "Document evidence was attached as project context but not mapped to specific skills."
+)
+_DEFENSE_LIMITATION = "Self-explanation evidence; should be combined with artifact evidence."
+_VIDEO_LIMITATION = (
+    "A short timestamped moment; it corroborates the explanation but does not independently prove authorship."
+)
+
+
+def _trace_text(text: Any, limit: int = 240) -> str:
+    """Collapse whitespace and cap length for a safe one/two-sentence summary."""
+    collapsed = " ".join(str(text or "").split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1].rstrip() + "…"
+
+
+def _humanize_list(items: list[str]) -> str:
+    items = [i for i in items if i]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _build_evidence_traces(
+    *,
+    github_proof: dict[str, Any] | None,
+    repo_full_name: str | None,
+    repo_url: str | None,
+    repo_is_public: bool,
+    documents: list[dict[str, Any]],
+    website_proofs: list[dict[str, Any]],
+    analysis: dict[str, Any] | None,
+    defense_questions: list[dict[str, Any]],
+    video_chips: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """Build the flat evidence-trace list and a normalized skill→trace-id map."""
+    traces: list[dict[str, Any]] = []
+    by_skill: dict[str, list[str]] = {}
+
+    def _attach(trace: dict[str, Any]) -> None:
+        traces.append(trace)
+        for skill in trace["skill_names"]:
+            key = _norm(skill)
+            if not key:
+                continue
+            ids = by_skill.setdefault(key, [])
+            if trace["trace_id"] not in ids:
+                ids.append(trace["trace_id"])
+
+    # ── GitHub Proof ─────────────────────────────────────────────────────────
+    if github_proof is not None:
+        detected = [str(s) for s in (github_proof.get("detected_skills") or [])]
+        owner = github_proof.get("repo_owner")
+        name = github_proof.get("repo_name")
+        title = repo_full_name or (f"{owner}/{name}" if owner and name else None) or (repo_url or "GitHub repository")
+        public_url = repo_url if (repo_is_public and is_safe_public_url(repo_url)) else None
+        summary = _scrub_score_fragments(str(github_proof.get("public_safe_summary") or "")) or (
+            "Repository analyzed; VeriBridge detected the skills below from its files and structure."
+        )
+        _attach(
+            {
+                "trace_id": "github-proof",
+                "source_type": _SRC_GITHUB,
+                "source_title": title,
+                "skill_names": detected,
+                "qualitative_status": _SUPPORTING_EVIDENCE,
+                "safe_summary": _trace_text(summary),
+                "safe_detail": (
+                    "Static analysis of the repository detected files and structure consistent with these skills."
+                ),
+                "evidence_anchor": "github-proof",
+                "public_url": public_url,
+                "public_url_label": "View public repository" if public_url else None,
+                "timestamp": None,
+                "limitation": (
+                    "Repository analysis confirms the code exists and its shape; it does not, by itself, "
+                    "prove the candidate personally authored every part."
+                ),
+                "is_publicly_openable": bool(public_url),
+                "private_evidence_note": (
+                    None if public_url else "Repository is private; only a recruiter-safe summary is shown."
+                ),
+            }
+        )
+
+    # ── Document Proof ───────────────────────────────────────────────────────
+    # Documents are mapped ONLY to the skills the analyzer explicitly matched in
+    # them (``doc["skills"]``, already narrowed to claimed skills upstream) — never
+    # to every claimed skill. When a document matched no specific skill it is kept
+    # as project-level context (``skill_names: []``) so it can never imply that a
+    # skill was supported when the matrix row says otherwise.
+    for idx, doc in enumerate(documents, start=1):
+        title = str(doc.get("title") or "Document")
+        status_label = str(doc.get("status") or "analyzed")
+        doc_skills = [str(s) for s in (doc.get("skills") or [])]
+        if doc_skills:
+            safe_summary = _trace_text(
+                f"{title} ({status_label}) — a supporting document the analyzer matched to "
+                f"{_humanize_list(doc_skills)}."
+            )
+            safe_detail = (
+                "The document was analyzed and references these specific skills; it is summarized "
+                "for recruiters rather than exposed as a raw file."
+            )
+            limitation = _DOC_LIMITATION
+        else:
+            safe_summary = _trace_text(
+                f"{title} ({status_label}) — attached as project context; not mapped to specific skills."
+            )
+            safe_detail = (
+                "The document provides written project context. It was not matched to specific claimed "
+                "skills, so it is shown as project-level evidence only and summarized rather than exposed."
+            )
+            limitation = _DOC_PROJECT_LIMITATION
+        _attach(
+            {
+                "trace_id": f"document-proof-{idx}",
+                "source_type": _SRC_DOCUMENT,
+                "source_title": title,
+                "skill_names": doc_skills,
+                "qualitative_status": _SUPPORTING_EVIDENCE,
+                "safe_summary": safe_summary,
+                "safe_detail": safe_detail,
+                "evidence_anchor": f"document-proof-{idx}",
+                "public_url": None,
+                "public_url_label": None,
+                "timestamp": None,
+                "limitation": limitation,
+                "is_publicly_openable": False,
+                "private_evidence_note": _PRIVATE_DOC_NOTE,
+            }
+        )
+
+    # ── Website Proof ────────────────────────────────────────────────────────
+    for idx, wp in enumerate(website_proofs, start=1):
+        target = str(wp.get("target_website") or "")
+        safe = is_safe_public_url(target)
+        supported = [str(s) for s in (wp.get("supported_skills") or [])]
+        confidence = str(wp.get("workflow_confidence") or "insufficient")
+        _attach(
+            {
+                "trace_id": f"website-proof-{idx}",
+                "source_type": _SRC_WEBSITE,
+                "source_title": target if safe else "Website Proof",
+                "skill_names": supported,
+                "qualitative_status": str(wp.get("evidence_strength") or _NOT_ASSESSED),
+                "safe_summary": _trace_text(
+                    f"A working deployment was inspected for the supported skills (workflow confidence: {confidence})."
+                ),
+                "safe_detail": (
+                    "The deployed site was checked for the supported skills' working behaviour at inspection time."
+                ),
+                "evidence_anchor": f"website-proof-{idx}",
+                "public_url": target if safe else None,
+                "public_url_label": "Open live website" if safe else None,
+                "timestamp": None,
+                "limitation": (
+                    "Demonstrates the deployed behaviour at check time; it is not a guarantee of ongoing "
+                    "uptime or of sole authorship."
+                ),
+                "is_publicly_openable": safe,
+                "private_evidence_note": (
+                    None if safe else "Deployment URL is private or internal and is not publicly linked."
+                ),
+            }
+        )
+
+    # ── Project Defense ──────────────────────────────────────────────────────
+    if analysis is not None:
+        explained = [str(s) for s in (analysis.get("skills_explained_well") or [])]
+        mentioned = [str(s) for s in (analysis.get("skills_mentioned") or [])]
+        defense_skills = _dedupe_skill_names(explained + mentioned)
+        summary = _scrub_score_fragments(
+            str(analysis.get("recruiter_summary") or analysis.get("transcript_summary") or "")
+        )
+        _attach(
+            {
+                "trace_id": "project-defense",
+                "source_type": _SRC_DEFENSE,
+                "source_title": "Project Defense",
+                "skill_names": defense_skills,
+                "qualitative_status": _PARTIALLY_DEMONSTRATED if explained else _SUPPORTING_EVIDENCE,
+                "safe_summary": _trace_text(
+                    summary or "The candidate explained their own work and approach during the Project Defense."
+                ),
+                "safe_detail": (
+                    "Process/ownership evidence: the candidate explained how and why they built the project."
+                ),
+                "evidence_anchor": "project-defense",
+                "public_url": None,
+                "public_url_label": None,
+                "timestamp": None,
+                "limitation": _DEFENSE_LIMITATION,
+                "is_publicly_openable": False,
+                "private_evidence_note": "Full defense answers are summarized; the raw transcript is not exposed.",
+            }
+        )
+
+    for idx, question in enumerate(defense_questions, start=1):
+        if not question.get("answered"):
+            continue
+        skill = question.get("skill")
+        _attach(
+            {
+                "trace_id": f"project-defense-q{idx}",
+                "source_type": _SRC_DEFENSE,
+                "source_title": "Project Defense Answer",
+                "skill_names": [str(skill)] if skill else [],
+                "qualitative_status": _SUPPORTING_EVIDENCE,
+                "safe_summary": _trace_text(
+                    "Answered: " + str(question.get("question_text") or "Project Defense question")
+                ),
+                "safe_detail": (
+                    "The candidate answered this Project Defense question in their own words, explaining their work."
+                ),
+                "evidence_anchor": f"project-defense-q{idx}",
+                "public_url": None,
+                "public_url_label": None,
+                "timestamp": None,
+                "limitation": _DEFENSE_LIMITATION,
+                "is_publicly_openable": False,
+                "private_evidence_note": "Answer is summarized; the raw transcript is not exposed.",
+            }
+        )
+
+    # ── Video Evidence chips ─────────────────────────────────────────────────
+    for idx, chip in enumerate(video_chips, start=1):
+        related = chip.get("related_skill")
+        label = str(chip.get("label") or f"Video chip {idx}")
+        _attach(
+            {
+                "trace_id": f"video-chip-{idx:03d}",
+                "source_type": _SRC_VIDEO,
+                "source_title": label,
+                "skill_names": [str(related)] if related else [],
+                "qualitative_status": _SUPPORTING_EVIDENCE,
+                "safe_summary": _trace_text(str(chip.get("short_summary") or "")),
+                "safe_detail": (
+                    "A timestamped moment in the recorded Project Defense where this skill/concept was discussed."
+                ),
+                "evidence_anchor": f"video-chip-{idx:03d}",
+                "public_url": None,
+                "public_url_label": None,
+                "timestamp": label,
+                "limitation": _VIDEO_LIMITATION,
+                "is_publicly_openable": False,
+                "private_evidence_note": "The recording itself is private; only this timestamped summary is shown.",
+            }
+        )
+
+    return traces, by_skill
+
+
+def _dedupe_skill_names(names: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        key = _norm(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def _enrich_skill_row(
+    row: dict[str, Any],
+    trace_ids: list[str],
+    traces_index: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Attach trace ids + a plain-language justification to a skill row."""
+    sources = list(row.get("supporting_sources") or [])
+    status = str(row.get("status") or _NOT_ASSESSED)
+
+    if sources:
+        why = f"Marked '{status}' because supporting evidence was found in: {_humanize_list(sources)}."
+    else:
+        why = (
+            f"Marked '{status}' because no evidence source has been reviewed for this skill yet — "
+            "treat it as a claim pending more proof."
+        )
+
+    section_types = _dedupe_skill_names(
+        [traces_index[t]["source_type"] for t in trace_ids if t in traces_index]
+    )
+    openable = any(traces_index.get(t, {}).get("is_publicly_openable") for t in trace_ids)
+    if section_types:
+        verify = (
+            f"Open the {_humanize_list(section_types)} evidence trace(s) below to see why this skill is supported."
+        )
+        if openable:
+            verify += " Some sources link directly to public, openable evidence."
+    else:
+        verify = "No evidence is attached for this skill yet — there is nothing to verify."
+
+    row["evidence_traces"] = trace_ids
+    row["why_this_status"] = why
+    row["recruiter_can_verify"] = verify
+    return row
+
+
 def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any], user_id: str) -> dict[str, Any]:
     """Build the safe, student-owned VBR report preview for ``project``.
 
@@ -279,15 +652,36 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
     website_proofs_raw = attached.get("website_proofs") if isinstance(attached.get("website_proofs"), list) else []
     skill_pipeline_ids = [str(p) for p in (attached.get("skill_pipeline_ids") or []) if p]
 
+    # Normalized claimed-skill lookup (normalized → canonical display name). A
+    # document only ever evidences a skill the project actually claims.
+    claimed_by_norm = {_norm(s): s for s in claimed_skills}
+
+    # Internal entries carry the analyzer-matched skills (narrowed to claimed
+    # skills) used to build per-skill document evidence + matrix rows. The public
+    # ``documents`` projection below intentionally drops the skills list.
+    document_entries: list[dict[str, Any]] = []
+    for doc in documents_raw:
+        if not isinstance(doc, dict):
+            continue
+        matched = _dedupe_skill_names(
+            [claimed_by_norm[_norm(s)] for s in (doc.get("skills") or []) if _norm(s) in claimed_by_norm]
+        )
+        document_entries.append(
+            {
+                "title": str(doc.get("title") or "Document"),
+                "source_type": doc.get("source_type"),
+                "status": doc.get("status"),
+                "skills": matched,
+            }
+        )
+
     documents = [
-        {
-            "title": str(doc.get("title") or "Document"),
-            "source_type": doc.get("source_type"),
-            "status": doc.get("status"),
-        }
-        for doc in documents_raw
-        if isinstance(doc, dict)
+        {"title": e["title"], "source_type": e["source_type"], "status": e["status"]}
+        for e in document_entries
     ]
+    # Skills the matrix may mark as Document-Proof-supported — identical to the set
+    # used to build the document evidence traces, so the two never disagree.
+    document_supported_skills = {_norm(s) for e in document_entries for s in e["skills"]}
 
     website_proofs = [
         {
@@ -348,11 +742,29 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
             analysis,
             github_detected_skills,
             website_supported_skills,
+            document_supported_skills,
             pipeline_lookup,
             video_chips,
         )
         for skill in claimed_skills
     ]
+
+    # ── Evidence traceability (claim → concrete evidence source) ─────────────
+    repo_is_public = _repo_is_public(db, github_proof)
+    evidence_traces, traces_by_skill = _build_evidence_traces(
+        github_proof=github_proof,
+        repo_full_name=project.get("repo_full_name"),
+        repo_url=(github_proof or {}).get("repo_url") or project.get("repo_url"),
+        repo_is_public=repo_is_public,
+        documents=document_entries,
+        website_proofs=website_proofs,
+        analysis=analysis,
+        defense_questions=defense_questions,
+        video_chips=video_chips,
+    )
+    traces_index = {t["trace_id"]: t for t in evidence_traces}
+    for row in skill_evidence:
+        _enrich_skill_row(row, traces_by_skill.get(_norm(row["skill"]), []), traces_index)
 
     # ── Limitations ──────────────────────────────────────────────────────────
     limitations: list[str] = []
@@ -436,7 +848,7 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
                 "public_safe_summary": _scrub_score_fragments(
                     str(github_proof.get("public_safe_summary") or "")
                 ),
-                "repo_is_public": _repo_is_public(db, github_proof),
+                "repo_is_public": repo_is_public,
             }
             if github_proof is not None
             else None
@@ -447,6 +859,7 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
         "defense_questions": defense_questions,
         "video_evidence_chips": video_chips,
         "skill_evidence": skill_evidence,
+        "evidence_traces": evidence_traces,
         "limitations": limitations,
         "next_actions": next_actions,
         "preview_only": True,

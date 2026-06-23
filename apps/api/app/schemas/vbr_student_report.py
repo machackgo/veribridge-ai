@@ -62,11 +62,56 @@ class VBRReportQuestionSummary(BaseModel):
     answered: bool = False
 
 
+class VBREvidenceTrace(BaseModel):
+    """A single recruiter-safe claim→evidence trace.
+
+    Each trace ties a concrete evidence *source* (a repo, a document, a website
+    proof, a defense answer, a video chip) to the skills it supports, with a
+    safe explanation, an in-page anchor, and — only when the target is genuinely
+    public — a directly-openable link. It never carries raw evidence, storage
+    paths, signed URLs, media URLs, tokens, or numeric scores.
+    """
+
+    trace_id: str
+    # GitHub Proof / Document Proof / Website Proof / Project Defense / Video Evidence
+    source_type: str
+    source_title: str
+    skill_names: list[str] = Field(default_factory=list)
+    qualitative_status: str = "Supporting evidence"
+    safe_summary: str = ""
+    safe_detail: str = ""
+    # In-page anchor id of the source section/item (e.g. "github-proof").
+    evidence_anchor: str = ""
+    # Only set when the target is a safe public URL (repo / live site).
+    public_url: str | None = None
+    public_url_label: str | None = None
+    # Only for video / defense chips when a timestamp label is available.
+    timestamp: str | None = None
+    limitation: str = ""
+    is_publicly_openable: bool = False
+    # Generic note shown when the source is not publicly openable.
+    private_evidence_note: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class VBRReportSkillEvidenceRow(BaseModel):
     skill: str
     status: str
     evidence_chip_count: int = 0
     notes: str = ""
+    # Canonical recruiter-facing evidence-source labels that support this skill
+    # (e.g. "GitHub Proof", "Website Proof", "Project Defense", "Video
+    # Evidence"). Never a numeric score.
+    supporting_sources: list[str] = Field(default_factory=list)
+    # Honest per-skill caveats (e.g. a weakly-evidenced claim pending more proof).
+    limitations: list[str] = Field(default_factory=list)
+    # Plain-language justification for the qualitative status above.
+    why_this_status: str = ""
+    # What a recruiter can safely inspect to verify this skill claim.
+    recruiter_can_verify: str = ""
+    # IDs of the evidence traces (see ``VBREvidenceTrace``) that support this skill.
+    evidence_traces: list[str] = Field(default_factory=list)
 
 
 class VBRReportProjectDefenseAnalysis(BaseModel):
@@ -122,6 +167,8 @@ class VBRStudentProjectReportResponse(BaseModel):
     video_evidence_chips: list[VideoEvidenceChipResponse] = Field(default_factory=list)
 
     skill_evidence: list[VBRReportSkillEvidenceRow] = Field(default_factory=list)
+    # Flat list of every claim→evidence trace referenced by the skill matrix.
+    evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
 
     limitations: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
@@ -143,6 +190,7 @@ __all__ = [
     "VBRReportWebsiteProofSummary",
     "VBRReportEvidencePackageSummary",
     "VBRReportQuestionSummary",
+    "VBREvidenceTrace",
     "VBRReportSkillEvidenceRow",
     "VBRReportProjectDefenseAnalysis",
     "VBRStudentProjectReportResponse",

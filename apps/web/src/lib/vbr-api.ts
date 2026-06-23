@@ -508,6 +508,30 @@ export type VBRReportQuestionSummary = {
 }
 
 /**
+ * A single recruiter-safe claim→evidence trace. Ties one concrete evidence
+ * source (repo, document, website proof, defense answer, video chip) to the
+ * skills it supports, with a safe explanation, an in-page anchor, and — only
+ * when the target is genuinely public — a directly-openable link. Never carries
+ * raw evidence, storage paths, signed URLs, media URLs, tokens, or scores.
+ */
+export type EvidenceTrace = {
+  trace_id: string
+  source_type: "GitHub Proof" | "Document Proof" | "Website Proof" | "Project Defense" | "Video Evidence" | string
+  source_title: string
+  skill_names: string[]
+  qualitative_status: string
+  safe_summary: string
+  safe_detail: string
+  evidence_anchor: string
+  public_url?: string | null
+  public_url_label?: string | null
+  timestamp?: string | null
+  limitation: string
+  is_publicly_openable: boolean
+  private_evidence_note?: string | null
+}
+
+/**
  * A single row in the skill evidence table. ``status`` is always a
  * qualitative label — never a numeric trust/confidence score.
  */
@@ -516,6 +540,20 @@ export type VBRReportSkillEvidenceRow = {
   status: "Demonstrated" | "Partially demonstrated" | "Supporting evidence" | "Needs review" | "Not assessed" | string
   evidence_chip_count: number
   notes: string
+  /**
+   * Canonical recruiter-facing evidence-source labels that support this skill
+   * (e.g. "GitHub Proof", "Website Proof", "Project Defense", "Video Evidence").
+   * May be absent on older payloads — treat as `[]`.
+   */
+  supporting_sources?: string[]
+  /** Honest per-skill caveats (e.g. a weakly-evidenced claim). */
+  limitations?: string[]
+  /** Plain-language justification for the qualitative status. */
+  why_this_status?: string
+  /** What a recruiter can safely inspect to verify this skill claim. */
+  recruiter_can_verify?: string
+  /** IDs of the evidence traces (see EvidenceTrace) that support this skill. */
+  evidence_traces?: string[]
 }
 
 /**
@@ -570,6 +608,7 @@ export type VBRStudentProjectReportResponse = {
   video_evidence_chips: VideoEvidenceChip[]
 
   skill_evidence: VBRReportSkillEvidenceRow[]
+  evidence_traces?: EvidenceTrace[]
 
   limitations: string[]
   next_actions: string[]
@@ -637,6 +676,66 @@ export type PublicVideoEvidenceChip = {
 }
 
 /**
+ * Defence-in-depth gate for direct verification links in public views.
+ *
+ * Mirrors the backend `is_safe_public_url` helper: a link is only safe to
+ * render to an anonymous recruiter when it is a plain http(s) URL pointing at a
+ * publicly resolvable host. Rejects localhost, private/internal hosts, private
+ * IPs (RFC1918 + link-local), bare intranet hostnames, file/data/blob/javascript
+ * schemes, and storage/signed/tokenized URLs. The backend already filters these
+ * out; this is a second line of defence so an unsafe URL is never linked even if
+ * one somehow reaches the client.
+ */
+export function isSafePublicUrl(url: string | null | undefined): boolean {
+  if (!url || typeof url !== "string") return false
+  let parsed: URL
+  try {
+    parsed = new URL(url.trim())
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false
+
+  // URL normalises IPv6 hosts to bracketed lowercase; strip the brackets.
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "")
+  if (!host) return false
+
+  const disallowedHosts = new Set(["localhost", "0.0.0.0", "127.0.0.1", "::1", "ip6-localhost", "ip6-loopback"])
+  if (disallowedHosts.has(host)) return false
+
+  const disallowedSuffixes = [".local", ".localhost", ".internal", ".intranet", ".lan", ".corp", ".home", ".test", ".example", ".invalid"]
+  if (disallowedSuffixes.some((suffix) => host.endsWith(suffix))) return false
+
+  // IPv4 literal → reject loopback / private / link-local ranges.
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (ipv4) {
+    const [a, b] = ipv4.slice(1).map(Number)
+    if ([a, b, Number(ipv4[3]), Number(ipv4[4])].some((n) => n > 255)) return false
+    if (a === 10 || a === 127 || a === 0) return false
+    if (a === 192 && b === 168) return false
+    if (a === 172 && b >= 16 && b <= 31) return false
+    if (a === 169 && b === 254) return false
+    return true
+  }
+  // Any other IP-literal-ish / no public suffix → reject.
+  if (host.includes(":")) return false // bare IPv6 literal
+  if (!host.includes(".")) return false // bare intranet hostname
+  const tld = host.slice(host.lastIndexOf(".") + 1)
+  if (tld.length < 2 || !/^[a-z]+$/.test(tld)) return false
+
+  // Storage / signed-object paths and obvious token/signature query params.
+  const path = parsed.pathname.toLowerCase()
+  if (path.includes("/storage/v1/object") || path.includes("/object/sign")) return false
+  for (const key of parsed.searchParams.keys()) {
+    const k = key.toLowerCase()
+    if (["token", "access_token", "signature", "sig", "expires", "x-goog-signature"].includes(k) || k.startsWith("x-amz-")) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
  * Public recruiter-safe Verified Build Report for one project. Read-only, no
  * login required, and never includes numeric trust scores, internal IDs, the
  * student's email, or raw/private evidence.
@@ -659,12 +758,18 @@ export type PublicVBRProjectReport = {
 
   project_defense_analysis: VBRReportProjectDefenseAnalysis | null
   skill_evidence: VBRReportSkillEvidenceRow[]
+  evidence_traces?: EvidenceTrace[]
   video_evidence_chips: PublicVideoEvidenceChip[]
 
   limitations: string[]
 
   published_at: string | null
   generated_at: string
+  /**
+   * Recruiter-safe link back to the candidate's published Work Passport
+   * (`/p/{slug}`), or null when the passport is private/unpublished.
+   */
+  public_passport_path?: string | null
   verification_note: string
 }
 
@@ -759,6 +864,8 @@ export type PassportSkillSummary = {
   evidence_sources: string[]
   projects: PassportSkillProjectRef[]
   evidence_chips: PassportSkillEvidenceChip[]
+  /** Aggregated claim→evidence traces across this candidate's projects. */
+  evidence_traces?: EvidenceTrace[]
   notes: string
   limitations: string[]
 }
@@ -817,6 +924,8 @@ export type PublicPassportSkill = {
   evidence_sources: string[]
   projects: PublicPassportSkillProjectRef[]
   evidence_chips: PassportSkillEvidenceChip[]
+  /** Claim→evidence traces sourced ONLY from published public reports. */
+  evidence_traces?: EvidenceTrace[]
   limitations: string[]
 }
 

@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react"
 import {
   getPublicVBRProjectReport,
+  isSafePublicUrl,
+  type EvidenceTrace,
   type PublicVBRProjectReport,
   type PublicVideoEvidenceChip,
   type VBRReportSkillEvidenceRow,
@@ -17,6 +19,7 @@ import {
   TOKEN,
   type BadgeTone,
 } from "../../../../../components/passport/shared"
+import { EvidenceTraceList } from "../../../../../components/passport/EvidenceTrace"
 
 const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   Demonstrated: "emerald",
@@ -25,6 +28,15 @@ const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   "Evidence observed": "emerald",
   "Needs review": "rose",
   "Not assessed": "slate",
+}
+
+const SOURCE_TONE: Record<string, BadgeTone> = {
+  "GitHub Proof": "indigo",
+  "Document Proof": "sky",
+  "Website Proof": "purple",
+  "Project Defense": "emerald",
+  "Video Evidence": "amber",
+  "VBR Report": "emerald",
 }
 
 function PublicVideoChip({ chip }: { chip: PublicVideoEvidenceChip }) {
@@ -40,14 +52,65 @@ function PublicVideoChip({ chip }: { chip: PublicVideoEvidenceChip }) {
   )
 }
 
-function SkillRow({ row }: { row: VBRReportSkillEvidenceRow }) {
+function SkillRow({ row, tracesById }: { row: VBRReportSkillEvidenceRow; tracesById: Map<string, EvidenceTrace> }) {
+  const sources = row.supporting_sources ?? []
+  const limitations = row.limitations ?? []
+  const traceRefs = (row.evidence_traces ?? [])
+    .map((id) => tracesById.get(id))
+    .filter((t): t is EvidenceTrace => Boolean(t))
   return (
     <tr data-testid="public-skill-row">
-      <td style={{ padding: "8px 10px", fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>{row.skill}</td>
-      <td style={{ padding: "8px 10px" }}>
+      <td style={{ padding: "8px 10px", fontSize: 13, fontWeight: 600, color: TOKEN.ink, verticalAlign: "top" }}>{row.skill}</td>
+      <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
         <Badge tone={QUALITATIVE_LABEL_TONE[row.status] ?? "slate"}>{row.status}</Badge>
       </td>
-      <td style={{ padding: "8px 10px", fontSize: 12, color: TOKEN.muted }}>{row.notes}</td>
+      <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+        {sources.length > 0 ? (
+          <div data-testid="public-skill-supporting-sources" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {sources.map((src) => (
+              <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
+                {src}
+              </Badge>
+            ))}
+          </div>
+        ) : (
+          <span style={{ fontSize: 12, color: TOKEN.muted }}>—</span>
+        )}
+        {traceRefs.length > 0 && (
+          <div data-testid="public-skill-trace-links" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+            {traceRefs.map((t) => (
+              <a
+                key={t.trace_id}
+                href={`#${t.evidence_anchor}`}
+                style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}
+              >
+                {t.source_type} →
+              </a>
+            ))}
+          </div>
+        )}
+      </td>
+      <td style={{ padding: "8px 10px", fontSize: 12, color: TOKEN.muted, verticalAlign: "top" }}>
+        {row.why_this_status ? (
+          <span data-testid="public-skill-why">{row.why_this_status}</span>
+        ) : (
+          row.notes
+        )}
+        {row.recruiter_can_verify && (
+          <div data-testid="public-skill-verify" style={{ marginTop: 4, fontStyle: "italic" }}>
+            {row.recruiter_can_verify}
+          </div>
+        )}
+        {limitations.length > 0 && (
+          <ul data-testid="public-skill-limitations" style={{ margin: "4px 0 0", paddingLeft: 16 }}>
+            {limitations.map((line, i) => (
+              <li key={i} style={{ fontSize: 11, color: TOKEN.muted }}>
+                {line}
+              </li>
+            ))}
+          </ul>
+        )}
+      </td>
     </tr>
   )
 }
@@ -80,12 +143,15 @@ const safeLinkStyle = {
  * and live website-proof / deployed targets. Never links private evidence.
  */
 function SafeLinksCard({ report }: { report: PublicVBRProjectReport }) {
-  const repoUrl = report.github_proof?.repo_is_public ? report.github_proof.repo_url : null
-  const websiteTargets = report.website_proofs
-    .map((w) => w.target_website)
-    .filter((u): u is string => Boolean(u && /^https?:\/\//i.test(u)))
+  // Defence in depth: only ever render links whose target is public-safe, even
+  // though the backend already filters unsafe links out of the projection.
+  const repoUrl =
+    report.github_proof?.repo_is_public && isSafePublicUrl(report.github_proof.repo_url)
+      ? report.github_proof.repo_url
+      : null
+  const websiteTargets = report.website_proofs.map((w) => w.target_website).filter(isSafePublicUrl)
   const liveLinks = Array.from(
-    new Set([report.deployed_url || null, ...websiteTargets].filter(Boolean) as string[]),
+    new Set([report.deployed_url, ...websiteTargets].filter(isSafePublicUrl) as string[]),
   )
 
   if (!repoUrl && liveLinks.length === 0) return null
@@ -178,6 +244,8 @@ export function PublicReportView({ token }: { token: string }) {
 
   const analysis = report.project_defense_analysis
   const pkg = report.evidence_package
+  const evidenceTraces = report.evidence_traces ?? []
+  const tracesById = new Map(evidenceTraces.map((t) => [t.trace_id, t]))
 
   return (
     <div data-testid="public-report" style={{ maxWidth: 900, margin: "0 auto", padding: "48px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -242,8 +310,8 @@ export function PublicReportView({ token }: { token: string }) {
       </Card>
 
       {/* Skills demonstrated */}
-      <Card>
-        <CardHeader title="Skills Demonstrated" eyebrow="Evidence-backed" icon="🧩" />
+      <Card id="skill-evidence">
+        <CardHeader title="Skill Evidence Matrix" eyebrow="Evidence-backed" icon="🧩" />
         {report.skill_evidence.length === 0 ? (
           <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>No claimed skills recorded for this project.</p>
         ) : (
@@ -252,23 +320,36 @@ export function PublicReportView({ token }: { token: string }) {
               <tr style={{ borderBottom: `1px solid ${TOKEN.line}`, textAlign: "left" }}>
                 <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Skill</th>
                 <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Evidence</th>
+                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Supporting evidence</th>
                 <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Notes</th>
               </tr>
             </thead>
             <tbody>
               {report.skill_evidence.map((row) => (
-                <SkillRow key={row.skill} row={row} />
+                <SkillRow key={row.skill} row={row} tracesById={tracesById} />
               ))}
             </tbody>
           </table>
         )}
       </Card>
 
+      {/* Evidence Traceability — concrete claim → evidence audit trail */}
+      {evidenceTraces.length > 0 && (
+        <Card id="evidence-traceability">
+          <CardHeader title="Evidence Traceability" eyebrow="Claim → evidence → source" icon="🔍" />
+          <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
+            Each item below is a concrete evidence source behind the skills above. Public sources link directly;
+            private evidence (raw documents, transcripts, and recordings) is summarized, never exposed.
+          </p>
+          <EvidenceTraceList traces={evidenceTraces} />
+        </Card>
+      )}
+
       {/* Evidence by source */}
-      <Card>
+      <Card id="evidence-by-source">
         <CardHeader title="Evidence by Source" eyebrow="Supporting evidence" icon="📎" />
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div>
+          <div id="github-proof">
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>GitHub Proof</Mono>
             {report.github_proof ? (
               <div style={{ marginTop: 4 }}>
@@ -293,7 +374,7 @@ export function PublicReportView({ token }: { token: string }) {
             )}
           </div>
 
-          <div>
+          <div id="documents">
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Document Proof</Mono>
             {report.documents.length > 0 ? (
               <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
@@ -309,26 +390,31 @@ export function PublicReportView({ token }: { token: string }) {
             )}
           </div>
 
-          <div>
+          <div id="website-proof">
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Website Proof</Mono>
             {report.website_proofs.length > 0 ? (
               <ul style={{ margin: "4px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
-                {report.website_proofs.map((wp, i) => (
-                  <li key={i} style={{ fontSize: 12, color: TOKEN.inkSoft, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    <span>
-                      {wp.target_website} — {wp.workflow_confidence} confidence
-                      {wp.supported_skills.length > 0 ? ` (${wp.supported_skills.join(", ")})` : ""}
-                    </span>
-                    <Badge tone={QUALITATIVE_LABEL_TONE[wp.evidence_strength] ?? "slate"}>{wp.evidence_strength}</Badge>
-                  </li>
-                ))}
+                {report.website_proofs.map((wp, i) => {
+                  // Never render a raw private/internal target URL; show a
+                  // generic note instead (the backend blanks unsafe targets).
+                  const safeTarget = isSafePublicUrl(wp.target_website) ? wp.target_website : null
+                  return (
+                    <li key={i} style={{ fontSize: 12, color: TOKEN.inkSoft, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span>
+                        {safeTarget ?? <em style={{ color: TOKEN.muted }}>Private/internal link omitted</em>} — {wp.workflow_confidence} confidence
+                        {wp.supported_skills.length > 0 ? ` (${wp.supported_skills.join(", ")})` : ""}
+                      </span>
+                      <Badge tone={QUALITATIVE_LABEL_TONE[wp.evidence_strength] ?? "slate"}>{wp.evidence_strength}</Badge>
+                    </li>
+                  )
+                })}
               </ul>
             ) : (
               <p style={{ fontSize: 12, color: TOKEN.muted, margin: "4px 0 0" }}>Website proof not attached.</p>
             )}
           </div>
 
-          <div>
+          <div id="project-defense">
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Project Defense</Mono>
             {analysis ? (
               <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -365,7 +451,7 @@ export function PublicReportView({ token }: { token: string }) {
       </Card>
 
       {/* Limitations */}
-      <Card>
+      <Card id="limitations">
         <CardHeader title="Limitations / Not Assessed" eyebrow="In good faith" icon="⚠️" />
         <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
           {report.limitations.map((line, i) => (
@@ -375,6 +461,19 @@ export function PublicReportView({ token }: { token: string }) {
           ))}
         </ul>
       </Card>
+
+      {/* Back to the candidate's public Work Passport (only when published) */}
+      {report.public_passport_path && (
+        <p style={{ textAlign: "center", margin: 0 }}>
+          <a
+            data-testid="public-report-passport-link"
+            href={report.public_passport_path}
+            style={{ fontSize: 13, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+          >
+            ← View this candidate&apos;s full Verified Work Passport
+          </a>
+        </p>
+      )}
 
       {/* Verification note */}
       {report.verification_note && (

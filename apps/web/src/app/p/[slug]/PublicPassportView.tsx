@@ -17,6 +17,7 @@ import {
   TOKEN,
   type BadgeTone,
 } from "../../../../components/passport/shared"
+import { EvidenceTraceList } from "../../../../components/passport/EvidenceTrace"
 
 const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   Demonstrated: "emerald",
@@ -38,8 +39,12 @@ const SOURCE_TONE: Record<string, BadgeTone> = {
 
 function SkillChip({ skill }: { skill: PublicPassportSkill }) {
   const [open, setOpen] = useState(false)
+  const traces = skill.evidence_traces ?? []
   const hasDetail =
-    skill.projects.length > 0 || skill.evidence_sources.length > 0 || skill.evidence_chips.length > 0
+    skill.projects.length > 0 ||
+    skill.evidence_sources.length > 0 ||
+    skill.evidence_chips.length > 0 ||
+    traces.length > 0
 
   const headerStyle = {
     display: "flex",
@@ -136,6 +141,15 @@ function SkillChip({ skill }: { skill: PublicPassportSkill }) {
                   <Mono style={{ fontSize: 11, color: TOKEN.ink }}>{c.label}</Mono> — {c.short_summary}
                 </div>
               ))}
+            </div>
+          )}
+
+          {traces.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                Evidence traceability
+              </Mono>
+              <EvidenceTraceList traces={traces} />
             </div>
           )}
 

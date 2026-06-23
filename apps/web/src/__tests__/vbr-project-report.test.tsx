@@ -12,7 +12,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { ProjectReportView } from "../app/student/vbr/projects/[projectId]/report/ProjectReportView"
 import type { VBRStudentProjectReportResponse } from "@/lib/vbr-api"
 
-vi.mock("@/lib/vbr-api", () => ({
+vi.mock("@/lib/vbr-api", async (importActual) => ({
+  ...(await importActual<typeof import("@/lib/vbr-api")>()),
   getVBRProjectReport: vi.fn(),
   getVBRProjectReportPublishStatus: vi.fn(),
   publishVBRProjectReport: vi.fn(),
@@ -98,6 +99,188 @@ beforeEach(() => {
 })
 
 describe("ProjectReportView", () => {
+  it("renders an Evidence Traceability section with skill anchors and a private note", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        skill_evidence: [
+          {
+            skill: "Python",
+            status: "Demonstrated",
+            evidence_chip_count: 2,
+            notes: "Explained clearly during the Project Defense.",
+            supporting_sources: ["GitHub Proof", "Document Proof"],
+            limitations: [],
+            why_this_status: "Marked 'Demonstrated' because supporting evidence was found in: GitHub Proof and Document Proof.",
+            recruiter_can_verify: "Open the GitHub Proof and Document Proof evidence trace(s) below.",
+            evidence_traces: ["github-proof", "document-proof-1"],
+          },
+        ],
+        evidence_traces: [
+          {
+            trace_id: "github-proof",
+            source_type: "GitHub Proof",
+            source_title: "octocat/Hello-World",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "Repository analyzed; Python backend files detected.",
+            safe_detail: "Static analysis detected backend files.",
+            evidence_anchor: "github-proof",
+            public_url: "https://github.com/octocat/Hello-World",
+            public_url_label: "View public repository",
+            timestamp: null,
+            limitation: "Confirms code shape, not sole authorship.",
+            is_publicly_openable: true,
+            private_evidence_note: null,
+          },
+          {
+            trace_id: "document-proof-1",
+            source_type: "Document Proof",
+            source_title: "Final Year Project Report",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "A supporting document describing the project.",
+            safe_detail: "Written context.",
+            evidence_anchor: "document-proof-1",
+            public_url: null,
+            public_url_label: null,
+            timestamp: null,
+            limitation: "Original private document is not publicly exposed.",
+            is_publicly_openable: false,
+            private_evidence_note: "Private document retained in student evidence vault; only a safe summary is shown.",
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(screen.getByText("Evidence Traceability")).toBeInTheDocument()
+    expect(screen.getAllByTestId("evidence-trace").length).toBe(2)
+    expect(screen.getByTestId("evidence-trace-link")).toHaveAttribute("href", "https://github.com/octocat/Hello-World")
+    expect(screen.getByTestId("evidence-trace-private-note").textContent).toContain("evidence vault")
+    expect(screen.getByTestId("skill-why").textContent).toContain("Demonstrated")
+    expect(screen.getByTestId("skill-trace-links")).toBeInTheDocument()
+  })
+
+  it("Document Proof: matrix sources and the trace agree on the matched skill only", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        documents: [{ title: "Final Year Project Report", source_type: "document", status: "analyzed" }],
+        skill_evidence: [
+          {
+            skill: "Python",
+            status: "Supporting evidence",
+            evidence_chip_count: 0,
+            notes: "Supported by an attached Document Proof referencing this skill.",
+            supporting_sources: ["Document Proof"],
+            limitations: [],
+            evidence_traces: ["document-proof-1"],
+          },
+          {
+            skill: "React",
+            status: "Not assessed",
+            evidence_chip_count: 0,
+            notes: "No evidence has been reviewed for this skill yet.",
+            supporting_sources: [],
+            limitations: ["Not yet strongly evidenced — treat as a claim pending more proof."],
+            evidence_traces: [],
+          },
+        ],
+        evidence_traces: [
+          {
+            trace_id: "document-proof-1",
+            source_type: "Document Proof",
+            source_title: "Final Year Project Report",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "Final Year Project Report (analyzed) — a supporting document the analyzer matched to Python.",
+            safe_detail: "The document was analyzed and references these specific skills.",
+            evidence_anchor: "document-proof-1",
+            public_url: null,
+            public_url_label: null,
+            timestamp: null,
+            limitation: "Recruiter can see the summarized evidence; the original private document is not publicly exposed.",
+            is_publicly_openable: false,
+            private_evidence_note: "Private document retained in student evidence vault; only a safe summary is shown.",
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    // Only Python's row lists Document Proof; React's does not (no over-claim).
+    const sourceBlocks = screen.getAllByTestId("skill-supporting-sources")
+    expect(sourceBlocks).toHaveLength(1)
+    expect(sourceBlocks[0].textContent).toContain("Document Proof")
+
+    // The Document Proof trace scopes itself to Python and shows the private note,
+    // never an open document link.
+    const docTrace = screen
+      .getAllByTestId("evidence-trace")
+      .find((el) => el.getAttribute("data-source-type") === "Document Proof")!
+    expect(docTrace).toBeTruthy()
+    expect(docTrace.textContent).toContain("Python")
+    expect(docTrace.textContent).not.toContain("React")
+    expect(screen.getByTestId("evidence-trace-private-note").textContent).toContain("evidence vault")
+    expect(screen.queryByTestId("evidence-trace-link")).not.toBeInTheDocument()
+  })
+
+  it("Document Proof: an unmatched document is project-level only and claims no skill", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        documents: [{ title: "Design Notes", source_type: "document", status: "analyzed" }],
+        skill_evidence: [
+          {
+            skill: "Python",
+            status: "Not assessed",
+            evidence_chip_count: 0,
+            notes: "No evidence has been reviewed for this skill yet.",
+            supporting_sources: [],
+            limitations: ["Not yet strongly evidenced — treat as a claim pending more proof."],
+            evidence_traces: [],
+          },
+        ],
+        evidence_traces: [
+          {
+            trace_id: "document-proof-1",
+            source_type: "Document Proof",
+            source_title: "Design Notes",
+            skill_names: [],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "Design Notes (analyzed) — attached as project context; not mapped to specific skills.",
+            safe_detail: "The document provides written project context.",
+            evidence_anchor: "document-proof-1",
+            public_url: null,
+            public_url_label: null,
+            timestamp: null,
+            limitation: "Document evidence was attached as project context but not mapped to specific skills.",
+            is_publicly_openable: false,
+            private_evidence_note: "Private document retained in student evidence vault; only a safe summary is shown.",
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    // No skill row claims Document Proof support.
+    expect(screen.queryByTestId("skill-supporting-sources")).not.toBeInTheDocument()
+
+    // The trace renders the honest project-level limitation and the private note,
+    // with no skill badges.
+    const docTrace = screen
+      .getAllByTestId("evidence-trace")
+      .find((el) => el.getAttribute("data-source-type") === "Document Proof")!
+    expect(docTrace.textContent).toContain("not mapped to specific skills")
+    expect(docTrace.textContent).not.toContain("Python")
+    expect(screen.getByTestId("evidence-trace-private-note")).toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-trace-link")).not.toBeInTheDocument()
+  })
+
   it("renders the project summary", async () => {
     vi.mocked(getVBRProjectReport).mockResolvedValue(makeReport())
 
@@ -108,6 +291,55 @@ describe("ProjectReportView", () => {
     expect(screen.getByText("octocat/Hello-World")).toBeInTheDocument()
     expect(screen.getAllByText("Python").length).toBeGreaterThan(0)
     expect(screen.getAllByText("React").length).toBeGreaterThan(0)
+  })
+
+  it("renders the in-page jump nav and per-skill supporting sources + limitations", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        skill_evidence: [
+          {
+            skill: "Python",
+            status: "Demonstrated",
+            evidence_chip_count: 2,
+            notes: "Explained clearly during the Project Defense.",
+            supporting_sources: ["GitHub Proof", "Project Defense", "Video Evidence"],
+            limitations: [],
+          },
+          {
+            skill: "React",
+            status: "Not assessed",
+            evidence_chip_count: 0,
+            notes: "No evidence has been reviewed for this skill yet.",
+            supporting_sources: [],
+            limitations: ["Not yet strongly evidenced — treat as a claim pending more proof."],
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    // Jump nav links to the evidence section anchors.
+    const nav = screen.getByTestId("report-jump-nav")
+    const hrefs = Array.from(nav.querySelectorAll("a")).map((a) => a.getAttribute("href"))
+    expect(hrefs).toEqual(
+      expect.arrayContaining([
+        "#github-proof",
+        "#documents",
+        "#website-proof",
+        "#project-defense",
+        "#skill-evidence",
+        "#limitations",
+      ]),
+    )
+
+    const sourceBlocks = screen.getAllByTestId("skill-supporting-sources")
+    expect(sourceBlocks).toHaveLength(1)
+    expect(sourceBlocks[0].textContent).toContain("GitHub Proof")
+    expect(sourceBlocks[0].textContent).toContain("Video Evidence")
+
+    expect(screen.getByTestId("skill-limitations").textContent).toContain("pending more proof")
   })
 
   it("shows the student-preview-only notice and does not claim public recruiter sharing", async () => {
