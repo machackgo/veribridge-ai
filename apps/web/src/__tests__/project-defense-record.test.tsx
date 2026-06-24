@@ -292,7 +292,7 @@ describe("ProjectDefenseRecordPage", () => {
     expect(text).not.toMatch(/signed_url/i)
   })
 
-  it("shows a 'will appear after transcript analysis' fallback when the transcript is ready but no chips exist yet", async () => {
+  it("shows a clear empty-chip state when transcript is ready but no chips exist yet", async () => {
     vi.mocked(getVBRSession).mockResolvedValue(
       makeSession({
         status: "uploaded",
@@ -307,7 +307,7 @@ describe("ProjectDefenseRecordPage", () => {
     await waitFor(() => expect(screen.getByTestId("vbr-video-evidence-preview")).toBeInTheDocument())
 
     expect(
-      screen.getByText(/timestamped evidence will appear after transcript analysis/i)
+      screen.getByText(/no skill-matched timestamped evidence chips were found yet/i)
     ).toBeInTheDocument()
     expect(screen.queryByTestId("vbr-video-evidence-chip")).not.toBeInTheDocument()
   })

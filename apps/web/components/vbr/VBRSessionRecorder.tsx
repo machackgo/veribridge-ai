@@ -11,6 +11,7 @@ import {
   processVBRSession,
   requestVBRChunkUploadUrl,
   startVBRSession,
+  submitDefenseAnswers,
   transcribeVBRSession,
   updateVBRSessionTelemetry,
   uploadVBRChunkBytes,
@@ -224,6 +225,11 @@ export function VBRSessionRecorder({
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
   const [transcriptMessage, setTranscriptMessage] = useState<string | null>(null)
+
+  // Transcript analysis (video evidence chip generation) runs after the
+  // transcript is generated, via the existing Project Defense submit path.
+  const [analysisLoading, setAnalysisLoading] = useState(false)
+  const [analysisError, setAnalysisError] = useState<string | null>(null)
 
 
   const [telemetryStatus, setTelemetryStatus] = useState<string | null>(null)
@@ -680,16 +686,62 @@ export function VBRSessionRecorder({
     setTranscriptLoading(true)
     setTranscriptError(null)
     setTranscriptMessage(null)
+    setAnalysisError(null)
+
+    // Only treat the transcribe response as a real transcript when the backend
+    // actually produced one. A "not_configured" (or any other non-transcribed)
+    // status means no transcript exists, so the submit-defense / chip-analysis
+    // fallback must NOT run.
+    let transcriptGenerated = false
     try {
       if (session?.status === "uploaded") {
         await processVBRSession(sessionId)
       }
       const result = await transcribeVBRSession(sessionId)
-      setTranscriptMessage(result.message)
+
+      if (result.status === "transcribed" && result.transcript_id) {
+        // Real transcript produced — continue into the chip-analysis path.
+        setTranscriptMessage("Transcript generated. Analyzing transcript for evidence chips…")
+        transcriptGenerated = true
+      } else if (result.status === "not_configured") {
+        // No transcript provider configured — the recording is saved, but
+        // automatic transcript analysis cannot run. Don't pretend otherwise.
+        setTranscriptMessage(
+          "Transcript provider is not configured. Recording was saved, but automatic transcript analysis could not run."
+        )
+      } else {
+        // Any other non-transcribed state — surface the backend message safely
+        // without claiming a transcript was generated or showing a pending state.
+        setTranscriptMessage(result.message || "Transcript was not generated.")
+      }
     } catch (err) {
       setTranscriptError(err instanceof Error ? err.message : "Failed to generate transcript.")
     } finally {
       setTranscriptLoading(false)
+    }
+
+    // Transcript generation only saves transcript rows/segments — it does not
+    // produce timestamped video evidence chips. Only continue into the existing
+    // Project Defense analysis path (which falls back to the auto-generated
+    // transcript with empty answers / null combined_text and computes chips)
+    // when a transcript was actually generated.
+    if (!transcriptGenerated) {
+      await refreshSession()
+      return
+    }
+
+    setAnalysisLoading(true)
+    try {
+      await submitDefenseAnswers(sessionId, { answers: [], combined_text: null })
+    } catch (err) {
+      // Keep the transcript-success state — only the chip analysis failed.
+      setAnalysisError(
+        err instanceof Error
+          ? `Transcript generated, but evidence analysis failed: ${err.message}`
+          : "Transcript generated, but evidence analysis failed."
+      )
+    } finally {
+      setAnalysisLoading(false)
       await refreshSession()
     }
   }
@@ -1040,28 +1092,46 @@ export function VBRSessionRecorder({
             <strong>Status:</strong>{" "}
             {transcriptLoading
               ? "Generating…"
+              : analysisLoading
+              ? "Analyzing transcript for evidence chips…"
               : TRANSCRIPT_STATUS_LABELS[session.transcript_status ?? "not_generated"] ??
                 TRANSCRIPT_STATUS_LABELS.not_generated}
           </p>
           <button
             type="button"
-            style={transcriptLoading ? disabledButtonStyle : primaryButtonStyle}
-            disabled={transcriptLoading}
+            style={transcriptLoading || analysisLoading ? disabledButtonStyle : primaryButtonStyle}
+            disabled={transcriptLoading || analysisLoading}
             onClick={handleGenerateTranscript}
           >
-            {transcriptLoading ? "Generating transcript…" : "Generate transcript"}
+            {transcriptLoading
+              ? "Generating transcript…"
+              : analysisLoading
+              ? "Analyzing transcript…"
+              : session.transcript_status === "transcribed"
+              ? "Regenerate transcript"
+              : "Generate transcript"}
           </button>
           {transcriptMessage && (
             <p style={{ fontSize: 12, color: "var(--emerald)", marginTop: 8 }}>{transcriptMessage}</p>
           )}
+          {analysisLoading && (
+            <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>
+              Analyzing transcript for evidence chips…
+            </p>
+          )}
           {transcriptError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{transcriptError}</p>}
+          {analysisError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{analysisError}</p>}
 
           {session.transcript_status === "transcribed" && (
             <div style={{ marginTop: 12 }} data-testid="vbr-video-evidence-preview">
               <div style={{ ...sectionTitleStyle, marginBottom: 6 }}>Video evidence</div>
-              {session.video_evidence_chips.length === 0 ? (
+              {analysisLoading ? (
                 <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>
-                  Timestamped evidence will appear after transcript analysis.
+                  Analyzing transcript for evidence chips…
+                </p>
+              ) : session.video_evidence_chips.length === 0 ? (
+                <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>
+                  Transcript was generated, but no skill-matched timestamped evidence chips were found yet.
                 </p>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

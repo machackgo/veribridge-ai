@@ -11,6 +11,7 @@ import {
   processVBRSession,
   requestVBRChunkUploadUrl,
   startVBRSession,
+  submitDefenseAnswers,
   transcribeVBRSession,
   uploadVBRChunkBytes,
   uploadVBRSessionChunk,
@@ -31,6 +32,7 @@ vi.mock("@/lib/vbr-api", () => ({
   finalizeVBRSession: vi.fn(),
   processVBRSession: vi.fn(),
   transcribeVBRSession: vi.fn(),
+  submitDefenseAnswers: vi.fn(),
 }))
 
 // SHA-256 of 32 zero-filled "fake" chunk bytes used by the digest mock below.
@@ -220,6 +222,32 @@ beforeEach(() => {
     ready: true,
     code: null,
     message: "Recording upload storage is ready.",
+  })
+
+  // Default: the post-transcript chip analysis succeeds with no chips. Tests
+  // that need chips override the refreshed session's video_evidence_chips.
+  vi.mocked(submitDefenseAnswers).mockResolvedValue({
+    project_id: "project-1",
+    session_id: "session-1",
+    transcript_id: "transcript-1",
+    segment_count: 2,
+    answered_question_count: 0,
+    analysis: {
+      transcript_summary: "",
+      skills_mentioned: [],
+      skills_explained_well: [],
+      skills_missing_from_explanation: [],
+      consistency_with_evidence_score: 0,
+      explanation_clarity_score: 0,
+      ownership_signal_score: 0,
+      technical_depth_score: 0,
+      overall_defense_score: 0,
+      risk_flags: [],
+      recruiter_summary: "",
+      recommended_improvements: [],
+      privacy_scan_status: "clean",
+    },
+    video_evidence_chips: [],
   })
 })
 
@@ -943,8 +971,20 @@ describe("Transcript generation", () => {
 
     await waitFor(() => expect(processVBRSession).toHaveBeenCalledWith("session-1"))
     await waitFor(() => expect(transcribeVBRSession).toHaveBeenCalledWith("session-1"))
-    await waitFor(() => expect(screen.getByText("Transcript generated using openai.")).toBeInTheDocument())
 
+    // Happy path: a real transcript (transcribed + transcript_id) continues into
+    // the chip-analysis path using the auto-generated transcript fallback
+    // (empty answers / null combined_text).
+    await waitFor(() =>
+      expect(submitDefenseAnswers).toHaveBeenCalledWith("session-1", { answers: [], combined_text: null })
+    )
+    await waitFor(() =>
+      expect(
+        screen.getByText("Transcript generated. Analyzing transcript for evidence chips…")
+      ).toBeInTheDocument()
+    )
+
+    // The session is refreshed after analysis completes and shows the ready state.
     const section = screen.getByTestId("vbr-transcript")
     await waitFor(() => expect(within(section).getByText(/Ready/)).toBeInTheDocument())
   })
@@ -999,14 +1039,36 @@ describe("Transcript generation", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText("Transcription provider is not configured. Use manual transcript fallback.")
+        screen.getByText(
+          "Transcript provider is not configured. Recording was saved, but automatic transcript analysis could not run."
+        )
       ).toBeInTheDocument()
     )
+
+    // No transcript exists, so the chip-analysis fallback must never run, and no
+    // analysis-pending state should appear.
+    expect(submitDefenseAnswers).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Analyzing transcript for evidence chips/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Analyzing transcript…" })).not.toBeInTheDocument()
 
     const text = document.body.textContent ?? ""
     expect(text).not.toMatch(/storage_path/i)
     expect(text).not.toMatch(/signed/i)
     expect(text).not.toMatch(/vbr\/sessions/)
+  })
+
+  it("changes the button away from plain 'Generate transcript' once the transcript is transcribed", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: "transcribed" })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+
+    expect(screen.getByRole("button", { name: "Regenerate transcript" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Generate transcript" })).not.toBeInTheDocument()
   })
 
   it("shows an error message if transcript generation fails", async () => {
@@ -1104,7 +1166,7 @@ describe("Transcript generation", () => {
     expect(text).not.toMatch(/signed_url/i)
   })
 
-  it("shows a 'will appear after transcript analysis' fallback when the transcript is ready but no chips exist yet", async () => {
+  it("shows a clear empty-chip state when transcript is ready but no chips exist yet", async () => {
     vi.mocked(getVBRSession).mockResolvedValue(
       makeSession({
         status: "processed",
@@ -1120,7 +1182,7 @@ describe("Transcript generation", () => {
     await waitFor(() => expect(screen.getByTestId("vbr-video-evidence-preview")).toBeInTheDocument())
 
     expect(
-      screen.getByText(/timestamped evidence will appear after transcript analysis/i)
+      screen.getByText(/no skill-matched timestamped evidence chips were found yet/i)
     ).toBeInTheDocument()
     expect(screen.queryByTestId("vbr-video-evidence-chip")).not.toBeInTheDocument()
   })
