@@ -67,9 +67,13 @@ class PassportSkillProjectRef(BaseModel):
 
     project_title: str = ""
     project_id: str | None = None
+    # This project's qualitative status FOR THIS SKILL (not the cross-project best).
+    skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
     report_is_public: bool = False
     public_report_path: str | None = None
+    # The proof-native trace cards this project contributes for this skill.
+    evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -98,8 +102,12 @@ class PublicPassportSkillProjectRef(BaseModel):
     """A published project supporting a public skill — no internal ids."""
 
     project_title: str = ""
+    # Per-project qualitative status for this skill (label only).
+    skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
     public_report_path: str
+    # Per-project trace cards (published, recruiter-safe) for this skill.
+    evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 

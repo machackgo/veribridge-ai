@@ -363,19 +363,40 @@ def _aggregate_skills_with_detail(
                 if not entry["notes"] and notes:
                     entry["notes"] = notes
 
+            # The concrete traces THIS project contributes for THIS skill — used
+            # both for the flat aggregate and for the per-project drilldown group.
+            project_skill_traces = [
+                report_traces[str(tid)]
+                for tid in (row.get("evidence_traces") or [])
+                if str(tid) in report_traces
+            ]
+
             title_key = project_title.strip().lower()
             if title_key not in entry["_seen_projects"]:
                 entry["_seen_projects"].add(title_key)
                 entry["project_count"] += 1
                 ref: dict[str, Any] = {
                     "project_title": project_title,
+                    # This project's qualitative status FOR THIS SKILL (not the
+                    # skill's best status across projects).
+                    "skill_status": status_label,
                     "evidence_sources": list(proj_sources),
                     "report_is_public": is_public,
                     "public_report_path": public_report_path,
+                    # The proof-native trace cards this project contributes for
+                    # this skill (grouped under the project in the drilldown).
+                    "evidence_traces": list(project_skill_traces),
                 }
                 if not public:
                     ref["project_id"] = summary.get("project_id")
                 entry["projects"].append(ref)
+            else:
+                # Same project seen again (e.g. another claimed skill row): merge
+                # any additional traces into the existing per-project group.
+                for existing in entry["projects"]:
+                    if existing.get("project_title", "").strip().lower() == title_key:
+                        existing["evidence_traces"].extend(project_skill_traces)
+                        break
 
             for src in proj_sources:
                 if src not in entry["evidence_sources"]:
@@ -384,10 +405,8 @@ def _aggregate_skills_with_detail(
             entry["evidence_chips"].extend(_sanitize_skill_chips(report, skill))
 
             # Pull the concrete evidence traces this skill row references.
-            for trace_id in row.get("evidence_traces") or []:
-                trace = report_traces.get(str(trace_id))
-                if trace is not None:
-                    entry["evidence_traces"].append(trace)
+            for trace in project_skill_traces:
+                entry["evidence_traces"].append(trace)
 
     skills: list[dict[str, Any]] = []
     for entry in by_skill.values():
@@ -416,6 +435,22 @@ def _aggregate_skills_with_detail(
             seen_traces.add(tk)
             deduped_traces.append(trace)
         entry["evidence_traces"] = deduped_traces[:_MAX_SKILL_TRACES]
+        # Dedupe + cap the per-project trace groups the same way so the
+        # cross-project drilldown stays scannable.
+        for ref in entry["projects"]:
+            seen_ref: set[tuple[str, str, str]] = set()
+            ref_traces: list[dict[str, Any]] = []
+            for trace in ref.get("evidence_traces") or []:
+                tk = (
+                    str(trace.get("source_type")),
+                    str(trace.get("source_title")),
+                    str(trace.get("safe_summary")),
+                )
+                if tk in seen_ref:
+                    continue
+                seen_ref.add(tk)
+                ref_traces.append(trace)
+            ref["evidence_traces"] = ref_traces[:_MAX_SKILL_TRACES]
         if entry["status"] in {"Needs review", "Not assessed"}:
             entry["limitations"].append(
                 "This skill is not yet strongly evidenced — treat it as a claim pending more proof."
@@ -444,6 +479,14 @@ def _public_safe_trace(trace: dict[str, Any]) -> dict[str, Any]:
     title = str(row.get("source_title") or "")
     if "://" in title and not is_safe_public_url(title):
         row["source_title"] = str(row.get("source_type") or "Evidence source")
+    # Strip the detailed private-only proof excerpts; keep the safe
+    # human-readable location label + deterministic question text.
+    row["snippet"] = None
+    row["answer_excerpt"] = None
+    if row.get("source_type") == "Document Proof" and row.get("location_detail"):
+        row["location_detail"] = (
+            "The matched passage is retained privately; only the document reference is shown."
+        )
     return row
 
 
@@ -457,8 +500,12 @@ def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
         "projects": [
             {
                 "project_title": ref.get("project_title") or "",
+                # Per-project qualitative status for this skill (label only).
+                "skill_status": ref.get("skill_status") or "Not assessed",
                 "evidence_sources": list(ref.get("evidence_sources") or []),
                 "public_report_path": ref.get("public_report_path") or "",
+                # Per-project trace cards, re-sanitized — published projects only.
+                "evidence_traces": [_public_safe_trace(t) for t in ref.get("evidence_traces") or []],
             }
             for ref in entry.get("projects") or []
             if ref.get("public_report_path")

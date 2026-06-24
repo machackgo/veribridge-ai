@@ -529,8 +529,44 @@ def test_github_trace_is_publicly_openable_with_safe_url(client: TestClient, mem
     assert gh["is_publicly_openable"] is True
     assert gh["public_url"].startswith("https://github.com/")
     assert gh["public_url_label"] == "View public repository"
-    assert gh["evidence_anchor"] == "github-proof"
+    # The anchor is namespaced so it never collides with the "github-proof"
+    # evidence *section* id in the report UI.
+    assert gh["evidence_anchor"] == "trace-github-proof"
+    assert gh["location_label"] == "repo-level"
     assert "Python" in gh["skill_names"]
+
+
+def test_evidence_anchors_unique_and_never_collide_with_section_ids(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Every trace anchor is unique and namespaced under "trace-", so a matrix
+    link can never resolve to a coarse evidence *section* header (the report UI
+    renders ``id="github-proof"``/``id="project-defense"`` etc.)."""
+    reserved_section_ids = {
+        "evidence-by-source",
+        "github-proof",
+        "documents",
+        "website-proof",
+        "project-defense",
+        "skill-evidence",
+        "evidence-traceability",
+        "limitations",
+    }
+    project_id = _full_evidence_project(client, mem_store)
+    body = _get_report(client, project_id).json()
+
+    anchors = [t["evidence_anchor"] for t in body["evidence_traces"]]
+    assert anchors, "expected at least one evidence trace"
+    assert len(anchors) == len(set(anchors)), "duplicate evidence_anchor values"
+    for anchor in anchors:
+        assert anchor.startswith("trace-")
+        assert anchor not in reserved_section_ids
+
+    # Every skill-row trace reference resolves to a real trace.
+    trace_ids = {t["trace_id"] for t in body["evidence_traces"]}
+    for row in body["skill_evidence"]:
+        for tid in row["evidence_traces"]:
+            assert tid in trace_ids
 
 
 def test_document_trace_is_safe_and_not_publicly_openable(client: TestClient, mem_store: dict) -> None:
@@ -679,3 +715,121 @@ def test_document_proof_trace_and_row_never_disagree(client: TestClient, mem_sto
         )
         if not row_has_doc:
             assert "no evidence reviewed" not in row["notes"].lower() or row["status"] == "Not assessed"
+
+
+# ── Phase 1: GitHub file-level traces (real evidence_files) ──────────────────
+
+
+def test_github_file_level_traces_when_evidence_files_present(
+    client: TestClient, mem_store: dict
+) -> None:
+    """When the GitHub proof carries safe ``evidence_files`` paths, the report
+    emits file-level traces (the recruiter lands on the exact file) with a
+    public ``…/blob/<branch>/<path>`` link, instead of only a repo-level card."""
+    github_proof_id = _seed_github_proof(
+        mem_store,
+        repo_metadata={
+            "secret_token": "should-never-leak",
+            "evidence_files": ["app/routes.py", "src/components/Chart.tsx", "https://evil.example/x"],
+        },
+    )
+    created = _create_project_defense(
+        client, repo_url=None, attached_proofs={"github_proof_id": github_proof_id}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    file_traces = [t for t in body["evidence_traces"] if t["location_type"] == "github_file"]
+    paths = {t["file_path"] for t in file_traces}
+    # External URL entry is dropped; only safe repo-relative paths become traces.
+    assert paths == {"app/routes.py", "src/components/Chart.tsx"}
+
+    routes = next(t for t in file_traces if t["file_path"] == "app/routes.py")
+    assert routes["location_label"] == "app/routes.py"
+    assert routes["is_publicly_openable"] is True
+    assert routes["public_url"] == "https://github.com/octocat/Hello-World/blob/main/app/routes.py"
+    assert routes["evidence_anchor"] == "trace-github-file-app-routes-py"
+    # Never claims line-level proof.
+    assert "line" not in routes["location_label"].lower()
+    assert "should-never-leak" not in _get_report(client, project_id).text
+
+
+def test_github_repo_level_fallback_when_no_evidence_files(
+    client: TestClient, mem_store: dict
+) -> None:
+    """With no ``evidence_files``, the report honestly falls back to a single
+    repo-level GitHub trace and emits no file-level traces."""
+    github_proof_id = _seed_github_proof(mem_store)  # repo_metadata has no evidence_files
+    created = _create_project_defense(
+        client, repo_url=None, attached_proofs={"github_proof_id": github_proof_id}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    gh_traces = [t for t in body["evidence_traces"] if t["source_type"] == "GitHub Proof"]
+    assert len(gh_traces) == 1
+    assert gh_traces[0]["location_type"] == "repo_level"
+
+
+# ── Phase 2: Document page/snippet traces (re-fetched at report time) ─────────
+
+
+def test_document_page_and_snippet_trace_when_analyzer_recorded_them(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A document whose structured evidence carries a page + snippet produces a
+    per-skill 'Doc: Page N' trace with a bounded snippet — never the raw file."""
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Python", "page_number": 2, "snippet": "Implements the FastAPI routing layer."}
+        ],
+    )
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    doc_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Document Proof"]
+    py = next(t for t in doc_traces if t["skill_names"] == ["Python"])
+    assert py["page_number"] == 2
+    assert py["location_label"] == "Page 2"
+    assert py["snippet"] == "Implements the FastAPI routing layer."
+    assert py["is_publicly_openable"] is False
+    assert py["public_url"] is None
+
+
+# ── Phase 4: Project Defense answer excerpts (private only) ───────────────────
+
+
+def _project_with_answered_defense(client: TestClient, mem_store: dict) -> str:
+    github_proof_id = _seed_github_proof(mem_store)
+    created = _create_project_defense(
+        client, repo_url=None, attached_proofs={"github_proof_id": github_proof_id}
+    ).json()
+    project_id = created["project"]["id"]
+    gen = _generate_questions(client, project_id).json()
+    session_id = gen["session_id"]
+    q = next(q for q in gen["questions"] if q["target_ref"].get("skill"))
+    _submit_defense(
+        client,
+        session_id,
+        answers=[{"question_id": q["id"], "answer_text": "I built the routing layer and the React dashboard myself."}],
+    )
+    return project_id
+
+
+def test_defense_answer_excerpt_present_in_private_report(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id = _project_with_answered_defense(client, mem_store)
+    body = _get_report(client, project_id).json()
+    q_traces = [
+        t
+        for t in body["evidence_traces"]
+        if t["location_type"] == "defense_question" and t.get("answer_excerpt")
+    ]
+    assert q_traces, "expected an answered-question trace with a bounded answer excerpt"
+    assert "routing layer" in q_traces[0]["answer_excerpt"]
+    assert q_traces[0]["is_publicly_openable"] is False

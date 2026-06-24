@@ -80,13 +80,41 @@ class VBREvidenceTrace(BaseModel):
     qualitative_status: str = "Supporting evidence"
     safe_summary: str = ""
     safe_detail: str = ""
-    # In-page anchor id of the source section/item (e.g. "github-proof").
+    # In-page anchor id of the trace card. Always namespaced under "trace-" so it
+    # can never collide with a coarse evidence *section* id (e.g. "github-proof").
     evidence_anchor: str = ""
+    # ── Proof-native location (where inside the source this trace points) ──────
+    # Coarse machine label: repo_level / document / document_page /
+    # document_snippet / website_url / defense_overview / defense_question /
+    # video_timestamp / project_level.
+    location_type: str | None = None
+    # Short human label used to render a precise matrix link (e.g. "repo-level",
+    # "Q3", "Live URL", "Video 02:14", "Page 2").
+    location_label: str | None = None
+    # A slightly longer, still-safe locator detail (e.g. "owner/name on branch
+    # main"). For documents this is redacted on public surfaces.
+    location_detail: str | None = None
+    # ── Per-source safe detail (never raw evidence) ───────────────────────────
+    # The deterministic Project Defense question text (safe — never the answer
+    # transcript).
+    question_text: str | None = None
+    # A short, safe excerpt of the candidate's own answer, when available. Never
+    # the full transcript; stripped on public surfaces.
+    answer_excerpt: str | None = None
+    # Document page locator, when the analyzer recorded one.
+    page_number: int | None = None
+    # A short, safe document snippet, only when one is safe to show. Stripped on
+    # public surfaces.
+    snippet: str | None = None
+    # Safe repository-relative file path, only for file-level GitHub traces.
+    file_path: str | None = None
     # Only set when the target is a safe public URL (repo / live site).
     public_url: str | None = None
     public_url_label: str | None = None
     # Only for video / defense chips when a timestamp label is available.
     timestamp: str | None = None
+    # Human timestamp label for video traces (e.g. "02:14").
+    timestamp_label: str | None = None
     limitation: str = ""
     is_publicly_openable: bool = False
     # Generic note shown when the source is not publicly openable.

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import {
   getPublicWorkPassportBySlug,
+  matrixTraceLabel,
   type PublicPassportProject,
   type PublicPassportSkill,
   type PublicWorkPassport,
@@ -109,25 +110,61 @@ function SkillChip({ skill }: { skill: PublicPassportSkill }) {
           )}
 
           {skill.projects.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
                 Evidenced in
               </Mono>
-              {skill.projects.map((p, i) => (
-                <div
-                  key={`${p.project_title}-${i}`}
-                  data-testid="public-skill-project-ref"
-                  style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
-                >
-                  <span style={{ fontSize: 12, color: TOKEN.ink, fontWeight: 600 }}>{p.project_title}</span>
-                  <a
-                    href={p.public_report_path}
-                    style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}
+              {skill.projects.map((p, i) => {
+                const projTraces = p.evidence_traces ?? []
+                return (
+                  <div
+                    key={`${p.project_title}-${i}`}
+                    data-testid="public-skill-project-ref"
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      padding: "8px 10px",
+                      border: `1px solid ${TOKEN.line}`,
+                      borderRadius: 8,
+                      background: "#fff",
+                    }}
                   >
-                    View report →
-                  </a>
-                </div>
-              ))}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, color: TOKEN.ink, fontWeight: 600 }}>{p.project_title}</span>
+                      {p.skill_status && (
+                        <Badge tone={QUALITATIVE_LABEL_TONE[p.skill_status] ?? "slate"}>{p.skill_status}</Badge>
+                      )}
+                    </div>
+                    {p.evidence_sources.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {p.evidence_sources.map((src) => (
+                          <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
+                            {src}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                    {/* Deep links straight to the exact trace cards in the public report. */}
+                    {projTraces.length > 0 && (
+                      <div data-testid="public-skill-project-trace-links" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {projTraces.map((t) => (
+                          <a
+                            key={t.trace_id}
+                            href={`${p.public_report_path}#${t.evidence_anchor}`}
+                            style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}
+                          >
+                            {matrixTraceLabel(t)} →
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                    <a href={p.public_report_path} style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}>
+                      View report →
+                    </a>
+                  </div>
+                )
+              })}
             </div>
           )}
 

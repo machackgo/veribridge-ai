@@ -863,3 +863,38 @@ def test_public_report_document_proof_is_consistent_and_safe(
             for tid in row.get("evidence_traces", [])
         )
         assert row_has_doc == trace_claims
+
+
+def test_public_report_strips_document_snippet_and_answer_excerpt(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Private-only proof excerpts (document snippet, defense answer excerpt) are
+    never exposed on the public recruiter surface, while the location label /
+    question text reference is preserved."""
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Python", "page_number": 2, "snippet": "Implements the FastAPI routing layer."}
+        ],
+    )
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+    gen = _generate_questions(client, project_id).json()
+    q = next(q for q in gen["questions"] if q["target_ref"].get("skill"))
+    _submit_defense(
+        client,
+        gen["session_id"],
+        answers=[{"question_id": q["id"], "answer_text": "I personally wrote the routing layer."}],
+    )
+
+    token = _publish(client, project_id).json()["public_token"]
+    raw = _get_public(client, token).text
+    assert "Implements the FastAPI routing layer." not in raw
+    assert "I personally wrote the routing layer." not in raw
+
+    body = _get_public(client, token).json()
+    for trace in body["evidence_traces"]:
+        assert trace.get("snippet") is None
+        assert trace.get("answer_excerpt") is None

@@ -534,6 +534,17 @@ def _public_evidence_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]
         title = str(row.get("source_title") or "")
         if "://" in title and not is_safe_public_url(title):
             row["source_title"] = str(row.get("source_type") or "Evidence source")
+        # Strip the safe-but-detailed proof excerpts that are only meant for the
+        # private student preview. The human-readable ``location_label`` (e.g.
+        # "Q3", "Live URL", "repo-level") and the deterministic ``question_text``
+        # stay — they carry the recruiter-facing reference without exposing raw
+        # answers, document passages, or internal paths.
+        row["snippet"] = None
+        row["answer_excerpt"] = None
+        if row.get("source_type") == "Document Proof" and row.get("location_detail"):
+            row["location_detail"] = (
+                "The matched passage is retained privately; only the document reference is shown."
+            )
         safe.append(row)
     return safe
 

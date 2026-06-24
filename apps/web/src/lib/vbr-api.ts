@@ -523,12 +523,60 @@ export type EvidenceTrace = {
   safe_summary: string
   safe_detail: string
   evidence_anchor: string
+  /** Coarse machine label for where inside the source this trace points. */
+  location_type?: string | null
+  /** Short human label for the location (e.g. "repo-level", "Q3", "Live URL", "Video 02:14"). */
+  location_label?: string | null
+  /** Slightly longer safe locator detail; redacted for documents on public surfaces. */
+  location_detail?: string | null
+  /** Deterministic Project Defense question text (never the answer transcript). */
+  question_text?: string | null
+  /** Short safe excerpt of the candidate's own answer; absent on public surfaces. */
+  answer_excerpt?: string | null
+  /** Document page locator, when one was recorded. */
+  page_number?: number | null
+  /** Short safe document snippet; absent on public surfaces. */
+  snippet?: string | null
+  /** Safe repository-relative file path, for file-level GitHub traces. */
+  file_path?: string | null
   public_url?: string | null
   public_url_label?: string | null
   timestamp?: string | null
+  /** Human timestamp label for video traces (e.g. "02:14"). */
+  timestamp_label?: string | null
   limitation: string
   is_publicly_openable: boolean
   private_evidence_note?: string | null
+}
+
+/**
+ * A precise, recruiter-readable label for a skill-matrix trace link, derived
+ * from the trace's proof-native location (e.g. "GitHub: repo-level",
+ * "Defense Q3", "Video 02:14", "Website: Live URL"). Falls back to the bare
+ * source type when no location label is present. Keeps the short matrix-link
+ * style ("matrixTraceLabel") while using the recovered location fields.
+ */
+export function matrixTraceLabel(trace: EvidenceTrace): string {
+  const loc = (trace.location_label ?? "").trim()
+  switch (trace.source_type) {
+    case "GitHub Proof":
+      return loc ? `GitHub: ${loc}` : "GitHub Proof"
+    case "Document Proof":
+      // "Doc: Page 2" / "Doc: Snippet" when a precise locator exists; otherwise
+      // a plain "Document" (the analyzer never persists raw page/snippet text).
+      if (typeof trace.page_number === "number") return `Doc: Page ${trace.page_number}`
+      if (loc === "matched skill" || loc === "project context" || loc === "") return "Document"
+      return `Doc: ${loc}`
+    case "Website Proof":
+      return loc ? `Website: ${loc}` : "Website Proof"
+    case "Project Defense":
+      // Q-located answers read "Defense Q3"; the overview reads "Defense".
+      return /^Q\d+$/.test(loc) ? `Defense ${loc}` : "Defense"
+    case "Video Evidence":
+      return trace.timestamp_label ? `Video ${trace.timestamp_label}` : loc || "Video Evidence"
+    default:
+      return loc || trace.source_type
+  }
 }
 
 /**
@@ -850,9 +898,13 @@ export type PassportSkillEvidenceChip = {
 export type PassportSkillProjectRef = {
   project_title: string
   project_id?: string | null
+  /** This project's qualitative status FOR THIS SKILL (not the cross-project best). */
+  skill_status?: string
   evidence_sources: string[]
   report_is_public: boolean
   public_report_path: string | null
+  /** Proof-native trace cards this project contributes for this skill. */
+  evidence_traces?: EvidenceTrace[]
 }
 
 /** A grouped, evidence-backed skill. `status` is always a qualitative label. */
@@ -913,8 +965,12 @@ export type PrivateWorkPassport = {
 /** A published project supporting a public skill — no internal ids. */
 export type PublicPassportSkillProjectRef = {
   project_title: string
+  /** Per-project qualitative status for this skill (label only). */
+  skill_status?: string
   evidence_sources: string[]
   public_report_path: string
+  /** Per-project trace cards (published, recruiter-safe) for this skill. */
+  evidence_traces?: EvidenceTrace[]
 }
 
 /** A public top-skill row — qualitative label only, with a safe drilldown. */

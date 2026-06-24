@@ -356,6 +356,141 @@ def _humanize_list(items: list[str]) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
+def _document_skill_locators(db: Any, user_id: str, doc_id: str) -> dict[str, dict[str, Any]]:
+    """Re-read a document's structured evidence to recover safe per-skill locators.
+
+    Returns ``{normalized_skill: {"page_number": int|None, "snippet": str|None}}``
+    built ONLY from the analyzer's structured ``evidence_objects`` (matched skill
+    name + page number + the short excerpt the analyzer already extracted). The
+    snippet is bounded and score-scrubbed; raw document text, file paths and
+    storage locators are never read. Document snippets are intentionally NOT
+    persisted into ``vbr_projects.metadata`` (privacy), so they are recovered
+    here at report-build time and stripped again on the public surface.
+
+    Any lookup problem returns ``{}`` so the report falls back to a safe,
+    locator-free document trace rather than failing.
+    """
+    if not doc_id:
+        return {}
+    try:
+        from app.services.optional_evidence_service import OptionalEvidenceService
+
+        row = OptionalEvidenceService(db).get_by_id(user_id=user_id, evidence_id=doc_id)
+    except Exception:  # pragma: no cover - document locators are best-effort
+        return {}
+    if not isinstance(row, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for item in row.get("evidence_objects") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("skill_name") or "").strip()
+        key = _norm(name)
+        if not key or key in out:
+            continue
+        page = item.get("page_number")
+        snippet = _trace_text(_scrub_score_fragments(str(item.get("snippet") or "")), 200) or None
+        out[key] = {
+            "page_number": int(page) if isinstance(page, int) or (isinstance(page, str) and page.isdigit()) else None,
+            "snippet": snippet,
+        }
+    return out
+
+
+_TRANSCRIPTS_TABLE = "vbr_transcripts"
+_TRANSCRIPT_SEGMENTS_TABLE = "vbr_transcript_segments"
+
+
+def _defense_answer_excerpts(db: Any, session_id: str) -> dict[str, str]:
+    """Map ``question_id`` → a bounded, sanitized excerpt of the student's answer.
+
+    Defense answers are stored as ``vbr_transcript_segments`` (each carrying the
+    answering ``question_id`` and the answer ``text``). We surface only a short,
+    score-scrubbed excerpt of the candidate's *own* answer for the private/student
+    report — never the full transcript. The public surface strips ``answer_excerpt``
+    entirely. Any lookup problem returns ``{}`` (honest fallback to no excerpt).
+    """
+    if not session_id:
+        return {}
+    try:
+        if isinstance(db, dict):
+            transcript_ids = {
+                str(r["id"])
+                for r in db.get(_TRANSCRIPTS_TABLE, {}).values()
+                if str(r.get("session_id")) == session_id and r.get("id")
+            }
+            segments = [
+                r
+                for r in db.get(_TRANSCRIPT_SEGMENTS_TABLE, {}).values()
+                if str(r.get("transcript_id")) in transcript_ids
+            ]
+        else:
+            tx = db.table(_TRANSCRIPTS_TABLE).select("id").eq("session_id", session_id).execute()
+            transcript_ids = [str(r["id"]) for r in (getattr(tx, "data", []) or []) if r.get("id")]
+            segments = []
+            for tid in transcript_ids:
+                seg = (
+                    db.table(_TRANSCRIPT_SEGMENTS_TABLE)
+                    .select("question_id,text")
+                    .eq("transcript_id", tid)
+                    .execute()
+                )
+                segments.extend(getattr(seg, "data", []) or [])
+    except Exception:  # pragma: no cover - answer excerpts are best-effort
+        return {}
+
+    out: dict[str, str] = {}
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        qid = seg.get("question_id")
+        if not qid or str(qid) in out:
+            continue
+        excerpt = _trace_text(_scrub_score_fragments(str(seg.get("text") or "")), 200)
+        if excerpt:
+            out[str(qid)] = excerpt
+    return out
+
+
+def _slugify(text: str, max_len: int = 48) -> str:
+    """Lowercase, hyphenated, filesystem/anchor-safe slug of ``text``.
+
+    Used to derive *unique, stable* evidence anchors from concrete locators
+    (a file path, a matched skill + page, a timestamp) so a trace card id never
+    collapses onto a coarse, duplicate anchor like ``github-proof``.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")
+    return slug[:max_len].strip("-")
+
+
+def _blob_url(repo_url: str | None, branch: str | None, file_path: str) -> str | None:
+    """Build a public ``…/blob/<branch>/<path>`` link for a public GitHub repo.
+
+    Returns ``None`` unless the repo URL is a safe public github.com target, so
+    a private/internal repo file is never advertised as openable.
+    """
+    base = str(repo_url or "").rstrip("/")
+    if not base or not is_safe_public_url(base) or "github.com" not in base:
+        return None
+    ref = (str(branch or "").strip() or "HEAD")
+    return f"{base}/blob/{ref}/{file_path.lstrip('/')}"
+
+
+def _safe_domain(url: str) -> str | None:
+    """Return just the host of a safe public URL (e.g. ``example.com``).
+
+    Used as a short, recruiter-safe location label for Website Proof traces.
+    Returns ``None`` when the host cannot be parsed.
+    """
+    try:
+        from urllib.parse import urlparse
+
+        host = urlparse(str(url or "")).hostname
+    except Exception:  # pragma: no cover - defensive
+        return None
+    return host or None
+
+
 def _build_evidence_traces(
     *,
     github_proof: dict[str, Any] | None,
@@ -373,6 +508,12 @@ def _build_evidence_traces(
     by_skill: dict[str, list[str]] = {}
 
     def _attach(trace: dict[str, Any]) -> None:
+        # The in-page anchor is always derived from the trace id with a stable
+        # "trace-" prefix so a trace card id can never collide with a coarse
+        # evidence *section* id in the report UI (e.g. the "github-proof" or
+        # "project-defense" section headers). A matrix link therefore always
+        # lands on the precise trace card, never the section above it.
+        trace["evidence_anchor"] = f"trace-{trace['trace_id']}"
         traces.append(trace)
         for skill in trace["skill_names"]:
             key = _norm(skill)
@@ -392,6 +533,15 @@ def _build_evidence_traces(
         summary = _scrub_score_fragments(str(github_proof.get("public_safe_summary") or "")) or (
             "Repository analyzed; VeriBridge detected the skills below from its files and structure."
         )
+        # Safe repo-relative evidence file paths the analyzer flagged. Present ⇒
+        # we emit file-level traces (the recruiter lands on the exact file, not a
+        # broad repo card); absent ⇒ we honestly fall back to the repo-level
+        # trace below. The analyzer never stores line ranges or function names,
+        # so file-level is the deepest honest GitHub granularity — we never
+        # invent line numbers or functions.
+        evidence_files = [str(f) for f in (github_proof.get("evidence_files") or []) if str(f).strip()]
+        branch = github_proof.get("default_branch")
+
         _attach(
             {
                 "trace_id": "github-proof",
@@ -401,15 +551,19 @@ def _build_evidence_traces(
                 "qualitative_status": _SUPPORTING_EVIDENCE,
                 "safe_summary": _trace_text(summary),
                 "safe_detail": (
-                    "Static analysis of the repository detected files and structure consistent with these skills."
+                    "Static analysis of the repository detected files and structure consistent with these skills. "
+                    "This is repository-level evidence, not line-level authorship proof."
                 ),
                 "evidence_anchor": "github-proof",
+                "location_type": "repo_level",
+                "location_label": "repo-level",
+                "location_detail": title,
                 "public_url": public_url,
                 "public_url_label": "View public repository" if public_url else None,
                 "timestamp": None,
                 "limitation": (
-                    "Repository analysis confirms the code exists and its shape; it does not, by itself, "
-                    "prove the candidate personally authored every part."
+                    "Repository-level analysis detected related files and structure, but this is not line-level "
+                    "proof and does not, by itself, prove the candidate personally authored every part."
                 ),
                 "is_publicly_openable": bool(public_url),
                 "private_evidence_note": (
@@ -417,6 +571,46 @@ def _build_evidence_traces(
                 ),
             }
         )
+
+        for file_path in evidence_files:
+            file_url = _blob_url(repo_url, branch, file_path) if public_url else None
+            _attach(
+                {
+                    # Unique, stable anchor derived from the concrete file path so
+                    # the matrix link lands on this exact file's card.
+                    "trace_id": f"github-file-{_slugify(file_path)}",
+                    "source_type": _SRC_GITHUB,
+                    "source_title": f"{title} — {file_path}",
+                    "skill_names": detected,
+                    "qualitative_status": _SUPPORTING_EVIDENCE,
+                    "safe_summary": _trace_text(
+                        f"The analyzer flagged {file_path} in the repository as evidence for the skills below."
+                    ),
+                    "safe_detail": (
+                        "A specific repository file the analyzer identified as relevant to these skills. "
+                        "This is file-level evidence; the analyzer does not record line ranges or function "
+                        "names, so it is not line-level authorship proof."
+                    ),
+                    "evidence_anchor": "",
+                    "location_type": "github_file",
+                    # Bare suffix — the UI renders it as "GitHub: <path>" (the
+                    # matrix-link label), matching the repo-level "repo-level".
+                    "location_label": file_path,
+                    "location_detail": file_path,
+                    "file_path": file_path,
+                    "public_url": file_url,
+                    "public_url_label": "View file on GitHub" if file_url else None,
+                    "timestamp": None,
+                    "limitation": (
+                        "Identifies a relevant file, not the exact lines or author; combine with the Project "
+                        "Defense for authorship context."
+                    ),
+                    "is_publicly_openable": bool(file_url),
+                    "private_evidence_note": (
+                        None if file_url else "Repository is private; the file path is shown without a public link."
+                    ),
+                }
+            )
 
     # ── Document Proof ───────────────────────────────────────────────────────
     # Documents are mapped ONLY to the skills the analyzer explicitly matched in
@@ -428,43 +622,90 @@ def _build_evidence_traces(
         title = str(doc.get("title") or "Document")
         status_label = str(doc.get("status") or "analyzed")
         doc_skills = [str(s) for s in (doc.get("skills") or [])]
-        if doc_skills:
-            safe_summary = _trace_text(
-                f"{title} ({status_label}) — a supporting document the analyzer matched to "
-                f"{_humanize_list(doc_skills)}."
+        locators = doc.get("skill_locators") or {}
+
+        if not doc_skills:
+            # Project-level context: no matched skill, so it never implies a claim.
+            _attach(
+                {
+                    "trace_id": f"document-proof-{idx}",
+                    "source_type": _SRC_DOCUMENT,
+                    "source_title": title,
+                    "skill_names": [],
+                    "qualitative_status": _SUPPORTING_EVIDENCE,
+                    "safe_summary": _trace_text(
+                        f"{title} ({status_label}) — attached as project context; not mapped to specific skills."
+                    ),
+                    "safe_detail": (
+                        "The document provides written project context. It was not matched to specific claimed "
+                        "skills, so it is shown as project-level evidence only and summarized rather than exposed."
+                    ),
+                    "evidence_anchor": "",
+                    "location_type": "project_level",
+                    "location_label": "project context",
+                    "location_detail": None,
+                    "public_url": None,
+                    "public_url_label": None,
+                    "timestamp": None,
+                    "limitation": _DOC_PROJECT_LIMITATION,
+                    "is_publicly_openable": False,
+                    "private_evidence_note": _PRIVATE_DOC_NOTE,
+                }
             )
-            safe_detail = (
-                "The document was analyzed and references these specific skills; it is summarized "
-                "for recruiters rather than exposed as a raw file."
+            continue
+
+        # One trace per matched skill so the matrix link lands on the exact
+        # claim. When the analyzer recorded a safe page/snippet locator we surface
+        # it ("Doc: Page 2" / "Doc: Snippet"); otherwise we honestly stay at
+        # matched-skill granularity ("Doc: matched skill") with no invented page.
+        for skill in doc_skills:
+            loc = locators.get(_norm(skill)) or {}
+            page = loc.get("page_number")
+            snippet = loc.get("snippet")
+            # Bare location labels — the UI renders these as "Doc: Page 2" /
+            # "Doc: Snippet" / "Document" via ``matrixTraceLabel``.
+            if page is not None:
+                location_type = "document_page"
+                location_label = f"Page {page}"
+                location_detail = f"Page {page}"
+            elif snippet:
+                location_type = "document_snippet"
+                location_label = "Snippet"
+                location_detail = "Matched passage"
+            else:
+                location_type = "document"
+                location_label = "matched skill"
+                location_detail = None
+            _attach(
+                {
+                    "trace_id": f"document-{idx}-{_slugify(skill)}",
+                    "source_type": _SRC_DOCUMENT,
+                    "source_title": title,
+                    "skill_names": [skill],
+                    "qualitative_status": _SUPPORTING_EVIDENCE,
+                    "safe_summary": _trace_text(
+                        f"{title} ({status_label}) — a supporting document the analyzer matched to {skill}"
+                        + (f" on page {page}." if page is not None else ".")
+                    ),
+                    "safe_detail": (
+                        "The document was analyzed and references this skill; a safe excerpt/page is shown "
+                        "for recruiters rather than the raw file. Document evidence supports but does not "
+                        "independently prove implementation or authorship."
+                    ),
+                    "evidence_anchor": "",
+                    "location_type": location_type,
+                    "location_label": location_label,
+                    "location_detail": location_detail,
+                    "page_number": page,
+                    "snippet": snippet,
+                    "public_url": None,
+                    "public_url_label": None,
+                    "timestamp": None,
+                    "limitation": _DOC_LIMITATION,
+                    "is_publicly_openable": False,
+                    "private_evidence_note": _PRIVATE_DOC_NOTE,
+                }
             )
-            limitation = _DOC_LIMITATION
-        else:
-            safe_summary = _trace_text(
-                f"{title} ({status_label}) — attached as project context; not mapped to specific skills."
-            )
-            safe_detail = (
-                "The document provides written project context. It was not matched to specific claimed "
-                "skills, so it is shown as project-level evidence only and summarized rather than exposed."
-            )
-            limitation = _DOC_PROJECT_LIMITATION
-        _attach(
-            {
-                "trace_id": f"document-proof-{idx}",
-                "source_type": _SRC_DOCUMENT,
-                "source_title": title,
-                "skill_names": doc_skills,
-                "qualitative_status": _SUPPORTING_EVIDENCE,
-                "safe_summary": safe_summary,
-                "safe_detail": safe_detail,
-                "evidence_anchor": f"document-proof-{idx}",
-                "public_url": None,
-                "public_url_label": None,
-                "timestamp": None,
-                "limitation": limitation,
-                "is_publicly_openable": False,
-                "private_evidence_note": _PRIVATE_DOC_NOTE,
-            }
-        )
 
     # ── Website Proof ────────────────────────────────────────────────────────
     for idx, wp in enumerate(website_proofs, start=1):
@@ -486,6 +727,9 @@ def _build_evidence_traces(
                     "The deployed site was checked for the supported skills' working behaviour at inspection time."
                 ),
                 "evidence_anchor": f"website-proof-{idx}",
+                "location_type": "website_url" if safe else "website_proof",
+                "location_label": "Live URL" if safe else "Proof",
+                "location_detail": _safe_domain(target) if safe else None,
                 "public_url": target if safe else None,
                 "public_url_label": "Open live website" if safe else None,
                 "timestamp": None,
@@ -522,6 +766,9 @@ def _build_evidence_traces(
                     "Process/ownership evidence: the candidate explained how and why they built the project."
                 ),
                 "evidence_anchor": "project-defense",
+                "location_type": "defense_overview",
+                "location_label": "overall explanation",
+                "location_detail": None,
                 "public_url": None,
                 "public_url_label": None,
                 "timestamp": None,
@@ -535,20 +782,32 @@ def _build_evidence_traces(
         if not question.get("answered"):
             continue
         skill = question.get("skill")
+        # The deterministic question text is safe to show; the raw answer
+        # transcript is never surfaced — only a short, sanitized answer excerpt
+        # (stripped entirely on the public surface).
+        q_text = _trace_text(_scrub_score_fragments(str(question.get("question_text") or "")))
+        answer_excerpt = question.get("answer_excerpt") or None
         _attach(
             {
                 "trace_id": f"project-defense-q{idx}",
                 "source_type": _SRC_DEFENSE,
-                "source_title": "Project Defense Answer",
+                "source_title": f"Project Defense — Q{idx}",
                 "skill_names": [str(skill)] if skill else [],
                 "qualitative_status": _SUPPORTING_EVIDENCE,
                 "safe_summary": _trace_text(
-                    "Answered: " + str(question.get("question_text") or "Project Defense question")
+                    "The candidate answered this Project Defense question in their own words."
                 ),
                 "safe_detail": (
-                    "The candidate answered this Project Defense question in their own words, explaining their work."
+                    "Self-explanation evidence for the question below; strongest when combined with "
+                    "artifact evidence."
                 ),
                 "evidence_anchor": f"project-defense-q{idx}",
+                "location_type": "defense_question",
+                # Bare "Q{n}" — the UI renders it as "Defense Q{n}".
+                "location_label": f"Q{idx}",
+                "location_detail": None,
+                "question_text": q_text or None,
+                "answer_excerpt": answer_excerpt,
                 "public_url": None,
                 "public_url_label": None,
                 "timestamp": None,
@@ -574,6 +833,10 @@ def _build_evidence_traces(
                     "A timestamped moment in the recorded Project Defense where this skill/concept was discussed."
                 ),
                 "evidence_anchor": f"video-chip-{idx:03d}",
+                "location_type": "video_timestamp",
+                "location_label": label,
+                "location_detail": None,
+                "timestamp_label": label,
                 "public_url": None,
                 "public_url_label": None,
                 "timestamp": label,
@@ -666,12 +929,20 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
         matched = _dedupe_skill_names(
             [claimed_by_norm[_norm(s)] for s in (doc.get("skills") or []) if _norm(s) in claimed_by_norm]
         )
+        # Recover safe per-skill page/snippet locators at report-build time
+        # (never persisted into project metadata). Empty ⇒ locator-free trace.
+        locators = (
+            _document_skill_locators(db, user_id, str(doc.get("document_evidence_id") or ""))
+            if matched
+            else {}
+        )
         document_entries.append(
             {
                 "title": str(doc.get("title") or "Document"),
                 "source_type": doc.get("source_type"),
                 "status": doc.get("status"),
                 "skills": matched,
+                "skill_locators": locators,
             }
         )
 
@@ -708,9 +979,12 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
 
     questions: list[dict[str, Any]] = []
     chunk_count = 0
+    answer_excerpts: dict[str, str] = {}
     if session is not None:
         questions = list_session_questions(db, str(session["id"]))
         chunk_count = count_chunks(db, str(session["id"]))
+        # Per-question bounded answer excerpts (private-only; stripped on public).
+        answer_excerpts = _defense_answer_excerpts(db, str(session["id"]))
 
     defense_questions = []
     for q in questions:
@@ -722,6 +996,7 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
                 "kind": target_ref.get("kind") if isinstance(target_ref, dict) else None,
                 "skill": target_ref.get("skill") if isinstance(target_ref, dict) else None,
                 "answered": bool(q.get("answered")),
+                "answer_excerpt": answer_excerpts.get(str(q["id"])),
             }
         )
 

@@ -299,4 +299,92 @@ describe("PrivatePassportView", () => {
     expect(screen.getByTestId("passport-no-skills")).toBeInTheDocument()
     expect(screen.getByTestId("passport-no-evidence")).toBeInTheDocument()
   })
+
+  it("renders a cross-project skill report: per-project status, deep links and source counts", async () => {
+    const base = makePassport()
+    const p = makePassport({
+      skills: [
+        {
+          ...base.skills[0],
+          skill: "Machine Learning",
+          status: "Demonstrated",
+          evidence_sources: ["GitHub Proof", "Document Proof"],
+          projects: [
+            {
+              project_title: "Boston Housing",
+              project_id: "proj-boston",
+              skill_status: "Demonstrated",
+              evidence_sources: ["GitHub Proof", "Project Defense"],
+              report_is_public: false,
+              public_report_path: null,
+              evidence_traces: [
+                {
+                  trace_id: "github-proof",
+                  source_type: "GitHub Proof",
+                  source_title: "octocat/boston",
+                  skill_names: ["Machine Learning"],
+                  qualitative_status: "Supporting evidence",
+                  safe_summary: "Repo analyzed.",
+                  safe_detail: "Repo-level.",
+                  evidence_anchor: "trace-github-proof",
+                  location_label: "repo-level",
+                  is_publicly_openable: false,
+                  limitation: "Repo-level only.",
+                },
+              ],
+            },
+            {
+              project_title: "Teachable Machine",
+              project_id: "proj-teachable",
+              skill_status: "Supporting evidence",
+              evidence_sources: ["Document Proof", "Website Proof"],
+              report_is_public: false,
+              public_report_path: null,
+              evidence_traces: [],
+            },
+          ],
+          evidence_chips: [],
+          evidence_traces: [
+            {
+              trace_id: "github-proof",
+              source_type: "GitHub Proof",
+              source_title: "octocat/boston",
+              skill_names: ["Machine Learning"],
+              qualitative_status: "Supporting evidence",
+              safe_summary: "Repo analyzed.",
+              safe_detail: "Repo-level.",
+              evidence_anchor: "trace-github-proof",
+              location_label: "repo-level",
+              is_publicly_openable: false,
+              limitation: "Repo-level only.",
+            },
+          ],
+          notes: "Evidenced across two projects.",
+          limitations: [],
+        },
+        base.skills[1],
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-header")
+    fireEvent.click(screen.getAllByTestId("skill-expand-toggle")[0])
+
+    const detail = await screen.findByTestId("skill-detail")
+    // Two projects compared under this one skill.
+    expect(screen.getAllByTestId("skill-project-ref")).toHaveLength(2)
+    expect(detail.textContent).toContain("Boston Housing")
+    expect(detail.textContent).toContain("Teachable Machine")
+    // Per-skill source counts.
+    expect(screen.getByTestId("skill-source-counts")).toBeInTheDocument()
+    // A deep link to the exact project report trace anchor.
+    const deepLinks = screen.getByTestId("skill-project-trace-links")
+    const a = deepLinks.querySelector("a") as HTMLAnchorElement
+    expect(a.getAttribute("href")).toBe("/student/vbr/projects/proj-boston/report#trace-github-proof")
+    expect(a.textContent).toContain("GitHub: repo-level")
+    // Missing-evidence guidance is shown for un-evidenced sources.
+    expect(screen.getByTestId("skill-missing-evidence").textContent).toContain("Website Proof")
+  })
 })
