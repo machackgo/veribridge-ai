@@ -744,4 +744,107 @@ describe("ProjectReportView — proof-native matrix links + precise anchors", ()
       "I built the routing layer and the React dashboard myself.",
     )
   })
+
+  it("renders GitHub line/function code evidence, Website OCR card, and a document citation", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        skill_evidence: [
+          {
+            skill: "Python",
+            status: "Supporting evidence",
+            evidence_chip_count: 0,
+            notes: "Line-level GitHub code, a Website OCR card, and a document citation.",
+            supporting_sources: ["GitHub Proof", "Website Proof", "Document Proof"],
+            limitations: [],
+            evidence_traces: ["github-code-src-main-py", "website-proof-1-ocr", "document-1-python"],
+          },
+        ],
+        evidence_traces: [
+          {
+            trace_id: "github-code-src-main-py",
+            source_type: "GitHub Proof",
+            source_title: "octocat/Hello-World — src/main.py (lines 24-38)",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "The analyzer located code in src/main.py (lines 24-38).",
+            safe_detail: "Line-level code evidence.",
+            evidence_anchor: "trace-github-code-src-main-py",
+            location_type: "github_function",
+            location_label: "function classify_image",
+            location_detail: "src/main.py (lines 24-38)",
+            file_path: "src/main.py",
+            line_start: 24,
+            line_end: 38,
+            function_name: "classify_image",
+            commit_sha: "abcdef0123456789abcdef0123456789abcdef01",
+            code_snippet: "def classify_image(img):\n    return model.predict(img)",
+            public_url: "https://github.com/octocat/Hello-World/blob/main/src/main.py#L24-L38",
+            public_url_label: "View code on GitHub",
+            is_publicly_openable: true,
+            limitation: "Pinpoints skill-relevant code, but is not proof of sole authorship.",
+            private_evidence_note: null,
+          },
+          {
+            trace_id: "website-proof-1-ocr",
+            source_type: "Website Proof",
+            source_title: "https://demo.example.com — OCR summary",
+            skill_names: ["Python"],
+            qualitative_status: "Evidence observed",
+            safe_summary: "Text read on-screen: Prediction: cat.",
+            safe_detail: "Safe OCR summary; no raw OCR dump is exposed.",
+            evidence_anchor: "trace-website-proof-1-ocr",
+            location_type: "website_ocr",
+            location_label: "OCR summary",
+            is_publicly_openable: false,
+            limitation: "Website proof confirms observed behaviour, not source-code authorship.",
+            private_evidence_note: "Captured during the proof session; only a safe summary is shown.",
+          },
+          {
+            trace_id: "document-1-python",
+            source_type: "Document Proof",
+            source_title: "Final Year Project Report",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "A supporting document matched to Python.",
+            safe_detail: "A safe citation is shown rather than the raw file.",
+            evidence_anchor: "trace-document-1-python",
+            location_type: "document_citation",
+            location_label: "Citation",
+            location_detail: "System Design",
+            citation: "System Design",
+            is_publicly_openable: false,
+            limitation: "Document evidence supports but does not prove authorship.",
+            private_evidence_note: "Private document retained in student evidence vault.",
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    // Proof-native matrix labels for the deepest GitHub/Website/Document sources.
+    const links = screen.getByTestId("skill-trace-links")
+    expect(links.textContent).toContain("GitHub: function classify_image")
+    expect(links.textContent).toContain("Website: OCR summary")
+    expect(links.textContent).toContain("Doc: Citation")
+
+    // The GitHub code card shows file + line range + function + a safe snippet.
+    const fileCell = screen.getByTestId("evidence-trace-file")
+    expect(fileCell.textContent).toContain("src/main.py")
+    expect(screen.getByTestId("evidence-trace-lines").textContent).toContain("lines 24-38")
+    expect(screen.getByTestId("evidence-trace-function").textContent).toContain("classify_image")
+    // The pinned commit SHA renders, shortened to 7 chars.
+    expect(screen.getByTestId("evidence-trace-commit").textContent).toContain("abcdef0")
+    expect(screen.getByTestId("evidence-trace-code").textContent).toContain("classify_image")
+
+    // The Website OCR summary card renders with no raw payload / URL link.
+    const ocrCard = screen
+      .getAllByTestId("evidence-trace")
+      .find((el) => el.getAttribute("id") === "trace-website-proof-1-ocr")
+    expect(ocrCard?.textContent).toContain("Prediction: cat")
+
+    // The document citation renders (no raw download URL).
+    expect(screen.getByTestId("evidence-trace-citation").textContent).toContain("System Design")
+  })
 })

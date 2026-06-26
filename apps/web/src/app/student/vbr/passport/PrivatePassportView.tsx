@@ -5,14 +5,10 @@ import Link from "next/link"
 import {
   getPrivateWorkPassport,
   getWorkPassportStatus,
-  matrixTraceLabel,
   publishWorkPassport,
   unpublishWorkPassport,
   publishVBRProjectReport,
-  type EvidenceTrace,
   type PassportProjectSummary,
-  type PassportSkillProjectRef,
-  type PassportSkillSummary,
   type PrivateWorkPassport,
   type WorkPassportStatus,
 } from "@/lib/vbr-api"
@@ -26,16 +22,7 @@ import {
   TOKEN,
   type BadgeTone,
 } from "../../../../../components/passport/shared"
-import { EvidenceTraceList } from "../../../../../components/passport/EvidenceTrace"
-
-const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
-  Demonstrated: "emerald",
-  "Partially demonstrated": "amber",
-  "Evidence observed": "emerald",
-  "Supporting evidence": "sky",
-  "Needs review": "rose",
-  "Not assessed": "slate",
-}
+import { VaultSkillDashboard } from "../../../../../components/passport/VaultProofs"
 
 const SOURCE_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
@@ -205,211 +192,6 @@ function PassportPublishControls({
         </p>
       </div>
     </Card>
-  )
-}
-
-const ALL_EVIDENCE_SOURCES = ["GitHub Proof", "Document Proof", "Website Proof", "Project Defense", "Video Evidence"] as const
-
-/** Count traces by source type, in canonical order, for the per-skill summary. */
-function sourceCountsFromTraces(traces: EvidenceTrace[]): Array<[string, number]> {
-  const counts = new Map<string, number>()
-  for (const t of traces) counts.set(t.source_type, (counts.get(t.source_type) ?? 0) + 1)
-  return ALL_EVIDENCE_SOURCES.filter((s) => counts.has(s)).map((s) => [s, counts.get(s) as number])
-}
-
-/** The recruiter-safe base URL of a project's report for anchor deep-links. */
-function reportBaseFor(p: PassportSkillProjectRef): string | null {
-  if (p.project_id) return `/student/vbr/projects/${p.project_id}/report`
-  if (p.public_report_path) return p.public_report_path
-  return null
-}
-
-function SkillRow({ skill }: { skill: PassportSkillSummary }) {
-  const [open, setOpen] = useState(false)
-  const traces = skill.evidence_traces ?? []
-  const sourceCounts = sourceCountsFromTraces(traces)
-  const missingSources = ALL_EVIDENCE_SOURCES.filter((s) => !skill.evidence_sources.includes(s))
-  const hasDetail =
-    skill.projects.length > 0 ||
-    skill.evidence_sources.length > 0 ||
-    skill.evidence_chips.length > 0 ||
-    traces.length > 0 ||
-    Boolean(skill.notes)
-
-  return (
-    <div data-testid="passport-skill" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <button
-        type="button"
-        data-testid="skill-expand-toggle"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        disabled={!hasDetail}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          background: "none",
-          border: "none",
-          padding: 0,
-          cursor: hasDetail ? "pointer" : "default",
-          width: "100%",
-          textAlign: "left",
-        }}
-      >
-        <span style={{ fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>
-          {hasDetail && <span style={{ color: TOKEN.muted, marginRight: 6 }}>{open ? "▾" : "▸"}</span>}
-          {skill.skill}
-        </span>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {skill.evidence_chip_count > 0 && (
-            <Mono style={{ fontSize: 11, color: TOKEN.muted }}>{skill.evidence_chip_count} chips</Mono>
-          )}
-          <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
-            {skill.project_count} {skill.project_count === 1 ? "project" : "projects"}
-          </Mono>
-          <Badge tone={QUALITATIVE_LABEL_TONE[skill.status] ?? "slate"}>{skill.status}</Badge>
-        </div>
-      </button>
-
-      {open && hasDetail && (
-        <div
-          data-testid="skill-detail"
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            padding: "10px 12px",
-            background: TOKEN.bg,
-            border: `1px solid ${TOKEN.line}`,
-            borderRadius: 8,
-          }}
-        >
-          {/* Per-skill proof source counts. */}
-          {sourceCounts.length > 0 && (
-            <div data-testid="skill-source-counts" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {sourceCounts.map(([src, n]) => (
-                <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
-                  {src} · {n}
-                </Badge>
-              ))}
-            </div>
-          )}
-
-          {skill.notes && (
-            <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{skill.notes}</p>
-          )}
-
-          {/* Cross-project skill report: one group per supporting project, each
-              with its own status for this skill, source badges, deep links to the
-              exact report trace anchors, and a link to the full report. */}
-          {skill.projects.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                Projects supporting this skill
-              </Mono>
-              {skill.projects.map((p, i) => {
-                const base = reportBaseFor(p)
-                const projTraces = p.evidence_traces ?? []
-                return (
-                  <div
-                    key={`${p.project_title}-${i}`}
-                    data-testid="skill-project-ref"
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 6,
-                      padding: "8px 10px",
-                      border: `1px solid ${TOKEN.line}`,
-                      borderRadius: 8,
-                      background: "#fff",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 12, color: TOKEN.ink, fontWeight: 600 }}>{p.project_title}</span>
-                      {p.skill_status && (
-                        <Badge tone={QUALITATIVE_LABEL_TONE[p.skill_status] ?? "slate"}>{p.skill_status}</Badge>
-                      )}
-                      {p.report_is_public && <Badge tone="emerald">Public report</Badge>}
-                    </div>
-                    {p.evidence_sources.length > 0 && (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                        {p.evidence_sources.map((src) => (
-                          <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
-                            {src}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
-                    {/* Deep links straight to the exact trace cards in this project's report. */}
-                    {base && projTraces.length > 0 && (
-                      <div data-testid="skill-project-trace-links" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {projTraces.map((t) => (
-                          <Link
-                            key={t.trace_id}
-                            href={`${base}#${t.evidence_anchor}`}
-                            style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}
-                          >
-                            {matrixTraceLabel(t)} →
-                          </Link>
-                        ))}
-                      </div>
-                    )}
-                    {base && (
-                      <Link href={base} style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}>
-                        View full report →
-                      </Link>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-
-          {skill.evidence_chips.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                Evidence snippets
-              </Mono>
-              {skill.evidence_chips.map((c, i) => (
-                <div key={`${c.label}-${i}`} style={{ fontSize: 12, color: TOKEN.inkSoft }}>
-                  <Mono style={{ fontSize: 11, color: TOKEN.ink }}>{c.label}</Mono> — {c.short_summary}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Full proof-native trace cards for this skill, aggregated across projects. */}
-          {traces.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                Evidence traceability
-              </Mono>
-              <EvidenceTraceList traces={traces} />
-            </div>
-          )}
-
-          {/* Missing-evidence guidance: which proof sources would strengthen this skill. */}
-          {missingSources.length > 0 && (
-            <div data-testid="skill-missing-evidence" style={{ fontSize: 11, color: TOKEN.muted }}>
-              <strong style={{ color: TOKEN.inkSoft }}>Could be strengthened with: </strong>
-              {missingSources.join(", ")}.
-            </div>
-          )}
-
-          {skill.limitations.length > 0 && (
-            <ul style={{ margin: 0, paddingLeft: 16 }}>
-              {skill.limitations.map((line, i) => (
-                <li key={i} style={{ fontSize: 11, color: TOKEN.muted }}>
-                  {line}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-    </div>
   )
 }
 
@@ -583,21 +365,33 @@ export function PrivatePassportView() {
         )}
       </Card>
 
-      {/* Evidence-backed skills */}
-      <Card>
-        <CardHeader title="Evidence-Backed Skills" eyebrow="Grouped by skill" icon="🧩" />
-        {passport.skills.length === 0 ? (
-          <p data-testid="passport-no-skills" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-            No skills assessed yet.
+      {/* Student Proof Vault — Layer 1: a COMPACT skill-intelligence dashboard.
+          Every proof you own is grouped by canonical skill (attached AND
+          unattached) into compact cards under category headings. The main page
+          shows only counts + a few previews; the full stored evidence for one
+          skill loads lazily when you click "View Skill Report". */}
+      {(passport.vault_skill_summaries?.length ?? 0) > 0 && (
+        <Card>
+          <CardHeader
+            title="Skill Intelligence"
+            eyebrow="Every proof you own, distilled into compact skill cards"
+            icon="🗂️"
+          />
+          <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
+            All your safe proof evidence — GitHub, Document, Website, Project Defense, Video, and Skill Graph — grouped
+            by skill. Open any skill to see its concrete, recruiter-verifiable evidence. Proofs you have not attached to
+            a VBR project are clearly labelled <strong>not attached to a VBR project</strong>, so nothing you have built
+            is ever lost.
+            {typeof passport.vault_unattached_count === "number" && passport.vault_unattached_count > 0 && (
+              <span data-testid="vault-unattached-summary">
+                {" "}
+                You have {passport.vault_unattached_count} unattached proof item(s).
+              </span>
+            )}
           </p>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {passport.skills.map((skill) => (
-              <SkillRow key={skill.skill} skill={skill} />
-            ))}
-          </div>
-        )}
-      </Card>
+          <VaultSkillDashboard summaries={passport.vault_skill_summaries} />
+        </Card>
+      )}
 
       {/* Projects */}
       <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>

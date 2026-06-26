@@ -534,3 +534,75 @@ def test_unpublished_project_traces_absent_from_public_passport(client: TestClie
     body = _get_public(client, slug).json()
     assert body["featured_project_count"] == 0
     assert all(not s.get("evidence_traces") for s in body["top_skills"])
+
+
+# ── Hydrated GitHub line + Website rich traces flow into the passport ─────────
+
+
+def _make_rich_project(client: TestClient, mem_store: dict) -> str:
+    """A project whose GitHub proof has line-level code evidence and whose
+    Website proof has the deeper OCR/DOM/visual artifacts."""
+    snapshot = {
+        "skill_code_evidence": [
+            {
+                "skill": "Python",
+                "file_path": "src/main.py",
+                "line_start": 24,
+                "line_end": 38,
+                "function_name": "classify_image",
+                "code_snippet": "def classify_image(img):\n    return model.predict(img)",
+                "github_url": "https://github.com/octocat/Hello-World/blob/main/src/main.py#L24-L38",
+            }
+        ]
+    }
+    github_proof_id = _seed_github_proof(mem_store, analysis_snapshot=snapshot)
+    website_proof_session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=["Python", "React"],
+        frame_ocr_evidence_summary={
+            "has_ocr_evidence": True,
+            "top_ocr_snippets": ["Prediction: cat"],
+            "frames_analyzed": 2,
+        },
+    )
+    created = _create_project_defense(
+        client,
+        attached_proofs={
+            "github_proof_id": github_proof_id,
+            "website_proof_session_ids": [website_proof_session_id],
+        },
+    ).json()
+    return created["project"]["id"]
+
+
+def test_private_passport_aggregates_github_line_and_website_traces(
+    client: TestClient, mem_store: dict
+) -> None:
+    _make_rich_project(client, mem_store)
+    body = _get_private(client).json()
+
+    all_traces = [t for s in body["skills"] for t in (s.get("evidence_traces") or [])]
+    # The deepest GitHub code trace and a Website OCR card both reach the passport.
+    assert any(t["location_type"] == "github_function" for t in all_traces)
+    assert any(t["location_type"] == "website_ocr" for t in all_traces)
+    # Private passport retains the safe code snippet.
+    gh = next(t for t in all_traces if t["location_type"] == "github_function")
+    assert gh["code_snippet"] and "classify_image" in gh["code_snippet"]
+
+
+def test_public_passport_strips_github_code_snippet(client: TestClient, mem_store: dict) -> None:
+    project_id = _make_rich_project(client, mem_store)
+    _publish_project_report(client, project_id)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+
+    all_traces = [t for s in body["top_skills"] for t in (s.get("evidence_traces") or [])]
+    gh = [t for t in all_traces if t.get("location_type") == "github_function"]
+    assert gh, "expected the GitHub code trace to surface on the public passport"
+    for t in gh:
+        # Snippet is private-only; the public #L link is the proof instead.
+        assert t.get("code_snippet") in (None, "")
+        if t.get("public_url"):
+            assert is_safe_public_url(t["public_url"])

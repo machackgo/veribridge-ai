@@ -96,17 +96,54 @@ export function EvidenceTraceItem({ trace }: { trace: EvidenceTrace }) {
           📄 Page {trace.page_number}
         </div>
       )}
+      {/* Document citation (matched section heading); safe on public surfaces. */}
+      {trace.citation && (
+        <div data-testid="evidence-trace-citation" style={{ fontSize: 11, color: TOKEN.muted }}>
+          🔖 {trace.citation}
+        </div>
+      )}
       {trace.snippet && (
         <p data-testid="evidence-trace-snippet" style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5, fontStyle: "italic" }}>
           “{trace.snippet}”
         </p>
       )}
 
-      {/* Safe file path for file-level GitHub traces (path only, link separate). */}
+      {/* Safe file path + line/function locator for GitHub code traces. */}
       {trace.file_path && (
         <Mono data-testid="evidence-trace-file" style={{ fontSize: 11, color: TOKEN.muted }}>
           {trace.file_path}
+          {typeof trace.line_start === "number" && (
+            <span data-testid="evidence-trace-lines">
+              {" "}· lines {trace.line_start}
+              {typeof trace.line_end === "number" && trace.line_end !== trace.line_start ? `-${trace.line_end}` : ""}
+            </span>
+          )}
+          {trace.function_name && (
+            <span data-testid="evidence-trace-function">{" "}· {trace.function_name}()</span>
+          )}
+          {trace.commit_sha && (
+            <span data-testid="evidence-trace-commit">{" "}@ {trace.commit_sha.slice(0, 7)}</span>
+          )}
         </Mono>
+      )}
+      {/* Safe code snippet from a public GitHub file (private surfaces only). */}
+      {trace.code_snippet && (
+        <pre
+          data-testid="evidence-trace-code"
+          style={{
+            margin: 0,
+            padding: "8px 10px",
+            background: "#0f172a",
+            color: "#e2e8f0",
+            borderRadius: 6,
+            fontSize: 11,
+            lineHeight: 1.45,
+            overflowX: "auto",
+            whiteSpace: "pre",
+          }}
+        >
+          <code>{trace.code_snippet}</code>
+        </pre>
       )}
 
       {trace.safe_summary && (

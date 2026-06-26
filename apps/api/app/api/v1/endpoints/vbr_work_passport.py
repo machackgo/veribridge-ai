@@ -15,15 +15,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_user_id, get_db, get_pipeline_db
+from app.schemas.vbr_student_report import SkillReportResponse
 from app.schemas.vbr_work_passport import (
     PrivateWorkPassportResponse,
     PublicWorkPassportResponse,
     PublishPassportRequest,
     WorkPassportStatusResponse,
 )
+from app.services.student_proof_vault_service import collect_skill_report
 from app.services.vbr_work_passport_service import (
     build_private_passport,
     build_public_passport,
@@ -47,6 +49,20 @@ def get_private_passport_route(
     pipeline_db: Any = Depends(get_pipeline_db),
 ) -> PrivateWorkPassportResponse:
     return PrivateWorkPassportResponse(**build_private_passport(db, pipeline_db, user_id))
+
+
+@student_router.get(
+    "/passport/skill-report",
+    response_model=SkillReportResponse,
+    summary="Get the full Student Proof Vault evidence for one selected skill",
+)
+def get_skill_report_route(
+    skill: str = Query(..., min_length=1, max_length=160),
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> SkillReportResponse:
+    return SkillReportResponse(**collect_skill_report(db, pipeline_db, user_id, skill))
 
 
 @student_router.get(

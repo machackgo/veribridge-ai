@@ -18,6 +18,17 @@ Security invariants:
     downgraded — confidence_score and support_status can only increase,
     and evidence_sources are merged rather than replaced.
   - Idempotent: safe to call multiple times for the same github_proof_id.
+
+TODO(canonical-evidence): this sync derives Skill Graph artifacts from a
+standalone ``github_proof_submissions`` snapshot only. The older GitHub
+Portfolio & Proof engine also persists *precise* code-line rows in the
+canonical ``skill_evidence`` table (exact file/line + ``github_highlight_url`` +
+``selection_reason``), which the Work Passport Skill Report now reads first via
+``github_canonical_skill_evidence_adapter.collect_canonical_github_skill_evidence``.
+A future, safe enhancement is to also fold any matching canonical
+``skill_evidence`` rows (by repo identity + skill) into the synced artifacts so
+the Skill Graph reflects the strongest available code evidence — without ever
+calling the live scanner here.
 """
 
 from __future__ import annotations

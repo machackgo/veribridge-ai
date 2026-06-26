@@ -537,8 +537,20 @@ export type EvidenceTrace = {
   page_number?: number | null
   /** Short safe document snippet; absent on public surfaces. */
   snippet?: string | null
+  /** Safe document citation (matched section heading); kept on public surfaces. */
+  citation?: string | null
   /** Safe repository-relative file path, for file-level GitHub traces. */
   file_path?: string | null
+  /** Start line for line-level GitHub code evidence, when recorded. */
+  line_start?: number | null
+  /** End line for line-level GitHub code evidence, when recorded. */
+  line_end?: number | null
+  /** Matched function name for GitHub code evidence, when recorded. */
+  function_name?: string | null
+  /** Commit SHA the analyzer pinned GitHub evidence to; safe on public surfaces. */
+  commit_sha?: string | null
+  /** Safe code snippet from a public GitHub file; absent on public surfaces. */
+  code_snippet?: string | null
   public_url?: string | null
   public_url_label?: string | null
   timestamp?: string | null
@@ -560,10 +572,13 @@ export function matrixTraceLabel(trace: EvidenceTrace): string {
   const loc = (trace.location_label ?? "").trim()
   switch (trace.source_type) {
     case "GitHub Proof":
+      // "GitHub: lines 24-38" / "GitHub: function classify_image" / "GitHub:
+      // src/main.py" / "GitHub: repo-level" — whatever the deepest recorded
+      // locator was, falling back to the bare source type.
       return loc ? `GitHub: ${loc}` : "GitHub Proof"
     case "Document Proof":
-      // "Doc: Page 2" / "Doc: Snippet" when a precise locator exists; otherwise
-      // a plain "Document" (the analyzer never persists raw page/snippet text).
+      // "Doc: Page 2" / "Doc: Citation" / "Doc: Snippet" when a precise locator
+      // exists; otherwise a plain "Document".
       if (typeof trace.page_number === "number") return `Doc: Page ${trace.page_number}`
       if (loc === "matched skill" || loc === "project context" || loc === "") return "Document"
       return `Doc: ${loc}`
@@ -577,6 +592,290 @@ export function matrixTraceLabel(trace: EvidenceTrace): string {
     default:
       return loc || trace.source_type
   }
+}
+
+/**
+ * One safe, student-owned proof from the Student Proof Vault. Normalized from
+ * any proof source (GitHub / Document / Website / Project Defense / Video /
+ * Skill Graph), attached to a VBR project or standalone. Never carries raw
+ * transcripts/docs/snapshots, storage paths, signed URLs, or numeric scores.
+ */
+export type VaultProofItem = {
+  /** Null when the proof is project-level context not mapped to a single skill. */
+  skill_name: string | null
+  proof_type: "GitHub Proof" | "Document Proof" | "Website Proof" | "Project Defense" | "Video Evidence" | "Skill Graph" | string
+  source_id: string
+  source_table: string
+  /** Owner-only: the primary VBR project this proof is attached to, if any. */
+  project_id: string | null
+  attached_project_ids: string[]
+  title: string
+  source_label: string
+  safe_summary: string
+  safe_snippet?: string | null
+  safe_location?: string | null
+  public_safe: boolean
+  visibility: string
+  limitation: string
+  is_attached_to_project: boolean
+  // Safe structured locators (populated cheaply at collection — no hydration).
+  file_path?: string | null
+  line_start?: number | null
+  line_end?: number | null
+  function_name?: string | null
+  commit_sha?: string | null
+  public_url?: string | null
+  // Explicit GitHub display-mode fields (only set for GitHub proofs).
+  display_mode?: "code_line" | "repo_level" | "limitation" | string | null
+  evidence_strength?: string | null
+  evidence_kind?: string | null
+  has_precise_line_evidence?: boolean | null
+  github_line_url?: string | null
+  repo_url?: string | null
+  page_number?: number | null
+  section_label?: string | null
+  citation?: string | null
+  question_text?: string | null
+  answer_excerpt?: string | null
+  timestamp_label?: string | null
+}
+
+/** Student-vault proofs grouped under one skill (attached + unattached). */
+export type VaultSkillGroup = {
+  skill: string
+  proofs: VaultProofItem[]
+  proof_types: string[]
+  attached_count: number
+  unattached_count: number
+  has_unattached: boolean
+}
+
+// ── Student Proof Vault — Layer 1 (compact skill summary) ───────────────────
+
+/** A compact, safe preview of one vault proof, for the main Passport card. */
+export type VaultSkillPreview = {
+  proof_type: string
+  title: string
+  safe_location?: string | null
+  safe_summary: string
+  is_attached_to_project: boolean
+  public_safe: boolean
+}
+
+/**
+ * Layer 1 — one compact skill card for the main Work Passport dashboard.
+ * Carries counts + a few representative previews only — NOT every proof. The
+ * full evidence is loaded lazily via the Skill Report endpoint.
+ */
+export type VaultSkillSummary = {
+  skill: string
+  /** Stable, URL-safe slug — the Skill Report route key. */
+  skill_slug?: string
+  category: string
+  status: string
+  source_labels: string[]
+  project_ids: string[]
+  project_titles: string[]
+  project_count: number
+  proof_source_counts: Record<string, number>
+  proof_count: number
+  attached_count: number
+  unattached_count: number
+  has_unattached: boolean
+  summary: string
+  previews: VaultSkillPreview[]
+  more_count: number
+  limitations: string[]
+}
+
+// ── Student Proof Vault — Layer 2 (full Skill Report) ───────────────────────
+
+/** One rich, recruiter-verifiable evidence item inside a Skill Report section. */
+export type SkillReportEvidenceItem = {
+  proof_type: string
+  source_id: string
+  title: string
+  safe_summary: string
+  safe_location?: string | null
+  safe_snippet?: string | null
+  public_safe: boolean
+  is_attached_to_project: boolean
+  attached_project_ids: string[]
+  project_titles: string[]
+  limitation: string
+  file_path?: string | null
+  line_start?: number | null
+  line_end?: number | null
+  function_name?: string | null
+  commit_sha?: string | null
+  public_url?: string | null
+  // Explicit GitHub display-mode fields. ``display_mode`` drives whether a card
+  // renders as precise "View code lines" or honest repo-level "View repository".
+  display_mode?: "code_line" | "repo_level" | "limitation" | string | null
+  evidence_strength?: string | null
+  evidence_kind?: string | null
+  has_precise_line_evidence?: boolean | null
+  github_line_url?: string | null
+  repo_url?: string | null
+  // Canonical (old GitHub Profile & Proof engine) fields — precise
+  // selection_reason ("API endpoint decorator") + optional subskill / graph node.
+  selection_reason?: string | null
+  subskill_name?: string | null
+  skill_graph_node?: string | null
+  page_number?: number | null
+  section_label?: string | null
+  citation?: string | null
+  question_text?: string | null
+  answer_excerpt?: string | null
+  timestamp_label?: string | null
+  workflow_summary?: string | null
+  workflow_steps: string[]
+  dom_summary?: string | null
+  ocr_summary?: string | null
+  visual_summary?: string | null
+  live_check?: Record<string, unknown> | null
+}
+
+export type SkillReportProjectUsage = {
+  project_id: string | null
+  project_title: string
+  attached: boolean
+  sources: string[]
+}
+
+/**
+ * A document shown as connected *corroboration* — never a standalone dump. It
+ * answers "what does this document corroborate?" with one safe citation.
+ */
+export type SkillReportDocumentCorrelation = {
+  source_id: string
+  document_title: string
+  page_number?: number | null
+  section_label?: string | null
+  citation?: string | null
+  safe_snippet?: string | null
+  /** "GitHub implementation" / "Website workflow behavior" / "Skill explanation" / "Project architecture". */
+  corroborates: string
+  /** "direct attachment" / "title/project match" / "skill-only match" / "weak/standalone". */
+  correlation_confidence?: string
+  /** Always "Supporting evidence" — a document corroborates, it is never primary proof. */
+  support_label?: string
+  reason: string
+  limitation: string
+}
+
+/** One evidence-cited synthesis statement (Proof Synthesis Agent). */
+export type SkillProofSynthesisStatement = {
+  text: string
+  source: string
+  /** The real evidence ids this statement was built from (never fabricated). */
+  evidence_ids: string[]
+}
+
+/** One project's connected proof chain for a skill — artifacts + corroboration. */
+export type SkillReportProjectChain = {
+  project_id: string | null
+  project_title: string
+  attached: boolean
+  attached_status: string
+  sources: string[]
+  evidence_chain_summary: string
+  github_evidence: SkillReportEvidenceItem[]
+  website_evidence: SkillReportEvidenceItem[]
+  document_correlations: SkillReportDocumentCorrelation[]
+  document_more_count: number
+  defense_evidence: SkillReportEvidenceItem[]
+  video_evidence: SkillReportEvidenceItem[]
+  limitations: string[]
+  /** >1 when duplicate VBR project rows sharing the same proof package were collapsed. */
+  collapsed_project_count?: number
+  collapsed_project_ids?: string[]
+  /** >1 when several same-title VBR attempts (different proof combos) were grouped into one chain. */
+  grouped_attempt_count?: number
+  grouped_project_ids?: string[]
+  // ── Proof Synthesis Agent fields (qualitative — never a numeric score) ──────
+  /** "Strongly corroborated" / "Corroborated" / "Supporting evidence" / "Needs review" / "Insufficient evidence". */
+  confidence_tier?: string
+  synthesis_result?: string
+  why_linked?: string
+  subskills?: string[]
+  synthesis_statements?: SkillProofSynthesisStatement[]
+}
+
+/** A standalone proof that links to no chain — shown under unlinked support. */
+export type SkillProofSynthesisUnlinkedItem = {
+  proof_type: string
+  source_id: string
+  title: string
+  safe_summary: string
+  safe_location?: string | null
+  corroborates: string
+  limitation: string
+}
+
+/** Capped bucket of proofs that support the skill but join no proof chain. */
+export type SkillProofSynthesisUnlinked = {
+  items: SkillProofSynthesisUnlinkedItem[]
+  count: number
+  more_count: number
+}
+
+/** Proofs supporting a skill that are not attached to any VBR project. */
+export type SkillReportStandaloneEvidence = {
+  github: SkillReportEvidenceItem[]
+  website: SkillReportEvidenceItem[]
+  documents: SkillReportDocumentCorrelation[]
+  document_more_count: number
+  defense: SkillReportEvidenceItem[]
+  video: SkillReportEvidenceItem[]
+  skill_graph: SkillReportEvidenceItem[]
+}
+
+export type SkillReportOverview = {
+  skill: string
+  category: string
+  status: string
+  proof_source_counts: Record<string, number>
+  proof_count: number
+  attached_count: number
+  unattached_count: number
+  project_count: number
+  why_supported: string
+  gaps: string[]
+}
+
+/** Layer 2 — the full, recruiter-verifiable evidence for one selected skill. */
+export type SkillReport = {
+  skill: string
+  skill_slug: string
+  requested_skill: string
+  category: string
+  status: string
+  summary: string
+  source_counts: Record<string, number>
+  overview: SkillReportOverview
+  /** Connected proof chains, one per project (plus a standalone-vault bucket). */
+  projects: SkillReportProjectChain[]
+  /** Proofs not attached to any VBR project, grouped by source. */
+  standalone_evidence: SkillReportStandaloneEvidence
+  // ── Proof Synthesis Agent output ──────────────────────────────────────────
+  /** Recruiter-facing summary of the whole synthesis (qualitative, no scores). */
+  synthesis_summary?: string
+  /** Boolean coverage across GitHub / Website / Document / Defense / Video. */
+  source_coverage?: Record<string, boolean>
+  /** Project-anchored connected proof chains (strongest tier first). */
+  proof_chains?: SkillReportProjectChain[]
+  /** Capped supporting proofs that join no chain. */
+  unlinked_supporting_evidence?: SkillProofSynthesisUnlinked
+  // Flat per-source lists (back-compat; the connected chains above are primary).
+  github: SkillReportEvidenceItem[]
+  website: SkillReportEvidenceItem[]
+  documents: SkillReportEvidenceItem[]
+  defense: SkillReportEvidenceItem[]
+  video: SkillReportEvidenceItem[]
+  skill_graph: SkillReportEvidenceItem[]
+  gaps: string[]
+  generated_at: string
 }
 
 /**
@@ -657,6 +956,14 @@ export type VBRStudentProjectReportResponse = {
 
   skill_evidence: VBRReportSkillEvidenceRow[]
   evidence_traces?: EvidenceTrace[]
+
+  /**
+   * "Other student proofs for related skills" — safe student-vault proofs that
+   * match this report's claimed skills but are NOT attached to this project.
+   * Cross-proof / vault evidence, kept separate from the attached skill matrix
+   * above so the report stays project-honest. May be absent on older payloads.
+   */
+  other_student_proofs?: VaultSkillGroup[]
 
   limitations: string[]
   next_actions: string[]
@@ -956,6 +1263,16 @@ export type PrivateWorkPassport = {
   skills: PassportSkillSummary[]
   projects: PassportProjectSummary[]
   evidence_source_counts: Record<string, number>
+  /**
+   * Student Proof Vault — Layer 1: COMPACT per-skill summaries (the main
+   * dashboard). Each card carries category, qualitative status, counts, and a
+   * few representative previews — never every proof card. The full evidence for
+   * one skill is loaded lazily via `getSkillReport`. May be absent on older
+   * payloads — treat as `[]`.
+   */
+  vault_skill_summaries?: VaultSkillSummary[]
+  vault_proof_count?: number
+  vault_unattached_count?: number
   project_count: number
   published_report_count: number
   limitations: string[]
@@ -1018,6 +1335,25 @@ export type PublicWorkPassport = {
 export async function getPrivateWorkPassport(): Promise<PrivateWorkPassport> {
   const res = await fetchAPI("/api/v1/student/vbr/passport")
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load passport (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** The private Skill Report route for a skill slug (a separate page, not inline). */
+export function skillReportPath(skillSlug: string): string {
+  return `/student/vbr/passport/skills/${encodeURIComponent(skillSlug)}`
+}
+
+/**
+ * Layer 2 — load the FULL Student Proof Vault evidence for ONE selected skill.
+ * Accepts either a canonical skill name or a URL slug (the backend resolves both
+ * to the same skill). This is the expensive call (it hydrates website detail for
+ * the skill); it is only made on the separate Skill Report page.
+ */
+export async function getSkillReport(skill: string): Promise<SkillReport> {
+  const res = await fetchAPI(
+    `/api/v1/student/vbr/passport/skill-report?skill=${encodeURIComponent(skill)}`,
+  )
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load skill report (HTTP ${res.status}).`))
   return res.json()
 }
 

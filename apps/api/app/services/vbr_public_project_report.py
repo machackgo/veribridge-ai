@@ -541,6 +541,9 @@ def _public_evidence_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]
         # answers, document passages, or internal paths.
         row["snippet"] = None
         row["answer_excerpt"] = None
+        # GitHub code snippet is dropped on the public surface — the public
+        # ``…#L`` blob link is the recruiter-facing proof of the exact lines.
+        row["code_snippet"] = None
         if row.get("source_type") == "Document Proof" and row.get("location_detail"):
             row["location_detail"] = (
                 "The matched passage is retained privately; only the document reference is shown."

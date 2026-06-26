@@ -46,6 +46,10 @@ from app.services.vbr_public_project_report import (
     _lookup_display_name,
     _scrub_public_report,
 )
+from app.services.student_proof_vault_service import (
+    collect_skill_summaries,
+    collect_vault_items,
+)
 from app.services.vbr_student_report import build_student_vbr_report
 
 _MAX_SKILL_TRACES = 8
@@ -483,6 +487,8 @@ def _public_safe_trace(trace: dict[str, Any]) -> dict[str, Any]:
     # human-readable location label + deterministic question text.
     row["snippet"] = None
     row["answer_excerpt"] = None
+    # GitHub code snippet is private-only; the public ``…#L`` link is the proof.
+    row["code_snippet"] = None
     if row.get("source_type") == "Document Proof" and row.get("location_detail"):
         row["location_detail"] = (
             "The matched passage is retained privately; only the document reference is shown."
@@ -761,12 +767,31 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         public=False,
     )
 
+    # ── Student Proof Vault (Layer 1 — compact skill dashboard) ──────────────
+    # The passport is no longer attached-proof-only: it aggregates EVERY safe,
+    # student-owned proof (GitHub / Document / Website / Project Defense / Video /
+    # Skill Graph) directly from its source — attached to a VBR project or not.
+    # The main page shows only COMPACT per-skill summaries (category, counts, a
+    # few previews) — never every proof card, and without hydrating website
+    # detail. The full evidence for one skill is loaded lazily by the Skill
+    # Report endpoint (``collect_skill_report``). We still compute the raw vault
+    # counts (cheap) so the page can show "N proofs / M unattached".
+    vault_items = collect_vault_items(db, pipeline_db, str(user_id))
+    vault_skill_summaries = collect_skill_summaries(db, pipeline_db, str(user_id), items=vault_items)
+    vault_unattached_count = sum(1 for item in vault_items if not item.get("is_attached_to_project"))
+
     limitations: list[str] = []
     if not projects:
         limitations.append("No projects yet — create a Project Defense to start your passport.")
     if published_report_count == 0:
         limitations.append(
             "No recruiter-safe VBR reports published yet. Publish a project report to feature it."
+        )
+    if vault_unattached_count:
+        limitations.append(
+            f"{vault_unattached_count} proof item(s) are not attached to any VBR project. They are "
+            "shown in your vault under the relevant skill so nothing is lost — attach them to a "
+            "project to feature them in a report."
         )
     limitations.append(
         "Skills and evidence are shown with qualitative labels only — never numeric trust scores."
@@ -784,6 +809,9 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         "skills": skills,
         "projects": project_summaries,
         "evidence_source_counts": _evidence_source_counts(project_summaries),
+        "vault_skill_summaries": vault_skill_summaries,
+        "vault_proof_count": len(vault_items),
+        "vault_unattached_count": vault_unattached_count,
         "project_count": len(project_summaries),
         "published_report_count": published_report_count,
         "limitations": limitations,

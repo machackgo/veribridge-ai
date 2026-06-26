@@ -20,6 +20,7 @@ All storage is in-memory (dict mode). No real network calls, no LLM calls.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -833,3 +834,778 @@ def test_defense_answer_excerpt_present_in_private_report(
     assert q_traces, "expected an answered-question trace with a bounded answer excerpt"
     assert "routing layer" in q_traces[0]["answer_excerpt"]
     assert q_traces[0]["is_publicly_openable"] is False
+
+
+# ── Phase 1: GitHub line/function code evidence (skill_code_evidence) ─────────
+
+
+_PUBLIC_BLOB = "https://github.com/octocat/Hello-World/blob/main"
+
+
+def _seed_github_proof_with_code_evidence(mem_store: dict, **overrides) -> str:
+    """A GitHub proof whose ``analysis_snapshot`` carries deep line-level
+    ``skill_code_evidence`` (file + line range + function + public ``#L`` link)."""
+    snapshot = {
+        "raw_dump": "should-never-leak",
+        "skill_code_evidence": [
+            {
+                "skill": "Python",
+                "file_path": "src/main.py",
+                "line_start": 24,
+                "line_end": 38,
+                "function_name": "classify_image",
+                "commit_sha": "ABCDEF0123456789abcdef0123456789abcdef01",
+                "code_snippet": "def classify_image(img):\n    return model.predict(img)",
+                "github_url": f"{_PUBLIC_BLOB}/src/main.py#L24-L38",
+            },
+            {
+                "skill": "React",
+                "file_path": "src/App.tsx",
+                "line_start": 10,
+                "line_end": 10,
+                # Non-hex commit values are sanitized away (never echoed raw).
+                "commit_sha": "not a sha!!",
+                "code_snippet": "const [state, setState] = useState(null)",
+                "github_url": f"{_PUBLIC_BLOB}/src/App.tsx#L10",
+            },
+            # Unsafe entries are dropped (traversal path + external URL).
+            {"skill": "Python", "file_path": "../../etc/passwd", "line_start": 1},
+            {"skill": "Python", "file_path": "ok.py", "github_url": "https://evil.example/x#L1"},
+        ],
+    }
+    return _seed_github_proof(mem_store, analysis_snapshot=snapshot, **overrides)
+
+
+def test_github_code_evidence_produces_line_and_function_traces(
+    client: TestClient, mem_store: dict
+) -> None:
+    """When the GitHub proof recorded line-level ``skill_code_evidence``, the
+    report emits exact line/function traces with public ``#L`` links — not just
+    a repo-level card."""
+    github_proof_id = _seed_github_proof_with_code_evidence(mem_store)
+    created = _create_project_defense(
+        client, repo_url=None, attached_proofs={"github_proof_id": github_proof_id}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    code_traces = [t for t in body["evidence_traces"] if str(t["location_type"]).startswith("github_") and t["location_type"] != "github_file"]
+
+    py = next(t for t in code_traces if t["file_path"] == "src/main.py")
+    assert py["location_type"] == "github_function"
+    assert py["location_label"] == "function classify_image"
+    assert py["function_name"] == "classify_image"
+    assert py["line_start"] == 24 and py["line_end"] == 38
+    assert py["skill_names"] == ["Python"]
+    assert py["is_publicly_openable"] is True
+    assert py["public_url"] == f"{_PUBLIC_BLOB}/src/main.py#L24-L38"
+    assert py["public_url_label"] == "View code on GitHub"
+    # The analyzer-recorded commit SHA is surfaced (normalized to lowercase hex).
+    assert py["commit_sha"] == "abcdef0123456789abcdef0123456789abcdef01"
+    # Private student surface keeps the safe code snippet.
+    assert "classify_image" in py["code_snippet"]
+
+    # A non-hex commit value is sanitized to None rather than echoed raw.
+    react = next(t for t in code_traces if t["file_path"] == "src/App.tsx")
+    assert react["commit_sha"] is None
+
+    react = next(t for t in code_traces if t["file_path"] == "src/App.tsx")
+    assert react["location_type"] == "github_lines"
+    assert react["location_label"] == "line 10"
+
+    # Traversal path + external github_url entries are dropped entirely.
+    paths = {t["file_path"] for t in code_traces}
+    assert "../../etc/passwd" not in paths
+    assert "should-never-leak" not in _get_report(client, project_id).text
+
+
+def test_github_code_evidence_private_repo_hides_link_keeps_path(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A private repo never advertises an openable link, but still shows the
+    file/line location without a public URL."""
+    github_proof_id = _seed_github_proof_with_code_evidence(mem_store, visibility="private")
+    created = _create_project_defense(
+        client, repo_url=None, attached_proofs={"github_proof_id": github_proof_id}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    code_traces = [t for t in body["evidence_traces"] if t["file_path"] in {"src/main.py", "src/App.tsx"}]
+    assert code_traces
+    for t in code_traces:
+        assert t["is_publicly_openable"] is False
+        assert t["public_url"] is None
+        assert t["private_evidence_note"]
+
+
+def test_github_code_evidence_public_report_strips_snippet_keeps_link(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The public project report drops the raw code snippet but keeps the public
+    ``#L`` link as the recruiter-facing proof of the exact lines."""
+    from app.services.vbr_student_report import build_student_vbr_report
+    from app.services.vbr_public_project_report import _public_evidence_traces
+
+    github_proof_id = _seed_github_proof_with_code_evidence(mem_store)
+    created = _create_project_defense(
+        client, repo_url=None, attached_proofs={"github_proof_id": github_proof_id}
+    ).json()
+    project = mem_store["vbr_projects"][created["project"]["id"]]
+    report = build_student_vbr_report(mem_store, {}, project, USER_ID)
+    public_traces = _public_evidence_traces(report["evidence_traces"])
+
+    code = [t for t in public_traces if t.get("file_path") == "src/main.py"]
+    assert code
+    for t in code:
+        assert t["code_snippet"] is None
+        assert t["public_url"] == f"{_PUBLIC_BLOB}/src/main.py#L24-L38"
+        # The commit SHA is a safe hex reference and is retained for recruiters.
+        assert t["commit_sha"] == "abcdef0123456789abcdef0123456789abcdef01"
+
+
+# ── Phase 2 (proof-native): weak GitHub line evidence is downgraded ──────────
+#
+# These fixtures mirror the REAL Boston project's stored ``skill_code_evidence``
+# (proven via DB inspection): a Python entry pinned to ``import sys/io/time``, a
+# "Google Cloud" entry pinned to a ``sys.path``/repo-root bootstrap comment, and
+# notebook-markdown entries. Surfacing those as line-level skill proof is the
+# browser bug; the report must drop them to the honest repo-level card.
+
+
+def _seed_weak_github_proof(mem_store: dict, evidence: list[dict], **overrides) -> str:
+    snapshot = {"raw_dump": "should-never-leak", "skill_code_evidence": evidence}
+    return _seed_github_proof(mem_store, analysis_snapshot=snapshot, **overrides)
+
+
+def _github_code_traces(body: dict) -> list[dict]:
+    return [
+        t
+        for t in body["evidence_traces"]
+        if str(t["location_type"]).startswith("github_") and t["location_type"] != "github_file"
+    ]
+
+
+def test_github_import_only_line_evidence_not_shown_as_strong_proof(
+    client: TestClient, mem_store: dict
+) -> None:
+    """An import-only snippet (``import sys/io/time``) is never surfaced as
+    line-level Python proof; the skill falls back to the repo-level card and the
+    card honestly flags that reanalysis/backfill is needed."""
+    gpid = _seed_weak_github_proof(
+        mem_store,
+        evidence=[
+            {
+                "skill": "Python",
+                "file_path": "api.py",
+                "line_start": 6,
+                "line_end": 9,
+                "code_snippet": "import sys\nimport io\nimport time",
+                "github_url": f"{_PUBLIC_BLOB}/api.py#L6-L9",
+            }
+        ],
+        detected_skills=["Python"],
+    )
+    created = _create_project_defense(
+        client,
+        repo_url=None,
+        claimed_skills=["Python"],
+        attached_proofs={"github_proof_id": gpid},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    # No line/function-level trace for the weak import snippet.
+    assert _github_code_traces(body) == []
+
+    repo = next(t for t in body["evidence_traces"] if t["trace_id"] == "github-proof")
+    assert "Python" in repo["weak_line_evidence_skills"]
+    assert "reanalysis" in repo["limitation"].lower()
+
+    # The import line itself must never appear anywhere in the report payload.
+    assert "import sys" not in _get_report(client, project_id).text
+
+
+def test_github_syspath_setup_line_evidence_downgraded(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A ``sys.path`` / repo-root bootstrap snippet is plumbing, not skill proof,
+    and is downgraded to the repo-level card."""
+    gpid = _seed_weak_github_proof(
+        mem_store,
+        evidence=[
+            {
+                "skill": "Google Cloud",
+                "file_path": "api.py",
+                "line_start": 14,
+                "line_end": 17,
+                "code_snippet": (
+                    "# Ensure repo root is on sys.path so src.predict.predictor is importable\n"
+                    "_REPO_ROOT = Path(__file__).resolve().parent"
+                ),
+                "github_url": f"{_PUBLIC_BLOB}/api.py#L14-L17",
+            }
+        ],
+        detected_skills=["Google Cloud"],
+    )
+    created = _create_project_defense(
+        client,
+        repo_url=None,
+        claimed_skills=["Google Cloud"],
+        attached_proofs={"github_proof_id": gpid},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    assert _github_code_traces(body) == []
+    repo = next(t for t in body["evidence_traces"] if t["trace_id"] == "github-proof")
+    assert "Google Cloud" in repo["weak_line_evidence_skills"]
+    assert "sys.path" not in _get_report(client, project_id).text
+
+
+def test_github_notebook_markdown_evidence_downgraded(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Raw ``.ipynb`` markdown narrative cells are not code and are downgraded."""
+    gpid = _seed_weak_github_proof(
+        mem_store,
+        evidence=[
+            {
+                "skill": "APIs",
+                "file_path": "second_model.ipynb",
+                "line_start": 123,
+                "line_end": 126,
+                "code_snippet": '"**APIs**\\n", "* Zillow API: https://pypi.python.org/pypi/pyzillow\\n"',
+                "github_url": f"{_PUBLIC_BLOB}/second_model.ipynb#L123-L126",
+            }
+        ],
+        detected_skills=["APIs"],
+    )
+    created = _create_project_defense(
+        client,
+        repo_url=None,
+        claimed_skills=["APIs"],
+        attached_proofs={"github_proof_id": gpid},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    assert _github_code_traces(body) == []
+    repo = next(t for t in body["evidence_traces"] if t["trace_id"] == "github-proof")
+    assert "APIs" in repo["weak_line_evidence_skills"]
+
+
+def test_github_prefers_strong_function_over_weak_import_for_same_skill(
+    client: TestClient, mem_store: dict
+) -> None:
+    """When a skill has BOTH a weak import snippet and a real function snippet,
+    the report surfaces the function snippet and never the import line."""
+    gpid = _seed_weak_github_proof(
+        mem_store,
+        evidence=[
+            {
+                "skill": "Python",
+                "file_path": "api.py",
+                "line_start": 6,
+                "line_end": 9,
+                "code_snippet": "import sys\nimport io",
+                "github_url": f"{_PUBLIC_BLOB}/api.py#L6-L9",
+            },
+            {
+                "skill": "Python",
+                "file_path": "src/model.py",
+                "line_start": 20,
+                "line_end": 34,
+                "function_name": "train_model",
+                "code_snippet": "def train_model(df):\n    return clf.fit(df)",
+                "github_url": f"{_PUBLIC_BLOB}/src/model.py#L20-L34",
+            },
+        ],
+        detected_skills=["Python"],
+    )
+    created = _create_project_defense(
+        client,
+        repo_url=None,
+        claimed_skills=["Python"],
+        attached_proofs={"github_proof_id": gpid},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    code = _github_code_traces(body)
+    files = {t["file_path"] for t in code}
+    assert files == {"src/model.py"}
+    fn = code[0]
+    assert fn["function_name"] == "train_model"
+    assert fn["skill_names"] == ["Python"]
+
+    # Python has strong evidence, so it is NOT flagged as needing reanalysis.
+    repo = next(t for t in body["evidence_traces"] if t["trace_id"] == "github-proof")
+    assert "Python" not in repo["weak_line_evidence_skills"]
+
+
+def test_github_strong_route_evidence_still_surfaced(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Genuine code (a FastAPI route + predict function — the real Boston ML
+    evidence) is still surfaced as a line-level trace (regression guard)."""
+    gpid = _seed_weak_github_proof(
+        mem_store,
+        evidence=[
+            {
+                "skill": "Machine Learning",
+                "file_path": "api.py",
+                "line_start": 252,
+                "line_end": 255,
+                "code_snippet": '@app.post("/predict")\ndef predict(request):\n    """Predict accident risk severity."""',
+                "github_url": f"{_PUBLIC_BLOB}/api.py#L252-L255",
+            }
+        ],
+        detected_skills=["Machine Learning"],
+    )
+    created = _create_project_defense(
+        client,
+        repo_url=None,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"github_proof_id": gpid},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    code = _github_code_traces(body)
+    assert len(code) == 1
+    ml = code[0]
+    assert ml["skill_names"] == ["Machine Learning"]
+    assert ml["line_start"] == 252 and ml["line_end"] == 255
+    assert ml["is_publicly_openable"] is True
+
+    repo = next(t for t in body["evidence_traces"] if t["trace_id"] == "github-proof")
+    assert repo["weak_line_evidence_skills"] == []
+
+
+def test_vbr_report_uses_shared_github_skill_evidence_filter() -> None:
+    """The VBR Project Report's weak-line classifier IS the canonical shared one,
+    so the Skill Report and the VBR Report downgrade weak GitHub evidence with the
+    exact same logic (no divergent duplicate filter)."""
+    from app.services import vbr_student_report
+    from app.services.github_skill_evidence_service import (
+        is_strong_code_snippet,
+        safe_code_snippet,
+        safe_commit_sha,
+    )
+
+    assert vbr_student_report._is_strong_code_snippet is is_strong_code_snippet
+    assert vbr_student_report._safe_code_snippet is safe_code_snippet
+    assert vbr_student_report._safe_commit_sha is safe_commit_sha
+
+
+def test_website_dom_card_drops_off_target_page_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """When the only DOM signal is an off-target page captured mid-session (e.g. a
+    Google Docs tab on docs.google.com while proving teachablemachine.withgoogle.com),
+    it is never surfaced as the target site's DOM summary."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        target_website="https://teachablemachine.withgoogle.com",
+        supported_skills=["Machine Learning"],
+        observed_demonstration={"dom_summary": ""},
+        page_context_summary=(
+            "DOM text was captured from 'MIT AI Ethics Curriculum - Google Docs' "
+            "(docs.google.com) page. Visible text included: Request edit access; Share."
+        ),
+        workflow_summary="The student demonstrated teachablemachine.withgoogle.com.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    raw = _get_report(client, project_id).text
+    assert "docs.google.com" not in raw
+    assert "Google Docs" not in raw
+
+    body = _get_report(client, project_id).json()
+    dom_cards = [t for t in body["evidence_traces"] if t["location_type"] == "website_dom"]
+    assert dom_cards == []
+
+
+# ── Phase 2: Website OCR/DOM/Qwen/NLP/live-check/workflow trace cards ─────────
+
+
+def _seed_rich_website(mem_store: dict, **overrides) -> str:
+    """A Website Proof session with the deeper safe artifacts populated."""
+    fields: dict = {
+        "target_website": "https://demo.example.com",
+        "supported_skills": ["Machine Learning", "React"],
+        "workflow_summary": "The user uploaded an image and the model returned a classification.",
+        "demonstrated_actions": ["Clicked Upload", "Selected an image", "Read the prediction"],
+        "observed_demonstration": {"dom_summary": "A prediction label and confidence bar were rendered."},
+        "page_context_summary": "Image classification demo page.",
+        "dom_evidence_status": "available",
+        "frame_ocr_evidence_summary": {
+            "has_ocr_evidence": True,
+            "top_ocr_snippets": ["Prediction: cat", "Confidence: high"],
+            "matched_ui_labels": ["Upload", "Classify"],
+            "frames_analyzed": 4,
+        },
+        "visual_reasoning_summary": {
+            "status": "analyzed",
+            "frames_analyzed": 4,
+            "summary": "The interface shows an image being classified with a visible result.",
+        },
+    }
+    fields.update(overrides)
+    session_id = _seed_workflow_analysis(mem_store, **fields)
+    # Live reachability check for the same session.
+    row_id = str(uuid4())
+    mem_store.setdefault("live_website_check_results", {})[row_id] = {
+        "id": row_id,
+        "user_id": USER_ID,
+        "proof_session_id": session_id,
+        "website_url": "https://demo.example.com",
+        "final_url": "https://demo.example.com/",
+        "page_title": "Image Classifier Demo",
+        "is_reachable": True,
+        "confidence": "high",
+        "recruiter_summary": "The deployed site responded successfully.",
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    return session_id
+
+
+def test_website_rich_artifact_trace_cards(client: TestClient, mem_store: dict) -> None:
+    """Saved OCR/DOM/visual/NLP/live-check/workflow summaries each become a
+    Website trace card when available."""
+    session_id = _seed_rich_website(mem_store)
+    created = _create_project_defense(
+        client, attached_proofs={"website_proof_session_ids": [session_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    web = [t for t in body["evidence_traces"] if t["source_type"] == "Website Proof"]
+    loc_types = {t["location_type"] for t in web}
+    assert {
+        "website_url",
+        "website_live_check",
+        "website_workflow",
+        "website_dom",
+        "website_ocr",
+        "website_visual",
+        "website_nlp",
+    } <= loc_types
+
+    ocr = next(t for t in web if t["location_type"] == "website_ocr")
+    assert ocr["location_label"] == "OCR summary"
+    assert "Prediction: cat" in ocr["safe_summary"]
+    assert "behaviour" in ocr["limitation"].lower()
+    # Supports the website's skills, not authorship.
+    assert "Machine Learning" in ocr["skill_names"]
+
+    live = next(t for t in web if t["location_type"] == "website_live_check")
+    assert "reachable" in live["safe_summary"].lower()
+
+
+def test_website_trace_cards_never_expose_raw_payloads(client: TestClient, mem_store: dict) -> None:
+    """Website trace cards never leak raw DOM/OCR/provider payloads or storage paths."""
+    session_id = _seed_rich_website(
+        mem_store,
+        # Try to smuggle unsafe data into the saved artifact.
+        observed_demonstration={
+            "dom_summary": "A prediction label was rendered.",
+            "screenshot_url": "https://bucket.example/secret.png",
+            "storage_path": "/private/bucket/raw.html",
+        },
+    )
+    created = _create_project_defense(
+        client, attached_proofs={"website_proof_session_ids": [session_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    raw = _get_report(client, project_id).text
+    for unsafe in ["screenshot_url", "storage_path", "secret.png", "/private/bucket", "signed_url"]:
+        assert unsafe not in raw, f"unsafe website fragment leaked: {unsafe!r}"
+
+
+def test_website_without_rich_artifacts_keeps_single_card(client: TestClient, mem_store: dict) -> None:
+    """A bare Website Proof (no deeper artifacts) still renders the single live-URL
+    card and no fabricated OCR/DOM/visual cards."""
+    session_id = _seed_workflow_analysis(mem_store)  # scoring fields only
+    created = _create_project_defense(
+        client, attached_proofs={"website_proof_session_ids": [session_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    web = [t for t in body["evidence_traces"] if t["source_type"] == "Website Proof"]
+    loc_types = {t["location_type"] for t in web}
+    assert "website_url" in loc_types
+    assert "website_ocr" not in loc_types
+    assert "website_dom" not in loc_types
+    # Bare proof carried no deeper artifacts, so the project-level card flags the
+    # missing-summary limitation honestly rather than implying depth.
+    url_card = next(t for t in web if t["location_type"] == "website_url")
+    assert "no safe OCR/DOM/vision/NLP summaries" in url_card["limitation"]
+
+
+def test_website_with_empty_supported_skills_is_project_level_evidence(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Website Proof attached with NO ``supported_skills`` still appears in Evidence
+    Traceability as project-level evidence (it maps to no skill row) and carries the
+    honest 'not mapped to specific skills' limitation."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    web = [t for t in body["evidence_traces"] if t["source_type"] == "Website Proof"]
+    # Still surfaced as a Website trace even with no supported skills.
+    assert web, "Website Proof must still appear as project-level evidence"
+    card = next(t for t in web if t["location_type"] in {"website_url", "website_proof"})
+    # Project-level: it maps to no skill row, so it can never overstate a claim.
+    assert card["skill_names"] == []
+    assert "no supported_skills" in card["limitation"]
+    # And it does NOT pollute any skill-matrix row's evidence traces.
+    for row in body["skill_evidence"]:
+        assert card["trace_id"] not in (row.get("evidence_traces") or [])
+
+
+# ── Phase 3: Document citation (matched section heading) ─────────────────────
+
+
+def test_document_citation_trace_when_section_recorded(client: TestClient, mem_store: dict) -> None:
+    """A document evidence object with a ``section_label`` (and no page) becomes a
+    'Doc: Citation' trace carrying the safe section heading."""
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Python", "section_label": "System Design", "snippet": "Built the API."}
+        ],
+    )
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    doc = next(
+        t for t in body["evidence_traces"]
+        if t["source_type"] == "Document Proof" and t["skill_names"] == ["Python"]
+    )
+    assert doc["location_type"] == "document_citation"
+    assert doc["location_label"] == "Citation"
+    assert doc["citation"] == "System Design"
+    assert doc["is_publicly_openable"] is False
+
+
+# ── Stale attached-document metadata rehydration (Boston root cause) ──────────
+
+
+def test_stale_attached_document_metadata_rehydrates_evidence_objects(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A document attached BEFORE per-skill evidence was recorded into project
+    metadata (stale ``attached_proofs.documents`` with no ``skills``) still
+    becomes skill-level Document Proof: the report re-reads the live
+    ``optional_evidence_submissions.evidence_objects`` at build time.
+
+    Mirrors the real Boston project — the attach-time summary lacks skills, but
+    the document row carries rich ``evidence_objects`` (skill_name + page/section
+    + snippet)."""
+    # 1. Seed the document with NO evidence_objects → attach-time skills are empty.
+    document_id = _seed_document_evidence(mem_store)
+
+    # 2. Attach it. metadata.attached_proofs.documents now has the id/title/
+    #    status/source_type but skills == [] (stale, pre-skills metadata).
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    attached_docs = created["metadata"]["attached_proofs"]["documents"]
+    assert attached_docs[0]["document_evidence_id"] == document_id
+    assert attached_docs[0]["skills"] == [], "precondition: attach metadata has no skills"
+
+    # 3. The REAL document row gains rich evidence_objects after attach (as in
+    #    Boston, where the analyzer's structured evidence outlives the stale
+    #    attach summary). Python is a claimed skill; "Rust" is not.
+    mem_store["optional_evidence_submissions"][document_id]["evidence_objects"] = [
+        {
+            "skill_name": "Python",
+            "snippet": "Implements the FastAPI routing and request validation layer.",
+            "reason": "Describes the backend implementation.",
+            "page_number": 3,
+            "section_label": "Backend Architecture",
+            "line_start": 12,
+            "line_end": 40,
+        },
+        {
+            "skill_name": "Rust",  # not a claimed skill → must never map.
+            "snippet": "Unrelated systems note.",
+            "page_number": 9,
+        },
+    ]
+
+    body = _get_report(client, project_id).json()
+
+    # Document Proof trace is now SKILL-LEVEL for the matched claimed skill.
+    doc_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Document Proof"]
+    py = next(t for t in doc_traces if t["skill_names"] == ["Python"])
+    assert py["page_number"] == 3
+    assert py["location_label"] == "Page 3"
+    assert "FastAPI routing" in py["snippet"]
+    assert py["citation"] == "Backend Architecture"
+    assert py["is_publicly_openable"] is False
+    assert py["public_url"] is None
+
+    # Skill matrix includes Document Proof for the matched skill only.
+    rows = _rows_by_skill(body)
+    assert "Document Proof" in rows["Python"]["supporting_sources"]
+    assert rows["Python"]["status"] == "Supporting evidence"
+
+    # The unrelated claimed skill (React) gets NO Document Proof, and the
+    # unclaimed evidence_objects skill (Rust) never appears at all.
+    assert "Document Proof" not in rows["React"]["supporting_sources"]
+    assert all(t["skill_names"] == ["Python"] for t in doc_traces)
+    assert "Rust" not in _get_report(client, project_id).text
+
+
+# ── Website Proof: never auto-attached when not in project metadata ───────────
+
+
+def test_report_does_not_auto_attach_unrelated_website_proofs(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Unrelated Website Proofs owned by the same user but NOT attached to this
+    project must never be auto-attached into the PRIMARY attached-proof section:
+    the attached matrix/traces read only the project's own
+    ``attached_proofs.website_proofs``.
+
+    They MAY, however, surface in the separate "Other student proofs for related
+    skills" vault section — clearly labelled as not attached to this project — so
+    the report stays project-honest without hiding the student's real evidence.
+    """
+    # An unrelated website proof exists for the same user, but is never attached.
+    _seed_workflow_analysis(
+        mem_store,
+        target_website="https://unrelated.example.com",
+        supported_skills=["Python", "React"],
+    )
+
+    created = _create_project_defense(client).json()  # no website_proofs attached
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    # Primary attached section: the unrelated proof is absent.
+    assert body["website_proofs"] == []
+    assert body["evidence_package"]["website_proofs_count"] == 0
+    web_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Website Proof"]
+    assert web_traces == [], "unrelated Website Proof must not be auto-attached"
+    assert "Website proof not attached." in body["limitations"]
+
+    # Secondary vault section: it surfaces as a cross-proof match for the project's
+    # claimed skills, clearly labelled as not attached to this project.
+    vault_web = [
+        proof
+        for group in body["other_student_proofs"]
+        for proof in group["proofs"]
+        if proof["proof_type"] == "Website Proof"
+    ]
+    assert vault_web, "unrelated Website Proof should appear as an 'other student proof'"
+    for proof in vault_web:
+        assert proof["is_attached_to_project"] is False
+        assert "Not attached to a VBR project." in proof["limitation"]
+
+
+# ── Website Proof: attached + empty supported_skills ⇒ project-level trace ────
+
+
+def test_attached_website_with_empty_supported_skills_still_counts_as_project_level_website_trace(
+    client: TestClient, mem_store: dict
+) -> None:
+    """An attached Website Proof whose saved detail has empty ``supported_skills``
+    still produces at least one Website Proof trace — project-level (no skill
+    mapping) — with a limitation explaining it was not mapped because the saved
+    proof carries no supported_skills."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        target_website="https://app.example.com",
+        supported_skills=[],
+        weakly_supported_skills=[],
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    web = [t for t in body["evidence_traces"] if t["source_type"] == "Website Proof"]
+    assert web, "attached Website Proof must still appear as project-level evidence"
+
+    primary = next(t for t in web if t["location_type"] in {"website_url", "website_proof"})
+    # Project-level: maps to no skill row, so it can never overstate a per-skill claim.
+    assert primary["skill_names"] == []
+    assert "not mapped to specific skills" in primary["limitation"]
+    assert "supported_skills" in primary["limitation"]
+
+    # It does not pollute any skill-matrix row.
+    for row in body["skill_evidence"]:
+        assert primary["trace_id"] not in (row.get("evidence_traces") or [])
+
+
+# ── Website detail service is invoked for an attached Website Proof ──────────
+
+
+def test_website_detail_service_is_used_for_attached_website_proof(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The report hydrates deeper Website Proof artifacts through
+    ``website_proof_detail_service.get_website_proof_detail`` — confirmed by a spy
+    — and emits the live/workflow/OCR/visual cards it returns."""
+    import app.services.vbr_student_report as report_mod
+
+    session_id = _seed_rich_website(mem_store)
+
+    real = report_mod.get_website_proof_detail
+    calls: list[str] = []
+
+    def _spy(db, user_id, proof_session_id):
+        calls.append(str(proof_session_id))
+        return real(db, user_id, proof_session_id)
+
+    monkeypatch.setattr(report_mod, "get_website_proof_detail", _spy)
+
+    created = _create_project_defense(
+        client, attached_proofs={"website_proof_session_ids": [session_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    # The detail service was invoked for the attached session.
+    assert session_id in calls
+
+    # The live/workflow/OCR/visual cards it produced are emitted.
+    web = [t for t in body["evidence_traces"] if t["source_type"] == "Website Proof"]
+    loc_types = {t["location_type"] for t in web}
+    assert {
+        "website_live_check",
+        "website_workflow",
+        "website_ocr",
+        "website_visual",
+    } <= loc_types

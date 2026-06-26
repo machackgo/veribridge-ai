@@ -26,6 +26,7 @@ import {
   type BadgeTone,
 } from "../../../../../../../components/passport/shared"
 import { EvidenceTraceList } from "../../../../../../../components/passport/EvidenceTrace"
+import { VaultSkillLinkList } from "../../../../../../../components/passport/VaultProofs"
 
 // Keeps an in-page anchor target clear of the sticky top chrome when the jump
 // nav or a skill-matrix link scrolls to it.
@@ -579,6 +580,28 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             evidence is summarized and never exposed as raw files.
           </p>
           <EvidenceTraceList traces={evidenceTraces} />
+        </Card>
+      )}
+
+      {/* Other student proofs for related skills — cross-proof vault matches.
+          These are NOT attached to this project; they are shown separately from
+          the attached skill matrix above so the report stays project-honest. */}
+      {(report.other_student_proofs?.length ?? 0) > 0 && (
+        <Card id="other-student-proofs" style={ANCHOR_OFFSET}>
+          <div data-testid="other-student-proofs">
+            <CardHeader
+              title="Other Student Proofs for Related Skills"
+              eyebrow="From your wider proof vault — not attached to this project"
+              icon="🗂️"
+            />
+            <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
+              These are other safe proofs you own that match this project&apos;s claimed skills but are{" "}
+              <strong>not attached to this project</strong>. They are summarised here as cross-proof / vault evidence —
+              open the full <strong>Skill Report</strong> to inspect the connected evidence. They are never counted as
+              this project&apos;s attached evidence.
+            </p>
+            <VaultSkillLinkList groups={report.other_student_proofs} />
+          </div>
         </Card>
       )}
 
