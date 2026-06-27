@@ -15,6 +15,8 @@ numeric trust scores.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from app.schemas.vbr_sessions import VideoEvidenceChipResponse
@@ -363,6 +365,34 @@ class SkillProofSynthesisStatement(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class NormalizedEvidenceArtifact(BaseModel):
+    """One proof normalized into the Evidence Normalization Engine's uniform shape.
+
+    A single internal model across every proof surface (GitHub / Website /
+    Document / Defense / Video / Skill Graph) that the Proof Synthesis Agent
+    consumes instead of each source's own messy shape. ``metadata`` holds only
+    already-safe internal locators; it is dropped from any public-safe projection.
+    """
+
+    evidence_id: str = ""
+    source_type: str = ""
+    skill_name: str | None = None
+    canonical_skill_name: str | None = None
+    subskill_name: str | None = None
+    project_id: str | None = None
+    project_title: str | None = None
+    source_id: str = ""
+    source_label: str = ""
+    exact_location: str | None = None
+    safe_summary: str = ""
+    proof_strength: str = ""
+    public_safe: bool = False
+    limitations: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
 class SkillReportProjectChain(BaseModel):
     """One project's connected proof chain for a skill — artifacts + corroboration.
 
@@ -404,6 +434,8 @@ class SkillReportProjectChain(BaseModel):
     subskills: list[str] = Field(default_factory=list)
     # Evidence-cited synthesis statements (each references real evidence ids).
     synthesis_statements: list[SkillProofSynthesisStatement] = Field(default_factory=list)
+    # Step 2: this chain's evidence collapsed into the uniform normalized model.
+    normalized_evidence: list[NormalizedEvidenceArtifact] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 

@@ -34,6 +34,17 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.services.evidence_normalization_service import (
+    SOURCE_DEFENSE,
+    SOURCE_DOCUMENT,
+    SOURCE_GITHUB,
+    SOURCE_VIDEO,
+    SOURCE_WEBSITE,
+    has_precise_code,
+    has_source,
+    normalize_chain,
+)
+
 logger = logging.getLogger(__name__)
 
 # Recruiter-facing proof-source labels (mirror student_proof_vault_service).
@@ -67,14 +78,6 @@ __all__ = [
 
 
 # ── Evidence helpers (operate ONLY on already-safe Skill Report items) ────────
-
-
-def _has_precise_code(github: list[dict[str, Any]]) -> bool:
-    """True when a chain carries precise, line-level GitHub code evidence."""
-    return any(
-        g.get("display_mode") == "code_line" and g.get("has_precise_line_evidence")
-        for g in github
-    )
 
 
 def _github_location(item: dict[str, Any]) -> str:
@@ -262,27 +265,31 @@ def _subskills(github: list[dict[str, Any]]) -> list[str]:
 def _enrich_chain(skill: str, chain: dict[str, Any]) -> dict[str, Any]:
     """Annotate one Skill Report chain in place with synthesis fields.
 
-    Adds ``confidence_tier``, ``synthesis_result``, ``why_linked``, ``subskills``
-    and evidence-cited ``synthesis_statements`` — the chain keeps every original
-    field, so existing consumers are unaffected.
+    Adds ``confidence_tier``, ``synthesis_result``, ``why_linked``, ``subskills``,
+    evidence-cited ``synthesis_statements`` and the uniform ``normalized_evidence``
+    set (Step 2's Evidence Normalization Engine output) — the chain keeps every
+    original field, so existing consumers are unaffected.
     """
     github = chain.get("github_evidence") or []
-    website = chain.get("website_evidence") or []
-    defense = (chain.get("defense_evidence") or []) + (chain.get("video_evidence") or [])
-    documents = chain.get("document_correlations") or []
+
+    # Step 2: collapse this chain's mixed-shape evidence into the single internal
+    # NormalizedEvidenceArtifact model, then tier from THAT uniform set so the
+    # source/strength logic lives in one place (the normalizer), not per-source here.
+    artifacts = normalize_chain(chain, skill)
 
     tier = _confidence_tier(
-        has_precise_code=_has_precise_code(github),
-        has_github_any=bool(github),
-        has_website=bool(website),
-        has_defense=bool(defense),
-        has_document=bool(documents),
+        has_precise_code=has_precise_code(artifacts),
+        has_github_any=has_source(artifacts, SOURCE_GITHUB),
+        has_website=has_source(artifacts, SOURCE_WEBSITE),
+        has_defense=has_source(artifacts, SOURCE_DEFENSE, SOURCE_VIDEO),
+        has_document=has_source(artifacts, SOURCE_DOCUMENT),
         has_skill_graph=False,
     )
     allowed_ids = _chain_evidence_ids(chain)
     statements = _build_statements(skill, chain, allowed_ids)
 
     chain["confidence_tier"] = tier
+    chain["normalized_evidence"] = [a.to_dict() for a in artifacts]
     chain["subskills"] = _subskills(github)
     chain["synthesis_statements"] = statements
     chain["synthesis_result"] = _synthesis_result(
