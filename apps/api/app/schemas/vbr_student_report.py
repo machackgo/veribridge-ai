@@ -529,6 +529,12 @@ class SkillReportResponse(BaseModel):
     unlinked_supporting_evidence: SkillProofSynthesisUnlinked = Field(
         default_factory=SkillProofSynthesisUnlinked
     )
+    # ── Cross-Proof Linking Engine output (Step 3) ────────────────────────────
+    # Deterministically linked proof chains across normalized evidence (same
+    # project / repo / endpoint / function). Each carries safe ``ev_…`` evidence
+    # ids so later synthesis can cite the exact evidence. Additive — the existing
+    # ``proof_chains`` above remain the primary recruiter-facing chains.
+    linked_proof_chains: list[dict[str, Any]] = Field(default_factory=list)
     # Flat per-source lists (back-compat; the connected chains above are primary).
     github: list[SkillReportEvidenceItem] = Field(default_factory=list)
     website: list[SkillReportEvidenceItem] = Field(default_factory=list)

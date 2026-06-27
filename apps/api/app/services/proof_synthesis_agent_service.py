@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.services.cross_proof_linking_service import link_proof_chains
 from app.services.evidence_normalization_service import (
     SOURCE_DEFENSE,
     SOURCE_DOCUMENT,
@@ -43,6 +44,7 @@ from app.services.evidence_normalization_service import (
     has_precise_code,
     has_source,
     normalize_chain,
+    normalize_skill_report,
 )
 
 logger = logging.getLogger(__name__)
@@ -428,11 +430,18 @@ def synthesize_skill_report(report: dict[str, Any]) -> dict[str, Any]:
     unlinked = _build_unlinked(report)
     summary = _synthesis_summary(skill, proof_chains, coverage)
 
+    # Step 3: collapse the whole report into the uniform artifact set and link
+    # related evidence (same project / repo / endpoint / function) into connected
+    # proof chains. Additive — existing keys above are untouched, so every prior
+    # consumer of the synthesis output is unaffected.
+    linked_chains = link_proof_chains(normalize_skill_report(report))
+
     return {
         "synthesis_summary": summary,
         "source_coverage": coverage,
         "proof_chains": proof_chains,
         "unlinked_supporting_evidence": unlinked,
+        "linked_proof_chains": [c.to_dict() for c in linked_chains],
     }
 
 
