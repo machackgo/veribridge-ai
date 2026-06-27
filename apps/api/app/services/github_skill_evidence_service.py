@@ -33,7 +33,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from app.services.safe_public_url import is_safe_public_url
+from app.services.safe_public_url import is_safe_public_url, safe_repo_relative_path
 from app.services.skill_normalization import canonical_skill
 
 __all__ = [
@@ -276,7 +276,11 @@ def build_github_line_url(
     base = str(repo_url or "").rstrip("/")
     if not public_safe or not base or not is_safe_public_url(base) or "github.com" not in base:
         return None
-    clean_path = str(file_path or "").lstrip("/")
+    # Defense-in-depth: never build a blob link from an absolute / local /
+    # Windows / file:// path — reject it instead of lstrip("/")-ing it into a
+    # fake repo-relative one (callers already sanitize, but this is the gate
+    # that actually emits the public URL).
+    clean_path = safe_repo_relative_path(file_path)
     if not clean_path:
         return None
     ref = commit_sha or (str(branch or "").strip() or "HEAD")
@@ -486,11 +490,11 @@ def extract_github_skill_evidence(
             if not isinstance(raw, dict):
                 continue
             skill = str(raw.get("skill") or "").strip()
-            file_path = str(raw.get("file_path") or "").strip().lstrip("/")
+            # Reject absolute / local / Windows / UNC / file:// / traversal
+            # paths outright — never lstrip("/") an absolute path into a fake
+            # repo-relative one (would leak a private filesystem location).
+            file_path = safe_repo_relative_path(raw.get("file_path"))
             if not skill or not file_path:
-                continue
-            # Reject traversal / absolute paths outright.
-            if "://" in file_path or ".." in file_path.split("/"):
                 continue
 
             line_start = _line(raw.get("line_start"))

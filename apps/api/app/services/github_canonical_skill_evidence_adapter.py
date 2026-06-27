@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.services.github_skill_evidence_service import build_github_line_url, safe_commit_sha
-from app.services.safe_public_url import is_safe_public_url
+from app.services.safe_public_url import is_safe_public_url, safe_repo_relative_path
 from app.services.skill_normalization import canonical_skill
 
 __all__ = [
@@ -194,11 +194,11 @@ def _is_github_source_code_row(row: dict[str, Any]) -> bool:
 
 def _build_item(row: dict[str, Any]) -> CanonicalGitHubEvidence | None:
     skill = str(row.get("skill_name") or "").strip()
-    file_path = str(row.get("file_path") or "").strip().lstrip("/")
+    # Reject absolute / local / Windows / UNC / file:// / traversal paths
+    # outright — never lstrip("/") an absolute path into a fake repo-relative
+    # one that would leak a private filesystem location into a public link.
+    file_path = safe_repo_relative_path(row.get("file_path"))
     if not skill or not file_path:
-        return None
-    # Reject traversal / absolute paths outright (mirrors the snapshot extractor).
-    if "://" in file_path or ".." in file_path.split("/"):
         return None
 
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}

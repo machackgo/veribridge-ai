@@ -876,6 +876,112 @@ def _seed_github_proof_with_code_evidence(mem_store: dict, **overrides) -> str:
     return _seed_github_proof(mem_store, analysis_snapshot=snapshot, **overrides)
 
 
+_BLOB_HOSTILE_PATHS = [
+    "/Users/alice/private/secret.py",
+    "/etc/passwd",
+    "C:\\Users\\alice\\private\\secret.py",
+    "C:/Users/alice/private/secret.py",
+    "file:///Users/alice/private/secret.py",
+    "file:/Users/alice/private/secret.py",
+    "../secrets.py",
+    "..\\secrets.py",
+    "~/secret.py",
+    "%2e%2e/secrets.py",
+    "%252e%252e/secrets.py",
+]
+
+
+@pytest.mark.parametrize("file_path", _BLOB_HOSTILE_PATHS)
+def test_blob_url_rejects_unsafe_paths(file_path: str) -> None:
+    """must-fix: ``_blob_url`` routes ``file_path`` through
+    ``safe_repo_relative_path`` — an absolute / local / Windows / file:// /
+    traversal / encoded path yields ``None``, never a fake repo-relative link."""
+    from app.services.vbr_student_report import _blob_url
+
+    repo_url = "https://github.com/octocat/Hello-World"
+    assert _blob_url(repo_url, "main", file_path) is None
+
+
+@pytest.mark.parametrize(
+    "file_path",
+    ["apps/api/main.py", "src/components/Button.tsx", "README.md"],
+)
+def test_blob_url_builds_link_for_safe_paths(file_path: str) -> None:
+    """must-fix: ``_blob_url`` still builds a github blob link for genuine
+    repo-relative paths."""
+    from app.services.vbr_student_report import _blob_url
+
+    repo_url = "https://github.com/octocat/Hello-World"
+    assert _blob_url(repo_url, "main", file_path) == (
+        f"https://github.com/octocat/Hello-World/blob/main/{file_path}"
+    )
+
+
+def test_blob_url_normalizes_safe_backslash_path() -> None:
+    """A safe relative path with backslashes is normalized, not rejected."""
+    from app.services.vbr_student_report import _blob_url
+
+    repo_url = "https://github.com/octocat/Hello-World"
+    assert _blob_url(repo_url, "main", "src\\components\\Button.tsx") == (
+        "https://github.com/octocat/Hello-World/blob/main/src/components/Button.tsx"
+    )
+
+
+def test_github_code_evidence_drops_absolute_and_local_file_paths(
+    client: TestClient, mem_store: dict
+) -> None:
+    """must-fix: an absolute / local / Windows / file:// file_path in
+    ``skill_code_evidence`` must be dropped — never lstrip("/")-ed into a fake
+    repo-relative locator that leaks a private filesystem path into the public
+    report's evidence traces / blob links."""
+    snapshot = {
+        "raw_dump": "should-never-leak",
+        "skill_code_evidence": [
+            {"skill": "Python", "file_path": "/Users/alice/private/secret.py", "line_start": 1},
+            {"skill": "Python", "file_path": "/etc/passwd", "line_start": 1},
+            {"skill": "Python", "file_path": "C:\\Users\\alice\\private\\secret.py", "line_start": 1},
+            {"skill": "Python", "file_path": "C:/Users/alice/private/secret.py", "line_start": 1},
+            {"skill": "Python", "file_path": "file:///Users/alice/private/secret.py", "line_start": 1},
+            {"skill": "Python", "file_path": "../secrets.py", "line_start": 1},
+            {"skill": "Python", "file_path": "..\\secrets.py", "line_start": 1},
+            # A genuine repo-relative path still survives end-to-end.
+            {
+                "skill": "Python",
+                "file_path": "src/main.py",
+                "line_start": 5,
+                "line_end": 9,
+                "function_name": "classify_image",
+                "commit_sha": "ABCDEF0123456789abcdef0123456789abcdef01",
+                "code_snippet": "def classify_image(img):\n    return model.predict(img)",
+                "github_url": f"{_PUBLIC_BLOB}/src/main.py#L5-L9",
+            },
+        ],
+    }
+    github_proof_id = _seed_github_proof(mem_store, analysis_snapshot=snapshot)
+    created = _create_project_defense(
+        client, repo_url=None, attached_proofs={"github_proof_id": github_proof_id}
+    ).json()
+    project_id = created["project"]["id"]
+
+    raw = _get_report(client, project_id).text
+    for leaked in (
+        "Users/alice",
+        "etc/passwd",
+        "secret.py",
+        "C:",
+        "file://",
+    ):
+        assert leaked not in raw, f"leaked fragment: {leaked!r}"
+
+    body = _get_report(client, project_id).json()
+    code_paths = [
+        t["file_path"]
+        for t in body["evidence_traces"]
+        if str(t.get("location_type", "")).startswith("github_") and t.get("file_path")
+    ]
+    assert "src/main.py" in code_paths
+
+
 def test_github_code_evidence_produces_line_and_function_traces(
     client: TestClient, mem_store: dict
 ) -> None:

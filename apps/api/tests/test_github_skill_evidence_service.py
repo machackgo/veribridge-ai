@@ -363,3 +363,44 @@ def test_adapter_hides_link_for_private_proof() -> None:
     # The locator path/line is still known (just not publicly linkable).
     assert ev.file_path == "app/api/routes.py"
     assert ev.to_dict()["repo_url"] is None
+
+
+# ── must-fix: absolute/local paths never reach public evidence ────────────────
+
+_HOSTILE_FILE_PATHS = [
+    "/Users/alice/private/secret.py",
+    "/etc/passwd",
+    "C:\\Users\\alice\\private\\secret.py",
+    "C:/Users/alice/private/secret.py",
+    "file:///Users/alice/private/secret.py",
+    "../secrets.py",
+    "..\\secrets.py",
+]
+
+
+def test_extractor_drops_absolute_and_local_file_paths() -> None:
+    # Service path (github_skill_evidence_service line ~489): a row whose
+    # file_path is absolute/local/Windows/file:// must be dropped, not
+    # lstrip("/")-ed into a fake repo-relative locator.
+    evidence = [
+        {"skill": f"Skill {i}", "file_path": p, "line_start": 1, "line_end": 2}
+        for i, p in enumerate(_HOSTILE_FILE_PATHS)
+    ]
+    evidence.append({"skill": "Safe", "file_path": "apps/api/main.py", "line_start": 1, "line_end": 2})
+    result = extract_github_skill_evidence(_gh_row(evidence))
+    paths = [item.file_path for item in result.items]
+    assert paths == ["apps/api/main.py"]
+    blob = "\n".join(filter(None, [item.github_url for item in result.items] + paths))
+    for leaked in ("Users/alice", "etc/passwd", "secret.py", ".."):
+        assert leaked not in blob
+
+
+def test_adapter_drops_absolute_and_local_file_paths() -> None:
+    # Adapter path (github_canonical_skill_evidence_adapter line ~197): same
+    # rejection from the skill_evidence-row source.
+    store: dict = {}
+    for i, p in enumerate(_HOSTILE_FILE_PATHS):
+        _seed_skill_evidence_row(store, id=f"se-bad-{i}", file_path=p, metadata={})
+    items = collect_canonical_github_skill_evidence(store, _USER)
+    assert items == []
+

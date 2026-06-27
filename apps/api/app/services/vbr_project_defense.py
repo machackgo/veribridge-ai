@@ -31,6 +31,7 @@ from app.schemas.vbr_project_defense import (
 from app.services.github_evidence_service import parse_github_repo_url
 from app.services.github_proof_service import GitHubProofNotFoundError, GitHubProofService
 from app.services.optional_evidence_service import OptionalEvidenceService
+from app.services.safe_public_url import safe_repo_relative_path
 from app.services.project_defense_analysis_service import analyze_defense_transcript
 from app.services.project_defense_evidence_chips import build_evidence_chips
 from app.services.website_proof_summary_service import get_website_proof_summary
@@ -84,8 +85,11 @@ def _safe_evidence_file_paths(repo_metadata: Any) -> list[str]:
         return []
     out: list[str] = []
     for raw in repo_metadata.get("evidence_files") or []:
-        path = str(raw).strip().lstrip("/")
-        if not path or "://" in path or ".." in path.split("/"):
+        # Reject absolute / local / Windows / UNC / file:// paths outright —
+        # never lstrip("/") them into a fake repo-relative path (would leak a
+        # private filesystem location into public evidence traces).
+        path = safe_repo_relative_path(raw)
+        if not path:
             continue
         out.append(path)
     return list(dict.fromkeys(out))[:20]

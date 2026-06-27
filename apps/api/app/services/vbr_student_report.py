@@ -39,7 +39,7 @@ from app.services.github_skill_evidence_service import (
 from app.services.github_skill_evidence_service import (
     safe_commit_sha as _safe_commit_sha,
 )
-from app.services.safe_public_url import is_safe_public_url
+from app.services.safe_public_url import is_safe_public_url, safe_repo_relative_path
 from app.services.skill_evidence_pipeline_service import (
     PipelineNotFoundError,
     SkillEvidencePipelineService,
@@ -385,10 +385,11 @@ def _github_code_evidence(db: Any, github_proof: dict[str, Any] | None) -> list[
         if not isinstance(item, dict):
             continue
         skill = str(item.get("skill") or "").strip()
-        file_path = str(item.get("file_path") or "").strip().lstrip("/")
+        # Reject absolute / local / Windows / UNC / file:// / traversal paths
+        # outright — never lstrip("/") an absolute path into a fake repo-relative
+        # one that would leak a private filesystem location into a public link.
+        file_path = safe_repo_relative_path(item.get("file_path"))
         if not skill or not file_path:
-            continue
-        if "://" in file_path or ".." in file_path.split("/"):
             continue
 
         def _line(value: Any) -> int | None:
@@ -620,12 +621,21 @@ def _blob_url(repo_url: str | None, branch: str | None, file_path: str) -> str |
 
     Returns ``None`` unless the repo URL is a safe public github.com target, so
     a private/internal repo file is never advertised as openable.
+
+    The ``file_path`` is routed through :func:`safe_repo_relative_path` (the same
+    gate as :func:`build_github_line_url`) so an absolute / local / Windows /
+    UNC / ``file://`` / traversal / encoded-traversal path is *rejected* — never
+    ``lstrip("/")``-ed into a fake repo-relative link that leaks a developer's
+    private filesystem into public output.
     """
     base = str(repo_url or "").rstrip("/")
     if not base or not is_safe_public_url(base) or "github.com" not in base:
         return None
+    clean_path = safe_repo_relative_path(file_path)
+    if not clean_path:
+        return None
     ref = (str(branch or "").strip() or "HEAD")
-    return f"{base}/blob/{ref}/{file_path.lstrip('/')}"
+    return f"{base}/blob/{ref}/{clean_path}"
 
 
 def _safe_domain(url: str) -> str | None:
