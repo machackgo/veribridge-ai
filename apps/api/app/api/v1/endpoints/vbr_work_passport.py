@@ -18,12 +18,20 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_user_id, get_db, get_pipeline_db
+from app.schemas.proof_reanalysis import (
+    ProofReanalysisRequestBody,
+    ProofReanalysisResultResponse,
+)
 from app.schemas.vbr_student_report import SkillReportResponse
 from app.schemas.vbr_work_passport import (
     PrivateWorkPassportResponse,
     PublicWorkPassportResponse,
     PublishPassportRequest,
     WorkPassportStatusResponse,
+)
+from app.services.proof_reanalysis_service import (
+    ProofReanalysisRequest,
+    reanalyze_student_proofs,
 )
 from app.services.student_proof_vault_service import collect_skill_report
 from app.services.vbr_work_passport_service import (
@@ -63,6 +71,37 @@ def get_skill_report_route(
     pipeline_db: Any = Depends(get_pipeline_db),
 ) -> SkillReportResponse:
     return SkillReportResponse(**collect_skill_report(db, pipeline_db, user_id, skill))
+
+
+@student_router.post(
+    "/passport/reanalyze",
+    response_model=ProofReanalysisResultResponse,
+    summary="Explicitly reanalyze (backfill) the current user's own proofs",
+)
+def reanalyze_passport_route(
+    body: ProofReanalysisRequestBody | None = None,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> ProofReanalysisResultResponse:
+    """Owner-only, explicit Step-6 reanalysis of the caller's existing proofs.
+
+    ``student_id`` is taken from the auth token (never the request body), so a
+    caller can only ever reanalyze their OWN proofs. Returns the recruiter-safe
+    public projection — aggregate counts, safe reasons and safe evidence-id
+    hashes only.
+    """
+    payload = body or ProofReanalysisRequestBody()
+    request = ProofReanalysisRequest(
+        student_id=user_id,
+        project_id=payload.project_id,
+        skill_name=payload.skill_name,
+        proof_types=tuple(payload.proof_types) if payload.proof_types else None,
+        include_llm_synthesis=payload.include_llm_synthesis,
+        dry_run=payload.dry_run,
+    )
+    result = reanalyze_student_proofs(db, pipeline_db, request)
+    return ProofReanalysisResultResponse(**result.public_view())
 
 
 @student_router.get(

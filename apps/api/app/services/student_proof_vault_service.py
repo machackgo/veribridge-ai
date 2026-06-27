@@ -1451,7 +1451,9 @@ def _group_chains_by_title(chains: list[dict[str, Any]]) -> list[dict[str, Any]]
     return grouped
 
 
-def collect_skill_report(db: Any, pipeline_db: Any, user_id: str, skill_name: str) -> dict[str, Any]:
+def collect_skill_report(
+    db: Any, pipeline_db: Any, user_id: str, skill_name: str, *, synthesize: bool = True
+) -> dict[str, Any]:
     """Layer 2 — the FULL, recruiter-verifiable evidence for ONE skill.
 
     Returns all of this student's safe proof evidence for ``skill_name``
@@ -1460,6 +1462,12 @@ def collect_skill_report(db: Any, pipeline_db: Any, user_id: str, skill_name: st
     workflow/OCR/DOM/visual/live-check summaries (hydrated HERE, only for this
     skill's website proofs), Document page/section/snippet/citation, and
     Defense/Video timestamp chips. Includes per-project usage and honest gaps.
+
+    ``synthesize`` (default ``True``) embeds the Proof Synthesis Agent fields,
+    which run the Step-4 LLM Synthesis Layer (so the configured provider is
+    resolved). Callers that only need the deterministic per-source evidence — and
+    must NOT trigger any LLM provider — pass ``synthesize=False`` to get the raw,
+    synthesis-free report; the explicit Step-6 reanalysis gate does exactly this.
     """
     requested = str(skill_name)
     requested_slug = skill_slug(requested)
@@ -1739,10 +1747,13 @@ def collect_skill_report(db: Any, pipeline_db: Any, user_id: str, skill_name: st
     # Proof Synthesis Agent — connect the per-source evidence above into
     # recruiter-verifiable proof chains (confidence tier, evidence-cited synthesis
     # statements, why-linked) and a capped "unlinked supporting evidence" bucket.
-    # Deterministic; never calls an LLM and never re-reads raw source tables.
-    from app.services.proof_synthesis_agent_service import synthesize_skill_report
+    # This runs the Step-4 LLM Synthesis Layer, so it is skipped entirely when a
+    # caller asks for the synthesis-free report (``synthesize=False``) — that path
+    # never resolves or calls an LLM provider.
+    if synthesize:
+        from app.services.proof_synthesis_agent_service import synthesize_skill_report
 
-    report.update(synthesize_skill_report(report))
+        report.update(synthesize_skill_report(report))
     return report
 
 
