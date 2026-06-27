@@ -1,15 +1,20 @@
 "use client"
 
+import type { ReactNode } from "react"
 import Link from "next/link"
 
 import {
   isSafePublicUrl,
   skillReportPath,
+  type SkillProofSynthesisStatement,
   type SkillProofSynthesisUnlinkedItem,
   type SkillReport,
   type SkillReportDocumentCorrelation,
   type SkillReportEvidenceItem,
+  type SkillReportLinkedChain,
   type SkillReportProjectChain,
+  type SkillSynthesisClaim,
+  type SkillSynthesisResult,
   type VaultProofItem,
   type VaultSkillGroup,
   type VaultSkillPreview,
@@ -591,8 +596,284 @@ function tierTone(tier?: string): BadgeTone {
   return "slate"
 }
 
+// ── Audit-grade synthesis: evidence citation chips + claim cards ───────────────
+
+// Normalized source_type (Evidence Normalization Engine) → recruiter-facing
+// label + chip tone. Mirrors the per-proof PROOF_TONE so a citation chip reads
+// the same as the proof card it points at.
+const NORMALIZED_SOURCE_LABEL: Record<string, string> = {
+  github: "GitHub",
+  website: "Website",
+  document: "Document",
+  defense: "Defense",
+  video: "Video",
+  skill_graph: "Skill Graph",
+}
+const NORMALIZED_SOURCE_TONE: Record<string, BadgeTone> = {
+  github: "indigo",
+  website: "purple",
+  document: "sky",
+  defense: "emerald",
+  video: "amber",
+  skill_graph: "slate",
+}
+
+type ResolvedEvidence = { label: string; sourceType: string }
+type EvidenceResolver = (id: string) => ResolvedEvidence | null
+
+/** A safe one-line locator for a per-chain proof item (never a raw id/payload). */
+function evidenceItemLabel(item: SkillReportEvidenceItem): string {
+  if (item.file_path) {
+    let loc = item.file_path
+    if (item.function_name) loc += ` · ${item.function_name}()`
+    else if (item.line_start) loc += ` · lines ${item.line_start}${item.line_end && item.line_end !== item.line_start ? `-${item.line_end}` : ""}`
+    return loc
+  }
+  return item.safe_location || item.title || item.safe_summary || ""
+}
+
+/**
+ * Resolve the safe ``ev_…`` ids cited by Step 4 synthesis claims back to the
+ * normalized member artifacts of the linked proof chains, so each citation chip
+ * reads as an audit reference (source + safe location) rather than an opaque id.
+ */
+function buildLinkedEvidenceResolver(chains?: SkillReportLinkedChain[] | null): EvidenceResolver {
+  const map = new Map<string, ResolvedEvidence>()
+  for (const chain of chains ?? []) {
+    for (const art of chain.evidence ?? []) {
+      if (!art.evidence_id) continue
+      map.set(art.evidence_id, {
+        sourceType: art.source_type,
+        label: art.exact_location || art.source_label || NORMALIZED_SOURCE_LABEL[art.source_type] || "",
+      })
+    }
+  }
+  return (id) => map.get(id) ?? null
+}
+
+/**
+ * Resolve the evidence ids cited by a chain's ``synthesis_statements`` (which
+ * reference that chain's own proof items) to a safe source + locator. Document
+ * correlations carry no per-item id, so only the rendered proof items are mapped.
+ */
+function buildChainEvidenceResolver(chain: SkillReportProjectChain): EvidenceResolver {
+  const map = new Map<string, ResolvedEvidence>()
+  const add = (items: SkillReportEvidenceItem[] | undefined, sourceType: string) => {
+    for (const item of items ?? []) {
+      if (!item.source_id) continue
+      map.set(item.source_id, { sourceType, label: evidenceItemLabel(item) })
+    }
+  }
+  add(chain.github_evidence, "github")
+  add(chain.website_evidence, "website")
+  add(chain.defense_evidence, "defense")
+  add(chain.video_evidence, "video")
+  for (const art of chain.normalized_evidence ?? []) {
+    if (!art.evidence_id) continue
+    map.set(art.evidence_id, {
+      sourceType: art.source_type,
+      label: art.exact_location || art.source_label || NORMALIZED_SOURCE_LABEL[art.source_type] || "",
+    })
+  }
+  return (id) => map.get(id) ?? null
+}
+
+/**
+ * One audit citation chip for a single evidence id. Renders the *resolved* safe
+ * source + locator — never the raw id (the underlying source_id may be private),
+ * never a score. Falls back to a neutral "Cited evidence" chip when the id can't
+ * be resolved to a safe label.
+ */
+function EvidenceCitationChip({ id, resolver }: { id: string; resolver?: EvidenceResolver }) {
+  const resolved = resolver?.(id) ?? null
+  const sourceType = resolved?.sourceType
+  const tone = (sourceType && NORMALIZED_SOURCE_TONE[sourceType]) || "slate"
+  const prefix = (sourceType && NORMALIZED_SOURCE_LABEL[sourceType]) || "Cited evidence"
+  const detail = resolved?.label && resolved.label !== prefix ? resolved.label : ""
+  return (
+    <span data-testid="evidence-citation-chip" data-source-type={sourceType ?? "unknown"}>
+      <Badge tone={tone}>{detail ? `${prefix} · ${detail}` : prefix}</Badge>
+    </span>
+  )
+}
+
+/** The citation chips row for a set of evidence ids. Renders nothing when empty. */
+function EvidenceCitations({ ids, resolver }: { ids: string[]; resolver?: EvidenceResolver }) {
+  if (!ids || ids.length === 0) return null
+  return (
+    <div data-testid="evidence-citations" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 11, color: TOKEN.muted }}>Cited evidence:</span>
+      {ids.map((id, i) => (
+        <EvidenceCitationChip key={`${id}-${i}`} id={id} resolver={resolver} />
+      ))}
+    </div>
+  )
+}
+
+/** A compact, reusable limitations panel (audit caveats — never a score). */
+function LimitationsPanel({ items, testId = "limitations-panel" }: { items: string[]; testId?: string }) {
+  if (!items || items.length === 0) return null
+  return (
+    <div data-testid={testId} style={{ fontSize: 11, color: TOKEN.muted }}>
+      <strong style={{ color: TOKEN.inkSoft }}>Limitation{items.length === 1 ? "" : "s"}: </strong>
+      <ul style={{ margin: "2px 0 0", paddingLeft: 18 }}>
+        {items.map((l, i) => (
+          <li key={`${l}-${i}`}>{l}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** A calm, audit-grade empty state (no data yet / nothing public-safe to show). */
+function EmptyState({ testId, children }: { testId: string; children: ReactNode }) {
+  return (
+    <div
+      data-testid={testId}
+      style={{
+        fontSize: 12,
+        color: TOKEN.muted,
+        fontStyle: "italic",
+        padding: "10px 12px",
+        border: `1px dashed ${TOKEN.line}`,
+        borderRadius: 8,
+        background: TOKEN.bg,
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
+/**
+ * One evidence-cited synthesis statement for a chain: the plain-language
+ * statement with the audit citation chips for the exact evidence it was built
+ * from. Statements with no citations are not shown (every shown claim must cite).
+ */
+function SynthesisStatementList({
+  statements,
+  resolver,
+}: {
+  statements?: SkillProofSynthesisStatement[]
+  resolver?: EvidenceResolver
+}) {
+  const cited = (statements ?? []).filter((s) => s.text && s.evidence_ids?.length > 0)
+  if (cited.length === 0) return null
+  return (
+    <div data-testid="chain-synthesis-statements" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {cited.map((s, i) => (
+        <div
+          key={`${s.text}-${i}`}
+          data-testid="chain-synthesis-statement"
+          style={{ display: "flex", flexDirection: "column", gap: 4 }}
+        >
+          <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{s.text}</p>
+          <EvidenceCitations ids={s.evidence_ids} resolver={resolver} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * One recruiter-readable VeriBridge synthesis claim (Step 4). Shows the claim,
+ * its qualitative tier (never a score), the audit citation chips for the exact
+ * evidence it cites, why the sources connect, and any limitations. Claims with
+ * no citations are filtered out by the caller — a shown claim always cites.
+ */
+function SynthesisClaimCard({ claim, resolver }: { claim: SkillSynthesisClaim; resolver?: EvidenceResolver }) {
+  return (
+    <div
+      data-testid="synthesis-claim"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: "10px 12px",
+        border: `1px solid ${TOKEN.line}`,
+        borderRadius: 8,
+        background: "#fff",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {claim.qualitative_tier && (
+          <span data-testid="synthesis-claim-tier">
+            <Badge tone={tierTone(claim.qualitative_tier)}>{claim.qualitative_tier}</Badge>
+          </span>
+        )}
+        {claim.public_safe === false && (
+          <span data-testid="synthesis-claim-private">
+            <Badge tone="slate">Private — not shown on public report</Badge>
+          </span>
+        )}
+      </div>
+      {claim.claim && <p style={{ fontSize: 13, color: TOKEN.ink, margin: 0, lineHeight: 1.5 }}>{claim.claim}</p>}
+      <EvidenceCitations ids={claim.supporting_evidence_ids} resolver={resolver} />
+      {claim.why_connected && (
+        <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          <strong style={{ color: TOKEN.inkSoft }}>Why connected: </strong>
+          {claim.why_connected}
+        </p>
+      )}
+      <LimitationsPanel items={claim.limitations} testId="synthesis-claim-limitations" />
+    </div>
+  )
+}
+
+/**
+ * The "What VeriBridge synthesis says" section — the Step 4 synthesis claims
+ * grouped by their linked proof chain, each claim fully cited to evidence chips.
+ * ``publicSafe`` (only true on a public surface) hides non-public-safe results.
+ * Returns ``null`` when there is genuinely nothing cited to show — the caller
+ * renders the appropriate empty state instead.
+ */
+function VeriBridgeSynthesisClaims({
+  results,
+  resolver,
+  publicSafe,
+}: {
+  results: SkillSynthesisResult[]
+  resolver?: EvidenceResolver
+  publicSafe: boolean
+}) {
+  const groups = results
+    .map((r) => ({
+      result: r,
+      claims: r.claims.filter((c) => c.supporting_evidence_ids.length > 0 && (!publicSafe || c.public_safe)),
+    }))
+    .filter((g) => g.claims.length > 0 && (!publicSafe || g.result.public_safe))
+  if (groups.length === 0) return null
+  return (
+    <div data-testid="synthesis-claim-groups" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {groups.map((g, gi) => (
+        <div
+          key={`${g.result.chain_id}-${gi}`}
+          data-testid="synthesis-claim-group"
+          style={{ display: "flex", flexDirection: "column", gap: 8 }}
+        >
+          {(g.result.project_title || g.result.canonical_skill_name) && (
+            <div style={{ fontSize: 12, fontWeight: 700, color: TOKEN.ink }}>
+              {g.result.project_title || g.result.canonical_skill_name}
+            </div>
+          )}
+          {g.result.overall_summary && (
+            <p data-testid="synthesis-group-summary" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+              {g.result.overall_summary}
+            </p>
+          )}
+          {g.claims.map((claim, ci) => (
+            <SynthesisClaimCard key={`${claim.claim_id}-${ci}`} claim={claim} resolver={resolver} />
+          ))}
+          <LimitationsPanel items={g.result.limitations} testId="synthesis-group-limitations" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** One project's connected proof chain: artifacts + corroborating documents. */
 function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
+  const evidenceResolver = buildChainEvidenceResolver(chain)
   return (
     <div
       data-testid="skill-report-chain"
@@ -660,6 +941,9 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
           {chain.why_linked}
         </p>
       )}
+      {/* Evidence-cited synthesis statements: each plain-language statement shows
+          the exact evidence chips it was built from (never an opaque id). */}
+      <SynthesisStatementList statements={chain.synthesis_statements} resolver={evidenceResolver} />
       <SkillReportSection testId="chain-github" title="Code implementation" items={chain.github_evidence} />
       <SkillReportSection testId="chain-website" title="Runtime / website behavior" items={chain.website_evidence} />
       <SkillReportSection testId="chain-defense" title="Defense / video explanation" items={chain.defense_evidence} />
@@ -709,13 +993,32 @@ function UnlinkedEvidenceCard({ item }: { item: SkillProofSynthesisUnlinkedItem 
   )
 }
 
-/** The full Skill Report for one skill — connected proof chains, never a dump. */
-export function SkillReportView({ report }: { report: SkillReport }) {
+/**
+ * The full Skill Report for one skill — a recruiter-trust instrument: connected
+ * proof chains, evidence-cited synthesis claims and honest limitations, never a
+ * raw dump. ``publicSafe`` (only true on a public surface) drops any synthesis
+ * claim/chain that is not public-safe; the default private view shows everything.
+ */
+export function SkillReportView({ report, publicSafe = false }: { report: SkillReport; publicSafe?: boolean }) {
   // Prefer the Proof Synthesis Agent's project-anchored chains; fall back to the
   // attached project chains for older payloads without synthesis fields.
   const attachedChains = report.proof_chains ?? report.projects?.filter((p) => p.attached) ?? []
   const unlinked = report.unlinked_supporting_evidence
   const std = report.standalone_evidence
+  // Step 4 synthesis claims, each cited to the Step 3 linked-chain evidence ids.
+  const synthesisResults = report.llm_synthesis ?? []
+  const evidenceResolver = buildLinkedEvidenceResolver(report.linked_proof_chains)
+  // Whether there is at least one cited, surface-appropriate synthesis claim.
+  const hasCitedSynthesis = synthesisResults.some(
+    (r) =>
+      (!publicSafe || r.public_safe) &&
+      r.claims.some((c) => c.supporting_evidence_ids.length > 0 && (!publicSafe || c.public_safe)),
+  )
+  // Synthesis exists but, on a public surface, none of it is public-safe.
+  const synthesisWithheld =
+    !hasCitedSynthesis &&
+    publicSafe &&
+    synthesisResults.some((r) => r.claims.some((c) => c.supporting_evidence_ids.length > 0))
   const hasStandalone = Boolean(
     std &&
       (std.github.length ||
@@ -766,17 +1069,42 @@ export function SkillReportView({ report }: { report: SkillReport }) {
         )}
       </div>
 
-      {/* B — Connected proof chains, one per project where the skill appears. */}
-      {attachedChains.length > 0 && (
-        <div data-testid="skill-report-chains" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
-            Connected proof chains
-          </h3>
-          {attachedChains.map((chain, i) => (
+      {/* B — Connected proof chain(s): the skill, the project that supports it,
+          and the code / runtime / document / defense evidence that corroborates
+          the same claim. Always shown with a calm empty state so the report reads
+          as an audit instrument even before any chain exists. */}
+      <div data-testid="skill-report-chains" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
+          Connected proof chain
+        </h3>
+        {attachedChains.length > 0 ? (
+          attachedChains.map((chain, i) => (
             <ProjectChainCard key={`${chain.project_id ?? "p"}-${i}`} chain={chain} />
-          ))}
-        </div>
-      )}
+          ))
+        ) : (
+          <EmptyState testId="skill-report-chains-empty">
+            No linked proof chain yet — attach this skill&rsquo;s proofs to a VBR project to connect them.
+          </EmptyState>
+        )}
+      </div>
+
+      {/* B2 — What VeriBridge synthesis says: recruiter-readable claims, each
+          cited to the exact evidence chips. Every shown claim cites evidence; an
+          empty state appears when there is no synthesis (or none public-safe). */}
+      <div data-testid="skill-report-synthesis" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
+          What VeriBridge synthesis says
+        </h3>
+        {hasCitedSynthesis ? (
+          <VeriBridgeSynthesisClaims results={synthesisResults} resolver={evidenceResolver} publicSafe={publicSafe} />
+        ) : synthesisWithheld ? (
+          <EmptyState testId="skill-report-synthesis-withheld">
+            Evidence available but not public-safe — the full synthesis is shown on the private report.
+          </EmptyState>
+        ) : (
+          <EmptyState testId="skill-report-synthesis-empty">No synthesis available yet.</EmptyState>
+        )}
+      </div>
 
       {/* C — Unlinked supporting evidence (synthesis): capped, clearly separated
           from the strong chains so unrelated proofs are never folded into them. */}

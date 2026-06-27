@@ -921,6 +921,116 @@ describe("SkillReportView — Proof Synthesis Agent", () => {
     expect(html).not.toContain("raw_dump")
     expect(html).not.toContain("/storage/v1/object")
   })
+
+  it("renders chain synthesis statements with audit citation chips (never raw ids)", () => {
+    const { container } = render(<SkillReportView report={synthesisReport()} />)
+    // The chain's evidence-cited statement renders with its citation chips.
+    expect(screen.getByTestId("chain-synthesis-statement")).toHaveTextContent("prediction endpoint")
+    const chips = screen.getAllByTestId("evidence-citation-chip")
+    expect(chips.length).toBeGreaterThan(0)
+    // The "gh-1" statement resolves to the chain's GitHub item location, not a raw id.
+    expect(chips[0]).toHaveAttribute("data-source-type", "github")
+    expect(container.innerHTML).not.toContain(">gh-1<")
+  })
+})
+
+// ── VeriBridge synthesis claims (Step 4) + empty states ────────────────────────
+
+describe("SkillReportView — VeriBridge synthesis claims", () => {
+  function reportWithSynthesis(): SkillReport {
+    return skillReport({
+      github: [],
+      standalone_evidence: emptyStandalone(),
+      linked_proof_chains: [
+        {
+          chain_id: "c1",
+          project_title: "Boston Smart Accident Risk Rerouting",
+          canonical_skill_name: "Python",
+          chain_label: "Python in Boston",
+          linked_evidence_ids: ["ev_a", "ev_b"],
+          source_types_present: ["github", "website"],
+          primary_source_type: "github",
+          connection_reasons: ["Same project"],
+          proof_strength_summary: {
+            label: "Implementation proven by precise code",
+            strengths_present: ["precise_code", "runtime_behavior"],
+            has_precise_code: true,
+            has_runtime_behavior: true,
+            has_self_explanation: false,
+            has_supporting_moment: false,
+            repo_level_only: false,
+            corroborating_document_count: 0,
+          },
+          limitations: [],
+          public_safe: true,
+          evidence: [
+            { evidence_id: "ev_a", source_type: "github", source_label: "GitHub", exact_location: "api.py · predict()", safe_summary: "", proof_strength: "precise_code" },
+            { evidence_id: "ev_b", source_type: "website", source_label: "Website", exact_location: "demo.example.com", safe_summary: "", proof_strength: "runtime_behavior" },
+          ],
+        },
+      ],
+      llm_synthesis: [
+        {
+          chain_id: "c1",
+          skill_name: "Python",
+          canonical_skill_name: "Python",
+          project_title: "Boston Smart Accident Risk Rerouting",
+          overall_summary: "GitHub code and a live workflow corroborate Python.",
+          limitations: ["Workflow confirmed only at inspection time."],
+          public_safe: true,
+          source: "deterministic",
+          claims: [
+            {
+              claim_id: "cl1",
+              claim: "The candidate implemented the prediction endpoint and demonstrated it live.",
+              supporting_evidence_ids: ["ev_a", "ev_b"],
+              why_connected: "Both reference the same prediction route.",
+              limitations: [],
+              qualitative_tier: "Strongly corroborated",
+              public_safe: true,
+            },
+          ],
+        },
+      ],
+    })
+  }
+
+  it("renders cited synthesis claims with qualitative tier and resolved citation chips", () => {
+    render(<SkillReportView report={reportWithSynthesis()} />)
+    const section = screen.getByTestId("skill-report-synthesis")
+    expect(section).toHaveTextContent("What VeriBridge synthesis says")
+    expect(screen.getByTestId("synthesis-claim")).toHaveTextContent("prediction endpoint")
+    expect(screen.getByTestId("synthesis-claim-tier")).toHaveTextContent("Strongly corroborated")
+    // Each ev_ id resolves to a recruiter-readable source + location chip.
+    const chips = screen.getAllByTestId("evidence-citation-chip")
+    expect(chips.some((c) => c.textContent?.includes("api.py · predict()"))).toBe(true)
+    expect(chips.some((c) => c.textContent?.includes("demo.example.com"))).toBe(true)
+  })
+
+  it("never exposes the raw ev_ ids or any score-like language", () => {
+    const { container } = render(<SkillReportView report={reportWithSynthesis()} />)
+    const html = container.innerHTML
+    expect(html).not.toContain("ev_a")
+    expect(html).not.toContain("ev_b")
+    expect(html).not.toMatch(/\d+%/)
+    expect(html).not.toMatch(/trust score|fully verified|ranked/i)
+  })
+
+  it("drops non-public-safe claims when rendered in public-safe mode", () => {
+    const report = reportWithSynthesis()
+    report.llm_synthesis![0].public_safe = false
+    report.llm_synthesis![0].claims[0].public_safe = false
+    render(<SkillReportView report={report} publicSafe />)
+    expect(screen.queryByTestId("synthesis-claim")).not.toBeInTheDocument()
+    // Honest empty state — the evidence exists but isn't public-safe.
+    expect(screen.getByTestId("skill-report-synthesis-withheld")).toHaveTextContent("not public-safe")
+  })
+
+  it("shows calm empty states when there is no chain or synthesis", () => {
+    render(<SkillReportView report={skillReport({ projects: [], proof_chains: [], standalone_evidence: emptyStandalone(), github: [] })} />)
+    expect(screen.getByTestId("skill-report-chains-empty")).toHaveTextContent("No linked proof chain yet")
+    expect(screen.getByTestId("skill-report-synthesis-empty")).toHaveTextContent("No synthesis available yet")
+  })
 })
 
 // ── Project report "Other student proofs" section ──────────────────────────────

@@ -800,6 +800,8 @@ export type SkillReportProjectChain = {
   why_linked?: string
   subskills?: string[]
   synthesis_statements?: SkillProofSynthesisStatement[]
+  /** Step 2: this chain's evidence collapsed into the uniform normalized model. */
+  normalized_evidence?: SkillReportNormalizedArtifact[]
 }
 
 /** A standalone proof that links to no chain — shown under unlinked support. */
@@ -818,6 +820,96 @@ export type SkillProofSynthesisUnlinked = {
   items: SkillProofSynthesisUnlinkedItem[]
   count: number
   more_count: number
+}
+
+/**
+ * One proof normalized into the Evidence Normalization Engine's uniform shape
+ * (Step 2). Only the already-safe fields are surfaced — never raw payloads,
+ * storage paths, signed URLs or the internal ``metadata`` bag.
+ */
+export type SkillReportNormalizedArtifact = {
+  /** Safe ``ev_…`` evidence id a synthesis claim can cite. */
+  evidence_id: string
+  source_type: string
+  source_label?: string
+  /** Public-safe location (e.g. "file.py · lines 10-20", "demo.example.com"). */
+  exact_location?: string | null
+  safe_summary?: string
+  /** Qualitative — never a numeric score. */
+  proof_strength?: string
+  subskill_name?: string | null
+  skill_name?: string | null
+  canonical_skill_name?: string | null
+  project_title?: string | null
+}
+
+/**
+ * Qualitative (never numeric) summary of a linked chain's proof strengths, as
+ * emitted by the backend's ``_strength_summary``. Mixed value types: a label
+ * string, the sorted list of strengths present, boolean capability flags, and a
+ * single corroborating-document count. Never a score or ranking.
+ */
+export type SkillReportProofStrengthSummary = {
+  /** Qualitative label, e.g. "Implementation proven by precise code". */
+  label?: string
+  /** Sorted qualitative strength tokens present across the chain. */
+  strengths_present?: string[]
+  has_precise_code?: boolean
+  has_runtime_behavior?: boolean
+  has_self_explanation?: boolean
+  has_supporting_moment?: boolean
+  repo_level_only?: boolean
+  /** Count of corroborating documents — never a primary-proof score. */
+  corroborating_document_count?: number
+}
+
+/**
+ * One deterministically linked proof chain across normalized evidence (Step 3):
+ * the safe ``ev_…`` ids, the source types present, why the sources connect, and
+ * the safe member artifacts a synthesis claim cites.
+ */
+export type SkillReportLinkedChain = {
+  chain_id: string
+  project_title?: string
+  canonical_skill_name?: string | null
+  chain_label?: string
+  linked_evidence_ids: string[]
+  source_types_present: string[]
+  primary_source_type?: string
+  connection_reasons: string[]
+  proof_strength_summary?: SkillReportProofStrengthSummary
+  limitations: string[]
+  public_safe: boolean
+  evidence: SkillReportNormalizedArtifact[]
+}
+
+/**
+ * One recruiter-readable synthesis claim (Step 4 — LLM Synthesis Layer). Every
+ * claim cites real ``ev_…`` ids (never invented); its ``qualitative_tier`` is a
+ * label, never a numeric score.
+ */
+export type SkillSynthesisClaim = {
+  claim_id: string
+  claim: string
+  supporting_evidence_ids: string[]
+  why_connected: string
+  limitations: string[]
+  qualitative_tier: string
+  public_safe: boolean
+}
+
+/** The synthesis for ONE linked proof chain (Step 4). */
+export type SkillSynthesisResult = {
+  chain_id: string
+  skill_name?: string | null
+  canonical_skill_name?: string | null
+  project_title?: string | null
+  claims: SkillSynthesisClaim[]
+  overall_summary: string
+  limitations: string[]
+  public_safe: boolean
+  /** Provenance only: "llm" | "deterministic" — never a score. */
+  source?: string
 }
 
 /** Proofs supporting a skill that are not attached to any VBR project. */
@@ -867,6 +959,18 @@ export type SkillReport = {
   proof_chains?: SkillReportProjectChain[]
   /** Capped supporting proofs that join no chain. */
   unlinked_supporting_evidence?: SkillProofSynthesisUnlinked
+  /**
+   * Deterministically linked proof chains across normalized evidence (Step 3).
+   * Carries the safe ``ev_…`` ids the synthesis claims cite. May be absent on
+   * older payloads — treat as `[]`.
+   */
+  linked_proof_chains?: SkillReportLinkedChain[]
+  /**
+   * Recruiter-readable synthesis claims over the linked proof chains (Step 4).
+   * Every claim cites real ``ev_…`` ids and carries a qualitative tier (never a
+   * numeric score). May be absent on older payloads — treat as `[]`.
+   */
+  llm_synthesis?: SkillSynthesisResult[]
   // Flat per-source lists (back-compat; the connected chains above are primary).
   github: SkillReportEvidenceItem[]
   website: SkillReportEvidenceItem[]
