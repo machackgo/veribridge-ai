@@ -535,6 +535,13 @@ class SkillReportResponse(BaseModel):
     # ids so later synthesis can cite the exact evidence. Additive — the existing
     # ``proof_chains`` above remain the primary recruiter-facing chains.
     linked_proof_chains: list[dict[str, Any]] = Field(default_factory=list)
+    # ── LLM Synthesis Layer output (Step 4) ───────────────────────────────────
+    # Recruiter-readable synthesis claims over the linked proof chains. Every claim
+    # cites existing ``ev_…`` evidence ids (never invented), its qualitative tier is
+    # clamped to the deterministic ceiling (never promoted), and all strings are
+    # scrubbed. Falls back to a deterministic rule-based synthesis when no LLM is
+    # available. Additive — the deterministic chains above remain primary.
+    llm_synthesis: list[dict[str, Any]] = Field(default_factory=list)
     # Flat per-source lists (back-compat; the connected chains above are primary).
     github: list[SkillReportEvidenceItem] = Field(default_factory=list)
     website: list[SkillReportEvidenceItem] = Field(default_factory=list)

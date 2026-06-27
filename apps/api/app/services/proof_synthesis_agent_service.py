@@ -35,6 +35,7 @@ import logging
 from typing import Any
 
 from app.services.cross_proof_linking_service import link_proof_chains
+from app.services.llm_proof_synthesis_service import synthesize_linked_chains_bounded
 from app.services.evidence_normalization_service import (
     SOURCE_DEFENSE,
     SOURCE_DOCUMENT,
@@ -436,12 +437,23 @@ def synthesize_skill_report(report: dict[str, Any]) -> dict[str, Any]:
     # consumer of the synthesis output is unaffected.
     linked_chains = link_proof_chains(normalize_skill_report(report))
 
+    # Step 4: LLM Synthesis Layer — produce recruiter-readable synthesis claims
+    # over the deterministic linked chains. Runs strictly AFTER linking; with no
+    # injected LLM and no Anthropic credentials it returns the safe, deterministic
+    # rule-based synthesis (so tests and local dev never touch the network). Purely
+    # additive: every existing key above is untouched, keeping all prior consumers
+    # backward compatible. Uses the bounded-concurrency orchestrator so the
+    # configured LLM_SYNTHESIS_MAX_CONCURRENCY is honoured, while staying safe to
+    # call from this synchronous service (deterministic order + per-chain fallback).
+    llm_synthesis = synthesize_linked_chains_bounded(linked_chains)
+
     return {
         "synthesis_summary": summary,
         "source_coverage": coverage,
         "proof_chains": proof_chains,
         "unlinked_supporting_evidence": unlinked,
         "linked_proof_chains": [c.to_dict() for c in linked_chains],
+        "llm_synthesis": [s.to_dict() for s in llm_synthesis],
     }
 
 
