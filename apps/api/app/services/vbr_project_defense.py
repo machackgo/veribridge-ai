@@ -31,6 +31,7 @@ from app.schemas.vbr_project_defense import (
 from app.services.github_evidence_service import parse_github_repo_url
 from app.services.github_proof_service import GitHubProofNotFoundError, GitHubProofService
 from app.services.optional_evidence_service import OptionalEvidenceService
+from app.services.safe_public_url import safe_repo_relative_path
 from app.services.project_defense_analysis_service import analyze_defense_transcript
 from app.services.project_defense_evidence_chips import build_evidence_chips
 from app.services.website_proof_summary_service import get_website_proof_summary
@@ -70,6 +71,30 @@ def _clean_list(values: Any) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def _safe_evidence_file_paths(repo_metadata: Any) -> list[str]:
+    """Safe, repo-relative evidence file paths the GitHub analyzer flagged.
+
+    Read ONLY from ``repo_metadata.evidence_files`` (a list of repo-relative
+    path strings) — never the rest of ``repo_metadata`` (which may hold raw
+    analysis dumps / secrets). Entries that look like absolute URLs or that
+    escape the repo root are dropped so the report can build file-level traces
+    and public ``…/blob/<branch>/<path>`` links without ever leaking a raw
+    snapshot, storage path, or external URL. Capped to keep the summary small.
+    """
+    if not isinstance(repo_metadata, dict):
+        return []
+    out: list[str] = []
+    for raw in repo_metadata.get("evidence_files") or []:
+        # Reject absolute / local / Windows / UNC / file:// paths outright —
+        # never lstrip("/") them into a fake repo-relative path (would leak a
+        # private filesystem location into public evidence traces).
+        path = safe_repo_relative_path(raw)
+        if not path:
+            continue
+        out.append(path)
+    return list(dict.fromkeys(out))[:20]
+
+
 # ── Project identity creation ────────────────────────────────────────────────
 
 
@@ -101,9 +126,14 @@ def _resolve_repo_url_and_proof(
             "repo_url": proof.repo_url,
             "repo_owner": proof.repo_owner,
             "repo_name": proof.repo_name,
+            "default_branch": (proof.default_branch or "").strip() or None,
             "status": proof.status,
             "detected_skills": _clean_list(proof.detected_skills),
             "public_safe_summary": _truncate(proof.public_safe_summary or "", 300),
+            # Safe repo-relative file paths only (no raw repo_metadata) so the
+            # report can build file-level GitHub traces instead of repo-level
+            # cards. Empty ⇒ the report honestly falls back to repo-level.
+            "evidence_files": _safe_evidence_file_paths(proof.repo_metadata),
         }
 
     if not repo_url:

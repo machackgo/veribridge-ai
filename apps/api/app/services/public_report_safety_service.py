@@ -1,0 +1,1001 @@
+"""Public Safety / Recruiter Sharing Layer — the centralized public projection.
+
+Steps 2–6 each grew their own ``public_view()`` and the public route builders
+(:mod:`vbr_public_project_report`, :mod:`vbr_work_passport_service`) each grew a
+local score-scrub + unsafe-field gate. The safety rules were therefore correct
+but *scattered*: there was no single module a public/recruiter surface could call
+to say "project this internal object into something safe to share". This module
+is that single source of truth.
+
+It does two things, both **fail-closed**:
+
+1. **Scrub + scan** — :func:`scrub_public_payload` recursively strips
+   score / ranking / rating / percentile / "fully verified" language and email
+   addresses from every string in a built public payload, and
+   :func:`contains_unsafe_fields` rejects the *whole* payload if any field still
+   smells private (storage path, signed URL, token, raw/metadata/source_id key,
+   local ``/Users/…`` path, ``file://`` URL, email, …). :func:`enforce_public_safe`
+   composes them: scrub, then refuse to serve anything that still trips the scan.
+
+2. **Explicit public projections** — ``public_safe_*`` functions turn the
+   internal ``to_dict()`` shapes of Steps 2–6 (normalized evidence artifacts,
+   linked proof chains, synthesis claims/results, stale/reanalysis markers, and a
+   whole Work-Passport skill-report payload) into recruiter-safe dicts. Each one
+   is a **whitelist**: it builds a brand-new dict containing only allowed keys,
+   re-scrubs every retained string, drops every private ``source_id`` /
+   ``project_id`` / ``metadata`` / raw-payload field, and gates any outbound URL
+   through :func:`~app.services.safe_public_url.is_safe_public_url`. A field that
+   is unknown, unsafe, or not explicitly allowed is **omitted**, never echoed.
+
+Nothing here calls an LLM; every transform is deterministic (pure regex /
+dict-whitelisting), so it is safe to run synchronously on any request path.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from app.services.project_defense_evidence_chips import _sanitize_transcript_text
+from app.services.safe_public_url import safe_public_url
+# Low-level, already-trusted primitives (single source of the regexes). Importing
+# them here (rather than re-implementing) keeps one definition of "score-style
+# fragment" / "unsafe field" so the central service can never drift from the
+# route builders that have shipped with these rules.
+from app.services.vbr_public_project_report import (
+    _contains_unsafe_fields as _base_contains_unsafe_fields,
+    _scrub_text as _scrub_score_fragments,
+)
+from app.services.llm_proof_synthesis_service import (
+    _scrub_score_rank_language,
+    TIER_STRONG,
+    TIER_CORROBORATED,
+    TIER_SUPPORTING,
+    TIER_NEEDS_REVIEW,
+    TIER_INSUFFICIENT,
+)
+# Single source of truth for the enum-like labels Steps 2–4 mint. Reusing the
+# real constants (rather than re-spelling the strings) keeps the public-safe
+# allowlists below from silently drifting from the producers — a label the
+# backend stops emitting, or starts emitting, is reflected here automatically.
+from app.services.evidence_normalization_service import (
+    SOURCE_GITHUB,
+    SOURCE_WEBSITE,
+    SOURCE_DOCUMENT,
+    SOURCE_DEFENSE,
+    SOURCE_VIDEO,
+    SOURCE_SKILL_GRAPH,
+    STRENGTH_PRECISE_CODE,
+    STRENGTH_RUNTIME,
+    STRENGTH_SELF_EXPLANATION,
+    STRENGTH_SUPPORTING_MOMENT,
+    STRENGTH_REPO_LEVEL,
+    STRENGTH_AGGREGATED,
+    STRENGTH_CORROBORATION,
+)
+from app.services.proof_synthesis_agent_service import (
+    PROOF_GITHUB,
+    PROOF_WEBSITE,
+    PROOF_DOCUMENT,
+    PROOF_DEFENSE,
+    PROOF_VIDEO,
+    PROOF_SKILL_GRAPH,
+)
+
+__all__ = [
+    "PublicReportUnsafeError",
+    "scrub_public_text",
+    "scrub_public_payload",
+    "contains_unsafe_fields",
+    "enforce_public_safe",
+    "public_safe_skill_name",
+    "public_safe_evidence_artifact",
+    "public_safe_linked_chain",
+    "public_safe_synthesis_claim",
+    "public_safe_synthesis_result",
+    "public_safe_stale_marker",
+    "public_safe_skill_report",
+]
+
+_TEXT_LIMIT = 400
+
+# Email addresses are not caught by the canonical sensitive-data scrubber (they
+# are not paths / tokens / URLs), so the public layer redacts them explicitly.
+_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+
+# Approved opaque public id formats — the deterministic, non-leaking hashes minted
+# by Steps 2–4: ``ev_<source>_<hex>`` (evidence), ``chain_<hex>`` (linked chain),
+# ``claim_<hex>`` (synthesis claim). The hash bodies are lower-case hex of bounded
+# length, so a raw UUID, email, ``/Users/…`` path, provider/source id, student or
+# project id, or any arbitrary string is rejected — only an approved opaque id is
+# ever echoed into a public citation / reference. (Mirrors the ``ev_``/``chain_``/
+# ``claim_`` minting in evidence_normalization / cross_proof_linking /
+# llm_proof_synthesis.)
+_PUBLIC_EVIDENCE_ID_RE = re.compile(r"^ev_[a-z0-9]{2,32}_[0-9a-f]{6,40}$")
+_PUBLIC_CHAIN_ID_RE = re.compile(r"^chain_[0-9a-f]{6,40}$")
+_PUBLIC_CLAIM_ID_RE = re.compile(r"^claim_[0-9a-f]{6,40}$")
+
+# Non-http(s) URI schemes the canonical scrubber (which only redacts ``http(s)``
+# URLs and local paths) can leave behind — ``file://`` / ``blob:`` / ``data:`` /
+# ``javascript:`` must never reach a recruiter-facing free-text field. ``data:``
+# requires a real ``type/subtype`` body so the English word "data:" is untouched.
+_DANGEROUS_URI_RE = re.compile(
+    r"\b(?:file|blob|javascript|vbscript|ftp)://?\S*|\bdata:[\w.+-]+/[\w.+-]+\S*",
+    re.IGNORECASE,
+)
+
+# ── Secret / credential material ──────────────────────────────────────────────
+# Credential-bearing ``name=value`` / ``name: value`` tokens (api_key, token,
+# client_secret, AWS/Azure/GCP signing params, …). The canonical scrubber only
+# redacts *whole* http(s) URLs + local paths, so a bare ``api_key=sk-…`` smuggled
+# into prose, or a *secret query string* hung off an otherwise-public URL, would
+# otherwise survive. Matched case-insensitively; the value run stops at
+# whitespace / ``&`` / quotes / angle brackets so only the secret itself (never the
+# surrounding prose) is redacted.
+_SECRET_KEY_NAMES = (
+    r"api[_-]?keys?|access[_-]?tokens?|refresh[_-]?tokens?|id[_-]?tokens?|"
+    r"auth[_-]?tokens?|bearer[_-]?tokens?|session[_-]?tokens?|csrf[_-]?tokens?|"
+    r"client[_-]?secrets?|secret[_-]?keys?|service[_-]?role[_-]?keys?|"
+    r"private[_-]?keys?|anon[_-]?keys?|secrets?|passwords?|passwd|pwd|tokens?|"
+    r"signatures?|sig|x-amz-[\w-]+|x-goog-[\w-]+|goog-[\w-]+|keys?"
+)
+_SECRET_KV_RE = re.compile(
+    rf"(?i)(?<![\w-])(?:{_SECRET_KEY_NAMES})\s*[=:]\s*[^\s&\"'<>]+"
+)
+
+# A standalone ``Bearer <token>`` / ``Authorization: Bearer <token>`` credential.
+# The token run requires ≥6 chars so the bare English word "bearer" is untouched.
+_BEARER_RE = re.compile(r"(?i)(?:authorization\s*:\s*)?\bbearer\s+[\w.\-~+/=]{6,}")
+
+# Any http(s) URL — used to strip a secret-bearing query string while keeping the
+# safe base, and to scan for secret query params in the fail-closed gate.
+_URL_RE = re.compile(r"https?://[^\s\"'<>)\]}]+", re.IGNORECASE)
+
+
+def _strip_secret_query(match: re.Match[str]) -> str:
+    """Drop a URL's *entire* query string when it carries credential params.
+
+    The base (scheme + host + path) is preserved verbatim; whether that base is a
+    genuinely public URL is judged elsewhere (the fail-closed scan / safe-url
+    gate). The point here is only that ``…?token=secret`` never survives.
+    """
+    url = match.group(0)
+    base, sep, query = url.partition("?")
+    if sep and _SECRET_KV_RE.search(query):
+        return base
+    return url
+
+
+def _redact_secrets(text: str) -> str:
+    """Strip credential material from a string while leaving safe prose + URLs.
+
+    In order: drop any secret-bearing query string off an http(s) URL (keeping the
+    safe base), redact ``Bearer …`` credentials, then redact any remaining bare
+    ``api_key=…`` / ``token=…`` / ``client_secret=…`` / signing-param token.
+    """
+    out = _URL_RE.sub(_strip_secret_query, text)
+    out = _BEARER_RE.sub("[redacted]", out)
+    out = _SECRET_KV_RE.sub("[redacted]", out)
+    return out
+
+
+# A token that is *only* a redaction marker carries no human-readable signal, so a
+# skill / project label that scrubs down to this is omitted entirely.
+_REDACTION_MARKER = "redacted"
+
+# Identifier-shaped tokens (bare UUIDs, hex blobs, ``prefix_<long-hex>`` private
+# ids) are NOT redacted by the canonical scrubber — yet a raw ``user_…`` /
+# ``project_…`` id or a bare UUID is exactly what must never ride out on a public
+# skill label. Mirrors the matchers in ``proof_reanalysis_service``.
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+_BARE_HEX_ID_RE = re.compile(r"^[0-9a-fA-F]{16,}$")
+_PREFIXED_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*[_-][0-9a-fA-F]{12,}$")
+_TOKEN_TRIM = " \t\r\n.,;:!?()[]{}<>\"'`"
+
+
+class PublicReportUnsafeError(RuntimeError):
+    """Raised by :func:`enforce_public_safe` when a payload still trips the scan.
+
+    Routes catch this and convert it to their own fail-closed ``404`` so a
+    questionable payload is never served — the same posture the inline gates in
+    the route builders already use.
+    """
+
+
+# ── Text scrubbing ────────────────────────────────────────────────────────────
+
+
+def _fragment_scrub(text: str) -> str:
+    """Remove score / rank / rating / percentile / over-claim wording + emails.
+
+    URL/path *preserving*: it never redacts ``http(s)`` links, so a legitimately
+    public ``deployed_url`` survives a recursive whole-payload pass. Leaking
+    paths/tokens/URLs is handled by the fail-closed :func:`contains_unsafe_fields`
+    scan, not by mangling the value.
+    """
+    out = _scrub_score_fragments(text)  # X/100, X%, "trust score", "fully verified", rank #N
+    out = _scrub_score_rank_language(out)  # rating, "N stars", "out of N", percentile
+    out = _EMAIL_RE.sub("[redacted]", out)
+    out = _redact_secrets(out)  # api_key=…/token=…/client_secret=…/Bearer …/?token=…
+    return out
+
+
+def scrub_public_text(value: Any, *, limit: int = _TEXT_LIMIT) -> str:
+    """Fully scrub a single recruiter-facing free-text string.
+
+    Applies, in order: score/rank/rating/percentile + over-claim removal, email
+    redaction, then the canonical sensitive-data scrubber (storage paths, signed
+    URLs, tokens, local ``/Users/…`` / ``file://`` paths, private media paths) and
+    a length bound. Use for an evidence summary / claim / limitation — i.e. a
+    field that should contain prose, never a raw outbound link (those go through
+    :func:`~app.services.safe_public_url.safe_public_url`). Deterministic.
+    """
+    text = _fragment_scrub(str(value or ""))
+    text = _sanitize_transcript_text(text)
+    # Strip any non-http(s) scheme the canonical scrubber leaves behind (it only
+    # redacts http(s) URLs + local paths), e.g. a leftover ``file://`` prefix after
+    # the local-path body was redacted, or a ``blob:`` / ``data:`` / ``javascript:``.
+    text = _DANGEROUS_URI_RE.sub("[redacted]", text)
+    text = text.strip()
+    return text[:limit].rstrip() if len(text) > limit else text
+
+
+def _scrub_text_or_none(value: Any) -> str | None:
+    """Scrub a free-text field, returning ``None`` when nothing survives."""
+    if value is None:
+        return None
+    scrubbed = scrub_public_text(value)
+    return scrubbed or None
+
+
+def scrub_public_payload(value: Any) -> Any:
+    """Recursively scrub score-style / rank / email fragments from a payload.
+
+    Walks dicts / lists / strings, scrubbing each string with the URL-preserving
+    :func:`_fragment_scrub` so any safe ``deployed_url`` survives. Keys are never
+    altered, so the downstream :func:`contains_unsafe_fields` scan still sees the
+    original structure. This is the recruiter-facing analogue of the route
+    builders' ``_scrub_public_report`` — strengthened with rank/rating/percentile
+    and email scrubbing.
+    """
+    if isinstance(value, str):
+        return _fragment_scrub(value)
+    if isinstance(value, dict):
+        return {key: scrub_public_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [scrub_public_payload(item) for item in value]
+    return value
+
+
+# ── Unsafe-field scan (fail-closed) ───────────────────────────────────────────
+
+# Private/internal keys that must NEVER appear in a public payload, in addition
+# to the storage/token/path/id keys the route builders already reject. Normalized
+# to lower-case-alnum (underscores stripped) before comparison.
+_EXTRA_UNSAFE_KEYS = {
+    "sourceid",
+    "metadata",
+    "rawmetadata",
+    "rawpayload",
+    "rawdata",
+    "rawresponse",
+    "providerresponse",
+    "providerpayload",
+    "providerjson",
+    "providermodel",
+    "providername",
+    "modelconfig",
+    "refreshtoken",
+    "idtoken",
+    "authtoken",
+    "apikey",
+    "apisecret",
+    "secret",
+    "secretkey",
+    "clientsecret",
+    "servicerolekey",
+    "anonkey",
+    "privatemediapath",
+    "mediapath",
+    "screenshotpath",
+    "framepath",
+    "framepayload",
+    "domhtml",
+    "domsnapshot",
+    "ocrtext",
+    "rawtranscript",
+    "providerconfig",
+}
+
+# Extra unsafe substrings to reject on (lower-cased value match), layered on top
+# of the base scanner's storage/signed-url patterns.
+_EXTRA_UNSAFE_VALUE_SUBSTRINGS = (
+    "/users/",
+    "/home/",
+    "file://",
+    "data:",
+    "blob:",
+    "refresh_token",
+    "access_token",
+    "service_role",
+    "-----begin",  # PEM private key blocks
+)
+
+
+def _normalize_key(key: str) -> str:
+    return "".join(ch for ch in key.lower() if ch.isalnum() or ch == "_")
+
+
+def _contains_extra_unsafe(value: Any) -> bool:
+    """Strengthening scan: extra private keys + value patterns + raw emails."""
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            normalized = _normalize_key(str(key))
+            compact = normalized.replace("_", "")
+            if normalized in _EXTRA_UNSAFE_KEYS or compact in _EXTRA_UNSAFE_KEYS:
+                return True
+            if _contains_extra_unsafe(nested):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_contains_extra_unsafe(item) for item in value)
+    if isinstance(value, str):
+        lowered = value.lower()
+        if any(fragment in lowered for fragment in _EXTRA_UNSAFE_VALUE_SUBSTRINGS):
+            return True
+        if _EMAIL_RE.search(value):
+            return True
+        return False
+    return False
+
+
+def _contains_secret_material(value: Any) -> bool:
+    """Fail-closed scan for credential material the scrubber may have missed.
+
+    Catches bare ``api_key=…`` / ``token=…`` / ``client_secret=…`` / signing-param
+    tokens, ``Bearer …`` credentials, and any http(s) URL whose *query string*
+    carries a secret param (``?token=…`` / ``&X-Amz-Signature=…``). Defence in
+    depth behind :func:`_redact_secrets`: even if a secret reaches the gate in a
+    shape the scrubber did not rewrite, the payload is refused rather than served.
+    """
+    if isinstance(value, dict):
+        return any(_contains_secret_material(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_secret_material(item) for item in value)
+    if isinstance(value, str):
+        if _SECRET_KV_RE.search(value) or _BEARER_RE.search(value):
+            return True
+        for match in _URL_RE.finditer(value):
+            _, sep, query = match.group(0).partition("?")
+            if sep and _SECRET_KV_RE.search(query):
+                return True
+        return False
+    return False
+
+
+def contains_unsafe_fields(value: Any) -> bool:
+    """``True`` when ``value`` still contains anything unsafe to publish.
+
+    A strict superset of the route builders' ``_contains_unsafe_fields``: it adds
+    private ``source_id`` / ``metadata`` / raw-payload / provider-config keys,
+    extra value patterns (``/Users/…``, ``file://``, ``data:``/``blob:``, raw
+    ``refresh_token`` / ``access_token`` / ``service_role`` mentions, PEM key
+    blocks), raw email addresses, and credential material (``api_key=…`` /
+    ``token=…`` / ``client_secret=…`` / ``Bearer …`` / secret-bearing URL query
+    strings). Used fail-closed: a public surface refuses to serve a payload for
+    which this returns ``True``.
+    """
+    return (
+        _base_contains_unsafe_fields(value)
+        or _contains_extra_unsafe(value)
+        or _contains_secret_material(value)
+    )
+
+
+def enforce_public_safe(payload: Any) -> Any:
+    """Scrub a built public payload, then refuse it if it still trips the scan.
+
+    Returns the scrubbed payload when it is safe; raises
+    :class:`PublicReportUnsafeError` otherwise so the caller can convert it into
+    its own fail-closed ``404`` (never leaking *why* it was rejected).
+    """
+    scrubbed = scrub_public_payload(payload)
+    if contains_unsafe_fields(scrubbed):
+        raise PublicReportUnsafeError("public payload failed the unsafe-field scan")
+    return scrubbed
+
+
+# ── Small typed helpers ───────────────────────────────────────────────────────
+
+
+def _looks_like_private_identifier(token: str) -> bool:
+    candidate = token.strip(_TOKEN_TRIM)
+    if not candidate:
+        return False
+    return bool(
+        _UUID_RE.match(candidate)
+        or _BARE_HEX_ID_RE.match(candidate)
+        or _PREFIXED_ID_RE.match(candidate)
+    )
+
+
+def public_safe_skill_name(value: Any) -> str | None:
+    """Scrub an untrusted skill / project label before it reaches a public view.
+
+    A skill name is meant to be a short human label ("Python", "FastAPI") but it
+    is derived from upstream artifact data, so it is treated as untrusted here: we
+    redact emails + sensitive fragments, then drop any token shaped like a bare
+    UUID / hex blob / ``prefix_<hex>`` private id. Returns ``None`` when nothing
+    human-readable survives (e.g. the label was *only* a private id).
+    """
+    if not value:
+        return None
+    scrubbed = scrub_public_text(value, limit=160)
+    if not scrubbed:
+        return None
+    kept = [
+        tok
+        for tok in scrubbed.split()
+        if not _looks_like_private_identifier(tok)
+        and tok.strip(_TOKEN_TRIM).lower() != _REDACTION_MARKER
+    ]
+    cleaned = " ".join(kept).strip()
+    return cleaned or None
+
+
+def _is_public_safe_evidence_id(value: Any) -> bool:
+    """``True`` only for an approved opaque ``ev_<source>_<hex>`` evidence id."""
+    return isinstance(value, str) and bool(_PUBLIC_EVIDENCE_ID_RE.match(value))
+
+
+def _is_public_safe_chain_id(value: Any) -> bool:
+    """``True`` only for an approved opaque ``chain_<hex>`` chain id."""
+    return isinstance(value, str) and bool(_PUBLIC_CHAIN_ID_RE.match(value))
+
+
+def _is_public_safe_claim_id(value: Any) -> bool:
+    """``True`` only for an approved opaque ``claim_<hex>`` claim id."""
+    return isinstance(value, str) and bool(_PUBLIC_CLAIM_ID_RE.match(value))
+
+
+def _public_id(value: Any, validator: Any) -> str | None:
+    """Echo an identifier only when it matches an approved opaque format.
+
+    Any raw UUID, email, path-like / provider / source / student / project id, or
+    arbitrary string fails ``validator`` and is omitted (``None``) so it never
+    rides out on a public citation / reference.
+    """
+    return value if validator(value) else None
+
+
+def _safe_evidence_ids(value: Any) -> list[str]:
+    """Keep only approved opaque ``ev_…`` evidence-id hashes from a citation list.
+
+    Invalid / private citation ids (raw UUIDs, source ids, arbitrary strings) are
+    dropped — the citation chip is omitted rather than echoed.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [v for v in value if _is_public_safe_evidence_id(v)]
+
+
+def _scrub_str_list(value: Any) -> list[str]:
+    """Scrub each string in a list, dropping any that scrub to empty."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in value:
+        scrubbed = _scrub_text_or_none(item)
+        if scrubbed:
+            out.append(scrubbed)
+    return out
+
+
+def _safe_url(value: Any) -> str | None:
+    """Return ``value`` only when it is a genuinely public http(s) URL."""
+    return safe_public_url(value)
+
+
+def _safe_scalar(value: Any) -> Any:
+    """Pass through a safe scalar (bool/int/float), scrubbing any string."""
+    if isinstance(value, bool) or isinstance(value, (int, float)) or value is None:
+        return value
+    return _scrub_text_or_none(value)
+
+
+# ── Enum-like field allowlists (STRICTER than generic scrubbing) ──────────────
+# Several public fields — ``source`` / ``source_type`` / ``proof_strength`` /
+# ``qualitative_tier`` / ``proof_type`` / ``source_types_present`` /
+# ``primary_source_type`` — are *assumed* by recruiter surfaces to be short,
+# known enum labels. But each is ultimately derived from upstream artifact data,
+# so a hostile or buggy producer could put ``api_key=sk-private`` / ``token=…`` /
+# ``client_secret=…``, a signed URL, an email, or a raw UUID where a label
+# belongs. Generic scrubbing wouldn't fully neutralise every such value, so these
+# fields are held to a STRICT allowlist: a value is echoed ONLY when it exactly
+# matches a known backend label; anything unknown is replaced with a neutral
+# fallback (or omitted), never passed through raw.
+_ALLOWED_SOURCE_TYPES = frozenset(
+    {
+        SOURCE_GITHUB,
+        SOURCE_WEBSITE,
+        SOURCE_DOCUMENT,
+        SOURCE_DEFENSE,
+        SOURCE_VIDEO,
+        SOURCE_SKILL_GRAPH,
+    }
+)
+# Neutral label for an unknown source — a known-safe word, never the raw value.
+_SOURCE_TYPE_FALLBACK = "other"
+
+_ALLOWED_PROOF_STRENGTHS = frozenset(
+    {
+        STRENGTH_PRECISE_CODE,
+        STRENGTH_RUNTIME,
+        STRENGTH_SELF_EXPLANATION,
+        STRENGTH_SUPPORTING_MOMENT,
+        STRENGTH_REPO_LEVEL,
+        STRENGTH_AGGREGATED,
+        STRENGTH_CORROBORATION,
+    }
+)
+_PROOF_STRENGTH_FALLBACK = "unknown"
+
+_ALLOWED_QUALITATIVE_TIERS = frozenset(
+    {
+        TIER_STRONG,
+        TIER_CORROBORATED,
+        TIER_SUPPORTING,
+        TIER_NEEDS_REVIEW,
+        TIER_INSUFFICIENT,
+    }
+)
+# Neutral, never-inflating tier for an unknown value ("Needs review" rather than a
+# corroborated/strong claim the original value can't be trusted to justify).
+_QUALITATIVE_TIER_FALLBACK = TIER_NEEDS_REVIEW
+
+# Synthesis provenance is deterministic-or-llm; an unknown value falls back to the
+# conservative "deterministic" label rather than echoing the raw string.
+_ALLOWED_SYNTHESIS_SOURCES = frozenset({"deterministic", "llm"})
+_SYNTHESIS_SOURCE_FALLBACK = "deterministic"
+
+# Display-label proof types for unlinked cards ("GitHub Proof", …).
+_ALLOWED_PROOF_TYPES = frozenset(
+    {
+        PROOF_GITHUB,
+        PROOF_WEBSITE,
+        PROOF_DOCUMENT,
+        PROOF_DEFENSE,
+        PROOF_VIDEO,
+        PROOF_SKILL_GRAPH,
+    }
+)
+_PROOF_TYPE_FALLBACK = "Other"
+
+
+def _safe_enum(value: Any, allowed: frozenset[str], fallback: str) -> str:
+    """Echo an enum-like value only on an EXACT allowlist match, else the fallback.
+
+    The defining property: an unknown / unsafe value (``api_key=sk-…``, a signed
+    URL, an email, a raw UUID, any arbitrary string) is NEVER returned — it is
+    replaced with ``fallback``, a known-safe neutral label. Stricter than the
+    generic scrubber, which only redacts *recognised* secret shapes.
+    """
+    return value if isinstance(value, str) and value in allowed else fallback
+
+
+def _safe_enum_or_none(value: Any, allowed: frozenset[str]) -> str | None:
+    """Like :func:`_safe_enum` but OMIT (``None``) an unknown value.
+
+    Used where the field is legitimately nullable (e.g. a document-only chain has
+    no ``primary_source_type``), so an unknown value collapses to ``None`` rather
+    than to a misleading neutral label.
+    """
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _safe_enum_list(value: Any, allowed: frozenset[str]) -> list[str]:
+    """Filter a list to known enum labels, dedup (order-preserving), drop the rest.
+
+    Each item must exactly match the allowlist; unknown / unsafe entries
+    (``token=private``, UUIDs, arbitrary strings) are dropped. Returns ``[]`` when
+    nothing valid remains.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item in allowed and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+# ── Step 2 — normalized evidence artifact ─────────────────────────────────────
+
+
+def public_safe_evidence_artifact(item: dict[str, Any]) -> dict[str, Any]:
+    """Project a normalized evidence artifact dict to a recruiter-safe dict.
+
+    Whitelist only. Drops the private ``source_id`` and the internal ``metadata``
+    bag entirely, scrubs every retained string, gates ``public_url`` through the
+    safe-public-url helper, scrubs the (untrusted) skill / project labels, and
+    echoes ``evidence_id`` only when it is an approved opaque ``ev_…`` id (a raw
+    UUID / source id / path / arbitrary string is omitted as ``None``).
+    """
+    if not isinstance(item, dict):
+        return {}
+    return {
+        "evidence_id": _public_id(item.get("evidence_id"), _is_public_safe_evidence_id),
+        "source_type": _safe_enum(
+            item.get("source_type"), _ALLOWED_SOURCE_TYPES, _SOURCE_TYPE_FALLBACK
+        ),
+        "source_label": _scrub_text_or_none(item.get("source_label")) or "",
+        "canonical_skill_name": public_safe_skill_name(item.get("canonical_skill_name")),
+        "subskill_name": public_safe_skill_name(item.get("subskill_name")),
+        "project_title": public_safe_skill_name(item.get("project_title")),
+        "exact_location": _scrub_text_or_none(item.get("exact_location")),
+        "safe_summary": scrub_public_text(item.get("safe_summary")),
+        "proof_strength": _safe_enum(
+            item.get("proof_strength"), _ALLOWED_PROOF_STRENGTHS, _PROOF_STRENGTH_FALLBACK
+        ),
+        "public_safe": bool(item.get("public_safe")),
+        "limitations": _scrub_str_list(item.get("limitations")),
+        "public_url": _safe_url(item.get("public_url")),
+    }
+
+
+# ── Step 3 — linked proof chain ───────────────────────────────────────────────
+
+
+# The documented, recruiter-safe fields of a proof-strength summary (Step 3's
+# ``_strength_summary`` in cross_proof_linking_service). A STRICT allowlist:
+# any other key — e.g. a smuggled ``owner`` carrying a UUID — is dropped, never
+# echoed. ``label`` is scrubbed prose, ``strengths_present`` a known-label list,
+# the ``has_*`` / ``repo_level_only`` fields booleans, and
+# ``corroborating_document_count`` a non-negative int.
+_STRENGTH_SUMMARY_BOOL_FIELDS = (
+    "has_precise_code",
+    "has_runtime_behavior",
+    "has_self_explanation",
+    "has_supporting_moment",
+    "repo_level_only",
+)
+
+# The known qualitative strength labels Step 2 mints (evidence_normalization /
+# workflow_sequence_analysis). ``strengths_present`` may contain ONLY these — any
+# other string (a UUID, an email, an arbitrary value) is scrubbed out.
+_KNOWN_STRENGTH_LABELS = {
+    "precise_code",
+    "runtime_behavior",
+    "self_explanation",
+    "supporting_moment",
+    "repo_level",
+    "aggregated",
+    "corroboration",
+    "insufficient",
+}
+
+
+def _safe_strength_labels(value: Any) -> list[str]:
+    """Keep only known qualitative strength labels from a list (drop the rest)."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [
+        item.strip()
+        for item in value
+        if isinstance(item, str) and item.strip().lower() in _KNOWN_STRENGTH_LABELS
+    ]
+
+
+def _safe_count(value: Any) -> int:
+    """Coerce to a safe non-negative int; anything else (bool/str/None) → 0."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value if value >= 0 else 0
+
+
+def _safe_strength_summary(value: Any) -> dict[str, Any]:
+    """Project a proof-strength summary through a STRICT allowlist.
+
+    Only the documented qualitative fields survive; every other key (e.g. a
+    smuggled ``owner`` carrying a UUID under an innocent-looking name) is dropped
+    rather than passed through. ``label`` is scrubbed prose, ``strengths_present``
+    keeps only known strength labels, the ``has_*`` / ``repo_level_only`` fields
+    stay booleans, and ``corroborating_document_count`` is coerced to a safe
+    non-negative int.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, Any] = {}
+
+    label = _scrub_text_or_none(value.get("label"))
+    if label:
+        out["label"] = label
+
+    if "strengths_present" in value:
+        out["strengths_present"] = _safe_strength_labels(value.get("strengths_present"))
+
+    for field in _STRENGTH_SUMMARY_BOOL_FIELDS:
+        if field in value:
+            out[field] = bool(value.get(field))
+
+    if "corroborating_document_count" in value:
+        out["corroborating_document_count"] = _safe_count(
+            value.get("corroborating_document_count")
+        )
+
+    return out
+
+
+def public_safe_linked_chain(chain: dict[str, Any]) -> dict[str, Any]:
+    """Project a linked proof chain dict to a recruiter-safe dict.
+
+    Drops the private ``project_id``; echoes ``chain_id`` only when it is an
+    approved opaque ``chain_…`` id (else ``None``); keeps only approved ``ev_…``
+    ids in ``linked_evidence_ids``; scrubs every connection reason, label, and
+    limitation; and projects each member artifact through
+    :func:`public_safe_evidence_artifact`, dropping any member whose
+    ``public_safe`` is not truthy (fail-closed).
+    """
+    if not isinstance(chain, dict):
+        return {}
+    return {
+        "chain_id": _public_id(chain.get("chain_id"), _is_public_safe_chain_id),
+        "project_title": public_safe_skill_name(chain.get("project_title")),
+        "canonical_skill_name": public_safe_skill_name(chain.get("canonical_skill_name")),
+        "chain_label": _scrub_text_or_none(chain.get("chain_label")) or "",
+        "linked_evidence_ids": _safe_evidence_ids(chain.get("linked_evidence_ids")),
+        "source_types_present": _safe_enum_list(
+            chain.get("source_types_present"), _ALLOWED_SOURCE_TYPES
+        ),
+        "primary_source_type": _safe_enum_or_none(
+            chain.get("primary_source_type"), _ALLOWED_SOURCE_TYPES
+        ),
+        "connection_reasons": _scrub_str_list(chain.get("connection_reasons")),
+        "proof_strength_summary": _safe_strength_summary(chain.get("proof_strength_summary")),
+        "limitations": _scrub_str_list(chain.get("limitations")),
+        "public_safe": bool(chain.get("public_safe")),
+        "evidence": [
+            public_safe_evidence_artifact(e)
+            for e in (chain.get("evidence") or [])
+            if isinstance(e, dict) and e.get("public_safe")
+        ],
+    }
+
+
+# ── Step 4 — synthesis claim / result ─────────────────────────────────────────
+
+
+def public_safe_synthesis_claim(claim: dict[str, Any]) -> dict[str, Any]:
+    """Project one synthesis claim to a recruiter-safe dict (cited ids only)."""
+    if not isinstance(claim, dict):
+        return {}
+    return {
+        "claim_id": _public_id(claim.get("claim_id"), _is_public_safe_claim_id),
+        "claim": scrub_public_text(claim.get("claim")),
+        "supporting_evidence_ids": _safe_evidence_ids(claim.get("supporting_evidence_ids")),
+        "why_connected": scrub_public_text(claim.get("why_connected")),
+        "limitations": _scrub_str_list(claim.get("limitations")),
+        "qualitative_tier": _safe_enum(
+            claim.get("qualitative_tier"),
+            _ALLOWED_QUALITATIVE_TIERS,
+            _QUALITATIVE_TIER_FALLBACK,
+        ),
+        "public_safe": bool(claim.get("public_safe")),
+    }
+
+
+def _safe_synthesis_claims(value: Any) -> list[dict[str, Any]]:
+    """Project + filter synthesis claims for a public result.
+
+    A claim is kept only when it is itself marked ``public_safe`` AND retains at
+    least one valid public evidence citation after strict ID validation. A claim
+    whose every ``supporting_evidence_id`` was rejected (raw UUID / source id /
+    arbitrary string) is dropped — an unsupported public claim, asserting a skill
+    with no citation a recruiter could trace, is never shown.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[dict[str, Any]] = []
+    for claim in value:
+        if not isinstance(claim, dict) or not claim.get("public_safe"):
+            continue
+        projected = public_safe_synthesis_claim(claim)
+        if not projected.get("supporting_evidence_ids"):
+            continue
+        out.append(projected)
+    return out
+
+
+_NO_PUBLIC_SYNTHESIS_SUMMARY = (
+    "No public-safe synthesis claims are available for this proof chain."
+)
+_NO_PUBLIC_SYNTHESIS_LIMITATION = (
+    "Public-safe cited synthesis claims were unavailable, so no overall summary "
+    "is shown for this proof chain."
+)
+
+
+def public_safe_synthesis_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Project one chain's synthesis result to a recruiter-safe dict.
+
+    Drops any private project id, scrubs the prose, and keeps only the claims that
+    are themselves marked public-safe AND still carry at least one valid public
+    evidence citation after ID validation (claims left without any citation are
+    dropped via :func:`_safe_synthesis_claims`).
+
+    When *every* claim is dropped, the original ``overall_summary`` is **not**
+    exposed: it can restate the same unsupported assertion as the dropped claims
+    without a single public citation a recruiter could trace. In that case the
+    summary is replaced with neutral language and a limitation is appended
+    explaining that public-safe cited claims were unavailable. When at least one
+    valid cited claim remains, the scrubbed summary is retained as before.
+    """
+    if not isinstance(result, dict):
+        return {}
+    claims = _safe_synthesis_claims(result.get("claims"))
+    limitations = _scrub_str_list(result.get("limitations"))
+    if claims:
+        overall_summary = scrub_public_text(result.get("overall_summary"))
+    else:
+        # No public-safe cited claim survived — never surface the original prose,
+        # which may assert a skill with no traceable public evidence.
+        overall_summary = _NO_PUBLIC_SYNTHESIS_SUMMARY
+        if _NO_PUBLIC_SYNTHESIS_LIMITATION not in limitations:
+            limitations.append(_NO_PUBLIC_SYNTHESIS_LIMITATION)
+    return {
+        "chain_id": _public_id(result.get("chain_id"), _is_public_safe_chain_id),
+        "canonical_skill_name": public_safe_skill_name(result.get("canonical_skill_name")),
+        "project_title": public_safe_skill_name(result.get("project_title")),
+        "claims": claims,
+        "overall_summary": overall_summary,
+        "limitations": limitations,
+        "public_safe": bool(result.get("public_safe")),
+        "source": _safe_enum(
+            result.get("source"), _ALLOWED_SYNTHESIS_SOURCES, _SYNTHESIS_SOURCE_FALLBACK
+        ),
+    }
+
+
+# ── Step 6 — stale / reanalysis marker ────────────────────────────────────────
+
+
+def public_safe_stale_marker(marker: dict[str, Any]) -> dict[str, Any] | None:
+    """Project one stale-evidence marker to a recruiter-safe dict (or omit it).
+
+    Fail-closed: a marker explicitly flagged ``public_safe=False`` is omitted
+    entirely (returns ``None``) so a not-for-public marker never rides out on a
+    recruiter surface. Otherwise drops the private ``project_id``, scrubs the
+    (untrusted) skill name, validates ``evidence_id`` to an approved opaque id,
+    and scrubs the reason / recommended-action prose.
+    """
+    if not isinstance(marker, dict):
+        return None
+    if marker.get("public_safe") is False:
+        return None
+    return {
+        "evidence_id": _public_id(marker.get("evidence_id"), _is_public_safe_evidence_id),
+        "reason": scrub_public_text(marker.get("reason")),
+        "recommended_action": scrub_public_text(marker.get("recommended_action")),
+        "source_type": _safe_enum(
+            marker.get("source_type"), _ALLOWED_SOURCE_TYPES, _SOURCE_TYPE_FALLBACK
+        ),
+        "skill_name": public_safe_skill_name(marker.get("skill_name")),
+    }
+
+
+# ── Work Passport skill-report payload ────────────────────────────────────────
+
+
+# Known evidence-source names allowed as public ``source_coverage`` keys. An
+# arbitrary key — an email, a UUID, or any private identifier used as a map key —
+# is dropped rather than echoed (matched case-insensitively via ``_normalize_key``
+# so the producer's capitalised "GitHub"/"Website"/… still pass).
+_ALLOWED_SOURCE_COVERAGE_KEYS = {
+    "github",
+    "website",
+    "document",
+    "defense",
+    "video",
+    "skill_graph",
+    "other",
+}
+
+
+def _safe_source_coverage(value: Any) -> dict[str, bool]:
+    """Whitelist known evidence-source coverage keys; booleans-only values.
+
+    Only the known source names survive; any other key (a private identifier or
+    email smuggled in as a key) is dropped, and every value is coerced to a plain
+    boolean so a raw string / dict can never ride out under a coverage key.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, bool] = {}
+    for key, present in value.items():
+        if _normalize_key(str(key)) in _ALLOWED_SOURCE_COVERAGE_KEYS:
+            out[str(key)] = bool(present)
+    return out
+
+
+def _public_unlinked_card(card: dict[str, Any]) -> dict[str, Any]:
+    """Project one unlinked supporting-evidence card to a safe dict (no source_id)."""
+    if not isinstance(card, dict):
+        return {}
+    return {
+        "proof_type": _safe_enum(
+            card.get("proof_type"), _ALLOWED_PROOF_TYPES, _PROOF_TYPE_FALLBACK
+        ),
+        "title": public_safe_skill_name(card.get("title")) or "",
+        "safe_summary": scrub_public_text(card.get("safe_summary")),
+        "safe_location": _scrub_text_or_none(card.get("safe_location")),
+        "corroborates": _scrub_text_or_none(card.get("corroborates")) or "",
+        "limitation": _scrub_text_or_none(card.get("limitation")) or "",
+    }
+
+
+def public_safe_skill_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Project a Work-Passport skill-report payload to a recruiter-safe shape.
+
+    The internal skill report (``collect_skill_report`` /
+    ``synthesize_skill_report``) carries rich, project-anchored ``proof_chains``
+    plus the Step 3 ``linked_proof_chains`` and Step 4 ``llm_synthesis``. The
+    public projection exposes ONLY:
+
+    * the (scrubbed) skill name and synthesis summary,
+    * the boolean ``source_coverage`` map (no counts/scores),
+    * the linked proof chains marked ``public_safe`` (via
+      :func:`public_safe_linked_chain`),
+    * the synthesis results marked ``public_safe`` (via
+      :func:`public_safe_synthesis_result`),
+    * a capped, safe ``unlinked_supporting_evidence`` bucket, and
+    * scrubbed limitations.
+
+    Fail-closed: any linked chain or synthesis result whose ``public_safe`` is not
+    truthy is dropped here (synthesis *claims* and nested *evidence* are likewise
+    dropped by their projections), so a section becomes a safe empty list rather
+    than leaking an unsafe item. The rich internal ``proof_chains`` (which still
+    carry private source_ids and raw per-source fields) are intentionally
+    dropped — the linked chains are the public, citation-safe representation. The
+    result is run through :func:`enforce_public_safe` so it fail-closes on
+    anything that slips through.
+    """
+    if not isinstance(report, dict):
+        return {}
+
+    safe_coverage = _safe_source_coverage(report.get("source_coverage"))
+
+    unlinked = report.get("unlinked_supporting_evidence") or {}
+    unlinked_items = unlinked.get("items") if isinstance(unlinked, dict) else None
+
+    projected = {
+        "skill": public_safe_skill_name(report.get("skill")),
+        "synthesis_summary": scrub_public_text(report.get("synthesis_summary")),
+        "source_coverage": safe_coverage,
+        "linked_proof_chains": [
+            public_safe_linked_chain(c)
+            for c in (report.get("linked_proof_chains") or [])
+            if isinstance(c, dict) and c.get("public_safe")
+        ],
+        "synthesis": [
+            public_safe_synthesis_result(s)
+            for s in (report.get("llm_synthesis") or [])
+            if isinstance(s, dict) and s.get("public_safe")
+        ],
+        "unlinked_supporting_evidence": {
+            "items": [
+                _public_unlinked_card(card)
+                for card in (unlinked_items or [])
+                if isinstance(card, dict)
+            ],
+            "count": int(unlinked.get("count", 0) or 0) if isinstance(unlinked, dict) else 0,
+            "more_count": int(unlinked.get("more_count", 0) or 0)
+            if isinstance(unlinked, dict)
+            else 0,
+        },
+        "limitations": _scrub_str_list(report.get("limitations")),
+    }
+    return enforce_public_safe(projected)

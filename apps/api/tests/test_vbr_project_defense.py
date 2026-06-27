@@ -253,6 +253,35 @@ def _submit_defense(client: TestClient, session_id: str, **body):
     return client.post(f"/api/v1/student/vbr/sessions/{session_id}/submit-defense", json=body)
 
 
+# ── Evidence file-path sanitizer (must-fix: no absolute/local path leak) ──────
+
+def test_safe_evidence_file_paths_rejects_absolute_and_local_paths() -> None:
+    from app.services.vbr_project_defense import _safe_evidence_file_paths
+
+    out = _safe_evidence_file_paths(
+        {
+            "evidence_files": [
+                "/Users/alice/private/secret.py",
+                "/etc/passwd",
+                "C:\\Users\\alice\\private\\secret.py",
+                "C:/Users/alice/private/secret.py",
+                "file:///Users/alice/private/secret.py",
+                "../secrets.py",
+                "..\\secrets.py",
+                # Safe repo-relative paths that MUST survive.
+                "apps/api/main.py",
+                "src/components/Button.tsx",
+                "README.md",
+            ]
+        }
+    )
+    assert out == ["apps/api/main.py", "src/components/Button.tsx", "README.md"]
+    # No absolute/local fragment may survive — not even lstrip("/")-ed.
+    blob = "\n".join(out)
+    for leaked in ("Users/alice", "etc/passwd", "secret.py", ".."):
+        assert leaked not in blob
+
+
 # ── Project identity creation ────────────────────────────────────────────────
 
 def test_create_individual_project_with_repo_url(client: TestClient) -> None:

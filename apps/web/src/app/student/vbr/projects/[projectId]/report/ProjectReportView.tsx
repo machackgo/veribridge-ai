@@ -6,6 +6,7 @@ import {
   getVBRProjectReport,
   getVBRProjectReportPublishStatus,
   isSafePublicUrl,
+  matrixTraceLabel,
   publishVBRProjectReport,
   unpublishVBRProjectReport,
   type EvidenceTrace,
@@ -25,6 +26,11 @@ import {
   type BadgeTone,
 } from "../../../../../../../components/passport/shared"
 import { EvidenceTraceList } from "../../../../../../../components/passport/EvidenceTrace"
+import { VaultSkillLinkList } from "../../../../../../../components/passport/VaultProofs"
+
+// Keeps an in-page anchor target clear of the sticky top chrome when the jump
+// nav or a skill-matrix link scrolls to it.
+const ANCHOR_OFFSET: CSSProperties = { scrollMarginTop: 96 }
 
 const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   Demonstrated: "emerald",
@@ -94,7 +100,7 @@ function SkillEvidenceRow({ row, tracesById }: { row: VBRReportSkillEvidenceRow;
           <div data-testid="skill-trace-links" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
             {traceRefs.map((t) => (
               <a key={t.trace_id} href={`#${t.evidence_anchor}`} style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}>
-                {t.source_type} →
+                {matrixTraceLabel(t)} →
               </a>
             ))}
           </div>
@@ -410,10 +416,10 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
       </Card>
 
       {/* Evidence by source */}
-      <Card id="evidence-by-source">
+      <Card id="evidence-by-source" style={ANCHOR_OFFSET}>
         <CardHeader title="Evidence by Source" eyebrow="Attached proof" icon="📎" />
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div id="github-proof">
+          <div id="github-proof" style={ANCHOR_OFFSET}>
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
               GitHub Proof
             </Mono>
@@ -445,7 +451,7 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             )}
           </div>
 
-          <div id="documents">
+          <div id="documents" style={ANCHOR_OFFSET}>
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
               Document Proof
             </Mono>
@@ -464,7 +470,7 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             )}
           </div>
 
-          <div id="website-proof">
+          <div id="website-proof" style={ANCHOR_OFFSET}>
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
               Website Proof
             </Mono>
@@ -485,7 +491,7 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             )}
           </div>
 
-          <div id="project-defense">
+          <div id="project-defense" style={ANCHOR_OFFSET}>
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
               Manual / Video Project Defense
             </Mono>
@@ -541,7 +547,7 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
       </Card>
 
       {/* Skill-level evidence table */}
-      <Card id="skill-evidence">
+      <Card id="skill-evidence" style={ANCHOR_OFFSET}>
         <CardHeader title="Skill Evidence Matrix" eyebrow="Claimed skills → evidence" icon="🧩" />
         {report.skill_evidence.length === 0 ? (
           <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>No claimed skills recorded for this project.</p>
@@ -567,13 +573,35 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
 
       {/* Evidence Traceability — concrete claim → evidence audit trail */}
       {evidenceTraces.length > 0 && (
-        <Card id="evidence-traceability">
+        <Card id="evidence-traceability" style={ANCHOR_OFFSET}>
           <CardHeader title="Evidence Traceability" eyebrow="Claim → evidence → source" icon="🔍" />
           <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
             Each item is a concrete evidence source behind your claimed skills. Public sources link directly; private
             evidence is summarized and never exposed as raw files.
           </p>
           <EvidenceTraceList traces={evidenceTraces} />
+        </Card>
+      )}
+
+      {/* Other student proofs for related skills — cross-proof vault matches.
+          These are NOT attached to this project; they are shown separately from
+          the attached skill matrix above so the report stays project-honest. */}
+      {(report.other_student_proofs?.length ?? 0) > 0 && (
+        <Card id="other-student-proofs" style={ANCHOR_OFFSET}>
+          <div data-testid="other-student-proofs">
+            <CardHeader
+              title="Other Student Proofs for Related Skills"
+              eyebrow="From your wider proof vault — not attached to this project"
+              icon="🗂️"
+            />
+            <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
+              These are other safe proofs you own that match this project&apos;s claimed skills but are{" "}
+              <strong>not attached to this project</strong>. They are summarised here as cross-proof / vault evidence —
+              open the full <strong>Skill Report</strong> to inspect the connected evidence. They are never counted as
+              this project&apos;s attached evidence.
+            </p>
+            <VaultSkillLinkList groups={report.other_student_proofs} />
+          </div>
         </Card>
       )}
 
@@ -595,7 +623,7 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
       )}
 
       {/* Limitations */}
-      <Card id="limitations">
+      <Card id="limitations" style={ANCHOR_OFFSET}>
         <CardHeader title="Limitations / Not Assessed" eyebrow="Be honest" icon="⚠️" />
         <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
           {report.limitations.map((line, i) => (

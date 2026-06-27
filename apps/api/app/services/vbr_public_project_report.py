@@ -534,6 +534,20 @@ def _public_evidence_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]
         title = str(row.get("source_title") or "")
         if "://" in title and not is_safe_public_url(title):
             row["source_title"] = str(row.get("source_type") or "Evidence source")
+        # Strip the safe-but-detailed proof excerpts that are only meant for the
+        # private student preview. The human-readable ``location_label`` (e.g.
+        # "Q3", "Live URL", "repo-level") and the deterministic ``question_text``
+        # stay — they carry the recruiter-facing reference without exposing raw
+        # answers, document passages, or internal paths.
+        row["snippet"] = None
+        row["answer_excerpt"] = None
+        # GitHub code snippet is dropped on the public surface — the public
+        # ``…#L`` blob link is the recruiter-facing proof of the exact lines.
+        row["code_snippet"] = None
+        if row.get("source_type") == "Document Proof" and row.get("location_detail"):
+            row["location_detail"] = (
+                "The matched passage is retained privately; only the document reference is shown."
+            )
         safe.append(row)
     return safe
 
@@ -608,7 +622,20 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     # after the projection is built and before the response is returned.
     public = _scrub_public_report(public)
 
-    if _contains_unsafe_fields(public):
+    # Step 7: route the final gate through the centralized Public Safety layer —
+    # a strict superset of the inline scan that also strengthens scrubbing
+    # (rank/rating/percentile + emails) and rejects private source_id / metadata /
+    # raw-payload / provider-config keys, ``/Users/…`` & ``file://`` paths, and raw
+    # emails. Lazily imported because the safety service imports this module's
+    # low-level primitives (``_scrub_text`` / ``_contains_unsafe_fields``).
+    from app.services.public_report_safety_service import (
+        PublicReportUnsafeError,
+        enforce_public_safe,
+    )
+
+    try:
+        public = enforce_public_safe(public)
+    except PublicReportUnsafeError:
         logger.warning("[VBR] Public project report failed the unsafe-field scan; refusing to serve.")
         raise _not_found()
 

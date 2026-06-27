@@ -563,3 +563,288 @@ describe("ProjectReportView — recruiter-safe publish controls", () => {
     expect(screen.getByTestId("public-link-url").textContent).toContain("/vbr/report/tok-new")
   })
 })
+
+describe("ProjectReportView — proof-native matrix links + precise anchors", () => {
+  it("renders proof-native labels and every matrix link resolves to its exact trace card", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        skill_evidence: [
+          {
+            skill: "Python",
+            status: "Supporting evidence",
+            evidence_chip_count: 0,
+            notes: "Matched in a defense answer and the repository.",
+            supporting_sources: ["GitHub Proof", "Project Defense"],
+            limitations: [],
+            // References the coarse GitHub overview trace whose anchor would
+            // collide with the "github-proof" section id unless namespaced.
+            evidence_traces: ["github-proof", "project-defense-q1"],
+          },
+        ],
+        evidence_traces: [
+          {
+            trace_id: "github-proof",
+            source_type: "GitHub Proof",
+            source_title: "octocat/Hello-World",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "Repository analyzed.",
+            safe_detail: "Repository-level evidence, not line-level proof.",
+            evidence_anchor: "trace-github-proof",
+            location_type: "repo_level",
+            location_label: "repo-level",
+            public_url: "https://github.com/octocat/Hello-World",
+            public_url_label: "View public repository",
+            is_publicly_openable: true,
+            limitation: "Repository-level analysis; not line-level proof.",
+            private_evidence_note: null,
+          },
+          {
+            trace_id: "project-defense-q1",
+            source_type: "Project Defense",
+            source_title: "Project Defense — Q1",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "The candidate answered this question in their own words.",
+            safe_detail: "Self-explanation evidence.",
+            evidence_anchor: "trace-project-defense-q1",
+            location_type: "defense_question",
+            location_label: "Q1",
+            question_text: "How did you implement the risk-scoring API?",
+            is_publicly_openable: false,
+            limitation: "Self-explanation evidence; combine with artifact evidence.",
+            private_evidence_note: "Answer is summarized; the raw transcript is not exposed.",
+          },
+        ],
+      }),
+    )
+
+    const { container } = render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    // Proof-native short labels, not bare source names.
+    const links = screen.getByTestId("skill-trace-links")
+    expect(links.textContent).toContain("GitHub: repo-level")
+    expect(links.textContent).toContain("Defense Q1")
+    expect(links.textContent).not.toContain("Project Defense →")
+
+    // Every matrix link resolves to a rendered trace *card* (not a section header).
+    const anchors = Array.from(links.querySelectorAll("a")) as HTMLAnchorElement[]
+    expect(anchors).toHaveLength(2)
+    for (const a of anchors) {
+      const id = (a.getAttribute("href") || "").slice(1)
+      const target = container.querySelector(`#${id}`)
+      expect(target).not.toBeNull()
+      expect(target?.getAttribute("data-testid")).toBe("evidence-trace")
+    }
+
+    // No DOM id is duplicated across the whole report (section ids vs trace ids).
+    const allIds = Array.from(container.querySelectorAll("[id]")).map((el) => el.id)
+    expect(new Set(allIds).size).toBe(allIds.length)
+
+    // The defense question text renders on its trace card; no numeric scores leak.
+    expect(screen.getByTestId("evidence-trace-question").textContent).toContain(
+      "How did you implement the risk-scoring API?",
+    )
+    expect(document.body.textContent ?? "").not.toMatch(/\/100|\btrust score\b/i)
+  })
+
+  it("renders proof-native deeper evidence: GitHub file path, document page+snippet, defense answer excerpt", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        skill_evidence: [
+          {
+            skill: "Python",
+            status: "Supporting evidence",
+            evidence_chip_count: 0,
+            notes: "File-level GitHub evidence + a document page and a defense answer.",
+            supporting_sources: ["GitHub Proof", "Document Proof", "Project Defense"],
+            limitations: [],
+            evidence_traces: ["github-file-app-routes-py", "document-1-python", "project-defense-q1"],
+          },
+        ],
+        evidence_traces: [
+          {
+            trace_id: "github-file-app-routes-py",
+            source_type: "GitHub Proof",
+            source_title: "octocat/Hello-World — app/routes.py",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "The analyzer flagged app/routes.py.",
+            safe_detail: "File-level evidence; not line-level proof.",
+            evidence_anchor: "trace-github-file-app-routes-py",
+            location_type: "github_file",
+            location_label: "app/routes.py",
+            location_detail: "app/routes.py",
+            file_path: "app/routes.py",
+            public_url: "https://github.com/octocat/Hello-World/blob/main/app/routes.py",
+            public_url_label: "View file on GitHub",
+            is_publicly_openable: true,
+            limitation: "Identifies a relevant file, not the exact lines or author.",
+            private_evidence_note: null,
+          },
+          {
+            trace_id: "document-1-python",
+            source_type: "Document Proof",
+            source_title: "Final Year Project Report",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "A supporting document matched to Python on page 2.",
+            safe_detail: "A safe excerpt/page is shown rather than the raw file.",
+            evidence_anchor: "trace-document-1-python",
+            location_type: "document_page",
+            location_label: "Page 2",
+            page_number: 2,
+            snippet: "Implements the FastAPI routing layer.",
+            is_publicly_openable: false,
+            limitation: "Document evidence supports but does not prove authorship.",
+            private_evidence_note: "Private document retained in student evidence vault; only a safe summary is shown.",
+          },
+          {
+            trace_id: "project-defense-q1",
+            source_type: "Project Defense",
+            source_title: "Project Defense — Q1",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "The candidate answered this question in their own words.",
+            safe_detail: "Self-explanation evidence.",
+            evidence_anchor: "trace-project-defense-q1",
+            location_type: "defense_question",
+            location_label: "Q1",
+            question_text: "How did you build the routing layer?",
+            answer_excerpt: "I built the routing layer and the React dashboard myself.",
+            is_publicly_openable: false,
+            limitation: "Self-explanation evidence; combine with artifact evidence.",
+            private_evidence_note: "Answer is summarized; the raw transcript is not exposed.",
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    // Proof-native matrix labels for the deeper sources.
+    const links = screen.getByTestId("skill-trace-links")
+    expect(links.textContent).toContain("GitHub: app/routes.py")
+    expect(links.textContent).toContain("Doc: Page 2")
+    expect(links.textContent).toContain("Defense Q1")
+
+    // The file path renders on the GitHub file trace card, with its public file link.
+    expect(screen.getByTestId("evidence-trace-file").textContent).toContain("app/routes.py")
+
+    // Document page + bounded snippet render on the document trace card.
+    expect(screen.getByTestId("evidence-trace-page").textContent).toContain("Page 2")
+    expect(screen.getByTestId("evidence-trace-snippet").textContent).toContain(
+      "Implements the FastAPI routing layer.",
+    )
+
+    // Bounded defense answer excerpt renders (private surface only).
+    expect(screen.getByTestId("evidence-trace-answer").textContent).toContain(
+      "I built the routing layer and the React dashboard myself.",
+    )
+  })
+
+  it("renders GitHub line/function code evidence, Website OCR card, and a document citation", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        skill_evidence: [
+          {
+            skill: "Python",
+            status: "Supporting evidence",
+            evidence_chip_count: 0,
+            notes: "Line-level GitHub code, a Website OCR card, and a document citation.",
+            supporting_sources: ["GitHub Proof", "Website Proof", "Document Proof"],
+            limitations: [],
+            evidence_traces: ["github-code-src-main-py", "website-proof-1-ocr", "document-1-python"],
+          },
+        ],
+        evidence_traces: [
+          {
+            trace_id: "github-code-src-main-py",
+            source_type: "GitHub Proof",
+            source_title: "octocat/Hello-World — src/main.py (lines 24-38)",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "The analyzer located code in src/main.py (lines 24-38).",
+            safe_detail: "Line-level code evidence.",
+            evidence_anchor: "trace-github-code-src-main-py",
+            location_type: "github_function",
+            location_label: "function classify_image",
+            location_detail: "src/main.py (lines 24-38)",
+            file_path: "src/main.py",
+            line_start: 24,
+            line_end: 38,
+            function_name: "classify_image",
+            commit_sha: "abcdef0123456789abcdef0123456789abcdef01",
+            code_snippet: "def classify_image(img):\n    return model.predict(img)",
+            public_url: "https://github.com/octocat/Hello-World/blob/main/src/main.py#L24-L38",
+            public_url_label: "View code on GitHub",
+            is_publicly_openable: true,
+            limitation: "Pinpoints skill-relevant code, but is not proof of sole authorship.",
+            private_evidence_note: null,
+          },
+          {
+            trace_id: "website-proof-1-ocr",
+            source_type: "Website Proof",
+            source_title: "https://demo.example.com — OCR summary",
+            skill_names: ["Python"],
+            qualitative_status: "Evidence observed",
+            safe_summary: "Text read on-screen: Prediction: cat.",
+            safe_detail: "Safe OCR summary; no raw OCR dump is exposed.",
+            evidence_anchor: "trace-website-proof-1-ocr",
+            location_type: "website_ocr",
+            location_label: "OCR summary",
+            is_publicly_openable: false,
+            limitation: "Website proof confirms observed behaviour, not source-code authorship.",
+            private_evidence_note: "Captured during the proof session; only a safe summary is shown.",
+          },
+          {
+            trace_id: "document-1-python",
+            source_type: "Document Proof",
+            source_title: "Final Year Project Report",
+            skill_names: ["Python"],
+            qualitative_status: "Supporting evidence",
+            safe_summary: "A supporting document matched to Python.",
+            safe_detail: "A safe citation is shown rather than the raw file.",
+            evidence_anchor: "trace-document-1-python",
+            location_type: "document_citation",
+            location_label: "Citation",
+            location_detail: "System Design",
+            citation: "System Design",
+            is_publicly_openable: false,
+            limitation: "Document evidence supports but does not prove authorship.",
+            private_evidence_note: "Private document retained in student evidence vault.",
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    // Proof-native matrix labels for the deepest GitHub/Website/Document sources.
+    const links = screen.getByTestId("skill-trace-links")
+    expect(links.textContent).toContain("GitHub: function classify_image")
+    expect(links.textContent).toContain("Website: OCR summary")
+    expect(links.textContent).toContain("Doc: Citation")
+
+    // The GitHub code card shows file + line range + function + a safe snippet.
+    const fileCell = screen.getByTestId("evidence-trace-file")
+    expect(fileCell.textContent).toContain("src/main.py")
+    expect(screen.getByTestId("evidence-trace-lines").textContent).toContain("lines 24-38")
+    expect(screen.getByTestId("evidence-trace-function").textContent).toContain("classify_image")
+    // The pinned commit SHA renders, shortened to 7 chars.
+    expect(screen.getByTestId("evidence-trace-commit").textContent).toContain("abcdef0")
+    expect(screen.getByTestId("evidence-trace-code").textContent).toContain("classify_image")
+
+    // The Website OCR summary card renders with no raw payload / URL link.
+    const ocrCard = screen
+      .getAllByTestId("evidence-trace")
+      .find((el) => el.getAttribute("id") === "trace-website-proof-1-ocr")
+    expect(ocrCard?.textContent).toContain("Prediction: cat")
+
+    // The document citation renders (no raw download URL).
+    expect(screen.getByTestId("evidence-trace-citation").textContent).toContain("System Design")
+  })
+})

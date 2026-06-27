@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from app.schemas.vbr_student_report import VBREvidenceTrace
+from app.schemas.vbr_student_report import VaultSkillSummary, VBREvidenceTrace
 
 
 # ── Owner-only publish controls ──────────────────────────────────────────────
@@ -67,9 +67,13 @@ class PassportSkillProjectRef(BaseModel):
 
     project_title: str = ""
     project_id: str | None = None
+    # This project's qualitative status FOR THIS SKILL (not the cross-project best).
+    skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
     report_is_public: bool = False
     public_report_path: str | None = None
+    # The proof-native trace cards this project contributes for this skill.
+    evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -98,8 +102,12 @@ class PublicPassportSkillProjectRef(BaseModel):
     """A published project supporting a public skill — no internal ids."""
 
     project_title: str = ""
+    # Per-project qualitative status for this skill (label only).
+    skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
     public_report_path: str
+    # Per-project trace cards (published, recruiter-safe) for this skill.
+    evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -180,6 +188,15 @@ class PrivateWorkPassportResponse(BaseModel):
     skills: list[PassportSkillSummary] = Field(default_factory=list)
     projects: list[PassportProjectSummary] = Field(default_factory=list)
     evidence_source_counts: dict[str, int] = Field(default_factory=dict)
+
+    # Student Proof Vault — Layer 1: COMPACT per-skill summaries (the main
+    # dashboard). Each card carries category, qualitative status, counts, and a
+    # few representative previews — never every proof card. The full evidence for
+    # one skill is loaded lazily via the Skill Report endpoint. Unattached proofs
+    # are reflected in ``has_unattached`` / ``unattached_count`` per summary.
+    vault_skill_summaries: list[VaultSkillSummary] = Field(default_factory=list)
+    vault_proof_count: int = 0
+    vault_unattached_count: int = 0
 
     project_count: int = 0
     published_report_count: int = 0

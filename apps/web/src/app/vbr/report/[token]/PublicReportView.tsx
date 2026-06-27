@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import {
   getPublicVBRProjectReport,
   isSafePublicUrl,
+  matrixTraceLabel,
   type EvidenceTrace,
   type PublicVBRProjectReport,
   type PublicVideoEvidenceChip,
@@ -20,6 +21,10 @@ import {
   type BadgeTone,
 } from "../../../../../components/passport/shared"
 import { EvidenceTraceList } from "../../../../../components/passport/EvidenceTrace"
+
+// Keeps an in-page anchor target clear of the sticky top chrome when a
+// skill-matrix trace link scrolls to it.
+const ANCHOR_OFFSET = { scrollMarginTop: 96 }
 
 const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   Demonstrated: "emerald",
@@ -84,7 +89,7 @@ function SkillRow({ row, tracesById }: { row: VBRReportSkillEvidenceRow; tracesB
                 href={`#${t.evidence_anchor}`}
                 style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}
               >
-                {t.source_type} →
+                {matrixTraceLabel(t)} →
               </a>
             ))}
           </div>
@@ -310,7 +315,7 @@ export function PublicReportView({ token }: { token: string }) {
       </Card>
 
       {/* Skills demonstrated */}
-      <Card id="skill-evidence">
+      <Card id="skill-evidence" style={ANCHOR_OFFSET}>
         <CardHeader title="Skill Evidence Matrix" eyebrow="Evidence-backed" icon="🧩" />
         {report.skill_evidence.length === 0 ? (
           <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>No claimed skills recorded for this project.</p>
@@ -335,7 +340,7 @@ export function PublicReportView({ token }: { token: string }) {
 
       {/* Evidence Traceability — concrete claim → evidence audit trail */}
       {evidenceTraces.length > 0 && (
-        <Card id="evidence-traceability">
+        <Card id="evidence-traceability" style={ANCHOR_OFFSET}>
           <CardHeader title="Evidence Traceability" eyebrow="Claim → evidence → source" icon="🔍" />
           <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
             Each item below is a concrete evidence source behind the skills above. Public sources link directly;
@@ -346,10 +351,10 @@ export function PublicReportView({ token }: { token: string }) {
       )}
 
       {/* Evidence by source */}
-      <Card id="evidence-by-source">
+      <Card id="evidence-by-source" style={ANCHOR_OFFSET}>
         <CardHeader title="Evidence by Source" eyebrow="Supporting evidence" icon="📎" />
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div id="github-proof">
+          <div id="github-proof" style={ANCHOR_OFFSET}>
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>GitHub Proof</Mono>
             {report.github_proof ? (
               <div style={{ marginTop: 4 }}>
@@ -374,7 +379,7 @@ export function PublicReportView({ token }: { token: string }) {
             )}
           </div>
 
-          <div id="documents">
+          <div id="documents" style={ANCHOR_OFFSET}>
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Document Proof</Mono>
             {report.documents.length > 0 ? (
               <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
@@ -390,7 +395,7 @@ export function PublicReportView({ token }: { token: string }) {
             )}
           </div>
 
-          <div id="website-proof">
+          <div id="website-proof" style={ANCHOR_OFFSET}>
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Website Proof</Mono>
             {report.website_proofs.length > 0 ? (
               <ul style={{ margin: "4px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -414,7 +419,7 @@ export function PublicReportView({ token }: { token: string }) {
             )}
           </div>
 
-          <div id="project-defense">
+          <div id="project-defense" style={ANCHOR_OFFSET}>
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Project Defense</Mono>
             {analysis ? (
               <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -451,7 +456,7 @@ export function PublicReportView({ token }: { token: string }) {
       </Card>
 
       {/* Limitations */}
-      <Card id="limitations">
+      <Card id="limitations" style={ANCHOR_OFFSET}>
         <CardHeader title="Limitations / Not Assessed" eyebrow="In good faith" icon="⚠️" />
         <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
           {report.limitations.map((line, i) => (

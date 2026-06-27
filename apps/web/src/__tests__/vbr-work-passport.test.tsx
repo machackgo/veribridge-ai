@@ -89,7 +89,7 @@ beforeEach(() => {
 })
 
 describe("PrivatePassportView", () => {
-  it("renders evidence source groups/badges and grouped skills", async () => {
+  it("renders evidence source groups/badges (no old 'Evidence-Backed Skills' section)", async () => {
     const p = makePassport()
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
@@ -100,8 +100,10 @@ describe("PrivatePassportView", () => {
     expect(screen.getByText("Jordan Rivera")).toBeInTheDocument()
     expect(screen.getByTestId("evidence-source-counts")).toBeInTheDocument()
     expect(screen.getAllByTestId("evidence-source-count").length).toBeGreaterThan(0)
-    expect(screen.getAllByTestId("passport-skill")).toHaveLength(2)
-    expect(screen.getByText("Python")).toBeInTheDocument()
+    // The old redundant "Evidence-Backed Skills" / "Grouped by skill" section is gone.
+    expect(screen.queryByText(/Evidence-Backed Skills/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId("passport-skill")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-expand-toggle")).not.toBeInTheDocument()
   })
 
   it("shows a merged-attempts badge when duplicate evidence is grouped into one card", async () => {
@@ -117,110 +119,6 @@ describe("PrivatePassportView", () => {
     // One card, not nine, with a badge surfacing the merged attempt count.
     expect(screen.getAllByTestId("passport-project-card")).toHaveLength(1)
     expect(screen.getByTestId("attempt-count-badge")).toHaveTextContent("9 attempts merged")
-  })
-
-  it("expands a skill to show safe drilldown detail with a report preview link", async () => {
-    const base = makePassport()
-    const p = makePassport({
-      skills: [
-        {
-          ...base.skills[0],
-          evidence_sources: ["GitHub Proof", "Project Defense"],
-          notes: "Explained clearly during the Project Defense.",
-          projects: [
-            {
-              project_title: "Skill Evidence Tracker",
-              project_id: "proj-1",
-              evidence_sources: ["GitHub Proof"],
-              report_is_public: false,
-              public_report_path: null,
-            },
-          ],
-          evidence_chips: [{ label: "00:42", short_summary: "Walks through the risk scoring function.", source: "project_defense_video" }],
-          limitations: [],
-        },
-        base.skills[1],
-      ],
-    })
-    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
-    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
-
-    render(<PrivatePassportView />)
-    await screen.findByTestId("passport-header")
-
-    // Detail hidden until expanded.
-    expect(screen.queryByTestId("skill-detail")).not.toBeInTheDocument()
-    fireEvent.click(screen.getAllByTestId("skill-expand-toggle")[0])
-
-    const detail = await screen.findByTestId("skill-detail")
-    expect(detail).toHaveTextContent("Explained clearly during the Project Defense.")
-    expect(screen.getByTestId("skill-project-ref")).toBeInTheDocument()
-    expect(detail).toHaveTextContent("Walks through the risk scoring function.")
-  })
-
-  it("shows aggregated evidence traces in the private skill drilldown", async () => {
-    const base = makePassport()
-    const p = makePassport({
-      skills: [
-        {
-          ...base.skills[0],
-          evidence_sources: ["GitHub Proof", "Document Proof"],
-          notes: "Backed by repository and document evidence.",
-          projects: [
-            { project_title: "Skill Evidence Tracker", project_id: "proj-1", evidence_sources: ["GitHub Proof"], report_is_public: false, public_report_path: null },
-          ],
-          evidence_chips: [],
-          evidence_traces: [
-            {
-              trace_id: "github-proof",
-              source_type: "GitHub Proof",
-              source_title: "octocat/Hello-World",
-              skill_names: ["Python"],
-              qualitative_status: "Supporting evidence",
-              safe_summary: "Repository analyzed.",
-              safe_detail: "Static analysis.",
-              evidence_anchor: "github-proof",
-              public_url: "https://github.com/octocat/Hello-World",
-              public_url_label: "View public repository",
-              timestamp: null,
-              limitation: "Not sole authorship.",
-              is_publicly_openable: true,
-              private_evidence_note: null,
-            },
-            {
-              trace_id: "document-proof-1",
-              source_type: "Document Proof",
-              source_title: "Final Year Project Report",
-              skill_names: ["Python"],
-              qualitative_status: "Supporting evidence",
-              safe_summary: "A supporting document.",
-              safe_detail: "Written context.",
-              evidence_anchor: "document-proof-1",
-              public_url: null,
-              public_url_label: null,
-              timestamp: null,
-              limitation: "Original private document is not publicly exposed.",
-              is_publicly_openable: false,
-              private_evidence_note: "Private document retained in student evidence vault; only a safe summary is shown.",
-            },
-          ],
-          limitations: [],
-        },
-        base.skills[1],
-      ],
-    })
-    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
-    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
-
-    render(<PrivatePassportView />)
-    await screen.findByTestId("passport-header")
-    fireEvent.click(screen.getAllByTestId("skill-expand-toggle")[0])
-
-    const detail = await screen.findByTestId("skill-detail")
-    expect(detail.querySelector('[data-testid="evidence-traceability"]')).toBeTruthy()
-    expect(screen.getAllByTestId("evidence-trace").length).toBe(2)
-    expect(screen.getByTestId("evidence-trace-link")).toHaveAttribute("href", "https://github.com/octocat/Hello-World")
-    expect(screen.getByTestId("evidence-trace-private-note").textContent).toContain("evidence vault")
   })
 
   it("renders project report actions including publish when no report exists", async () => {
@@ -296,7 +194,8 @@ describe("PrivatePassportView", () => {
     render(<PrivatePassportView />)
 
     expect(await screen.findByTestId("passport-no-projects")).toBeInTheDocument()
-    expect(screen.getByTestId("passport-no-skills")).toBeInTheDocument()
     expect(screen.getByTestId("passport-no-evidence")).toBeInTheDocument()
+    // The old "Evidence-Backed Skills" empty state no longer renders.
+    expect(screen.queryByTestId("passport-no-skills")).not.toBeInTheDocument()
   })
 })

@@ -863,3 +863,84 @@ def test_public_report_document_proof_is_consistent_and_safe(
             for tid in row.get("evidence_traces", [])
         )
         assert row_has_doc == trace_claims
+
+
+def test_public_report_strips_document_snippet_and_answer_excerpt(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Private-only proof excerpts (document snippet, defense answer excerpt) are
+    never exposed on the public recruiter surface, while the location label /
+    question text reference is preserved."""
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Python", "page_number": 2, "snippet": "Implements the FastAPI routing layer."}
+        ],
+    )
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+    gen = _generate_questions(client, project_id).json()
+    q = next(q for q in gen["questions"] if q["target_ref"].get("skill"))
+    _submit_defense(
+        client,
+        gen["session_id"],
+        answers=[{"question_id": q["id"], "answer_text": "I personally wrote the routing layer."}],
+    )
+
+    token = _publish(client, project_id).json()["public_token"]
+    raw = _get_public(client, token).text
+    assert "Implements the FastAPI routing layer." not in raw
+    assert "I personally wrote the routing layer." not in raw
+
+    body = _get_public(client, token).json()
+    for trace in body["evidence_traces"]:
+        assert trace.get("snippet") is None
+        assert trace.get("answer_excerpt") is None
+
+
+# ── Step 7: centralized Public Safety gate (strengthened, fail-closed) ────────
+
+
+def test_public_report_fail_closed_on_nested_source_id(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A private ``source_id`` smuggled into a nested report field must trip the
+    strengthened central scan and 404 the public report (fail-closed)."""
+    report = _minimal_report(
+        skill_evidence=[{"skill": "Python", "status": "Demonstrated", "source_id": "private-row-uuid"}]
+    )
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 404, response.text
+
+
+def test_public_report_fail_closed_on_raw_metadata(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A raw ``metadata`` / ``raw_payload`` bag must never reach a public report."""
+    report = _minimal_report(
+        project_defense_analysis={"metadata": {"provider_response": {"model": "x"}}}
+    )
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 404, response.text
+
+
+def test_public_report_fail_closed_on_local_path_value(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A local ``/Users/…`` path lurking in a non-scrubbed position fails closed."""
+    report = _minimal_report(documents=[{"title": "Doc", "local_path": "/Users/me/secret.pdf"}])
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 404, response.text
+
+
+def test_public_report_scrubs_email_in_free_text(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """An email address in a free-text field is scrubbed, and the report still
+    serves (the central gate redacts recoverable content rather than 404-ing)."""
+    report = _minimal_report(project_description="Reach the author at private@example.com for a demo.")
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    assert "private@example.com" not in response.text

@@ -40,11 +40,18 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.services.public_report_safety_service import (
+    PublicReportUnsafeError,
+    enforce_public_safe,
+)
 from app.services.safe_public_url import is_safe_public_url
 from app.services.vbr_public_project_report import (
-    _contains_unsafe_fields,
     _lookup_display_name,
     _scrub_public_report,
+)
+from app.services.student_proof_vault_service import (
+    collect_skill_summaries,
+    collect_vault_items,
 )
 from app.services.vbr_student_report import build_student_vbr_report
 
@@ -363,19 +370,40 @@ def _aggregate_skills_with_detail(
                 if not entry["notes"] and notes:
                     entry["notes"] = notes
 
+            # The concrete traces THIS project contributes for THIS skill — used
+            # both for the flat aggregate and for the per-project drilldown group.
+            project_skill_traces = [
+                report_traces[str(tid)]
+                for tid in (row.get("evidence_traces") or [])
+                if str(tid) in report_traces
+            ]
+
             title_key = project_title.strip().lower()
             if title_key not in entry["_seen_projects"]:
                 entry["_seen_projects"].add(title_key)
                 entry["project_count"] += 1
                 ref: dict[str, Any] = {
                     "project_title": project_title,
+                    # This project's qualitative status FOR THIS SKILL (not the
+                    # skill's best status across projects).
+                    "skill_status": status_label,
                     "evidence_sources": list(proj_sources),
                     "report_is_public": is_public,
                     "public_report_path": public_report_path,
+                    # The proof-native trace cards this project contributes for
+                    # this skill (grouped under the project in the drilldown).
+                    "evidence_traces": list(project_skill_traces),
                 }
                 if not public:
                     ref["project_id"] = summary.get("project_id")
                 entry["projects"].append(ref)
+            else:
+                # Same project seen again (e.g. another claimed skill row): merge
+                # any additional traces into the existing per-project group.
+                for existing in entry["projects"]:
+                    if existing.get("project_title", "").strip().lower() == title_key:
+                        existing["evidence_traces"].extend(project_skill_traces)
+                        break
 
             for src in proj_sources:
                 if src not in entry["evidence_sources"]:
@@ -384,10 +412,8 @@ def _aggregate_skills_with_detail(
             entry["evidence_chips"].extend(_sanitize_skill_chips(report, skill))
 
             # Pull the concrete evidence traces this skill row references.
-            for trace_id in row.get("evidence_traces") or []:
-                trace = report_traces.get(str(trace_id))
-                if trace is not None:
-                    entry["evidence_traces"].append(trace)
+            for trace in project_skill_traces:
+                entry["evidence_traces"].append(trace)
 
     skills: list[dict[str, Any]] = []
     for entry in by_skill.values():
@@ -416,6 +442,22 @@ def _aggregate_skills_with_detail(
             seen_traces.add(tk)
             deduped_traces.append(trace)
         entry["evidence_traces"] = deduped_traces[:_MAX_SKILL_TRACES]
+        # Dedupe + cap the per-project trace groups the same way so the
+        # cross-project drilldown stays scannable.
+        for ref in entry["projects"]:
+            seen_ref: set[tuple[str, str, str]] = set()
+            ref_traces: list[dict[str, Any]] = []
+            for trace in ref.get("evidence_traces") or []:
+                tk = (
+                    str(trace.get("source_type")),
+                    str(trace.get("source_title")),
+                    str(trace.get("safe_summary")),
+                )
+                if tk in seen_ref:
+                    continue
+                seen_ref.add(tk)
+                ref_traces.append(trace)
+            ref["evidence_traces"] = ref_traces[:_MAX_SKILL_TRACES]
         if entry["status"] in {"Needs review", "Not assessed"}:
             entry["limitations"].append(
                 "This skill is not yet strongly evidenced — treat it as a claim pending more proof."
@@ -444,6 +486,16 @@ def _public_safe_trace(trace: dict[str, Any]) -> dict[str, Any]:
     title = str(row.get("source_title") or "")
     if "://" in title and not is_safe_public_url(title):
         row["source_title"] = str(row.get("source_type") or "Evidence source")
+    # Strip the detailed private-only proof excerpts; keep the safe
+    # human-readable location label + deterministic question text.
+    row["snippet"] = None
+    row["answer_excerpt"] = None
+    # GitHub code snippet is private-only; the public ``…#L`` link is the proof.
+    row["code_snippet"] = None
+    if row.get("source_type") == "Document Proof" and row.get("location_detail"):
+        row["location_detail"] = (
+            "The matched passage is retained privately; only the document reference is shown."
+        )
     return row
 
 
@@ -457,8 +509,12 @@ def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
         "projects": [
             {
                 "project_title": ref.get("project_title") or "",
+                # Per-project qualitative status for this skill (label only).
+                "skill_status": ref.get("skill_status") or "Not assessed",
                 "evidence_sources": list(ref.get("evidence_sources") or []),
                 "public_report_path": ref.get("public_report_path") or "",
+                # Per-project trace cards, re-sanitized — published projects only.
+                "evidence_traces": [_public_safe_trace(t) for t in ref.get("evidence_traces") or []],
             }
             for ref in entry.get("projects") or []
             if ref.get("public_report_path")
@@ -714,12 +770,31 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         public=False,
     )
 
+    # ── Student Proof Vault (Layer 1 — compact skill dashboard) ──────────────
+    # The passport is no longer attached-proof-only: it aggregates EVERY safe,
+    # student-owned proof (GitHub / Document / Website / Project Defense / Video /
+    # Skill Graph) directly from its source — attached to a VBR project or not.
+    # The main page shows only COMPACT per-skill summaries (category, counts, a
+    # few previews) — never every proof card, and without hydrating website
+    # detail. The full evidence for one skill is loaded lazily by the Skill
+    # Report endpoint (``collect_skill_report``). We still compute the raw vault
+    # counts (cheap) so the page can show "N proofs / M unattached".
+    vault_items = collect_vault_items(db, pipeline_db, str(user_id))
+    vault_skill_summaries = collect_skill_summaries(db, pipeline_db, str(user_id), items=vault_items)
+    vault_unattached_count = sum(1 for item in vault_items if not item.get("is_attached_to_project"))
+
     limitations: list[str] = []
     if not projects:
         limitations.append("No projects yet — create a Project Defense to start your passport.")
     if published_report_count == 0:
         limitations.append(
             "No recruiter-safe VBR reports published yet. Publish a project report to feature it."
+        )
+    if vault_unattached_count:
+        limitations.append(
+            f"{vault_unattached_count} proof item(s) are not attached to any VBR project. They are "
+            "shown in your vault under the relevant skill so nothing is lost — attach them to a "
+            "project to feature them in a report."
         )
     limitations.append(
         "Skills and evidence are shown with qualitative labels only — never numeric trust scores."
@@ -737,6 +812,9 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         "skills": skills,
         "projects": project_summaries,
         "evidence_source_counts": _evidence_source_counts(project_summaries),
+        "vault_skill_summaries": vault_skill_summaries,
+        "vault_proof_count": len(vault_items),
+        "vault_unattached_count": vault_unattached_count,
         "project_count": len(project_summaries),
         "published_report_count": published_report_count,
         "limitations": limitations,
@@ -847,7 +925,13 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     public = _scrub_public_report(public)
 
     # …then refuse to serve anything that still trips the unsafe-field scan.
-    if _contains_unsafe_fields(public):
+    # Step 7: the final gate runs through the centralized Public Safety layer,
+    # a strict superset of the inline scan (rejects private source_id / metadata /
+    # raw-payload / provider keys, ``/Users/…`` & ``file://`` paths, raw emails)
+    # that also strengthens scrubbing (rank/rating/percentile + emails).
+    try:
+        public = enforce_public_safe(public)
+    except PublicReportUnsafeError:
         logger.warning("[VBR] Public Work Passport failed the unsafe-field scan; refusing to serve.")
         raise _not_found()
 

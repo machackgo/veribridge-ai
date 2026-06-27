@@ -269,6 +269,65 @@ class Settings(BaseSettings):
         alias="LOCAL_WHISPER_COMPUTE_TYPE",
     )
 
+    # ── LLM Proof Synthesis Layer (Step 4) ───────────────────────────────────
+    # Provider-agnostic, recruiter-readable synthesis of already-linked proof
+    # chains.  Anthropic is NEVER required: the default is fully disabled and the
+    # service always has a deterministic, rule-based fallback.  A local
+    # OpenAI-compatible endpoint (Ollama / vLLM / LM Studio serving Qwen, etc.)
+    # is the recommended provider so synthesis runs at zero API cost.
+    #
+    # LLM_SYNTHESIS_ENABLED:  master switch.  When False, the deterministic
+    #   fallback is used for every chain regardless of provider.
+    # LLM_SYNTHESIS_PROVIDER:  disabled | local_openai | anthropic
+    #   disabled      — deterministic fallback only (default; no network).
+    #   local_openai  — POST {LOCAL_LLM_BASE_URL}/chat/completions (OpenAI shape).
+    #   anthropic     — Anthropic Messages API; used ONLY when ANTHROPIC_API_KEY
+    #                   and AI_REVIEWER_MODEL are also configured.
+    llm_synthesis_enabled: bool = Field(
+        default=False,
+        alias="LLM_SYNTHESIS_ENABLED",
+    )
+    llm_synthesis_provider: str = Field(
+        default="disabled",
+        alias="LLM_SYNTHESIS_PROVIDER",
+    )
+
+    # Local OpenAI-compatible endpoint (Ollama default shown).  Works unchanged
+    # with vLLM / LM Studio / any OpenAI-compatible server by pointing BASE_URL
+    # and MODEL at it.  The API key is a dummy for most local servers ("ollama").
+    local_llm_base_url: str = Field(
+        default="http://localhost:11434/v1",
+        alias="LOCAL_LLM_BASE_URL",
+    )
+    local_llm_model: str = Field(
+        default="qwen3:14b",
+        alias="LOCAL_LLM_MODEL",
+    )
+    local_llm_api_key: SecretStr = Field(
+        default=SecretStr("ollama"),
+        alias="LOCAL_LLM_API_KEY",
+    )
+
+    # Per-call timeout for a single provider request (seconds).  A slow/hung
+    # provider trips this and the chain falls back deterministically.
+    llm_synthesis_timeout_seconds: int = Field(
+        default=30,
+        alias="LLM_SYNTHESIS_TIMEOUT_SECONDS",
+    )
+    # Bounded parallel synthesis of independent chains.  Default 1 (conservative
+    # for a single local model).  Raise to 2 locally only after testing; a
+    # GPU/vLLM server can run 4, 8, or more.
+    llm_synthesis_max_concurrency: int = Field(
+        default=1,
+        alias="LLM_SYNTHESIS_MAX_CONCURRENCY",
+    )
+    # Upper bound on how many chains may use the LLM in one report run (cost
+    # guard).  Chains beyond this still get the deterministic synthesis.
+    llm_synthesis_max_chains_per_run: int = Field(
+        default=20,
+        alias="LLM_SYNTHESIS_MAX_CHAINS_PER_RUN",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

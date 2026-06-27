@@ -23,10 +23,11 @@ The check is intentionally conservative: any parsing ambiguity returns
 from __future__ import annotations
 
 import ipaddress
+import re
 
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
-__all__ = ["is_safe_public_url", "safe_public_url"]
+__all__ = ["is_safe_public_url", "safe_public_url", "safe_repo_relative_path"]
 
 _ALLOWED_SCHEMES = {"http", "https"}
 
@@ -154,3 +155,144 @@ def safe_public_url(url: object) -> str | None:
     if is_safe_public_url(url):
         return url.strip()  # type: ignore[union-attr]
     return None
+
+
+# ── Repo-relative path gate (must-fix) ────────────────────────────────────────
+#
+# Code-evidence rows carry a ``file_path`` that becomes a public GitHub
+# ``…/blob/<branch>/<path>`` link, an "exact location" citation chip, and an
+# evidence trace on anonymous recruiter surfaces. That value MUST be a genuine
+# repo-relative path (``apps/api/main.py``). It must NEVER be an absolute /
+# local / Windows / UNC / ``file://`` path, because those leak a developer's
+# private filesystem into public output.
+#
+# The old code did ``str(raw).strip().lstrip("/")`` which silently *converted*
+# ``/Users/alice/secret.py`` into the apparently-relative ``Users/alice/...``
+# (and left ``C:\Users\...`` untouched) — hiding the leak instead of blocking
+# it. This helper rejects those values outright rather than normalizing them.
+
+# Tokens that flag an absolute POSIX path we must never expose.
+_UNSAFE_POSIX_PREFIXES = (
+    "/users/",
+    "/home/",
+    "/private/",
+    "/var/",
+    "/tmp/",
+    "/etc/",
+    "/root/",
+    "/mnt/",
+    "/opt/",
+    "/usr/",
+    "/srv/",
+)
+
+# Query/param-style keys that mark a signed or tokenized storage path.
+_UNSAFE_PATH_TOKENS = (
+    "://",  # any scheme (file://, https://, s3://, …)
+    "token=",
+    "signature=",
+    "x-amz-",
+    "x-goog-",
+    "access_token",
+)
+
+# A leading URL/URI scheme (``file:``, ``file://``, ``https://``, ``s3:``,
+# ``mailto:`` …) or a Windows drive letter (``C:``). Either is unsafe as a
+# repo-relative path; genuine relative paths never start with ``<scheme>:``.
+_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
+
+
+def _is_unsafe_repo_form(text: str) -> bool:
+    """Return ``True`` if ``text`` (a raw *or* URL-decoded candidate) is unsafe.
+
+    Applied to the raw value and to one/two URL-decoded passes so traversal or
+    an absolute/scheme path that only appears *after* percent-decoding
+    (``%2e%2e/…``, ``..%2f…``, ``%252e%252e/…``) is still rejected.
+    """
+    if not text:
+        return False  # emptiness is handled by the caller
+    lowered = text.lower()
+    norm = text.replace("\\", "/")
+    lowered_norm = lowered.replace("\\", "/")
+
+    # Home-relative path: ``~/secret.py`` / ``~alice/secret.py``.
+    if text.startswith("~"):
+        return True
+    # Any URI scheme (file:, file://, https://, s3:, …) or Windows drive (C:).
+    if _SCHEME_RE.match(text):
+        return True
+    # Signed-storage / token fragments.
+    if any(token in lowered for token in _UNSAFE_PATH_TOKENS):
+        return True
+    # UNC path (\\server\share\file) or //server/share.
+    if text.startswith("\\\\") or norm.startswith("//"):
+        return True
+    # POSIX absolute path (do NOT lstrip("/") into a fake relative path).
+    if norm.startswith("/"):
+        return True
+    if any(lowered_norm.startswith(prefix) for prefix in _UNSAFE_POSIX_PREFIXES):
+        return True
+    # Traversal in any segment.
+    if ".." in norm.split("/"):
+        return True
+    return False
+
+
+def safe_repo_relative_path(value: object) -> str | None:
+    """Return a safe repo-relative path, or ``None`` if ``value`` is unsafe.
+
+    Accepts only genuine repo-relative paths (``apps/api/main.py``,
+    ``src/components/Button.tsx``, ``README.md``). Backslash separators in an
+    otherwise-safe relative path are normalized to forward slashes
+    (``src\\components\\Button.tsx`` → ``src/components/Button.tsx``).
+
+    Returns ``None`` — never a "cleaned up" path — for anything that could leak
+    a private filesystem location into public output:
+
+    * empty / ``None`` / non-string values
+    * POSIX absolute paths (``/Users/…``, ``/home/…``, ``/etc/passwd``, ``/…``)
+    * Windows absolute paths (``C:\\Users\\…``, ``C:/Users/…``)
+    * UNC paths (``\\\\server\\share\\file``)
+    * home-relative paths (``~/secret.py``, ``~alice/secret.py``)
+    * ``file:`` / ``file://`` and any other scheme URL / signed storage path
+    * traversal (``../`` or ``..\\``)
+    * traversal/absolute/scheme paths hidden behind URL-encoding
+      (``%2e%2e/…``, ``..%2f…``, ``%2e%2e%2f…``, double-encoded ``%252e%252e/…``)
+    * values carrying obvious secret/token query fragments
+
+    Both the raw value and one/two URL-decoded passes are inspected (a bounded
+    number of passes — never an unbounded decode loop). Callers must drop the
+    field (or substitute a neutral limitation) when this returns ``None`` — they
+    must not fall back to ``lstrip("/")``.
+    """
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+
+    # Inspect the raw value and up to two URL-decode passes so traversal /
+    # absolute / scheme paths that only surface after percent-decoding are still
+    # rejected. Two passes catches double-encoding (``%252e`` → ``%2e`` → ``.``)
+    # without an unbounded decode loop.
+    candidate = raw
+    for _ in range(2):
+        if _is_unsafe_repo_form(candidate):
+            return None
+        decoded = unquote(candidate)
+        if decoded == candidate:
+            break
+        candidate = decoded
+    else:
+        # Loop exhausted both passes without breaking — check the final form too.
+        if _is_unsafe_repo_form(candidate):
+            return None
+
+    # Normalize backslashes to slashes and drop empty segments from the (now
+    # known-safe) raw path; require something left.
+    normalized = raw.replace("\\", "/")
+    cleaned = "/".join(seg for seg in normalized.split("/") if seg)
+    if not cleaned:
+        return None
+
+    return cleaned

@@ -27,9 +27,17 @@ export const TOKEN = {
 
 // ── Shared micro-components ───────────────────────────────────────────────
 
-export function Mono({ children, style }: { children: ReactNode; style?: React.CSSProperties }) {
+export function Mono({
+  children,
+  style,
+  "data-testid": testId,
+}: {
+  children: ReactNode
+  style?: React.CSSProperties
+  "data-testid"?: string
+}) {
   return (
-    <span style={{ fontFamily: "'JetBrains Mono', monospace", ...style }}>
+    <span data-testid={testId} style={{ fontFamily: "'JetBrains Mono', monospace", ...style }}>
       {children}
     </span>
   )
