@@ -898,3 +898,49 @@ def test_public_report_strips_document_snippet_and_answer_excerpt(
     for trace in body["evidence_traces"]:
         assert trace.get("snippet") is None
         assert trace.get("answer_excerpt") is None
+
+
+# ── Step 7: centralized Public Safety gate (strengthened, fail-closed) ────────
+
+
+def test_public_report_fail_closed_on_nested_source_id(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A private ``source_id`` smuggled into a nested report field must trip the
+    strengthened central scan and 404 the public report (fail-closed)."""
+    report = _minimal_report(
+        skill_evidence=[{"skill": "Python", "status": "Demonstrated", "source_id": "private-row-uuid"}]
+    )
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 404, response.text
+
+
+def test_public_report_fail_closed_on_raw_metadata(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A raw ``metadata`` / ``raw_payload`` bag must never reach a public report."""
+    report = _minimal_report(
+        project_defense_analysis={"metadata": {"provider_response": {"model": "x"}}}
+    )
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 404, response.text
+
+
+def test_public_report_fail_closed_on_local_path_value(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A local ``/Users/…`` path lurking in a non-scrubbed position fails closed."""
+    report = _minimal_report(documents=[{"title": "Doc", "local_path": "/Users/me/secret.pdf"}])
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 404, response.text
+
+
+def test_public_report_scrubs_email_in_free_text(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """An email address in a free-text field is scrubbed, and the report still
+    serves (the central gate redacts recoverable content rather than 404-ing)."""
+    report = _minimal_report(project_description="Reach the author at private@example.com for a demo.")
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    assert "private@example.com" not in response.text

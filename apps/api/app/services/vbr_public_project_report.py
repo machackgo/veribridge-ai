@@ -622,7 +622,20 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     # after the projection is built and before the response is returned.
     public = _scrub_public_report(public)
 
-    if _contains_unsafe_fields(public):
+    # Step 7: route the final gate through the centralized Public Safety layer —
+    # a strict superset of the inline scan that also strengthens scrubbing
+    # (rank/rating/percentile + emails) and rejects private source_id / metadata /
+    # raw-payload / provider-config keys, ``/Users/…`` & ``file://`` paths, and raw
+    # emails. Lazily imported because the safety service imports this module's
+    # low-level primitives (``_scrub_text`` / ``_contains_unsafe_fields``).
+    from app.services.public_report_safety_service import (
+        PublicReportUnsafeError,
+        enforce_public_safe,
+    )
+
+    try:
+        public = enforce_public_safe(public)
+    except PublicReportUnsafeError:
         logger.warning("[VBR] Public project report failed the unsafe-field scan; refusing to serve.")
         raise _not_found()
 

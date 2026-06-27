@@ -1,0 +1,1276 @@
+"""Tests for the centralized Public Safety / Recruiter Sharing Layer (Step 7).
+
+Every public/recruiter-facing surface must project internal objects through
+``public_report_safety_service`` so a recruiter only ever sees safe, qualitative
+proof summaries — never raw transcripts/docs/DOM/OCR/provider JSON, storage
+paths, signed URLs, local paths, ``source_id`` values, private ids, emails,
+tokens/secrets, raw payloads, internal metadata, or score/ranking/"fully
+verified" language.
+
+These tests feed each projection function deliberately HOSTILE data (a token
+smuggled into a summary, a ``/Users/…`` path in a location, an email in a
+limitation, a score in a synthesis claim, a UUID as a skill name, …) and assert
+the projection is fail-closed: unsafe fragments are scrubbed/omitted, private
+keys never appear, and the whole-payload gate refuses anything that slips
+through. All deterministic — no network, no LLM.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from app.services.public_report_safety_service import (
+    _NO_PUBLIC_SYNTHESIS_LIMITATION,
+    _NO_PUBLIC_SYNTHESIS_SUMMARY,
+    PublicReportUnsafeError,
+    contains_unsafe_fields,
+    enforce_public_safe,
+    public_safe_evidence_artifact,
+    public_safe_linked_chain,
+    public_safe_skill_name,
+    public_safe_skill_report,
+    public_safe_stale_marker,
+    public_safe_synthesis_claim,
+    public_safe_synthesis_result,
+    scrub_public_payload,
+    scrub_public_text,
+)
+
+# A grab-bag of fragments that must NEVER survive into a public projection.
+_SIGNED_URL = "https://proj.supabase.co/storage/v1/object/sign/vbr/sessions/abc.webm?token=ey.secret"
+_LOCAL_PATH = "/Users/student/Desktop/secret-demo.mp4"
+_FILE_URI = "file:///private/var/folders/tmp/full.webm"
+_STORAGE_PATH = "vbr/sessions/9f/raw/frame_001.png"
+_EMAIL = "private.student@example.com"
+_ACCESS_TOKEN = "access_token=eyJhbGciOiA9.aaa.bbb"
+_BEARER = "Bearer sk-live-1234567890abcdef"
+_UUID = "550e8400-e29b-41d4-a716-446655440000"
+_PRIVATE_ID = "user_1234567890abcdef"
+
+_LEAK_FRAGMENTS = [
+    "supabase.co/storage",
+    "/storage/v1/object",
+    "vbr/sessions/",
+    "/users/",
+    "file://",
+    "example.com",
+    "access_token",
+    "bearer ",
+    "eyjhbgci",
+]
+
+_SCORE_FRAGMENTS = ["/100", "%", "score", "trust score", "fully verified", "ranked #", "percentile", "stars"]
+
+
+def _lower_blob(value: object) -> str:
+    return json.dumps(value, default=str).lower()
+
+
+def _assert_no_leaks(value: object, *, fragments: list[str] = _LEAK_FRAGMENTS) -> None:
+    blob = _lower_blob(value)
+    for fragment in fragments:
+        assert fragment not in blob, f"leaked sensitive fragment {fragment!r} into {blob!r}"
+
+
+def _assert_no_scores(value: object) -> None:
+    blob = _lower_blob(value)
+    for fragment in _SCORE_FRAGMENTS:
+        assert fragment not in blob, f"leaked score/rank fragment {fragment!r} into {blob!r}"
+
+
+# ── Text scrub ────────────────────────────────────────────────────────────────
+
+
+def test_scrub_public_text_strips_paths_tokens_urls_emails() -> None:
+    text = f"Built it; demo at {_SIGNED_URL}, local copy {_LOCAL_PATH}, {_FILE_URI}, contact {_EMAIL}, {_BEARER}"
+    out = scrub_public_text(text)
+    _assert_no_leaks(out)
+    assert _EMAIL not in out
+
+
+def test_scrub_public_text_strips_score_rank_percentile_language() -> None:
+    text = "Trust score 92/100, ranked #1, 9.8 out of 10, 4.9 stars, top 1 percentile, fully verified."
+    out = scrub_public_text(text)
+    _assert_no_scores(out)
+
+
+def test_scrub_public_text_keeps_qualitative_prose() -> None:
+    text = "Implemented a FastAPI risk-scoring endpoint and a React dashboard."
+    out = scrub_public_text(text)
+    # "scoring" is a substring of a skill phrase; the word "score" must be gone but
+    # the legitimate technical prose around it should still be readable.
+    assert "fastapi" in out.lower()
+    assert "react dashboard" in out.lower()
+
+
+def test_scrub_public_payload_preserves_safe_deployed_url() -> None:
+    payload = {"deployed_url": "https://my-live-app.example.io/app", "summary": "scored 90/100"}
+    out = scrub_public_payload(payload)
+    # The safe outbound URL survives the recursive whole-payload scrub…
+    assert out["deployed_url"] == "https://my-live-app.example.io/app"
+    # …while the score fragment is removed.
+    assert "/100" not in out["summary"]
+    assert "score" not in out["summary"].lower()
+
+
+# ── Unsafe-field scan (fail-closed) ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"source_id": "abc123"},
+        {"metadata": {"anything": 1}},
+        {"raw_payload": {"x": 1}},
+        {"provider_response": {"model": "x"}},
+        {"provider_name": "anthropic"},
+        {"nested": [{"deep": {"refresh_token": "x"}}]},
+        {"summary": _SIGNED_URL},
+        {"location": _LOCAL_PATH},
+        {"note": f"reach me at {_EMAIL}"},
+        {"link": _FILE_URI},
+        {"path": _STORAGE_PATH},
+        {"auth": _ACCESS_TOKEN},
+    ],
+)
+def test_contains_unsafe_fields_flags_hostile_payloads(payload: dict) -> None:
+    assert contains_unsafe_fields(payload) is True
+
+
+def test_contains_unsafe_fields_allows_safe_payload() -> None:
+    safe = {
+        "skill": "Python",
+        "qualitative_tier": "Strongly corroborated",
+        "evidence_id": "ev_github_deadbeefcafe01",
+        "public_url": "https://github.com/octocat/Hello-World/blob/main/app.py#L10",
+        "limitations": ["Documents corroborate but are never primary proof."],
+    }
+    assert contains_unsafe_fields(safe) is False
+
+
+def test_enforce_public_safe_raises_on_unsafe_after_scrub() -> None:
+    # A storage path is not removed by the score/rank scrub, so the scan must
+    # still catch it and the gate must fail closed.
+    with pytest.raises(PublicReportUnsafeError):
+        enforce_public_safe({"summary": "all good", "leaked": _STORAGE_PATH})
+
+
+def test_enforce_public_safe_returns_scrubbed_when_safe() -> None:
+    out = enforce_public_safe({"summary": "Scored 95/100 on review.", "tier": "Corroborated"})
+    assert out["tier"] == "Corroborated"
+    _assert_no_scores(out)
+
+
+# ── Skill-name scrubbing ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("hostile", [_UUID, _PRIVATE_ID, _EMAIL, _STORAGE_PATH, _SIGNED_URL])
+def test_public_safe_skill_name_drops_private_id_like_labels(hostile: str) -> None:
+    assert public_safe_skill_name(hostile) is None
+
+
+def test_public_safe_skill_name_keeps_human_label() -> None:
+    assert public_safe_skill_name("FastAPI") == "FastAPI"
+    assert public_safe_skill_name("Data Visualization") == "Data Visualization"
+
+
+def test_public_safe_skill_name_strips_id_from_mixed_label() -> None:
+    out = public_safe_skill_name(f"Python {_UUID}")
+    assert out == "Python"
+
+
+# ── Step 2 — normalized evidence artifact ─────────────────────────────────────
+
+
+def test_public_safe_evidence_artifact_strips_source_id_metadata_and_scrubs() -> None:
+    hostile = {
+        "evidence_id": "ev_github_deadbeefcafe01",
+        "source_id": "proof-row-uuid-private",  # private — must be dropped
+        "source_type": "github",
+        "source_label": "GitHub Proof",
+        "canonical_skill_name": _UUID,  # private id masquerading as a skill
+        "subskill_name": "Routing",
+        "project_title": "Risk Platform",
+        "exact_location": f"app.py · lines 10-20 {_LOCAL_PATH}",
+        "safe_summary": f"Scored 92/100; demo {_SIGNED_URL}; ask {_EMAIL}",
+        "proof_strength": "precise_code",
+        "public_safe": True,
+        "limitations": [f"Token {_ACCESS_TOKEN} only on request"],
+        "public_url": _SIGNED_URL,  # signed URL — not publicly linkable
+        "metadata": {"raw": {"provider_json": {"x": 1}}},  # must be dropped
+        "raw_payload": "do not leak",
+    }
+    out = public_safe_evidence_artifact(hostile)
+
+    assert "source_id" not in out
+    assert "metadata" not in out
+    assert "raw_payload" not in out
+    assert out["evidence_id"] == "ev_github_deadbeefcafe01"
+    assert out["canonical_skill_name"] is None  # UUID skill scrubbed away
+    assert out["public_url"] is None  # signed URL refused
+    _assert_no_leaks(out)
+    _assert_no_scores(out)
+    # Whole projection must pass the fail-closed gate.
+    assert contains_unsafe_fields(out) is False
+
+
+# ── Step 3 — linked proof chain ───────────────────────────────────────────────
+
+
+def test_public_safe_linked_chain_drops_project_id_and_private_ids() -> None:
+    hostile = {
+        "chain_id": "chain_1",
+        "project_id": _UUID,  # private — must be dropped
+        "project_title": "Checkout Service",
+        "canonical_skill_name": "Python",
+        "chain_label": f"Checkout · {_STORAGE_PATH}",
+        # Mix a safe ev_ id with a raw private id — only the safe one survives.
+        "linked_evidence_ids": ["ev_github_deadbeefcafe01", _PRIVATE_ID, _UUID],
+        "source_types_present": ["github", "website"],
+        "primary_source_type": "github",
+        "connection_reasons": [
+            f"Same repo; provider payload {{'raw': '{_SIGNED_URL}'}}",
+            "Same project title.",
+        ],
+        "proof_strength_summary": {"precise_code": 1, "runtime": 1, "source_id": "leak"},
+        "limitations": [f"Contact {_EMAIL}"],
+        "public_safe": True,
+        "evidence": [
+            {
+                "evidence_id": "ev_github_deadbeefcafe01",
+                "source_id": "private-row",
+                "source_type": "github",
+                "safe_summary": f"scored 80/100 {_LOCAL_PATH}",
+                "public_safe": True,
+            }
+        ],
+    }
+    out = public_safe_linked_chain(hostile)
+
+    assert "project_id" not in out
+    assert out["linked_evidence_ids"] == ["ev_github_deadbeefcafe01"]
+    assert "source_id" not in out["proof_strength_summary"]
+    assert "source_id" not in out["evidence"][0]
+    _assert_no_leaks(out)
+    _assert_no_scores(out)
+    assert contains_unsafe_fields(out) is False
+
+
+# ── Step 4 — synthesis claim / result ─────────────────────────────────────────
+
+
+def test_public_safe_synthesis_claim_scrubs_scores_and_keeps_safe_citations() -> None:
+    hostile = {
+        "claim_id": "c1",
+        "claim": "Candidate ranked #1, fully verified, scored 98/100 on this skill.",
+        "supporting_evidence_ids": ["ev_website_abcdef123456", "raw-private-id"],
+        "why_connected": f"Linked via repo {_SIGNED_URL}",
+        "limitations": [f"Email {_EMAIL}"],
+        "qualitative_tier": "Strongly corroborated",
+        "public_safe": True,
+    }
+    out = public_safe_synthesis_claim(hostile)
+    _assert_no_scores(out)
+    _assert_no_leaks(out)
+    assert out["supporting_evidence_ids"] == ["ev_website_abcdef123456"]
+    assert out["qualitative_tier"] == "Strongly corroborated"
+
+
+def test_public_safe_synthesis_result_drops_unsafe_claims_and_project_id() -> None:
+    hostile = {
+        "chain_id": "chain_1",
+        "project_id": _UUID,
+        "canonical_skill_name": "Python",
+        "project_title": "Risk Platform",
+        "claims": [
+            {"claim_id": "claim_abc123def456", "claim": "Implements risk scoring.",
+             "public_safe": True, "supporting_evidence_ids": ["ev_github_deadbeefcafe01"],
+             "why_connected": "", "limitations": [], "qualitative_tier": "Corroborated"},
+            {"claim_id": "claim_dead00beef11", "claim": "secret", "public_safe": False},  # not public-safe
+        ],
+        "overall_summary": "Scored 90/100 overall.",
+        "limitations": [f"Path {_STORAGE_PATH}"],
+        "public_safe": True,
+        "source": "deterministic",
+    }
+    out = public_safe_synthesis_result(hostile)
+    assert "project_id" not in out
+    assert len(out["claims"]) == 1
+    # The surviving claim's opaque claim_id passes validation and is echoed.
+    assert out["claims"][0]["claim_id"] == "claim_abc123def456"
+    _assert_no_scores(out)
+    _assert_no_leaks(out)
+    assert contains_unsafe_fields(out) is False
+
+
+# ── Step 6 — stale / reanalysis marker ────────────────────────────────────────
+
+
+def test_public_safe_stale_marker_drops_project_id_and_scrubs_skill_name() -> None:
+    hostile = {
+        "evidence_id": "ev_github_deadbeefcafe01",
+        "reason": f"Repo-level only; raw {_SIGNED_URL}",
+        "recommended_action": "Add a precise code citation.",
+        "source_type": "github",
+        "project_id": _UUID,
+        "skill_name": _PRIVATE_ID,  # private id as skill name
+    }
+    out = public_safe_stale_marker(hostile)
+    assert "project_id" not in out
+    assert out["skill_name"] is None
+    _assert_no_leaks(out)
+    assert contains_unsafe_fields(out) is False
+
+
+# ── Work Passport skill-report payload ────────────────────────────────────────
+
+
+def _hostile_skill_report() -> dict:
+    """A skill-report-shaped payload riddled with hostile content."""
+    return {
+        "skill": "Python",
+        "synthesis_summary": "Skill is strongly corroborated; scored 95/100, ranked #1.",
+        "source_coverage": {"GitHub": True, "Website": True, "Document": False},
+        # Internal, rich proof_chains carry private source_ids — must be dropped.
+        "proof_chains": [
+            {"project_id": _UUID, "github_evidence": [{"source_id": "private-row"}]}
+        ],
+        "linked_proof_chains": [
+            {
+                "chain_id": "chain_1",
+                "project_id": _UUID,
+                "project_title": "Checkout",
+                "canonical_skill_name": "Python",
+                "chain_label": "Checkout",
+                "linked_evidence_ids": ["ev_github_deadbeefcafe01"],
+                "source_types_present": ["github"],
+                "primary_source_type": "github",
+                "connection_reasons": [f"Same repo {_STORAGE_PATH}"],
+                "proof_strength_summary": {"precise_code": 1},
+                "limitations": [],
+                "public_safe": True,
+                "evidence": [],
+            }
+        ],
+        "llm_synthesis": [
+            {
+                "chain_id": "chain_1",
+                "project_id": _UUID,
+                "canonical_skill_name": "Python",
+                "project_title": "Checkout",
+                "claims": [
+                    {"claim_id": "c", "claim": "Implements checkout flow.", "public_safe": True,
+                     "supporting_evidence_ids": ["ev_github_deadbeefcafe01"], "why_connected": "",
+                     "limitations": [], "qualitative_tier": "Corroborated"}
+                ],
+                "overall_summary": f"Built it; contact {_EMAIL}",
+                "limitations": [],
+                "public_safe": True,
+                "source": "deterministic",
+            }
+        ],
+        "unlinked_supporting_evidence": {
+            "items": [
+                {
+                    "proof_type": "Document Proof",
+                    "source_id": "private-doc-row",  # must be dropped
+                    "title": "Design Doc",
+                    "safe_summary": f"Scored 80/100; {_FILE_URI}",
+                    "safe_location": "Page 3",
+                    "corroborates": "the implementation",
+                    "limitation": f"raw {_BEARER}",
+                }
+            ],
+            "count": 1,
+            "more_count": 0,
+        },
+        "limitations": [f"Reach me at {_EMAIL}"],
+    }
+
+
+def test_public_safe_skill_report_is_fail_closed_and_drops_private_chains() -> None:
+    out = public_safe_skill_report(_hostile_skill_report())
+
+    # The rich internal proof_chains (with source_ids) are not exposed publicly.
+    assert "proof_chains" not in out
+    # The unlinked card's private source_id is dropped.
+    assert "source_id" not in out["unlinked_supporting_evidence"]["items"][0]
+    # The linked chain's project_id is dropped.
+    assert "project_id" not in out["linked_proof_chains"][0]
+    assert "project_id" not in out["synthesis"][0]
+    # No leaks of any kind survive the projection + gate.
+    _assert_no_leaks(out)
+    _assert_no_scores(out)
+    # Qualitative content survives.
+    assert out["skill"] == "Python"
+    assert out["source_coverage"] == {"GitHub": True, "Website": True, "Document": False}
+    assert out["synthesis"][0]["claims"][0]["qualitative_tier"] == "Corroborated"
+
+
+def test_public_safe_skill_report_handles_old_report_without_step_2_6_fields() -> None:
+    """A pre-Step-2..6 report (no linked chains / synthesis / unlinked) still
+    projects to a safe, well-formed payload — never raises, never leaks."""
+    old = {"skill": "React", "synthesis_summary": "Supporting evidence only.", "limitations": []}
+    out = public_safe_skill_report(old)
+    assert out["skill"] == "React"
+    assert out["linked_proof_chains"] == []
+    assert out["synthesis"] == []
+    assert out["unlinked_supporting_evidence"]["items"] == []
+    assert contains_unsafe_fields(out) is False
+
+
+def test_public_safe_skill_report_scrubs_rather_than_over_rejecting() -> None:
+    """A storage path in a scrubbable free-text position is redacted (not echoed)
+    and the projection succeeds — proving the layer scrubs recoverable content
+    instead of over-rejecting it, while still leaking nothing."""
+    bad = {
+        "skill": "Python",
+        "synthesis_summary": "ok",
+        "linked_proof_chains": [],
+        "llm_synthesis": [],
+        # An unlinked card whose location is a raw storage path the scrub leaves
+        # detectable should be caught by the gate.
+        "unlinked_supporting_evidence": {
+            "items": [{"proof_type": "Document Proof", "title": "Doc", "safe_summary": "ok",
+                       "safe_location": _STORAGE_PATH, "corroborates": "", "limitation": ""}],
+            "count": 1,
+            "more_count": 0,
+        },
+        "limitations": [],
+    }
+    # safe_location is scrubbed by scrub_public_text (storage paths redacted), so
+    # this particular payload is *recoverable* and must NOT raise — proving the
+    # projection scrubs rather than over-rejects safe-after-scrub content.
+    out = public_safe_skill_report(bad)
+    _assert_no_leaks(out)
+
+
+# ── Must-fix 1 — secret/credential-bearing strings ────────────────────────────
+
+# Exact secret VALUES that must never appear anywhere in public output.
+_SECRET_VALUES = [
+    "sk-test-123",
+    "abc123",
+    "eyJhbGciOiA9.aaa.bbb",
+    "AKIAEXAMPLE",
+    "deadsignature99",
+]
+
+
+def _assert_no_secret_values(value: object) -> None:
+    blob = _lower_blob(value)
+    for secret in _SECRET_VALUES:
+        assert secret.lower() not in blob, f"leaked secret value {secret!r} into {blob!r}"
+
+
+_SECRET_STRINGS = [
+    "api_key=sk-test-123",
+    "apikey=sk-test-123",
+    "token=abc123",
+    "access_token=abc123",
+    "refresh_token=abc123",
+    "client_secret=abc123",
+    "secret=abc123",
+    "key=abc123",
+    "password=abc123",
+    "https://example.com/path?token=abc123",
+    "https://example.com/path?x=1&api_key=abc123",
+    "https://files.example.com/o?X-Amz-Signature=deadsignature99&X-Amz-Credential=AKIAEXAMPLE",
+    "https://blob.example.net/x?sig=deadsignature99",
+    "Authorization: Bearer abc123",
+    "Bearer sk-test-123",
+]
+
+
+@pytest.mark.parametrize("hostile", _SECRET_STRINGS)
+def test_scrub_public_text_redacts_secret_bearing_strings(hostile: str) -> None:
+    out = scrub_public_text(hostile)
+    _assert_no_secret_values(out)
+    # bare secret param names + values must not survive scrubbing
+    low = out.lower()
+    assert "=sk-test-123" not in low
+    assert "=abc123" not in low
+    assert "bearer abc123" not in low
+    assert "bearer sk-test-123" not in low
+
+
+@pytest.mark.parametrize("hostile", _SECRET_STRINGS)
+def test_contains_unsafe_fields_flags_secret_bearing_strings(hostile: str) -> None:
+    # The fail-closed gate must reject the raw (un-scrubbed) secret-bearing string.
+    assert contains_unsafe_fields({"field": hostile}) is True
+
+
+def test_scrub_public_payload_strips_secret_query_keeps_safe_base() -> None:
+    # The URL-preserving whole-payload scrub keeps a safe deployed URL but drops
+    # its credential query string (the must-fix's "strip the query if base safe").
+    out = scrub_public_payload({"deployed_url": "https://example.com/app?token=abc123"})
+    assert "token=abc123" not in out["deployed_url"]
+    assert "abc123" not in out["deployed_url"]
+    assert out["deployed_url"] == "https://example.com/app"
+
+
+def test_scrub_public_text_redacts_full_url_with_secret_query() -> None:
+    # A prose field redacts the whole link (it should never carry a raw outbound
+    # URL); either way the exact secret never survives.
+    out = scrub_public_text("Live demo at https://example.com/app?token=abc123 — try it")
+    assert "token=abc123" not in out
+    assert "abc123" not in out
+
+
+def test_enforce_public_safe_redacts_secrets_then_serves() -> None:
+    # A secret smuggled into scrubbable free text is redacted and the payload is
+    # served (proving the layer scrubs rather than only rejecting).
+    out = enforce_public_safe({"summary": "config api_key=sk-test-123 for the demo"})
+    _assert_no_secret_values(out)
+    assert "api_key=sk-test-123" not in _lower_blob(out)
+
+
+def test_enforce_public_safe_fails_closed_on_secret_in_unscrubbed_key() -> None:
+    # contains_unsafe_fields scans the scrubbed payload; if a secret somehow lands
+    # in a position scrubbing cannot rewrite it must still fail closed. A raw
+    # access_token key value is caught by the unsafe-field scan.
+    with pytest.raises(PublicReportUnsafeError):
+        enforce_public_safe({"access_token": "abc123"})
+
+
+def test_evidence_artifact_scrubs_secret_in_summary_and_limitations() -> None:
+    hostile = {
+        "evidence_id": "ev_github_deadbeefcafe01",
+        "source_type": "github",
+        "safe_summary": "Endpoint reads client_secret=abc123 from env; demo at "
+        "https://example.com/app?token=abc123",
+        "limitations": ["Set api_key=sk-test-123 to run", "Authorization: Bearer abc123"],
+        "public_safe": True,
+    }
+    out = public_safe_evidence_artifact(hostile)
+    _assert_no_secret_values(out)
+    assert contains_unsafe_fields(out) is False
+
+
+# ── Must-fix 2 — public_safe=False chains / synthesis / evidence are dropped ───
+
+
+def _safe_chain(public_safe: bool, *, evidence_safe: bool = True) -> dict:
+    return {
+        "chain_id": "chain_deadbeefcafe01",
+        "project_title": "Checkout",
+        "canonical_skill_name": "Python",
+        "chain_label": "Checkout",
+        "linked_evidence_ids": ["ev_github_deadbeefcafe01"],
+        "source_types_present": ["github"],
+        "primary_source_type": "github",
+        "connection_reasons": ["Same repo."],
+        "proof_strength_summary": {"precise_code": 1},
+        "limitations": [],
+        "public_safe": public_safe,
+        "evidence": [
+            {"evidence_id": "ev_github_deadbeefcafe01", "source_type": "github",
+             "safe_summary": "Implements checkout.", "public_safe": evidence_safe},
+        ],
+    }
+
+
+def _safe_synth(public_safe: bool, *, claim_safe: bool = True) -> dict:
+    return {
+        "chain_id": "chain_deadbeefcafe01",
+        "canonical_skill_name": "Python",
+        "project_title": "Checkout",
+        "claims": [
+            {"claim_id": "claim_abc123def456", "claim": "Implements checkout.",
+             "public_safe": claim_safe, "supporting_evidence_ids": ["ev_github_deadbeefcafe01"],
+             "why_connected": "", "limitations": [], "qualitative_tier": "Corroborated"},
+        ],
+        "overall_summary": "Built the checkout flow.",
+        "limitations": [],
+        "public_safe": public_safe,
+        "source": "deterministic",
+    }
+
+
+def test_skill_report_drops_unsafe_linked_chain() -> None:
+    report = {
+        "skill": "Python",
+        "synthesis_summary": "ok",
+        "linked_proof_chains": [_safe_chain(True), _safe_chain(False)],
+        "llm_synthesis": [],
+        "limitations": [],
+    }
+    out = public_safe_skill_report(report)
+    # Only the public_safe=True chain survives.
+    assert len(out["linked_proof_chains"]) == 1
+    assert all(c["public_safe"] for c in out["linked_proof_chains"])
+
+
+def test_skill_report_drops_unsafe_synthesis_result() -> None:
+    report = {
+        "skill": "Python",
+        "synthesis_summary": "ok",
+        "linked_proof_chains": [],
+        "llm_synthesis": [_safe_synth(True), _safe_synth(False)],
+        "limitations": [],
+    }
+    out = public_safe_skill_report(report)
+    assert len(out["synthesis"]) == 1
+    assert all(s["public_safe"] for s in out["synthesis"])
+
+
+def test_synthesis_result_drops_unsafe_claim() -> None:
+    out = public_safe_synthesis_result(_safe_synth(True, claim_safe=False))
+    # The single claim is public_safe=False → dropped, leaving a safe empty list.
+    assert out["claims"] == []
+
+
+def test_linked_chain_drops_unsafe_nested_evidence() -> None:
+    out = public_safe_linked_chain(_safe_chain(True, evidence_safe=False))
+    # The nested evidence artifact is public_safe=False → dropped.
+    assert out["evidence"] == []
+
+
+def test_skill_report_renders_with_safe_items_after_dropping_unsafe() -> None:
+    report = {
+        "skill": "Python",
+        "synthesis_summary": "ok",
+        "linked_proof_chains": [_safe_chain(False), _safe_chain(True)],
+        "llm_synthesis": [_safe_synth(False), _safe_synth(True)],
+        "limitations": [],
+    }
+    out = public_safe_skill_report(report)
+    assert out["skill"] == "Python"
+    assert len(out["linked_proof_chains"]) == 1
+    assert len(out["synthesis"]) == 1
+
+
+def test_skill_report_safe_empty_sections_when_all_unsafe() -> None:
+    report = {
+        "skill": "Python",
+        "synthesis_summary": "ok",
+        "linked_proof_chains": [_safe_chain(False), _safe_chain(False)],
+        "llm_synthesis": [_safe_synth(False)],
+        "limitations": [],
+    }
+    out = public_safe_skill_report(report)
+    # Fail closed: all-unsafe sections collapse to safe empty lists, never leak.
+    assert out["linked_proof_chains"] == []
+    assert out["synthesis"] == []
+    assert contains_unsafe_fields(out) is False
+
+
+# ── Must-fix 3 — public id validation (approved opaque formats only) ───────────
+
+_HOSTILE_IDS = [
+    _UUID,                                   # raw UUID
+    "private.student@example.com",           # email-shaped
+    "/Users/student/proofs/row.json",        # path-like
+    "proof-row-uuid-private",                # source_id-style
+    "student_1234567890",                    # student id
+    "project_9f8e7d6c5b4a",                  # project id
+    "ev_github_NOTHEX!",                      # ev_ prefix but invalid body
+    "chain_not_hex",                          # chain_ prefix but invalid body
+    "claim_xyz",                              # claim_ prefix but invalid body
+    "",                                       # empty
+]
+
+
+@pytest.mark.parametrize("bad_id", _HOSTILE_IDS)
+def test_evidence_artifact_omits_invalid_evidence_id(bad_id: str) -> None:
+    out = public_safe_evidence_artifact(
+        {"evidence_id": bad_id, "source_type": "github", "public_safe": True}
+    )
+    assert out["evidence_id"] is None
+
+
+@pytest.mark.parametrize("bad_id", _HOSTILE_IDS)
+def test_linked_chain_omits_invalid_chain_id(bad_id: str) -> None:
+    out = public_safe_linked_chain({"chain_id": bad_id, "public_safe": True})
+    assert out["chain_id"] is None
+
+
+@pytest.mark.parametrize("bad_id", _HOSTILE_IDS)
+def test_synthesis_claim_omits_invalid_claim_id(bad_id: str) -> None:
+    out = public_safe_synthesis_claim({"claim_id": bad_id, "claim": "x", "public_safe": True})
+    assert out["claim_id"] is None
+
+
+def test_valid_opaque_ids_survive() -> None:
+    ev = public_safe_evidence_artifact(
+        {"evidence_id": "ev_github_deadbeefcafe01", "source_type": "github", "public_safe": True}
+    )
+    chain = public_safe_linked_chain({"chain_id": "chain_deadbeefcafe01", "public_safe": True})
+    claim = public_safe_synthesis_claim(
+        {"claim_id": "claim_abc123def456", "claim": "x", "public_safe": True}
+    )
+    stale = public_safe_stale_marker({"evidence_id": "ev_website_abcdef123456"})
+    assert ev["evidence_id"] == "ev_github_deadbeefcafe01"
+    assert chain["chain_id"] == "chain_deadbeefcafe01"
+    assert claim["claim_id"] == "claim_abc123def456"
+    assert stale["evidence_id"] == "ev_website_abcdef123456"
+
+
+def test_stale_marker_omits_invalid_evidence_id() -> None:
+    out = public_safe_stale_marker({"evidence_id": _UUID, "reason": "stale"})
+    assert out["evidence_id"] is None
+
+
+def test_citation_lists_drop_invalid_evidence_ids() -> None:
+    # supporting_evidence_ids / linked_evidence_ids keep only approved ev_ ids;
+    # private/invalid citation chips are omitted.
+    claim = public_safe_synthesis_claim(
+        {
+            "claim_id": "claim_abc123def456",
+            "claim": "x",
+            "public_safe": True,
+            "supporting_evidence_ids": [
+                "ev_github_deadbeefcafe01", _UUID, "source-row-private", "student_123",
+            ],
+        }
+    )
+    chain = public_safe_linked_chain(
+        {
+            "chain_id": "chain_deadbeefcafe01",
+            "public_safe": True,
+            "linked_evidence_ids": ["ev_website_abcdef123456", _UUID, "/Users/x/y"],
+        }
+    )
+    assert claim["supporting_evidence_ids"] == ["ev_github_deadbeefcafe01"]
+    assert chain["linked_evidence_ids"] == ["ev_website_abcdef123456"]
+
+
+# ── Codex must-fix 1 — proof_strength_summary is a STRICT allowlist ────────────
+
+
+def test_strength_summary_drops_unknown_key_carrying_uuid() -> None:
+    # A UUID smuggled under an innocent-looking key ("owner") must NOT survive the
+    # proof-strength-summary projection — only documented fields are allowed.
+    out = public_safe_linked_chain(
+        {
+            "chain_id": "chain_deadbeefcafe01",
+            "public_safe": True,
+            "proof_strength_summary": {
+                "owner": _UUID,  # unknown key carrying a private UUID — must be dropped
+                "label": "Implementation proven by precise code",
+                "has_precise_code": True,
+            },
+        }
+    )
+    summary = out["proof_strength_summary"]
+    assert "owner" not in summary
+    assert _UUID not in _lower_blob(summary)
+    assert _UUID.lower() not in _lower_blob(out)
+    # The documented fields that were present still survive.
+    assert summary["label"] == "Implementation proven by precise code"
+    assert summary["has_precise_code"] is True
+
+
+def test_strength_summary_keeps_documented_fields_and_scrubs_values() -> None:
+    out = public_safe_linked_chain(
+        {
+            "chain_id": "chain_deadbeefcafe01",
+            "public_safe": True,
+            "proof_strength_summary": {
+                "label": "Runtime behaviour demonstrated",
+                "strengths_present": ["precise_code", "runtime_behavior", _UUID, "leak"],
+                "has_precise_code": True,
+                "has_runtime_behavior": True,
+                "has_self_explanation": False,
+                "has_supporting_moment": False,
+                "repo_level_only": False,
+                "corroborating_document_count": 2,
+                # hostile extras
+                "project_id": _UUID,
+                "raw_payload": {"x": 1},
+                "corroborating_document_count_evil": -5,
+            },
+        }
+    )
+    summary = out["proof_strength_summary"]
+    # Documented fields survive with correct types.
+    assert summary["label"] == "Runtime behaviour demonstrated"
+    assert summary["has_precise_code"] is True
+    assert summary["has_self_explanation"] is False
+    assert summary["corroborating_document_count"] == 2
+    # strengths_present keeps only known labels; the UUID / "leak" are dropped.
+    assert summary["strengths_present"] == ["precise_code", "runtime_behavior"]
+    # Unknown keys are gone entirely.
+    assert "project_id" not in summary
+    assert "raw_payload" not in summary
+    assert "corroborating_document_count_evil" not in summary
+    assert contains_unsafe_fields(out) is False
+
+
+def test_strength_summary_count_coerced_to_non_negative_int() -> None:
+    out = public_safe_linked_chain(
+        {
+            "chain_id": "chain_deadbeefcafe01",
+            "public_safe": True,
+            "proof_strength_summary": {"corroborating_document_count": -3},
+        }
+    )
+    assert out["proof_strength_summary"]["corroborating_document_count"] == 0
+
+
+# ── Codex must-fix 2 — source_coverage keys are whitelisted ───────────────────
+
+
+def test_source_coverage_drops_email_key_keeps_known_source() -> None:
+    report = {
+        "skill": "Python",
+        "synthesis_summary": "ok",
+        "source_coverage": {"student@example.com": True, "github": True},
+        "linked_proof_chains": [],
+        "llm_synthesis": [],
+        "limitations": [],
+    }
+    out = public_safe_skill_report(report)
+    coverage = out["source_coverage"]
+    assert coverage == {"github": True}
+    assert "student@example.com" not in coverage
+    _assert_no_leaks(out)
+
+
+def test_source_coverage_drops_uuid_and_private_id_keys() -> None:
+    report = {
+        "skill": "Python",
+        "synthesis_summary": "ok",
+        "source_coverage": {
+            _UUID: True,
+            _PRIVATE_ID: True,
+            "GitHub": True,  # producer's capitalised key still passes
+            "Website": False,
+            "owner_secret": True,  # unknown private-looking key — dropped
+        },
+        "linked_proof_chains": [],
+        "llm_synthesis": [],
+        "limitations": [],
+    }
+    out = public_safe_skill_report(report)
+    coverage = out["source_coverage"]
+    assert coverage == {"GitHub": True, "Website": False}
+    assert _UUID not in coverage
+    assert _PRIVATE_ID not in coverage
+    assert "owner_secret" not in coverage
+    assert contains_unsafe_fields(out) is False
+
+
+def test_source_coverage_values_coerced_to_bool() -> None:
+    # A non-boolean value under a known key must not ride out as a raw string/dict.
+    report = {
+        "skill": "Python",
+        "synthesis_summary": "ok",
+        "source_coverage": {"github": {"raw": "leak"}, "website": "yes"},
+        "linked_proof_chains": [],
+        "llm_synthesis": [],
+        "limitations": [],
+    }
+    out = public_safe_skill_report(report)
+    assert out["source_coverage"] == {"github": True, "website": True}
+    assert all(isinstance(v, bool) for v in out["source_coverage"].values())
+
+
+# ── Codex must-fix 3 — unsupported synthesis claims are dropped ───────────────
+
+
+def test_synthesis_result_drops_claim_with_only_private_citations() -> None:
+    # A public_safe claim whose every citation id is a raw UUID / private id is an
+    # UNSUPPORTED public claim and must be dropped (no traceable citation).
+    result = {
+        "chain_id": "chain_deadbeefcafe01",
+        "canonical_skill_name": "Python",
+        "project_title": "Checkout",
+        "claims": [
+            {
+                "claim_id": "claim_abc123def456",
+                "claim": "Implements the checkout flow end to end.",
+                "public_safe": True,
+                "supporting_evidence_ids": [_UUID, "source-row-private", "student_123"],
+                "why_connected": "",
+                "limitations": [],
+                "qualitative_tier": "Corroborated",
+            }
+        ],
+        "overall_summary": "Built it.",
+        "limitations": [],
+        "public_safe": True,
+        "source": "deterministic",
+    }
+    out = public_safe_synthesis_result(result)
+    assert out["claims"] == []
+    assert contains_unsafe_fields(out) is False
+
+
+def test_synthesis_result_keeps_claim_with_valid_citation() -> None:
+    result = {
+        "chain_id": "chain_deadbeefcafe01",
+        "canonical_skill_name": "Python",
+        "project_title": "Checkout",
+        "claims": [
+            {
+                "claim_id": "claim_abc123def456",
+                "claim": "Implements the checkout flow.",
+                "public_safe": True,
+                # one valid public citation among the private ones
+                "supporting_evidence_ids": ["ev_github_deadbeefcafe01", _UUID],
+                "why_connected": "",
+                "limitations": [],
+                "qualitative_tier": "Corroborated",
+            }
+        ],
+        "overall_summary": "Built it.",
+        "limitations": [],
+        "public_safe": True,
+        "source": "deterministic",
+    }
+    out = public_safe_synthesis_result(result)
+    assert len(out["claims"]) == 1
+    assert out["claims"][0]["supporting_evidence_ids"] == ["ev_github_deadbeefcafe01"]
+
+
+def test_skill_report_drops_unsupported_synthesis_claims() -> None:
+    report = {
+        "skill": "Python",
+        "synthesis_summary": "ok",
+        "linked_proof_chains": [],
+        "llm_synthesis": [
+            {
+                "chain_id": "chain_deadbeefcafe01",
+                "canonical_skill_name": "Python",
+                "project_title": "Checkout",
+                "claims": [
+                    {
+                        "claim_id": "claim_abc123def456",
+                        "claim": "Skill present.",
+                        "public_safe": True,
+                        "supporting_evidence_ids": [_UUID],  # no valid citation
+                        "why_connected": "",
+                        "limitations": [],
+                        "qualitative_tier": "Corroborated",
+                    }
+                ],
+                "overall_summary": "Built it.",
+                "limitations": [],
+                "public_safe": True,
+                "source": "deterministic",
+            }
+        ],
+        "limitations": [],
+    }
+    out = public_safe_skill_report(report)
+    assert out["synthesis"][0]["claims"] == []
+
+
+# ── Codex must-fix 4 — public_safe=False stale markers are dropped ────────────
+
+
+def test_stale_marker_dropped_when_not_public_safe() -> None:
+    marker = {
+        "evidence_id": "ev_github_deadbeefcafe01",
+        "reason": "Repo-level only.",
+        "recommended_action": "Add a precise code citation.",
+        "source_type": "github",
+        "skill_name": "Python",
+        "public_safe": False,  # explicitly not for public surfaces
+    }
+    assert public_safe_stale_marker(marker) is None
+
+
+def test_stale_marker_public_safe_true_is_projected() -> None:
+    marker = {
+        "evidence_id": "ev_github_deadbeefcafe01",
+        "reason": f"Repo-level only; raw {_SIGNED_URL}",
+        "recommended_action": "Add a precise code citation.",
+        "source_type": "github",
+        "skill_name": _PRIVATE_ID,  # private id as skill name — scrubbed away
+        "public_safe": True,
+    }
+    out = public_safe_stale_marker(marker)
+    assert out is not None
+    assert out["evidence_id"] == "ev_github_deadbeefcafe01"
+    assert out["skill_name"] is None
+    _assert_no_leaks(out)
+    assert contains_unsafe_fields(out) is False
+
+
+def test_stale_marker_without_public_safe_field_is_projected() -> None:
+    # Backward compatible: a marker that simply omits public_safe is still
+    # projected (only an explicit False omits it).
+    out = public_safe_stale_marker(
+        {"evidence_id": "ev_website_abcdef123456", "reason": "stale"}
+    )
+    assert out is not None
+    assert out["evidence_id"] == "ev_website_abcdef123456"
+
+
+# ── Codex must-fix 5 — overall_summary cannot ride out when every claim drops ──
+
+# An assertion that, if surfaced without a single traceable public citation,
+# overstates the candidate's contribution. It lives in overall_summary AND in the
+# only claim, whose citations are all private/invalid (so the claim is dropped).
+_UNSUPPORTED_ASSERTION = "Architected the entire payment platform single-handedly."
+
+
+def test_synthesis_result_does_not_expose_summary_when_all_claims_dropped() -> None:
+    # Hostile: the unsupported assertion is parked in overall_summary while every
+    # claim carries only private/invalid citations and is dropped. The original
+    # summary must NOT survive into the public projection — otherwise the same
+    # uncited assertion rides out via the summary field instead of a claim.
+    result = {
+        "chain_id": "chain_deadbeefcafe01",
+        "canonical_skill_name": "Python",
+        "project_title": "Checkout",
+        "claims": [
+            {
+                "claim_id": "claim_abc123def456",
+                "claim": _UNSUPPORTED_ASSERTION,
+                "public_safe": True,
+                # every citation is a raw UUID / private id → claim dropped
+                "supporting_evidence_ids": [_UUID, "source-row-private", _PRIVATE_ID],
+                "why_connected": "",
+                "limitations": [],
+                "qualitative_tier": "Corroborated",
+            }
+        ],
+        "overall_summary": _UNSUPPORTED_ASSERTION,
+        "limitations": [],
+        "public_safe": True,
+        "source": "deterministic",
+    }
+    out = public_safe_synthesis_result(result)
+
+    # No claim survived.
+    assert out["claims"] == []
+    # The original unsupported assertion is gone from every field.
+    assert _UNSUPPORTED_ASSERTION not in json.dumps(out)
+    # Summary is replaced with neutral language, not the original prose.
+    assert out["overall_summary"] == _NO_PUBLIC_SYNTHESIS_SUMMARY
+    # A limitation explains why no summary is shown.
+    assert _NO_PUBLIC_SYNTHESIS_LIMITATION in out["limitations"]
+    assert contains_unsafe_fields(out) is False
+
+
+def test_synthesis_result_retains_safe_summary_when_a_cited_claim_survives() -> None:
+    # Positive control: at least one claim keeps a valid public citation, so the
+    # (scrubbed) overall_summary is allowed to remain.
+    result = {
+        "chain_id": "chain_deadbeefcafe01",
+        "canonical_skill_name": "Python",
+        "project_title": "Checkout",
+        "claims": [
+            {
+                "claim_id": "claim_abc123def456",
+                "claim": "Implements the checkout flow.",
+                "public_safe": True,
+                "supporting_evidence_ids": ["ev_github_deadbeefcafe01", _UUID],
+                "why_connected": "",
+                "limitations": [],
+                "qualitative_tier": "Corroborated",
+            }
+        ],
+        "overall_summary": "Built the checkout flow end to end.",
+        "limitations": [],
+        "public_safe": True,
+        "source": "deterministic",
+    }
+    out = public_safe_synthesis_result(result)
+    assert len(out["claims"]) == 1
+    assert out["overall_summary"] == "Built the checkout flow end to end."
+    assert _NO_PUBLIC_SYNTHESIS_LIMITATION not in out["limitations"]
+    assert contains_unsafe_fields(out) is False
+
+
+# ── Codex must-fix 6 — enum-like fields are held to a STRICT allowlist ─────────
+#
+# source / source_type / proof_strength / qualitative_tier / proof_type /
+# source_types_present / primary_source_type are *assumed* to be short, known
+# enum labels by recruiter surfaces. A hostile/internal producer could instead
+# put ``api_key=sk-private`` / ``token=private`` / ``client_secret=private`` (or a
+# signed URL, an email, a raw UUID) where a label belongs. These must never ride
+# out raw: an unknown value is replaced with a neutral fallback (or dropped).
+
+# The literal secret bodies that must never survive in any enum field.
+_ENUM_SECRET_BODIES = ["sk-private", "private", "client_secret", "api_key", "token="]
+
+
+def _assert_no_enum_secrets(value: object) -> None:
+    blob = _lower_blob(value)
+    for fragment in ["sk-private", "api_key=", "token=", "client_secret="]:
+        assert fragment not in blob, f"leaked enum secret {fragment!r} into {blob!r}"
+
+
+def test_evidence_artifact_source_type_secret_falls_back_to_other() -> None:
+    out = public_safe_evidence_artifact(
+        {"evidence_id": "ev_github_deadbeefcafe01", "source_type": "api_key=sk-private",
+         "public_safe": True}
+    )
+    # The unknown/hostile source_type is replaced with the neutral "other" label,
+    # never echoed raw — the secret cannot ride out.
+    assert out["source_type"] == "other"
+    _assert_no_enum_secrets(out)
+    assert contains_unsafe_fields(out) is False
+
+
+def test_evidence_artifact_proof_strength_secret_falls_back_to_unknown() -> None:
+    out = public_safe_evidence_artifact(
+        {"evidence_id": "ev_github_deadbeefcafe01", "source_type": "github",
+         "proof_strength": "token=private", "public_safe": True}
+    )
+    assert out["proof_strength"] == "unknown"
+    _assert_no_enum_secrets(out)
+    assert contains_unsafe_fields(out) is False
+
+
+def test_synthesis_claim_qualitative_tier_secret_falls_back_to_needs_review() -> None:
+    out = public_safe_synthesis_claim(
+        {"claim_id": "claim_abc123def456", "claim": "x", "public_safe": True,
+         "supporting_evidence_ids": ["ev_github_deadbeefcafe01"],
+         "qualitative_tier": "client_secret=private"}
+    )
+    # An unknown tier never inflates the candidate and never carries the secret —
+    # it collapses to the neutral "Needs review".
+    assert out["qualitative_tier"] == "Needs review"
+    _assert_no_enum_secrets(out)
+    assert contains_unsafe_fields(out) is False
+
+
+def test_synthesis_result_source_secret_falls_back_to_deterministic() -> None:
+    out = public_safe_synthesis_result(
+        {
+            "chain_id": "chain_deadbeefcafe01",
+            "canonical_skill_name": "Python",
+            "project_title": "Checkout",
+            "claims": [
+                {"claim_id": "claim_abc123def456", "claim": "Implements checkout.",
+                 "public_safe": True, "supporting_evidence_ids": ["ev_github_deadbeefcafe01"],
+                 "why_connected": "", "limitations": [], "qualitative_tier": "Corroborated"}
+            ],
+            "overall_summary": "Built it.",
+            "limitations": [],
+            "public_safe": True,
+            "source": "api_key=sk-private",  # hostile provenance label
+        }
+    )
+    assert out["source"] == "deterministic"
+    _assert_no_enum_secrets(out)
+    assert contains_unsafe_fields(out) is False
+
+
+def test_linked_chain_source_types_present_keeps_known_drops_secret() -> None:
+    out = public_safe_linked_chain(
+        {
+            "chain_id": "chain_deadbeefcafe01",
+            "public_safe": True,
+            "source_types_present": ["github", "token=private", _UUID, "website"],
+        }
+    )
+    # Known labels survive (order preserved); the hostile entries are dropped.
+    assert out["source_types_present"] == ["github", "website"]
+    _assert_no_enum_secrets(out)
+    assert contains_unsafe_fields(out) is False
+
+
+def test_linked_chain_source_types_present_dedupes() -> None:
+    out = public_safe_linked_chain(
+        {
+            "chain_id": "chain_deadbeefcafe01",
+            "public_safe": True,
+            "source_types_present": ["github", "github", "website"],
+        }
+    )
+    assert out["source_types_present"] == ["github", "website"]
+
+
+def test_linked_chain_primary_source_type_secret_falls_back_to_none() -> None:
+    out = public_safe_linked_chain(
+        {
+            "chain_id": "chain_deadbeefcafe01",
+            "public_safe": True,
+            "primary_source_type": "api_key=sk-private",
+        }
+    )
+    # A nullable enum collapses an unknown/hostile value to None, never raw.
+    assert out["primary_source_type"] is None
+    _assert_no_enum_secrets(out)
+    assert contains_unsafe_fields(out) is False
+
+
+def test_stale_marker_source_type_secret_falls_back_to_other() -> None:
+    out = public_safe_stale_marker(
+        {"evidence_id": "ev_github_deadbeefcafe01", "reason": "stale",
+         "source_type": "client_secret=private"}
+    )
+    assert out is not None
+    assert out["source_type"] == "other"
+    _assert_no_enum_secrets(out)
+    assert contains_unsafe_fields(out) is False
+
+
+def test_unlinked_card_proof_type_secret_falls_back_to_other() -> None:
+    report = {
+        "skill": "Python",
+        "synthesis_summary": "ok",
+        "linked_proof_chains": [],
+        "llm_synthesis": [],
+        "unlinked_supporting_evidence": {
+            "items": [
+                {"proof_type": "api_key=sk-private", "title": "Doc", "safe_summary": "ok",
+                 "safe_location": None, "corroborates": "", "limitation": ""}
+            ],
+            "count": 1,
+            "more_count": 0,
+        },
+        "limitations": [],
+    }
+    out = public_safe_skill_report(report)
+    card = out["unlinked_supporting_evidence"]["items"][0]
+    assert card["proof_type"] == "Other"
+    _assert_no_enum_secrets(out)
+
+
+@pytest.mark.parametrize(
+    "source_type", ["github", "website", "document", "defense", "video", "skill_graph"]
+)
+def test_known_source_types_survive(source_type: str) -> None:
+    out = public_safe_evidence_artifact(
+        {"evidence_id": "ev_github_deadbeefcafe01", "source_type": source_type,
+         "public_safe": True}
+    )
+    assert out["source_type"] == source_type
+
+
+@pytest.mark.parametrize(
+    "proof_strength",
+    ["precise_code", "runtime_behavior", "self_explanation", "supporting_moment",
+     "repo_level", "aggregated", "corroboration"],
+)
+def test_known_proof_strengths_survive(proof_strength: str) -> None:
+    out = public_safe_evidence_artifact(
+        {"evidence_id": "ev_github_deadbeefcafe01", "source_type": "github",
+         "proof_strength": proof_strength, "public_safe": True}
+    )
+    assert out["proof_strength"] == proof_strength
+
+
+@pytest.mark.parametrize(
+    "tier",
+    ["Strongly corroborated", "Corroborated", "Supporting evidence", "Needs review",
+     "Insufficient evidence"],
+)
+def test_known_qualitative_tiers_survive(tier: str) -> None:
+    out = public_safe_synthesis_claim(
+        {"claim_id": "claim_abc123def456", "claim": "x", "public_safe": True,
+         "supporting_evidence_ids": ["ev_github_deadbeefcafe01"], "qualitative_tier": tier}
+    )
+    assert out["qualitative_tier"] == tier
+
+
+def test_known_enum_values_survive_in_linked_chain() -> None:
+    out = public_safe_linked_chain(
+        {
+            "chain_id": "chain_deadbeefcafe01",
+            "public_safe": True,
+            "source_types_present": ["github", "website", "document"],
+            "primary_source_type": "github",
+        }
+    )
+    assert out["source_types_present"] == ["github", "website", "document"]
+    assert out["primary_source_type"] == "github"

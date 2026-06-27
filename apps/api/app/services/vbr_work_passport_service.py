@@ -40,9 +40,12 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.services.public_report_safety_service import (
+    PublicReportUnsafeError,
+    enforce_public_safe,
+)
 from app.services.safe_public_url import is_safe_public_url
 from app.services.vbr_public_project_report import (
-    _contains_unsafe_fields,
     _lookup_display_name,
     _scrub_public_report,
 )
@@ -922,7 +925,13 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     public = _scrub_public_report(public)
 
     # …then refuse to serve anything that still trips the unsafe-field scan.
-    if _contains_unsafe_fields(public):
+    # Step 7: the final gate runs through the centralized Public Safety layer,
+    # a strict superset of the inline scan (rejects private source_id / metadata /
+    # raw-payload / provider keys, ``/Users/…`` & ``file://`` paths, raw emails)
+    # that also strengthens scrubbing (rank/rating/percentile + emails).
+    try:
+        public = enforce_public_safe(public)
+    except PublicReportUnsafeError:
         logger.warning("[VBR] Public Work Passport failed the unsafe-field scan; refusing to serve.")
         raise _not_found()
 
