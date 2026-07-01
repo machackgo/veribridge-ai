@@ -18,9 +18,11 @@ from uuid import uuid4
 import pytest
 
 from app.services.proof_synthesis_agent_service import (
+    TIER_CORROBORATED,
     TIER_NEEDS_REVIEW,
     TIER_STRONG,
     build_skill_proof_synthesis,
+    synthesize_skill_report,
 )
 
 from tests.test_vbr_project_defense import (
@@ -370,3 +372,295 @@ def test_synthesis_weak_only_github_is_needs_review(mem_store: dict, pipeline_db
     report = build_skill_proof_synthesis(mem_store, pipeline_db, USER_ID, "python")
     chain = next(c for c in report["proof_chains"] if c["project_id"] == pid)
     assert chain["confidence_tier"] == TIER_NEEDS_REVIEW
+
+
+# ── Smart GitHub Evidence integration (grade-aware synthesis) ──────────────────
+#
+# These exercise the Proof Synthesis Agent's consumption of the Smart GitHub
+# Evidence ``evidence_quality_grade`` directly via the pure ``synthesize_skill_report``
+# entrypoint, so the deterministic quality band (not the grader's exact output) is
+# under test. Every chain here is already-safe (as the Vault would have produced).
+
+
+def _gh_row(grade: str, *, file_path: str, line_start: int, line_end: int, reason: str, sid: str) -> dict:
+    return {
+        "proof_type": "GitHub Proof",
+        "source_id": sid,
+        "skill_name": "Machine Learning",
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "file_path": file_path,
+        "line_start": line_start,
+        "line_end": line_end,
+        "evidence_quality_grade": grade,
+        "selection_reason": reason,
+        "safe_summary": reason,
+        "public_safe": True,
+        "attached_project_ids": ["p1"],
+    }
+
+
+def _report_with_github(github: list[dict]) -> dict:
+    chain = {
+        "attached": True,
+        "project_id": "p1",
+        "project_title": "Boston Model Trainer",
+        "github_evidence": github,
+    }
+    return synthesize_skill_report(
+        {"skill": "Machine Learning", "projects": [chain], "source_counts": {"GitHub Proof": len(github)}}
+    )
+
+
+def test_implementation_body_ranks_above_supporting_and_is_primary() -> None:
+    report = _report_with_github(
+        [
+            _gh_row(
+                "supporting_logic",
+                file_path="serving/main.py",
+                line_start=40,
+                line_end=70,
+                reason="model inference serving",
+                sid="gh-support",
+            ),
+            _gh_row(
+                "implementation_body",
+                file_path="train.py",
+                line_start=94,
+                line_end=135,
+                reason="model training/evaluation",
+                sid="gh-impl",
+            ),
+        ]
+    )
+    chain = report["proof_chains"][0]
+    assert chain["has_primary_github_implementation"] is True
+    assess = chain["github_evidence_assessment"]
+    assert assess["strength"] == "implementation"
+    # The primary line is the implementation body (train.py 94-135), not the
+    # supporting serving row — recruiter-readable, with a precise citation.
+    assert "train.py · lines 94-135" in assess["note"]
+    assert "Primary GitHub implementation evidence" in chain["synthesis_result"]
+    gh_statements = [s for s in chain["synthesis_statements"] if s["source"] == "GitHub Proof"]
+    primary = [s for s in gh_statements if s["text"].startswith("Primary GitHub implementation evidence")]
+    supporting = [s for s in gh_statements if s["text"].startswith("Supporting GitHub evidence")]
+    assert primary and "train.py · lines 94-135" in primary[0]["text"]
+    assert supporting and "serving/main.py · lines 40-70" in supporting[0]["text"]
+
+
+def test_supporting_logic_only_is_partial_not_primary() -> None:
+    report = _report_with_github(
+        [
+            _gh_row(
+                "supporting_logic",
+                file_path="serving/main.py",
+                line_start=40,
+                line_end=70,
+                reason="model inference serving",
+                sid="gh-support",
+            )
+        ]
+    )
+    chain = report["proof_chains"][0]
+    assert chain["has_primary_github_implementation"] is False
+    assess = chain["github_evidence_assessment"]
+    assert assess["strength"] == "supporting"
+    # Honest: partial/supporting, never over-claimed as primary implementation.
+    assert "partial" in assess["note"].lower()
+    assert "Supporting GitHub evidence" in chain["synthesis_result"]
+    assert "Primary GitHub implementation evidence" not in chain["synthesis_result"]
+
+
+def test_weak_graded_precise_line_is_insufficient_never_primary() -> None:
+    report = _report_with_github(
+        [
+            _gh_row(
+                "route_decorator_only",
+                file_path="api.py",
+                line_start=19,
+                line_end=23,
+                reason="API endpoint decorator",
+                sid="gh-weak",
+            )
+        ]
+    )
+    chain = report["proof_chains"][0]
+    assert chain["has_primary_github_implementation"] is False
+    assess = chain["github_evidence_assessment"]
+    assert assess["strength"] == "weak"
+    assert "insufficient" in assess["note"].lower()
+    # A weak precise line inflates nothing — the chain is only Needs review.
+    assert chain["confidence_tier"] == TIER_NEEDS_REVIEW
+    gh_statements = [s for s in chain["synthesis_statements"] if s["source"] == "GitHub Proof"]
+    assert gh_statements, "the weak row is still cited (precisely), just not as primary"
+    assert not any(
+        s["text"].startswith("Primary GitHub implementation evidence") for s in gh_statements
+    )
+
+
+# ── Confidence-tier: only a primary implementation_body body can be "Strong" ───
+#
+# supporting_logic / ungraded / weak GitHub evidence corroborates but is never a
+# primary implementation source, so it must NEVER produce "Strongly corroborated"
+# even when paired with a Website workflow or a Project Defense. Regression guard
+# for the tier/limitation contradiction (a chain reading both "Strongly
+# corroborated" AND "No primary implementation body was isolated").
+
+_NO_PRIMARY_BODY = "No primary implementation body was isolated"
+
+
+def _website_row(sid: str = "web-1") -> dict:
+    return {
+        "proof_type": "Website Proof",
+        "source_id": sid,
+        "skill_name": "Machine Learning",
+        "workflow_summary": "the recorded prediction workflow runs end to end",
+        "safe_summary": "the recorded prediction workflow runs end to end",
+        "public_safe": True,
+        "attached_project_ids": ["p1"],
+    }
+
+
+def _defense_row(sid: str = "def-1") -> dict:
+    return {
+        "proof_type": "Project Defense",
+        "source_id": sid,
+        "skill_name": "Machine Learning",
+        "safe_summary": "the candidate explained the training pipeline",
+        "public_safe": True,
+        "attached_project_ids": ["p1"],
+    }
+
+
+def _ungraded_gh_row(sid: str = "gh-ungraded") -> dict:
+    # A precise located line with NO evidence_quality_grade at all — precise but of
+    # unproven quality, so it must be treated as supporting, never primary.
+    row = _gh_row(
+        "",
+        file_path="serving/main.py",
+        line_start=40,
+        line_end=70,
+        reason="model inference serving",
+        sid=sid,
+    )
+    row.pop("evidence_quality_grade", None)
+    return row
+
+
+def _report_with_evidence(
+    *, github: list[dict], website: list[dict] | None = None, defense: list[dict] | None = None
+) -> dict:
+    chain = {
+        "attached": True,
+        "project_id": "p1",
+        "project_title": "Boston Model Trainer",
+        "github_evidence": github,
+        "website_evidence": website or [],
+        "defense_evidence": defense or [],
+    }
+    counts = {"GitHub Proof": len(github)}
+    if website:
+        counts["Website Proof"] = len(website)
+    if defense:
+        counts["Project Defense"] = len(defense)
+    return synthesize_skill_report(
+        {"skill": "Machine Learning", "projects": [chain], "source_counts": counts}
+    )
+
+
+def _supporting_gh_row(sid: str = "gh-support") -> dict:
+    return _gh_row(
+        "supporting_logic",
+        file_path="serving/main.py",
+        line_start=40,
+        line_end=70,
+        reason="model inference serving",
+        sid=sid,
+    )
+
+
+def test_supporting_logic_plus_website_is_not_strong() -> None:
+    report = _report_with_evidence(github=[_supporting_gh_row()], website=[_website_row()])
+    chain = report["proof_chains"][0]
+    assert chain["has_primary_github_implementation"] is False
+    # Corroborated (Website + supporting code), but NEVER strongly corroborated.
+    assert chain["confidence_tier"] != TIER_STRONG
+    assert chain["confidence_tier"] == TIER_CORROBORATED
+    # The honest limitation must be present and consistent with the tier.
+    assert _NO_PRIMARY_BODY in chain["github_evidence_assessment"]["note"]
+    assert TIER_STRONG not in chain["synthesis_result"]
+
+
+def test_supporting_logic_plus_defense_is_not_strong() -> None:
+    report = _report_with_evidence(github=[_supporting_gh_row()], defense=[_defense_row()])
+    chain = report["proof_chains"][0]
+    assert chain["has_primary_github_implementation"] is False
+    assert chain["confidence_tier"] != TIER_STRONG
+    assert chain["confidence_tier"] == TIER_CORROBORATED
+    assert _NO_PRIMARY_BODY in chain["github_evidence_assessment"]["note"]
+
+
+def test_ungraded_github_plus_website_or_defense_is_not_strong() -> None:
+    for evidence in ({"website": [_website_row()]}, {"defense": [_defense_row()]}):
+        report = _report_with_evidence(github=[_ungraded_gh_row()], **evidence)
+        chain = report["proof_chains"][0]
+        assert chain["has_primary_github_implementation"] is False
+        assert chain["confidence_tier"] != TIER_STRONG
+        # Ungraded precise code is supporting, so it corroborates but never anchors strong.
+        assert _NO_PRIMARY_BODY in chain["github_evidence_assessment"]["note"]
+
+
+def test_repo_level_fallback_plus_website_is_not_strong() -> None:
+    report = _report_with_evidence(
+        github=[
+            _gh_row(
+                "repo_level_fallback",
+                file_path="api.py",
+                line_start=1,
+                line_end=1,
+                reason="repository-level reference",
+                sid="gh-repo",
+            )
+        ],
+        website=[_website_row()],
+    )
+    chain = report["proof_chains"][0]
+    assert chain["has_primary_github_implementation"] is False
+    assert chain["confidence_tier"] != TIER_STRONG
+
+
+def test_implementation_body_plus_website_can_be_strong() -> None:
+    report = _report_with_evidence(
+        github=[
+            _gh_row(
+                "implementation_body",
+                file_path="train.py",
+                line_start=94,
+                line_end=135,
+                reason="model training/evaluation",
+                sid="gh-impl",
+            )
+        ],
+        website=[_website_row()],
+    )
+    chain = report["proof_chains"][0]
+    assert chain["has_primary_github_implementation"] is True
+    # A real implementation body + Website runtime → the strongest tier is allowed.
+    assert chain["confidence_tier"] == TIER_STRONG
+    # And the contradictory limitation must NOT be paired with a strong tier.
+    assert _NO_PRIMARY_BODY not in chain["github_evidence_assessment"]["note"]
+
+
+def test_strong_tier_never_paired_with_no_primary_body_limitation() -> None:
+    # Even with the fullest supporting mix (supporting code + Website + Defense),
+    # the "No primary implementation body" limitation must never co-occur with a
+    # Strongly corroborated tier.
+    report = _report_with_evidence(
+        github=[_supporting_gh_row()],
+        website=[_website_row()],
+        defense=[_defense_row()],
+    )
+    chain = report["proof_chains"][0]
+    note = chain["github_evidence_assessment"]["note"]
+    if _NO_PRIMARY_BODY in note:
+        assert chain["confidence_tier"] != TIER_STRONG

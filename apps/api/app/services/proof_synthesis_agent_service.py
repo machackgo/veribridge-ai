@@ -35,6 +35,12 @@ import logging
 from typing import Any
 
 from app.services.cross_proof_linking_service import link_proof_chains
+from app.services.github_python_evidence_focus import (
+    GRADE_IMPLEMENTATION_BODY,
+    GRADE_SUPPORTING_LOGIC,
+    grade_rank,
+    is_weak_grade,
+)
 from app.services.llm_proof_synthesis_service import synthesize_linked_chains_bounded
 from app.services.evidence_normalization_service import (
     SOURCE_DEFENSE,
@@ -42,6 +48,7 @@ from app.services.evidence_normalization_service import (
     SOURCE_GITHUB,
     SOURCE_VIDEO,
     SOURCE_WEBSITE,
+    has_implementation_body,
     has_precise_code,
     has_source,
     normalize_chain,
@@ -69,6 +76,13 @@ TIER_INSUFFICIENT = "Insufficient evidence"
 # proof; the overflow is reported as ``more_count``.
 _MAX_UNLINKED_ITEMS = 6
 
+# GitHub Smart-Evidence proof-strength labels (honest proof language, no scores).
+# implementation_body → primary; supporting_logic → supporting; anything weaker →
+# not enough on its own.
+GH_PRIMARY = "Primary implementation evidence"
+GH_SUPPORTING = "Supporting code evidence"
+GH_INSUFFICIENT = "Insufficient precise evidence"
+
 __all__ = [
     "build_skill_proof_synthesis",
     "synthesize_skill_report",
@@ -95,6 +109,84 @@ def _github_location(item: dict[str, Any]) -> str:
     return fp
 
 
+def _github_reason(item: dict[str, Any]) -> str:
+    """The safe "why this line" text for a GitHub code row (already scrubbed)."""
+    return (
+        item.get("selection_reason")
+        or item.get("safe_summary")
+        or "skill-relevant implementation"
+    )
+
+
+def _github_code_rows(github: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Precise ``code_line`` GitHub rows (located line evidence), any grade."""
+    return [
+        g
+        for g in github
+        if g.get("display_mode") == "code_line" and g.get("has_precise_line_evidence")
+    ]
+
+
+def _github_evidence_assessment(github: list[dict[str, Any]]) -> dict[str, Any]:
+    """Classify a chain's GitHub code evidence by Smart-Evidence quality band.
+
+    Deterministic, no LLM. Consumes the Smart GitHub Evidence output already on
+    each row (``evidence_quality_grade`` + safe file/line/``selection_reason``) and
+    distinguishes, honestly:
+
+    * a real **implementation body** (grade ``implementation_body``) → *primary*
+      GitHub implementation proof;
+    * **supporting logic** (grade ``supporting_logic``, or a precise line whose
+      grade is not yet established) → *supporting* code proof, never primary;
+    * only **weak / repo-level** rows (import/docstring/config/route-decorator/
+      repo-fallback, or no located line at all) → precise implementation evidence
+      is *insufficient by itself*.
+
+    Returns a small dict with a ``strength`` key, a recruiter-facing ``label`` and
+    an honest ``note`` sentence (empty when the chain has no GitHub evidence).
+    """
+    rows = _github_code_rows(github)
+    impl = [g for g in rows if g.get("evidence_quality_grade") == GRADE_IMPLEMENTATION_BODY]
+    support = [g for g in rows if g.get("evidence_quality_grade") == GRADE_SUPPORTING_LOGIC]
+    # A precise line with no grade at all is precise but its quality is unproven —
+    # treat as supporting, never promote to primary implementation.
+    ungraded = [g for g in rows if not g.get("evidence_quality_grade")]
+
+    if impl:
+        best = min(impl, key=lambda g: grade_rank(g.get("evidence_quality_grade")))
+        return {
+            "strength": "implementation",
+            "label": GH_PRIMARY,
+            "note": (
+                f"Primary GitHub implementation evidence: {_github_location(best)} "
+                f"shows {_github_reason(best)}."
+            ),
+        }
+    if support or ungraded:
+        best = (support or ungraded)[0]
+        return {
+            "strength": "supporting",
+            "label": GH_SUPPORTING,
+            "note": (
+                f"Supporting GitHub evidence: {_github_location(best)} shows "
+                f"{_github_reason(best)}. No primary implementation body was isolated, "
+                "so GitHub evidence is partial/supporting."
+            ),
+        }
+    if github:
+        # Some GitHub evidence exists, but only weak precise lines or repo-level rows.
+        return {
+            "strength": "weak",
+            "label": GH_INSUFFICIENT,
+            "note": (
+                "GitHub evidence is repository- or weak-level only "
+                "(imports/config/decorators/no located line); precise implementation "
+                "evidence is insufficient by itself."
+            ),
+        }
+    return {"strength": "none", "label": "", "note": ""}
+
+
 def _chain_evidence_ids(chain: dict[str, Any]) -> set[str]:
     """Every real evidence ``source_id`` present in a chain (anti-fabrication set).
 
@@ -119,7 +211,8 @@ def _chain_evidence_ids(chain: dict[str, Any]) -> set[str]:
 
 def _confidence_tier(
     *,
-    has_precise_code: bool,
+    has_implementation_body: bool,
+    has_supporting_code: bool,
     has_github_any: bool,
     has_website: bool,
     has_defense: bool,
@@ -128,28 +221,46 @@ def _confidence_tier(
 ) -> str:
     """Map a chain's source mix to a qualitative tier — never a numeric score.
 
-    Independent *strong* sources are: precise GitHub code (implementation), a
-    Website runtime workflow (behaviour), and a Project Defense/Video
-    (understanding). Documents corroborate but are never counted as a strong,
-    independent source on their own.
+    Independent *strong, primary* sources are: a located GitHub implementation
+    **body** (Smart-Evidence grade ``implementation_body``), a Website runtime
+    workflow (behaviour), and a Project Defense/Video (understanding). Only a real
+    implementation body counts as primary GitHub implementation proof — so a
+    "Strongly corroborated" tier can only be reached with a primary implementation
+    artifact anchoring it.
+
+    ``supporting_logic`` / as-yet-ungraded precise GitHub lines
+    (``has_supporting_code``) are corroborative code evidence, never primary: they
+    can lift a single strong source to *corroborated* but can never, on their own,
+    create the strongest tier. This keeps the tier consistent with the honest
+    "No primary implementation body was isolated" limitation — that limitation is
+    only emitted when no implementation body exists, and in that case this function
+    never returns :data:`TIER_STRONG`. Documents likewise corroborate but are never
+    a strong, independent source on their own.
     """
     strong = [
         name
         for name, present in (
-            ("github_code", has_precise_code),
+            ("github_code", has_implementation_body),
             ("website", has_website),
             ("defense", has_defense),
         )
         if present
     ]
     if len(strong) >= 2:
-        # Two+ independent strong sources, anchored by real code → strongest.
+        # Two+ independent strong sources; only a primary GitHub implementation
+        # body anchors the strongest tier (Website + Defense alone → corroborated).
         return TIER_STRONG if "github_code" in strong else TIER_CORROBORATED
     if len(strong) == 1:
-        # One strong source plus a corroborating document reads as corroborated.
-        return TIER_CORROBORATED if has_document else TIER_SUPPORTING
+        # One strong source; a corroborating document OR supporting GitHub code
+        # (supporting_logic / ungraded precise line) lifts it to corroborated but
+        # never to strong.
+        return TIER_CORROBORATED if (has_document or has_supporting_code) else TIER_SUPPORTING
+    if has_supporting_code:
+        # Precise supporting GitHub code with no strong source to anchor it reads
+        # as supporting evidence, never a strong claim.
+        return TIER_SUPPORTING
     if has_github_any or has_document or has_skill_graph:
-        # Only repo-level GitHub, documents, or aggregated graph evidence → review.
+        # Only repo-level/weak GitHub, documents, or aggregated graph evidence → review.
         return TIER_NEEDS_REVIEW
     return TIER_INSUFFICIENT
 
@@ -175,10 +286,30 @@ def _build_statements(
 
     for g in chain.get("github_evidence") or []:
         sid = str(g.get("source_id") or "")
-        if g.get("display_mode") == "code_line" and g.get("has_precise_line_evidence"):
-            reason = g.get("selection_reason") or g.get("safe_summary") or "skill-relevant logic"
+        grade = g.get("evidence_quality_grade")
+        is_code_line = g.get("display_mode") == "code_line" and g.get("has_precise_line_evidence")
+        reason = _github_reason(g)
+        if is_code_line and grade == GRADE_IMPLEMENTATION_BODY:
+            # Strongest artifact proof — a located implementation body.
             _add(
-                f"GitHub code at {_github_location(g)} shows {reason}.",
+                f"Primary GitHub implementation evidence: {_github_location(g)} shows {reason}.",
+                PROOF_GITHUB,
+                [sid],
+            )
+        elif is_code_line and not is_weak_grade(grade):
+            # supporting_logic (or an as-yet-ungraded precise line) — supporting code
+            # proof, cited precisely, but never framed as primary implementation.
+            _add(
+                f"Supporting GitHub evidence: {_github_location(g)} shows {reason}.",
+                PROOF_GITHUB,
+                [sid],
+            )
+        elif is_code_line:
+            # Precise line but a WEAK Smart-Evidence grade (import/docstring/config/
+            # route-decorator) — honest, never primary implementation proof.
+            _add(
+                f"GitHub evidence at {_github_location(g)} is repository/weak-level "
+                f"({reason}); it is not sufficient by itself as implementation proof.",
                 PROOF_GITHUB,
                 [sid],
             )
@@ -223,19 +354,33 @@ def _build_statements(
     return statements
 
 
-def _synthesis_result(skill: str, project_title: str, tier: str, statements: list[dict[str, Any]]) -> str:
-    """One safe sentence summarizing how the chain's sources corroborate the skill."""
+def _synthesis_result(
+    skill: str,
+    project_title: str,
+    tier: str,
+    statements: list[dict[str, Any]],
+    github_note: str = "",
+) -> str:
+    """One-to-two safe sentences summarizing how the chain's sources corroborate.
+
+    The optional ``github_note`` (from :func:`_github_evidence_assessment`) is
+    appended verbatim so the recruiter-facing result states honestly whether GitHub
+    is *primary* implementation proof, *supporting* code, or *insufficient* — never
+    over-claiming when only weak/repo-level GitHub evidence exists.
+    """
     sources = sorted({s["source"] for s in statements})
     if not sources:
-        return f"No connected evidence was found for {skill} in {project_title}."
+        base = f"No connected evidence was found for {skill} in {project_title}."
+        return f"{base} {github_note}".strip() if github_note else base
     if len(sources) == 1:
         joined = sources[0]
     else:
         joined = ", ".join(sources[:-1]) + " and " + sources[-1]
-    return (
+    base = (
         f"In {project_title}, {joined} independently corroborate {skill} "
         f"({tier.lower()})."
     )
+    return f"{base} {github_note}".strip() if github_note else base
 
 
 def _why_linked(chain: dict[str, Any]) -> str:
@@ -280,8 +425,13 @@ def _enrich_chain(skill: str, chain: dict[str, Any]) -> dict[str, Any]:
     # source/strength logic lives in one place (the normalizer), not per-source here.
     artifacts = normalize_chain(chain, skill)
 
+    # Only a located implementation *body* is primary GitHub implementation proof;
+    # a precise line that is only supporting_logic / not-yet-graded corroborates but
+    # can never anchor the strongest tier (kept separate so the tier stays honest).
+    impl_body = has_implementation_body(artifacts)
     tier = _confidence_tier(
-        has_precise_code=has_precise_code(artifacts),
+        has_implementation_body=impl_body,
+        has_supporting_code=has_precise_code(artifacts) and not impl_body,
         has_github_any=has_source(artifacts, SOURCE_GITHUB),
         has_website=has_source(artifacts, SOURCE_WEBSITE),
         has_defense=has_source(artifacts, SOURCE_DEFENSE, SOURCE_VIDEO),
@@ -291,12 +441,22 @@ def _enrich_chain(skill: str, chain: dict[str, Any]) -> dict[str, Any]:
     allowed_ids = _chain_evidence_ids(chain)
     statements = _build_statements(skill, chain, allowed_ids)
 
+    # Smart GitHub Evidence assessment: primary implementation body vs supporting
+    # logic vs weak/repo-level — drives honest recruiter wording (never over-claims).
+    gh_assessment = _github_evidence_assessment(github)
+
     chain["confidence_tier"] = tier
     chain["normalized_evidence"] = [a.to_dict() for a in artifacts]
     chain["subskills"] = _subskills(github)
     chain["synthesis_statements"] = statements
+    chain["github_evidence_assessment"] = gh_assessment
+    chain["has_primary_github_implementation"] = has_implementation_body(artifacts)
     chain["synthesis_result"] = _synthesis_result(
-        skill, chain.get("project_title") or "this project", tier, statements
+        skill,
+        chain.get("project_title") or "this project",
+        tier,
+        statements,
+        gh_assessment.get("note", ""),
     )
     chain["why_linked"] = _why_linked(chain) if chain.get("attached") else (
         "Not attached to a VBR project — shown for context only."

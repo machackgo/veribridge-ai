@@ -1295,3 +1295,93 @@ def test_known_enum_values_survive_in_linked_chain() -> None:
     )
     assert out["source_types_present"] == ["github", "website", "document"]
     assert out["primary_source_type"] == "github"
+
+
+# ── Smart GitHub Evidence integration — public safety of grade-aware synthesis ──
+
+
+def test_public_skill_report_drops_internal_github_assessment_fields() -> None:
+    """The rich, internal proof_chains (with the new Smart-Evidence assessment and
+    private source ids) are never exposed publicly — only the citation-safe linked
+    chains / synthesis survive."""
+    from app.services.proof_synthesis_agent_service import synthesize_skill_report
+
+    internal = synthesize_skill_report(
+        {
+            "skill": "Machine Learning",
+            "source_counts": {"GitHub Proof": 1},
+            "projects": [
+                {
+                    "attached": True,
+                    "project_id": "p-secret-uuid",
+                    "project_title": "Boston Model Trainer",
+                    "github_evidence": [
+                        {
+                            "proof_type": "GitHub Proof",
+                            "source_id": "gh-secret-uuid",
+                            "skill_name": "Machine Learning",
+                            "display_mode": "code_line",
+                            "has_precise_line_evidence": True,
+                            "file_path": "train.py",
+                            "line_start": 94,
+                            "line_end": 135,
+                            "evidence_quality_grade": "implementation_body",
+                            "selection_reason": "model training/evaluation",
+                            "safe_summary": "model training/evaluation",
+                            "public_safe": True,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    # Sanity: the internal chain carries the new assessment fields.
+    assert internal["proof_chains"][0]["github_evidence_assessment"]["strength"] == "implementation"
+
+    public = public_safe_skill_report(internal)
+    # The rich proof_chains (and their internal fields / private ids) are dropped.
+    assert "proof_chains" not in public
+    assert "github_evidence_assessment" not in json.dumps(public)
+    assert "gh-secret-uuid" not in json.dumps(public)
+    assert "p-secret-uuid" not in json.dumps(public)
+
+
+def test_public_linked_chain_does_not_claim_precise_code_for_weak_grade() -> None:
+    """A weak-graded precise line must not surface has_precise_code=True publicly."""
+    from app.services.proof_synthesis_agent_service import synthesize_skill_report
+
+    internal = synthesize_skill_report(
+        {
+            "skill": "Machine Learning",
+            "source_counts": {"GitHub Proof": 1},
+            "projects": [
+                {
+                    "attached": True,
+                    "project_id": "p1",
+                    "project_title": "Boston Model Trainer",
+                    "github_evidence": [
+                        {
+                            "proof_type": "GitHub Proof",
+                            "source_id": "gh-weak",
+                            "skill_name": "Machine Learning",
+                            "display_mode": "code_line",
+                            "has_precise_line_evidence": True,
+                            "file_path": "api.py",
+                            "line_start": 19,
+                            "line_end": 23,
+                            "evidence_quality_grade": "route_decorator_only",
+                            "selection_reason": "API endpoint decorator",
+                            "safe_summary": "API endpoint decorator",
+                            "public_safe": True,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    public = public_safe_skill_report(internal)
+    for chain in public["linked_proof_chains"]:
+        summary = chain.get("proof_strength_summary") or {}
+        assert summary.get("has_precise_code") is not True, (
+            "a weak-graded precise line must never read as precise implementation code"
+        )
