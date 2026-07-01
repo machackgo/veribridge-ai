@@ -51,9 +51,12 @@ from app.services.github_canonical_skill_evidence_adapter import (
     repo_identity,
 )
 from app.services.github_python_evidence_focus import (
+    GRADE_IMPLEMENTATION_BODY,
     GRADE_REPO_LEVEL_FALLBACK,
+    effective_evidence_grade,
     grade_rank,
     is_strong_grade,
+    safe_selection_reason,
 )
 from app.services.github_skill_evidence_service import (
     GitHubSkillEvidenceItem,
@@ -61,6 +64,7 @@ from app.services.github_skill_evidence_service import (
     extract_github_skill_evidence,
     is_github_evidence_related_to_skill,
     is_ml_skill,
+    skill_profile,
 )
 from app.services.safe_public_url import is_safe_public_url
 from app.services.skill_normalization import canonical_skill, skill_category, skill_slug
@@ -253,6 +257,9 @@ _LOCATOR_KEYS = (
     "display_mode",
     "evidence_strength",
     "evidence_quality_grade",
+    # Grade-time ML verdict from the trusted provenance body (tri-state bool / None).
+    # Drives read-time ML semantic validation without ever re-exposing the snippet.
+    "ml_executable_signal",
     "evidence_kind",
     "has_precise_line_evidence",
     "github_line_url",
@@ -420,6 +427,7 @@ def _canonical_github_items(
                     "repo_url": ev.repo_url if ev.public_safe else None,
                     "evidence_strength": ev.evidence_strength,
                     "evidence_quality_grade": ev.evidence_quality_grade,
+                    "ml_executable_signal": ev.ml_executable_signal,
                     "evidence_kind": ev.evidence_kind,
                     "selection_reason": ev.selection_reason,
                     "subskill_name": ev.subskill_name,
@@ -1016,18 +1024,98 @@ _PREVIEW_PRIORITY = {
 _MAX_PREVIEWS = 3
 
 
-def _skill_status(proof_types: list[str], attached_count: int) -> str:
+def _skill_status(
+    proof_types: list[str],
+    attached_count: int,
+    *,
+    skill: str | None = None,
+    has_implementation_body: bool = False,
+) -> str:
     """Qualitative skill label — never a numeric score.
 
     More distinct evidence sources (and any attached to a real project) ⇒ a
     stronger qualitative label. This is a grouping heuristic, not a trust score.
+
+    For an IMPLEMENTATION-ORIENTED skill (one with a code profile — Machine
+    Learning, API, React, Security, DevOps, MLOps …), "Demonstrated" additionally
+    requires a real GitHub *implementation body*. Weak GitHub (imports / docstrings
+    / config / bare route decorator) plus a document and a defense must NOT read as
+    "Demonstrated" — that would contradict the honest "no primary implementation
+    body was isolated" limitation. Such a skill is capped at "Evidence observed"
+    until a primary implementation body exists. Skills with no code profile (e.g.
+    Communication) are unaffected.
     """
     distinct = len({t for t in proof_types})
     if distinct >= 2 and attached_count:
+        if skill and skill_profile(skill) and not has_implementation_body:
+            return "Evidence observed"
         return "Demonstrated"
     if distinct >= 2 or attached_count:
         return "Evidence observed"
     return "Supporting evidence"
+
+
+def _effective_item_grade(item: dict[str, Any], skill: str | None) -> str | None:
+    """Read-time VALIDATED grade for a vault item — the same ML semantic validation
+    that :func:`collect_skill_report` applies when hydrating a card.
+
+    A persisted GitHub ``implementation_body`` on an ML skill is only honoured when
+    its trusted executable body actually carries an ML executable signal; a
+    deployment-only / serving-only / route-only body (or one whose "ML" evidence is
+    a stale reason / filename / function name) is DOWNGRADED here just as it is at
+    hydration, so status evaluation never keys off a pre-validation grade.
+    Non-GitHub items and non-ML skills are returned unchanged.
+    """
+    grade = item.get("evidence_quality_grade")
+    if item.get("proof_type") != PROOF_GITHUB:
+        return grade
+    return effective_evidence_grade(
+        grade,
+        is_ml=is_ml_skill(skill) if skill else False,
+        reason=item.get("selection_reason") or item.get("safe_summary"),
+        code_snippet=item.get("safe_snippet"),
+        file_path=item.get("file_path"),
+        function_name=item.get("function_name"),
+        ml_signal=item.get("ml_executable_signal"),
+    )
+
+
+def _has_coherent_impl_chain(
+    items: list[dict[str, Any]], *, skill: str | None = None
+) -> bool:
+    """True when a SINGLE attached project carries BOTH a GitHub implementation body
+    AND independent corroboration (>= 2 distinct proof types), all attached to that
+    same project.
+
+    Skill status must be derived from the strongest COHERENT project chain, never
+    from mixed global evidence: a standalone implementation body from project A plus
+    weak attached evidence from a DIFFERENT project B must NOT read as
+    "Demonstrated". Grouping by project identity keeps the implementation body and
+    its corroboration inside the same chain, so an unrelated attached chain cannot
+    be upgraded by a standalone implementation elsewhere.
+
+    The implementation-body test uses the read-time VALIDATED grade
+    (:func:`_effective_item_grade`), never the raw persisted
+    ``evidence_quality_grade``: an ML ``implementation_body`` row that is downgraded
+    at read time because its trusted body lacks executable ML signals (a
+    deployment-only body) must NOT count as coherent implementation evidence, so it
+    can never combine with a defense / document to fabricate "Demonstrated".
+    """
+    by_project: dict[str, list[dict[str, Any]]] = {}
+    for it in items:
+        if not it.get("is_attached_to_project"):
+            continue
+        for pid in it.get("attached_project_ids") or []:
+            by_project.setdefault(pid, []).append(it)
+    for chain_items in by_project.values():
+        types = {i["proof_type"] for i in chain_items}
+        has_impl = any(
+            _effective_item_grade(i, skill) == GRADE_IMPLEMENTATION_BODY
+            for i in chain_items
+        )
+        if has_impl and len(types) >= 2:
+            return True
+    return False
 
 
 def _preview_of(item: dict[str, Any]) -> dict[str, Any]:
@@ -1100,6 +1188,10 @@ def collect_skill_summaries(
     for group in by_canon.values():
         group_items = group.pop("_items")
         proof_types = list(group["proof_source_counts"].keys())
+        # Coherent-chain gate (fix): a real implementation body counts toward
+        # "Demonstrated" ONLY when it lives in the same attached project as its
+        # corroboration — never a standalone body from an unrelated project.
+        has_impl_body = _has_coherent_impl_chain(group_items, skill=group["skill"])
         ordered = sorted(
             group_items,
             key=lambda i: (
@@ -1123,7 +1215,9 @@ def collect_skill_summaries(
                 "skill": group["skill"],
                 "skill_slug": skill_slug(group["skill"]),
                 "category": group["category"],
-                "status": _skill_status(proof_types, attached),
+                "status": _skill_status(
+                    proof_types, attached, skill=group["skill"], has_implementation_body=has_impl_body
+                ),
                 "source_labels": group["source_labels"],
                 "project_ids": group["project_ids"],
                 "project_titles": project_titles,
@@ -1153,8 +1247,19 @@ def collect_skill_summaries(
 # ── Layer 2: full Skill Report for ONE skill (hydrates website detail here) ────
 
 
-def _report_item(item: dict[str, Any], titles: dict[str, str], *, hydrated: dict[str, Any] | None = None) -> dict[str, Any]:
-    """A rich, recruiter-verifiable evidence item for the Skill Report sections."""
+def _report_item(
+    item: dict[str, Any],
+    titles: dict[str, str],
+    *,
+    hydrated: dict[str, Any] | None = None,
+    skill: str | None = None,
+) -> dict[str, Any]:
+    """A rich, recruiter-verifiable evidence item for the Skill Report sections.
+
+    ``skill`` (the report's canonical skill) drives read-time ML semantic validation
+    of GitHub rows so a trusted deployment-only body stored as ``implementation_body``
+    can never present as Machine Learning primary implementation proof.
+    """
     row = {
         "proof_type": item["proof_type"],
         "source_id": item["source_id"],
@@ -1178,6 +1283,7 @@ def _report_item(item: dict[str, Any], titles: dict[str, str], *, hydrated: dict
         "display_mode": item.get("display_mode"),
         "evidence_strength": item.get("evidence_strength"),
         "evidence_quality_grade": item.get("evidence_quality_grade"),
+        "ml_executable_signal": item.get("ml_executable_signal"),
         "evidence_kind": item.get("evidence_kind"),
         "has_precise_line_evidence": item.get("has_precise_line_evidence"),
         "github_line_url": item.get("github_line_url"),
@@ -1202,6 +1308,33 @@ def _report_item(item: dict[str, Any], titles: dict[str, str], *, hydrated: dict
         "visual_summary": None,
         "live_check": None,
     }
+    if item["proof_type"] == PROOF_GITHUB:
+        # Read-time ML semantic validation FIRST: a trusted ``implementation_body``
+        # that lacks actual ML executable signals (a deployment-only / serving-only /
+        # cloud-only body) is downgraded to ``supporting_logic`` for an ML skill, so
+        # it can never present as Machine Learning primary implementation proof. The
+        # neutralisation below then keys off the VALIDATED grade.
+        grade = effective_evidence_grade(
+            item.get("evidence_quality_grade"),
+            is_ml=is_ml_skill(skill),
+            reason=item.get("selection_reason") or item.get("safe_summary"),
+            code_snippet=item.get("safe_snippet"),
+            file_path=item.get("file_path"),
+            function_name=item.get("function_name"),
+            ml_signal=item.get("ml_executable_signal"),
+        )
+        row["evidence_quality_grade"] = grade
+        # Read-time neutralisation of a STALE persisted selection reason / summary. A
+        # WEAK / fallback / ungraded GitHub row can never keep its stored reason —
+        # even one that reads as technical ("model serving inference handler") — it is
+        # replaced with an honest grade-derived / repository-level label. Only a
+        # validated strong body (implementation_body / supporting_logic) keeps its
+        # precise reason. Safe file path / line / function / "View code lines" links
+        # are untouched; only the recruiter-facing reason/summary wording is corrected.
+        if item.get("selection_reason"):
+            row["selection_reason"] = safe_selection_reason(grade, item.get("selection_reason"))
+        if not is_strong_grade(grade):
+            row["safe_summary"] = safe_selection_reason(grade, row.get("safe_summary"))
     if hydrated:
         row["workflow_summary"] = hydrated.get("workflow_summary")
         row["workflow_steps"] = list(hydrated.get("workflow_steps") or [])
@@ -1967,7 +2100,7 @@ def collect_skill_report(
     # generic Python helper/import/setup line — see ``is_github_evidence_related_to_skill``).
     matched += _related_github_items(items, matched, canon)
 
-    github = [_report_item(i, titles) for i in matched if i["proof_type"] == PROOF_GITHUB]
+    github = [_report_item(i, titles, skill=canon) for i in matched if i["proof_type"] == PROOF_GITHUB]
     documents = [_report_item(i, titles) for i in matched if i["proof_type"] == PROOF_DOCUMENT]
     defense = [_report_item(i, titles) for i in matched if i["proof_type"] == PROOF_DEFENSE]
     video = [_report_item(i, titles) for i in matched if i["proof_type"] == PROOF_VIDEO]
@@ -2234,7 +2367,14 @@ def collect_skill_report(
     summary = (
         f"{len(matched)} safe proof source(s) across {len(proof_types)} type(s) support {canon}."
     )
-    status = _skill_status(proof_types, attached_count)
+    # A real GitHub implementation body is required before an implementation-oriented
+    # skill reads as "Demonstrated" (see :func:`_skill_status`) — and it must live in
+    # a COHERENT attached project chain (implementation body + corroboration in the
+    # SAME project), never a standalone body from an unrelated project.
+    has_impl_body = _has_coherent_impl_chain(matched, skill=canon)
+    status = _skill_status(
+        proof_types, attached_count, skill=canon, has_implementation_body=has_impl_body
+    )
 
     report = {
         "skill": canon,

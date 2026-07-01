@@ -268,8 +268,23 @@ function GitHubSnippet({ snippet }: { snippet: string }) {
  * * legacy payloads with no ``display_mode`` keep the prior heuristic.
  */
 function GitHubEvidence({ item, ghLocation }: { item: SkillReportEvidenceItem; ghLocation: string | null }) {
-  const precise = item.display_mode === "code_line" && item.has_precise_line_evidence === true
-  const repoLevel = item.display_mode === "repo_level"
+  // A code_line row only renders as "Precise code evidence" when its quality grade
+  // is explicitly STRONG (implementation_body / supporting_logic). It FAILS CLOSED:
+  //  * an explicitly WEAK grade (import/docstring/config/route-decorator/fallback)
+  //    → the honest "Repo-level support only" treatment; and
+  //  * a MISSING / ungraded grade is NEVER treated as precise implementation proof —
+  //    it renders as a conservative "Needs review — repository-level signal" that
+  //    keeps the safe location + "View code lines" link but clearly states it has
+  //    not been validated as primary implementation proof.
+  const grade = item.evidence_quality_grade
+  const strongGrade = !!grade && STRONG_GITHUB_GRADES.has(grade)
+  const weakGrade = !!grade && !STRONG_GITHUB_GRADES.has(grade)
+  const isCodeLine = item.display_mode === "code_line" && item.has_precise_line_evidence === true
+  const precise = isCodeLine && strongGrade
+  const repoLevel = item.display_mode === "repo_level" || (isCodeLine && weakGrade)
+  // A precise located line with NO grade fails closed to "needs review": it is a
+  // repository-level signal, never validated primary/precise implementation proof.
+  const needsReview = isCodeLine && !grade
 
   if (precise) {
     return (
@@ -310,6 +325,32 @@ function GitHubEvidence({ item, ghLocation }: { item: SkillReportEvidenceItem; g
           <Badge tone="amber">Repo-level support only</Badge>
         </span>
         <SafeLink url={item.repo_url ?? item.public_url} label="View repository →" />
+      </>
+    )
+  }
+
+  if (needsReview) {
+    // Ungraded precise line: fail closed. The "View code lines" link may remain, but
+    // the surrounding label makes clear this is a repository-level signal, NOT
+    // validated primary/precise implementation proof. No "Precise code evidence"
+    // badge, no snippet framed as proof.
+    return (
+      <>
+        <span data-testid="github-needs-review-badge">
+          <Badge tone="amber">Needs review — repository-level signal</Badge>
+        </span>
+        <p
+          data-testid="github-needs-review-note"
+          style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
+        >
+          This code link is a repository-level signal and has not been validated as primary implementation proof.
+        </p>
+        {ghLocation && (
+          <Mono data-testid="github-location" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
+            {ghLocation}
+          </Mono>
+        )}
+        <SafeLink url={item.github_line_url ?? item.public_url} label="View code lines →" />
       </>
     )
   }
@@ -497,6 +538,38 @@ function SkillReportSection({
   return (
     <div data-testid={testId} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>{title}</h4>
+      {items.map((item) => (
+        <SkillEvidenceItem key={`${item.proof_type}-${item.source_id}`} item={item} />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The connected-chain GitHub section for LEGACY payloads that carry a flat
+ * ``github_evidence`` list (no ``github_groups``). It FAILS CLOSED like the grouped
+ * path: the section is titled "Code implementation" ONLY when at least one row is a
+ * graded ``implementation_body``. When every row is ungraded / missing
+ * ``evidence_quality_grade`` (or only weak-graded), the honest "GitHub code signals"
+ * title is used with a conservative note — such repository-level links have not been
+ * validated as primary implementation proof.
+ */
+function ConnectedFlatGitHubSection({ items }: { items: SkillReportEvidenceItem[] }) {
+  if (!items || items.length === 0) return null
+  const hasPrimary = items.some((r) => isImplementationBody(r.evidence_quality_grade))
+  return (
+    <div data-testid="chain-github" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>
+        {hasPrimary ? "Code implementation" : "GitHub code signals"}
+      </h4>
+      {!hasPrimary && (
+        <p
+          data-testid="chain-github-flat-no-primary"
+          style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
+        >
+          These code links are repository-level signals and have not been validated as primary implementation proof.
+        </p>
+      )}
       {items.map((item) => (
         <SkillEvidenceItem key={`${item.proof_type}-${item.source_id}`} item={item} />
       ))}
@@ -911,7 +984,7 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
       {(chain.github_groups?.length ?? 0) > 0 ? (
         <ConnectedGitHubGroups groups={chain.github_groups} />
       ) : (
-        <SkillReportSection testId="chain-github" title="Code implementation" items={chain.github_evidence} />
+        <ConnectedFlatGitHubSection items={chain.github_evidence} />
       )}
       <SkillReportSection testId="chain-website" title="Runtime / website behavior" items={chain.website_evidence} />
       {chain.defense_group && chain.defense_group.grouped_count > 0 ? (
@@ -938,16 +1011,172 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
   )
 }
 
-/** One compact code-location row inside a standalone GitHub repository group. */
-function StandaloneGitHubRowItem({ row }: { row: SkillReportStandaloneGitHubRow }) {
+// ── GitHub evidence quality bands ─────────────────────────────────────────────
+//
+// Only ``implementation_body`` and ``supporting_logic`` are STRONG grades fit to
+// render as real code evidence. Every other grade (config/comment/docstring/
+// import/route-decorator/repo-fallback) is a WEAK repository-level signal that
+// must never appear under "Code implementation" or carry a "Precise code
+// evidence" badge — it is surfaced only as a collapsed "Needs review /
+// repository-level signals" summary.
+const STRONG_GITHUB_GRADES = new Set(["implementation_body", "supporting_logic"])
+
+// Visible rows per quality band before a "+N more" control appears. Each band
+// (primary / supporting / needs-review) caps independently, so a graded group can
+// never render every row uncapped — and weak rows never surface above primary.
+const GITHUB_BAND_CAP = 3
+
+function isImplementationBody(grade?: string | null): boolean {
+  return grade === "implementation_body"
+}
+/** A row with an explicit WEAK grade (config/comment/import/decorator/fallback).
+ *  A missing/unknown grade is treated as NOT weak (older payloads keep their
+ *  prior precise rendering rather than being demoted). */
+function isWeakGitHubRow(row: { evidence_quality_grade?: string | null }): boolean {
+  return !!row.evidence_quality_grade && !STRONG_GITHUB_GRADES.has(row.evidence_quality_grade)
+}
+function groupsHaveImplementationBody(groups?: SkillReportStandaloneGitHubGroup[] | null): boolean {
+  return !!groups?.some((g) => g.rows.some((r) => isImplementationBody(r.evidence_quality_grade)))
+}
+/** Use the honest "GitHub code signals" title whenever NO group isolates a primary
+ *  implementation body — whether the rows are weak-graded OR fully ungraded (legacy).
+ *  Ungraded evidence fails closed too: without a validated implementation body the
+ *  section must never claim "Code implementation" / precise "GitHub evidence".
+ *  (Only reached with non-empty groups; the flat no-groups fallback is separate.) */
+function useSignalsTitle(groups?: SkillReportStandaloneGitHubGroup[] | null): boolean {
+  return !groupsHaveImplementationBody(groups)
+}
+
+/** One compact code-location row inside a standalone GitHub repository group.
+ *  ``weak`` rows are repository-level signals — rendered muted, never framed as
+ *  precise "View code lines" implementation proof. */
+function StandaloneGitHubRowItem({ row, weak = false }: { row: SkillReportStandaloneGitHubRow; weak?: boolean }) {
   return (
     <div
-      data-testid="standalone-github-row"
+      data-testid={weak ? "standalone-github-weak-row" : "standalone-github-row"}
       style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}
     >
-      <Mono style={{ fontSize: 12, color: TOKEN.inkSoft }}>{row.label}</Mono>
+      <Mono style={{ fontSize: 12, color: weak ? TOKEN.muted : TOKEN.inkSoft }}>{row.label}</Mono>
       {row.selection_reason && <span style={{ fontSize: 11, color: TOKEN.muted }}>— {row.selection_reason}</span>}
-      <SafeLink url={row.github_line_url ?? row.public_url} label="View code lines →" />
+      <SafeLink
+        url={row.github_line_url ?? row.public_url}
+        label={weak ? "View on GitHub →" : "View code lines →"}
+      />
+    </div>
+  )
+}
+
+/** The "+N more code locations" / "Show fewer" toggle shared by every band. */
+function RowMoreToggle({
+  testId,
+  expanded,
+  moreCount,
+  onToggle,
+}: {
+  testId: string
+  expanded: boolean
+  moreCount: number
+  onToggle: () => void
+}) {
+  if (moreCount <= 0) return null
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      aria-expanded={expanded}
+      onClick={onToggle}
+      style={{
+        alignSelf: "flex-start",
+        padding: 0,
+        border: "none",
+        background: "none",
+        cursor: "pointer",
+        fontSize: 11,
+        color: TOKEN.indigo,
+        fontWeight: 600,
+      }}
+    >
+      {expanded
+        ? "Show fewer code locations"
+        : `+${moreCount} more code location${moreCount === 1 ? "" : "s"}`}
+    </button>
+  )
+}
+
+/**
+ * A capped, expandable quality band (Primary / Supporting). Shows the first
+ * ``GITHUB_BAND_CAP`` rows and a "+N more" control for the rest, so a graded group
+ * never renders every strong row uncapped. Never renders weak rows — those go to
+ * the Needs-review band below, so strong rows always sit above weak ones.
+ */
+function GitHubRowBand({
+  testId,
+  label,
+  labelColor,
+  rows,
+}: {
+  testId: string
+  label: string
+  labelColor: string
+  rows: SkillReportStandaloneGitHubRow[]
+}) {
+  const [expanded, setExpanded] = useState(false)
+  if (rows.length === 0) return null
+  const moreCount = Math.max(0, rows.length - GITHUB_BAND_CAP)
+  const visible = expanded ? rows : rows.slice(0, GITHUB_BAND_CAP)
+  return (
+    <div data-testid={testId} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color: labelColor }}>{label}</span>
+      {visible.map((row, i) => (
+        <StandaloneGitHubRowItem key={`${row.source_id}-${row.label}-${i}`} row={row} />
+      ))}
+      <RowMoreToggle testId={`${testId}-more`} expanded={expanded} moreCount={moreCount} onToggle={() => setExpanded((v) => !v)} />
+    </div>
+  )
+}
+
+/**
+ * Collapsed "Needs review / repository-level signals" summary for a repo's WEAK
+ * (and, in a mixed group, ungraded) GitHub rows — imports, comments, configuration,
+ * endpoint scaffolding, or unvalidated legacy lines. These are never primary
+ * implementation proof, so they render as one honest summary line; expanding
+ * reveals up to ``GITHUB_BAND_CAP`` muted rows plus a "+N more" for the rest — never
+ * precise code evidence, and always below any primary/supporting rows.
+ */
+function WeakGitHubSignals({ rows }: { rows: SkillReportStandaloneGitHubRow[] }) {
+  const [open, setOpen] = useState(false)
+  const [showAll, setShowAll] = useState(false)
+  if (rows.length === 0) return null
+  const moreCount = Math.max(0, rows.length - GITHUB_BAND_CAP)
+  const visible = showAll ? rows : rows.slice(0, GITHUB_BAND_CAP)
+  return (
+    <div data-testid="github-weak-signals" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          alignSelf: "flex-start",
+          padding: 0,
+          border: "none",
+          background: "none",
+          cursor: "pointer",
+          fontSize: 11,
+          color: TOKEN.muted,
+          fontWeight: 600,
+        }}
+      >
+        {open ? "Hide repository-level signals" : `Needs review — ${rows.length} weak/repository-level signal${rows.length === 1 ? "" : "s"}`}
+      </button>
+      {!open && (
+        <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          Mostly imports, comments, configuration, or endpoint scaffolding — not sufficient as implementation proof.
+        </p>
+      )}
+      {open && visible.map((row, i) => <StandaloneGitHubRowItem key={`${row.source_id}-${row.label}-${i}`} row={row} weak />)}
+      {open && (
+        <RowMoreToggle testId="github-weak-more" expanded={showAll} moreCount={moreCount} onToggle={() => setShowAll((v) => !v)} />
+      )}
     </div>
   )
 }
@@ -967,14 +1196,26 @@ function GitHubGroupCard({
   attached?: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
-  // ``row_more_count`` rows sit beyond the visible window but ARE present in
-  // ``rows`` (the backend no longer drops the overflow), so "+N more code
-  // locations" reveals them inline rather than being a dead label. Collapsed by
-  // default; the first ``visibleCount`` rows always show.
+  // Split this repo's rows into quality bands so weak repository-level signals
+  // (imports/comments/config/route-decorator) never render beside real code as if
+  // they were implementation proof. Primary = implementation_body; Supporting =
+  // supporting_logic; the rest collapse into a "Needs review" summary.
+  const primaryRows = group.rows.filter((r) => isImplementationBody(r.evidence_quality_grade))
+  const supportingRows = group.rows.filter((r) => r.evidence_quality_grade === "supporting_logic")
+  const explicitWeakRows = group.rows.filter((r) => isWeakGitHubRow(r))
+  const ungradedRows = group.rows.filter((r) => !r.evidence_quality_grade)
+  // "Only fail closed when mixed": a MIXED group (at least one graded row) demotes
+  // its ungraded rows into the Needs-review band — an unvalidated legacy line can
+  // never sit under "Code implementation" beside real graded evidence. A
+  // FULLY-ungraded (legacy) group keeps the prior flat "+N more" list unchanged.
+  const hasGraded = primaryRows.length > 0 || supportingRows.length > 0 || explicitWeakRows.length > 0
+  const needsReviewRows = hasGraded ? [...explicitWeakRows, ...ungradedRows] : explicitWeakRows
+  const legacyRows = hasGraded ? [] : ungradedRows
+  // Legacy flat "+N more" expansion — ONLY for a fully-ungraded legacy group.
   const moreCount = group.row_more_count
-  const canExpand = moreCount > 0
-  const visibleCount = canExpand ? group.rows.length - moreCount : group.rows.length
-  const rows = expanded || !canExpand ? group.rows : group.rows.slice(0, visibleCount)
+  const canExpand = !hasGraded && moreCount > 0
+  const visibleCount = canExpand ? legacyRows.length - moreCount : legacyRows.length
+  const rows = expanded || !canExpand ? legacyRows : legacyRows.slice(0, visibleCount)
   return (
     <div
       data-testid={attached ? "chain-github-group" : "standalone-github-group"}
@@ -1001,31 +1242,49 @@ function GitHubGroupCard({
         )}
         {group.repo_is_public && <SafeLink url={group.repo_url} label="View repository →" />}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {rows.map((row, i) => (
-          <StandaloneGitHubRowItem key={`${row.source_id}-${row.label}-${i}`} row={row} />
-        ))}
-        {canExpand && (
-          <button
-            type="button"
-            data-testid="standalone-github-more"
-            aria-expanded={expanded}
-            onClick={() => setExpanded((v) => !v)}
-            style={{
-              alignSelf: "flex-start",
-              padding: 0,
-              border: "none",
-              background: "none",
-              cursor: "pointer",
-              fontSize: 11,
-              color: TOKEN.indigo,
-              fontWeight: 600,
-            }}
-          >
-            {expanded
-              ? "Show fewer code locations"
-              : `+${moreCount} more code location${moreCount === 1 ? "" : "s"}`}
-          </button>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {/* Primary (implementation_body) always first, then Supporting, then the
+            Needs-review band — each capped independently so weak rows never surface
+            above primary and no band renders every row uncapped. */}
+        <GitHubRowBand
+          testId="github-primary-band"
+          label="Primary implementation evidence"
+          labelColor={TOKEN.emerald}
+          rows={primaryRows}
+        />
+        <GitHubRowBand
+          testId="github-supporting-band"
+          label="Supporting code evidence — useful context, not primary implementation proof"
+          labelColor={TOKEN.inkSoft}
+          rows={supportingRows}
+        />
+        {needsReviewRows.length > 0 && <WeakGitHubSignals rows={needsReviewRows} />}
+        {/* Fully-ungraded legacy group → fail closed. With no validated grade these
+            rows can never claim "Primary implementation" / "Precise code evidence",
+            so they render under a conservative "Needs review / repository-level
+            signals" heading that states they are not validated primary proof. The
+            "View code lines" links remain, and the backend-driven "+N more" flat
+            expansion is preserved unchanged. */}
+        {legacyRows.length > 0 && (
+          <div data-testid="github-ungraded-legacy" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span
+              data-testid="github-ungraded-heading"
+              style={{ fontSize: 11, fontWeight: 700, color: TOKEN.muted }}
+            >
+              Needs review / repository-level signals — not validated primary implementation proof
+            </span>
+            {rows.map((row, i) => (
+              <StandaloneGitHubRowItem key={`u-${row.source_id}-${row.label}-${i}`} row={row} />
+            ))}
+            {canExpand && (
+              <RowMoreToggle
+                testId="standalone-github-more"
+                expanded={expanded}
+                moreCount={moreCount}
+                onToggle={() => setExpanded((v) => !v)}
+              />
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -1039,9 +1298,17 @@ function GitHubGroupCard({
  */
 function StandaloneGitHubGroups({ groups }: { groups?: SkillReportStandaloneGitHubGroup[] | null }) {
   if (!groups || groups.length === 0) return null
+  const signalsTitle = useSignalsTitle(groups)
   return (
     <div data-testid="skill-report-github" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>GitHub evidence</h4>
+      <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>
+        {signalsTitle ? "GitHub code signals" : "GitHub evidence"}
+      </h4>
+      {signalsTitle && (
+        <p data-testid="standalone-github-no-primary" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          No primary implementation body was isolated. The rows below are supporting or weak repository-level signals.
+        </p>
+      )}
       {groups.map((g, i) => (
         <GitHubGroupCard key={`${g.repo_label}-${i}`} group={g} />
       ))}
@@ -1059,9 +1326,20 @@ function StandaloneGitHubGroups({ groups }: { groups?: SkillReportStandaloneGitH
  */
 function ConnectedGitHubGroups({ groups }: { groups?: SkillReportStandaloneGitHubGroup[] | null }) {
   if (!groups || groups.length === 0) return null
+  // When NO group isolated a primary implementation body, the section is honestly
+  // titled "GitHub code signals" (not "Code implementation") with a note — the rows
+  // below are supporting or weak repository-level signals, never primary proof.
+  const signalsTitle = useSignalsTitle(groups)
   return (
     <div data-testid="chain-github" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Code implementation</h4>
+      <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>
+        {signalsTitle ? "GitHub code signals" : "Code implementation"}
+      </h4>
+      {signalsTitle && (
+        <p data-testid="chain-github-no-primary" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          No primary implementation body was isolated. The rows below are supporting or weak repository-level signals.
+        </p>
+      )}
       {groups.map((g, i) => (
         <GitHubGroupCard key={`${g.repo_label}-${i}`} group={g} attached />
       ))}

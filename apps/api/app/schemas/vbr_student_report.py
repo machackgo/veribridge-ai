@@ -181,6 +181,9 @@ class VaultProofItem(BaseModel):
     display_mode: str | None = None
     evidence_strength: str | None = None
     evidence_quality_grade: str | None = None
+    # Grade-time ML verdict from the trusted provenance body (plain tri-state bool /
+    # None — never the raw snippet). Drives read-time ML semantic validation.
+    ml_executable_signal: bool | None = None
     evidence_kind: str | None = None
     has_precise_line_evidence: bool | None = None
     github_line_url: str | None = None
@@ -301,6 +304,10 @@ class SkillReportEvidenceItem(BaseModel):
     display_mode: str | None = None
     evidence_strength: str | None = None
     evidence_quality_grade: str | None = None
+    # Grade-time ML verdict from the trusted provenance body (a plain tri-state
+    # bool / None — never the raw snippet). Drives read-time ML semantic validation
+    # so a deployment-only body can never present as ML primary implementation proof.
+    ml_executable_signal: bool | None = None
     evidence_kind: str | None = None
     has_precise_line_evidence: bool | None = None
     github_line_url: str | None = None

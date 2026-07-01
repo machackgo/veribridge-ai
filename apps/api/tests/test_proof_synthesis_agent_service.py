@@ -21,9 +21,219 @@ from app.services.proof_synthesis_agent_service import (
     TIER_CORROBORATED,
     TIER_NEEDS_REVIEW,
     TIER_STRONG,
+    _build_statements,
     build_skill_proof_synthesis,
     synthesize_skill_report,
 )
+from app.services.github_python_evidence_focus import (
+    GRADE_COMMENT_OR_DOCSTRING,
+    GRADE_IMPLEMENTATION_BODY,
+    GRADE_IMPORT_ONLY,
+    GRADE_SUPPORTING_LOGIC,
+)
+
+
+def test_build_statements_aggregates_weak_github_rows_into_one_limitation() -> None:
+    """Several weak GitHub rows produce ONE aggregated limitation statement, not one
+    repeated paragraph per row; primary/supporting rows each collapse to one too."""
+    def _row(sid: str, grade: str, fp: str) -> dict:
+        row = {
+            "source_id": sid,
+            "display_mode": "code_line",
+            "has_precise_line_evidence": True,
+            "evidence_quality_grade": grade,
+            "file_path": fp,
+            "line_start": 1,
+            "line_end": 5,
+            "selection_reason": f"{grade} at {fp}",
+        }
+        if grade == GRADE_IMPLEMENTATION_BODY:
+            # A real ML executable body so the read-time ML gate keeps it primary.
+            row["safe_snippet"] = "clf = LGBMClassifier()\nclf.fit(X_train, y_train)"
+        return row
+
+    chain = {
+        "github_evidence": [
+            _row("p1", GRADE_IMPLEMENTATION_BODY, "model/train.py"),
+            _row("s1", GRADE_SUPPORTING_LOGIC, "model/util.py"),
+            _row("w1", GRADE_IMPORT_ONLY, "a.py"),
+            _row("w2", GRADE_COMMENT_OR_DOCSTRING, "b.py"),
+            _row("w3", GRADE_IMPORT_ONLY, "c.py"),
+        ],
+    }
+    allowed = {"p1", "s1", "w1", "w2", "w3"}
+    statements = _build_statements("Machine Learning", chain, allowed)
+    gh = [s for s in statements if s["source"] == "GitHub Proof"]
+
+    primary = [s for s in gh if s["text"].startswith("Primary GitHub implementation")]
+    supporting = [s for s in gh if s["text"].startswith("Supporting GitHub evidence")]
+    weak = [s for s in gh if "weak/repository-level" in s["text"]]
+    assert len(primary) == 1
+    assert len(supporting) == 1
+    # The three weak rows collapse into exactly ONE limitation citing all three ids.
+    assert len(weak) == 1
+    assert set(weak[0]["evidence_ids"]) == {"w1", "w2", "w3"}
+    assert "3 weak/repository-level" in weak[0]["text"]
+
+
+def _weak_row(sid: str, grade: str, stale_reason: str) -> dict:
+    return {
+        "source_id": sid,
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "evidence_quality_grade": grade,
+        "file_path": "scripts/pipeline_retrain.py",
+        "line_start": 2,
+        "line_end": 20,
+        "selection_reason": stale_reason,
+    }
+
+
+def test_build_statements_neutralises_stale_ml_reason_on_weak_row() -> None:
+    """A weak (docstring) row that persisted a stale "ML model instantiation" reason
+    is synthesized as weak repository context — never as ML implementation."""
+    chain = {"github_evidence": [_weak_row("w1", GRADE_COMMENT_OR_DOCSTRING, "ML model instantiation")]}
+    statements = _build_statements("Machine Learning", chain, {"w1"})
+    text = " ".join(s["text"] for s in statements)
+    assert "ML model instantiation" not in text
+    assert "weak/repository-level" in text
+    assert "module docstring or header comment" in text
+
+
+def test_build_statements_neutralises_stale_deploy_reason_on_weak_row() -> None:
+    """A weak (import) row that persisted a stale "Cloud deployment command" reason
+    is not synthesized as deployment implementation."""
+    chain = {"github_evidence": [_weak_row("w1", GRADE_IMPORT_ONLY, "Cloud deployment command")]}
+    statements = _build_statements("Machine Learning", chain, {"w1"})
+    text = " ".join(s["text"] for s in statements)
+    assert "Cloud deployment command" not in text
+    assert "import statements" in text
+
+
+def test_build_statements_primary_keeps_precise_ml_reason() -> None:
+    """A validated implementation body keeps its precise ML reason (only weak rows
+    are neutralised)."""
+    row = _weak_row("p1", GRADE_IMPLEMENTATION_BODY, "model.fit training loop")
+    # A real ML executable body validates the implementation_body so its precise
+    # reason survives (a stale reason alone would never keep it primary).
+    row["safe_snippet"] = "model.fit(X_train, y_train)\npreds = model.predict(X_test)"
+    statements = _build_statements("Machine Learning", {"github_evidence": [row]}, {"p1"})
+    primary = [s for s in statements if s["text"].startswith("Primary GitHub implementation")]
+    assert len(primary) == 1
+    assert "model.fit training loop" in primary[0]["text"]
+
+
+def test_build_statements_downgrades_deployment_only_ml_body_from_primary() -> None:
+    """A trusted implementation_body that is deployment/serving-only (no ML
+    executable signal) is NOT synthesized as Machine Learning primary implementation
+    proof — it is downgraded to supporting code evidence."""
+    row = {
+        "source_id": "d1",
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "evidence_quality_grade": GRADE_IMPLEMENTATION_BODY,
+        "file_path": "serving/main.py",
+        "line_start": 1,
+        "line_end": 5,
+        "selection_reason": "model serving inference handler",
+    }
+    statements = _build_statements("Machine Learning", {"github_evidence": [row]}, {"d1"})
+    primary = [s for s in statements if s["text"].startswith("Primary GitHub implementation")]
+    supporting = [s for s in statements if s["text"].startswith("Supporting GitHub evidence")]
+    assert primary == []
+    assert len(supporting) == 1
+
+
+def test_build_statements_keeps_real_ml_body_as_primary() -> None:
+    """A real ML implementation body (executable fit/predict signals in the trusted
+    snippet) stays primary for an ML skill even though a deployment-only body would
+    be downgraded."""
+    row = {
+        "source_id": "p1",
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "evidence_quality_grade": GRADE_IMPLEMENTATION_BODY,
+        "file_path": "src/model/train.py",
+        "function_name": "train_model",
+        "line_start": 1,
+        "line_end": 9,
+        "selection_reason": "model.fit training loop",
+        "safe_snippet": "clf = LGBMClassifier()\nclf.fit(X_train, y_train)",
+    }
+    statements = _build_statements("Machine Learning", {"github_evidence": [row]}, {"p1"})
+    primary = [s for s in statements if s["text"].startswith("Primary GitHub implementation")]
+    assert len(primary) == 1
+    assert "model.fit training loop" in primary[0]["text"]
+
+
+def test_build_statements_downgrades_ml_body_backed_only_by_stale_labels() -> None:
+    """An implementation_body whose only "ML" evidence is a stale reason / train.py
+    filename / train_model function name (no executable snippet, no grade-time
+    verdict) is NOT synthesized as ML primary implementation proof."""
+    row = {
+        "source_id": "p1",
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "evidence_quality_grade": GRADE_IMPLEMENTATION_BODY,
+        "file_path": "src/model/train.py",
+        "function_name": "train_model",
+        "line_start": 1,
+        "line_end": 9,
+        "selection_reason": "ML model instantiation",
+    }
+    statements = _build_statements("Machine Learning", {"github_evidence": [row]}, {"p1"})
+    primary = [s for s in statements if s["text"].startswith("Primary GitHub implementation")]
+    supporting = [s for s in statements if s["text"].startswith("Supporting GitHub evidence")]
+    assert primary == []
+    assert len(supporting) == 1
+
+
+def test_build_statements_keeps_ml_body_with_grade_time_signal() -> None:
+    """A canonical row whose raw snippet is not re-exposed at read time stays primary
+    when the trusted grade-time ML verdict (``ml_executable_signal``) is True."""
+    row = {
+        "source_id": "p1",
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "evidence_quality_grade": GRADE_IMPLEMENTATION_BODY,
+        "file_path": "src/model/train.py",
+        "line_start": 1,
+        "line_end": 9,
+        "selection_reason": "model training/evaluation",
+        "ml_executable_signal": True,
+    }
+    statements = _build_statements("Machine Learning", {"github_evidence": [row]}, {"p1"})
+    primary = [s for s in statements if s["text"].startswith("Primary GitHub implementation")]
+    assert len(primary) == 1
+
+
+def test_build_statements_aggregates_documents_into_one_statement() -> None:
+    """Multiple document correlations collapse into ONE corroboration statement with
+    de-duplicated cited ids — never one repeated paragraph per document."""
+    chain = {
+        "document_correlations": [
+            {"source_id": "d1", "corroborates": "GitHub implementation"},
+            {"source_id": "d2", "corroborates": "GitHub implementation"},
+            {"source_id": "d1", "corroborates": "GitHub implementation"},  # duplicate id
+            {"source_id": "d3", "corroborates": "Website workflow behavior"},
+        ],
+    }
+    statements = _build_statements("Machine Learning", chain, {"d1", "d2", "d3"})
+    docs = [s for s in statements if s["source"] == "Document Proof"]
+    assert len(docs) == 1
+    assert docs[0]["evidence_ids"] == ["d1", "d2", "d3"]  # deduped, order-preserved
+    assert "Documents corroborate the Machine Learning skill claim" in docs[0]["text"]
+    assert "do not independently prove implementation" in docs[0]["text"]
+
+
+def test_build_statements_single_document_uses_singular_phrasing() -> None:
+    chain = {"document_correlations": [{"source_id": "d1", "corroborates": "GitHub implementation"}]}
+    statements = _build_statements("Machine Learning", chain, {"d1"})
+    docs = [s for s in statements if s["source"] == "Document Proof"]
+    assert len(docs) == 1
+    assert docs[0]["text"].startswith("A document corroborates the Machine Learning skill claim")
+    assert "does not independently prove implementation" in docs[0]["text"]
+
 
 from tests.test_vbr_project_defense import (
     USER_ID,
@@ -250,9 +460,13 @@ def test_synthesis_prefers_canonical_github_code_evidence(mem_store: dict, pipel
     code = [g for g in chain["github_evidence"] if g.get("display_mode") == "code_line"]
     assert code, "canonical precise code evidence is the code implementation"
     assert code[0]["file_path"] == "app/api/routes.py"
-    # A synthesis statement cites the canonical selection reason.
+    # The bare route-decorator row is WEAK, so its stored "API endpoint decorator"
+    # reason is neutralised to an honest grade-derived label in the synthesis
+    # statement — never presented as implementation evidence.
     gh_statements = [s for s in chain["synthesis_statements"] if s["source"] == "GitHub Proof"]
-    assert any("API endpoint decorator" in s["text"] for s in gh_statements)
+    text = " ".join(s["text"] for s in gh_statements)
+    assert "API endpoint decorator" not in text
+    assert "route decorator without a handler body" in text
 
 
 # ── 5. Never fabricates evidence (statements cite real ids) ───────────────────
@@ -383,7 +597,7 @@ def test_synthesis_weak_only_github_is_needs_review(mem_store: dict, pipeline_db
 
 
 def _gh_row(grade: str, *, file_path: str, line_start: int, line_end: int, reason: str, sid: str) -> dict:
-    return {
+    row = {
         "proof_type": "GitHub Proof",
         "source_id": sid,
         "skill_name": "Machine Learning",
@@ -398,6 +612,10 @@ def _gh_row(grade: str, *, file_path: str, line_start: int, line_end: int, reaso
         "public_safe": True,
         "attached_project_ids": ["p1"],
     }
+    if grade == GRADE_IMPLEMENTATION_BODY:
+        # A real ML executable body so the read-time ML gate keeps it primary.
+        row["safe_snippet"] = "clf = LGBMClassifier()\nclf.fit(X_train, y_train)"
+    return row
 
 
 def _report_with_github(github: list[dict]) -> dict:

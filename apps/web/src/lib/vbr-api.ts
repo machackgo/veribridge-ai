@@ -714,6 +714,14 @@ export type SkillReportEvidenceItem = {
   display_mode?: "code_line" | "repo_level" | "limitation" | string | null
   evidence_strength?: string | null
   evidence_kind?: string | null
+  /**
+   * Deterministic quality band (implementation_body / supporting_logic /
+   * config_or_constant / comment_or_docstring / import_only / route_decorator_only
+   * / repo_level_fallback). Only implementation_body / supporting_logic are strong;
+   * everything else is a weak repository-level signal and must never render as
+   * precise "Precise code evidence".
+   */
+  evidence_quality_grade?: string | null
   has_precise_line_evidence?: boolean | null
   github_line_url?: string | null
   repo_url?: string | null

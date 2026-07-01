@@ -21,6 +21,7 @@ import type {
   PublicWorkPassport,
   SkillReport,
   SkillReportProjectChain,
+  SkillReportStandaloneGitHubRow,
   VaultSkillGroup,
   VaultSkillSummary,
   VBRStudentProjectReportResponse,
@@ -567,6 +568,7 @@ describe("SkillReportView — explicit GitHub display_mode", () => {
     display_mode: "code_line",
     has_precise_line_evidence: true,
     evidence_strength: "strong",
+    evidence_quality_grade: "implementation_body",
     evidence_kind: "function",
     github_line_url: "https://github.com/octocat/Hello-World/blob/abc1234/api.py#L252-L255",
     repo_url: "https://github.com/octocat/Hello-World",
@@ -640,6 +642,132 @@ describe("SkillReportView — explicit GitHub display_mode", () => {
   })
 })
 
+// ── Missing evidence_quality_grade fails closed (never "Precise code evidence") ─
+describe("SkillReportView — ungraded GitHub code_line fails closed", () => {
+  const MISSING_GRADE_ITEM: SkillReport["github"][number] = {
+    ...GITHUB_ITEM,
+    source_id: "gh-ungraded",
+    safe_location: "api.py · predict()",
+    safe_snippet: "def predict(req):\n    return model.predict(req)",
+    file_path: "api.py",
+    line_start: 252,
+    line_end: 255,
+    function_name: "predict",
+    display_mode: "code_line",
+    has_precise_line_evidence: true,
+    evidence_strength: "strong",
+    // NO evidence_quality_grade — this must fail closed.
+    github_line_url: "https://github.com/octocat/Hello-World/blob/abc1234/api.py#L252-L255",
+    repo_url: "https://github.com/octocat/Hello-World",
+    public_url: "https://github.com/octocat/Hello-World/blob/abc1234/api.py#L252-L255",
+  }
+
+  it("does NOT show 'Precise code evidence' for a missing grade", () => {
+    render(
+      <SkillReportView
+        report={skillReport({
+          github: [],
+          standalone_evidence: { ...emptyStandalone(), github: [{ ...MISSING_GRADE_ITEM }] },
+        })}
+      />,
+    )
+    expect(screen.queryByTestId("github-precise-badge")).not.toBeInTheDocument()
+    expect(screen.queryByText("Precise code evidence")).not.toBeInTheDocument()
+  })
+
+  it("renders a Needs review / repository-level signal for a missing grade, keeping the code link", () => {
+    render(
+      <SkillReportView
+        report={skillReport({
+          github: [],
+          standalone_evidence: { ...emptyStandalone(), github: [{ ...MISSING_GRADE_ITEM }] },
+        })}
+      />,
+    )
+    expect(screen.getByTestId("github-needs-review-badge")).toHaveTextContent(
+      "Needs review — repository-level signal",
+    )
+    expect(screen.getByTestId("github-needs-review-note")).toHaveTextContent(
+      "not been validated as primary implementation proof",
+    )
+    // The "View code lines" link may remain (rule 4).
+    const link = screen.getByTestId("evidence-public-link")
+    expect(link).toHaveTextContent("View code lines →")
+    expect(link).toHaveAttribute("href", expect.stringContaining("#L252-L255"))
+  })
+
+  it("still renders implementation_body as precise implementation", () => {
+    render(
+      <SkillReportView
+        report={skillReport({
+          github: [],
+          standalone_evidence: {
+            ...emptyStandalone(),
+            github: [{ ...MISSING_GRADE_ITEM, evidence_quality_grade: "implementation_body" }],
+          },
+        })}
+      />,
+    )
+    expect(screen.getByTestId("github-precise-badge")).toHaveTextContent("Precise code evidence")
+    expect(screen.queryByTestId("github-needs-review-badge")).not.toBeInTheDocument()
+  })
+})
+
+// ── Connected chain FLAT fallback (no github_groups) fails closed for ungraded ──
+describe("SkillReportView — connected flat GitHub fallback fails closed", () => {
+  function flatChainReport(grade?: string): SkillReport {
+    const chain: SkillReport["projects"][number] = {
+      project_id: "proj-1",
+      project_title: "Boston Smart Rerouting",
+      attached: true,
+      attached_status: "Attached to a VBR project",
+      sources: ["GitHub Proof"],
+      evidence_chain_summary: "GitHub code.",
+      // No github_groups on the chain → the flat fallback path is exercised.
+      github_evidence: [
+        {
+          ...GITHUB_ITEM,
+          source_id: "gh-flat",
+          is_attached_to_project: true,
+          attached_project_ids: ["proj-1"],
+          display_mode: "code_line",
+          has_precise_line_evidence: true,
+          ...(grade ? { evidence_quality_grade: grade } : {}),
+        },
+      ],
+      website_evidence: [],
+      document_correlations: [],
+      document_more_count: 0,
+      defense_evidence: [],
+      video_evidence: [],
+      limitations: [],
+    }
+    return skillReport({
+      github: [],
+      standalone_evidence: emptyStandalone(),
+      projects: [chain],
+      proof_chains: [chain],
+    })
+  }
+
+  it("renders 'GitHub code signals' (not 'Code implementation') for ungraded flat rows", () => {
+    render(<SkillReportView report={flatChainReport()} />)
+    const section = screen.getByTestId("chain-github")
+    expect(section).toHaveTextContent("GitHub code signals")
+    expect(section).not.toHaveTextContent("Code implementation")
+    expect(screen.getByTestId("chain-github-flat-no-primary")).toHaveTextContent(
+      "not been validated as primary implementation proof",
+    )
+  })
+
+  it("renders 'Code implementation' when a flat row is a graded implementation_body", () => {
+    render(<SkillReportView report={flatChainReport("implementation_body")} />)
+    const section = screen.getByTestId("chain-github")
+    expect(section).toHaveTextContent("Code implementation")
+    expect(screen.queryByTestId("chain-github-flat-no-primary")).not.toBeInTheDocument()
+  })
+})
+
 // ── Canonical GitHub skill evidence (old Profile & Proof engine) ────────────────
 
 describe("SkillReportView — canonical skill_evidence GitHub fields", () => {
@@ -655,6 +783,7 @@ describe("SkillReportView — canonical skill_evidence GitHub fields", () => {
     display_mode: "code_line",
     has_precise_line_evidence: true,
     evidence_strength: "strong",
+    evidence_quality_grade: "implementation_body",
     evidence_kind: "portfolio_skill_evidence",
     selection_reason: "API endpoint decorator",
     subskill_name: "API Route",
@@ -842,7 +971,16 @@ describe("SkillReportView — Proof Synthesis Agent", () => {
       synthesis_statements: [
         { text: "GitHub code at api.py shows the prediction endpoint.", source: "GitHub Proof", evidence_ids: ["gh-1"] },
       ],
-      github_evidence: [{ ...GITHUB_ITEM, is_attached_to_project: true, attached_project_ids: ["proj-1"] }],
+      github_evidence: [
+        {
+          ...GITHUB_ITEM,
+          is_attached_to_project: true,
+          attached_project_ids: ["proj-1"],
+          display_mode: "code_line",
+          has_precise_line_evidence: true,
+          evidence_quality_grade: "implementation_body",
+        },
+      ],
       website_evidence: [
         {
           proof_type: "Website Proof",
@@ -1329,14 +1467,23 @@ describe("SkillReportView — connected chain GitHub grouped by repository", () 
     const chain = connectedChain()
     render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
     const section = screen.getByTestId("chain-github")
-    expect(section).toHaveTextContent("Code implementation")
+    // A fully-ungraded (legacy) group fails closed: the section is titled "GitHub
+    // code signals" (never "Code implementation") and the rows sit under a
+    // conservative "Needs review / repository-level signals" heading.
+    expect(section).toHaveTextContent("GitHub code signals")
+    expect(section).not.toHaveTextContent("Code implementation")
+    expect(screen.getByTestId("github-ungraded-heading")).toHaveTextContent(
+      "not validated primary implementation proof",
+    )
     // Grouped block (attached) — not the standalone "not attached" variant.
     const group = screen.getByTestId("chain-github-group")
     expect(group).toHaveAttribute("data-repo", "octocat/Hello-World")
     expect(group).toHaveTextContent("Attached")
+    // "View code lines" rows remain, but never as "Primary implementation".
     const rows = screen.getAllByTestId("standalone-github-row")
     expect(rows).toHaveLength(1)
     expect(rows[0]).toHaveTextContent("api.py · predict()")
+    expect(screen.queryByTestId("github-primary-band")).not.toBeInTheDocument()
     // No "not attached" badge on a connected chain group.
     expect(group).not.toHaveTextContent("Not attached to a VBR project")
   })
@@ -1385,10 +1532,183 @@ describe("SkillReportView — connected chain GitHub grouped by repository", () 
     const chain = { ...connectedChain(), github_groups: undefined }
     render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
     const section = screen.getByTestId("chain-github")
-    expect(section).toHaveTextContent("Code implementation")
+    // The flat fallback fails closed: the ungraded rows are repository-level signals,
+    // so the honest "GitHub code signals" title is used (never "Code implementation").
+    expect(section).toHaveTextContent("GitHub code signals")
+    expect(section).not.toHaveTextContent("Code implementation")
     // Older payload → flat SkillEvidenceItem card, not a grouped block.
     expect(screen.getByTestId("skill-evidence-item")).toBeInTheDocument()
     expect(screen.queryByTestId("chain-github-group")).not.toBeInTheDocument()
+  })
+
+  it("titles the section 'GitHub code signals' and shows the no-primary note when graded rows have no implementation body", () => {
+    const chain = connectedChain()
+    chain.github_groups = [
+      {
+        repo_label: "octocat/Hello-World",
+        repo_url: "https://github.com/octocat/Hello-World",
+        repo_is_public: true,
+        row_more_count: 0,
+        rows: [
+          { source_id: "w1", label: "scripts/pipeline_retrain.py · lines 2-20", file_path: "scripts/pipeline_retrain.py", line_start: 2, line_end: 20, evidence_quality_grade: "comment_or_docstring", selection_reason: "module docstring or header comment", github_line_url: "https://github.com/octocat/Hello-World/blob/main/scripts/pipeline_retrain.py#L2-L20" },
+          { source_id: "w2", label: "scripts/pipeline_retrain.py · lines 29-47", file_path: "scripts/pipeline_retrain.py", line_start: 29, line_end: 47, evidence_quality_grade: "import_only", selection_reason: "import statements", github_line_url: "https://github.com/octocat/Hello-World/blob/main/scripts/pipeline_retrain.py#L29-L47" },
+        ],
+      },
+    ]
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const section = screen.getByTestId("chain-github")
+    expect(section).toHaveTextContent("GitHub code signals")
+    expect(section).not.toHaveTextContent("Code implementation")
+    expect(screen.getByTestId("chain-github-no-primary")).toBeInTheDocument()
+    // Weak rows collapse into a "Needs review" summary, not precise code rows.
+    expect(screen.getByTestId("github-weak-signals")).toBeInTheDocument()
+    expect(screen.queryByTestId("standalone-github-row")).not.toBeInTheDocument()
+  })
+
+  it("keeps 'Code implementation' and renders primary rows when an implementation body exists", () => {
+    const chain = connectedChain()
+    chain.github_groups = [
+      {
+        repo_label: "octocat/Hello-World",
+        repo_url: "https://github.com/octocat/Hello-World",
+        repo_is_public: true,
+        row_more_count: 0,
+        rows: [
+          { source_id: "p1", label: "src/model/train.py · train_model()", file_path: "src/model/train.py", function_name: "train_model", evidence_quality_grade: "implementation_body", selection_reason: "ML training call", github_line_url: "https://github.com/octocat/Hello-World/blob/main/src/model/train.py#L16-L26" },
+          { source_id: "w1", label: "a.py · lines 1-3", file_path: "a.py", line_start: 1, line_end: 3, evidence_quality_grade: "import_only", selection_reason: "import statements", github_line_url: "https://github.com/octocat/Hello-World/blob/main/a.py#L1-L3" },
+        ],
+      },
+    ]
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const section = screen.getByTestId("chain-github")
+    expect(section).toHaveTextContent("Code implementation")
+    expect(screen.getByTestId("github-primary-band")).toBeInTheDocument()
+    expect(screen.getByTestId("github-primary-band")).toHaveTextContent("train_model()")
+    // The weak import row is still demoted to the "Needs review" summary.
+    expect(screen.getByTestId("github-weak-signals")).toBeInTheDocument()
+  })
+
+  // ── Fix #3: legacy ungraded rows fail closed (only when mixed) ────────────────
+
+  function ghRow(over: Partial<SkillReportStandaloneGitHubRow> & { source_id: string; label: string }) {
+    return {
+      file_path: "x.py",
+      line_start: 1,
+      line_end: 5,
+      github_line_url: `https://github.com/octocat/Hello-World/blob/main/${over.file_path ?? "x.py"}#L1-L5`,
+      ...over,
+    } as SkillReportStandaloneGitHubRow
+  }
+
+  function groupedChain(rows: SkillReportStandaloneGitHubRow[], rowMore = 0): SkillReportProjectChain {
+    const chain = connectedChain()
+    chain.github_groups = [
+      { repo_label: "octocat/Hello-World", repo_url: "https://github.com/octocat/Hello-World", repo_is_public: true, row_more_count: rowMore, rows },
+    ]
+    return chain
+  }
+
+  it("demotes an UNGRADED code_line into Needs review when the group also has a graded row", () => {
+    const chain = groupedChain([
+      ghRow({ source_id: "p1", label: "src/train.py · train_model()", file_path: "src/train.py", function_name: "train_model", evidence_quality_grade: "implementation_body" }),
+      ghRow({ source_id: "u1", label: "legacy_helper.py · lines 1-5", file_path: "legacy_helper.py", selection_reason: "prior heuristic" }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    // The ungraded row is inside the Needs-review summary (collapsed), never a
+    // precise primary row, and never carries the "Precise code evidence" badge.
+    expect(screen.getByTestId("github-weak-signals")).toBeInTheDocument()
+    expect(screen.queryByTestId("github-precise-badge")).not.toBeInTheDocument()
+    expect(screen.queryByText("legacy_helper.py · lines 1-5")).not.toBeInTheDocument()
+    // Expand Needs review → the ungraded row surfaces as a muted weak row.
+    fireEvent.click(screen.getByRole("button", { name: /Needs review/i }))
+    expect(screen.getByText("legacy_helper.py · lines 1-5")).toBeInTheDocument()
+    expect(screen.getAllByTestId("standalone-github-weak-row").length).toBeGreaterThanOrEqual(1)
+  })
+
+  it("a weak-GRADED-only group titles the section 'GitHub code signals', never 'Code implementation'", () => {
+    const chain = groupedChain([
+      ghRow({ source_id: "w1", label: "a.py · lines 1-5", evidence_quality_grade: "import_only", selection_reason: "import statements" }),
+      ghRow({ source_id: "w2", label: "b.py · lines 1-5", file_path: "b.py", evidence_quality_grade: "comment_or_docstring", selection_reason: "module docstring or header comment" }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const section = screen.getByTestId("chain-github")
+    expect(section).toHaveTextContent("GitHub code signals")
+    expect(section).not.toHaveTextContent("Code implementation")
+    expect(screen.getByTestId("github-weak-signals")).toBeInTheDocument()
+    expect(screen.queryByTestId("standalone-github-row")).not.toBeInTheDocument()
+  })
+
+  // ── Fix #4: each band caps visible rows with a "+N more" control ──────────────
+
+  it("caps the primary band and reveals hidden primary rows via '+N more'", () => {
+    const rows = Array.from({ length: 5 }, (_, i) =>
+      ghRow({ source_id: `p${i}`, label: `src/m${i}.py · f${i}()`, file_path: `src/m${i}.py`, function_name: `f${i}`, evidence_quality_grade: "implementation_body" }),
+    )
+    const chain = groupedChain(rows)
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    // Only the first 3 primary rows are visible; a "+2 more" control caps the band.
+    expect(screen.getByTestId("github-primary-band")).toHaveTextContent("f0()")
+    expect(screen.queryByText("src/m4.py · f4()")).not.toBeInTheDocument()
+    const more = screen.getByTestId("github-primary-band-more")
+    expect(more).toHaveTextContent("+2 more code locations")
+    fireEvent.click(more)
+    expect(screen.getByText("src/m4.py · f4()")).toBeInTheDocument()
+    expect(more).toHaveTextContent("Show fewer code locations")
+  })
+
+  it("caps the Needs-review band with its own '+N more' when expanded", () => {
+    const rows = Array.from({ length: 5 }, (_, i) =>
+      ghRow({ source_id: `w${i}`, label: `w${i}.py · lines 1-5`, file_path: `w${i}.py`, evidence_quality_grade: "import_only", selection_reason: "import statements" }),
+    )
+    const chain = groupedChain(rows)
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    // Collapsed summary first; open it, then only 3 rows show + a "+2 more".
+    fireEvent.click(screen.getByRole("button", { name: /Needs review/i }))
+    expect(screen.getAllByTestId("standalone-github-weak-row")).toHaveLength(3)
+    const more = screen.getByTestId("github-weak-more")
+    expect(more).toHaveTextContent("+2 more code locations")
+    fireEvent.click(more)
+    expect(screen.getAllByTestId("standalone-github-weak-row")).toHaveLength(5)
+  })
+
+  it("preserves the legacy '+N more' flat behavior for a fully-ungraded group", () => {
+    const chain = groupedChain(
+      [
+        ghRow({ source_id: "l1", label: "train.py · train_model()", file_path: "train.py", function_name: "train_model", selection_reason: "training body" }),
+        ghRow({ source_id: "l2", label: "extra1.py · lines 1-5", file_path: "extra1.py", selection_reason: "helper" }),
+        ghRow({ source_id: "l3", label: "extra2.py · lines 1-5", file_path: "extra2.py", selection_reason: "helper" }),
+      ],
+      2,
+    )
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    // Fully ungraded → legacy flat list: 1 visible + a "+2 more code locations".
+    expect(screen.getAllByTestId("standalone-github-row")).toHaveLength(1)
+    const toggle = screen.getByTestId("standalone-github-more")
+    expect(toggle).toHaveTextContent("+2 more code locations")
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId("standalone-github-row")).toHaveLength(3)
+  })
+
+  it("fails closed for a fully-ungraded legacy group (no implementation overclaim)", () => {
+    const chain = groupedChain([
+      ghRow({ source_id: "l1", label: "train.py · train_model()", file_path: "train.py", function_name: "train_model", selection_reason: "training body" }),
+      ghRow({ source_id: "l2", label: "extra1.py · lines 1-5", file_path: "extra1.py", selection_reason: "helper" }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const section = screen.getByTestId("chain-github")
+    // Section title is "GitHub code signals", never "Code implementation".
+    expect(section).toHaveTextContent("GitHub code signals")
+    expect(section).not.toHaveTextContent("Code implementation")
+    // Rows render under the conservative Needs-review / repository-level heading.
+    expect(screen.getByTestId("github-ungraded-heading")).toHaveTextContent(
+      "Needs review / repository-level signals — not validated primary implementation proof",
+    )
+    // No primary-implementation band and no "Precise code evidence" badge.
+    expect(screen.queryByTestId("github-primary-band")).not.toBeInTheDocument()
+    expect(section).not.toHaveTextContent("Primary implementation")
+    expect(screen.queryByTestId("github-precise-badge")).not.toBeInTheDocument()
+    // "View code lines" links may remain on the ungraded rows.
+    expect(screen.getAllByText("View code lines →").length).toBeGreaterThanOrEqual(1)
   })
 })
 

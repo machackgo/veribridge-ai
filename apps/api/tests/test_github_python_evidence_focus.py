@@ -25,13 +25,19 @@ from app.services.github_python_evidence_focus import (
     RESERVED_PROVENANCE_FIELDS,
     SERVER_PROVENANCE_KEY,
     build_server_provenance,
+    effective_evidence_grade,
     focus_python_range,
     grade_evidence,
     grade_python_snippet,
+    GRADE_REPO_LEVEL_FALLBACK,
     grade_rank,
+    has_ml_executable_signal,
+    is_overclaiming_reason,
     is_strong_grade,
     is_weak_grade,
+    ml_implementation_is_valid,
     redact_secrets,
+    safe_selection_reason,
     strip_client_provenance,
     trusted_provenance,
 )
@@ -471,3 +477,361 @@ def test_user_metadata_cannot_forge_trusted_provenance() -> None:
     assert SERVER_PROVENANCE_KEY not in cleaned
     # A non-dict value is returned unchanged.
     assert strip_client_provenance("not-a-dict") == "not-a-dict"
+
+
+# ── Read-time selection-reason neutralisation (stale evidence hardening) ────────
+
+
+def test_is_overclaiming_reason_matches_ml_and_deploy_labels() -> None:
+    for reason in (
+        "ML model instantiation",
+        "ML training call",
+        "ML prediction/inference",
+        "Cloud deployment command",
+        "model instantiation",
+    ):
+        assert is_overclaiming_reason(reason), reason
+    for reason in ("import statements", "module docstring or header comment", "", None):
+        assert not is_overclaiming_reason(reason), reason
+
+
+def test_safe_selection_reason_neutralises_stale_ml_label_on_weak_row() -> None:
+    """A docstring/import row that persisted a stale "ML model instantiation" reason
+    is relabelled honestly — never presented as ML implementation."""
+    assert (
+        safe_selection_reason(GRADE_COMMENT_OR_DOCSTRING, "ML model instantiation")
+        == "module docstring or header comment"
+    )
+    assert (
+        safe_selection_reason(GRADE_IMPORT_ONLY, "ML training call") == "import statements"
+    )
+
+
+def test_safe_selection_reason_neutralises_stale_deploy_label_on_weak_row() -> None:
+    """A config/decorator row that persisted a stale "Cloud deployment command"
+    reason is not shown as deployment implementation."""
+    assert (
+        safe_selection_reason(GRADE_ROUTE_DECORATOR_ONLY, "Cloud deployment command")
+        == "route decorator without a handler body"
+    )
+
+
+def test_safe_selection_reason_fails_closed_for_fallback_and_ungraded() -> None:
+    # Fallback / legacy-ungraded rows with an overclaiming reason fail closed.
+    assert (
+        safe_selection_reason(GRADE_REPO_LEVEL_FALLBACK, "ML model instantiation")
+        == "Weak GitHub signal; not primary implementation proof"
+    )
+    assert (
+        safe_selection_reason(None, "Cloud deployment command")
+        == "Weak GitHub signal; not primary implementation proof"
+    )
+    # An ungraded row with no reason at all becomes a repository-level label.
+    assert safe_selection_reason(None, None) == "Repository-level GitHub signal"
+
+
+def test_safe_selection_reason_keeps_precise_reason_for_strong_body() -> None:
+    """A validated implementation/supporting body keeps its precise stored reason —
+    only weak/ungraded rows are neutralised."""
+    assert (
+        safe_selection_reason(GRADE_IMPLEMENTATION_BODY, "ML model instantiation")
+        == "ML model instantiation"
+    )
+    assert (
+        safe_selection_reason(GRADE_SUPPORTING_LOGIC, "feature engineering")
+        == "feature engineering"
+    )
+
+
+def test_safe_selection_reason_drops_arbitrary_technical_reason_on_weak_row() -> None:
+    """A weak row must NOT preserve a stored reason that dodges the overclaiming
+    keyword denylist — neutralisation is grade-derived, not phrase-derived. A
+    "model serving inference handler" (which is NOT matched by the narrow denylist)
+    is still replaced with the honest grade label."""
+    assert not is_overclaiming_reason("model serving inference handler")
+    assert (
+        safe_selection_reason(GRADE_COMMENT_OR_DOCSTRING, "model serving inference handler")
+        == "module docstring or header comment"
+    )
+    # Any arbitrary technical phrase is likewise discarded on a weak band.
+    assert (
+        safe_selection_reason(GRADE_CONFIG_OR_CONSTANT, "custom neural pipeline orchestrator")
+        == "configuration/constant definitions"
+    )
+    # A fallback/ungraded row with such a phrase fails closed, never preserving it.
+    assert (
+        safe_selection_reason(GRADE_REPO_LEVEL_FALLBACK, "model serving inference handler")
+        == "Weak GitHub signal; not primary implementation proof"
+    )
+    assert (
+        safe_selection_reason(None, "bespoke transformer feature graph")
+        == "Weak GitHub signal; not primary implementation proof"
+    )
+
+
+# ── Read-time ML semantic validation ──────────────────────────────────────────
+
+
+def test_has_ml_executable_signal_detects_real_code_but_not_prose() -> None:
+    # Concrete executable ML code constructs ARE signals.
+    for text in (
+        "clf.fit(X, y)",
+        "model.predict(rows)",
+        "model.predict_proba(rows)",
+        "X_tr, X_te, y_tr, y_te = train_test_split(X, y)",
+        "joblib.dump(model, path)",
+        "accuracy_score(y_true, y_pred)",
+        "f1_score(y_true, y_pred)",
+        "roc_auc_score(y_true, scores)",
+        "clf = LGBMClassifier(n_estimators=200)",
+        "reg = RandomForestRegressor()",
+        "loss.backward()",
+    ):
+        assert has_ml_executable_signal(text), text
+    # Natural-language PROSE / labels / filenames / function names are NOT signals —
+    # a label can never be executable proof of ML implementation.
+    for text in (
+        "ML model instantiation",
+        "model.fit training loop",
+        "scripts/pipeline_retrain.py training call",
+        "train.py",
+        "train_model",
+        "model serving inference handler",
+        "Cloud deployment command",
+        "gcloud run deploy",
+        "Dockerfile CMD uvicorn serving app",
+        "",
+        None,
+    ):
+        assert not has_ml_executable_signal(text), text
+
+
+def test_ml_valid_rejects_stale_reason_filename_function_name_alone() -> None:
+    """Labels alone (stale reason / filename / function name) never validate ML —
+    only a trusted executable body/snippet/provenance can."""
+    # Stale reason "ML model instantiation" alone → not valid.
+    assert not ml_implementation_is_valid(reason="ML model instantiation")
+    # Filename train.py alone → not valid.
+    assert not ml_implementation_is_valid(file_path="src/model/train.py")
+    # Function name train_model alone → not valid.
+    assert not ml_implementation_is_valid(function_name="train_model")
+    # Even all three labels together, with no executable body, do not validate.
+    assert not ml_implementation_is_valid(
+        reason="ML model instantiation",
+        file_path="src/model/train.py",
+        function_name="train_model",
+    )
+    # No trusted body at all → fails closed.
+    assert not ml_implementation_is_valid()
+
+
+def test_ml_valid_requires_executable_body_signal() -> None:
+    """A trusted snippet/provenance carrying a real ML executable call validates."""
+    assert ml_implementation_is_valid(
+        code_snippet="clf = LGBMClassifier()\nclf.fit(X_train, y_train)"
+    )
+    assert ml_implementation_is_valid(code_snippet="proba = model.predict_proba(X_test)")
+    assert ml_implementation_is_valid(
+        code_snippet=(
+            "X_tr, X_te, y_tr, y_te = train_test_split(X, y)\n"
+            "print(classification_report(y_te, preds))"
+        )
+    )
+    # Provenance body (server-side) also counts as trusted executable evidence.
+    assert ml_implementation_is_valid(provenance="model.fit(X, y)\naccuracy_score(y, p)")
+    # A serving/deployment body with no ML executable call does NOT validate.
+    assert not ml_implementation_is_valid(
+        code_snippet="@app.post('/health')\ndef health():\n    return {'ok': True}"
+    )
+
+
+def test_ml_signal_ignores_docstring_and_comment_mentions() -> None:
+    """Docstrings / comments that merely MENTION ML calls are stripped before signal
+    matching, so a deployment body annotated with ML prose never validates."""
+    # Module docstring mentioning model.fit — not executable, must not signal.
+    assert not has_ml_executable_signal('"""Later call model.fit(...) here."""')
+    # Function docstring mentioning predict_proba, no executable ML call in body.
+    fn_with_docstring = (
+        "def serve(req):\n"
+        '    """Returns a score; internally would call model.predict_proba(rows)."""\n'
+        "    return {'ok': True}"
+    )
+    assert not has_ml_executable_signal(fn_with_docstring)
+    assert not ml_implementation_is_valid(code_snippet=fn_with_docstring)
+    # Single-line comments mentioning train_test_split / fit — not executable.
+    commented = (
+        "# would call train_test_split(X, y) then clf.fit(X, y)\n"
+        "def deploy():\n"
+        "    return start_server()  # fit the app to the port\n"
+    )
+    assert not has_ml_executable_signal(commented)
+    assert not ml_implementation_is_valid(code_snippet=commented)
+    # A deployment body whose only ML text is a docstring stays supporting_logic.
+    deploy_body = (
+        "def deploy_model():\n"
+        '    """Deploy step. Later call model.fit(...) and predict_proba(...)."""\n'
+        "    subprocess.run(['gcloud', 'run', 'deploy'])\n"
+    )
+    assert (
+        effective_evidence_grade(
+            GRADE_IMPLEMENTATION_BODY, is_ml=True, code_snippet=deploy_body
+        )
+        == GRADE_SUPPORTING_LOGIC
+    )
+
+
+def test_ml_signal_still_detects_real_executable_code_after_stripping() -> None:
+    """Real executable ML code (even alongside docstrings/comments) still validates —
+    stripping only removes comments/strings, never executable calls."""
+    lgbm_body = (
+        "def train():\n"
+        '    """Train the classifier."""  # entrypoint\n'
+        "    clf = LGBMClassifier(n_estimators=200)\n"
+        "    clf.fit(X_train, y_train)  # fit call\n"
+    )
+    assert has_ml_executable_signal(lgbm_body)
+    assert ml_implementation_is_valid(code_snippet=lgbm_body)
+    proba_body = (
+        "def score(rows):\n"
+        '    """Score rows."""\n'
+        "    return model.predict_proba(rows)\n"
+    )
+    assert has_ml_executable_signal(proba_body)
+    assert ml_implementation_is_valid(code_snippet=proba_body)
+    split_body = (
+        "# split and evaluate\n"
+        "X_tr, X_te, y_tr, y_te = train_test_split(X, y)\n"
+        "print(classification_report(y_te, preds))\n"
+    )
+    assert has_ml_executable_signal(split_body)
+    assert ml_implementation_is_valid(code_snippet=split_body)
+    assert (
+        effective_evidence_grade(
+            GRADE_IMPLEMENTATION_BODY, is_ml=True, code_snippet=lgbm_body
+        )
+        == GRADE_IMPLEMENTATION_BODY
+    )
+
+
+def test_effective_grade_downgrades_deployment_only_ml_implementation_body() -> None:
+    """A trusted implementation_body that is deployment/serving-only (no ML
+    executable signal) is downgraded for an ML skill so it can never present as
+    primary ML implementation proof."""
+    assert (
+        effective_evidence_grade(
+            GRADE_IMPLEMENTATION_BODY,
+            is_ml=True,
+            reason="model serving inference handler",
+            file_path="serving/main.py",
+            code_snippet="CMD [\"uvicorn\", \"main:app\"]  # serving container entrypoint",
+        )
+        == GRADE_SUPPORTING_LOGIC
+    )
+    assert (
+        effective_evidence_grade(
+            GRADE_IMPLEMENTATION_BODY,
+            is_ml=True,
+            reason="Cloud deployment command",
+            file_path="deploy/run.sh",
+            code_snippet="gcloud run deploy risk-api --region us-central1",
+        )
+        == GRADE_SUPPORTING_LOGIC
+    )
+
+
+def test_effective_grade_downgrades_fastapi_route_only_ml_body() -> None:
+    """A FastAPI endpoint body with NO model.predict/predict_proba/training/eval
+    call is not Machine Learning primary implementation proof."""
+    assert (
+        effective_evidence_grade(
+            GRADE_IMPLEMENTATION_BODY,
+            is_ml=True,
+            reason="ML prediction endpoint",
+            file_path="app/api.py",
+            function_name="predict",
+            code_snippet=(
+                "@app.post('/predict')\n"
+                "def predict(payload: Payload):\n"
+                "    return {'status': 'ok', 'id': payload.id}"
+            ),
+        )
+        == GRADE_SUPPORTING_LOGIC
+    )
+
+
+def test_effective_grade_downgrades_ml_body_backed_only_by_stale_labels() -> None:
+    """implementation_body whose only "ML" evidence is a stale reason / train.py
+    filename / train_model function name (no executable snippet) is downgraded."""
+    assert (
+        effective_evidence_grade(
+            GRADE_IMPLEMENTATION_BODY,
+            is_ml=True,
+            reason="ML model instantiation",
+            file_path="src/model/train.py",
+            function_name="train_model",
+        )
+        == GRADE_SUPPORTING_LOGIC
+    )
+
+
+def test_effective_grade_keeps_real_ml_implementation_body() -> None:
+    """A real ML implementation body (executable fit/predict/split signals in the
+    trusted snippet) stays primary."""
+    # LGBMClassifier + fit in the executable body.
+    assert (
+        effective_evidence_grade(
+            GRADE_IMPLEMENTATION_BODY,
+            is_ml=True,
+            reason="model training",
+            file_path="src/model/train.py",
+            function_name="train_model",
+            code_snippet="clf = LGBMClassifier(n_estimators=300)\nclf.fit(X_train, y_train)",
+        )
+        == GRADE_IMPLEMENTATION_BODY
+    )
+    # predict_proba inference in the executable body.
+    assert (
+        effective_evidence_grade(
+            GRADE_IMPLEMENTATION_BODY,
+            is_ml=True,
+            reason="inference",
+            file_path="app/serve.py",
+            code_snippet="proba = model.predict_proba(features)[:, 1]",
+        )
+        == GRADE_IMPLEMENTATION_BODY
+    )
+    # train_test_split + evaluation metrics in the executable body.
+    assert (
+        effective_evidence_grade(
+            GRADE_IMPLEMENTATION_BODY,
+            is_ml=True,
+            reason="training + evaluation",
+            file_path="src/pipeline.py",
+            code_snippet=(
+                "X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2)\n"
+                "model.fit(X_tr, y_tr)\n"
+                "print(classification_report(y_te, model.predict(X_te)))"
+            ),
+        )
+        == GRADE_IMPLEMENTATION_BODY
+    )
+
+
+def test_effective_grade_is_noop_for_non_ml_and_non_implementation() -> None:
+    # Non-ML skill: a deployment-only body is NOT downgraded (only ML skills gate).
+    assert (
+        effective_evidence_grade(
+            GRADE_IMPLEMENTATION_BODY,
+            is_ml=False,
+            reason="model serving inference handler",
+            code_snippet="gcloud run deploy",
+        )
+        == GRADE_IMPLEMENTATION_BODY
+    )
+    # Non-implementation grades are always returned unchanged.
+    assert (
+        effective_evidence_grade(GRADE_SUPPORTING_LOGIC, is_ml=True, reason="serving handler")
+        == GRADE_SUPPORTING_LOGIC
+    )
+    assert not ml_implementation_is_valid(code_snippet="model serving inference handler")
+    assert ml_implementation_is_valid(code_snippet="clf.fit(X, y)")

@@ -1328,6 +1328,7 @@ def test_public_skill_report_drops_internal_github_assessment_fields() -> None:
                             "evidence_quality_grade": "implementation_body",
                             "selection_reason": "model training/evaluation",
                             "safe_summary": "model training/evaluation",
+                            "safe_snippet": "clf = LGBMClassifier()\nclf.fit(X_train, y_train)",
                             "public_safe": True,
                         }
                     ],

@@ -38,6 +38,7 @@ from app.services.github_python_evidence_focus import (
     TRUSTED_ANALYSIS_TABLE,
     grade_evidence,
     grade_rank,
+    has_ml_executable_signal,
     is_strong_grade,
     is_weak_grade,
     trusted_provenance,
@@ -126,6 +127,12 @@ class CanonicalGitHubEvidence:
     evidence_strength: str = "strong"
     evidence_quality_grade: str = GRADE_REPO_LEVEL_FALLBACK
     public_safe: bool = False
+    # Grade-time ML verdict from the TRUSTED provenance body (the raw snippet is
+    # discarded rather than re-exposed). Tri-state: True = the trusted executable
+    # body carried a real ML signal; False = it was inspected and carried none;
+    # None = no trusted body was available to judge. Drives the read-time ML gate so
+    # a deployment-only body can never present as ML primary implementation proof.
+    ml_executable_signal: bool | None = None
 
     @property
     def skill_key(self) -> str:
@@ -166,6 +173,7 @@ class CanonicalGitHubEvidence:
             "evidence_kind": self.evidence_kind,
             "evidence_strength": self.evidence_strength,
             "evidence_quality_grade": self.evidence_quality_grade,
+            "ml_executable_signal": self.ml_executable_signal,
             "public_safe": self.public_safe,
         }
 
@@ -366,6 +374,14 @@ def _build_item(
     trusted_snippet = (
         str(provenance.get("safe_excerpt") or "").strip() or None if provenance else None
     )
+    # Grade-time ML verdict: inspect the TRUSTED provenance body for a real ML
+    # executable signal here, where the snippet is available, then carry only the
+    # boolean forward (the raw snippet is never re-exposed at read time). When no
+    # trusted body exists the verdict is None (unknown) and the read-time gate fails
+    # closed — a stale reason / filename / function name can never stand in for it.
+    ml_executable_signal = (
+        has_ml_executable_signal(trusted_snippet) if trusted_snippet else None
+    )
     if trusted_snippet:
         quality_grade = grade_evidence(
             file_path=file_path,
@@ -420,6 +436,7 @@ def _build_item(
         skill_graph_node=graph_node,
         evidence_strength=strength,
         evidence_quality_grade=quality_grade,
+        ml_executable_signal=ml_executable_signal,
         public_safe=public_safe,
     )
 

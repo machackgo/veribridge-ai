@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import re
+import tokenize
 from typing import Any
 
 __all__ = [
@@ -55,6 +57,13 @@ __all__ = [
     "is_strong_grade",
     "grade_python_snippet",
     "grade_evidence",
+    "describe_grade",
+    "is_overclaiming_reason",
+    "safe_selection_reason",
+    "has_ml_executable_signal",
+    "ml_implementation_is_valid",
+    "effective_evidence_grade",
+    "docstring_and_comment_lines",
     "focus_python_anchor",
     "focus_python_range",
 ]
@@ -337,6 +346,306 @@ def is_strong_grade(grade: str | None) -> bool:
 def is_weak_grade(grade: str | None) -> bool:
     """True for a weak grade (config/comment/import/decorator/repo fallback)."""
     return bool(grade) and grade not in _STRONG_GRADES
+
+
+# Honest, recruiter-readable label for each grade. Used to replace a stale
+# keyword-derived selection reason ("ML model instantiation", "Cloud deployment
+# command") when a focused range turns out to be a docstring / import / config /
+# bare route decorator — the reason must describe what the range ACTUALLY is, so a
+# module docstring is never presented as ML implementation evidence.
+_GRADE_REASON: dict[str, str] = {
+    GRADE_IMPLEMENTATION_BODY: "implementation body",
+    GRADE_SUPPORTING_LOGIC: "supporting implementation logic",
+    GRADE_CONFIG_OR_CONSTANT: "configuration/constant definitions",
+    GRADE_COMMENT_OR_DOCSTRING: "module docstring or header comment",
+    GRADE_IMPORT_ONLY: "import statements",
+    GRADE_ROUTE_DECORATOR_ONLY: "route decorator without a handler body",
+    GRADE_REPO_LEVEL_FALLBACK: "repository-level context",
+}
+
+
+def describe_grade(grade: str | None) -> str:
+    """Return an honest, human-readable selection reason for a grade band."""
+    return _GRADE_REASON.get(grade or "", "repository-level context")
+
+
+# Persisted selection-reason phrases (from the keyword scanner) that OVERCLAIM an
+# implementation. On a WEAK / fallback / ungraded row these must never be shown as
+# an implementation label — the range was never validated as a real ML body or an
+# executed deployment. Matched at read/render time so a legacy row can never
+# present a docstring / import / config / bare deploy line as ML implementation.
+_OVERCLAIMING_REASON_RE = re.compile(
+    r"ML\s+(?:model\s+instantiation|training\s+call|prediction|inference)"
+    r"|model\s+instantiation|training\s+call|prediction/inference"
+    r"|Cloud\s+deployment\s+command|deployment\s+command",
+    re.IGNORECASE,
+)
+
+# Conservative, honest replacements for a neutralized weak/ungraded row.
+_SAFE_WEAK_REASON = "Weak GitHub signal; not primary implementation proof"
+_SAFE_REPO_REASON = "Repository-level GitHub signal"
+
+
+def is_overclaiming_reason(reason: str | None) -> bool:
+    """True when a persisted selection reason claims ML/deployment implementation
+    (e.g. "ML model instantiation", "Cloud deployment command")."""
+    return bool(reason) and bool(_OVERCLAIMING_REASON_RE.search(reason))
+
+
+def safe_selection_reason(grade: str | None, reason: str | None) -> str:
+    """Read-time neutraliser for a persisted GitHub ``selection_reason``.
+
+    A row is trusted to keep its stored reason ONLY when its deterministic quality
+    grade is STRONG (``implementation_body`` / ``supporting_logic``) — those bodies
+    were validated as real implementation / supporting logic. Every WEAK / fallback
+    / ungraded / unknown row is fail-closed and NEVER preserves its stored reason —
+    not even when the stale text sounds technical (e.g. "model serving inference
+    handler", an arbitrary phrase no keyword denylist can enumerate). Such rows are
+    relabelled from the GRADE alone:
+
+    * a KNOWN weak band (import / docstring / config / route-decorator) always shows
+      its honest grade-derived label (:func:`describe_grade`), discarding whatever
+      reason was stored;
+    * a FALLBACK grade or legacy ungraded / unknown row shows a conservative
+      repository-level label — "Weak GitHub signal; not primary implementation
+      proof" when any stale reason was stored, else "Repository-level GitHub signal".
+
+    The result is safe to render/synthesize: a stale reason on a weak row can never
+    be presented as implementation evidence, regardless of how technical it reads.
+    The narrow overclaiming-keyword denylist (:func:`is_overclaiming_reason`) is NOT
+    consulted here — neutralisation is grade-derived, not phrase-derived, so it can
+    never miss a stale label that simply avoids the known keywords.
+    """
+    reason = (reason or "").strip()
+    if grade in _STRONG_GRADES:
+        return reason or describe_grade(grade)
+    # KNOWN weak band → grade-derived label ONLY (the stored reason is discarded,
+    # even when it reads as technical). ``_GRADE_RANK`` enumerates every known band.
+    if grade and grade in _GRADE_RANK and grade != GRADE_REPO_LEVEL_FALLBACK:
+        return describe_grade(grade)
+    # Fallback grade or legacy ungraded / unknown row → fail closed, reason dropped.
+    return _SAFE_WEAK_REASON if reason else _SAFE_REPO_REASON
+
+
+# ── Read-time ML semantic validation (implementation_body → primary ML gate) ──
+#
+# A persisted ``implementation_body`` grade proves the range was a real code body at
+# scan time. For a Machine Learning skill, "primary implementation proof" requires
+# MORE: the trusted EXECUTABLE body / snippet / server-side provenance must itself
+# carry an actual ML executable signal — a ``.fit(`` / ``.predict(`` /
+# ``.predict_proba(`` call, ``train_test_split(``, an evaluation metric call
+# (``accuracy_score`` / ``f1_score`` / ``roc_auc_score`` / ``r2_score`` …), an
+# sklearn / xgboost / lightgbm estimator constructor, a torch / tensorflow / keras
+# training or inference call, or a model-artifact ``joblib``/``pickle`` save-load.
+#
+# It FAILS CLOSED: the stale ``selection_reason``, the file path, and the function
+# name are LABELS, never proof. A stale reason like "ML model instantiation", a
+# ``train.py`` filename, or a ``train_model`` function name can NO LONGER, by
+# themselves, preserve a Machine Learning ``implementation_body``. Deployment-only /
+# serving-only / cloud-only / FastAPI-route-only / config-only / import-only bodies
+# therefore never survive unless the executable body carries a real ML signal. Read-
+# time consumers validate with :func:`ml_implementation_is_valid` and downgrade via
+# :func:`effective_evidence_grade`.
+#
+# The regex matches CONCRETE executable code constructs (a call paren or a framework
+# module reference), never natural-language prose — so a reason phrase that merely
+# *mentions* "training" or "prediction" is not mistaken for executable ML code.
+_ML_EXECUTABLE_SIGNAL_RE = re.compile(
+    # concrete ML method CALLS on a model / estimator (the call paren is required)
+    r"\.(?:fit|fit_transform|fit_predict|partial_fit|predict|predict_proba|"
+    r"predict_log_proba|decision_function|evaluate|score|transform|inverse_transform)\s*\("
+    # data split / cross-validation / hyperparameter search (call form)
+    r"|\b(?:train_test_split|cross_val_score|cross_validate|GridSearchCV|"
+    r"RandomizedSearchCV|StratifiedKFold|KFold)\s*\("
+    # evaluation metric CALLS
+    r"|\b(?:accuracy_score|f1_score|precision_score|recall_score|roc_auc_score|"
+    r"roc_curve|confusion_matrix|classification_report|mean_squared_error|"
+    r"mean_absolute_error|r2_score|log_loss)\s*\("
+    # estimator / model CONSTRUCTORS used in an executable body (call paren required)
+    r"|\b(?:RandomForest(?:Classifier|Regressor)|XGB(?:Classifier|Regressor)|"
+    r"LGBM(?:Classifier|Regressor)|LightGBM|GradientBoosting(?:Classifier|Regressor)|"
+    r"LogisticRegression|LinearRegression|DecisionTree(?:Classifier|Regressor)|"
+    r"KMeans|KNeighbors(?:Classifier|Regressor)|SVC|SVR|GaussianNB|MLPClassifier)\s*\("
+    # feature transformers inside an ML pipeline body (constructor call form)
+    r"|\b(?:StandardScaler|MinMaxScaler|RobustScaler|OneHotEncoder|LabelEncoder|"
+    r"CountVectorizer|TfidfVectorizer|ColumnTransformer|Pipeline|make_pipeline)\s*\("
+    # deep-learning framework training / inference calls
+    r"|\bnn\.(?:Module|Linear|Conv\w*|LSTM|GRU|Sequential)\b"
+    r"|\btorch\.(?:load|save|no_grad|tensor|from_numpy)\b"
+    r"|\btf\.(?:keras|GradientTape)\b|\bkeras\.(?:models|layers|Sequential)\b"
+    r"|\.backward\s*\(|optimizer\.(?:step|zero_grad)\s*\("
+    # model artifact save / load (call form) — a strong ML persistence signal
+    r"|\b(?:joblib|pickle)\.(?:load|dump)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _strip_comments_and_docstrings(text: str) -> str:
+    """Return an EXECUTABLE-ONLY representation of ``text`` with every comment and
+    string literal (module/class/function docstrings, triple-quoted blocks, and
+    ordinary string literals) removed, so a docstring or comment that merely
+    *mentions* ``model.fit(...)`` / ``predict_proba`` / ``train_test_split`` can
+    never be mistaken for executable ML code.
+
+    A structural :mod:`tokenize` pass is preferred: it deletes ``COMMENT`` and
+    ``STRING`` tokens (which cover every docstring, since a docstring is just a
+    bare string-literal expression) while preserving the surrounding executable
+    tokens verbatim. Because a persisted excerpt is frequently a *fragment* of a
+    larger body (an indented function slice with no enclosing ``def``), tokenizing
+    can fail with :class:`(IndentationError, TokenError, SyntaxError)`; in that
+    case we fall back to a conservative regex strip of triple-quoted blocks and
+    ``#`` line comments. Both paths only ever REMOVE text, so real executable ML
+    calls are always preserved.
+    """
+    try:
+        pieces: list[str] = []
+        last_end = (1, 0)
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type in (tokenize.COMMENT, tokenize.STRING):
+                # Preserve newlines so downstream line structure survives, but
+                # drop the comment/string content itself.
+                start_row, _ = tok.start
+                end_row, _ = tok.end
+                pieces.append("\n" * (end_row - start_row))
+                last_end = tok.end
+                continue
+            start_row, start_col = tok.start
+            end_row, end_col = tok.end
+            last_row, last_col = last_end
+            if start_row > last_row:
+                pieces.append("\n" * (start_row - last_row))
+                pieces.append(" " * start_col)
+            elif start_col > last_col:
+                pieces.append(" " * (start_col - last_col))
+            pieces.append(tok.string)
+            last_end = tok.end
+        return "".join(pieces)
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        # Fragment / unparseable excerpt: conservative regex strip that only
+        # removes triple-quoted blocks and single-line ``#`` comments.
+        stripped = _TRIPLE_QUOTED_BLOCK_RE.sub("", text)
+        stripped = _LINE_COMMENT_RE.sub("", stripped)
+        return stripped
+
+
+_TRIPLE_QUOTED_BLOCK_RE = re.compile(
+    r"[rRbBuUfF]{0,3}(?:'''.*?'''|\"\"\".*?\"\"\")",
+    re.DOTALL,
+)
+# A ``#`` that is not inside a string literal begins a comment to end of line.
+# On the regex fallback path triple-quoted blocks are already gone, so this only
+# needs to avoid ``#`` chars sitting inside ordinary single-line quotes.
+_LINE_COMMENT_RE = re.compile(
+    r"""(?m)(?<!['"])#.*$""",
+)
+
+
+def has_ml_executable_signal(*parts: str | None) -> bool:
+    """True when any provided text carries a concrete ML EXECUTABLE code signal
+    (a ``.fit(`` / ``.predict(`` / ``.predict_proba(`` call, ``train_test_split(``,
+    a metric call, an estimator constructor, a torch/tf/keras training-or-inference
+    call, or a ``joblib``/``pickle`` model save-load).
+
+    Only concrete code constructs match, and only in EXECUTABLE code: comments and
+    string/docstring literals are structurally stripped (via
+    :func:`_strip_comments_and_docstrings`) BEFORE matching, so a docstring or
+    comment that merely mentions ``model.fit(...)`` / ``predict_proba`` /
+    ``train_test_split`` is NOT a signal. Natural-language prose — a reason phrase
+    like "ML model instantiation", "model serving inference handler", "training
+    call", or a bare ``train.py`` / ``train_model`` mention — is likewise never a
+    signal: those are labels, and a label can never be executable proof.
+    """
+    haystack = " ".join(p for p in parts if p)
+    if not haystack.strip():
+        return False
+    executable = _strip_comments_and_docstrings(haystack)
+    return bool(executable.strip()) and bool(
+        _ML_EXECUTABLE_SIGNAL_RE.search(executable)
+    )
+
+
+def ml_implementation_is_valid(
+    *,
+    reason: str | None = None,
+    code_snippet: str | None = None,
+    file_path: str | None = None,
+    function_name: str | None = None,
+    provenance: str | None = None,
+    ml_signal: bool | None = None,
+) -> bool:
+    """Read-time ML gate for a persisted ``implementation_body`` on an ML skill.
+
+    Returns True only when a TRUSTED executable body proves ML — the persisted code
+    snippet or the server-side analyzer provenance carries a real ML executable
+    signal (fit / predict / predict_proba / train_test_split / metric call /
+    estimator constructor / framework training / model save-load). Otherwise it
+    returns False and the caller downgrades the row.
+
+    ``ml_signal`` is an authoritative GRADE-TIME verdict for rows whose trusted
+    executable body is inspected where it is available (the canonical adapter grades
+    the server-side provenance excerpt, then discards the raw snippet rather than
+    re-exposing it). It is tri-state: ``True`` = the trusted body carried a real ML
+    executable signal → valid; ``False`` = the trusted body was inspected and carried
+    NONE → fail closed; ``None`` = no grade-time verdict, fall back to any read-time
+    trusted ``code_snippet`` / ``provenance`` body.
+
+    It FAILS CLOSED. ``reason``, ``file_path`` and ``function_name`` are accepted for
+    caller convenience but are LABELS, never proof: a stale "ML model instantiation"
+    reason, a ``train.py`` filename, or a ``train_model`` function name can no longer
+    preserve a Machine Learning ``implementation_body`` on their own. A deployment-
+    only / serving-only / cloud-only / FastAPI-route-only / config-only / import-only
+    body — anything whose executable snippet lacks a real ML inference / training /
+    evaluation signal — is rejected. When no trusted body is available at read time,
+    the row is downgraded (conservative), never given the benefit of the doubt.
+    """
+    # An authoritative grade-time verdict (from the trusted provenance body) wins.
+    if ml_signal is True:
+        return True
+    if ml_signal is False:
+        return False
+    # No grade-time verdict: only the trusted EXECUTABLE body / provenance may prove
+    # ML. reason / file_path / function_name are deliberately excluded — they are
+    # labels, and a label can never be executable proof.
+    trusted_body = " ".join(p for p in (code_snippet, provenance) if p)
+    return has_ml_executable_signal(trusted_body)
+
+
+def effective_evidence_grade(
+    grade: str | None,
+    *,
+    is_ml: bool = False,
+    reason: str | None = None,
+    code_snippet: str | None = None,
+    file_path: str | None = None,
+    function_name: str | None = None,
+    provenance: str | None = None,
+    ml_signal: bool | None = None,
+) -> str | None:
+    """Read-time semantic validation of a persisted ``evidence_quality_grade``.
+
+    Only a Machine Learning ``implementation_body`` is re-validated: it stays
+    ``implementation_body`` ONLY when the trusted executable body / snippet /
+    provenance carries a real ML executable signal, otherwise it FAILS CLOSED and is
+    DOWNGRADED to ``supporting_logic`` so a trusted deployment-only / serving-only /
+    route-only body — or one whose only "ML" evidence is a stale reason, a
+    ``train.py`` filename, or a ``train_model`` function name — can never present as
+    Machine Learning primary implementation proof (it is still a real body, just not
+    proven ML). Non-ML skills and every non-implementation grade are returned
+    unchanged. The caller supplies ``is_ml`` (e.g. ``is_ml_skill(skill)``) so this
+    stdlib-only module never depends on the skill-taxonomy service.
+    """
+    if grade != GRADE_IMPLEMENTATION_BODY or not is_ml:
+        return grade
+    if ml_implementation_is_valid(
+        reason=reason,
+        code_snippet=code_snippet,
+        file_path=file_path,
+        function_name=function_name,
+        provenance=provenance,
+        ml_signal=ml_signal,
+    ):
+        return grade
+    return GRADE_SUPPORTING_LOGIC
 
 
 # ── Line-shape classifiers (snippet grading) ──────────────────────────────────
@@ -718,6 +1027,39 @@ def focus_python_range(
     body_region = "\n".join(src_lines[min(body_start, total) - 1 : body_end])
     grade = grade_python_snippet(body_region)
     return start, end, grade
+
+
+def docstring_and_comment_lines(source: str) -> set[int]:
+    """Return the 1-indexed line numbers that are docstrings, bare string
+    expressions, or ``#`` comments in ``source``.
+
+    Used by the offline scanner so a keyword sitting inside a module/function
+    docstring (prose such as "... fits a RandomForest ...") is never chosen as a
+    high-signal implementation anchor. Falls back to a comment-only scan when the
+    source cannot be parsed. Never raises.
+    """
+    lines: set[int] = set()
+    src_lines = source.splitlines()
+    for i, raw in enumerate(src_lines, start=1):
+        if _COMMENT_RE.match(raw.strip()):
+            lines.add(i)
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return lines
+    for node in ast.walk(tree):
+        # A bare string statement is a docstring (module/class/function) or a
+        # stray string literal used as prose — never executable logic.
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(getattr(node, "value", None), ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            start = getattr(node, "lineno", None)
+            end = getattr(node, "end_lineno", start)
+            if start is not None and end is not None:
+                lines.update(range(start, end + 1))
+    return lines
 
 
 def focus_python_anchor(

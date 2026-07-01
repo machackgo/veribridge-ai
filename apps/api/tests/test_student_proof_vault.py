@@ -27,11 +27,14 @@ from app.services.github_python_evidence_focus import (
     build_server_provenance,
 )
 from app.services.skill_normalization import canonical_skill, skill_category, skill_slug
+from app.services.github_python_evidence_focus import GRADE_IMPLEMENTATION_BODY
 from app.services.student_proof_vault_service import (
     _collect_documents,
     _github_repo_identity,
     _group_github_evidence,
+    _has_coherent_impl_chain,
     _match_github_to_project,
+    _skill_status,
     collect_skill_report,
     collect_skill_summaries,
     collect_vault_items,
@@ -681,6 +684,50 @@ def test_skill_report_uses_repo_level_fallback_for_weak_only_skill(mem_store: di
     assert "repository-level" in (item.get("limitation") or "").lower()
 
 
+def test_skill_report_downgrades_deployment_only_ml_implementation_body(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A TRUSTED implementation_body that is deployment/serving-only (no ML executable
+    signal) is downgraded at read time for an ML skill, so it can never render as
+    Machine Learning primary implementation proof (must-fix: read-time ML validation)."""
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="serving/main.py",
+        line_start=1,
+        line_end=8,
+        evidence_description="model serving inference handler",
+        selection_reason="model serving inference handler",
+        evidence_quality_grade=GRADE_IMPLEMENTATION_BODY,
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    row = next(i for i in _github_items(report) if i.get("file_path") == "serving/main.py")
+    # Downgraded from the trusted implementation_body → supporting (not primary ML).
+    assert row["evidence_quality_grade"] == "supporting_logic"
+
+
+def test_skill_report_keeps_real_ml_implementation_body(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A REAL ML implementation body (fit/predict/training signals) stays primary and
+    keeps its useful reason — only deployment-only bodies are downgraded."""
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="src/model/train.py",
+        line_start=10,
+        line_end=20,
+        evidence_description="model.fit training loop",
+        selection_reason="model.fit training loop",
+        evidence_quality_grade=GRADE_IMPLEMENTATION_BODY,
+        code_snippet="def train_model(df):\n    return clf.fit(df)",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    row = next(i for i in _github_items(report) if i.get("file_path") == "src/model/train.py")
+    assert row["evidence_quality_grade"] == GRADE_IMPLEMENTATION_BODY
+    assert row["selection_reason"] == "model.fit training loop"
+
+
 def test_documents_remain_corroboration_not_primary_dump(mem_store: dict, pipeline_db: dict) -> None:
     # A project with STRONG GitHub evidence + several attached documents.
     gh_id = _seed_github_proof(
@@ -1190,6 +1237,202 @@ def test_connected_multirow_fallback_not_duplicated_in_standalone(
     )
     report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
     assert report["standalone_evidence"]["github_groups"] == []
+
+
+def test_skill_status_ml_without_implementation_body_not_demonstrated() -> None:
+    """Weak GitHub + document + defense for an implementation-oriented skill (ML)
+    must NOT read as "Demonstrated" when no primary implementation body exists."""
+    proof_types = ["GitHub Proof", "Document Proof", "Project Defense"]
+    status = _skill_status(
+        proof_types, attached_count=1, skill="Machine Learning", has_implementation_body=False
+    )
+    assert status == "Evidence observed"
+
+
+def test_skill_status_ml_with_implementation_body_is_demonstrated() -> None:
+    """A real GitHub implementation body lifts an ML skill to "Demonstrated"."""
+    proof_types = ["GitHub Proof", "Project Defense"]
+    status = _skill_status(
+        proof_types, attached_count=1, skill="Machine Learning", has_implementation_body=True
+    )
+    assert status == "Demonstrated"
+
+
+def test_skill_status_non_code_skill_unaffected_by_body_gate() -> None:
+    """A skill with no code profile (e.g. Communication) is not gated on a GitHub
+    implementation body — it keeps the original multi-source demonstration rule."""
+    proof_types = ["Project Defense", "Document Proof"]
+    status = _skill_status(
+        proof_types, attached_count=1, skill="Communication", has_implementation_body=False
+    )
+    assert status == "Demonstrated"
+
+
+def _item(proof_type: str, *, pid: str | None, grade: str | None = None) -> dict:
+    return {
+        "proof_type": proof_type,
+        "is_attached_to_project": pid is not None,
+        "attached_project_ids": [pid] if pid else [],
+        "evidence_quality_grade": grade,
+    }
+
+
+def test_coherent_chain_true_for_impl_body_plus_corroboration_same_project() -> None:
+    """A single attached project with a GitHub implementation body AND a defense
+    (>= 2 distinct sources) is a coherent chain → eligible for Demonstrated."""
+    items = [
+        _item("GitHub Proof", pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    assert _has_coherent_impl_chain(items) is True
+
+
+def test_coherent_chain_false_when_impl_body_standalone_and_weak_attached_elsewhere() -> None:
+    """A standalone implementation body (project A) plus weak attached evidence from
+    a DIFFERENT project (Boston) is NOT a coherent chain — it must not upgrade the
+    unrelated Boston chain to Demonstrated."""
+    items = [
+        # Standalone (unattached) implementation body — supports standalone proof only.
+        _item("GitHub Proof", pid=None, grade=GRADE_IMPLEMENTATION_BODY),
+        # Boston attached chain: weak GitHub + document + defense (no impl body).
+        _item("GitHub Proof", pid="boston", grade="import_only"),
+        _item("Document Proof", pid="boston"),
+        _item("Project Defense", pid="boston"),
+    ]
+    assert _has_coherent_impl_chain(items) is False
+
+
+def test_coherent_chain_false_for_single_source_even_with_impl_body() -> None:
+    """An implementation body alone (only one distinct source in the chain) is not
+    yet a coherent multi-source chain."""
+    items = [_item("GitHub Proof", pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY)]
+    assert _has_coherent_impl_chain(items) is False
+
+
+def test_skill_status_standalone_impl_plus_weak_boston_not_demonstrated() -> None:
+    """End-to-end status: standalone ML implementation + weak attached Boston chain
+    stays capped (not Demonstrated) because there is no coherent chain."""
+    items = [
+        _item("GitHub Proof", pid=None, grade=GRADE_IMPLEMENTATION_BODY),
+        _item("GitHub Proof", pid="boston", grade="import_only"),
+        _item("Document Proof", pid="boston"),
+        _item("Project Defense", pid="boston"),
+    ]
+    has_impl = _has_coherent_impl_chain(items)
+    status = _skill_status(
+        ["GitHub Proof", "Document Proof", "Project Defense"],
+        attached_count=3,
+        skill="Machine Learning",
+        has_implementation_body=has_impl,
+    )
+    assert status == "Evidence observed"
+
+
+def test_skill_status_coherent_ml_chain_is_demonstrated() -> None:
+    """A single coherent project (implementation body + defense) reads Demonstrated."""
+    items = [
+        _item("GitHub Proof", pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    status = _skill_status(
+        ["GitHub Proof", "Project Defense"],
+        attached_count=2,
+        skill="Machine Learning",
+        has_implementation_body=_has_coherent_impl_chain(items),
+    )
+    assert status == "Demonstrated"
+
+
+def _ml_github_item(
+    *, pid: str | None, grade: str | None, snippet: str = "", ml_signal: bool | None = None
+) -> dict:
+    """A GitHub vault item carrying the fields read-time ML validation inspects."""
+    return {
+        "proof_type": "GitHub Proof",
+        "is_attached_to_project": pid is not None,
+        "attached_project_ids": [pid] if pid else [],
+        "evidence_quality_grade": grade,
+        "safe_snippet": snippet,
+        "ml_executable_signal": ml_signal,
+    }
+
+
+def test_coherent_chain_false_for_deployment_only_impl_body_downgraded() -> None:
+    """A deployment-only GitHub row persisted as implementation_body but whose trusted
+    body carries NO executable ML signal is downgraded at read time — it must not
+    count as coherent implementation evidence even with defense corroboration."""
+    items = [
+        _ml_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            snippet="@app.post('/predict')\ndef serve(req):\n    return {'ok': True}",
+            ml_signal=False,
+        ),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is False
+
+
+def test_coherent_chain_downgraded_ml_row_plus_defense_document_capped() -> None:
+    """A downgraded ML implementation_body row combined with a defense AND a document
+    (same project) still does not form a coherent implementation chain."""
+    items = [
+        _ml_github_item(
+            pid="boston",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            snippet='"""Later call model.fit(...) and predict_proba(...)."""',
+            ml_signal=None,
+        ),
+        _item("Document Proof", pid="boston"),
+        _item("Project Defense", pid="boston"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is False
+    status = _skill_status(
+        ["GitHub Proof", "Document Proof", "Project Defense"],
+        attached_count=3,
+        skill="Machine Learning",
+        has_implementation_body=_has_coherent_impl_chain(items, skill="Machine Learning"),
+    )
+    assert status == "Evidence observed"
+
+
+def test_coherent_chain_validated_ml_body_plus_corroboration_still_demonstrated() -> None:
+    """A real validated ML implementation_body (executable fit call) plus defense in
+    the same project still forms a coherent chain → Demonstrated is preserved."""
+    items = [
+        _ml_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            snippet="clf = LGBMClassifier()\nclf.fit(X_train, y_train)",
+            ml_signal=None,
+        ),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is True
+    status = _skill_status(
+        ["GitHub Proof", "Project Defense"],
+        attached_count=2,
+        skill="Machine Learning",
+        has_implementation_body=_has_coherent_impl_chain(items, skill="Machine Learning"),
+    )
+    assert status == "Demonstrated"
+
+
+def test_coherent_chain_downgraded_standalone_ml_cannot_upgrade_weak_attached() -> None:
+    """An unrelated standalone ML body (even if executable) cannot upgrade a weak
+    attached chain from a DIFFERENT project — grouping by project keeps them apart."""
+    items = [
+        _ml_github_item(
+            pid=None,
+            grade=GRADE_IMPLEMENTATION_BODY,
+            snippet="clf.fit(X_train, y_train)",
+            ml_signal=None,
+        ),
+        _ml_github_item(pid="boston", grade="import_only", snippet="import sklearn"),
+        _item("Document Proof", pid="boston"),
+        _item("Project Defense", pid="boston"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is False
 
 
 def test_group_github_evidence_keeps_distinct_owner_repos_apart() -> None:
@@ -1804,8 +2047,10 @@ def test_skill_report_exposes_selection_reason_and_highlight_url(
 
     report = collect_skill_report(mem_store, pipeline_db, USER_ID, "api-development")
     item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
-    # selection_reason + highlight URL became frontend-safe fields on the item.
-    assert item["selection_reason"] == "API endpoint decorator"
+    # selection_reason + highlight URL became frontend-safe fields on the item. The
+    # bare route-decorator row is WEAK, so its stored "API endpoint decorator" reason
+    # is neutralised to an honest grade-derived label (never preserved on a weak row).
+    assert item["selection_reason"] == "route decorator without a handler body"
     assert (
         item["github_line_url"]
         == "https://github.com/octocat/Hello-World/blob/main/app/api/routes.py#L12-L30"
