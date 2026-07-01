@@ -43,6 +43,7 @@ from fastapi import HTTPException, status
 from app.services.public_report_safety_service import (
     PublicReportUnsafeError,
     enforce_public_safe,
+    public_safe_skill_name,
 )
 from app.services.safe_public_url import is_safe_public_url
 from app.services.vbr_public_project_report import (
@@ -61,6 +62,14 @@ logger = logging.getLogger(__name__)
 
 _PASSPORTS_TABLE = "vbr_work_passports"
 _PROJECTS_TABLE = "vbr_projects"
+_ONBOARDING_TABLE = "student_onboarding_profiles"
+
+# Whitelisted, recruiter-safe onboarding profile fields for the identity header.
+# Deliberately excludes every private/sensitive field (visa_status, sponsorship,
+# work-authorization, timeline, raw institution name) — only education context.
+_SAFE_PROFILE_FIELDS = ("degree_level", "major", "graduation_year", "university_country")
+
+_VERIFICATION_LABEL = "Verified Work Passport"
 
 _SLUG_GENERATION_ATTEMPTS = 5
 _PUBLIC_PATH_PREFIX = "/p/"
@@ -96,6 +105,10 @@ _STATUS_ORDER = {
 }
 
 _DEFAULT_HEADLINE = "Verified Work Passport"
+# Neutral, non-PII fallback used when the onboarding-derived display name is
+# missing OR scrubs down to nothing safe (e.g. it was only a UUID / private id /
+# email). It never leaks a private value while still rendering a usable header.
+_SAFE_DISPLAY_NAME = "Verified candidate profile"
 _DEFAULT_SUMMARY = (
     "An evidence-backed profile of projects this candidate has built and "
     "defended. Each linked Verified Build Report shows recruiter-safe evidence "
@@ -525,6 +538,122 @@ def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _lookup_candidate_profile(db: Any, user_id: str) -> dict[str, Any]:
+    """Best-effort, recruiter-safe education context from onboarding.
+
+    Reads ONLY the whitelisted safe fields (degree level, major, graduation year,
+    region/country) — never visa/sponsorship/work-authorization or any private
+    field. Any lookup problem returns ``{}`` so the header degrades gracefully.
+    """
+    try:
+        if isinstance(db, dict):
+            row = next(
+                (
+                    r
+                    for r in db.setdefault(_ONBOARDING_TABLE, {}).values()
+                    if str(r.get("user_id")) == str(user_id)
+                ),
+                None,
+            )
+        else:
+            result = (
+                db.table(_ONBOARDING_TABLE)
+                .select(",".join(_SAFE_PROFILE_FIELDS))
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+            row = rows[0] if rows else None
+    except Exception:  # pragma: no cover - profile context is optional
+        return {}
+    if not isinstance(row, dict):
+        return {}
+    return {k: row.get(k) for k in _SAFE_PROFILE_FIELDS}
+
+
+def _education_summary(profile: dict[str, Any]) -> str:
+    """A single safe education line from whitelisted onboarding fields."""
+    parts: list[str] = []
+    major = str(profile.get("major") or "").strip()
+    if major:
+        parts.append(major)
+    degree = str(profile.get("degree_level") or "").strip()
+    if degree:
+        parts.append(degree.replace("_", " ").title())
+    grad = profile.get("graduation_year")
+    if isinstance(grad, int) and grad > 0:
+        parts.append(f"Class of {grad}")
+    region = str(profile.get("university_country") or "").strip()
+    if region:
+        parts.append(region)
+    return " · ".join(parts)
+
+
+def _evidence_source_summary(counts: dict[str, int]) -> list[str]:
+    """Compact ``"GitHub Proof · 3"`` badges for nonzero evidence sources."""
+    return [f"{label} · {count}" for label, count in counts.items() if count > 0]
+
+
+def _safe_identity_text(value: Any) -> str | None:
+    """Scrub one onboarding-derived identity field for the public/private header.
+
+    Reuses the Step 7 public-safety scrubber (:func:`public_safe_skill_name`): it
+    redacts emails + score/secret fragments and drops any token shaped like a
+    bare UUID, hex blob, or a private-prefixed id — both ``prefix_<hex>`` and a
+    long *alphanumeric* suffix (``user_1234567890ghijkl`` / ``project_ABCXYZ…`` /
+    ``student_…`` / ``artifact_…`` / ``source_…`` / ``provider_…`` / ``report_…``).
+    Returns ``None`` when nothing human-readable survives, so the caller can omit
+    the field or substitute a neutral placeholder. Onboarding values are untrusted
+    free text, so a UUID / private id / email must never ride out raw on the
+    identity header — public OR private.
+    """
+    return public_safe_skill_name(value)
+
+
+def _build_identity(
+    *,
+    display_name: str | None,
+    headline: str,
+    profile: dict[str, Any],
+    evidence_source_counts: dict[str, int],
+    public_status: str,
+    public_path: str | None,
+    last_updated: str | None,
+) -> dict[str, Any]:
+    """Assemble the recruiter-safe identity header (non-PII only).
+
+    Every free-text field sourced from onboarding/profile data is scrubbed with
+    :func:`_safe_identity_text`. Unsafe / empty values are either omitted
+    (optional fields → ``None``) or replaced with a neutral placeholder
+    (``display_name``/``headline``) so a raw UUID, private id, email, path, or
+    token can never surface on the identity header.
+
+    TODO(profile-model): this is an interim header assembled from the few safe
+    onboarding fields available today. When a dedicated, consented candidate
+    profile model exists (verified name, avatar, links), build the header from it
+    here — never invent profile fields; keep the "Verified candidate profile"
+    placeholder until real, recruiter-safe fields are supplied.
+    """
+    grad = profile.get("graduation_year")
+    return {
+        "display_name": _safe_identity_text(display_name) or _SAFE_DISPLAY_NAME,
+        "headline": _safe_identity_text(headline) or _DEFAULT_HEADLINE,
+        "program": _safe_identity_text(profile.get("major")),
+        "degree_level": _safe_identity_text(
+            str(profile.get("degree_level") or "").replace("_", " ").title()
+        ),
+        "graduation_year": grad if isinstance(grad, int) and grad > 0 else None,
+        "region": _safe_identity_text(profile.get("university_country")),
+        "education_summary": _safe_identity_text(_education_summary(profile)) or "",
+        "public_status": public_status,
+        "public_path": public_path,
+        "last_updated": last_updated,
+        "evidence_source_summary": _evidence_source_summary(evidence_source_counts),
+        "verification_label": _VERIFICATION_LABEL,
+    }
+
+
 def _evidence_source_counts(project_summaries: list[dict[str, Any]]) -> dict[str, int]:
     counts = {label: 0 for label in _EVIDENCE_SOURCE_LABELS}
     for proj in project_summaries:
@@ -716,7 +845,15 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
 
     # Build one report per owned row, then collapse duplicate rows of the same
     # real project (same repo/title) into a single evidence card.
-    pairs = [(project, build_student_vbr_report(db, pipeline_db, project, user_id)) for project in projects]
+    # The passport only reads the attached-project matrix/traces/evidence_package
+    # from each report — never the additive ``other_student_proofs`` cross-proof
+    # vault scan. Skip it so the passport doesn't pay a whole-vault scan PER
+    # project (the dominant cost when a student has many projects). The Student
+    # Proof Vault dashboard below already surfaces every owned proof once.
+    pairs = [
+        (project, build_student_vbr_report(db, pipeline_db, project, user_id, include_cross_proof=False))
+        for project in projects
+    ]
     groups = _group_project_pairs(pairs)
 
     project_summaries: list[dict[str, Any]] = []
@@ -801,17 +938,29 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     )
 
     status_part = _status_response(passport_row)
+    display_name = _lookup_display_name(db, str(user_id))
+    evidence_source_counts = _evidence_source_counts(project_summaries)
+    identity = _build_identity(
+        display_name=display_name,
+        headline=status_part["headline"],
+        profile=_lookup_candidate_profile(db, str(user_id)),
+        evidence_source_counts=evidence_source_counts,
+        public_status="Public passport live" if status_part["is_published"] else "Private only",
+        public_path=status_part["public_path"],
+        last_updated=status_part["published_at"] or _now(),
+    )
     return {
-        "candidate_display_name": _lookup_display_name(db, str(user_id)),
+        "candidate_display_name": display_name,
         "headline": status_part["headline"],
         "summary": status_part["summary"],
+        "identity": identity,
         "is_published": status_part["is_published"],
         "public_slug": status_part["public_slug"],
         "public_path": status_part["public_path"],
         "published_at": status_part["published_at"],
         "skills": skills,
         "projects": project_summaries,
-        "evidence_source_counts": _evidence_source_counts(project_summaries),
+        "evidence_source_counts": evidence_source_counts,
         "vault_skill_summaries": vault_skill_summaries,
         "vault_proof_count": len(vault_items),
         "vault_unattached_count": vault_unattached_count,
@@ -857,7 +1006,7 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     # duplicate rows of the same project are collapsed into a single card so a
     # recruiter never sees the same report featured twice.
     published_pairs = [
-        (project, build_student_vbr_report(db, pipeline_db, project, owner_id))
+        (project, build_student_vbr_report(db, pipeline_db, project, owner_id, include_cross_proof=False))
         for project in projects
         if project.get("public_report_token")
     ]
@@ -907,10 +1056,24 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         "Evidence is shown with qualitative labels only — never numeric scores or rankings."
     )
 
+    public_display_name = _lookup_display_name(db, owner_id)
+    public_evidence_counts = _evidence_source_counts(featured_summaries)
+    public_identity = _build_identity(
+        display_name=public_display_name,
+        headline=_headline_of(passport_row),
+        profile=_lookup_candidate_profile(db, owner_id),
+        evidence_source_counts=public_evidence_counts,
+        # The public surface is itself the passport — it never carries a private
+        # owner link or owner-only publish-status text.
+        public_status=_VERIFICATION_LABEL,
+        public_path=None,
+        last_updated=passport_row.get("published_at"),
+    )
     public = {
-        "candidate_display_name": _lookup_display_name(db, owner_id),
+        "candidate_display_name": public_display_name,
         "headline": _headline_of(passport_row),
         "summary": _summary_of(passport_row),
+        "identity": public_identity,
         "top_skills": top_skills,
         "featured_projects": featured_summaries,
         "evidence_source_counts": _evidence_source_counts(featured_summaries),

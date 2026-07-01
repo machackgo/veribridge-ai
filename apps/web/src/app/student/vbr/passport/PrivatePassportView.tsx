@@ -19,6 +19,7 @@ import {
   ErrorState,
   LoadingState,
   Mono,
+  PassportIdentityHeader,
   TOKEN,
   type BadgeTone,
 } from "../../../../../components/passport/shared"
@@ -331,13 +332,14 @@ export function PrivatePassportView() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Candidate header */}
+      {/* Candidate identity header — passport-style identity area */}
       <Card>
-        <div data-testid="passport-header" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {passport.candidate_display_name && (
-            <h2 style={{ fontSize: 20, color: TOKEN.ink, margin: 0 }}>{passport.candidate_display_name}</h2>
-          )}
-          <p style={{ fontSize: 14, color: TOKEN.inkSoft, margin: 0, fontWeight: 600 }}>{passport.headline}</p>
+        <div data-testid="passport-header" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <PassportIdentityHeader
+            identity={passport.identity}
+            fallbackName={passport.candidate_display_name}
+            fallbackHeadline={passport.headline}
+          />
           <p style={{ fontSize: 13, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>{passport.summary}</p>
         </div>
       </Card>

@@ -32,6 +32,16 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.github_python_evidence_focus import (
+    EVIDENCE_QUALITY_GRADES,
+    GRADE_REPO_LEVEL_FALLBACK,
+    TRUSTED_ANALYSIS_TABLE,
+    grade_evidence,
+    grade_rank,
+    is_strong_grade,
+    is_weak_grade,
+    trusted_provenance,
+)
 from app.services.github_skill_evidence_service import build_github_line_url, safe_commit_sha
 from app.services.safe_public_url import is_safe_public_url, safe_repo_relative_path
 from app.services.skill_normalization import canonical_skill
@@ -114,6 +124,7 @@ class CanonicalGitHubEvidence:
     has_precise_line_evidence: bool = True
     evidence_kind: str = "portfolio_skill_evidence"
     evidence_strength: str = "strong"
+    evidence_quality_grade: str = GRADE_REPO_LEVEL_FALLBACK
     public_safe: bool = False
 
     @property
@@ -154,6 +165,7 @@ class CanonicalGitHubEvidence:
             "has_precise_line_evidence": self.has_precise_line_evidence,
             "evidence_kind": self.evidence_kind,
             "evidence_strength": self.evidence_strength,
+            "evidence_quality_grade": self.evidence_quality_grade,
             "public_safe": self.public_safe,
         }
 
@@ -177,6 +189,46 @@ def _rows_for_user(db: Any, user_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def _trusted_provenance_by_evidence(db: Any, user_id: str) -> dict[str, dict[str, Any]]:
+    """Map ``skill_evidence_id -> validated provenance`` from the protected table.
+
+    Reads :data:`TRUSTED_ANALYSIS_TABLE` — a SERVICE-ROLE-ONLY table that
+    authenticated users can neither write nor read — and keeps only records that
+    pass :func:`trusted_provenance` (our analyzer name + a recognized version). The
+    read path uses the service-role client (``get_db``), so this is the single
+    place a *trusted* grade / focused excerpt enters render time. A missing table
+    or any error yields an empty map, so every row FAILS CLOSED to source-backed /
+    weak grading rather than trusting anything user-editable.
+
+    ``skill_evidence.metadata`` is never consulted here — a hostile owner editing
+    their own metadata directly via Supabase cannot reach this map.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        if isinstance(db, dict):
+            table = db.get(TRUSTED_ANALYSIS_TABLE, {})
+            records = list(table.values()) if isinstance(table, dict) else list(table or [])
+        else:
+            resp = db.table(TRUSTED_ANALYSIS_TABLE).select("*").eq("user_id", user_id).execute()
+            records = [r for r in (getattr(resp, "data", []) or []) if isinstance(r, dict)]
+    except Exception:  # pragma: no cover - provenance read is best-effort, fail closed
+        return out
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        eid = str(rec.get("skill_evidence_id") or "")
+        if not eid:
+            continue
+        # Defense in depth for the dict-backed store: never cross user boundaries.
+        rec_user = rec.get("user_id")
+        if rec_user is not None and str(rec_user) != str(user_id):
+            continue
+        validated = trusted_provenance(rec)
+        if validated is not None:
+            out[eid] = validated
+    return out
+
+
 def _is_github_source_code_row(row: dict[str, Any]) -> bool:
     """True only for a precise GitHub *source-code* evidence row.
 
@@ -192,7 +244,49 @@ def _is_github_source_code_row(row: dict[str, Any]) -> bool:
     return "github" in evidence_type or "github.com" in repo_url
 
 
-def _build_item(row: dict[str, Any]) -> CanonicalGitHubEvidence | None:
+def _trusted_persisted_grade(
+    row: dict[str, Any],
+    metadata: dict[str, Any],
+    provenance: dict[str, Any] | None,
+) -> str | None:
+    """A previously-persisted ``evidence_quality_grade``, if it is trustworthy.
+
+    A recognized grade *string* in user-controlled metadata is NOT enough — a
+    hostile owner can UPDATE their own ``skill_evidence.metadata`` directly via
+    Supabase (the row's RLS is "own row ALL") and assert ``implementation_body``
+    with no real source behind it. Provenance from the SERVICE-ROLE-ONLY protected
+    table gates what we trust:
+
+    * A grade carried by a trusted protected-table ``provenance`` record (our
+      analyzer name + a recognized version, stamped only by the offline scanner
+      through the service role) is trusted as-is. Authenticated users cannot write
+      that table, so this can never be forged.
+    * Otherwise only a **weak** flat grade in metadata is honored (a weak band can
+      never promote a row to top evidence, so keeping weak rows weak is harmless).
+      Any **strong** flat grade without protected provenance FAILS CLOSED.
+
+    Returns ``None`` when there is no trustworthy persisted grade, so the caller
+    then tries source-backed AST validation, else caps the row to
+    ``repo_level_fallback``.
+    """
+    if provenance is not None:
+        grade = str(provenance.get("evidence_quality_grade") or "").strip().lower()
+        return grade if grade in EVIDENCE_QUALITY_GRADES else None
+    # No trusted protected provenance: a forged analyzer marker / grade in flat
+    # metadata can never be trusted. Honor only a weak flat grade (cannot promote);
+    # fail closed on any strong claim.
+    raw = metadata.get("evidence_quality_grade") if isinstance(metadata, dict) else None
+    if raw is None:
+        raw = row.get("evidence_quality_grade")
+    grade = str(raw or "").strip().lower()
+    if grade in EVIDENCE_QUALITY_GRADES and is_weak_grade(grade):
+        return grade
+    return None
+
+
+def _build_item(
+    row: dict[str, Any], provenance: dict[str, Any] | None = None
+) -> CanonicalGitHubEvidence | None:
     skill = str(row.get("skill_name") or "").strip()
     # Reject absolute / local / Windows / UNC / file:// / traversal paths
     # outright — never lstrip("/") an absolute path into a fake repo-relative
@@ -245,6 +339,67 @@ def _build_item(row: dict[str, Any]) -> CanonicalGitHubEvidence | None:
     confidence = _norm(metadata.get("confidence_label") or row.get("confidence_label"))
     strength = _STRENGTH_BY_CONFIDENCE.get(confidence, "strong")
 
+    # Deterministic evidence_quality_grade. A canonical row rarely carries its
+    # source body, so grading FAILS CLOSED unless implementation quality can be
+    # proven from real source — descriptive metadata alone must never establish
+    # precise implementation evidence:
+    #
+    # * a SERVER-trusted source excerpt (the scanner persists the focused excerpt,
+    #   redacted, into the SERVICE-ROLE-ONLY protected table) → regrade
+    #   structurally via AST/body logic; this is the ONLY snippet path that may
+    #   yield a strong implementation_body / supporting_logic grade. A user-forged
+    #   ``code_snippet`` in metadata is NOT read here — it cannot validate source.
+    # * else a trusted persisted ``evidence_quality_grade`` (one the scanner
+    #   computed from real source at scan time, carried by the protected table, or
+    #   a weak flat metadata grade) → honored.
+    # * else (no trusted body, no trusted grade) → grade conservatively from the
+    #   selection_reason / file kind but CAP the result to a weak band: any strong
+    #   metadata read fails closed to ``repo_level_fallback``. So a stale
+    #   import-only / docstring / config / decorator-only canonical row (e.g. an
+    #   import-only ``api.py:19-23``), or a hostile forged payload, can never
+    #   become visible top evidence on the strength of its description.
+    #
+    # ``provenance`` is supplied by the caller from the protected table only;
+    # ``skill_evidence.metadata`` is never trusted for provenance. selection_reason
+    # still helps identify relevance (and is preserved safely below), but never
+    # upgrades a weak canonical row.
+    trusted_snippet = (
+        str(provenance.get("safe_excerpt") or "").strip() or None if provenance else None
+    )
+    if trusted_snippet:
+        quality_grade = grade_evidence(
+            file_path=file_path,
+            code_snippet=trusted_snippet,
+            selection_reason=selection_reason or evidence_description,
+            evidence_kind=None,
+            line_start=line_start,
+            line_end=line_end,
+        )
+    else:
+        trusted_grade = _trusted_persisted_grade(row, metadata, provenance)
+        if trusted_grade is not None:
+            quality_grade = trusted_grade
+        else:
+            metadata_grade = grade_evidence(
+                file_path=file_path,
+                code_snippet=None,
+                selection_reason=selection_reason or evidence_description,
+                evidence_kind=None,
+                line_start=line_start,
+                line_end=line_end,
+            )
+            # Fail closed: metadata may only establish a WEAK band. Any strong read
+            # (supporting_logic / implementation_body) without a body or trusted
+            # grade collapses to repo_level_fallback and is flagged for re-scan.
+            quality_grade = (
+                metadata_grade if is_weak_grade(metadata_grade) else GRADE_REPO_LEVEL_FALLBACK
+            )
+    # A canonical row whose grade collapses to a weak band is no longer "strong"
+    # precise proof — surface it as medium so the consumer ranks it below genuine
+    # implementation bodies (it is still precise line evidence, just weaker).
+    if not is_strong_grade(quality_grade) and strength == "strong":
+        strength = "medium"
+
     return CanonicalGitHubEvidence(
         source_id=str(row.get("id") or ""),
         skill_name=skill,
@@ -264,6 +419,7 @@ def _build_item(row: dict[str, Any]) -> CanonicalGitHubEvidence | None:
         subskill_name=subskill,
         skill_graph_node=graph_node,
         evidence_strength=strength,
+        evidence_quality_grade=quality_grade,
         public_safe=public_safe,
     )
 
@@ -283,16 +439,29 @@ def collect_canonical_github_skill_evidence(
     This NEVER triggers a live scan — it only consumes saved rows.
     """
     wanted = _norm(canonical_skill(skill_name)) if skill_name else None
+    # Trusted provenance comes ONLY from the service-role-only protected table,
+    # keyed by skill_evidence id — never from the user-editable row metadata.
+    provenance_by_eid = _trusted_provenance_by_evidence(db, user_id)
     items: list[CanonicalGitHubEvidence] = []
     for row in _rows_for_user(db, user_id):
         if not _is_github_source_code_row(row):
             continue
-        item = _build_item(row)
+        provenance = provenance_by_eid.get(str(row.get("id") or ""))
+        item = _build_item(row, provenance)
         if item is None:
             continue
         if wanted and _norm(item.canonical_skill_name) != wanted and item.skill_key != wanted:
             continue
         items.append(item)
-    # Deterministic: precise (with lines) first, then by file path / line.
-    items.sort(key=lambda i: (0 if i.line_start else 1, i.file_path or "", i.line_start or 0))
+    # Deterministic: strong implementation/supporting grades first (so a stale
+    # docstring/import/constant canonical row sinks below genuine implementation
+    # bodies), then precise (with lines) first, then by file path / line.
+    items.sort(
+        key=lambda i: (
+            grade_rank(i.evidence_quality_grade),
+            0 if i.line_start else 1,
+            i.file_path or "",
+            i.line_start or 0,
+        )
+    )
     return items

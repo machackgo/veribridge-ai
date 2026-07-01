@@ -20,6 +20,7 @@ import type {
   PrivateWorkPassport,
   PublicWorkPassport,
   SkillReport,
+  SkillReportProjectChain,
   VaultSkillGroup,
   VaultSkillSummary,
   VBRStudentProjectReportResponse,
@@ -457,6 +458,35 @@ describe("SkillReportView — connected proof chains & document corroboration", 
     render(<SkillReportView report={chainReport()} />)
     const snippets = screen.getAllByTestId("document-snippet").map((n) => n.textContent)
     expect(new Set(snippets).size).toBe(snippets.length)
+  })
+
+  it("shows skill-specific document context (figure, why) and gates full download", () => {
+    const report = chainReport()
+    const chain = (report.proof_chains ?? report.projects)![0]
+    chain.document_correlations = [
+      {
+        source_id: "doc-1",
+        document_title: "Stroke — Final Report",
+        page_number: 7,
+        section_label: "Model Evaluation",
+        citation: "Model Evaluation",
+        figure_reference: "Figure 4",
+        safe_snippet: "Reported F1 and confusion matrix.",
+        corroborates: "GitHub implementation",
+        reason: "Documents the evaluation metrics.",
+        why_supported: "Documents the evaluation metrics used to assess the model.",
+        full_document_available: false,
+        document_access_note: "Full document available only with candidate permission.",
+        limitation: "Document supports the claim but does not independently prove implementation.",
+      },
+    ]
+    chain.document_more_count = 0
+    render(<SkillReportView report={report} />)
+    expect(screen.getByTestId("document-citation")).toHaveTextContent("Figure 4")
+    expect(screen.getByTestId("document-why")).toHaveTextContent("evaluation metrics")
+    expect(screen.getByTestId("document-access-note")).toHaveTextContent(
+      "Full document available only with candidate permission.",
+    )
   })
 })
 
@@ -896,6 +926,30 @@ describe("SkillReportView — Proof Synthesis Agent", () => {
     expect(screen.getByTestId("chain-subskill")).toHaveTextContent("API Route")
   })
 
+  it("collapses repeated Project Defense evidence into one grouped section", () => {
+    const report = synthesisReport()
+    const chain = (report.proof_chains ?? report.projects)![0]
+    chain.defense_group = {
+      explanation: "The candidate explained the model training and prediction route.",
+      grouped_count: 3,
+      limitation: "Self-explanation evidence; should be combined with artifact evidence.",
+      source_ids: ["dfn-1", "vid-1", "vid-2"],
+      moments: [
+        { label: "Explains training loop", timestamp_label: "01:20", question_text: null, short_summary: "Walks through model.fit.", source_id: "vid-1" },
+        { label: "Explains prediction", timestamp_label: "02:05", question_text: null, short_summary: "Shows the predict endpoint.", source_id: "vid-2" },
+      ],
+    }
+    render(<SkillReportView report={report} />)
+    const defense = screen.getByTestId("chain-defense")
+    expect(defense).toHaveTextContent("Defense / video explanation")
+    expect(screen.getByTestId("defense-grouped-count")).toHaveTextContent("3 defense moments grouped")
+    expect(screen.getByTestId("defense-explanation")).toHaveTextContent("training and prediction route")
+    // Only ONE grouped section — never repeated near-identical cards.
+    expect(screen.getAllByTestId("chain-defense")).toHaveLength(1)
+    expect(screen.getAllByTestId("defense-moment")).toHaveLength(2)
+    expect(defense).toHaveTextContent("01:20")
+  })
+
   it("renders source-coverage badges across the five surfaces", () => {
     render(<SkillReportView report={synthesisReport()} />)
     const coverage = screen.getByTestId("skill-report-coverage")
@@ -931,6 +985,72 @@ describe("SkillReportView — Proof Synthesis Agent", () => {
     // The "gh-1" statement resolves to the chain's GitHub item location, not a raw id.
     expect(chips[0]).toHaveAttribute("data-source-type", "github")
     expect(container.innerHTML).not.toContain(">gh-1<")
+  })
+})
+
+// ── Legacy unlinked/standalone dedupe without source_id ────────────────────────
+
+describe("SkillReportView — legacy unlinked/standalone dedupe", () => {
+  function legacyReport(): SkillReport {
+    // A legacy GitHub proof with NO stable source_id, present in BOTH the
+    // standalone section and the derived unlinked bucket.
+    const legacyGithub: SkillReport["github"][number] = {
+      proof_type: "GitHub Proof",
+      source_id: "",
+      title: "legacy/repo",
+      safe_summary: "Legacy repository analyzed.",
+      safe_location: "old.py · lines 1-9",
+      public_safe: true,
+      is_attached_to_project: false,
+      attached_project_ids: [],
+      project_titles: [],
+      limitation: "",
+      file_path: "old.py",
+      line_start: 1,
+      line_end: 9,
+      workflow_steps: [],
+    }
+    return skillReport({
+      github: [],
+      projects: [],
+      proof_chains: [],
+      standalone_evidence: {
+        ...emptyStandalone(),
+        github: [legacyGithub],
+        github_groups: [
+          {
+            repo_label: "legacy/repo",
+            repo_url: null,
+            repo_is_public: false,
+            rows: [{ source_id: "", label: "old.py · lines 1-9", file_path: "old.py", line_start: 1, line_end: 9 }],
+            row_more_count: 0,
+          },
+        ],
+      },
+      unlinked_supporting_evidence: {
+        count: 2,
+        more_count: 0,
+        items: [
+          // Same proof as the standalone GitHub item (no source_id) — must dedupe.
+          { proof_type: "GitHub Proof", source_id: "", title: "legacy/repo", safe_summary: "Legacy repository analyzed.", safe_location: "old.py · lines 1-9", corroborates: "", limitation: "" },
+          // A genuinely distinct legacy proof (no source_id) — must stay visible.
+          { proof_type: "Website Proof", source_id: "", title: "https://distinct.example.com", safe_summary: "A genuinely distinct deployment.", safe_location: "distinct.example.com", corroborates: "", limitation: "" },
+        ],
+      },
+    })
+  }
+
+  it("renders legacy evidence once (standalone), not duplicated in the unlinked bucket", () => {
+    render(<SkillReportView report={legacyReport()} />)
+    // Shown once — in the canonical standalone section.
+    const standalone = screen.getByTestId("skill-report-standalone")
+    expect(standalone).toHaveTextContent("old.py")
+    // Excluded from the unlinked bucket (deduped by normalized fallback identity).
+    const unlinked = screen.getByTestId("skill-report-unlinked")
+    expect(unlinked).not.toHaveTextContent("legacy/repo")
+    // The genuinely distinct legacy proof remains visible.
+    expect(screen.getAllByTestId("unlinked-evidence")).toHaveLength(1)
+    expect(unlinked).toHaveTextContent("distinct.example.com")
   })
 })
 
@@ -995,16 +1115,19 @@ describe("SkillReportView — VeriBridge synthesis claims", () => {
     })
   }
 
-  it("renders cited synthesis claims with qualitative tier and resolved citation chips", () => {
+  it("collapses the big 'synthesis says' wall into ONE compact agent summary (no repeated claim cards)", () => {
     render(<SkillReportView report={reportWithSynthesis()} />)
     const section = screen.getByTestId("skill-report-synthesis")
-    expect(section).toHaveTextContent("What VeriBridge synthesis says")
-    expect(screen.getByTestId("synthesis-claim")).toHaveTextContent("prediction endpoint")
-    expect(screen.getByTestId("synthesis-claim-tier")).toHaveTextContent("Strongly corroborated")
-    // Each ev_ id resolves to a recruiter-readable source + location chip.
-    const chips = screen.getAllByTestId("evidence-citation-chip")
-    expect(chips.some((c) => c.textContent?.includes("api.py · predict()"))).toBe(true)
-    expect(chips.some((c) => c.textContent?.includes("demo.example.com"))).toBe(true)
+    // The large "What VeriBridge synthesis says" claim-card section is gone — it
+    // is now a short, recruiter-facing agent summary block.
+    expect(section).toHaveTextContent("VeriBridge agent summary")
+    expect(screen.getByTestId("skill-report-agent-summary")).toHaveTextContent(
+      "GitHub code and a live workflow corroborate Python.",
+    )
+    // The duplicate per-claim cards (and their repeated limitations / GitHub
+    // citation chips) are no longer rendered in this section.
+    expect(screen.queryByTestId("synthesis-claim")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("synthesis-claim-tier")).not.toBeInTheDocument()
   })
 
   it("never exposes the raw ev_ ids or any score-like language", () => {
@@ -1016,20 +1139,256 @@ describe("SkillReportView — VeriBridge synthesis claims", () => {
     expect(html).not.toMatch(/trust score|fully verified|ranked/i)
   })
 
-  it("drops non-public-safe claims when rendered in public-safe mode", () => {
+  it("withholds the agent summary in public-safe mode when no result is public-safe", () => {
     const report = reportWithSynthesis()
     report.llm_synthesis![0].public_safe = false
     report.llm_synthesis![0].claims[0].public_safe = false
     render(<SkillReportView report={report} publicSafe />)
-    expect(screen.queryByTestId("synthesis-claim")).not.toBeInTheDocument()
-    // Honest empty state — the evidence exists but isn't public-safe.
+    expect(screen.queryByTestId("skill-report-agent-summary")).not.toBeInTheDocument()
+    // Honest withheld state — the synthesis exists but isn't public-safe.
     expect(screen.getByTestId("skill-report-synthesis-withheld")).toHaveTextContent("not public-safe")
   })
 
-  it("shows calm empty states when there is no chain or synthesis", () => {
-    render(<SkillReportView report={skillReport({ projects: [], proof_chains: [], standalone_evidence: emptyStandalone(), github: [] })} />)
+  it("hides the synthesis section entirely when there is no chain or synthesis", () => {
+    render(<SkillReportView report={skillReport({ projects: [], proof_chains: [], standalone_evidence: emptyStandalone(), github: [], llm_synthesis: [] })} />)
     expect(screen.getByTestId("skill-report-chains-empty")).toHaveTextContent("No linked proof chain yet")
-    expect(screen.getByTestId("skill-report-synthesis-empty")).toHaveTextContent("No synthesis available yet")
+    // No synthesis ⇒ the compact agent-summary section is omitted (not an empty card).
+    expect(screen.queryByTestId("skill-report-synthesis")).not.toBeInTheDocument()
+  })
+})
+
+// ── Standalone GitHub evidence grouped by repository (no repeated cards) ────────
+
+describe("SkillReportView — standalone GitHub grouped by repository", () => {
+  function groupedStandalone(): SkillReport["standalone_evidence"] {
+    return {
+      ...emptyStandalone(),
+      // Back-compat flat list still present, but the UI must render the grouped
+      // projection so multiple lines from one repo are not repeated full cards.
+      github: [],
+      github_groups: [
+        {
+          repo_label: "Stroke Prediction Model",
+          repo_url: "https://github.com/alice/stroke-prediction",
+          repo_is_public: true,
+          row_more_count: 0,
+          rows: [
+            { source_id: "g1", label: "Tree.py · lines 13-72", file_path: "Tree.py", line_start: 13, line_end: 72, selection_reason: "ML training call", github_line_url: "https://github.com/alice/stroke-prediction/blob/main/Tree.py#L13-L72" },
+            { source_id: "g2", label: "retrain_tree.py · lines 87-105", file_path: "retrain_tree.py", line_start: 87, line_end: 105, selection_reason: "model instantiation", github_line_url: "https://github.com/alice/stroke-prediction/blob/main/retrain_tree.py#L87-L105" },
+          ],
+        },
+      ],
+    }
+  }
+
+  it("renders ONE compact repository group with code-line rows, not one full card per line", () => {
+    render(<SkillReportView report={skillReport({ projects: [], proof_chains: [], github: [], standalone_evidence: groupedStandalone() })} />)
+    const groups = screen.getAllByTestId("standalone-github-group")
+    expect(groups).toHaveLength(1)
+    expect(groups[0]).toHaveAttribute("data-repo", "Stroke Prediction Model")
+    // Compact rows, never full SkillEvidenceItem cards for the grouped lines.
+    const rows = screen.getAllByTestId("standalone-github-row")
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveTextContent("Tree.py · lines 13-72")
+    expect(rows[0]).toHaveTextContent("ML training call")
+    expect(screen.queryByTestId("skill-evidence-item")).not.toBeInTheDocument()
+  })
+
+  it("expands and collapses '+N more code locations' inline (rows present in payload)", () => {
+    const standalone: SkillReport["standalone_evidence"] = {
+      ...emptyStandalone(),
+      github: [],
+      github_groups: [
+        {
+          repo_label: "Stroke Prediction Model",
+          repo_url: "https://github.com/alice/stroke-prediction",
+          repo_is_public: true,
+          // Two collapsed rows beyond the visible window, still carried in `rows`.
+          row_more_count: 2,
+          rows: [
+            { source_id: "v1", label: "train.py · train_model()", file_path: "train.py", function_name: "train_model", selection_reason: "ML training call", github_line_url: "https://github.com/alice/stroke-prediction/blob/main/train.py#L1-L9" },
+            { source_id: "h1", label: "extra1.py · lines 1-5", file_path: "extra1.py", line_start: 1, line_end: 5, selection_reason: "model instantiation", github_line_url: "https://github.com/alice/stroke-prediction/blob/main/extra1.py#L1-L5" },
+            { source_id: "h2", label: "extra2.py · lines 1-5", file_path: "extra2.py", line_start: 1, line_end: 5, selection_reason: "evaluation metrics", github_line_url: "https://github.com/alice/stroke-prediction/blob/main/extra2.py#L1-L5" },
+          ],
+        },
+      ],
+    }
+    render(<SkillReportView report={skillReport({ projects: [], proof_chains: [], github: [], standalone_evidence: standalone })} />)
+    // Collapsed: only the first (visible) row shows; overflow rows are hidden.
+    expect(screen.getAllByTestId("standalone-github-row")).toHaveLength(1)
+    expect(screen.queryByText("extra2.py · lines 1-5")).not.toBeInTheDocument()
+    const toggle = screen.getByTestId("standalone-github-more")
+    expect(toggle).toHaveTextContent("+2 more code locations")
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    // Expand → all rows + their safe "View code lines" links appear.
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId("standalone-github-row")).toHaveLength(3)
+    expect(screen.getByText("extra2.py · lines 1-5")).toBeInTheDocument()
+    expect(toggle).toHaveAttribute("aria-expanded", "true")
+    expect(toggle).toHaveTextContent("Show fewer code locations")
+    const revealedLink = screen
+      .getAllByTestId("evidence-public-link")
+      .find((a) => a.getAttribute("href")?.includes("extra2.py"))
+    expect(revealedLink).toBeTruthy()
+    // Collapse again → back to a single visible row.
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId("standalone-github-row")).toHaveLength(1)
+  })
+
+  it("does not render an interactive '+N more' control when no rows are collapsed", () => {
+    render(<SkillReportView report={skillReport({ projects: [], proof_chains: [], github: [], standalone_evidence: groupedStandalone() })} />)
+    expect(screen.queryByTestId("standalone-github-more")).not.toBeInTheDocument()
+  })
+
+  it("links a public standalone repo once and never duplicates the rows as cards", () => {
+    render(<SkillReportView report={skillReport({ projects: [], proof_chains: [], github: [], standalone_evidence: groupedStandalone() })} />)
+    const repoLink = screen
+      .getAllByTestId("evidence-public-link")
+      .find((a) => a.getAttribute("href") === "https://github.com/alice/stroke-prediction")
+    expect(repoLink).toBeTruthy()
+  })
+
+  it("does NOT render the same standalone evidence twice (unlinked excludes standalone)", () => {
+    // The unlinked bucket is derived from the SAME standalone proofs; the same
+    // GitHub evidence (source_id g1) must appear ONCE — in the canonical
+    // standalone section, never also in "Unlinked supporting evidence".
+    const report = skillReport({
+      projects: [],
+      proof_chains: [],
+      github: [],
+      standalone_evidence: groupedStandalone(),
+      unlinked_supporting_evidence: {
+        count: 1,
+        more_count: 0,
+        items: [
+          { proof_type: "GitHub Proof", source_id: "g1", title: "Stroke Prediction Model", safe_summary: "Tree.py training.", safe_location: "Tree.py · lines 13-72", corroborates: "", limitation: "" },
+        ],
+      },
+    })
+    render(<SkillReportView report={report} />)
+    // Standalone group still renders the grouped GitHub rows.
+    expect(screen.getByTestId("standalone-github-group")).toHaveAttribute("data-repo", "Stroke Prediction Model")
+    // The duplicate unlinked card (same source_id) is dropped → section absent.
+    expect(screen.queryByTestId("skill-report-unlinked")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("unlinked-evidence")).not.toBeInTheDocument()
+  })
+
+  it("keeps truly unlinked non-standalone evidence in the unlinked section", () => {
+    const report = skillReport({
+      projects: [],
+      proof_chains: [],
+      github: [],
+      standalone_evidence: groupedStandalone(),
+      unlinked_supporting_evidence: {
+        count: 1,
+        more_count: 0,
+        // A different source_id that is NOT in the standalone groups.
+        items: [
+          { proof_type: "Document Proof", source_id: "loose-1", title: "Loose Memo", safe_summary: "Unrelated note.", safe_location: "Page 2", corroborates: "Project architecture", limitation: "" },
+        ],
+      },
+    })
+    render(<SkillReportView report={report} />)
+    expect(screen.getByTestId("skill-report-unlinked")).toHaveTextContent("Loose Memo")
+  })
+})
+
+// ── Connected proof-chain GitHub uses the grouped repository model ──────────────
+
+describe("SkillReportView — connected chain GitHub grouped by repository", () => {
+  function connectedChain(): SkillReportProjectChain {
+    return {
+      project_id: "proj-1",
+      project_title: "Boston Smart Accident Risk Rerouting",
+      attached: true,
+      attached_status: "Attached to a VBR project",
+      sources: ["GitHub Proof"],
+      evidence_chain_summary: "ML is supported by GitHub implementation.",
+      github_evidence: [{ ...GITHUB_ITEM, source_id: "gh-boston", file_path: "api.py", function_name: "predict" }],
+      github_groups: [
+        {
+          repo_label: "octocat/Hello-World",
+          repo_url: "https://github.com/octocat/Hello-World",
+          repo_is_public: true,
+          row_more_count: 0,
+          rows: [
+            { source_id: "gh-boston", label: "api.py · predict()", file_path: "api.py", function_name: "predict", selection_reason: "prediction endpoint", github_line_url: "https://github.com/octocat/Hello-World/blob/main/api.py#L252-L255" },
+          ],
+        },
+      ],
+      website_evidence: [],
+      document_correlations: [],
+      document_more_count: 0,
+      defense_evidence: [],
+      video_evidence: [],
+      limitations: [],
+    }
+  }
+
+  it("renders connected GitHub through the grouped model (one repo block, compact rows)", () => {
+    const chain = connectedChain()
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const section = screen.getByTestId("chain-github")
+    expect(section).toHaveTextContent("Code implementation")
+    // Grouped block (attached) — not the standalone "not attached" variant.
+    const group = screen.getByTestId("chain-github-group")
+    expect(group).toHaveAttribute("data-repo", "octocat/Hello-World")
+    expect(group).toHaveTextContent("Attached")
+    const rows = screen.getAllByTestId("standalone-github-row")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveTextContent("api.py · predict()")
+    // No "not attached" badge on a connected chain group.
+    expect(group).not.toHaveTextContent("Not attached to a VBR project")
+  })
+
+  it("renders ONE grouped block with MULTIPLE code rows (each with location, reason, link)", () => {
+    const chain = connectedChain()
+    chain.github_groups = [
+      {
+        repo_label: "octocat/Hello-World",
+        repo_url: "https://github.com/octocat/Hello-World",
+        repo_is_public: true,
+        row_more_count: 0,
+        rows: [
+          { source_id: "g-train", label: "src/train.py · train_model()", file_path: "src/train.py", function_name: "train_model", selection_reason: "Analyzer located function evidence for Machine Learning in src/train.py (lines 10-14).", github_line_url: "https://github.com/octocat/Hello-World/blob/main/src/train.py#L10-L14" },
+          { source_id: "g-prep", label: "src/preprocess.py · prepare_features()", file_path: "src/preprocess.py", function_name: "prepare_features", selection_reason: "Analyzer located function evidence for Machine Learning in src/preprocess.py (lines 20-24).", github_line_url: "https://github.com/octocat/Hello-World/blob/main/src/preprocess.py#L20-L24" },
+          { source_id: "g-pred", label: "api.py · predict()", file_path: "api.py", function_name: "predict", selection_reason: "Analyzer located function evidence for Machine Learning in api.py (lines 40-44).", github_line_url: "https://github.com/octocat/Hello-World/blob/main/api.py#L40-L44" },
+        ],
+      },
+    ]
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    // ONE repository group...
+    expect(screen.getAllByTestId("chain-github-group")).toHaveLength(1)
+    // ...with MULTIPLE code rows (not a single weak one-row card).
+    const rows = screen.getAllByTestId("standalone-github-row")
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toHaveTextContent("src/train.py · train_model()")
+    expect(rows[1]).toHaveTextContent("src/preprocess.py · prepare_features()")
+    expect(rows[2]).toHaveTextContent("api.py · predict()")
+    // Each row shows its selection reason and a safe "View code lines" link.
+    expect(rows[0]).toHaveTextContent("Analyzer located function evidence")
+    const links = screen.getAllByText("View code lines →")
+    expect(links.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it("never shows a contradictory 'No GitHub code evidence' note when github_groups exists", () => {
+    const chain = connectedChain()
+    // A stale derived limitation that the backend should have dropped post-merge;
+    // even if present, it must not contradict the rendered GitHub groups.
+    chain.limitations = ["3 related project attempts grouped."]
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    expect(screen.getByTestId("chain-github-group")).toBeInTheDocument()
+    expect(screen.queryByText(/No GitHub code evidence/i)).not.toBeInTheDocument()
+  })
+
+  it("falls back to the flat per-item list when a chain has no github_groups", () => {
+    const chain = { ...connectedChain(), github_groups: undefined }
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const section = screen.getByTestId("chain-github")
+    expect(section).toHaveTextContent("Code implementation")
+    // Older payload → flat SkillEvidenceItem card, not a grouped block.
+    expect(screen.getByTestId("skill-evidence-item")).toBeInTheDocument()
+    expect(screen.queryByTestId("chain-github-group")).not.toBeInTheDocument()
   })
 })
 

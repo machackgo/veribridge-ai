@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.github_code_evidence_segmentation import GitHubCodeEvidenceSummaryResponse
+from app.services.github_python_evidence_focus import strip_client_provenance
 
 
 VerificationStatus = Literal[
@@ -65,6 +66,16 @@ class _SkillEvidenceBase(BaseModel):
             trimmed = value.strip()
             return trimmed or None
         return str(value).strip() or None
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _strip_reserved_provenance(cls, value: object) -> object:
+        """Server-only provenance (analyzer marker, persisted grade, code
+        snippet, focused line ranges) is NEVER accepted from a public create/
+        update payload — a client could otherwise forge strong implementation
+        evidence. Strip the reserved fields + the server provenance namespace so
+        only the offline scanner's server-only path can establish provenance."""
+        return strip_client_provenance(value)
 
     @model_validator(mode="after")
     def _validate_line_range(self) -> "_SkillEvidenceBase":

@@ -15,6 +15,7 @@ import {
   ErrorState,
   LoadingState,
   Mono,
+  PassportIdentityHeader,
   TOKEN,
   type BadgeTone,
 } from "../../../../components/passport/shared"
@@ -305,16 +306,15 @@ export function PublicPassportView({ slug }: { slug: string }) {
       data-testid="public-passport"
       style={{ maxWidth: 900, margin: "0 auto", padding: "48px 24px", display: "flex", flexDirection: "column", gap: 16 }}
     >
-      {/* Header */}
-      <div style={{ textAlign: "center", display: "flex", flexDirection: "column", gap: 6 }}>
-        <Mono style={{ fontSize: 11, letterSpacing: "0.16em", color: TOKEN.indigo, textTransform: "uppercase" }}>
-          VeriBridge AI · Verified Work Passport
-        </Mono>
-        {passport.candidate_display_name && (
-          <h1 style={{ fontSize: 26, color: TOKEN.ink, margin: 0 }}>{passport.candidate_display_name}</h1>
-        )}
-        <p style={{ fontSize: 15, color: TOKEN.inkSoft, margin: 0, fontWeight: 600 }}>{passport.headline}</p>
-        <p style={{ fontSize: 13, color: TOKEN.muted, margin: "0 auto", maxWidth: 620, lineHeight: 1.6 }}>
+      {/* Header — passport-style candidate identity area (recruiter-safe) */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
+        <PassportIdentityHeader
+          identity={passport.identity}
+          fallbackName={passport.candidate_display_name}
+          fallbackHeadline={passport.headline}
+          align="center"
+        />
+        <p style={{ fontSize: 13, color: TOKEN.muted, margin: "0 auto", maxWidth: 620, lineHeight: 1.6, textAlign: "center" }}>
           {passport.summary}
         </p>
         {passport.published_at && (

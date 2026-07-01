@@ -2,6 +2,8 @@
 
 import type { ReactNode } from "react"
 
+import type { PassportIdentity } from "@/lib/vbr-api"
+
 // ── Design tokens (match globals.css variables) ──────────────────────────
 
 export const TOKEN = {
@@ -349,6 +351,112 @@ export function Grid2({ children }: { children: ReactNode }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
       {children}
+    </div>
+  )
+}
+
+/**
+ * The Verified Work Passport identity header — a passport-style candidate
+ * identity area (name, headline, education context, public status, evidence
+ * source summary). Recruiter-safe: it only renders the non-PII fields the
+ * backend supplies, and falls back to "Verified candidate profile" when no name
+ * is available — never a raw id or email. Shared by the private and public views.
+ */
+export function PassportIdentityHeader({
+  identity,
+  fallbackName,
+  fallbackHeadline,
+  align = "left",
+}: {
+  identity?: PassportIdentity | null
+  fallbackName?: string | null
+  fallbackHeadline?: string
+  align?: "left" | "center"
+}) {
+  const name = identity?.display_name ?? fallbackName ?? null
+  const headline = identity?.headline || fallbackHeadline || "Verified Work Passport"
+  const verification = identity?.verification_label || "Verified Work Passport"
+  const education = identity?.education_summary?.trim() || ""
+  const status = identity?.public_status?.trim() || ""
+  const sources = identity?.evidence_source_summary ?? []
+  const lastUpdated = identity?.last_updated ?? null
+  const isPublicLive = status.toLowerCase().includes("public passport live")
+  const centered = align === "center"
+
+  return (
+    <div
+      data-testid="passport-identity-header"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        textAlign: centered ? "center" : "left",
+        alignItems: centered ? "center" : "stretch",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          justifyContent: centered ? "center" : "flex-start",
+          flexWrap: "wrap",
+        }}
+      >
+        <Mono style={{ fontSize: 11, letterSpacing: "0.16em", color: TOKEN.indigo, textTransform: "uppercase" }}>
+          🪪 VeriBridge AI · {verification}
+        </Mono>
+        {status && (
+          <span data-testid="passport-identity-status">
+            <Badge tone={isPublicLive ? "emerald" : "slate"}>{status}</Badge>
+          </span>
+        )}
+      </div>
+
+      <h1 data-testid="passport-identity-name" style={{ fontSize: 24, color: TOKEN.ink, margin: 0 }}>
+        {name || "Verified candidate profile"}
+      </h1>
+      <p style={{ fontSize: 14, color: TOKEN.inkSoft, margin: 0, fontWeight: 600 }}>{headline}</p>
+
+      {education && (
+        <p data-testid="passport-identity-education" style={{ fontSize: 13, color: TOKEN.muted, margin: 0 }}>
+          🎓 {education}
+        </p>
+      )}
+
+      {sources.length > 0 && (
+        <div
+          data-testid="passport-identity-evidence-summary"
+          style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: centered ? "center" : "flex-start" }}
+        >
+          {sources.map((s) => (
+            <Badge key={s} tone="slate">
+              {s}
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          flexWrap: "wrap",
+          justifyContent: centered ? "center" : "flex-start",
+          alignItems: "center",
+        }}
+      >
+        {identity?.public_path && (
+          <Mono data-testid="passport-identity-public-path" style={{ fontSize: 11, color: TOKEN.muted }}>
+            {identity.public_path}
+          </Mono>
+        )}
+        {lastUpdated && (
+          <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
+            Updated {new Date(lastUpdated).toLocaleDateString()}
+          </Mono>
+        )}
+      </div>
     </div>
   )
 }

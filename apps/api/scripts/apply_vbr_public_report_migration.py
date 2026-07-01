@@ -1,4 +1,4 @@
-"""Apply VBR public-report + Work Passport migrations (051 + 052) to Supabase.
+"""Apply VBR public-report + Work Passport migrations (051 + 052 + 053) to Supabase.
 
 Usage:
     cd apps/api
@@ -15,6 +15,10 @@ Migrations applied (each is idempotent / additive-only):
       browser as "Failed to fetch" (the 500 carries no CORS header).
   052_vbr_work_passport.sql — creates the vbr_work_passports table + RLS so the
       public Work Passport can be published.
+  053_trusted_github_evidence_analysis.sql — creates the service-role-only
+      trusted_github_evidence_analysis table (+ RLS). Without it the GitHub
+      scanner's trusted-provenance write and the read-time grade trust check
+      both fail closed, so imported evidence silently degrades to weak grading.
 """
 
 from __future__ import annotations
@@ -99,6 +103,7 @@ if conn is None:
 MIGRATIONS = [
     "051_vbr_project_public_report_token.sql",
     "052_vbr_work_passport.sql",
+    "053_trusted_github_evidence_analysis.sql",
 ]
 
 migrations_dir = pathlib.Path(__file__).parent.parent / "app" / "db" / "migrations"
@@ -115,7 +120,10 @@ try:
         conn.commit()
         print(f"  {filename} applied.")
     print("\nAll migrations applied successfully.")
-    print("vbr_projects.public_report_token + vbr_work_passports are ready.")
+    print(
+        "vbr_projects.public_report_token + vbr_work_passports "
+        "+ trusted_github_evidence_analysis are ready."
+    )
 
     # Tell PostgREST to refresh its schema cache so the newly created
     # columns/tables (e.g. public.vbr_work_passports) become visible without a

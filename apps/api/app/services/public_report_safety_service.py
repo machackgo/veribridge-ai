@@ -192,6 +192,26 @@ _UUID_RE = re.compile(
 )
 _BARE_HEX_ID_RE = re.compile(r"^[0-9a-fA-F]{16,}$")
 _PREFIXED_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*[_-][0-9a-fA-F]{12,}$")
+# Known private-id prefixes whose suffix is a long *alphanumeric* (not just hex)
+# blob — e.g. ``user_1234567890ghijkl`` / ``project_ABCXYZ1234567890``. The hex
+# matcher above misses these (``g``/``h``/… are not hex), so a raw ``user_…`` /
+# ``project_…`` / ``student_…`` / ``artifact_…`` / ``source_…`` / ``provider_…`` /
+# ``report_…`` identifier could otherwise ride out on a public/private identity
+# header. Matched case-insensitively; the suffix must be ≥12 alphanumerics so
+# short human labels ("MS AI", "Machine Learning") are never caught.
+_PRIVATE_ID_PREFIXES = (
+    "user",
+    "project",
+    "student",
+    "artifact",
+    "source",
+    "provider",
+    "report",
+)
+_PREFIXED_ALNUM_ID_RE = re.compile(
+    r"^(?:" + "|".join(_PRIVATE_ID_PREFIXES) + r")[_-][A-Za-z0-9]{12,}$",
+    re.IGNORECASE,
+)
 _TOKEN_TRIM = " \t\r\n.,;:!?()[]{}<>\"'`"
 
 
@@ -418,6 +438,7 @@ def _looks_like_private_identifier(token: str) -> bool:
         _UUID_RE.match(candidate)
         or _BARE_HEX_ID_RE.match(candidate)
         or _PREFIXED_ID_RE.match(candidate)
+        or _PREFIXED_ALNUM_ID_RE.match(candidate)
     )
 
 

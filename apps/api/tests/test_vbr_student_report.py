@@ -1715,3 +1715,32 @@ def test_website_detail_service_is_used_for_attached_website_proof(
         "website_ocr",
         "website_visual",
     } <= loc_types
+
+
+# ── Performance: passport summary skips the per-project cross-proof vault scan ─
+
+
+def test_include_cross_proof_false_skips_whole_vault_scan(monkeypatch) -> None:
+    """The Work Passport builds a report per project but never reads
+    ``other_student_proofs``. ``include_cross_proof=False`` must skip the
+    expensive whole-vault scan (``collect_related_skill_proofs``) entirely."""
+    import app.services.student_proof_vault_service as vault
+    import app.services.vbr_student_report as report_mod
+
+    calls = {"n": 0}
+
+    def _spy(*args, **kwargs):  # pragma: no cover - should never run when gated
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(vault, "collect_related_skill_proofs", _spy)
+
+    project = {"id": str(uuid4()), "title": "P", "metadata": {"claimed_skills": ["Python"]}}
+
+    gated = report_mod.build_student_vbr_report({}, {}, project, USER_ID, include_cross_proof=False)
+    assert gated["other_student_proofs"] == []
+    assert calls["n"] == 0
+
+    # Default behaviour still runs the scan (backward compatible).
+    report_mod.build_student_vbr_report({}, {}, project, USER_ID)
+    assert calls["n"] == 1

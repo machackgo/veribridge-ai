@@ -34,6 +34,9 @@ from app.services.github_skill_evidence_service import (
     is_strong_code_snippet as _is_strong_code_snippet,
 )
 from app.services.github_skill_evidence_service import (
+    ml_pipeline_rank as _ml_pipeline_rank,
+)
+from app.services.github_skill_evidence_service import (
     safe_code_snippet as _safe_code_snippet,
 )
 from app.services.github_skill_evidence_service import (
@@ -773,6 +776,18 @@ def collect_github_proof_traces(
     # honest "stored proof lacked strong line-level evidence — reanalysis needed"
     # limitation rather than advertising imports as skill proof.
     strong_code = [c for c in github_code_evidence if c.get("evidence_strength") != "weak"]
+    # For ML-style skills, surface the most meaningful pipeline code first
+    # (training / preprocessing / model / predict / metrics / dataset) ahead of
+    # generic helper lines. Neutral for every non-ML skill, so other skills keep
+    # their stored order (stable sort).
+    strong_code.sort(
+        key=lambda c: _ml_pipeline_rank(
+            str(c.get("skill") or ""),
+            str(c.get("file_path") or ""),
+            str(c.get("code_snippet") or ""),
+            str(c.get("function_name") or "") or None,
+        )
+    )
     strong_skills = {_norm(str(c.get("skill") or "")) for c in strong_code}
     weak_only_skills = _dedupe_skill_names(
         [
@@ -1414,11 +1429,26 @@ def _enrich_skill_row(
     return row
 
 
-def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any], user_id: str) -> dict[str, Any]:
+def build_student_vbr_report(
+    db: Any,
+    pipeline_db: Any,
+    project: dict[str, Any],
+    user_id: str,
+    *,
+    include_cross_proof: bool = True,
+) -> dict[str, Any]:
     """Build the safe, student-owned VBR report preview for ``project``.
 
     ``project`` must already be ownership-checked (see
     ``get_owned_vbr_project_or_404``).
+
+    ``include_cross_proof`` controls the ``other_student_proofs`` section, which
+    scans the student's *entire* proof vault for related (unattached) proofs. It
+    is needed by the single-project report view, but a caller that builds a
+    report for every owned project (e.g. the Work Passport summary) pays that
+    whole-vault scan once per project for data it never reads — so it passes
+    ``include_cross_proof=False`` to skip it. The attached, project-honest
+    matrix/traces are unaffected; only the additive cross-proof section is gated.
     """
     metadata = project.get("metadata") or {}
     attached = metadata.get("attached_proofs") or {}
@@ -1610,14 +1640,15 @@ def build_student_vbr_report(db: Any, pipeline_db: Any, project: dict[str, Any],
     # never presented as if it belongs to this one. Lazy import breaks the import
     # cycle (the vault service imports scrubbers from this module).
     other_student_proofs: list[dict[str, Any]] = []
-    try:
-        from app.services.student_proof_vault_service import collect_related_skill_proofs
+    if include_cross_proof:
+        try:
+            from app.services.student_proof_vault_service import collect_related_skill_proofs
 
-        other_student_proofs = collect_related_skill_proofs(
-            db, pipeline_db, user_id, str(project["id"]), claimed_skills
-        )
-    except Exception:  # pragma: no cover - the vault section is best-effort/additive
-        other_student_proofs = []
+            other_student_proofs = collect_related_skill_proofs(
+                db, pipeline_db, user_id, str(project["id"]), claimed_skills
+            )
+        except Exception:  # pragma: no cover - the vault section is best-effort/additive
+            other_student_proofs = []
 
     # ── Limitations ──────────────────────────────────────────────────────────
     limitations: list[str] = []

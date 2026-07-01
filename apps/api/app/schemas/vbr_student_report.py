@@ -180,6 +180,7 @@ class VaultProofItem(BaseModel):
     # Explicit GitHub display-mode fields (only set for GitHub items).
     display_mode: str | None = None
     evidence_strength: str | None = None
+    evidence_quality_grade: str | None = None
     evidence_kind: str | None = None
     has_precise_line_evidence: bool | None = None
     github_line_url: str | None = None
@@ -192,6 +193,10 @@ class VaultProofItem(BaseModel):
     page_number: int | None = None
     section_label: str | None = None
     citation: str | None = None
+    # Safe document figure/diagram/table reference label + student recruiter-share
+    # opt-in (documents only; ``None`` for every other proof type). Never a path.
+    figure_reference: str | None = None
+    full_document_available: bool | None = None
     question_text: str | None = None
     answer_excerpt: str | None = None
     timestamp_label: str | None = None
@@ -295,6 +300,7 @@ class SkillReportEvidenceItem(BaseModel):
     #   ``display_mode``: "code_line" (precise) | "repo_level" (weak/repo-only).
     display_mode: str | None = None
     evidence_strength: str | None = None
+    evidence_quality_grade: str | None = None
     evidence_kind: str | None = None
     has_precise_line_evidence: bool | None = None
     github_line_url: str | None = None
@@ -309,6 +315,11 @@ class SkillReportEvidenceItem(BaseModel):
     page_number: int | None = None
     section_label: str | None = None
     citation: str | None = None
+    # Safe figure/diagram/table reference label (documents only; never the raw
+    # figure). ``full_document_available`` reflects the student's explicit
+    # recruiter-share opt-in — a plain bool, never a storage path or signed URL.
+    figure_reference: str | None = None
+    full_document_available: bool = False
     # Defense / video locators
     question_text: str | None = None
     answer_excerpt: str | None = None
@@ -336,6 +347,9 @@ class SkillReportDocumentCorrelation(BaseModel):
     page_number: int | None = None
     section_label: str | None = None
     citation: str | None = None
+    # Safe figure/diagram/table reference label (e.g. "Figure 3") — never the raw
+    # figure/image/text.
+    figure_reference: str | None = None
     safe_snippet: str | None = None
     # What stronger evidence this doc corroborates: "GitHub implementation" /
     # "Website workflow behavior" / "Skill explanation" / "Project architecture".
@@ -346,7 +360,49 @@ class SkillReportDocumentCorrelation(BaseModel):
     # Documents corroborate; they are supporting evidence, never primary proof.
     support_label: str = "Supporting evidence"
     reason: str = ""
+    # Why this page/section supports the skill (safe analyzer reason, with a
+    # deterministic fallback).
+    why_supported: str = ""
+    # Full-document download is gated on the student's explicit recruiter-share
+    # opt-in. ``full_document_available`` is a plain bool; ``document_access_note``
+    # carries the safe gating message — never a storage path or signed URL.
+    full_document_available: bool = False
+    document_access_note: str = ""
     limitation: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class SkillReportDefenseMoment(BaseModel):
+    """One cited Project Defense / video moment inside the grouped defense section.
+
+    A safe, timestamped explanation moment — never raw transcript text. Only the
+    label, optional timestamp/question, and a bounded safe summary are surfaced."""
+
+    label: str = ""
+    timestamp_label: str | None = None
+    question_text: str | None = None
+    short_summary: str = ""
+    source_id: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class SkillReportDefenseGroup(BaseModel):
+    """All Project Defense + Video evidence for one chain, grouped into ONE section.
+
+    Repeated defense attempts for the same project produced many near-identical
+    "the candidate explained their work" cards. This collapses them into a single
+    "Defense / video explanation" section: one concise explanation, the combined
+    cited moments/chips, one limitation, and the count of grouped evidence items
+    (no evidence is lost — the raw ``defense_evidence`` / ``video_evidence`` lists
+    are still present on the chain)."""
+
+    explanation: str = ""
+    moments: list[SkillReportDefenseMoment] = Field(default_factory=list)
+    grouped_count: int = 0
+    limitation: str = ""
+    source_ids: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -407,11 +463,21 @@ class SkillReportProjectChain(BaseModel):
     sources: list[str] = Field(default_factory=list)
     evidence_chain_summary: str = ""
     github_evidence: list[SkillReportEvidenceItem] = Field(default_factory=list)
+    # This chain's GitHub implementation evidence grouped by canonical owner/repo —
+    # the SAME compact, repository-grouped projection used for standalone GitHub
+    # (``SkillReportStandaloneGitHubGroup``) so connected "Code implementation"
+    # renders one grouped block per repo with compact file/line rows. Additive:
+    # ``github_evidence`` above stays for back-compat; the UI prefers these groups.
+    github_groups: list["SkillReportStandaloneGitHubGroup"] = Field(default_factory=list)
     website_evidence: list[SkillReportEvidenceItem] = Field(default_factory=list)
     document_correlations: list[SkillReportDocumentCorrelation] = Field(default_factory=list)
     document_more_count: int = 0
     defense_evidence: list[SkillReportEvidenceItem] = Field(default_factory=list)
     video_evidence: list[SkillReportEvidenceItem] = Field(default_factory=list)
+    # Project Defense + Video evidence collapsed into ONE grouped section so the
+    # chain never renders many repeated "the candidate explained their work"
+    # cards. ``None`` when the chain has no defense/video evidence.
+    defense_group: SkillReportDefenseGroup | None = None
     limitations: list[str] = Field(default_factory=list)
     # When several VBR project rows share the same proof package, duplicate chains
     # are collapsed into one representative; these record how many were merged.
@@ -440,10 +506,65 @@ class SkillReportProjectChain(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class SkillReportStandaloneGitHubRow(BaseModel):
+    """One compact code-location row inside a standalone GitHub repository group.
+
+    A single safe line/file locator (never a full evidence card) so several code
+    lines from the same repo render as compact grouped rows instead of one
+    repeated card per line. Carries only safe locators + a public ``…#L`` link."""
+
+    source_id: str = ""
+    # Human "file · lines / function()" label (e.g. "Tree.py · lines 13-72").
+    label: str = ""
+    file_path: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    function_name: str | None = None
+    display_mode: str | None = None
+    # Deterministic quality band (implementation_body / supporting_logic /
+    # config_or_constant / comment_or_docstring / import_only / route_decorator_only
+    # / repo_level_fallback). The frontend ranks/excludes weak rows by this grade so
+    # a route-decorator / docstring / import / fallback row never renders like real
+    # implementation code when a strong row exists for the same repo.
+    evidence_quality_grade: str | None = None
+    # Precise "why selected" reason ("ML training call"), when the analyzer set it.
+    selection_reason: str | None = None
+    github_line_url: str | None = None
+    public_url: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class SkillReportStandaloneGitHubGroup(BaseModel):
+    """Standalone GitHub evidence grouped by repository (compact rows, not cards).
+
+    Several code lines that belong to the same standalone repository are collapsed
+    into ONE repository group with compact ``rows`` instead of one full evidence
+    card per line — so "Standalone GitHub evidence — Stroke Prediction Model" reads
+    as a single grouped block. ``repo_url`` is only set when the repo is public."""
+
+    repo_label: str = ""
+    repo_url: str | None = None
+    repo_is_public: bool = False
+    rows: list[SkillReportStandaloneGitHubRow] = Field(default_factory=list)
+    # How many of ``rows`` are initially collapsed behind the "+N more code
+    # locations" toggle. ALL counted rows are present in ``rows`` (the overflow is
+    # not dropped) so the frontend can reveal them inline; ``0`` means every row
+    # is shown by default.
+    row_more_count: int = 0
+
+    model_config = {"extra": "forbid"}
+
+
 class SkillReportStandaloneEvidence(BaseModel):
     """Proofs supporting a skill that are not attached to any VBR project."""
 
     github: list[SkillReportEvidenceItem] = Field(default_factory=list)
+    # Standalone GitHub evidence grouped by repository — compact rows per repo so
+    # multiple lines from one repo never render as repeated full cards. Additive:
+    # ``github`` above stays for back-compat; ``github_groups`` is the primary,
+    # de-duplicated, repository-grouped projection the UI should render.
+    github_groups: list[SkillReportStandaloneGitHubGroup] = Field(default_factory=list)
     website: list[SkillReportEvidenceItem] = Field(default_factory=list)
     documents: list[SkillReportDocumentCorrelation] = Field(default_factory=list)
     document_more_count: int = 0

@@ -15,12 +15,37 @@ Design principles:
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
 import httpx
+
+try:
+    # Deterministic Python AST evidence focusing + grading (shared with the
+    # read-time services). Focuses a line anchor onto its enclosing function/class
+    # body so the scanner persists implementation bodies, not docstring / import /
+    # decorator-only windows. Guarded so the scanner still imports if run fully
+    # standalone (outside the app package), in which case focusing is skipped.
+    from app.services.github_python_evidence_focus import (  # type: ignore
+        ANALYZER_NAME,
+        ANALYZER_VERSION,
+        TRUSTED_ANALYSIS_TABLE,
+        build_server_provenance,
+        focus_python_range,
+        grade_evidence,
+        is_strong_grade,
+    )
+except Exception:  # pragma: no cover - standalone fallback
+    focus_python_range = None  # type: ignore
+    is_strong_grade = None  # type: ignore
+    grade_evidence = None  # type: ignore
+    build_server_provenance = None  # type: ignore
+    TRUSTED_ANALYSIS_TABLE = "trusted_github_evidence_analysis"  # type: ignore
+    ANALYZER_NAME = "veribridge_github_ast_focus"  # type: ignore
+    ANALYZER_VERSION = "1"  # type: ignore
 
 
 # ── Data types ────────────────────────────────────────────────────────────────
@@ -54,6 +79,14 @@ class EvidenceCandidate:
     detection_reason: str
     github_highlight_url: str
     import_key: str                  # deduplicate key
+    # Controlled analyzer provenance for the persisted precise range. These let the
+    # canonical read-time adapter keep a strong grade WITHOUT re-fetching source:
+    # the AST focus already proved the grade from real source at scan time.
+    evidence_quality_grade: str | None = None   # band computed by the AST focus
+    code_snippet: str | None = None             # focused public source excerpt
+    focused_start_line: int | None = None       # provenance: AST-focused range
+    focused_end_line: int | None = None
+    focused_reason: str | None = None           # why this range was selected
 
 
 @dataclass
@@ -445,6 +478,22 @@ def select_high_signal_ranges(
 
     total = len(lines)
 
+    is_python = file_path.lower().endswith(".py")
+
+    # Fail closed on un-parseable Python. The whole value of the AST focus is that
+    # it PROVES a selected range is a real implementation body; when the file does
+    # not parse, that proof is impossible, so the old keyword-window heuristic would
+    # otherwise promote unparsed ranges (ML keywords sitting in comments / imports /
+    # broken code) as strong precise evidence. Instead we skip precise code evidence
+    # for the file entirely — a malformed Python file never yields visible
+    # implementation_body / supporting_logic evidence. (Non-Python files keep their
+    # existing conservative heuristics below — only Python is AST-gated.)
+    if is_python:
+        try:
+            ast.parse(content)
+        except (SyntaxError, ValueError):
+            return []
+
     # Score each line
     anchor_lines: list[tuple[int, int, str]] = []
     for i, line in enumerate(lines):
@@ -463,6 +512,7 @@ def select_high_signal_ranges(
     groups = _group_anchors(anchor_lines, gap=15)
 
     results: list[tuple[int, int, str]] = []
+    weak_results: list[tuple[int, int, str]] = []
     seen_starts: set[int] = set()
 
     for group in groups:
@@ -476,6 +526,24 @@ def select_high_signal_ranges(
         exp_start = max(1, anchor_start - 3)
         exp_end = min(total, anchor_end + 15)
 
+        # For Python, focus the candidate region onto the enclosing function/class
+        # body (after its docstring) so the persisted range is an implementation
+        # body, not a docstring/import/decorator-only window. The grade decides
+        # whether this is real implementation evidence; weak-grade ranges are held
+        # back and only used if no strong range is found (see below).
+        focused_grade: str | None = None
+        if is_python and focus_python_range is not None:
+            focused = focus_python_range(
+                content, anchor_start, anchor_end, max_lines=80, include_signature=True
+            )
+            if focused is not None:
+                exp_start, exp_end, focused_grade = focused
+            else:
+                # Defensive: the whole-file parse above already fails closed, but if
+                # an individual range cannot be focused (parse loss), never promote
+                # the raw keyword window — demote it to a weak fallback grade.
+                focused_grade = "repo_level_fallback"
+
         # Avoid duplicating ranges that start very close together
         if any(abs(exp_start - s) < 8 for s in seen_starts):
             continue
@@ -487,12 +555,25 @@ def select_high_signal_ranges(
             continue
 
         seen_starts.add(exp_start)
-        results.append((exp_start, exp_end, best_reason))
+        candidate = (exp_start, exp_end, best_reason)
+        # Demote (but do not discard) Python ranges that focus to a non-implementation
+        # body — a docstring / import / constant / bare route decorator. They are only
+        # surfaced if no strong implementation body exists in this file.
+        if focused_grade is not None and is_strong_grade is not None and not is_strong_grade(focused_grade):
+            weak_results.append(candidate)
+        else:
+            results.append(candidate)
 
         if len(results) >= max_ranges:
             break
 
-    return results
+    if len(results) < max_ranges:
+        for candidate in weak_results:
+            results.append(candidate)
+            if len(results) >= max_ranges:
+                break
+
+    return results[:max_ranges]
 
 
 # ── Dockerfile range selector ─────────────────────────────────────────────────
@@ -924,7 +1005,7 @@ class PortfolioScanner:
                     candidates.append(self._make_candidate(
                         repo, branch, file_path, start, end,
                         "Docker", "Dockerfile instruction",
-                        website_url,
+                        website_url, content=content,
                     ))
 
         # GitHub Actions workflow
@@ -936,7 +1017,7 @@ class PortfolioScanner:
                     candidates.append(self._make_candidate(
                         repo, branch, file_path, start, end,
                         "CI/CD", "CI/CD workflow step",
-                        website_url,
+                        website_url, content=content,
                     ))
 
         # Python / ML / FastAPI files
@@ -955,7 +1036,7 @@ class PortfolioScanner:
             for start, end, reason in ranges:
                 candidates.append(self._make_candidate(
                     repo, branch, file_path, start, end,
-                    best_skill, reason, website_url,
+                    best_skill, reason, website_url, content=content,
                 ))
 
         # TypeScript / JavaScript / React
@@ -967,7 +1048,7 @@ class PortfolioScanner:
                 for start, end, reason in ranges:
                     candidates.append(self._make_candidate(
                         repo, branch, file_path, start, end,
-                        skill, reason, website_url,
+                        skill, reason, website_url, content=content,
                     ))
 
         # YAML (non-workflow) — skip for now, too noisy
@@ -983,8 +1064,27 @@ class PortfolioScanner:
         skill_name: str,
         detection_reason: str,
         website_url: str | None,
+        *,
+        content: str | None = None,
     ) -> EvidenceCandidate:
         project_title = _prettify_repo_name(repo.name)
+        # Grade + capture the EXACT persisted window from real source so the grade
+        # travels with the candidate (and survives import_candidates). The snippet
+        # is public repo source code already reachable via the highlight URL — it
+        # carries no secret/token/private metadata.
+        code_snippet: str | None = None
+        evidence_quality_grade: str | None = None
+        if content is not None:
+            window = content.splitlines()[line_start - 1 : line_end]
+            code_snippet = "\n".join(window) or None
+            if grade_evidence is not None:
+                evidence_quality_grade = grade_evidence(
+                    file_path=file_path,
+                    code_snippet=code_snippet,
+                    selection_reason=detection_reason,
+                    line_start=line_start,
+                    line_end=line_end,
+                )
         highlight_url = build_github_highlight_url(
             repo.owner, repo.name, branch, file_path, line_start, line_end
         )
@@ -1011,6 +1111,11 @@ class PortfolioScanner:
             detection_reason=detection_reason,
             github_highlight_url=highlight_url,
             import_key=import_key,
+            evidence_quality_grade=evidence_quality_grade,
+            code_snippet=code_snippet,
+            focused_start_line=line_start,
+            focused_end_line=line_end,
+            focused_reason=detection_reason,
         )
 
 
@@ -1061,12 +1166,19 @@ def import_candidates(
             from app.schemas.skill_evidence import SkillEvidenceCreate
             from app.services.skill_evidence_service import SkillEvidenceService
 
+            # PUBLIC metadata only — never the analyzer marker / grade / snippet.
+            # Those are server-only provenance: the create payload goes through the
+            # same public schema a hostile client could POST, which STRIPS reserved
+            # provenance fields. So we persist provenance separately, AFTER create,
+            # through a server-only path (``_stamp_server_provenance``) that public
+            # callers never reach.
             metadata: dict[str, Any] = {
                 "evidence_title": candidate.project_title,
                 "submission_source": "student_profile_proof_modal",
                 "import_source": "github_portfolio_importer",
                 "import_key": real_import_key,
                 "branch_ref": "main",
+                "selection_reason": candidate.detection_reason,
             }
 
             payload = SkillEvidenceCreate(
@@ -1083,6 +1195,25 @@ def import_candidates(
             evidence = SkillEvidenceService(supabase_client).create_skill_evidence(
                 user_id, payload
             )
+
+            # Server-only provenance: the AST analyzer's grade + the exact public
+            # source excerpt (secrets redacted) so the canonical read-time adapter
+            # can keep a verified strong grade without re-fetching source. Stamped
+            # into the SERVICE-ROLE-ONLY protected table, which authenticated users
+            # can neither write nor read — a user-supplied metadata string cannot
+            # forge it.
+            if build_server_provenance is not None and (
+                candidate.evidence_quality_grade or candidate.code_snippet
+            ):
+                provenance = build_server_provenance(
+                    grade=candidate.evidence_quality_grade,
+                    code_snippet=candidate.code_snippet,
+                    focused_start_line=candidate.focused_start_line,
+                    focused_end_line=candidate.focused_end_line,
+                    focused_reason=candidate.focused_reason,
+                )
+                _stamp_server_provenance(supabase_client, user_id, evidence.id, provenance)
+
             result.created.append(
                 f"CREATED: {evidence.id} — {candidate.skill_name} "
                 f"from {candidate.file_path}:{candidate.line_start}-{candidate.line_end} "
@@ -1094,6 +1225,42 @@ def import_candidates(
             )
 
     return result
+
+
+def _stamp_server_provenance(
+    supabase_client: Any,
+    user_id: str,
+    evidence_id: str,
+    provenance: dict[str, Any],
+) -> None:
+    """Persist server-only evidence provenance into the protected analysis table.
+
+    SERVER-ONLY path — never reachable from a public create/update. It writes the
+    analyzer marker, scan-time grade, redacted source excerpt and focused line
+    range into :data:`TRUSTED_ANALYSIS_TABLE`, a SERVICE-ROLE-ONLY table that
+    authenticated users can neither write (so they cannot forge a trusted grade)
+    nor read. The provenance NEVER goes into the user-editable
+    ``skill_evidence.metadata``. Best-effort: a failure here never aborts the
+    import (the row simply falls back to weak/source-backed grading at read time).
+    """
+    if not evidence_id:
+        return
+    record = {
+        **provenance,
+        "skill_evidence_id": evidence_id,
+        "user_id": user_id,
+    }
+    try:
+        if isinstance(supabase_client, dict):
+            supabase_client.setdefault(TRUSTED_ANALYSIS_TABLE, {})[evidence_id] = record
+            return
+        (
+            supabase_client.table(TRUSTED_ANALYSIS_TABLE)
+            .upsert(record, on_conflict="skill_evidence_id")
+            .execute()
+        )
+    except Exception:  # pragma: no cover - provenance stamp is best-effort
+        return
 
 
 # ── Dry-run report builder ─────────────────────────────────────────────────────

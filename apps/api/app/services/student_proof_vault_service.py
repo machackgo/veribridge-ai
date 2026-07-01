@@ -50,10 +50,17 @@ from app.services.github_canonical_skill_evidence_adapter import (
     collect_canonical_github_skill_evidence,
     repo_identity,
 )
+from app.services.github_python_evidence_focus import (
+    GRADE_REPO_LEVEL_FALLBACK,
+    grade_rank,
+    is_strong_grade,
+)
 from app.services.github_skill_evidence_service import (
     GitHubSkillEvidenceItem,
     GitHubSkillEvidenceResult,
     extract_github_skill_evidence,
+    is_github_evidence_related_to_skill,
+    is_ml_skill,
 )
 from app.services.safe_public_url import is_safe_public_url
 from app.services.skill_normalization import canonical_skill, skill_category, skill_slug
@@ -103,6 +110,15 @@ _GITHUB_WEAK_ONLY_LIMITATION = (
     "setup/metadata or notebook narrative — not strong line-level proof. Reanalysis is needed to "
     "surface stronger code-level evidence."
 )
+# Derived "this project has no GitHub code evidence for this skill" limitation.
+# A shared constant so the per-chain generator and the same-title merge (which
+# must drop it once chains with GitHub evidence are unioned in) stay in sync.
+_NO_GITHUB_CODE_EVIDENCE_LIMITATION = "No GitHub code evidence in this project for this skill."
+# Max precise (strong/medium) fallback code rows emitted per repo+skill from a
+# ``github_proof_submissions`` snapshot. The canonical ranking (strong→medium,
+# ML-pipeline relevance, line presence) is preserved by ``strong_for_skill``, so
+# this only bounds how many of the strongest rows are surfaced per repo+skill.
+_MAX_GITHUB_FALLBACK_ROWS_PER_SKILL = 5
 _GITHUB_CANONICAL_LIMITATION = (
     "Precise code lines selected by the GitHub Portfolio & Proof scanner; locating skill-relevant "
     "code is strong evidence of the skill but is not, by itself, proof of sole authorship — combine "
@@ -222,6 +238,12 @@ _LOCATOR_KEYS = (
     "page_number",
     "section_label",
     "citation",
+    # Safe document context: a figure/diagram/table reference label (never the
+    # raw image/text) and whether the student explicitly allowed full-document
+    # recruiter download. ``full_document_available`` is a plain bool — it never
+    # carries a storage path or signed URL.
+    "figure_reference",
+    "full_document_available",
     "question_text",
     "answer_excerpt",
     "timestamp_label",
@@ -230,6 +252,7 @@ _LOCATOR_KEYS = (
     # for GitHub items; ``None`` everywhere else.
     "display_mode",
     "evidence_strength",
+    "evidence_quality_grade",
     "evidence_kind",
     "has_precise_line_evidence",
     "github_line_url",
@@ -359,7 +382,16 @@ def _canonical_github_items(
     covered: set[tuple[str, str]] = set()
     for ev in collect_canonical_github_skill_evidence(db, user_id):
         attached = repo_pids.get(ev.repo_id, []) if ev.repo_id else []
-        covered.add((ev.repo_id, ev.skill_key))
+        # Only STRONG canonical evidence (implementation_body / supporting_logic)
+        # is allowed to suppress the weaker github_proof_submissions fallback for
+        # the same (repo, skill). A weak canonical row (import-only / docstring /
+        # config / repo_level_fallback) is still surfaced as its own precise item,
+        # but must NOT mark the pair fully covered — otherwise a stale/weak
+        # canonical import row would hide a STRONGER snapshot/fallback proof for
+        # the same repo+skill. Exact-duplicate rows are still collapsed later by
+        # :func:`_dedupe_evidence`.
+        if is_strong_grade(ev.evidence_quality_grade):
+            covered.add((ev.repo_id, ev.skill_key))
         summary = (
             ev.evidence_description
             or ev.selection_reason
@@ -387,6 +419,7 @@ def _canonical_github_items(
                     "github_line_url": ev.github_line_url,
                     "repo_url": ev.repo_url if ev.public_safe else None,
                     "evidence_strength": ev.evidence_strength,
+                    "evidence_quality_grade": ev.evidence_quality_grade,
                     "evidence_kind": ev.evidence_kind,
                     "selection_reason": ev.selection_reason,
                     "subskill_name": ev.subskill_name,
@@ -449,6 +482,7 @@ def _collect_github(db: Any, user_id: str, attach: dict[tuple[str, str], list[st
             "display_mode": "repo_level",
             "has_precise_line_evidence": False,
             "evidence_kind": "repo_level_summary",
+            "evidence_quality_grade": "repo_level_fallback",
         }
 
         if not all_skill_keys:
@@ -478,39 +512,54 @@ def _collect_github(db: Any, user_id: str, attach: dict[tuple[str, str], list[st
             # already covers it — never override it with the weaker snapshot.
             if (row_repo_id, key) in covered:
                 continue
-            # Pick the STRONGEST evidence for this skill — never the first blindly.
-            strong = result.best_strong_for_skill(display)
-            if strong is not None:
-                items.append(
-                    _make_item(
-                        skill_name=display,
-                        proof_type=PROOF_GITHUB,
-                        source_id=proof_id,
-                        source_table=_GITHUB_PROOFS_TABLE,
-                        title=str(repo_full),
-                        safe_summary=summary,
-                        safe_location=_github_location_label(strong),
-                        public_safe=public_safe,
-                        limitation=_GITHUB_LIMITATION,
-                        attached_project_ids=attached,
-                        safe_snippet=strong.code_snippet,
-                        locators={
-                            "file_path": strong.file_path,
-                            "line_start": strong.line_start,
-                            "line_end": strong.line_end,
-                            "function_name": strong.function_name,
-                            "commit_sha": strong.commit_sha,
-                            "public_url": strong.github_url or repo_public_url,
-                            # Explicit precise-evidence display mode for the frontend.
-                            "display_mode": "code_line",
-                            "has_precise_line_evidence": True,
-                            "github_line_url": strong.github_url,
-                            "repo_url": repo_public_url,
-                            "evidence_strength": strong.evidence_strength,
-                            "evidence_kind": strong.evidence_kind,
-                        },
+            # Emit EVERY distinct strong/medium precise row for this skill (already
+            # ranked strong→medium, ML-pipeline relevance, then line presence by the
+            # extractor), bounded per repo+skill — not just the single best row. A
+            # one-row group made connected GitHub proof look weaker than standalone;
+            # the bounded ranked list surfaces the same multi-row code evidence.
+            strong_rows = result.strong_for_skill(display)[:_MAX_GITHUB_FALLBACK_ROWS_PER_SKILL]
+            if strong_rows:
+                for strong in strong_rows:
+                    # Preserve the analyzer's mapping reason as the row's
+                    # ``selection_reason`` (safely scrubbed) so connected rows carry
+                    # the same "why this line" context as canonical precise rows.
+                    selection_reason = (
+                        _trace_text(_scrub_score_fragments(strong.mapping_reason))
+                        if strong.mapping_reason
+                        else None
                     )
-                )
+                    items.append(
+                        _make_item(
+                            skill_name=display,
+                            proof_type=PROOF_GITHUB,
+                            source_id=proof_id,
+                            source_table=_GITHUB_PROOFS_TABLE,
+                            title=str(repo_full),
+                            safe_summary=summary,
+                            safe_location=_github_location_label(strong),
+                            public_safe=public_safe,
+                            limitation=_GITHUB_LIMITATION,
+                            attached_project_ids=attached,
+                            safe_snippet=strong.code_snippet,
+                            locators={
+                                "file_path": strong.file_path,
+                                "line_start": strong.line_start,
+                                "line_end": strong.line_end,
+                                "function_name": strong.function_name,
+                                "commit_sha": strong.commit_sha,
+                                "public_url": strong.github_url or repo_public_url,
+                                # Explicit precise-evidence display mode for the frontend.
+                                "display_mode": "code_line",
+                                "has_precise_line_evidence": True,
+                                "github_line_url": strong.github_url,
+                                "repo_url": repo_public_url,
+                                "evidence_strength": strong.evidence_strength,
+                                "evidence_quality_grade": strong.evidence_quality_grade,
+                                "evidence_kind": strong.evidence_kind,
+                                "selection_reason": selection_reason,
+                            },
+                        )
+                    )
             else:
                 # Weak-only (or no) line evidence → honest repo-level fallback. We
                 # NEVER render the weak snippet or fabricate a line URL.
@@ -533,6 +582,21 @@ def _collect_github(db: Any, user_id: str, attach: dict[tuple[str, str], list[st
     return items
 
 
+# Dedicated, student-controlled full-document download opt-in fields. Consent is
+# granted ONLY when one of these holds an actual boolean ``True`` (see the
+# ``is True`` gate in ``_collect_documents``); the generic ``public_safe`` flag is
+# deliberately excluded — "safe to summarize/cite" is not "safe to download".
+_DOWNLOAD_CONSENT_FIELDS = (
+    "recruiter_shareable",
+    "allow_full_download",
+    "allow_public_download",
+    "public_download_enabled",
+    "student_allowed_public_download",
+    "recruiter_download_enabled",
+    "explicit_download_consent",
+)
+
+
 def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list[str]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for row in _rows_for_user(db, _DOCUMENTS_TABLE, user_id):
@@ -543,6 +607,24 @@ def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list
         analysis_json = row.get("analysis_json") if isinstance(row.get("analysis_json"), dict) else {}
         title = str(analysis_json.get("title") or row.get("file_path") or "Document")
         status_label = str(row.get("status") or "analyzed")
+
+        # Whether the student explicitly allowed full-document recruiter download.
+        # Sourced ONLY from a dedicated student-controlled download opt-in on the
+        # document's analysis_json (default closed). The generic ``public_safe``
+        # flag is intentionally NOT consulted here: ``public_safe`` means a
+        # document is safe to *summarize/cite* in a projection — it is NOT consent
+        # to share the full document for download.
+        #
+        # Consent MUST be an actual Python boolean ``True`` on a dedicated opt-in
+        # field. Truthy strings/numbers/containers ("true", "false", "yes", "no",
+        # "1", "0", 1, 0, [], {}, any non-empty string) are NEVER consent — a
+        # malformed/free-text value defaults to closed. A missing field is closed;
+        # an explicit ``False`` disables. This is a plain bool — we NEVER surface a
+        # storage path or signed URL from here; an "available" document still only
+        # shows safe context, and any actual download is gated by its own endpoint.
+        full_download_allowed = any(
+            analysis_json.get(field) is True for field in _DOWNLOAD_CONSENT_FIELDS
+        )
 
         evidence_objects = row.get("evidence_objects") if isinstance(row.get("evidence_objects"), list) else []
         seen_skills: set[str] = set()
@@ -565,6 +647,19 @@ def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list
                 location = "matched skill"
             page_int = page if isinstance(page, int) else (int(page) if isinstance(page, str) and page.isdigit() else None)
             reason = _trace_text(_scrub_score_fragments(str(obj.get("reason") or "")), 200) or None
+            # Safe figure/diagram/table reference label (e.g. "Figure 3", "Table 2")
+            # — only the analyzer's reference label, never the raw image/text.
+            figure_reference = _trace_text(
+                str(
+                    obj.get("figure_reference")
+                    or obj.get("figure")
+                    or obj.get("table_reference")
+                    or obj.get("diagram_reference")
+                    or obj.get("exhibit")
+                    or ""
+                ),
+                60,
+            ) or None
             items.append(
                 _make_item(
                     skill_name=skill,
@@ -586,6 +681,8 @@ def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list
                         "page_number": page_int,
                         "section_label": section,
                         "citation": section,
+                        "figure_reference": figure_reference,
+                        "full_document_available": full_download_allowed,
                     },
                 )
             )
@@ -604,6 +701,7 @@ def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list
                     public_safe=False,
                     limitation=_DOCUMENT_LIMITATION,
                     attached_project_ids=attached,
+                    locators={"full_document_available": full_download_allowed},
                 )
             )
     return items
@@ -1079,6 +1177,7 @@ def _report_item(item: dict[str, Any], titles: dict[str, str], *, hydrated: dict
         # Explicit GitHub display-mode fields (frontend renders from these).
         "display_mode": item.get("display_mode"),
         "evidence_strength": item.get("evidence_strength"),
+        "evidence_quality_grade": item.get("evidence_quality_grade"),
         "evidence_kind": item.get("evidence_kind"),
         "has_precise_line_evidence": item.get("has_precise_line_evidence"),
         "github_line_url": item.get("github_line_url"),
@@ -1090,6 +1189,8 @@ def _report_item(item: dict[str, Any], titles: dict[str, str], *, hydrated: dict
         "page_number": item.get("page_number"),
         "section_label": item.get("section_label"),
         "citation": item.get("citation"),
+        "figure_reference": item.get("figure_reference"),
+        "full_document_available": bool(item.get("full_document_available")),
         "question_text": item.get("question_text"),
         "answer_excerpt": item.get("answer_excerpt"),
         "timestamp_label": item.get("timestamp_label"),
@@ -1126,6 +1227,7 @@ _DOC_CORROBORATION_BASE_LIMITATION = (
     "Document supports the claim but does not independently prove implementation."
 )
 _DOC_PRIVATE_NOTE = "Private document; only a safe citation is shown."
+_DOC_DOWNLOAD_GATED_NOTE = "Full document available only with candidate permission."
 
 
 def _doc_corroborates_label(*, has_github: bool, has_website: bool, has_defense: bool) -> str:
@@ -1156,19 +1258,39 @@ def _doc_correlation(
     limitations = [_DOC_CORROBORATION_BASE_LIMITATION, _DOC_PRIVATE_NOTE]
     if not attached_to_project:
         limitations.append(_UNATTACHED_NOTE)
+    # Full-document download is gated on the student's explicit recruiter-share
+    # opt-in. When not allowed, surface a safe permission note instead of any
+    # path/URL (which are NEVER exposed here regardless of the flag).
+    full_document_available = bool(item.get("full_document_available"))
+    document_access_note = (
+        "Full document shared by the candidate for recruiter review."
+        if full_document_available
+        else _DOC_DOWNLOAD_GATED_NOTE
+    )
     return {
         "source_id": str(item["source_id"]),
         "document_title": item.get("title") or "Document",
         "page_number": item.get("page_number"),
         "section_label": item.get("section_label"),
         "citation": item.get("citation"),
+        # Safe figure/diagram/table reference label (never the raw figure).
+        "figure_reference": item.get("figure_reference"),
         "safe_snippet": item.get("safe_snippet"),
         "corroborates": corroborates,
         "correlation_confidence": confidence
         or ("direct attachment" if attached_to_project else "weak/standalone"),
         "reason": item.get("safe_summary") or "",
+        # Why this page/section supports the skill — the analyzer's safe reason,
+        # falling back to a deterministic "supports {corroborates}" sentence.
+        "why_supported": (
+            item.get("safe_summary")
+            or f"This document section supports {corroborates.lower()} for this skill."
+        ),
         # Documents corroborate; they are supporting evidence, never "Demonstrated".
         "support_label": "Supporting evidence",
+        # Recruiter-safe download gating (no signed URL / storage path ever).
+        "full_document_available": full_document_available,
+        "document_access_note": document_access_note,
         "limitation": " ".join(limitations),
     }
 
@@ -1226,6 +1348,161 @@ def _dedupe_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+# Compact code-location rows shown per repository BEFORE the "+N more" toggle.
+_MAX_STANDALONE_GITHUB_ROWS_PER_REPO = 6
+# Hard upper bound on rows carried per repository group. Rows beyond the visible
+# window (above) are still included in the payload so the frontend can expand
+# "+N more code locations" inline, but the total is bounded so a pathological repo
+# never bloats the report. Strong implementation rows are ordered first, so any
+# rows dropped past this cap are always the weakest/repo-level fallbacks.
+_MAX_GITHUB_GROUP_ROWS_HARD_CAP = 18
+
+
+def _github_row_label(e: dict[str, Any]) -> str:
+    """Compact "file · function()/lines" label for one standalone GitHub row."""
+    fp = str(e.get("file_path") or "").strip()
+    if not fp:
+        return str(e.get("title") or "Repository-level evidence")
+    if e.get("function_name"):
+        return f"{fp} · {e['function_name']}()"
+    line_start = e.get("line_start")
+    if line_start:
+        line_end = e.get("line_end")
+        rng = f"lines {line_start}" + (
+            f"-{line_end}" if line_end and line_end != line_start else ""
+        )
+        return f"{fp} · {rng}"
+    return fp
+
+
+def _github_row_tier(row: dict[str, Any]) -> int:
+    """Precise-vs-repo-level tier for a row. ``0`` = precise code line, ``1`` =
+    other, ``2`` = repo-level fallback. Used as a SECONDARY key after the quality
+    grade so precise code rows still sort above repo-level cards within a grade."""
+    has_line = bool(row.get("file_path")) and row.get("line_start") is not None
+    display_mode = str(row.get("display_mode") or "")
+    if display_mode == "code_line" or has_line:
+        return 0
+    if display_mode == "repo_level":
+        return 2
+    return 1
+
+
+def _github_row_rank(row: dict[str, Any]) -> tuple[int, int]:
+    """Sort key ordering STRONG implementation rows above weak/repo-level rows.
+
+    The PRIMARY key is the deterministic ``evidence_quality_grade`` band (so an
+    ``implementation_body`` / ``supporting_logic`` row outranks a
+    ``route_decorator_only`` / docstring / import / config / repo-level fallback
+    row for the same repo). The SECONDARY key is the precise-vs-repo-level tier so
+    a precise code line still sorts above an honest repo-level card within the same
+    grade. Neither key is the file path: the sort is stable, so the upstream
+    ML-pipeline relevance order (training / preprocessing / model / inference /
+    metrics ahead of generic helpers) is preserved among equal-rank rows.
+    """
+    return (grade_rank(row.get("evidence_quality_grade")), _github_row_tier(row))
+
+
+def _group_github_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group GitHub evidence by repository into compact row groups.
+
+    Several code lines from the SAME repository are collapsed into one repository
+    group with compact ``rows`` (a safe "file · lines" label + public ``…#L``
+    link) instead of one full evidence card per line. Repositories are grouped
+    ONLY by their canonical ``owner/name`` identity (an exact-owner match that
+    must contain a ``/`` — never a bare repo name), so two different owners'
+    same-named repos never merge. Evidence with NO canonical owner/repo identity
+    (a legacy/ownerless row) is ambiguous: grouping it by title alone would
+    wrongly merge two unrelated "shared-app" rows, so we fail closed and keep each
+    such row as its own group, keyed by stable *internal* evidence identity
+    (source_id / file / line range / display mode via :func:`_evidence_item_key`).
+    That identity is only ever a grouping key — it is never exposed in the
+    projected rows. ``repo_url`` is only carried when the repo is public-safe.
+    Rows are de-duplicated, ordered precise-line-first, and capped per repo (the
+    remainder is reported as ``row_more_count``). Returns ``[]`` for an empty
+    list. Used for BOTH the standalone GitHub projection and each connected proof
+    chain's "Code implementation" section so they render the same grouped model.
+    """
+    groups: list[dict[str, Any]] = []
+    index: dict[Any, dict[str, Any]] = {}
+    seen_rows: dict[Any, set[tuple]] = {}
+    for e in items:
+        repo_full, _name = _github_repo_identity(e)
+        # Group ONLY by a confidently-known canonical ``owner/repo`` (must contain
+        # a ``/``). A missing/ownerless identity falls back to stable evidence
+        # identity — NEVER the title — so ambiguous legacy rows stay separate.
+        if "/" in repo_full:
+            key: Any = ("repo", repo_full)
+        else:
+            key = ("evidence", _evidence_item_key(e))
+        group = index.get(key)
+        if group is None:
+            # ``repo_url`` is set on the item ONLY when the repo is public-safe
+            # (see ``_collect_github``), so its presence is the public signal.
+            repo_url = e.get("repo_url") or None
+            group = {
+                "repo_label": str(e.get("title") or "") or (repo_full or "GitHub repository"),
+                "repo_url": repo_url,
+                "repo_is_public": bool(repo_url),
+                "rows": [],
+                "row_more_count": 0,
+            }
+            index[key] = group
+            seen_rows[key] = set()
+            groups.append(group)
+        elif not group["repo_url"] and e.get("repo_url"):
+            # A later row for the same repo carried the public URL — promote it.
+            group["repo_url"] = e["repo_url"]
+            group["repo_is_public"] = True
+
+        row_key = _evidence_item_key(e)
+        if row_key in seen_rows[key]:
+            continue
+        seen_rows[key].add(row_key)
+        group["rows"].append(
+            {
+                "source_id": str(e.get("source_id") or ""),
+                "label": _github_row_label(e),
+                "file_path": e.get("file_path"),
+                "line_start": e.get("line_start"),
+                "line_end": e.get("line_end"),
+                "function_name": e.get("function_name"),
+                "display_mode": e.get("display_mode"),
+                # Deterministic quality band so the frontend ranks/excludes weak
+                # rows (route_decorator_only / docstring / import / config /
+                # repo-level fallback) instead of rendering them like real code.
+                "evidence_quality_grade": e.get("evidence_quality_grade"),
+                "selection_reason": e.get("selection_reason"),
+                "github_line_url": e.get("github_line_url"),
+                "public_url": e.get("public_url"),
+            }
+        )
+    # Order STRONG implementation rows above weak/repo-level rows by quality grade,
+    # THEN bound (so a strong precise row is never demoted into "+N more" by mere
+    # input order). Rows beyond the visible window are KEPT in the payload (up to
+    # the hard cap) so "+N more code locations" can expand inline; ``row_more_count``
+    # reports how many are initially collapsed.
+    #
+    # When a group has ANY strong (implementation_body / supporting_logic) row, the
+    # visible window holds ONLY strong rows — every weak row (route_decorator_only /
+    # docstring / import / config / repo-level fallback) is pushed into the
+    # collapsed "+N more" remainder so it never appears as visible top evidence
+    # beside real implementation code. When a group has no strong row, the least-bad
+    # safe fallback is shown normally (the strongest weak rows fill the window).
+    for group in groups:
+        group["rows"].sort(key=_github_row_rank)
+        rows = group["rows"][:_MAX_GITHUB_GROUP_ROWS_HARD_CAP]
+        group["rows"] = rows
+        strong_count = sum(1 for r in rows if is_strong_grade(r.get("evidence_quality_grade")))
+        if strong_count:
+            # Only strong rows are visible; weak rows collapse into "+N more".
+            visible = min(strong_count, _MAX_STANDALONE_GITHUB_ROWS_PER_REPO)
+        else:
+            visible = min(len(rows), _MAX_STANDALONE_GITHUB_ROWS_PER_REPO)
+        group["row_more_count"] = max(0, len(rows) - visible)
+    return groups
+
+
 def _doc_corr_key(c: dict[str, Any]) -> tuple:
     """Stable identity for a Document corroboration card (title/page/snippet)."""
     return (
@@ -1245,6 +1522,80 @@ def _dedupe_doc_correlations(items: list[dict[str, Any]]) -> list[dict[str, Any]
         seen.add(key)
         out.append(c)
     return out
+
+
+def _group_defense_evidence(
+    defense: list[dict[str, Any]], video: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Collapse a chain's Project Defense + Video evidence into ONE grouped section.
+
+    Repeated defense attempts produce many near-identical "the candidate explained
+    their work" cards. This groups them into a single section: one concise
+    explanation (the defense recruiter summary), the combined *cited moments*
+    (video chips / timestamped or question-anchored defense moments, de-duplicated),
+    a single merged limitation, and the count of grouped evidence items. No
+    evidence is lost — the raw ``defense_evidence`` / ``video_evidence`` lists stay
+    on the chain. Returns ``None`` when there is no defense/video evidence. Never
+    exposes raw transcript text — only the already-safe summaries/labels.
+    """
+    combined = list(defense or []) + list(video or [])
+    if not combined:
+        return None
+
+    # Concise explanation: the first non-empty Project Defense explanation, else
+    # the first non-empty summary across the grouped evidence.
+    explanation = ""
+    for e in defense or []:
+        s = str(e.get("safe_summary") or "").strip()
+        if s:
+            explanation = s
+            break
+    if not explanation:
+        for e in combined:
+            s = str(e.get("safe_summary") or "").strip()
+            if s:
+                explanation = s
+                break
+
+    # Cited moments: only items anchored to a concrete moment (a video timestamp
+    # or a defense question) — the generic "overall explanation" defense cards are
+    # folded into ``explanation`` above, never repeated as a moment. De-duplicated.
+    moments: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for e in combined:
+        ts = e.get("timestamp_label")
+        q = e.get("question_text")
+        if not ts and not q:
+            continue
+        label = str(e.get("title") or "").strip() or "Defense moment"
+        summ = str(e.get("safe_summary") or "").strip()
+        key = (label.lower(), str(ts or ""), str(q or ""), summ.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        moments.append(
+            {
+                "label": label,
+                "timestamp_label": str(ts).strip() if ts else None,
+                "question_text": str(q).strip() if q else None,
+                "short_summary": summ,
+                "source_id": str(e.get("source_id") or ""),
+            }
+        )
+
+    limitations: list[str] = []
+    for e in combined:
+        lim = str(e.get("limitation") or "").strip()
+        if lim and lim not in limitations:
+            limitations.append(lim)
+
+    return {
+        "explanation": explanation,
+        "moments": moments,
+        "grouped_count": len(combined),
+        "limitation": " ".join(limitations),
+        "source_ids": [str(e.get("source_id") or "") for e in combined if e.get("source_id")],
+    }
 
 
 def _match_document_to_project(
@@ -1274,6 +1625,112 @@ def _match_document_to_project(
         if repo_name and len(repo_name) >= 4 and repo_name in haystack:
             return pid
     return None
+
+
+def _github_repo_identity(item: dict[str, Any]) -> tuple[str, str]:
+    """Normalized ``(owner/name, name)`` repo identity for a GitHub evidence item."""
+    repo_url = str(item.get("repo_url") or item.get("public_url") or "").strip().lower()
+    if not repo_url:
+        return "", ""
+    m = _REPO_IDENTITY_RE.search(repo_url)
+    repo_full = (m.group(1) if m else repo_url.rstrip("/")).lower()
+    repo_name = repo_full.split("/")[-1] if repo_full else ""
+    return repo_full, repo_name
+
+
+def _match_github_to_project(
+    item: dict[str, Any], meta: dict[str, dict[str, Any]]
+) -> str | None:
+    """Best-effort link an UNATTACHED GitHub proof to the project it belongs to.
+
+    A GitHub proof carries its own authoritative repository identity, so it is
+    folded into a project's main proof chain ONLY when it is the *exact same
+    repository* — a canonical ``owner/name`` identity match. Matching by repo
+    name alone is unsafe: ``bob/shared-app`` must never fold into a project built
+    on ``alice/shared-app`` just because both end in ``shared-app``. So when the
+    owner is missing or ambiguous on either side we fail closed and keep the proof
+    genuinely standalone. URLs are normalized (``https://github.com/alice/x`` and
+    ``git@github.com:alice/x.git`` both canonicalize to ``alice/x``) but the
+    comparison is always owner+repo, case-normalized — never the bare name. A
+    proof for a different repo is never folded in. The selected skill is constant
+    across the report, so an exact-repo match here is a same-repo + same-skill +
+    same-project-context match. Returns the matched ``project_id`` or ``None``.
+    """
+    repo_full, _repo_name = _github_repo_identity(item)
+    # Require a canonical ``owner/name`` identity. A bare repo name (no owner, no
+    # ``/``) is ambiguous, so we fail closed and leave the proof standalone.
+    if "/" not in repo_full:
+        return None
+    for pid, m in meta.items():
+        m_repo_full = str(m.get("repo_full") or "")
+        if "/" in m_repo_full and m_repo_full == repo_full:
+            return pid
+    return None
+
+
+def _related_github_items(
+    items: list[dict[str, Any]], matched: list[dict[str, Any]], canon: str
+) -> list[dict[str, Any]]:
+    """Adjacent-tagged GitHub rows to relate into an ML skill's report (narrow).
+
+    Returns the extra GitHub vault items (beyond exact-skill ``matched``) that
+    belong to the SAME confirmed owner/repo, ``github_proof_submissions`` source,
+    or attached project as an exact ML match, carry precise (strong/medium) line
+    evidence, and are ML-specific per
+    :func:`is_github_evidence_related_to_skill`. Returns ``[]`` for any non-ML
+    skill (no broadening) or when there is no confirmed GitHub context — so exact
+    owner/repo routing is never weakened and unrelated repos are never folded in.
+    """
+    if not is_ml_skill(canon):
+        return []
+
+    # Confirmed context: every repo / proof source / project that ALREADY has an
+    # exact ML match. A candidate row must share one of these to be related in.
+    confirmed_repos: set[str] = set()
+    confirmed_sources: set[str] = set()
+    confirmed_projects: set[str] = set()
+    for i in matched:
+        if i["proof_type"] != PROOF_GITHUB:
+            continue
+        repo_full, _name = _github_repo_identity(i)
+        if "/" in repo_full:
+            confirmed_repos.add(repo_full)
+        if i.get("source_id"):
+            confirmed_sources.add(str(i["source_id"]))
+        for pid in i.get("attached_project_ids") or []:
+            confirmed_projects.add(pid)
+    if not (confirmed_repos or confirmed_sources or confirmed_projects):
+        return []
+
+    matched_obj_ids = {id(i) for i in matched}
+    related: list[dict[str, Any]] = []
+    for i in items:
+        if id(i) in matched_obj_ids or i["proof_type"] != PROOF_GITHUB:
+            continue
+        # Only precise (strong/medium) line evidence is related in — never a
+        # weak/repo-level row (those keep their own honest repo-level fallback).
+        if not i.get("has_precise_line_evidence"):
+            continue
+        repo_full, _name = _github_repo_identity(i)
+        same_context = (
+            ("/" in repo_full and repo_full in confirmed_repos)
+            or (bool(i.get("source_id")) and str(i["source_id"]) in confirmed_sources)
+            or any(pid in confirmed_projects for pid in (i.get("attached_project_ids") or []))
+        )
+        if not same_context:
+            continue
+        if not is_github_evidence_related_to_skill(
+            canon,
+            evidence_skill=str(i.get("skill_name") or ""),
+            file_path=i.get("file_path"),
+            code_snippet=i.get("safe_snippet"),
+            symbol_name=i.get("function_name"),
+            mapping_reason=i.get("selection_reason") or i.get("safe_summary"),
+            evidence_kind=i.get("evidence_kind"),
+        ):
+            continue
+        related.append(i)
+    return related
 
 
 def _chain_summary(
@@ -1427,6 +1884,16 @@ def _group_chains_by_title(chains: list[dict[str, Any]]) -> list[dict[str, Any]]
             for lim in c.get("limitations") or []:
                 if lim not in limitations:
                     limitations.append(lim)
+        # A same-title merge unions GitHub evidence across attempts: one attempt may
+        # have had no GitHub proof (so it carried the derived "No GitHub code
+        # evidence…" limitation) while another supplied it. After the union, that
+        # derived limitation would contradict the now-nonempty merged evidence, so
+        # recompute it: drop it when merged GitHub evidence exists. Genuine repo /
+        # authorship limitations on the evidence items themselves are untouched.
+        if rep.get("github_evidence"):
+            limitations = [
+                lim for lim in limitations if lim != _NO_GITHUB_CODE_EVIDENCE_LIMITATION
+            ]
 
         grouped_count = sum(int(c.get("collapsed_project_count", 1) or 1) for c in group)
         grouped_ids: list[str] = []
@@ -1488,6 +1955,18 @@ def collect_skill_report(
     titles = _project_titles(db, user_id)
     meta = _project_meta(db, user_id)
 
+    # ── Conservative GitHub evidence skill relation (ML connected reports) ─────
+    # An ML report's exact canonical matching above drops genuine ML-pipeline
+    # GitHub rows the analyzer tagged with an adjacent skill (Python / Machine
+    # Learning Engineering) — so a connected ML project can show a single row even
+    # when the SAME owner/repo holds many real ML rows (model instantiation,
+    # prediction, training, evaluation). Relate those in HERE, narrowly: only for
+    # an ML target skill, only precise (strong/medium) rows, only from a repo /
+    # source / project ALREADY confirmed by an exact ML match (exact owner/repo
+    # routing is never weakened), and only when the row is ML-specific (never a
+    # generic Python helper/import/setup line — see ``is_github_evidence_related_to_skill``).
+    matched += _related_github_items(items, matched, canon)
+
     github = [_report_item(i, titles) for i in matched if i["proof_type"] == PROOF_GITHUB]
     documents = [_report_item(i, titles) for i in matched if i["proof_type"] == PROOF_DOCUMENT]
     defense = [_report_item(i, titles) for i in matched if i["proof_type"] == PROOF_DEFENSE]
@@ -1539,9 +2018,27 @@ def collect_skill_report(
             doc_confidence[id(doc)] = "weak/standalone"
             standalone_docs.append(doc)
 
+    # Integrate UNATTACHED GitHub proofs that belong to a project that already
+    # has a chain (same repo / project title) INTO that main chain, instead of
+    # leaving them as duplicate "standalone supporting proofs" at the bottom. The
+    # proof is never duplicated — a routed item is removed from the standalone
+    # bucket. GitHub proofs that match no existing chain stay genuinely standalone.
+    routed_github: dict[str, list[dict[str, Any]]] = {pid: [] for pid in project_ids}
+    integrated_github_ids: set[int] = set()
+    for e in github:
+        if e.get("attached_project_ids"):
+            continue
+        matched_pid = _match_github_to_project(e, meta)
+        if matched_pid and matched_pid in routed_github:
+            routed_github[matched_pid].append(e)
+            integrated_github_ids.add(id(e))
+
     projects: list[dict[str, Any]] = []
     for pid in project_ids:
-        gh = [e for e in github if pid in (e.get("attached_project_ids") or [])]
+        gh = _dedupe_evidence(
+            [e for e in github if pid in (e.get("attached_project_ids") or [])]
+            + routed_github.get(pid, [])
+        )
         web = [e for e in website if pid in (e.get("attached_project_ids") or [])]
         dfn = [e for e in defense if pid in (e.get("attached_project_ids") or [])]
         vid = [e for e in video if pid in (e.get("attached_project_ids") or [])]
@@ -1567,7 +2064,7 @@ def collect_skill_report(
         )
         limitations: list[str] = []
         if not gh:
-            limitations.append("No GitHub code evidence in this project for this skill.")
+            limitations.append(_NO_GITHUB_CODE_EVIDENCE_LIMITATION)
         if not web:
             limitations.append("No Website Proof in this project for this skill.")
         projects.append(
@@ -1610,7 +2107,15 @@ def collect_skill_report(
         chain["document_more_count"] = max(0, len(full) - _MAX_DOC_CORRELATIONS_PER_PROJECT)
 
     # ── Standalone bucket (proofs not attached to any VBR project) ────────────
-    standalone_github = [e for e in github if not e.get("attached_project_ids")]
+    # GitHub proofs already integrated into a project chain (same repo/title) are
+    # excluded here so they are never shown twice (chain + standalone).
+    standalone_github = _dedupe_evidence(
+        [
+            e
+            for e in github
+            if not e.get("attached_project_ids") and id(e) not in integrated_github_ids
+        ]
+    )
     standalone_website = [e for e in website if not e.get("attached_project_ids")]
     standalone_defense = [e for e in defense if not e.get("attached_project_ids")]
     standalone_video = [e for e in video if not e.get("attached_project_ids")]
@@ -1634,6 +2139,10 @@ def collect_skill_report(
 
     standalone_evidence = {
         "github": standalone_github,
+        # Repository-grouped, de-duplicated projection of the standalone GitHub
+        # evidence above — compact rows per repo (the UI renders this, never one
+        # full card per code line). ``github`` stays for back-compat.
+        "github_groups": _group_github_evidence(standalone_github),
         "website": standalone_website,
         "documents": standalone_doc_corr,
         "document_more_count": standalone_doc_more,
@@ -1680,6 +2189,21 @@ def collect_skill_report(
                 "limitations": [_UNATTACHED_NOTE],
             }
         )
+
+    # Collapse each chain's Project Defense + Video evidence into ONE grouped
+    # section so a chain never renders many repeated "the candidate explained
+    # their work" cards (the raw lists are kept intact — no evidence is lost).
+    # Also project each chain's GitHub implementation evidence through the SAME
+    # repository-grouped model used for standalone GitHub (compact "file · lines"
+    # rows grouped per canonical owner/repo) so connected "Code implementation"
+    # reads as one grouped block per repo instead of a weaker single card. The
+    # flat ``github_evidence`` stays for back-compat; ``github_groups`` is the
+    # primary projection the UI renders.
+    for chain in projects:
+        chain["defense_group"] = _group_defense_evidence(
+            chain.get("defense_evidence") or [], chain.get("video_evidence") or []
+        )
+        chain["github_groups"] = _group_github_evidence(chain.get("github_evidence") or [])
 
     # ── Overview + gaps ──────────────────────────────────────────────────────
     proof_source_counts: dict[str, int] = {}
