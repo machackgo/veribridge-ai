@@ -425,6 +425,99 @@ class TestLineRangeSelection:
         ranges = select_high_signal_ranges(content, "many_models.py", "Machine Learning", max_ranges=3)
         assert len(ranges) <= 3
 
+    def test_docstring_keyword_is_not_labeled_ml_instantiation(self):
+        # A retrain script whose MODULE DOCSTRING (lines 2-20-ish) name-drops model
+        # / deployment terms, followed by imports + a setup body. No range may be
+        # labelled "ML model instantiation" / "Cloud deployment command" — the
+        # docstring is prose and the setup body is not ML implementation.
+        content = "\n".join([
+            '"""Pipeline retrain entrypoint.',
+            "",
+            "This script instantiates a RandomForestClassifier and redeploys the",
+            "model to Cloud Run using gcloud. It documents the LightGBM training",
+            "flow and the deployment command used in production.",
+            '"""',
+            "import os",
+            "import sys",
+            "import subprocess",
+            "",
+            "sys.path.append(os.path.dirname(__file__))",
+            "",
+            "",
+            "def main():",
+            '    """Kick off retraining."""',
+            "    subprocess.run(['gcloud', 'run', 'deploy', 'model'])",
+            "    return 0",
+        ])
+        ranges = select_high_signal_ranges(content, "scripts/pipeline_retrain.py", "Machine Learning")
+        for _s, _e, reason in ranges:
+            assert reason not in ("ML model instantiation", "Cloud deployment command")
+            # The docstring's model keyword never leaks as an implementation reason.
+            assert "instantiation" not in reason.lower()
+
+    def test_real_training_body_keeps_ml_reason(self):
+        # Sanity: a genuine training body still derives an ML implementation reason
+        # from its executable signals (not demoted by the reason change).
+        content = "\n".join([
+            "import pandas as pd",
+            "from lightgbm import LGBMClassifier",
+            "from sklearn.model_selection import train_test_split",
+            "",
+            "def train(df):",
+            "    X_train, X_test, y_train, y_test = train_test_split(df.X, df.y)",
+            "    clf = LGBMClassifier(n_estimators=200)",
+            "    clf.fit(X_train, y_train)",
+            "    return clf.predict(X_test)",
+        ])
+        ranges = select_high_signal_ranges(content, "src/model/train.py", "Machine Learning")
+        assert ranges
+        _s, _e, reason = ranges[0]
+        assert "ML" in reason or "training" in reason or "inference" in reason or "prediction" in reason
+
+
+class TestRangeSkillResolution:
+    """The Python range's skill is only Machine Learning when the focused body has
+    real ML implementation signals; deployment/setup bodies map elsewhere."""
+
+    def _candidates(self, source: str, skills: list[str], path: str = "scripts/x.py"):
+        scanner = PortfolioScanner(github_client=None)  # type: ignore[arg-type]
+        repo = _make_repo(name="proj", owner="alice")
+        return scanner._extract_candidates_from_file(repo, "main", path, source, skills, None)
+
+    def test_real_ml_body_stays_machine_learning(self):
+        source = "\n".join([
+            "import pandas as pd",
+            "from sklearn.ensemble import RandomForestClassifier",
+            "from sklearn.model_selection import train_test_split",
+            "",
+            "def train(df):",
+            "    X_train, X_test, y_train, y_test = train_test_split(df.X, df.y)",
+            "    clf = RandomForestClassifier(n_estimators=200)",
+            "    clf.fit(X_train, y_train)",
+            "    return clf.predict(X_test)",
+        ])
+        cands = self._candidates(source, ["Machine Learning", "Python"])
+        assert cands
+        assert any(c.skill_name == "Machine Learning" for c in cands)
+
+    def test_deploy_setup_body_is_not_machine_learning(self):
+        source = "\n".join([
+            "import os",
+            "import subprocess",
+            "",
+            "def deploy():",
+            "    cmd = 'gcloud run deploy svc --region us-central1'",
+            "    subprocess.run(cmd.split())",
+            "    os.environ['DEPLOYED'] = '1'",
+            "    return True",
+        ])
+        cands = self._candidates(source, ["Machine Learning", "MLOps", "Python"])
+        assert cands
+        # None of the deployment ranges are labelled Machine Learning.
+        assert all(c.skill_name != "Machine Learning" for c in cands)
+        # It maps to MLOps (detected) rather than ML.
+        assert any(c.skill_name in ("MLOps", "Python") for c in cands)
+
 
 # ── Dockerfile range selection ─────────────────────────────────────────────────
 

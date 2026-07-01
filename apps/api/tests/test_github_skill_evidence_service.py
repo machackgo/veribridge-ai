@@ -1086,6 +1086,63 @@ def test_canonical_trusted_persisted_grade_is_honored_without_snippet() -> None:
     ev = collect_canonical_github_skill_evidence(store, _USER)[0]
     assert ev.evidence_quality_grade == GRADE_IMPLEMENTATION_BODY
     assert is_strong_grade(ev.evidence_quality_grade)
+    # No re-stored snippet → no grade-time ML verdict; the read-time gate fails closed.
+    assert ev.ml_executable_signal is None
+
+
+def test_canonical_ml_executable_signal_true_for_real_ml_body() -> None:
+    # A trusted provenance body carrying real ML executable code (fit) yields a
+    # grade-time ml_executable_signal=True so the read-time ML gate keeps it primary.
+    store: dict = {}
+    _seed_skill_evidence_row(
+        store,
+        id="se-ml-real",
+        skill_name="Machine Learning",
+        file_path="src/model/train.py",
+        line_start=40,
+        line_end=60,
+        metadata={"selection_reason": "model training"},
+    )
+    _seed_trusted_provenance(
+        store,
+        "se-ml-real",
+        code_snippet="def train(df):\n    clf = RandomForestClassifier()\n    return clf.fit(df.X, df.y)",
+    )
+    ev = collect_canonical_github_skill_evidence(store, _USER)[0]
+    assert ev.evidence_quality_grade == GRADE_IMPLEMENTATION_BODY
+    assert ev.ml_executable_signal is True
+
+
+def test_canonical_ml_executable_signal_false_for_serving_only_body() -> None:
+    # A trusted body that is a real code body but carries NO ML executable signal (a
+    # serving/deployment handler) yields ml_executable_signal=False → the read-time
+    # ML gate downgrades it so it can never present as ML primary implementation proof.
+    store: dict = {}
+    _seed_skill_evidence_row(
+        store,
+        id="se-ml-serving",
+        skill_name="Machine Learning",
+        file_path="serving/main.py",
+        line_start=1,
+        line_end=12,
+        metadata={"selection_reason": "model serving inference handler"},
+    )
+    _seed_trusted_provenance(
+        store,
+        "se-ml-serving",
+        code_snippet=(
+            "@app.post('/predict')\n"
+            "def predict(payload: Payload):\n"
+            "    if not payload.rows:\n"
+            "        raise HTTPException(400)\n"
+            "    return {'status': 'ok'}"
+        ),
+    )
+    ev = collect_canonical_github_skill_evidence(store, _USER)[0]
+    # A real body (route handler with control flow) → still a strong body grade …
+    assert is_strong_grade(ev.evidence_quality_grade)
+    # … but it carries no ML executable signal, so the ML gate will downgrade it.
+    assert ev.ml_executable_signal is False
 
 
 def test_untrusted_persisted_implementation_grade_fails_closed() -> None:

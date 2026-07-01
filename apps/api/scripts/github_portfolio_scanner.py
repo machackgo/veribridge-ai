@@ -34,6 +34,8 @@ try:
         ANALYZER_VERSION,
         TRUSTED_ANALYSIS_TABLE,
         build_server_provenance,
+        describe_grade,
+        docstring_and_comment_lines,
         focus_python_range,
         grade_evidence,
         is_strong_grade,
@@ -43,6 +45,8 @@ except Exception:  # pragma: no cover - standalone fallback
     is_strong_grade = None  # type: ignore
     grade_evidence = None  # type: ignore
     build_server_provenance = None  # type: ignore
+    describe_grade = None  # type: ignore
+    docstring_and_comment_lines = None  # type: ignore
     TRUSTED_ANALYSIS_TABLE = "trusted_github_evidence_analysis"  # type: ignore
     ANALYZER_NAME = "veribridge_github_ast_focus"  # type: ignore
     ANALYZER_VERSION = "1"  # type: ignore
@@ -400,6 +404,60 @@ _SIGNAL_PATTERNS: list[tuple[re.Pattern, int, str]] = [
 _IMPORT_PATTERN = re.compile(r"^(import |from .+ import )")
 _COMMENT_PATTERN = re.compile(r"^\s*(#|//|/\*|\*|<!--|$)")
 
+# ML-specific implementation signals — a real training / inference / evaluation /
+# feature-engineering / artifact body. Used to decide whether a focused Python body
+# genuinely demonstrates Machine Learning IMPLEMENTATION (never a docstring that
+# merely names a model, and never a generic deployment/setup script). Mirrors the
+# service-layer ML-pipeline signals so scanner + read-time grading agree.
+_ML_IMPL_SIGNAL_RE = re.compile(
+    r"\.fit\s*\(|\.fit_transform\s*\(|train_test_split\s*\(|\.predict(?:_proba)?\s*\("
+    r"|\bLGBMClassifier\b|\bLGBMRegressor\b|\bXGB\w*\b|\bRandomForest\w*\b|\bGradientBoosting\w*\b"
+    r"|\bDecisionTree\w*\b|\bLogisticRegression\b|\bKMeans\b|\bSVC\b|\bKNeighbors\w*\b"
+    r"|\bSequential\b|nn\.Module|\bkeras\b"
+    r"|accuracy_score|f1_score|precision_score|recall_score|roc_auc|confusion_matrix"
+    r"|classification_report|mean_squared_error|r2_score"
+    r"|StandardScaler|MinMaxScaler|OneHotEncoder|LabelEncoder|CountVectorizer|TfidfVectorizer"
+    r"|joblib\.(?:load|dump)|pickle\.(?:load|dump)|torch\.(?:load|save)",
+)
+# Deployment / environment setup signals — infra commands, container plumbing,
+# path/env bootstrap. A range that is only this is MLOps/Cloud/setup, NOT Machine
+# Learning implementation.
+_DEPLOY_SETUP_SIGNAL_RE = re.compile(
+    r"\bgcloud\b|\bkubectl\b|\bhelm\b|\bterraform\b|\bdocker\b|\baws\b|\baz\b"
+    r"|subprocess|Popen|sys\.path|os\.environ|load_dotenv|\bdeploy\b",
+    re.IGNORECASE,
+)
+
+# ML-style skill labels the scanner may reassign away from when a Python body is
+# not genuine ML implementation (deployment/setup/generic code).
+_ML_SKILL_LABELS = frozenset({"Machine Learning", "Deep Learning", "NLP", "Computer Vision"})
+
+
+def _is_ml_skill_label(skill: str | None) -> bool:
+    return str(skill or "") in _ML_SKILL_LABELS
+
+
+def _executable_body_text(window: str) -> str:
+    """Strip comment / docstring / import lines from a window so signal matching
+    only sees real executable statements (a docstring naming ``RandomForest`` must
+    not read as an ML implementation body)."""
+    if docstring_and_comment_lines is not None:
+        try:
+            prose = docstring_and_comment_lines(window)
+        except Exception:  # pragma: no cover - defensive
+            prose = set()
+    else:
+        prose = set()
+    kept: list[str] = []
+    for i, line in enumerate(window.splitlines(), start=1):
+        if i in prose:
+            continue
+        stripped = line.strip()
+        if not stripped or _COMMENT_PATTERN.match(stripped) or _IMPORT_PATTERN.match(stripped):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
 
 def _score_line(line: str) -> tuple[int, str]:
     """Return (score, reason) for a single line. Higher = more signal."""
@@ -456,6 +514,82 @@ def _group_anchors(
     return groups
 
 
+def _resolve_range_skill(
+    preferred: str,
+    relevant_skills: list[str],
+    all_skills: list[str],
+    content: str,
+    start: int,
+    end: int,
+) -> str:
+    """Assign a Machine-Learning-style label ONLY when the focused executable body
+    genuinely demonstrates ML implementation.
+
+    A deployment / environment-setup body (gcloud/docker/sys.path/os.environ …)
+    maps to MLOps / Cloud Deployment when the repo detected one; otherwise a
+    non-ML body falls back to a non-ML relevant skill (usually Python). Non-ML
+    preferred skills are returned unchanged, so only over-broad ML tagging is
+    corrected.
+    """
+    if not _is_ml_skill_label(preferred):
+        return preferred
+    window = "\n".join(content.splitlines()[start - 1 : end])
+    body = _executable_body_text(window)
+    if _ML_IMPL_SIGNAL_RE.search(body):
+        return preferred
+    # Not an ML implementation body. Deployment/setup → MLOps/Cloud when detected.
+    if _DEPLOY_SETUP_SIGNAL_RE.search(body):
+        for alt in ("MLOps", "Cloud Deployment", "Docker", "CI/CD"):
+            if alt in all_skills:
+                return alt
+    # Otherwise fall back to a non-ML relevant skill (Python), never ML.
+    for alt in relevant_skills:
+        if not _is_ml_skill_label(alt):
+            return alt
+    if "Python" in all_skills:
+        return "Python"
+    return "Python"
+
+
+def _reason_from_body(range_lines: list[str]) -> str | None:
+    """Best signal-pattern reason found in the EXECUTABLE lines of a focused body.
+
+    Scans only real statements (imports/comments/docstrings stripped) so the reason
+    describes the implementation itself. Returns ``None`` when no signal matches.
+    """
+    body = _executable_body_text("\n".join(range_lines))
+    best_score = 0
+    best_reason: str | None = None
+    for line in body.splitlines():
+        for pattern, score, reason in _SIGNAL_PATTERNS:
+            if pattern.search(line) and score > best_score:
+                best_score = score
+                best_reason = reason
+    return best_reason
+
+
+def _final_reason(
+    is_python: bool,
+    focused_grade: str | None,
+    keyword_reason: str,
+    range_lines: list[str],
+) -> str:
+    """Resolve the selection reason from the focused grade (never a stale keyword).
+
+    * Non-Python or ungraded → keep the keyword reason (existing heuristic surfaces).
+    * Strong grade (implementation/supporting) → re-derive from the focused body's
+      real signals, falling back to the keyword reason then a generic label.
+    * Weak grade (docstring/import/config/route-decorator/fallback) → an honest
+      grade-based label; the keyword reason is discarded so a docstring is never
+      labelled "ML model instantiation".
+    """
+    if not is_python or focused_grade is None or describe_grade is None:
+        return keyword_reason
+    if is_strong_grade is not None and is_strong_grade(focused_grade):
+        return _reason_from_body(range_lines) or keyword_reason or "implementation logic"
+    return describe_grade(focused_grade)
+
+
 def select_high_signal_ranges(
     content: str,
     file_path: str,
@@ -494,9 +628,21 @@ def select_high_signal_ranges(
         except (SyntaxError, ValueError):
             return []
 
+    # Lines that are docstrings / bare string prose / comments must never become
+    # high-signal anchors — a keyword sitting inside a module or function docstring
+    # ("...fits a RandomForest...") is documentation, not an implementation line.
+    prose_lines: set[int] = set()
+    if is_python and docstring_and_comment_lines is not None:
+        try:
+            prose_lines = docstring_and_comment_lines(content)
+        except Exception:  # pragma: no cover - defensive
+            prose_lines = set()
+
     # Score each line
     anchor_lines: list[tuple[int, int, str]] = []
     for i, line in enumerate(lines):
+        if (i + 1) in prose_lines:
+            continue
         score, reason = _score_line(line)
         if score >= 5:  # only high-signal lines become anchors
             anchor_lines.append((i + 1, score, reason))
@@ -554,8 +700,16 @@ def select_high_signal_ranges(
         if is_weak_range(range_lines):
             continue
 
+        # Derive the FINAL selection reason from the focused AST grade/body — never
+        # keep the stale keyword reason from the raw anchor window. A range that
+        # focuses to a docstring / import / config / bare route decorator gets an
+        # honest grade-based label (so it is never presented as "ML model
+        # instantiation"); a real implementation/supporting body re-derives its
+        # reason from the signals actually present in the focused body.
+        final_reason = _final_reason(is_python, focused_grade, best_reason, range_lines)
+
         seen_starts.add(exp_start)
-        candidate = (exp_start, exp_end, best_reason)
+        candidate = (exp_start, exp_end, final_reason)
         # Demote (but do not discard) Python ranges that focus to a non-implementation
         # body — a docstring / import / constant / bare route decorator. They are only
         # surfaced if no strong implementation body exists in this file.
@@ -1034,9 +1188,12 @@ class PortfolioScanner:
             best_skill = relevant_skills[0]
             ranges = select_high_signal_ranges(content, file_path, best_skill, max_ranges=2)
             for start, end, reason in ranges:
+                skill_for_range = _resolve_range_skill(
+                    best_skill, relevant_skills, skills, content, start, end
+                )
                 candidates.append(self._make_candidate(
                     repo, branch, file_path, start, end,
-                    best_skill, reason, website_url, content=content,
+                    skill_for_range, reason, website_url, content=content,
                 ))
 
         # TypeScript / JavaScript / React

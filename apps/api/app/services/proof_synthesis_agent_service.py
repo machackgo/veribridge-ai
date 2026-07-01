@@ -38,9 +38,12 @@ from app.services.cross_proof_linking_service import link_proof_chains
 from app.services.github_python_evidence_focus import (
     GRADE_IMPLEMENTATION_BODY,
     GRADE_SUPPORTING_LOGIC,
+    effective_evidence_grade,
     grade_rank,
     is_weak_grade,
+    safe_selection_reason,
 )
+from app.services.github_skill_evidence_service import is_ml_skill
 from app.services.llm_proof_synthesis_service import synthesize_linked_chains_bounded
 from app.services.evidence_normalization_service import (
     SOURCE_DEFENSE,
@@ -110,12 +113,19 @@ def _github_location(item: dict[str, Any]) -> str:
 
 
 def _github_reason(item: dict[str, Any]) -> str:
-    """The safe "why this line" text for a GitHub code row (already scrubbed)."""
-    return (
-        item.get("selection_reason")
-        or item.get("safe_summary")
-        or "skill-relevant implementation"
+    """The safe "why this line" text for a GitHub code row.
+
+    Read-time neutralised via :func:`safe_selection_reason`: a WEAK / fallback /
+    ungraded row can NEVER present a stale keyword reason ("ML model instantiation",
+    "Cloud deployment command") as implementation evidence — it is replaced with an
+    honest grade-based / repository-level label. Only a validated strong body
+    (implementation_body / supporting_logic) keeps its precise stored reason.
+    """
+    reason = safe_selection_reason(
+        item.get("evidence_quality_grade"),
+        item.get("selection_reason") or item.get("safe_summary"),
     )
+    return reason or "skill-relevant implementation"
 
 
 def _github_code_rows(github: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -127,7 +137,27 @@ def _github_code_rows(github: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _github_evidence_assessment(github: list[dict[str, Any]]) -> dict[str, Any]:
+def _row_effective_grade(skill: str, row: dict[str, Any]) -> str | None:
+    """Read-time ML-validated grade for a GitHub row (defense in depth).
+
+    A trusted ``implementation_body`` that lacks actual ML executable signals — a
+    deployment-only / serving-only / cloud-only body — is downgraded to
+    ``supporting_logic`` for a Machine Learning skill, so it can never be classified
+    as Machine Learning primary implementation proof. Non-ML skills and every other
+    grade are returned unchanged.
+    """
+    return effective_evidence_grade(
+        row.get("evidence_quality_grade"),
+        is_ml=is_ml_skill(skill),
+        reason=row.get("selection_reason") or row.get("safe_summary"),
+        code_snippet=row.get("safe_snippet"),
+        file_path=row.get("file_path"),
+        function_name=row.get("function_name"),
+        ml_signal=row.get("ml_executable_signal"),
+    )
+
+
+def _github_evidence_assessment(skill: str, github: list[dict[str, Any]]) -> dict[str, Any]:
     """Classify a chain's GitHub code evidence by Smart-Evidence quality band.
 
     Deterministic, no LLM. Consumes the Smart GitHub Evidence output already on
@@ -146,8 +176,10 @@ def _github_evidence_assessment(github: list[dict[str, Any]]) -> dict[str, Any]:
     an honest ``note`` sentence (empty when the chain has no GitHub evidence).
     """
     rows = _github_code_rows(github)
-    impl = [g for g in rows if g.get("evidence_quality_grade") == GRADE_IMPLEMENTATION_BODY]
-    support = [g for g in rows if g.get("evidence_quality_grade") == GRADE_SUPPORTING_LOGIC]
+    # Read-time ML-validate each row so a deployment-only body stored as
+    # implementation_body is never classified as Machine Learning primary proof.
+    impl = [g for g in rows if _row_effective_grade(skill, g) == GRADE_IMPLEMENTATION_BODY]
+    support = [g for g in rows if _row_effective_grade(skill, g) == GRADE_SUPPORTING_LOGIC]
     # A precise line with no grade at all is precise but its quality is unproven —
     # treat as supporting, never promote to primary implementation.
     ungraded = [g for g in rows if not g.get("evidence_quality_grade")]
@@ -280,46 +312,74 @@ def _build_statements(
     statements: list[dict[str, Any]] = []
 
     def _add(text: str, source: str, ids: list[str]) -> None:
-        cited = [i for i in ids if i in allowed_ids]
+        cited = list(dict.fromkeys(i for i in ids if i in allowed_ids))
         if cited:
             statements.append({"text": text, "source": source, "evidence_ids": cited})
 
-    for g in chain.get("github_evidence") or []:
-        sid = str(g.get("source_id") or "")
-        grade = g.get("evidence_quality_grade")
+    # Aggregate GitHub evidence by quality class so a repo with many rows produces
+    # AT MOST one primary-code statement, one supporting-code statement, and one
+    # weak/repo-level limitation — never one repeated paragraph per row. Cited
+    # evidence ids are deduplicated (via ``_add``) so the same row is never chipped
+    # twice. Rows are already ranked strongest-first by the vault grouper, so the
+    # first primary/supporting row is the best exemplar to describe.
+    github = chain.get("github_evidence") or []
+    primary_rows: list[dict[str, Any]] = []
+    supporting_rows: list[dict[str, Any]] = []
+    weak_line_rows: list[dict[str, Any]] = []
+    repo_level_rows: list[dict[str, Any]] = []
+    for g in github:
+        # Read-time ML-validated grade: a deployment-only implementation_body is
+        # downgraded so it is synthesized as supporting code, never primary ML proof.
+        grade = _row_effective_grade(skill, g)
         is_code_line = g.get("display_mode") == "code_line" and g.get("has_precise_line_evidence")
-        reason = _github_reason(g)
         if is_code_line and grade == GRADE_IMPLEMENTATION_BODY:
-            # Strongest artifact proof — a located implementation body.
-            _add(
-                f"Primary GitHub implementation evidence: {_github_location(g)} shows {reason}.",
-                PROOF_GITHUB,
-                [sid],
-            )
+            primary_rows.append(g)
         elif is_code_line and not is_weak_grade(grade):
-            # supporting_logic (or an as-yet-ungraded precise line) — supporting code
-            # proof, cited precisely, but never framed as primary implementation.
-            _add(
-                f"Supporting GitHub evidence: {_github_location(g)} shows {reason}.",
-                PROOF_GITHUB,
-                [sid],
-            )
+            supporting_rows.append(g)
         elif is_code_line:
-            # Precise line but a WEAK Smart-Evidence grade (import/docstring/config/
-            # route-decorator) — honest, never primary implementation proof.
-            _add(
-                f"GitHub evidence at {_github_location(g)} is repository/weak-level "
-                f"({reason}); it is not sufficient by itself as implementation proof.",
-                PROOF_GITHUB,
-                [sid],
-            )
+            weak_line_rows.append(g)
         else:
-            _add(
-                "GitHub repository evidence supports this skill at repository level "
-                "(no precise line-level code located).",
-                PROOF_GITHUB,
-                [sid],
-            )
+            repo_level_rows.append(g)
+
+    def _ids(rows: list[dict[str, Any]]) -> list[str]:
+        return [str(r.get("source_id") or "") for r in rows]
+
+    if primary_rows:
+        best = primary_rows[0]
+        _add(
+            f"Primary GitHub implementation evidence: {_github_location(best)} shows "
+            f"{_github_reason(best)}.",
+            PROOF_GITHUB,
+            _ids(primary_rows),
+        )
+    if supporting_rows:
+        best = supporting_rows[0]
+        _add(
+            f"Supporting GitHub evidence: {_github_location(best)} shows {_github_reason(best)}.",
+            PROOF_GITHUB,
+            _ids(supporting_rows),
+        )
+    if weak_line_rows:
+        # ONE aggregated limitation for every weak precise line (import/docstring/
+        # config/route-decorator), never one paragraph per weak row. A representative
+        # row's location + reason is named so the honest limitation is still concrete.
+        n = len(weak_line_rows)
+        best = weak_line_rows[0]
+        noun = "GitHub code signal was" if n == 1 else "GitHub code signals were"
+        _add(
+            f"{n} weak/repository-level {noun} found (e.g. {_github_location(best)} — "
+            f"{_github_reason(best)}): imports, comments, configuration, or endpoint "
+            "scaffolding that is not sufficient by itself as implementation proof.",
+            PROOF_GITHUB,
+            _ids(weak_line_rows),
+        )
+    if repo_level_rows:
+        _add(
+            "GitHub repository evidence supports this skill at repository level "
+            "(no precise line-level code located).",
+            PROOF_GITHUB,
+            _ids(repo_level_rows),
+        )
 
     for w in chain.get("website_evidence") or []:
         sid = str(w.get("source_id") or "")
@@ -342,14 +402,25 @@ def _build_statements(
             defense_ids,
         )
 
-    for d in chain.get("document_correlations") or []:
-        sid = str(d.get("source_id") or "")
-        corro = d.get("corroborates") or "the implementation"
-        _add(
-            f"A document corroborates {corro} (supporting evidence, not primary proof).",
-            PROOF_DOCUMENT,
-            [sid],
-        )
+    # Aggregate EVERY document correlation into ONE corroboration statement per
+    # chain — documents corroborate the skill claim but never independently prove
+    # implementation, so the report must not emit one nearly identical paragraph per
+    # document. Cited evidence ids are deduplicated so the same document is chipped
+    # once, and the singular/plural phrasing reflects the distinct cited count.
+    doc_ids = [str(d.get("source_id") or "") for d in (chain.get("document_correlations") or [])]
+    cited_docs = list(dict.fromkeys(i for i in doc_ids if i in allowed_ids))
+    if cited_docs:
+        if len(cited_docs) == 1:
+            text = (
+                f"A document corroborates the {skill} skill claim, but does not "
+                "independently prove implementation (supporting evidence, not primary proof)."
+            )
+        else:
+            text = (
+                f"Documents corroborate the {skill} skill claim, but do not "
+                "independently prove implementation (supporting evidence, not primary proof)."
+            )
+        _add(text, PROOF_DOCUMENT, cited_docs)
 
     return statements
 
@@ -443,7 +514,7 @@ def _enrich_chain(skill: str, chain: dict[str, Any]) -> dict[str, Any]:
 
     # Smart GitHub Evidence assessment: primary implementation body vs supporting
     # logic vs weak/repo-level — drives honest recruiter wording (never over-claims).
-    gh_assessment = _github_evidence_assessment(github)
+    gh_assessment = _github_evidence_assessment(skill, github)
 
     chain["confidence_tier"] = tier
     chain["normalized_evidence"] = [a.to_dict() for a in artifacts]
