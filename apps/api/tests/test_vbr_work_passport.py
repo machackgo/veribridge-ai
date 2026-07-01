@@ -606,3 +606,202 @@ def test_public_passport_strips_github_code_snippet(client: TestClient, mem_stor
         assert t.get("code_snippet") in (None, "")
         if t.get("public_url"):
             assert is_safe_public_url(t["public_url"])
+
+
+# ── Identity / passport header ───────────────────────────────────────────────
+
+
+def _seed_user(mem_store: dict, user_id: str = USER_ID, full_name: str = "Ada Lovelace") -> None:
+    mem_store.setdefault("users", {})[user_id] = {"id": user_id, "full_name": full_name}
+
+
+def _seed_onboarding(mem_store: dict, user_id: str = USER_ID, **fields) -> None:
+    row = {"id": str(uuid4()), "user_id": user_id}
+    row.update(fields)
+    mem_store.setdefault("student_onboarding_profiles", {})[row["id"]] = row
+
+
+def test_private_passport_has_identity_header(client: TestClient, mem_store: dict) -> None:
+    _seed_user(mem_store)
+    _seed_onboarding(
+        mem_store,
+        degree_level="masters",
+        major="Computer Science",
+        graduation_year=2026,
+        university_country="United States",
+        # Private/sensitive fields that must NEVER surface in the header.
+        visa_status="F1",
+        sponsorship_needed=True,
+    )
+    body = _get_private(client).json()
+    identity = body["identity"]
+    assert identity is not None
+    assert identity["display_name"] == "Ada Lovelace"
+    assert identity["program"] == "Computer Science"
+    assert identity["degree_level"] == "Masters"
+    assert identity["graduation_year"] == 2026
+    assert identity["region"] == "United States"
+    assert "Computer Science" in identity["education_summary"]
+    assert identity["verification_label"] == "Verified Work Passport"
+    assert identity["public_status"] == "Private only"
+    # No private/sensitive fields leak into the header.
+    blob = str(identity)
+    assert "F1" not in blob and "sponsorship" not in blob.lower() and "visa" not in blob.lower()
+
+
+def test_private_passport_identity_uses_safe_placeholder_when_no_profile(
+    client: TestClient, mem_store: dict
+) -> None:
+    # No user row and no onboarding profile → header still renders safely.
+    body = _get_private(client).json()
+    identity = body["identity"]
+    assert identity is not None
+    assert identity["headline"]  # default "Verified Work Passport" headline
+    assert identity["program"] is None
+    assert identity["verification_label"] == "Verified Work Passport"
+
+
+def test_public_passport_identity_is_recruiter_safe(client: TestClient, mem_store: dict) -> None:
+    _seed_user(mem_store)
+    _seed_onboarding(mem_store, major="Computer Science", graduation_year=2026, visa_status="F1")
+    slug = _publish(client).json()["public_slug"]
+    body = _get_public(client, slug).json()
+    identity = body["identity"]
+    assert identity is not None
+    assert identity["display_name"] == "Ada Lovelace"
+    assert identity["program"] == "Computer Science"
+    # Public identity never carries a private owner link or sensitive profile data.
+    assert identity["public_path"] is None
+    blob = str(body)
+    assert "F1" not in blob and USER_ID not in blob
+
+
+# ── Must-fix: identity header scrubs UUID / private-id / email onboarding values ─
+#
+# Onboarding-derived identity fields are untrusted free text. A value shaped like
+# a raw UUID, a ``user_…`` / ``project_…`` private id, or an email must never ride
+# out on the identity header — it is omitted (optional fields) or replaced with a
+# neutral placeholder (display name / headline), public OR private.
+
+
+def test_identity_replaces_uuid_display_name_with_safe_placeholder(
+    client: TestClient, mem_store: dict
+) -> None:
+    raw_uuid = "550e8400-e29b-41d4-a716-446655440000"
+    _seed_user(mem_store, full_name=raw_uuid)
+    identity = _get_private(client).json()["identity"]
+    assert identity["display_name"] == "Verified candidate profile"
+    assert raw_uuid not in str(identity)
+
+
+def test_identity_omits_private_prefixed_id_onboarding_fields(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_user(mem_store)
+    _seed_onboarding(
+        mem_store,
+        major="user_1234567890abcdef",
+        university_country="project_0011223344556677",
+    )
+    identity = _get_private(client).json()["identity"]
+    assert identity["program"] is None
+    assert identity["region"] is None
+    blob = str(identity)
+    assert "user_1234567890abcdef" not in blob
+    assert "project_0011223344556677" not in blob
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [
+        "user_1234567890ghijkl",
+        "project_ABCXYZ1234567890",
+        "student_1234567890ghijkl",
+        "artifact_ABCXYZ1234567890",
+        "source_ABCXYZ1234567890",
+        "provider_1234567890ghijkl",
+        "report_ABCXYZ1234567890",
+    ],
+)
+def test_safe_identity_text_rejects_long_alphanumeric_private_ids(raw_value: str) -> None:
+    from app.services.vbr_work_passport_service import _safe_identity_text
+
+    # A long alphanumeric private-prefixed id must never come back as the raw value.
+    assert _safe_identity_text(raw_value) != raw_value
+
+
+def test_safe_identity_text_preserves_normal_safe_labels() -> None:
+    from app.services.vbr_work_passport_service import _safe_identity_text
+
+    assert _safe_identity_text("Mohammed Faraz") == "Mohammed Faraz"
+    assert _safe_identity_text("MS AI") == "MS AI"
+    assert _safe_identity_text("Machine Learning Engineer") == "Machine Learning Engineer"
+
+
+def test_identity_omits_long_alphanumeric_private_id_onboarding_fields(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_user(mem_store)
+    _seed_onboarding(
+        mem_store,
+        major="project_ABCXYZ1234567890",
+        university_country="user_1234567890ghijkl",
+    )
+    identity = _get_private(client).json()["identity"]
+    assert identity["program"] is None
+    assert identity["region"] is None
+    blob = str(identity)
+    assert "project_ABCXYZ1234567890" not in blob
+    assert "user_1234567890ghijkl" not in blob
+
+
+def test_public_identity_omits_long_alphanumeric_private_id(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_user(mem_store, full_name="student_1234567890ghijkl")
+    _seed_onboarding(mem_store, major="artifact_ABCXYZ1234567890")
+    slug = _publish(client).json()["public_slug"]
+    identity = _get_public(client, slug).json()["identity"]
+    assert identity["display_name"] == "Verified candidate profile"
+    assert identity["program"] is None
+    blob = str(identity)
+    assert "student_1234567890ghijkl" not in blob
+    assert "artifact_ABCXYZ1234567890" not in blob
+
+
+def test_identity_does_not_expose_email_like_value(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_user(mem_store, full_name="ada@example.com")
+    _seed_onboarding(mem_store, major="ada@example.com")
+    identity = _get_private(client).json()["identity"]
+    assert "@example.com" not in str(identity)
+    assert identity["display_name"] == "Verified candidate profile"
+    assert identity["program"] is None
+
+
+def test_identity_preserves_normal_safe_values(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_user(mem_store, full_name="Ada Lovelace")
+    _seed_onboarding(
+        mem_store, major="Computer Science", university_country="United States"
+    )
+    identity = _get_private(client).json()["identity"]
+    assert identity["display_name"] == "Ada Lovelace"
+    assert identity["program"] == "Computer Science"
+    assert identity["region"] == "United States"
+
+
+def test_public_identity_scrubs_uuid_and_email_onboarding_values(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_user(mem_store, full_name="550e8400-e29b-41d4-a716-446655440000")
+    _seed_onboarding(mem_store, major="ada@example.com")
+    slug = _publish(client).json()["public_slug"]
+    identity = _get_public(client, slug).json()["identity"]
+    assert identity["display_name"] == "Verified candidate profile"
+    assert identity["program"] is None
+    blob = str(identity)
+    assert "550e8400" not in blob
+    assert "@example.com" not in blob

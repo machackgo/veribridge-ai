@@ -172,6 +172,40 @@ class PublicPassportProject(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+# ── Passport identity header (recruiter-safe candidate identity) ─────────────
+
+
+class PassportIdentity(BaseModel):
+    """Recruiter-safe candidate identity header for the Verified Work Passport.
+
+    Carries ONLY non-PII identity context — never the student's email, auth ID,
+    private profile fields (visa / sponsorship / work-authorization), or a raw
+    institution name beyond the safe ``region`` (country). Missing fields fall
+    back to safe placeholders so the header always reads like a verified passport.
+    """
+
+    display_name: str | None = None
+    headline: str = ""
+    # Education context (safe onboarding fields only): degree program (major),
+    # degree level, graduation year, and region (country) — never a raw school
+    # name or any private field.
+    program: str | None = None
+    degree_level: str | None = None
+    graduation_year: int | None = None
+    region: str | None = None
+    education_summary: str = ""
+    # Public passport status + link (owner view); the public surface never carries
+    # a private link here.
+    public_status: str = ""
+    public_path: str | None = None
+    last_updated: str | None = None
+    # Compact evidence-source summary badges, e.g. "GitHub Proof · 3".
+    evidence_source_summary: list[str] = Field(default_factory=list)
+    verification_label: str = "Verified Work Passport"
+
+    model_config = {"extra": "forbid"}
+
+
 # ── Private / public passport responses ──────────────────────────────────────
 
 
@@ -179,6 +213,7 @@ class PrivateWorkPassportResponse(BaseModel):
     candidate_display_name: str | None = None
     headline: str = ""
     summary: str = ""
+    identity: PassportIdentity | None = None
 
     is_published: bool = False
     public_slug: str | None = None
@@ -210,6 +245,7 @@ class PublicWorkPassportResponse(BaseModel):
     candidate_display_name: str | None = None
     headline: str = ""
     summary: str = ""
+    identity: PassportIdentity | None = None
 
     top_skills: list[PublicPassportSkill] = Field(default_factory=list)
     featured_projects: list[PublicPassportProject] = Field(default_factory=list)

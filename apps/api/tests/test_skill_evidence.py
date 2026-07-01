@@ -1103,3 +1103,51 @@ def test_website_verification_plan_includes_executor_fields() -> None:
         assert "No browser actions are executed" in data["agent_notes"]
     finally:
         _clear_overrides()
+
+
+def test_create_schema_strips_client_provenance_fields() -> None:
+    # Defense in depth at the FastAPI boundary: a public create payload that tries
+    # to inject server-only provenance (analyzer marker, persisted grade, source
+    # snippet, focused line range) into metadata is scrubbed BEFORE persistence, so
+    # a hostile client can never park a forged strong grade in skill_evidence.metadata.
+    from app.schemas.skill_evidence import SkillEvidenceCreate
+    from app.services.github_python_evidence_focus import (
+        GRADE_IMPLEMENTATION_BODY,
+        SERVER_PROVENANCE_KEY,
+    )
+
+    payload = SkillEvidenceCreate(
+        skill_name="Python",
+        evidence_type="GitHub file",
+        file_path="app/main.py",
+        line_start=20,
+        line_end=95,
+        evidence_description="Built FastAPI prediction endpoint.",
+        metadata={
+            "evidence_title": "Legit Project",  # ordinary metadata is preserved
+            "analyzer": "veribridge_github_ast_focus",
+            "analyzer_name": "veribridge_github_ast_focus",
+            "analyzer_version": "1",
+            "evidence_quality_grade": GRADE_IMPLEMENTATION_BODY,
+            "code_snippet": "def train(): clf.fit(X, y)",
+            "safe_excerpt": "def train(): clf.fit(X, y)",
+            "snippet_hash": "deadbeef",
+            "focused_start_line": 20,
+            "focused_end_line": 40,
+            SERVER_PROVENANCE_KEY: {"evidence_quality_grade": GRADE_IMPLEMENTATION_BODY},
+        },
+    )
+    assert payload.metadata == {"evidence_title": "Legit Project"}
+    for forbidden in (
+        "analyzer",
+        "analyzer_name",
+        "analyzer_version",
+        "evidence_quality_grade",
+        "code_snippet",
+        "safe_excerpt",
+        "snippet_hash",
+        "focused_start_line",
+        "focused_end_line",
+        SERVER_PROVENANCE_KEY,
+    ):
+        assert forbidden not in payload.metadata

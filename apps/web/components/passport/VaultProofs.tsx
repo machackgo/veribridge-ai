@@ -1,6 +1,6 @@
 "use client"
 
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import Link from "next/link"
 
 import {
@@ -9,11 +9,12 @@ import {
   type SkillProofSynthesisStatement,
   type SkillProofSynthesisUnlinkedItem,
   type SkillReport,
+  type SkillReportDefenseGroup,
   type SkillReportDocumentCorrelation,
   type SkillReportEvidenceItem,
-  type SkillReportLinkedChain,
   type SkillReportProjectChain,
-  type SkillSynthesisClaim,
+  type SkillReportStandaloneGitHubGroup,
+  type SkillReportStandaloneGitHubRow,
   type SkillSynthesisResult,
   type VaultProofItem,
   type VaultSkillGroup,
@@ -504,6 +505,50 @@ function SkillReportSection({
 }
 
 /**
+ * The grouped "Defense / video explanation" section: ONE concise explanation,
+ * the combined cited moments/chips, a single limitation and the grouped count —
+ * so repeated defense attempts never render as many near-identical cards.
+ */
+function DefenseGroupSection({ group }: { group: SkillReportDefenseGroup }) {
+  if (!group || group.grouped_count === 0) return null
+  return (
+    <div data-testid="chain-defense" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Defense / video explanation</h4>
+        {group.grouped_count > 1 && (
+          <span data-testid="defense-grouped-count">
+            <Badge tone="slate">{group.grouped_count} defense moments grouped</Badge>
+          </span>
+        )}
+      </div>
+      {group.explanation && (
+        <p data-testid="defense-explanation" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+          {group.explanation}
+        </p>
+      )}
+      {group.moments.length > 0 && (
+        <div data-testid="defense-moments" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {group.moments.map((m, i) => (
+            <div
+              key={`${m.source_id}-${m.timestamp_label ?? ""}-${m.question_text ?? ""}-${i}`}
+              data-testid="defense-moment"
+              style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}
+            >
+              {m.timestamp_label && <Mono style={{ fontSize: 11, color: TOKEN.indigo }}>⏱ {m.timestamp_label}</Mono>}
+              <span style={{ fontSize: 12, color: TOKEN.ink, fontWeight: 600 }}>{m.label}</span>
+              {m.short_summary && <span style={{ fontSize: 12, color: TOKEN.inkSoft }}>— {m.short_summary}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {group.limitation && (
+        <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>{group.limitation}</p>
+      )}
+    </div>
+  )
+}
+
+/**
  * A document shown as connected *corroboration*: it answers "what does this
  * document corroborate?" — never a raw line-by-line dump. The raw document is
  * always private; only a safe citation/snippet is shown.
@@ -537,11 +582,12 @@ function DocumentCorrelationCard({ corr }: { corr: SkillReportDocumentCorrelatio
         )}
       </div>
       {corr.document_title && <div style={{ fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>{corr.document_title}</div>}
-      {(corr.page_number || corr.citation) && (
+      {(corr.page_number || corr.citation || corr.figure_reference) && (
         <Mono data-testid="document-citation" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
           {corr.page_number ? `Page ${corr.page_number}` : ""}
           {corr.page_number && corr.citation ? " · " : ""}
           {corr.citation ?? ""}
+          {corr.figure_reference ? `${corr.page_number || corr.citation ? " · " : ""}${corr.figure_reference}` : ""}
         </Mono>
       )}
       {corr.safe_snippet && (
@@ -549,7 +595,17 @@ function DocumentCorrelationCard({ corr }: { corr: SkillReportDocumentCorrelatio
           “{corr.safe_snippet}”
         </p>
       )}
-      {corr.reason && <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{corr.reason}</p>}
+      {(corr.why_supported || corr.reason) && (
+        <p data-testid="document-why" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+          {corr.why_supported || corr.reason}
+        </p>
+      )}
+      {corr.document_access_note && (
+        <div data-testid="document-access-note" style={{ fontSize: 11, color: corr.full_document_available ? TOKEN.inkSoft : TOKEN.muted }}>
+          <strong style={{ color: TOKEN.inkSoft }}>🔒 </strong>
+          {corr.document_access_note}
+        </div>
+      )}
       {corr.limitation && (
         <div style={{ fontSize: 11, color: TOKEN.muted }}>
           <strong style={{ color: TOKEN.inkSoft }}>Limitation: </strong>
@@ -633,25 +689,6 @@ function evidenceItemLabel(item: SkillReportEvidenceItem): string {
 }
 
 /**
- * Resolve the safe ``ev_…`` ids cited by Step 4 synthesis claims back to the
- * normalized member artifacts of the linked proof chains, so each citation chip
- * reads as an audit reference (source + safe location) rather than an opaque id.
- */
-function buildLinkedEvidenceResolver(chains?: SkillReportLinkedChain[] | null): EvidenceResolver {
-  const map = new Map<string, ResolvedEvidence>()
-  for (const chain of chains ?? []) {
-    for (const art of chain.evidence ?? []) {
-      if (!art.evidence_id) continue
-      map.set(art.evidence_id, {
-        sourceType: art.source_type,
-        label: art.exact_location || art.source_label || NORMALIZED_SOURCE_LABEL[art.source_type] || "",
-      })
-    }
-  }
-  return (id) => map.get(id) ?? null
-}
-
-/**
  * Resolve the evidence ids cited by a chain's ``synthesis_statements`` (which
  * reference that chain's own proof items) to a safe source + locator. Document
  * correlations carry no per-item id, so only the rendered proof items are mapped.
@@ -710,21 +747,6 @@ function EvidenceCitations({ ids, resolver }: { ids: string[]; resolver?: Eviden
   )
 }
 
-/** A compact, reusable limitations panel (audit caveats — never a score). */
-function LimitationsPanel({ items, testId = "limitations-panel" }: { items: string[]; testId?: string }) {
-  if (!items || items.length === 0) return null
-  return (
-    <div data-testid={testId} style={{ fontSize: 11, color: TOKEN.muted }}>
-      <strong style={{ color: TOKEN.inkSoft }}>Limitation{items.length === 1 ? "" : "s"}: </strong>
-      <ul style={{ margin: "2px 0 0", paddingLeft: 18 }}>
-        {items.map((l, i) => (
-          <li key={`${l}-${i}`}>{l}</li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
 /** A calm, audit-grade empty state (no data yet / nothing public-safe to show). */
 function EmptyState({ testId, children }: { testId: string; children: ReactNode }) {
   return (
@@ -776,96 +798,34 @@ function SynthesisStatementList({
 }
 
 /**
- * One recruiter-readable VeriBridge synthesis claim (Step 4). Shows the claim,
- * its qualitative tier (never a score), the audit citation chips for the exact
- * evidence it cites, why the sources connect, and any limitations. Claims with
- * no citations are filtered out by the caller — a shown claim always cites.
+ * The compact "VeriBridge agent summary" block. The detailed, evidence-cited
+ * synthesis is embedded PER CHAIN above (each chain card carries its own
+ * ``synthesis_result`` / cited statements), so this section is intentionally just
+ * a short recruiter-facing summary — one line per synthesized chain — never the
+ * old wall of repeated claim cards with repeated limitations and duplicated
+ * GitHub citation chips. ``publicSafe`` drops any non-public-safe result.
  */
-function SynthesisClaimCard({ claim, resolver }: { claim: SkillSynthesisClaim; resolver?: EvidenceResolver }) {
+function AgentSummary({ results, publicSafe }: { results: SkillSynthesisResult[]; publicSafe: boolean }) {
+  const lines: { title: string; summary: string }[] = []
+  const seen = new Set<string>()
+  for (const r of results) {
+    if (publicSafe && !r.public_safe) continue
+    const summary = (r.overall_summary || "").trim()
+    if (!summary) continue
+    const title = (r.project_title || r.canonical_skill_name || "").trim()
+    const key = `${title}::${summary}`.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    lines.push({ title, summary })
+  }
+  if (lines.length === 0) return null
   return (
-    <div
-      data-testid="synthesis-claim"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-        padding: "10px 12px",
-        border: `1px solid ${TOKEN.line}`,
-        borderRadius: 8,
-        background: "#fff",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        {claim.qualitative_tier && (
-          <span data-testid="synthesis-claim-tier">
-            <Badge tone={tierTone(claim.qualitative_tier)}>{claim.qualitative_tier}</Badge>
-          </span>
-        )}
-        {claim.public_safe === false && (
-          <span data-testid="synthesis-claim-private">
-            <Badge tone="slate">Private — not shown on public report</Badge>
-          </span>
-        )}
-      </div>
-      {claim.claim && <p style={{ fontSize: 13, color: TOKEN.ink, margin: 0, lineHeight: 1.5 }}>{claim.claim}</p>}
-      <EvidenceCitations ids={claim.supporting_evidence_ids} resolver={resolver} />
-      {claim.why_connected && (
-        <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
-          <strong style={{ color: TOKEN.inkSoft }}>Why connected: </strong>
-          {claim.why_connected}
+    <div data-testid="skill-report-agent-summary" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {lines.map((l, i) => (
+        <p key={`${l.summary}-${i}`} style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+          {l.title && <strong style={{ color: TOKEN.ink }}>{l.title}: </strong>}
+          {l.summary}
         </p>
-      )}
-      <LimitationsPanel items={claim.limitations} testId="synthesis-claim-limitations" />
-    </div>
-  )
-}
-
-/**
- * The "What VeriBridge synthesis says" section — the Step 4 synthesis claims
- * grouped by their linked proof chain, each claim fully cited to evidence chips.
- * ``publicSafe`` (only true on a public surface) hides non-public-safe results.
- * Returns ``null`` when there is genuinely nothing cited to show — the caller
- * renders the appropriate empty state instead.
- */
-function VeriBridgeSynthesisClaims({
-  results,
-  resolver,
-  publicSafe,
-}: {
-  results: SkillSynthesisResult[]
-  resolver?: EvidenceResolver
-  publicSafe: boolean
-}) {
-  const groups = results
-    .map((r) => ({
-      result: r,
-      claims: r.claims.filter((c) => c.supporting_evidence_ids.length > 0 && (!publicSafe || c.public_safe)),
-    }))
-    .filter((g) => g.claims.length > 0 && (!publicSafe || g.result.public_safe))
-  if (groups.length === 0) return null
-  return (
-    <div data-testid="synthesis-claim-groups" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {groups.map((g, gi) => (
-        <div
-          key={`${g.result.chain_id}-${gi}`}
-          data-testid="synthesis-claim-group"
-          style={{ display: "flex", flexDirection: "column", gap: 8 }}
-        >
-          {(g.result.project_title || g.result.canonical_skill_name) && (
-            <div style={{ fontSize: 12, fontWeight: 700, color: TOKEN.ink }}>
-              {g.result.project_title || g.result.canonical_skill_name}
-            </div>
-          )}
-          {g.result.overall_summary && (
-            <p data-testid="synthesis-group-summary" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
-              {g.result.overall_summary}
-            </p>
-          )}
-          {g.claims.map((claim, ci) => (
-            <SynthesisClaimCard key={`${claim.claim_id}-${ci}`} claim={claim} resolver={resolver} />
-          ))}
-          <LimitationsPanel items={g.result.limitations} testId="synthesis-group-limitations" />
-        </div>
       ))}
     </div>
   )
@@ -944,10 +904,24 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
       {/* Evidence-cited synthesis statements: each plain-language statement shows
           the exact evidence chips it was built from (never an opaque id). */}
       <SynthesisStatementList statements={chain.synthesis_statements} resolver={evidenceResolver} />
-      <SkillReportSection testId="chain-github" title="Code implementation" items={chain.github_evidence} />
+      {/* C — GitHub: prefer the repository-grouped projection (one grouped block
+          per canonical owner/repo with compact file/line rows), matching the
+          standalone GitHub model. Fall back to the flat per-item list for older
+          payloads that don't carry ``github_groups``. */}
+      {(chain.github_groups?.length ?? 0) > 0 ? (
+        <ConnectedGitHubGroups groups={chain.github_groups} />
+      ) : (
+        <SkillReportSection testId="chain-github" title="Code implementation" items={chain.github_evidence} />
+      )}
       <SkillReportSection testId="chain-website" title="Runtime / website behavior" items={chain.website_evidence} />
-      <SkillReportSection testId="chain-defense" title="Defense / video explanation" items={chain.defense_evidence} />
-      <SkillReportSection testId="chain-video" title="Video evidence" items={chain.video_evidence} />
+      {chain.defense_group && chain.defense_group.grouped_count > 0 ? (
+        <DefenseGroupSection group={chain.defense_group} />
+      ) : (
+        <>
+          <SkillReportSection testId="chain-defense" title="Defense / video explanation" items={chain.defense_evidence} />
+          <SkillReportSection testId="chain-video" title="Video evidence" items={chain.video_evidence} />
+        </>
+      )}
       <DocumentCorrelations
         testId="chain-documents"
         items={chain.document_correlations}
@@ -960,6 +934,137 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
           ))}
         </ul>
       )}
+    </div>
+  )
+}
+
+/** One compact code-location row inside a standalone GitHub repository group. */
+function StandaloneGitHubRowItem({ row }: { row: SkillReportStandaloneGitHubRow }) {
+  return (
+    <div
+      data-testid="standalone-github-row"
+      style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}
+    >
+      <Mono style={{ fontSize: 12, color: TOKEN.inkSoft }}>{row.label}</Mono>
+      {row.selection_reason && <span style={{ fontSize: 11, color: TOKEN.muted }}>— {row.selection_reason}</span>}
+      <SafeLink url={row.github_line_url ?? row.public_url} label="View code lines →" />
+    </div>
+  )
+}
+
+/**
+ * One repository group: the repo, an attached/unattached marker, an optional
+ * "View repository" link (public repos only), and the compact code-line rows — so
+ * several lines from one repo read as a single grouped block instead of one
+ * repeated full card per line. ``attached`` distinguishes a connected proof-chain
+ * group (the chain IS attached to a VBR project) from a standalone group.
+ */
+function GitHubGroupCard({
+  group,
+  attached = false,
+}: {
+  group: SkillReportStandaloneGitHubGroup
+  attached?: boolean
+}) {
+  const [expanded, setExpanded] = useState(false)
+  // ``row_more_count`` rows sit beyond the visible window but ARE present in
+  // ``rows`` (the backend no longer drops the overflow), so "+N more code
+  // locations" reveals them inline rather than being a dead label. Collapsed by
+  // default; the first ``visibleCount`` rows always show.
+  const moreCount = group.row_more_count
+  const canExpand = moreCount > 0
+  const visibleCount = canExpand ? group.rows.length - moreCount : group.rows.length
+  const rows = expanded || !canExpand ? group.rows : group.rows.slice(0, visibleCount)
+  return (
+    <div
+      data-testid={attached ? "chain-github-group" : "standalone-github-group"}
+      data-repo={group.repo_label}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: "10px 12px",
+        border: `1px solid ${TOKEN.line}`,
+        borderRadius: 8,
+        background: "#fff",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <Badge tone={PROOF_TONE["GitHub Proof"]}>GitHub Proof</Badge>
+        <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>{group.repo_label}</span>
+        {attached ? (
+          <Badge tone="emerald">Attached</Badge>
+        ) : (
+          <span data-testid="vault-unattached-badge">
+            <Badge tone="amber">Not attached to a VBR project</Badge>
+          </span>
+        )}
+        {group.repo_is_public && <SafeLink url={group.repo_url} label="View repository →" />}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {rows.map((row, i) => (
+          <StandaloneGitHubRowItem key={`${row.source_id}-${row.label}-${i}`} row={row} />
+        ))}
+        {canExpand && (
+          <button
+            type="button"
+            data-testid="standalone-github-more"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+            style={{
+              alignSelf: "flex-start",
+              padding: 0,
+              border: "none",
+              background: "none",
+              cursor: "pointer",
+              fontSize: 11,
+              color: TOKEN.indigo,
+              fontWeight: 600,
+            }}
+          >
+            {expanded
+              ? "Show fewer code locations"
+              : `+${moreCount} more code location${moreCount === 1 ? "" : "s"}`}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Standalone GitHub evidence grouped by repository — compact row groups instead
+ * of one full evidence card per code line. Renders nothing when empty (the caller
+ * falls back to the flat per-item list for older payloads without groups).
+ */
+function StandaloneGitHubGroups({ groups }: { groups?: SkillReportStandaloneGitHubGroup[] | null }) {
+  if (!groups || groups.length === 0) return null
+  return (
+    <div data-testid="skill-report-github" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>GitHub evidence</h4>
+      {groups.map((g, i) => (
+        <GitHubGroupCard key={`${g.repo_label}-${i}`} group={g} />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * A connected proof chain's "Code implementation" section, rendered through the
+ * SAME repository-grouped GitHub model as standalone evidence: one grouped block
+ * per canonical owner/repo with compact "file · lines" rows (the strongest row
+ * first, as ordered by the backend's ML ranking) instead of a weaker single card.
+ * Renders nothing when empty (the caller falls back to the flat per-item list for
+ * older payloads without ``github_groups``).
+ */
+function ConnectedGitHubGroups({ groups }: { groups?: SkillReportStandaloneGitHubGroup[] | null }) {
+  if (!groups || groups.length === 0) return null
+  return (
+    <div data-testid="chain-github" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Code implementation</h4>
+      {groups.map((g, i) => (
+        <GitHubGroupCard key={`${g.repo_label}-${i}`} group={g} attached />
+      ))}
     </div>
   )
 }
@@ -994,6 +1099,29 @@ function UnlinkedEvidenceCard({ item }: { item: SkillProofSynthesisUnlinkedItem 
 }
 
 /**
+ * Normalized fallback identity for evidence that has no stable `source_id` (older
+ * payloads). Built ONLY from the safe, stable fields that both a standalone
+ * evidence item AND its derived unlinked card carry (see backend `_unlinked_card`):
+ * proof type, title/project title, location label (which already encodes repo /
+ * file / line for code proofs), and a bounded summary hash (workflow summary
+ * preferred, mirroring the backend precedence). No private ids, signed URLs,
+ * tokens, raw file paths, or raw provider JSON are used. Used solely for in-memory
+ * de-duplication so a proof never renders in BOTH the standalone and unlinked
+ * sections.
+ */
+function evidenceFallbackIdentity(p: {
+  proof_type?: string | null
+  title?: string | null
+  safe_location?: string | null
+  safe_summary?: string | null
+  workflow_summary?: string | null
+}): string {
+  const n = (v?: string | null) => (v ?? "").trim().toLowerCase()
+  const summary = n(p.workflow_summary) || n(p.safe_summary)
+  return [n(p.proof_type), n(p.title), n(p.safe_location), summary.slice(0, 160)].join("|")
+}
+
+/**
  * The full Skill Report for one skill — a recruiter-trust instrument: connected
  * proof chains, evidence-cited synthesis claims and honest limitations, never a
  * raw dump. ``publicSafe`` (only true on a public surface) drops any synthesis
@@ -1005,23 +1133,68 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
   const attachedChains = report.proof_chains ?? report.projects?.filter((p) => p.attached) ?? []
   const unlinked = report.unlinked_supporting_evidence
   const std = report.standalone_evidence
-  // Step 4 synthesis claims, each cited to the Step 3 linked-chain evidence ids.
+  // The "Unlinked supporting evidence" bucket is derived from the SAME standalone
+  // proofs the canonical "Standalone supporting proofs" section (D) renders, so
+  // the two sections would otherwise show the same proof twice. Deduplicate so the
+  // standalone section stays canonical and a proof never renders in BOTH places.
+  // Primary identity is the stable `source_id`; when a legacy payload has none we
+  // fall back to a normalized identity built ONLY from safe, stable fields
+  // (proof type + title + location + repo/file/line + a bounded summary hash) —
+  // never a private id or signed URL. The standalone unlinked cards are built from
+  // the SAME flat standalone arrays (see `_unlinked_card`), so the fallback
+  // identity computed on each side matches for the same underlying proof.
+  const standaloneSourceIds = new Set<string>()
+  const standaloneFallbackIds = new Set<string>()
+  if (std) {
+    for (const g of std.github_groups ?? []) for (const r of g.rows) if (r.source_id) standaloneSourceIds.add(r.source_id)
+    // The unlinked cards are built from these flat standalone arrays, so a fallback
+    // identity computed here matches the one computed on the unlinked side for the
+    // same proof — covering the github_groups projection too (it is built from the
+    // SAME flat `github` array).
+    for (const arr of [std.github, std.website, std.defense, std.video, std.skill_graph]) {
+      for (const it of arr ?? []) {
+        if (!it) continue
+        if (it.source_id) standaloneSourceIds.add(it.source_id)
+        standaloneFallbackIds.add(evidenceFallbackIdentity(it))
+      }
+    }
+    for (const d of std.documents ?? []) {
+      if (!d) continue
+      if (d.source_id) standaloneSourceIds.add(d.source_id)
+      standaloneFallbackIds.add(
+        evidenceFallbackIdentity({
+          proof_type: "Document Proof",
+          title: d.document_title,
+          safe_summary: d.reason,
+          safe_location: d.citation ?? (d.page_number ? `Page ${d.page_number}` : null),
+        }),
+      )
+    }
+  }
+  const unlinkedItems = (unlinked?.items ?? []).filter((it) =>
+    it.source_id
+      ? !standaloneSourceIds.has(it.source_id)
+      : !standaloneFallbackIds.has(evidenceFallbackIdentity(it)),
+  )
+  // Step 4 synthesis — collapsed to a COMPACT agent summary (the detailed,
+  // evidence-cited synthesis is embedded per chain above, so this is just a short
+  // recruiter-facing summary, never the old wall of repeated claim cards).
   const synthesisResults = report.llm_synthesis ?? []
-  const evidenceResolver = buildLinkedEvidenceResolver(report.linked_proof_chains)
-  // Whether there is at least one cited, surface-appropriate synthesis claim.
-  const hasCitedSynthesis = synthesisResults.some(
-    (r) =>
-      (!publicSafe || r.public_safe) &&
-      r.claims.some((c) => c.supporting_evidence_ids.length > 0 && (!publicSafe || c.public_safe)),
+  const hasAgentSummary = synthesisResults.some(
+    (r) => (!publicSafe || r.public_safe) && Boolean((r.overall_summary || "").trim()),
   )
   // Synthesis exists but, on a public surface, none of it is public-safe.
   const synthesisWithheld =
-    !hasCitedSynthesis &&
+    !hasAgentSummary &&
     publicSafe &&
-    synthesisResults.some((r) => r.claims.some((c) => c.supporting_evidence_ids.length > 0))
+    synthesisResults.some((r) => Boolean((r.overall_summary || "").trim()))
+  // Prefer the repository-grouped standalone GitHub projection; fall back to the
+  // flat per-item list for older payloads that don't carry ``github_groups``.
+  const stdGithubGroups = std?.github_groups ?? []
   const hasStandalone = Boolean(
     std &&
       (std.github.length ||
+        stdGithubGroups.length ||
         std.website.length ||
         std.documents.length ||
         std.defense.length ||
@@ -1088,32 +1261,35 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
         )}
       </div>
 
-      {/* B2 — What VeriBridge synthesis says: recruiter-readable claims, each
-          cited to the exact evidence chips. Every shown claim cites evidence; an
-          empty state appears when there is no synthesis (or none public-safe). */}
-      <div data-testid="skill-report-synthesis" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
-          What VeriBridge synthesis says
-        </h3>
-        {hasCitedSynthesis ? (
-          <VeriBridgeSynthesisClaims results={synthesisResults} resolver={evidenceResolver} publicSafe={publicSafe} />
-        ) : synthesisWithheld ? (
-          <EmptyState testId="skill-report-synthesis-withheld">
-            Evidence available but not public-safe — the full synthesis is shown on the private report.
-          </EmptyState>
-        ) : (
-          <EmptyState testId="skill-report-synthesis-empty">No synthesis available yet.</EmptyState>
-        )}
-      </div>
+      {/* B2 — VeriBridge agent summary (COMPACT): one short line per synthesized
+          chain. The detailed, evidence-cited synthesis lives inside each chain
+          card above, so this is no longer a wall of repeated claim cards. Hidden
+          entirely unless there is a real summary (or a public-safe withhold). */}
+      {(hasAgentSummary || synthesisWithheld) && (
+        <div data-testid="skill-report-synthesis" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
+            VeriBridge agent summary
+          </h3>
+          {hasAgentSummary ? (
+            <AgentSummary results={synthesisResults} publicSafe={publicSafe} />
+          ) : (
+            <EmptyState testId="skill-report-synthesis-withheld">
+              Evidence available but not public-safe — the full synthesis is shown on the private report.
+            </EmptyState>
+          )}
+        </div>
+      )}
 
       {/* C — Unlinked supporting evidence (synthesis): capped, clearly separated
-          from the strong chains so unrelated proofs are never folded into them. */}
-      {unlinked && unlinked.items.length > 0 && (
+          from the strong chains so unrelated proofs are never folded into them.
+          Items already shown in the canonical standalone section (D) are dropped
+          so the same proof never appears in both sections. */}
+      {unlinked && unlinkedItems.length > 0 && (
         <div data-testid="skill-report-unlinked" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
             Unlinked supporting evidence
           </h3>
-          {unlinked.items.map((item) => (
+          {unlinkedItems.map((item) => (
             <UnlinkedEvidenceCard key={`${item.proof_type}-${item.source_id}`} item={item} />
           ))}
           {unlinked.more_count > 0 && (
@@ -1130,7 +1306,11 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
           <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
             Standalone supporting proofs (not attached to a VBR project)
           </h3>
-          <SkillReportSection testId="skill-report-github" title="GitHub evidence" items={std.github} />
+          {stdGithubGroups.length > 0 ? (
+            <StandaloneGitHubGroups groups={stdGithubGroups} />
+          ) : (
+            <SkillReportSection testId="skill-report-github" title="GitHub evidence" items={std.github} />
+          )}
           <SkillReportSection testId="skill-report-website" title="Website evidence" items={std.website} />
           <DocumentCorrelations
             testId="skill-report-documents"

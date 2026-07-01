@@ -106,6 +106,60 @@ describe("PrivatePassportView", () => {
     expect(screen.queryByTestId("skill-expand-toggle")).not.toBeInTheDocument()
   })
 
+  it("renders the passport identity header with education, status and evidence summary", async () => {
+    const p = makePassport({
+      identity: {
+        display_name: "Jordan Rivera",
+        headline: "Full-stack builder",
+        program: "Computer Science",
+        degree_level: "Masters",
+        graduation_year: 2026,
+        region: "United States",
+        education_summary: "Computer Science · Masters · Class of 2026 · United States",
+        public_status: "Private only",
+        public_path: null,
+        last_updated: "2026-01-02T00:00:00Z",
+        evidence_source_summary: ["GitHub Proof · 1", "Document Proof · 1"],
+        verification_label: "Verified Work Passport",
+      },
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("passport-identity-header")).toBeInTheDocument()
+    expect(screen.getByTestId("passport-identity-name")).toHaveTextContent("Jordan Rivera")
+    expect(screen.getByTestId("passport-identity-education")).toHaveTextContent("Computer Science")
+    expect(screen.getByTestId("passport-identity-status")).toHaveTextContent("Private only")
+    expect(screen.getByTestId("passport-identity-evidence-summary")).toHaveTextContent("GitHub Proof · 1")
+  })
+
+  it("falls back to a safe placeholder name when identity has no display name", async () => {
+    const p = makePassport({
+      candidate_display_name: null,
+      identity: {
+        display_name: null,
+        headline: "Verified Work Passport",
+        program: null,
+        degree_level: null,
+        graduation_year: null,
+        region: null,
+        education_summary: "",
+        public_status: "Private only",
+        public_path: null,
+        last_updated: null,
+        evidence_source_summary: [],
+        verification_label: "Verified Work Passport",
+      },
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    expect(await screen.findByTestId("passport-identity-name")).toHaveTextContent("Verified candidate profile")
+  })
+
   it("shows a merged-attempts badge when duplicate evidence is grouped into one card", async () => {
     const base = makePassport()
     const p = makePassport({

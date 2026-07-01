@@ -5,8 +5,11 @@ All tests use MockGitHubAPIClient — no live GitHub calls are made.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -29,6 +32,36 @@ from scripts.github_portfolio_scanner import (
     select_dockerfile_range,
     select_high_signal_ranges,
     select_workflow_range,
+)
+
+from app.services.github_canonical_skill_evidence_adapter import (  # noqa: E402
+    collect_canonical_github_skill_evidence,
+)
+from app.services.github_python_evidence_focus import (  # noqa: E402
+    ANALYZER_NAME,
+    GRADE_IMPLEMENTATION_BODY,
+    GRADE_IMPORT_ONLY,
+    GRADE_SUPPORTING_LOGIC,
+    SERVER_PROVENANCE_KEY,
+    TRUSTED_ANALYSIS_TABLE,
+    is_strong_grade,
+    is_weak_grade,
+    trusted_provenance,
+)
+
+
+def _trusted_provenance_for(db: dict, evidence_id: str) -> dict | None:
+    """Validated server-only provenance for ``evidence_id``, read from the
+    SERVICE-ROLE-ONLY protected table — never from ``skill_evidence.metadata``.
+
+    Mirrors the canonical adapter's read path: a hostile owner editing their own
+    metadata directly via Supabase cannot reach this table, so a grade/snippet
+    here can never be forged."""
+    rec = db.get(TRUSTED_ANALYSIS_TABLE, {}).get(evidence_id)
+    return trusted_provenance(rec)
+from app.services.student_proof_vault_service import (  # noqa: E402
+    _collect_github,
+    collect_skill_report,
 )
 
 
@@ -296,9 +329,87 @@ class TestLineRangeSelection:
         all_code = "\n".join(content.splitlines()[ranges[0][0] - 1 : ranges[0][1]])
         assert "predict" in all_code.lower()
 
+    def test_boston_canonical_ranges_focus_on_real_model_body(self):
+        # Boston-style training file: module docstring + imports + a config
+        # constant + the real training function. The persisted range must focus
+        # onto the function's implementation body (model fit / evaluation), never
+        # the module docstring, the import block, or the MODEL_PATH constant.
+        content = "\n".join([
+            '"""Boston accident-risk model training pipeline.',
+            "",
+            "Loads the cleaned dataset, fits a tuned random forest, persists it.",
+            '"""',
+            "",
+            "import os",
+            "import joblib",
+            "import pandas as pd",
+            "from sklearn.ensemble import RandomForestClassifier",
+            "from sklearn.model_selection import train_test_split",
+            "from sklearn.metrics import f1_score",
+            "",
+            'MODEL_PATH = os.environ.get("MODEL_PATH", "model.joblib")',
+            "",
+            "",
+            "def train_model(data_path):",
+            '    """Train and persist the Boston accident-risk model."""',
+            "    df = pd.read_csv(data_path)",
+            '    X = df.drop("risk", axis=1)',
+            '    y = df["risk"]',
+            "    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)",
+            "    clf = RandomForestClassifier(n_estimators=200, max_depth=8)",
+            "    clf.fit(X_train, y_train)",
+            "    score = f1_score(y_test, clf.predict(X_test))",
+            "    joblib.dump(clf, MODEL_PATH)",
+            "    return score",
+        ])
+        lines = content.splitlines()
+        ranges = select_high_signal_ranges(content, "src/model/train.py", "Machine Learning")
+        assert len(ranges) >= 1
+        start, end, _reason = ranges[0]
+        selected = "\n".join(lines[start - 1 : end])
+        # Focused on the real implementation body…
+        assert "clf.fit" in selected
+        assert "RandomForestClassifier" in selected
+        # …and NOT opened on the module docstring / imports / config constant.
+        assert "Loads the cleaned dataset" not in selected
+        assert "import joblib" not in selected
+        assert "MODEL_PATH = os.environ" not in selected
+        # The range starts at/after the def, never at the module docstring.
+        assert start >= lines.index("def train_model(data_path):") + 1
+
     def test_returns_empty_for_empty_file(self):
         ranges = select_high_signal_ranges("", "empty.py", "Python")
         assert ranges == []
+
+    def test_python_parse_failure_fails_closed_to_fallback(self):
+        # A malformed Python file: ML keywords live in a comment and an import, but
+        # the body has a syntax error so the AST cannot prove any real
+        # implementation. The scanner must FAIL CLOSED — it never resumes the old
+        # keyword-window path and never promotes the unparsed range as strong
+        # precise evidence. No precise ranges are produced for the broken file, so
+        # nothing can later be graded implementation_body / supporting_logic.
+        content = "\n".join([
+            "# trains a RandomForestClassifier and computes the f1_score metric",
+            "import sklearn",
+            "from sklearn.ensemble import RandomForestClassifier",
+            "def train(df:",  # <- syntax error: unterminated signature
+            "    clf = RandomForestClassifier(n_estimators=200)",
+            "    clf.fit(df.X, df.y)",
+            "    return f1_score(df.y, clf.predict(df.X))",
+        ])
+        ranges = select_high_signal_ranges(content, "src/model/train.py", "Machine Learning")
+        assert ranges == []
+
+        # Sanity: the guard fires ONLY on parse failure — a well-formed body still
+        # yields precise evidence (so we did not just disable Python evidence).
+        fixed = content.replace("def train(df:", "def train(df):")
+        assert select_high_signal_ranges(fixed, "src/model/train.py", "Machine Learning")
+
+        # Non-Python files are NOT AST-gated — the same broken-Python text under a
+        # .ts path keeps the existing conservative keyword heuristics (never forced
+        # empty by the Python parse guard).
+        ts_ranges = select_high_signal_ranges(content, "src/model/train.ts", "TypeScript")
+        assert isinstance(ts_ranges, list)
 
     def test_at_most_max_ranges(self):
         # Large file with many signal lines
@@ -871,3 +982,380 @@ class TestImportKey:
         k1 = make_import_key("u1", "https://github.com/a/b", "api.py", 10, 30, "Python")
         k2 = make_import_key("u1", "https://github.com/a/b", "api.py", 10, 30, "Machine Learning")
         assert k1 != k2
+
+
+# ── Scanner → import → canonical adapter → grouped report (end-to-end) ──────────
+#
+# These cover the full path Codex flagged: the AST scanner focuses a real
+# implementation body, ``import_candidates`` PERSISTS the grade + analyzer
+# provenance + the public source snippet, the canonical adapter keeps the strong
+# grade (instead of collapsing to ``repo_level_fallback`` because the grade was
+# dropped), and the grouped report surfaces the implementation body — never the
+# module docstring / import block / config constant.
+
+_BOSTON_TRAIN_SOURCE = "\n".join([
+    '"""Boston accident-risk model training pipeline.',
+    "",
+    "Loads the cleaned dataset, fits a tuned random forest, persists it.",
+    '"""',
+    "",
+    "import os",
+    "import joblib",
+    "import pandas as pd",
+    "from sklearn.ensemble import RandomForestClassifier",
+    "from sklearn.model_selection import train_test_split",
+    "from sklearn.metrics import f1_score",
+    "",
+    'MODEL_PATH = os.environ.get("MODEL_PATH", "model.joblib")',
+    "",
+    "",
+    "def train_model(data_path):",
+    '    """Train and persist the Boston accident-risk model."""',
+    "    df = pd.read_csv(data_path)",
+    '    X = df.drop("risk", axis=1)',
+    '    y = df["risk"]',
+    "    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)",
+    "    clf = RandomForestClassifier(n_estimators=200, max_depth=8)",
+    "    clf.fit(X_train, y_train)",
+    "    score = f1_score(y_test, clf.predict(X_test))",
+    "    joblib.dump(clf, MODEL_PATH)",
+    "    return score",
+])
+
+
+_SECRET_TRAIN_SOURCE = "\n".join([
+    '"""Model training that accidentally hard-codes a secret."""',
+    "",
+    "import os",
+    "import joblib",
+    "import pandas as pd",
+    "from sklearn.ensemble import RandomForestClassifier",
+    "from sklearn.model_selection import train_test_split",
+    "from sklearn.metrics import f1_score",
+    "",
+    'MODEL_PATH = os.environ.get("MODEL_PATH", "model.joblib")',
+    "",
+    "",
+    "def train_model(data_path):",
+    '    """Train and persist the model."""',
+    '    api_key = "sk-supersecret-DEADBEEF1234"',
+    '    token = "ghp_aaaaaaaaaaaaaaaaaaaa"',
+    "    df = pd.read_csv(data_path)",
+    '    X = df.drop("risk", axis=1)',
+    '    y = df["risk"]',
+    "    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)",
+    "    clf = RandomForestClassifier(n_estimators=200, max_depth=8)",
+    "    clf.fit(X_train, y_train)",
+    "    score = f1_score(y_test, clf.predict(X_test))",
+    "    joblib.dump(clf, MODEL_PATH)",
+    "    return score",
+])
+
+
+class TestScannerImportCanonicalReportE2E:
+    _USER = "00000000-0000-0000-0000-0000000000ee"
+
+    def _boston_candidates(self) -> list[EvidenceCandidate]:
+        # ``_extract_candidates_from_file`` never touches the github client.
+        scanner = PortfolioScanner(github_client=None)  # type: ignore[arg-type]
+        repo = _make_repo(name="boston-accident-risk", owner="alice")
+        return scanner._extract_candidates_from_file(
+            repo, "main", "src/model/train.py", _BOSTON_TRAIN_SOURCE,
+            ["Machine Learning"], None,
+        )
+
+    def test_scanner_import_preserves_evidence_quality_grade_for_canonical_report(self):
+        candidates = self._boston_candidates()
+        assert candidates, "scanner should focus the training body"
+        cand = candidates[0]
+
+        # 1) Scanner focused the real implementation body and graded it strong,
+        #    carrying the focused snippet + provenance on the candidate.
+        assert cand.evidence_quality_grade == GRADE_IMPLEMENTATION_BODY
+        assert cand.code_snippet and "clf.fit" in cand.code_snippet
+        assert "import joblib" not in cand.code_snippet
+        assert cand.focused_start_line == cand.line_start
+        assert cand.focused_end_line == cand.line_end
+
+        # 2) Real import path (dict-backed client) persists grade/provenance/snippet
+        #    into the SERVICE-ROLE-ONLY protected table — never into the
+        #    user-editable skill_evidence.metadata a public payload could forge.
+        db: dict = {"skill_evidence": {}}
+        result = import_candidates(db, self._USER, [cand], dry_run=False)
+        assert result.created, result.errors
+        row = next(iter(db["skill_evidence"].values()))
+        md = row["metadata"]
+        # No provenance leaked into the public metadata surface — not as flat keys,
+        # and not under the legacy server-provenance namespace either.
+        assert "evidence_quality_grade" not in md
+        assert "evidence_analyzer" not in md
+        assert "code_snippet" not in md
+        assert SERVER_PROVENANCE_KEY not in md
+        # Trusted provenance lives ONLY in the protected table, keyed by evidence id.
+        prov = _trusted_provenance_for(db, row["id"])
+        assert prov is not None
+        assert prov["evidence_quality_grade"] == GRADE_IMPLEMENTATION_BODY
+        assert prov["analyzer_name"] == ANALYZER_NAME
+        assert "clf.fit" in prov["safe_excerpt"]
+
+        # 3) Canonical adapter KEEPS the strong grade — it does not become
+        #    repo_level_fallback merely because import moved the grade/snippet.
+        evs = collect_canonical_github_skill_evidence(db, self._USER)
+        assert evs
+        assert is_strong_grade(evs[0].evidence_quality_grade)
+        assert evs[0].evidence_quality_grade in (
+            GRADE_IMPLEMENTATION_BODY, GRADE_SUPPORTING_LOGIC
+        )
+
+    def test_boston_scanner_import_to_grouped_report_excludes_imports_and_docstrings(self):
+        candidates = self._boston_candidates()
+        db: dict = {"skill_evidence": {}}
+        import_candidates(db, self._USER, candidates, dry_run=False)
+
+        items = _collect_github(db, self._USER, {})
+        ml_items = [i for i in items if (i.get("skill_name") or "") == "Machine Learning"]
+        assert ml_items
+
+        precise = [i for i in ml_items if i.get("has_precise_line_evidence")]
+        assert precise, "the training body must surface as precise code evidence"
+        for item in precise:
+            # Visible top evidence is a real implementation/supporting body…
+            assert item.get("evidence_quality_grade") in (
+                GRADE_IMPLEMENTATION_BODY, GRADE_SUPPORTING_LOGIC
+            )
+            # …and its focused range opens at/after the def, never the module
+            # docstring / import block / MODEL_PATH constant (all in lines 1-15).
+            assert (item.get("line_start") or 0) >= 16
+
+    def test_scanner_import_through_collect_skill_report_into_github_groups(self):
+        # TRUE end-to-end: scanner → import_candidates → canonical adapter →
+        # collect_skill_report() → github_groups. (synthesize=False so NO LLM /
+        # provider call happens in this render path.)
+        candidates = self._boston_candidates()
+        db: dict = {"skill_evidence": {}}
+        import_candidates(db, self._USER, candidates, dry_run=False)
+
+        report = collect_skill_report(
+            db, {}, self._USER, "Machine Learning", synthesize=False
+        )
+        groups = report["standalone_evidence"]["github_groups"]
+        assert groups, "the imported training body must surface as a github group"
+
+        all_rows = [r for g in groups for r in g["rows"]]
+        strong_rows = [
+            r for r in all_rows if is_strong_grade(r.get("evidence_quality_grade"))
+        ]
+        assert strong_rows, "a real implementation body must rank into github_groups"
+        for r in strong_rows:
+            # The module docstring / imports / MODEL_PATH constant (lines 1-15)
+            # never enter the visible top github_groups rows.
+            assert (r.get("line_start") or 0) >= 16
+            assert r.get("evidence_quality_grade") in (
+                GRADE_IMPLEMENTATION_BODY, GRADE_SUPPORTING_LOGIC
+            )
+
+    def test_scanner_import_redacts_hardcoded_secret_in_persisted_snippet(self):
+        # A focused implementation body that happens to contain a hard-coded secret
+        # must be persisted with the secret redacted — never verbatim — and the raw
+        # secret must not appear anywhere in storage or the rendered report.
+        scanner = PortfolioScanner(github_client=None)  # type: ignore[arg-type]
+        repo = _make_repo(name="secret-leak-model", owner="alice")
+        candidates = scanner._extract_candidates_from_file(
+            repo, "main", "src/train.py", _SECRET_TRAIN_SOURCE,
+            ["Machine Learning"], None,
+        )
+        assert candidates, "scanner should focus the training body"
+
+        db: dict = {"skill_evidence": {}}
+        import_candidates(db, self._USER, candidates, dry_run=False)
+
+        dump = json.dumps(db)
+        assert "sk-supersecret" not in dump
+        assert "ghp_aaaaaaaaaaaaaaaaaaaa" not in dump
+
+        row = next(iter(db["skill_evidence"].values()))
+        prov = _trusted_provenance_for(db, row["id"])
+        assert prov is not None
+        snippet = prov["safe_excerpt"]
+        assert "clf.fit" in snippet              # real body kept
+        assert "[REDACTED_SECRET]" in snippet    # secret scrubbed
+        assert "sk-supersecret" not in snippet
+
+        report = collect_skill_report(
+            db, {}, self._USER, "Machine Learning", synthesize=False
+        )
+        assert "sk-supersecret" not in json.dumps(report)
+
+    def test_weak_canonical_does_not_suppress_stronger_github_fallback(self):
+        # Must-fix #4: a WEAK canonical row produced by the import path (import-only)
+        # must NOT cover (suppress) a STRONGER github_proof_submissions fallback for
+        # the same repo + skill — the strong fallback still appears and ranks.
+        repo_url = "https://github.com/alice/boston-accident-risk"
+        weak_candidate = EvidenceCandidate(
+            skill_name="Machine Learning",
+            project_title="Boston Accident Risk",
+            repo_url=repo_url,
+            repo_name="boston-accident-risk",
+            file_path="src/utils.py",
+            line_start=1,
+            line_end=3,
+            evidence_description="Imports for the ML utilities.",
+            student_claim="I imported ML libraries.",
+            evidence_type="github repository",
+            website_url=None,
+            detection_reason="import statements",
+            github_highlight_url=f"{repo_url}/blob/main/src/utils.py#L1-L3",
+            import_key="",
+            evidence_quality_grade=GRADE_IMPORT_ONLY,
+            code_snippet="import os\nimport sys\nimport joblib",
+            focused_start_line=1,
+            focused_end_line=3,
+            focused_reason="import statements",
+        )
+
+        db: dict = {
+            "skill_evidence": {},
+            "github_proof_submissions": {
+                "gh-strong": {
+                    "id": "gh-strong",
+                    "user_id": self._USER,
+                    "repo_owner": "alice",
+                    "repo_name": "boston-accident-risk",
+                    "repo_url": repo_url,
+                    "default_branch": "main",
+                    "visibility": "public",
+                    "detected_skills": ["Machine Learning"],
+                    "public_safe_summary": "Repository analyzed.",
+                    "analysis_snapshot": {
+                        "skill_code_evidence": [
+                            {
+                                "skill": "Machine Learning",
+                                "file_path": "src/model/train.py",
+                                "line_start": 30,
+                                "line_end": 45,
+                                "function_name": "serve_prediction",
+                                "code_snippet": (
+                                    "def serve_prediction(features):\n"
+                                    "    clf = joblib.load(MODEL_PATH)\n"
+                                    "    proba = clf.predict_proba([features])[0]\n"
+                                    "    return f1_score(y_test, clf.predict(X_test))\n"
+                                ),
+                                "commit_sha": "abc1234def5678",
+                            }
+                        ]
+                    },
+                }
+            },
+        }
+        import_candidates(db, self._USER, [weak_candidate], dry_run=False)
+
+        report = collect_skill_report(
+            db, {}, self._USER, "Machine Learning", synthesize=False
+        )
+        groups = report["standalone_evidence"]["github_groups"]
+        assert groups
+        strong_rows = [
+            r
+            for g in groups
+            for r in g["rows"]
+            if is_strong_grade(r.get("evidence_quality_grade"))
+        ]
+        # The stronger fallback body (lines 30-45) survives — it is NOT suppressed by
+        # the weak import-only canonical row for the same repo + skill.
+        assert any((r.get("line_start") or 0) >= 30 for r in strong_rows), (
+            "stronger github_proof_submissions fallback must not be suppressed"
+        )
+
+
+# ── Migration 053 application path + RLS guarantees ───────────────────────────
+#
+# Trusted GitHub evidence provenance lives in the service-role-only
+# ``trusted_github_evidence_analysis`` table created by migration 053. The
+# scanner's provenance write (:func:`_stamp_server_provenance`) and the
+# read-time grade-trust check both target that table, so if 053 is never
+# applied, both fail closed and imported evidence silently degrades to weak
+# grading. The repo applies migrations through per-group helper scripts (the
+# same psycopg2 + .env + pooler + ``NOTIFY pgrst`` pattern used for 047/048 and
+# 051/052); 053 MUST be wired into that same application path. These hermetic
+# text/policy assertions guard both the application path and the RLS contract
+# without requiring a live Supabase.
+
+_APPLY_HELPER = (
+    ROOT / "scripts" / "apply_vbr_public_report_migration.py"
+)
+_MIGRATION_053 = (
+    ROOT / "app" / "db" / "migrations" / "053_trusted_github_evidence_analysis.sql"
+)
+
+
+@pytest.fixture(scope="module")
+def apply_helper_src() -> str:
+    return _APPLY_HELPER.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def migration_053_sql() -> str:
+    return _MIGRATION_053.read_text(encoding="utf-8").lower()
+
+
+def test_migration_053_included_in_apply_helper(apply_helper_src: str) -> None:
+    # 053 must be listed in the existing migration-apply helper (the one that
+    # already stops at 052), so the local/dev/test DB actually gets the table.
+    assert "053_trusted_github_evidence_analysis.sql" in apply_helper_src
+    # It must sit inside the ordered MIGRATIONS list the helper iterates over,
+    # after 052 (migrations are applied in list order).
+    migrations_block = apply_helper_src.split("MIGRATIONS = [", 1)[1].split("]", 1)[0]
+    assert "052_vbr_work_passport.sql" in migrations_block
+    assert "053_trusted_github_evidence_analysis.sql" in migrations_block
+    assert migrations_block.index("052_vbr_work_passport.sql") < migrations_block.index(
+        "053_trusted_github_evidence_analysis.sql"
+    )
+
+
+def test_migration_053_sql_reachable_through_helper() -> None:
+    # The filename the helper iterates over must resolve to a real migration the
+    # helper reads from app/db/migrations, and that SQL must create the table.
+    assert _MIGRATION_053.exists()
+    sql = _MIGRATION_053.read_text(encoding="utf-8").lower()
+    assert "create table if not exists public.trusted_github_evidence_analysis" in sql
+
+
+def test_migration_053_apply_helper_reloads_postgrest_schema(
+    apply_helper_src: str,
+) -> None:
+    # Newly created table stays invisible to PostgREST until its cache reloads;
+    # the shared helper must issue the reload after applying the migrations.
+    assert "notify pgrst, 'reload schema'" in apply_helper_src.lower()
+
+
+def test_migration_053_enables_row_level_security(migration_053_sql: str) -> None:
+    assert (
+        "alter table public.trusted_github_evidence_analysis "
+        "enable row level security" in migration_053_sql
+    )
+
+
+def test_migration_053_grants_service_role_write(migration_053_sql: str) -> None:
+    # service_role (the offline scanner / import path) may insert/update
+    # trusted provenance: a single FOR ALL policy scoped to service_role.
+    assert (
+        '"trusted_github_evidence_analysis: service role all"' in migration_053_sql
+    )
+    assert "for all" in migration_053_sql
+    assert "to service_role" in migration_053_sql
+    assert "using (true)" in migration_053_sql
+    assert "with check (true)" in migration_053_sql
+
+
+def test_migration_053_has_no_authenticated_or_anon_write_policy(
+    migration_053_sql: str,
+) -> None:
+    # Authenticated students can neither forge (write) nor read trusted
+    # provenance directly, and anonymous users have no access at all: the only
+    # role any policy targets is service_role. If a policy were ever added for
+    # authenticated/anon/public, a hostile owner could inject a strong grade.
+    assert "to authenticated" not in migration_053_sql
+    assert "to anon" not in migration_053_sql
+    assert "to public" not in migration_053_sql
+    # Exactly one policy exists on the table, and it is the service-role policy.
+    assert migration_053_sql.count("create policy") == 1

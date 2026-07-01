@@ -753,6 +753,8 @@ export type SkillReportDocumentCorrelation = {
   page_number?: number | null
   section_label?: string | null
   citation?: string | null
+  /** Safe figure/diagram/table reference label (e.g. "Figure 3") — never the raw figure. */
+  figure_reference?: string | null
   safe_snippet?: string | null
   /** "GitHub implementation" / "Website workflow behavior" / "Skill explanation" / "Project architecture". */
   corroborates: string
@@ -761,6 +763,12 @@ export type SkillReportDocumentCorrelation = {
   /** Always "Supporting evidence" — a document corroborates, it is never primary proof. */
   support_label?: string
   reason: string
+  /** Why this page/section supports the skill (safe analyzer reason, with a deterministic fallback). */
+  why_supported?: string
+  /** True only when the student explicitly allowed full-document recruiter download. */
+  full_document_available?: boolean
+  /** Safe download gating message — never a storage path or signed URL. */
+  document_access_note?: string
   limitation: string
 }
 
@@ -781,11 +789,19 @@ export type SkillReportProjectChain = {
   sources: string[]
   evidence_chain_summary: string
   github_evidence: SkillReportEvidenceItem[]
+  /**
+   * This chain's GitHub implementation evidence grouped by canonical owner/repo —
+   * the same compact grouped projection used for standalone GitHub. May be absent
+   * on older payloads; fall back to `github_evidence`.
+   */
+  github_groups?: SkillReportStandaloneGitHubGroup[]
   website_evidence: SkillReportEvidenceItem[]
   document_correlations: SkillReportDocumentCorrelation[]
   document_more_count: number
   defense_evidence: SkillReportEvidenceItem[]
   video_evidence: SkillReportEvidenceItem[]
+  /** Project Defense + Video evidence collapsed into ONE grouped section (no repeated cards). */
+  defense_group?: SkillReportDefenseGroup | null
   limitations: string[]
   /** >1 when duplicate VBR project rows sharing the same proof package were collapsed. */
   collapsed_project_count?: number
@@ -802,6 +818,24 @@ export type SkillReportProjectChain = {
   synthesis_statements?: SkillProofSynthesisStatement[]
   /** Step 2: this chain's evidence collapsed into the uniform normalized model. */
   normalized_evidence?: SkillReportNormalizedArtifact[]
+}
+
+/** One cited Project Defense / video moment inside the grouped defense section. */
+export type SkillReportDefenseMoment = {
+  label: string
+  timestamp_label?: string | null
+  question_text?: string | null
+  short_summary: string
+  source_id: string
+}
+
+/** All Project Defense + Video evidence for one chain, grouped into one section. */
+export type SkillReportDefenseGroup = {
+  explanation: string
+  moments: SkillReportDefenseMoment[]
+  grouped_count: number
+  limitation: string
+  source_ids: string[]
 }
 
 /** A standalone proof that links to no chain — shown under unlinked support. */
@@ -913,8 +947,48 @@ export type SkillSynthesisResult = {
 }
 
 /** Proofs supporting a skill that are not attached to any VBR project. */
+/** One compact code-location row inside a standalone GitHub repository group. */
+export type SkillReportStandaloneGitHubRow = {
+  source_id: string
+  /** Compact "file · lines / function()" label (e.g. "Tree.py · lines 13-72"). */
+  label: string
+  file_path?: string | null
+  line_start?: number | null
+  line_end?: number | null
+  function_name?: string | null
+  display_mode?: string | null
+  /**
+   * Deterministic quality band (implementation_body / supporting_logic /
+   * config_or_constant / comment_or_docstring / import_only / route_decorator_only
+   * / repo_level_fallback). The backend already ranks strong rows first and pushes
+   * weak rows past `row_more_count`; this is exposed so the UI can label/skip weak
+   * rows rather than render them like real implementation code.
+   */
+  evidence_quality_grade?: string | null
+  /** Precise "why selected" reason ("ML training call"), when the analyzer set it. */
+  selection_reason?: string | null
+  github_line_url?: string | null
+  public_url?: string | null
+}
+
+/** Standalone GitHub evidence grouped by repository — compact rows, not cards. */
+export type SkillReportStandaloneGitHubGroup = {
+  repo_label: string
+  /** Only set when the repository is public-safe. */
+  repo_url?: string | null
+  repo_is_public: boolean
+  rows: SkillReportStandaloneGitHubRow[]
+  row_more_count: number
+}
+
 export type SkillReportStandaloneEvidence = {
   github: SkillReportEvidenceItem[]
+  /**
+   * Repository-grouped, de-duplicated projection of `github` — compact rows per
+   * repo so multiple lines from one repo never render as repeated full cards.
+   * May be absent on older payloads — fall back to `github`.
+   */
+  github_groups?: SkillReportStandaloneGitHubGroup[]
   website: SkillReportEvidenceItem[]
   documents: SkillReportDocumentCorrelation[]
   document_more_count: number
@@ -1356,10 +1430,31 @@ export type PassportProjectSummary = {
 }
 
 /** The owner-only private Work Passport (full evidence wallet). */
+/**
+ * Recruiter-safe candidate identity header for the Verified Work Passport.
+ * Non-PII identity context only — never the student's email, auth id, private
+ * profile fields, or a raw institution name beyond the safe `region` (country).
+ */
+export type PassportIdentity = {
+  display_name: string | null
+  headline: string
+  program: string | null
+  degree_level: string | null
+  graduation_year: number | null
+  region: string | null
+  education_summary: string
+  public_status: string
+  public_path: string | null
+  last_updated: string | null
+  evidence_source_summary: string[]
+  verification_label: string
+}
+
 export type PrivateWorkPassport = {
   candidate_display_name: string | null
   headline: string
   summary: string
+  identity?: PassportIdentity | null
   is_published: boolean
   public_slug: string | null
   public_path: string | null
@@ -1425,6 +1520,7 @@ export type PublicWorkPassport = {
   candidate_display_name: string | null
   headline: string
   summary: string
+  identity?: PassportIdentity | null
   top_skills: PublicPassportSkill[]
   featured_projects: PublicPassportProject[]
   evidence_source_counts: Record<string, number>

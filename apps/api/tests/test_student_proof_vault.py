@@ -22,8 +22,16 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user_id, get_db, get_pipeline_db
 from app.main import app
+from app.services.github_python_evidence_focus import (
+    TRUSTED_ANALYSIS_TABLE,
+    build_server_provenance,
+)
 from app.services.skill_normalization import canonical_skill, skill_category, skill_slug
 from app.services.student_proof_vault_service import (
+    _collect_documents,
+    _github_repo_identity,
+    _group_github_evidence,
+    _match_github_to_project,
     collect_skill_report,
     collect_skill_summaries,
     collect_vault_items,
@@ -808,6 +816,520 @@ def test_github_precise_evidence_exposes_display_mode_code_line(mem_store: dict,
     assert item["evidence_strength"] in ("strong", "medium")
 
 
+def test_standalone_github_is_grouped_by_repository(mem_store: dict, pipeline_db: dict) -> None:
+    """Standalone code evidence is grouped into ONE compact block per repository.
+
+    Two distinct repositories that both evidence the skill form two separate
+    groups (never merged), each with its own public "View repository" link and
+    compact, de-duplicated code-line rows — so the report reads as a few grouped
+    blocks instead of one full card per code line.
+    """
+    _seed_github_proof(
+        mem_store,
+        repo_url="https://github.com/alice/stroke-prediction",
+        repo_owner="alice",
+        repo_name="stroke-prediction",
+        detected_skills=["Machine Learning"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "Tree.py",
+                    "line_start": 13,
+                    "line_end": 72,
+                    "function_name": "train_tree",
+                    "code_snippet": "def train_tree(X, y):\n    model = DecisionTreeClassifier().fit(X, y)\n    return model",
+                }
+            ]
+        },
+    )
+    _seed_github_proof(
+        mem_store,
+        repo_url="https://github.com/bob/risk-rerouting",
+        repo_owner="bob",
+        repo_name="risk-rerouting",
+        detected_skills=["Machine Learning"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "model.py",
+                    "line_start": 40,
+                    "line_end": 88,
+                    "function_name": "fit_model",
+                    "code_snippet": "def fit_model(X, y):\n    return RandomForestClassifier().fit(X, y)",
+                }
+            ]
+        },
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    groups = report["standalone_evidence"]["github_groups"]
+    # Two repositories ⇒ two separate groups (different owners never merge).
+    assert len(groups) == 2
+    repos = sorted(g["repo_url"] for g in groups)
+    assert any("alice/stroke-prediction" in r for r in repos)
+    assert any("bob/risk-rerouting" in r for r in repos)
+    for group in groups:
+        assert group["repo_is_public"] is True
+        assert group["rows"], "each repo group surfaces its compact code rows"
+        # Rows are de-duplicated within a group.
+        keys = [(r["source_id"], r["label"]) for r in group["rows"]]
+        assert len(keys) == len(set(keys))
+
+
+def test_standalone_github_groups_never_duplicate_chain_evidence(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """GitHub evidence folded into a project chain is not regrouped as standalone."""
+    proof_id = _seed_github_proof(
+        mem_store,
+        detected_skills=["Machine Learning"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "api.py",
+                    "line_start": 10,
+                    "line_end": 20,
+                    "function_name": "predict",
+                    "code_snippet": "def predict(x):\n    return model.predict(x)",
+                }
+            ]
+        },
+    )
+    # Attach the same repo to a VBR project so it becomes a connected chain.
+    _seed_project(
+        mem_store,
+        title="Hello World ML",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": proof_id}},
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    # The evidence lives in the connected chain — the standalone group is empty.
+    assert report["standalone_evidence"]["github_groups"] == []
+    chain_gh = [g for p in report["projects"] for g in (p.get("github_evidence") or [])]
+    assert any(g.get("file_path") == "api.py" for g in chain_gh)
+
+
+def test_connected_chain_github_uses_grouped_model(mem_store: dict, pipeline_db: dict) -> None:
+    """A connected chain's GitHub evidence is projected through the grouped model.
+
+    Boston-style: even when only ``api.py``/``predict`` exists, the connected
+    "Code implementation" is rendered through the SAME repository-grouped model as
+    standalone GitHub — one group per canonical owner/repo with a compact row."""
+    proof_id = _seed_ml_strong_github(mem_store)  # api.py · predict, octocat/Hello-World
+    _seed_project(
+        mem_store,
+        title="Boston Smart Accident Risk Rerouting",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": proof_id}},
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    attached_chains = [p for p in report["projects"] if p.get("attached")]
+    assert len(attached_chains) == 1
+    chain = attached_chains[0]
+    groups = chain["github_groups"]
+    # One grouped block for the single canonical repo, with a compact api.py row.
+    assert len(groups) == 1
+    group = groups[0]
+    assert "octocat/Hello-World" in (group["repo_url"] or "")
+    assert group["rows"], "the grouped block surfaces a compact code row"
+    assert any("api.py" in r["label"] and "predict" in r["label"] for r in group["rows"])
+    # The flat list is kept for back-compat — but the grouped model is preferred.
+    assert any(g.get("file_path") == "api.py" for g in chain["github_evidence"])
+
+
+# ── Connected GitHub fallback: bounded multi-row ranked evidence ──────────────
+
+
+def _seed_ml_multirow_github(mem_store: dict) -> str:
+    """A ``github_proof_submissions`` snapshot with several genuine ML pipeline
+    rows (training, preprocessing, model, inference, metrics), one generic helper,
+    and a weak import — so the connected fallback has real multi-row evidence to
+    rank and bound (it must surface the precise rows, ML-pipeline-first)."""
+    return _seed_github_proof(
+        mem_store,
+        detected_skills=["Machine Learning"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                # Generic helper (strong code, but NOT an ML pipeline stage).
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "src/util.py",
+                    "line_start": 3,
+                    "line_end": 5,
+                    "function_name": "format_row",
+                    "code_snippet": "def format_row(r):\n    return dict(r)",
+                },
+                # Weak import-only line — must never become a precise row.
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "setup.py",
+                    "line_start": 1,
+                    "line_end": 2,
+                    "code_snippet": "import numpy as np\nimport pandas as pd",
+                },
+                # Inference endpoint.
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "api.py",
+                    "line_start": 40,
+                    "line_end": 44,
+                    "function_name": "predict",
+                    "code_snippet": "def predict(req):\n    return model.predict(req)",
+                },
+                # Training pipeline.
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "src/train.py",
+                    "line_start": 10,
+                    "line_end": 14,
+                    "function_name": "train_model",
+                    "code_snippet": "def train_model(X, y):\n    return model.fit(X, y)",
+                },
+                # Preprocessing / feature engineering.
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "src/preprocess.py",
+                    "line_start": 20,
+                    "line_end": 24,
+                    "function_name": "prepare_features",
+                    "code_snippet": "def prepare_features(df):\n    return train_test_split(df)",
+                },
+                # Evaluation metrics.
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "src/evaluate.py",
+                    "line_start": 30,
+                    "line_end": 34,
+                    "function_name": "evaluate",
+                    "code_snippet": "def evaluate(y, p):\n    return f1_score(y, p)",
+                },
+            ]
+        },
+    )
+
+
+def _connected_chain(report: dict) -> dict:
+    attached = [p for p in report["projects"] if p.get("attached")]
+    assert len(attached) == 1
+    return attached[0]
+
+
+def test_connected_fallback_emits_multiple_strong_ml_rows(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A connected GitHub fallback proof with several strong ML rows produces a
+    single repo group with MULTIPLE rows — not the one-row group the old
+    ``best_strong_for_skill`` single-row pick produced."""
+    proof_id = _seed_ml_multirow_github(mem_store)
+    _seed_project(
+        mem_store,
+        title="Boston Smart Rerouting",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": proof_id}},
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    chain = _connected_chain(report)
+    groups = chain["github_groups"]
+    assert len(groups) == 1, "one canonical repo → one group"
+    rows = groups[0]["rows"]
+    # Multiple precise rows surface (not a single best row), bounded by the cap.
+    precise = [r for r in rows if r.get("display_mode") == "code_line"]
+    assert len(precise) >= 4
+    files = {r.get("file_path") for r in precise}
+    assert {"src/train.py", "src/preprocess.py", "api.py"} <= files
+
+
+def test_connected_fallback_ranks_ml_pipeline_before_generic_helper(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """ML-pipeline rows (training/preprocessing/model/inference/metrics) precede the
+    generic helper; file-path alphabetical order never overrides ML relevance."""
+    proof_id = _seed_ml_multirow_github(mem_store)
+    _seed_project(
+        mem_store,
+        title="Boston Smart Rerouting",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": proof_id}},
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    rows = _connected_chain(report)["github_groups"][0]["rows"]
+    precise_files = [r.get("file_path") for r in rows if r.get("display_mode") == "code_line"]
+    helper_idx = precise_files.index("src/util.py")
+    # Every genuine pipeline stage that is present outranks the generic helper.
+    for ml_file in ("src/train.py", "src/preprocess.py", "api.py", "src/evaluate.py"):
+        assert precise_files.index(ml_file) < helper_idx
+
+
+def test_connected_fallback_excludes_weak_imports_when_precise_exist(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Weak import/setup rows never appear as precise rows when strong/medium
+    precise evidence exists for the same repo+skill."""
+    proof_id = _seed_ml_multirow_github(mem_store)
+    _seed_project(
+        mem_store,
+        title="Boston Smart Rerouting",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": proof_id}},
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    rows = _connected_chain(report)["github_groups"][0]["rows"]
+    assert all(r.get("file_path") != "setup.py" for r in rows)
+    assert "import numpy" not in str(report)
+
+
+def test_connected_fallback_populates_selection_reason(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Each precise fallback row carries ``selection_reason`` derived from the
+    analyzer's ``mapping_reason`` (safely scrubbed)."""
+    proof_id = _seed_ml_multirow_github(mem_store)
+    _seed_project(
+        mem_store,
+        title="Boston Smart Rerouting",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": proof_id}},
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    rows = _connected_chain(report)["github_groups"][0]["rows"]
+    train_row = next(r for r in rows if r.get("file_path") == "src/train.py")
+    assert train_row["selection_reason"]
+    assert "src/train.py" in train_row["selection_reason"]
+
+
+def test_connected_repo_level_fallback_only_when_no_precise(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A repo-level fallback row appears ONLY when there is no strong/medium precise
+    evidence for the skill — never alongside precise rows."""
+    # Precise evidence present → no repo-level fallback row for Machine Learning.
+    proof_id = _seed_ml_multirow_github(mem_store)
+    _seed_project(
+        mem_store,
+        title="Boston Smart Rerouting",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": proof_id}},
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    rows = _connected_chain(report)["github_groups"][0]["rows"]
+    assert all(r.get("display_mode") != "repo_level" for r in rows)
+
+    # Weak-only evidence → the single honest repo-level fallback IS used.
+    weak_store: dict = {}
+    weak_proof = _seed_github_proof(
+        weak_store,
+        detected_skills=["Python"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {
+                    "skill": "Python",
+                    "file_path": "setup.py",
+                    "line_start": 1,
+                    "code_snippet": "import os\nimport sys",
+                }
+            ]
+        },
+    )
+    _seed_project(
+        weak_store,
+        title="Weak Only",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": weak_proof}},
+    )
+    weak_report = collect_skill_report(weak_store, {}, USER_ID, "python")
+    weak_rows = _connected_chain(weak_report)["github_groups"][0]["rows"]
+    assert weak_rows and all(r.get("display_mode") == "repo_level" for r in weak_rows)
+
+
+def test_same_title_merge_omits_no_github_code_evidence(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """When same-title attempts merge and the union has GitHub evidence, the derived
+    "No GitHub code evidence…" limitation from a GitHub-less attempt is dropped."""
+    title = "Boston Smart Rerouting"
+    gh_proof = _seed_ml_multirow_github(mem_store)
+    # Attempt A: has the GitHub proof attached.
+    _seed_project(
+        mem_store,
+        title=title,
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": gh_proof}},
+    )
+    # Attempt B: same title, but only a document (NO GitHub) — would carry the
+    # derived "No GitHub code evidence…" limitation on its own.
+    doc_id = _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Boston Report"},
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "confidence": "high", "snippet": "ML write-up", "page_number": 2}
+        ],
+    )
+    _seed_project(
+        mem_store,
+        title=title,
+        attached_proofs={"documents": [{"document_evidence_id": doc_id}]},
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    chain = _connected_chain(report)
+    assert chain["github_evidence"], "merged chain has GitHub evidence"
+    assert "No GitHub code evidence in this project for this skill." not in chain["limitations"]
+
+
+def test_connected_multirow_fallback_not_duplicated_in_standalone(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """The multi-row connected GitHub evidence is not also regrouped as standalone."""
+    proof_id = _seed_ml_multirow_github(mem_store)
+    _seed_project(
+        mem_store,
+        title="Boston Smart Rerouting",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": proof_id}},
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    assert report["standalone_evidence"]["github_groups"] == []
+
+
+def test_group_github_evidence_keeps_distinct_owner_repos_apart() -> None:
+    """The shared grouper keys on canonical owner/repo, never the bare repo name.
+
+    Used for BOTH standalone and connected chain GitHub, so two different owners'
+    same-named repos never merge (``bob/shared-app`` ≠ ``alice/shared-app``)."""
+    groups = _group_github_evidence(
+        [
+            {"source_id": "a", "repo_url": "https://github.com/alice/shared-app",
+             "public_url": "https://github.com/alice/shared-app", "file_path": "train.py",
+             "line_start": 1, "line_end": 9},
+            {"source_id": "b", "repo_url": "https://github.com/bob/shared-app",
+             "public_url": "https://github.com/bob/shared-app", "file_path": "infer.py",
+             "line_start": 1, "line_end": 9},
+        ]
+    )
+    assert len(groups) == 2
+    repo_urls = sorted(g["repo_url"] for g in groups)
+    assert any("alice/shared-app" in r for r in repo_urls)
+    assert any("bob/shared-app" in r for r in repo_urls)
+
+
+def test_group_github_ownerless_same_title_rows_stay_separate() -> None:
+    """Two legacy rows with the SAME title but no canonical owner/repo must NOT
+    merge by title alone — ambiguous ownerless evidence falls back to stable
+    evidence identity, so they render as two separate groups."""
+    groups = _group_github_evidence(
+        [
+            {"source_id": "a", "title": "shared-app", "file_path": "train.py",
+             "line_start": 1, "line_end": 9},
+            {"source_id": "b", "title": "shared-app", "file_path": "infer.py",
+             "line_start": 20, "line_end": 30},
+        ]
+    )
+    assert len(groups) == 2
+
+
+def test_group_github_exact_owner_repo_rows_group_together() -> None:
+    """Rows sharing a canonical ``owner/repo`` identity collapse into ONE group."""
+    groups = _group_github_evidence(
+        [
+            {"source_id": "a", "repo_url": "https://github.com/alice/app",
+             "public_url": "https://github.com/alice/app", "file_path": "train.py",
+             "line_start": 1, "line_end": 9},
+            {"source_id": "b", "repo_url": "https://github.com/alice/app",
+             "public_url": "https://github.com/alice/app", "file_path": "infer.py",
+             "line_start": 20, "line_end": 30},
+        ]
+    )
+    assert len(groups) == 1
+    assert len(groups[0]["rows"]) == 2
+
+
+def test_group_github_overflow_rows_kept_for_inline_expansion() -> None:
+    """Rows beyond the visible window are KEPT in the payload (not dropped) so the
+    "+N more code locations" toggle can reveal them inline; ``row_more_count``
+    reports how many are initially collapsed."""
+    rows = [
+        {
+            "source_id": "s",
+            "repo_url": "https://github.com/alice/app",
+            "public_url": "https://github.com/alice/app",
+            "file_path": f"mod{i}.py",
+            "line_start": i + 1,
+            "line_end": i + 5,
+            "display_mode": "code_line",
+        }
+        for i in range(9)
+    ]
+    groups = _group_github_evidence(rows)
+    assert len(groups) == 1
+    group = groups[0]
+    # All 9 distinct rows are present in the payload (visible 6 + 3 collapsed).
+    assert len(group["rows"]) == 9
+    assert group["row_more_count"] == 3
+
+
+def test_group_github_no_more_count_when_within_window() -> None:
+    """A repo with at most the visible number of rows reports no overflow."""
+    rows = [
+        {
+            "source_id": "s",
+            "repo_url": "https://github.com/alice/app",
+            "public_url": "https://github.com/alice/app",
+            "file_path": f"mod{i}.py",
+            "line_start": i + 1,
+            "line_end": i + 5,
+            "display_mode": "code_line",
+        }
+        for i in range(3)
+    ]
+    groups = _group_github_evidence(rows)
+    assert groups[0]["row_more_count"] == 0
+    assert len(groups[0]["rows"]) == 3
+
+
+def test_group_github_unknown_owner_uses_stable_identity_not_title() -> None:
+    """Ownerless fallback keys on stable evidence identity, never the title.
+
+    Same-title rows with DISTINCT evidence stay separate; rows with an identical
+    stable identity (same source/file/line) still de-dupe into a single row."""
+    distinct = _group_github_evidence(
+        [
+            {"source_id": "x", "title": "legacy", "file_path": "a.py", "line_start": 1},
+            {"source_id": "y", "title": "legacy", "file_path": "b.py", "line_start": 2},
+        ]
+    )
+    assert len(distinct) == 2
+    same = _group_github_evidence(
+        [
+            {"source_id": "x", "title": "legacy", "file_path": "a.py",
+             "line_start": 1, "line_end": 5},
+            {"source_id": "x", "title": "legacy", "file_path": "a.py",
+             "line_start": 1, "line_end": 5},
+        ]
+    )
+    assert len(same) == 1
+    assert len(same[0]["rows"]) == 1
+
+
+def test_group_github_orders_precise_line_above_repo_level() -> None:
+    """Within one repo group a precise file/line code row ranks ABOVE a repo-level
+    fallback card — repo-level evidence is never the strongest item when precise
+    line-level evidence exists for the same repo."""
+    groups = _group_github_evidence(
+        [
+            {"source_id": "r", "repo_url": "https://github.com/alice/app",
+             "title": "alice/app", "display_mode": "repo_level"},
+            {"source_id": "c", "repo_url": "https://github.com/alice/app",
+             "title": "alice/app", "file_path": "model.py", "line_start": 5,
+             "line_end": 10, "function_name": "train", "display_mode": "code_line"},
+        ]
+    )
+    assert len(groups) == 1
+    rows = groups[0]["rows"]
+    assert rows[0]["display_mode"] == "code_line"
+    assert rows[-1]["display_mode"] == "repo_level"
+
+
 def test_github_weak_evidence_exposes_repo_level_only(mem_store: dict, pipeline_db: dict) -> None:
     _seed_github_proof(
         mem_store,
@@ -1034,6 +1556,20 @@ def _seed_skill_evidence(
     if highlight is None and line_start:
         suffix = f"-L{line_end}" if line_end and line_end != line_start else ""
         highlight = f"{repository_url}/blob/main/{file_path}#L{line_start}{suffix}"
+    # Route scanner-owned provenance (snippet/grade/focused range) into the
+    # SERVICE-ROLE-ONLY protected table, mirroring how ``import_candidates``
+    # persists a real PortfolioScanner row — skill_evidence.metadata is never
+    # trusted for provenance, so it never carries the analyzer marker / grade /
+    # snippet.
+    prov_kwargs = {
+        "code_snippet": meta_extra.pop("code_snippet", None),
+        "grade": meta_extra.pop("evidence_quality_grade", None),
+        "focused_start_line": meta_extra.pop("focused_start_line", None),
+        "focused_end_line": meta_extra.pop("focused_end_line", None),
+        "focused_reason": meta_extra.pop("focused_reason", None),
+    }
+    meta_extra.pop("evidence_analyzer", None)
+    meta_extra.pop("evidence_analyzer_version", None)
     metadata = {
         "evidence_title": evidence_title,
         "submission_source": "github_portfolio_scan",
@@ -1045,6 +1581,12 @@ def _seed_skill_evidence(
         "secret_token": "should-never-leak",
         **meta_extra,
     }
+    if any(v is not None for v in prov_kwargs.values()):
+        mem_store.setdefault(TRUSTED_ANALYSIS_TABLE, {})[evidence_id] = {
+            "skill_evidence_id": evidence_id,
+            "user_id": user_id,
+            **build_server_provenance(**prov_kwargs),
+        }
     mem_store.setdefault("skill_evidence", {})[evidence_id] = {
         "id": evidence_id,
         "user_id": user_id,
@@ -1091,7 +1633,9 @@ def test_skill_report_reads_canonical_skill_evidence_github_rows(
 def test_canonical_skill_evidence_beats_github_proof_snapshot_fallback(
     mem_store: dict, pipeline_db: dict
 ) -> None:
-    # Strong, precise canonical row for Python on octocat/Hello-World …
+    # Strong, precise canonical row for Python on octocat/Hello-World — a real
+    # implementation body (the scanner persists the focused source snippet), so it
+    # grades implementation_body and is allowed to suppress the weaker fallback.
     _seed_skill_evidence(
         mem_store,
         skill_name="Python",
@@ -1099,6 +1643,12 @@ def test_canonical_skill_evidence_beats_github_proof_snapshot_fallback(
         line_start=40,
         line_end=44,
         selection_reason="ML training call",
+        code_snippet="\n".join([
+            "def train(df):",
+            "    clf = RandomForestClassifier(n_estimators=200)",
+            "    clf.fit(df.X, df.y)",
+            "    return f1_score(df.y, clf.predict(df.X))",
+        ]),
     )
     # … plus a WEAK github_proof_submissions snapshot (import-only) for the SAME
     # repo + skill. The canonical precise row must win; the snapshot is suppressed.
@@ -1127,6 +1677,84 @@ def test_canonical_skill_evidence_beats_github_proof_snapshot_fallback(
     assert item["evidence_kind"] == "portfolio_skill_evidence"  # came from skill_evidence
     assert item["file_path"] == "src/train.py"
     # The weak snapshot import line never leaks anywhere.
+    assert "import sys" not in str(report)
+
+
+def test_weak_canonical_does_not_suppress_strong_snapshot_fallback(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A WEAK canonical row (import-only, no body/provenance → grades weak) for ML on
+    # octocat/Hello-World …
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="api.py",
+        line_start=1,
+        line_end=5,
+        selection_reason="module imports and setup",
+        evidence_description="Imports and module setup.",
+    )
+    # … must NOT hide a STRONGER github_proof_submissions snapshot (a real predict
+    # handler body with precise lines) for the SAME repo + skill.
+    _seed_ml_strong_github(mem_store)
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    gh = _github_items(report)
+    assert gh, "ML GitHub evidence must be present"
+    # The strong snapshot body survives as precise code_line evidence — the weak
+    # canonical import row did not suppress it.
+    code_line = [i for i in gh if i.get("display_mode") == "code_line"]
+    assert code_line, "weak canonical row must NOT suppress the strong snapshot fallback"
+    assert any(
+        (i.get("file_path") == "api.py" and i.get("line_start") == 252)
+        or i.get("function_name") == "predict"
+        for i in code_line
+    ), "the strong predict handler body from the snapshot must surface"
+
+
+def test_strong_canonical_still_suppresses_redundant_fallback(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A STRONG canonical row (real implementation body with a focused snippet) for
+    # ML on octocat/Hello-World still suppresses the weaker snapshot fallback for the
+    # SAME repo + skill — strong canonical wins, as before.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="src/train.py",
+        line_start=40,
+        line_end=44,
+        selection_reason="ML training call",
+        code_snippet="\n".join([
+            "def train(df):",
+            "    clf = RandomForestClassifier(n_estimators=200)",
+            "    clf.fit(df.X, df.y)",
+            "    return f1_score(df.y, clf.predict(df.X))",
+        ]),
+    )
+    # Weak import-only snapshot for the same repo + skill.
+    _seed_github_proof(
+        mem_store,
+        detected_skills=["Machine Learning"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "api.py",
+                    "line_start": 6,
+                    "line_end": 9,
+                    "code_snippet": "import sys\nimport io\nimport time",
+                }
+            ]
+        },
+    )
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    gh = _github_items(report)
+    assert gh, "ML GitHub evidence must be present"
+    # Only the canonical precise row — the redundant weak fallback is suppressed.
+    assert all(i.get("display_mode") == "code_line" for i in gh)
+    assert gh[0]["file_path"] == "src/train.py"
     assert "import sys" not in str(report)
 
 
@@ -1295,3 +1923,739 @@ def test_public_passport_excludes_unattached_vault_evidence(
     # The public schema exposes no private vault structure.
     assert "vault_skills" not in body
     assert "vault_proof_count" not in body
+
+
+# ── #6: standalone GitHub evidence integrates into the same-repo project chain ─
+
+
+def test_unattached_github_integrates_into_same_repo_project_chain(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """An UNATTACHED GitHub proof for the SAME repo as a project that already has
+    a chain must be folded into that main chain — not shown as a duplicate
+    standalone supporting proof. No evidence is lost or duplicated."""
+    # Unattached GitHub proof (same repo as the project; NOT in attached_proofs).
+    _seed_github_proof(
+        mem_store,
+        detected_skills=["Machine Learning"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {
+                    "skill": "Machine Learning",
+                    "file_path": "src/train.py",
+                    "line_start": 10,
+                    "line_end": 20,
+                    "function_name": "train_model",
+                    "code_snippet": "def train_model():\n    return clf.fit(X, y)",
+                }
+            ]
+        },
+    )
+    # The project chain exists via an attached document (same repo/skill).
+    doc_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "confidence": "high", "snippet": "ML design", "page_number": 3}
+        ],
+    )
+    pid = _seed_project(
+        mem_store,
+        title="Stroke Prediction",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"documents": [{"document_evidence_id": doc_id}]},
+    )
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    chain = next(p for p in report["projects"] if p.get("project_id") == pid)
+    # Integrated into the main chain…
+    assert chain["github_evidence"], "same-repo GitHub proof should join the main chain"
+    assert any(g.get("file_path") == "src/train.py" for g in chain["github_evidence"])
+    # …and never duplicated in the standalone bucket.
+    assert report["standalone_evidence"]["github"] == []
+
+
+def test_unrelated_github_stays_standalone(mem_store: dict, pipeline_db: dict) -> None:
+    """A GitHub proof whose repo/title matches no project chain stays standalone."""
+    _seed_github_proof(
+        mem_store,
+        repo_url="https://github.com/someone/unrelated-lib",
+        repo_owner="someone",
+        repo_name="unrelated-lib",
+        detected_skills=["Machine Learning"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {"skill": "Machine Learning", "file_path": "m.py", "line_start": 1, "line_end": 2,
+                 "function_name": "f", "code_snippet": "def f():\n    return clf.predict(x)"}
+            ]
+        },
+    )
+    doc_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Machine Learning", "snippet": "design", "page_number": 1}],
+    )
+    _seed_project(
+        mem_store, title="Totally Different Project", repo_full_name="octocat/Hello-World",
+        attached_proofs={"documents": [{"document_evidence_id": doc_id}]},
+    )
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    assert report["standalone_evidence"]["github"], "unrelated GitHub proof must remain standalone"
+
+
+# ── #4: Project Defense + Video evidence is grouped into one section ──────────
+
+
+def _seed_session_with_defense(
+    mem_store: dict, project_id: str, *, skill: str, chips: list[dict], session_id: str | None = None
+) -> str:
+    sid = session_id or str(uuid4())
+    mem_store.setdefault("vbr_verification_sessions", {})[sid] = {
+        "id": sid,
+        "project_id": project_id,
+        "attempt_no": 1,
+        "telemetry": {
+            "project_defense_analysis": {
+                "skills_explained_well": [skill],
+                "recruiter_summary": "The candidate explained the model training and prediction route.",
+            },
+            "video_evidence_chips": chips,
+        },
+    }
+    return sid
+
+
+def test_defense_evidence_is_grouped_into_one_section(mem_store: dict, pipeline_db: dict) -> None:
+    pid = _seed_project(mem_store, title="Stroke Prediction", repo_full_name="octocat/Hello-World")
+    _seed_session_with_defense(
+        mem_store,
+        pid,
+        skill="Machine Learning",
+        chips=[
+            {"related_skill": "Machine Learning", "label": "Explains training loop", "timestamp": "01:20", "short_summary": "Walks through model.fit."},
+            {"related_skill": "Machine Learning", "label": "Explains prediction", "timestamp": "02:05", "short_summary": "Shows the predict endpoint."},
+        ],
+    )
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    chain = next(p for p in report["projects"] if p.get("project_id") == pid)
+    group = chain["defense_group"]
+    assert group is not None
+    # 1 defense explanation + 2 video chips grouped.
+    assert group["grouped_count"] == 3
+    assert group["explanation"], "a single concise explanation should be surfaced"
+    # The two timestamped video chips are the cited moments (defense overall card folded in).
+    assert len(group["moments"]) == 2
+    assert {m["timestamp_label"] for m in group["moments"]} == {"01:20", "02:05"}
+    # One merged limitation, raw lists preserved (no evidence lost).
+    assert group["limitation"]
+    assert len(chain["video_evidence"]) == 2
+
+
+def test_defense_group_absent_when_no_defense_or_video(mem_store: dict, pipeline_db: dict) -> None:
+    _seed_github_proof(
+        mem_store,
+        detected_skills=["Machine Learning"],
+        analysis_snapshot={"skill_code_evidence": [
+            {"skill": "Machine Learning", "file_path": "t.py", "line_start": 1, "line_end": 2,
+             "function_name": "train", "code_snippet": "def train():\n    clf.fit(X, y)"}
+        ]},
+    )
+    doc_id = _seed_document_evidence(mem_store, evidence_objects=[{"skill_name": "Machine Learning", "snippet": "x", "page_number": 1}])
+    pid = _seed_project(mem_store, title="P", repo_full_name="octocat/Hello-World",
+                        attached_proofs={"documents": [{"document_evidence_id": doc_id}]})
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    chain = next(p for p in report["projects"] if p.get("project_id") == pid)
+    assert chain["defense_group"] is None
+
+
+# ── #5: skill-specific document context + download permission gating ─────────
+
+
+def _doc_correlations(report: dict) -> list[dict]:
+    out: list[dict] = []
+    for chain in report.get("projects") or []:
+        out.extend(chain.get("document_correlations") or [])
+    out.extend(report.get("standalone_evidence", {}).get("documents") or [])
+    return out
+
+
+def test_document_context_surfaces_page_section_figure_and_gated_download(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Stroke Prediction — Final Report"},  # no share opt-in
+        evidence_objects=[
+            {
+                "skill_name": "Machine Learning",
+                "page_number": 7,
+                "section_label": "Model Evaluation",
+                "snippet": "Reported F1 and confusion matrix for the classifier.",
+                "figure_reference": "Figure 4",
+                "reason": "Documents the evaluation metrics used to assess the model.",
+            }
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    corrs = _doc_correlations(report)
+    assert corrs, "document must surface as corroboration"
+    corr = corrs[0]
+    assert corr["page_number"] == 7
+    assert corr["section_label"] == "Model Evaluation"
+    assert corr["figure_reference"] == "Figure 4"
+    assert corr["why_supported"], "must explain why the section supports the skill"
+    # Download is gated by default (no explicit student opt-in).
+    assert corr["full_document_available"] is False
+    assert corr["document_access_note"] == "Full document available only with candidate permission."
+    # Never a storage path or signed URL.
+    blob = " ".join(str(v) for v in corr.values())
+    assert "/storage/" not in blob and "://" not in blob.replace("Self-explanation", "")
+
+
+def test_document_full_download_allowed_when_student_opted_in(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Shared Report", "recruiter_shareable": True},
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "page_number": 1, "snippet": "x", "reason": "supports"}
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    corr = _doc_correlations(report)[0]
+    assert corr["full_document_available"] is True
+    assert "candidate permission" not in corr["document_access_note"]
+
+
+# ── Must-fix: full-document download needs an EXPLICIT opt-in, not public_safe ──
+#
+# ``public_safe`` only means a document is safe to summarize/cite in a projection
+# — it is NOT consent to expose the full document for download. Only a dedicated
+# student-controlled download opt-in may enable availability; default is closed.
+
+
+def _doc_download_available(mem_store: dict, analysis_json: dict) -> bool:
+    """Collect a single seeded document and return its full-download availability."""
+    _seed_document_evidence(mem_store, analysis_json=analysis_json)
+    items = _collect_documents(mem_store, USER_ID, {})
+    assert items, "document proof must be collected"
+    return bool(items[0]["full_document_available"])
+
+
+def test_public_safe_alone_does_not_enable_full_document_download(mem_store: dict) -> None:
+    # public_safe=True with NO dedicated download opt-in must stay download-gated.
+    assert _doc_download_available(mem_store, {"title": "Report", "public_safe": True}) is False
+
+
+def test_dedicated_download_opt_in_enables_full_document_availability(mem_store: dict) -> None:
+    assert _doc_download_available(mem_store, {"title": "Report", "allow_public_download": True}) is True
+
+
+def test_dedicated_download_opt_in_false_disables_full_document_availability(mem_store: dict) -> None:
+    assert _doc_download_available(mem_store, {"title": "Report", "allow_public_download": False}) is False
+
+
+def test_missing_download_opt_in_disables_full_document_availability(mem_store: dict) -> None:
+    assert _doc_download_available(mem_store, {"title": "Report"}) is False
+
+
+def test_document_proof_never_exposes_signed_url_or_storage_path(mem_store: dict) -> None:
+    # Even WITH explicit consent, no storage path / signed URL is ever surfaced.
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Report", "allow_public_download": True},
+        file_path="/private/storage/users/secret/report.pdf",
+    )
+    items = _collect_documents(mem_store, USER_ID, {})
+    assert items and items[0]["full_document_available"] is True
+    blob = str(items)
+    assert "/private/storage" not in blob
+    assert "report.pdf" not in blob
+    # No raw storage path / signed URL value is ever surfaced on the item.
+    for it in items:
+        assert it.get("file_path") is None
+        assert it.get("public_url") is None
+
+
+# ── Hostile: full-document consent requires an actual boolean True ──────────────
+#
+# Consent must be a real Python ``True`` on a dedicated opt-in field. Truthy
+# strings/numbers/containers ("true", "false", "yes", "no", "1", "0", 1, 0, [],
+# {}, any non-empty string) are NEVER consent; ``analysis_json.public_safe`` alone
+# never enables download. A signed URL / storage path is never surfaced regardless.
+
+
+def test_explicit_boolean_true_enables_download_indicator(mem_store: dict) -> None:
+    assert _doc_download_available(mem_store, {"title": "R", "explicit_download_consent": True}) is True
+
+
+def test_explicit_boolean_false_disables_download(mem_store: dict) -> None:
+    assert _doc_download_available(mem_store, {"title": "R", "explicit_download_consent": False}) is False
+
+
+@pytest.mark.parametrize(
+    "analysis_json",
+    [
+        {"title": "R", "explicit_download_consent": "true"},
+        {"title": "R", "explicit_download_consent": "false"},
+        {"title": "R", "recruiter_shareable": "yes"},
+        {"title": "R", "recruiter_shareable": "no"},
+        {"title": "R", "allow_public_download": "1"},
+        {"title": "R", "allow_public_download": "0"},
+        {"title": "R", "allow_public_download": 1},
+        {"title": "R", "allow_public_download": 0},
+        {"title": "R", "allow_full_download": "enabled"},
+        {"title": "R", "recruiter_download_enabled": []},
+        {"title": "R", "student_allowed_public_download": {}},
+        {"title": "R", "public_download_enabled": "True"},
+    ],
+)
+def test_truthy_non_boolean_consent_never_enables_download(
+    mem_store: dict, analysis_json: dict
+) -> None:
+    # Truthy strings/numbers/containers are NOT consent — only boolean True counts.
+    assert _doc_download_available(mem_store, analysis_json) is False
+
+
+def test_public_safe_true_alone_does_not_enable_download(mem_store: dict) -> None:
+    # The generic ``public_safe`` flag is never consulted as download consent.
+    assert _doc_download_available(mem_store, {"title": "R", "public_safe": True}) is False
+
+
+def test_signed_url_never_exposed_when_download_disabled(mem_store: dict) -> None:
+    # A non-boolean consent value leaves download disabled AND never leaks a path.
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "R", "explicit_download_consent": "true"},
+        file_path="/private/storage/users/secret/report.pdf",
+    )
+    items = _collect_documents(mem_store, USER_ID, {})
+    assert items and items[0]["full_document_available"] is False
+    blob = str(items)
+    assert "/private/storage" not in blob and "report.pdf" not in blob
+    for it in items:
+        assert it.get("file_path") is None
+        assert it.get("public_url") is None
+
+
+# ── Must-fix: standalone GitHub evidence only folds in on EXACT owner/repo ─────
+#
+# A GitHub proof carries its own authoritative repo identity. It may fold into a
+# project's main chain ONLY when it is the *exact same* canonical ``owner/name``
+# repository — never by repo name alone (``bob/shared-app`` must not fold into a
+# project built on ``alice/shared-app``).
+
+
+def _project_repo_meta(pid: str, repo_full: str) -> dict:
+    return {
+        pid: {
+            "title": "Shared App",
+            "title_norm": "shared app",
+            "repo_full": repo_full,
+            "repo_name": repo_full.split("/")[-1],
+        }
+    }
+
+
+def test_github_evidence_not_folded_into_different_owner_same_repo_name() -> None:
+    meta = _project_repo_meta("p-alice", "alice/shared-app")
+    assert _match_github_to_project({"repo_url": "https://github.com/bob/shared-app"}, meta) is None
+
+
+def test_github_evidence_folds_into_exact_same_owner_repo() -> None:
+    meta = _project_repo_meta("p-alice", "alice/shared-app")
+    assert _match_github_to_project({"repo_url": "https://github.com/alice/shared-app"}, meta) == "p-alice"
+
+
+def test_github_evidence_owner_missing_stays_standalone() -> None:
+    # A bare repo name (no owner) is ambiguous → fail closed, keep it standalone.
+    meta = _project_repo_meta("p-alice", "alice/shared-app")
+    assert _match_github_to_project({"repo_url": "shared-app"}, meta) is None
+
+
+def test_github_evidence_matches_across_url_formats_when_owner_repo_same() -> None:
+    meta = _project_repo_meta("p-alice", "alice/shared-app")
+    for url in (
+        "alice/shared-app",
+        "git@github.com:alice/shared-app.git",
+        "https://github.com/Alice/Shared-App",
+        "https://github.com/alice/shared-app.git/",
+    ):
+        assert _match_github_to_project({"repo_url": url}, meta) == "p-alice", url
+
+
+def test_github_evidence_format_normalization_does_not_cross_owners() -> None:
+    # Case/format normalization must only match when owner AND repo are the same.
+    meta = _project_repo_meta("p-alice", "alice/shared-app")
+    for url in (
+        "git@github.com:bob/shared-app.git",
+        "https://github.com/BOB/Shared-App",
+        "bob/shared-app",
+    ):
+        assert _match_github_to_project({"repo_url": url}, meta) is None, url
+
+
+def test_github_repo_identity_canonicalizes_ssh_https_and_shorthand() -> None:
+    assert _github_repo_identity({"repo_url": "git@github.com:alice/shared-app.git"})[0] == "alice/shared-app"
+    assert _github_repo_identity({"repo_url": "https://github.com/Alice/Shared-App"})[0] == "alice/shared-app"
+    assert _github_repo_identity({"repo_url": "alice/shared-app"})[0] == "alice/shared-app"
+
+
+# ── Conservative GitHub evidence skill relation (ML connected reports) ────────
+#
+# A connected Machine-Learning project's GitHub evidence is often spread across
+# canonical rows the analyzer tagged ``Python`` / ``Machine Learning Engineering``
+# (model instantiation, prediction/inference, training, evaluation) rather than
+# ``Machine Learning`` exactly. The relation layer folds those ML-specific rows
+# from the SAME confirmed owner/repo into the ML report's connected
+# ``github_groups`` — without weakening exact owner/repo routing and without
+# admitting generic Python helpers/imports/setup.
+
+
+def _seed_boston_like_repo(mem_store: dict, *, repo: str = "octocat/Hello-World") -> str:
+    """A Boston-like repo: one exact ML row + several ML-specific canonical rows
+    the analyzer tagged Python / Machine Learning Engineering, plus a generic
+    Python row that must NOT be related into Machine Learning."""
+    repo_url = f"https://github.com/{repo}"
+    # Exact Machine Learning anchor row.
+    _seed_skill_evidence(
+        mem_store, skill_name="Machine Learning", repository_url=repo_url,
+        file_path="api.py", line_start=252, line_end=255,
+        selection_reason="prediction endpoint", evidence_description="Prediction inference endpoint.",
+    )
+    # ML-specific rows the analyzer tagged Python.
+    _seed_skill_evidence(
+        mem_store, skill_name="Python", repository_url=repo_url,
+        file_path="src/model/train.py", line_start=10, line_end=20,
+        selection_reason="model instantiation", evidence_description="Instantiates the model.",
+    )
+    _seed_skill_evidence(
+        mem_store, skill_name="Python", repository_url=repo_url,
+        file_path="src/model/evaluate.py", line_start=30, line_end=40,
+        selection_reason="evaluation metrics", evidence_description="Computes evaluation metrics.",
+    )
+    _seed_skill_evidence(
+        mem_store, skill_name="Python", repository_url=repo_url,
+        file_path="scripts/pipeline_retrain.py", line_start=5, line_end=15,
+        selection_reason="pipeline retrain", evidence_description="Retraining pipeline.",
+    )
+    # ML-specific row tagged Machine Learning Engineering.
+    _seed_skill_evidence(
+        mem_store, skill_name="Machine Learning Engineering", repository_url=repo_url,
+        file_path="serving/main.py", line_start=8, line_end=18,
+        selection_reason="model serving / inference", evidence_description="Model serving endpoint.",
+    )
+    # Generic Python row — MUST be rejected from Machine Learning.
+    _seed_skill_evidence(
+        mem_store, skill_name="Python", repository_url=repo_url,
+        file_path="src/config.py", line_start=1, line_end=4,
+        selection_reason="configuration constants", evidence_description="App configuration constants.",
+    )
+    return repo
+
+
+def _ml_connected_rows(report: dict) -> list[dict]:
+    chain = _connected_chain(report)
+    rows: list[dict] = []
+    for group in chain.get("github_groups") or []:
+        rows += group.get("rows") or []
+    return rows
+
+
+def test_related_python_and_mle_rows_join_connected_ml_group(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Boston-like: ML-specific rows tagged Python / Machine Learning Engineering
+    join the connected Machine Learning ``github_groups`` — a multi-row group, not
+    the single exact-ML row."""
+    repo = _seed_boston_like_repo(mem_store)
+    _seed_project(
+        mem_store, title="Boston Smart Accident Risk Rerouting", repo_full_name=repo,
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    chain = _connected_chain(report)
+    groups = chain["github_groups"]
+    assert len(groups) == 1, "one canonical repo → one group"
+    files = {r.get("file_path") for r in groups[0]["rows"]}
+    # The exact ML row AND the related Python / MLE ML-specific rows are present.
+    assert {"api.py", "src/model/train.py", "src/model/evaluate.py",
+            "scripts/pipeline_retrain.py", "serving/main.py"} <= files
+    assert len(groups[0]["rows"]) >= 5, "the connected group has multiple rows"
+
+
+def test_generic_python_row_excluded_from_connected_ml_group(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A generic Python row (config/constants) never joins Machine Learning."""
+    repo = _seed_boston_like_repo(mem_store)
+    _seed_project(mem_store, title="Boston Smart Rerouting", repo_full_name=repo)
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    files = {r.get("file_path") for r in _ml_connected_rows(report)}
+    assert "src/config.py" not in files
+
+
+def test_related_rows_require_exact_owner_repo(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A ML-specific Python row in a DIFFERENT owner's repo is never folded into a
+    Machine Learning report anchored on another owner's repo."""
+    # Anchor ML repo owned by alice, attached to the project.
+    _seed_skill_evidence(
+        mem_store, skill_name="Machine Learning",
+        repository_url="https://github.com/alice/shared-app",
+        file_path="api.py", line_start=10, line_end=14, selection_reason="prediction endpoint",
+    )
+    # ML-specific Python row in bob/shared-app — same NAME, different owner.
+    _seed_skill_evidence(
+        mem_store, skill_name="Python",
+        repository_url="https://github.com/bob/shared-app",
+        file_path="src/model/train.py", line_start=5, line_end=9,
+        selection_reason="model instantiation",
+    )
+    _seed_project(mem_store, title="Shared App", repo_full_name="alice/shared-app")
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    chain = _connected_chain(report)
+    repo_urls = " ".join(g.get("repo_url") or "" for g in chain["github_groups"])
+    files = {r.get("file_path") for r in _ml_connected_rows(report)}
+    assert "bob/shared-app" not in repo_urls
+    # bob's train.py must not ride into alice's connected ML group.
+    bob_rows = [
+        r for g in chain["github_groups"] for r in (g.get("rows") or [])
+        if "bob/shared-app" in (r.get("github_line_url") or r.get("public_url") or "")
+    ]
+    assert not bob_rows
+
+
+def test_related_rows_only_for_ml_target_skill(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """The relation layer does not broaden a non-ML target skill (e.g. Python):
+    a Machine-Learning-tagged row never folds into the Python report by relation."""
+    repo = _seed_boston_like_repo(mem_store)
+    _seed_project(mem_store, title="Boston Smart Rerouting", repo_full_name=repo)
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "python")
+    files = {r.get("file_path") for r in _ml_connected_rows(report)}
+    # Python report shows the genuinely-Python rows but NOT the ML anchor (api.py
+    # tagged Machine Learning) nor the MLE serving row by relation.
+    assert "src/model/train.py" in files  # genuinely Python
+    assert "api.py" not in files          # Machine Learning — not related into Python
+    assert "serving/main.py" not in files  # Machine Learning Engineering
+
+
+def test_connected_ml_group_drops_no_github_code_evidence_limitation(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """When related rows give the connected chain GitHub evidence, the chain never
+    carries the contradictory "No GitHub code evidence…" limitation."""
+    repo = _seed_boston_like_repo(mem_store)
+    _seed_project(mem_store, title="Boston Smart Rerouting", repo_full_name=repo)
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    chain = _connected_chain(report)
+    assert chain["github_groups"], "connected chain has grouped GitHub evidence"
+    assert all(
+        "No GitHub code evidence" not in lim for lim in (chain.get("limitations") or [])
+    )
+
+
+def test_related_connected_rows_not_duplicated_in_standalone(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A related row folded into the connected chain is never also shown in the
+    standalone/unlinked bucket."""
+    repo = _seed_boston_like_repo(mem_store)
+    _seed_project(mem_store, title="Boston Smart Rerouting", repo_full_name=repo)
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    standalone_files = {
+        r.get("file_path")
+        for g in (report["standalone_evidence"].get("github_groups") or [])
+        for r in (g.get("rows") or [])
+    }
+    # All related ML rows are connected (the repo is attached) → standalone empty
+    # of them.
+    for f in ("src/model/train.py", "serving/main.py", "scripts/pipeline_retrain.py"):
+        assert f not in standalone_files
+
+
+def test_repo_level_fallback_only_when_no_precise_related(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """The relation layer only folds in PRECISE rows — a weak-only adjacent row is
+    never related in, leaving the honest repo-level fallback behaviour intact."""
+    repo_url = "https://github.com/octocat/Hello-World"
+    # Exact ML anchor (precise).
+    _seed_skill_evidence(
+        mem_store, skill_name="Machine Learning", repository_url=repo_url,
+        file_path="api.py", line_start=10, line_end=14, selection_reason="prediction endpoint",
+    )
+    # Adjacent Python proof whose ONLY stored line evidence is a weak import — it
+    # has no precise line evidence, so it is never related into Machine Learning.
+    _seed_github_proof(
+        mem_store, detected_skills=["Python"], repo_owner="octocat", repo_name="Hello-World",
+        repo_url=repo_url,
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {"skill": "Python", "file_path": "setup.py", "line_start": 1,
+                 "code_snippet": "import os\nimport sys"}
+            ]
+        },
+    )
+    _seed_project(mem_store, title="Boston Smart Rerouting", repo_full_name="octocat/Hello-World")
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    files = {r.get("file_path") for r in _ml_connected_rows(report)}
+    assert "api.py" in files
+    assert "setup.py" not in files, "weak-only adjacent row must not be related in"
+
+
+# ── End-to-end Boston regression: stale canonical rows never become top evidence ──
+#
+# These exercise the ACTIVE report path (collect_skill_report → canonical
+# skill_evidence read → github_groups grouping/ranking), not isolated helpers, so
+# they catch the live canonical-data failure: an import-only / docstring / config
+# canonical range with no source snippet must never enter the visible top rows
+# while a real training/inference/evaluation body exists for the same repo+skill.
+
+_STRONG_GRADES = {"implementation_body", "supporting_logic"}
+
+
+def _only_group(report: dict) -> dict:
+    groups = report["standalone_evidence"]["github_groups"]
+    assert len(groups) == 1, f"expected one canonical repo group, got {len(groups)}"
+    return groups[0]
+
+
+def _visible_rows(group: dict) -> list[dict]:
+    """The rows shown by default (before the "+N more" expansion)."""
+    visible = len(group["rows"]) - group["row_more_count"]
+    return group["rows"][:visible]
+
+
+def test_boston_stale_canonical_import_rows_are_not_visible_top_evidence(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A STALE canonical row for an import-only api.py:19-23 range — NO source
+    # snippet, but a reason that reads like real model serving — alongside a
+    # genuine training body for the same repo+skill.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        repository_url="https://github.com/octocat/Hello-World",
+        file_path="api.py",
+        line_start=19,
+        line_end=23,
+        evidence_description="Model serving inference endpoint.",
+        selection_reason="model serving inference handler",
+    )  # no code_snippet → stale row
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        repository_url="https://github.com/octocat/Hello-World",
+        file_path="src/model/train.py",
+        line_start=40,
+        line_end=52,
+        evidence_description="Train and evaluate the model.",
+        selection_reason="model training",
+        code_snippet=(
+            "def train(df):\n"
+            "    clf = RandomForestClassifier(n_estimators=200)\n"
+            "    clf.fit(df.X, df.y)\n"
+            "    return f1_score(df.y, clf.predict(df.X))"
+        ),
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    group = _only_group(report)
+    by_file = {r["file_path"]: r for r in group["rows"]}
+    import_row = by_file["api.py"]
+    body_row = by_file["src/model/train.py"]
+
+    # The stale import-only row failed closed — never implementation/supporting.
+    assert import_row["evidence_quality_grade"] not in _STRONG_GRADES
+    assert import_row["evidence_quality_grade"] == "repo_level_fallback"
+    # The genuine body kept a strong grade and is the visible top row.
+    assert body_row["evidence_quality_grade"] in _STRONG_GRADES
+    assert group["rows"][0] is body_row
+    # The import row is demoted out of the visible window into "+N more".
+    visible = _visible_rows(group)
+    assert body_row in visible
+    assert import_row not in visible
+    # The import lines are never rendered as a snippet anywhere in the report.
+    assert "import " not in (import_row.get("selection_reason") or "")
+
+
+def test_boston_docstring_and_config_ranges_are_demoted_when_implementation_exists(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    repo = "https://github.com/octocat/Hello-World"
+    # Module docstring range (prose only).
+    _seed_skill_evidence(
+        mem_store, skill_name="Machine Learning", repository_url=repo,
+        file_path="src/model/__init__.py", line_start=1, line_end=4,
+        selection_reason="module docstring",
+        code_snippet='"""Boston rerouting model package.\n\nProse only.\n"""',
+    )
+    # Config/constant + path-setup range.
+    _seed_skill_evidence(
+        mem_store, skill_name="Machine Learning", repository_url=repo,
+        file_path="src/config.py", line_start=10, line_end=12,
+        selection_reason="config constants",
+        code_snippet='MODEL_PATH = os.environ.get("MODEL_PATH", "m.joblib")\nBATCH_SIZE = 32',
+    )
+    # Real training/evaluation body.
+    _seed_skill_evidence(
+        mem_store, skill_name="Machine Learning", repository_url=repo,
+        file_path="src/model/train.py", line_start=40, line_end=52,
+        selection_reason="model training",
+        code_snippet=(
+            "def train(df):\n"
+            "    clf = RandomForestClassifier(n_estimators=200)\n"
+            "    clf.fit(df.X, df.y)\n"
+            "    return f1_score(df.y, clf.predict(df.X))"
+        ),
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    group = _only_group(report)
+    by_file = {r["file_path"]: r for r in group["rows"]}
+
+    # The docstring and config ranges grade weak and are demoted off the top.
+    assert by_file["src/model/__init__.py"]["evidence_quality_grade"] not in _STRONG_GRADES
+    assert by_file["src/config.py"]["evidence_quality_grade"] not in _STRONG_GRADES
+    # Only the real implementation body is visible top evidence.
+    visible_files = {r["file_path"] for r in _visible_rows(group)}
+    assert visible_files == {"src/model/train.py"}
+    assert group["rows"][0]["evidence_quality_grade"] in _STRONG_GRADES
+
+
+def test_github_groups_preserve_quality_grade_and_filter_visible_rows(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # Mixed canonical rows: a real inference body + a weak import-only range for the
+    # same repo+skill. Every row must carry evidence_quality_grade, and the weak row
+    # must not rank/appear like normal implementation code while a strong row exists.
+    repo = "https://github.com/octocat/Hello-World"
+    _seed_skill_evidence(
+        mem_store, skill_name="Machine Learning", repository_url=repo,
+        file_path="src/model/infer.py", line_start=12, line_end=20,
+        selection_reason="model inference",
+        code_snippet=(
+            "def predict(model, df):\n"
+            "    X = df.drop('risk', axis=1)\n"
+            "    return model.predict(X)"
+        ),
+    )
+    _seed_skill_evidence(
+        mem_store, skill_name="Machine Learning", repository_url=repo,
+        file_path="src/model/imports.py", line_start=1, line_end=3,
+        selection_reason="imports",
+        code_snippet="import os\nimport joblib\nfrom sklearn.ensemble import RandomForestClassifier",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    group = _only_group(report)
+
+    # Every row carries the quality grade (must-fix 2 acceptance).
+    assert all("evidence_quality_grade" in r for r in group["rows"])
+    # A strong row exists → the weak import row is not in the visible top rows.
+    visible_grades = [r["evidence_quality_grade"] for r in _visible_rows(group)]
+    assert visible_grades and all(g in _STRONG_GRADES for g in visible_grades)
+    weak = next(r for r in group["rows"] if r["file_path"] == "src/model/imports.py")
+    assert weak["evidence_quality_grade"] not in _STRONG_GRADES
+    assert weak not in _visible_rows(group)

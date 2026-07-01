@@ -181,6 +181,27 @@ def test_public_safe_skill_name_strips_id_from_mixed_label() -> None:
     assert out == "Python"
 
 
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "user_1234567890ghijkl",
+        "project_ABCXYZ1234567890",
+        "student_1234567890ghijkl",
+        "artifact_ABCXYZ1234567890",
+        "source_ABCXYZ1234567890",
+        "provider_1234567890ghijkl",
+        "report_ABCXYZ1234567890",
+    ],
+)
+def test_public_safe_skill_name_drops_long_alphanumeric_private_ids(hostile: str) -> None:
+    # Long alphanumeric (not just hex) private-prefixed ids are dropped entirely.
+    assert public_safe_skill_name(hostile) is None
+
+
+def test_public_safe_skill_name_strips_alphanumeric_id_from_mixed_label() -> None:
+    assert public_safe_skill_name("Python user_1234567890ghijkl") == "Python"
+
+
 # ── Step 2 — normalized evidence artifact ─────────────────────────────────────
 
 
