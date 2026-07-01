@@ -40,6 +40,10 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.github_python_evidence_focus import (
+    GRADE_IMPLEMENTATION_BODY,
+    is_weak_grade,
+)
 from app.services.project_defense_evidence_chips import _sanitize_transcript_text
 from app.services.safe_public_url import is_safe_public_url
 from app.services.skill_normalization import canonical_skill
@@ -88,6 +92,10 @@ _GITHUB_META_KEYS = (
     "selection_reason",
     "skill_graph_node",
     "display_mode",
+    # The deterministic Smart-Evidence quality band (implementation_body /
+    # supporting_logic / … / repo_level_fallback). Carried so the Synthesis Agent
+    # can distinguish primary implementation code from weaker precise lines.
+    "evidence_quality_grade",
 )
 
 __all__ = [
@@ -110,6 +118,7 @@ __all__ = [
     "normalize_chain",
     "normalize_skill_report",
     "has_precise_code",
+    "has_implementation_body",
     "has_source",
 ]
 
@@ -267,8 +276,19 @@ def _github_strength(item: dict[str, Any]) -> str:
     implementation-grade code when it is an explicit ``code_line`` row carrying
     located line evidence. Any other GitHub row (repo-level, weak-only) stays a
     fallback and is NEVER promoted to ``precise_code``.
+
+    The Smart-Evidence quality band is the final gate: a precise line whose
+    deterministic ``evidence_quality_grade`` is a WEAK band (``import_only`` /
+    ``comment_or_docstring`` / ``config_or_constant`` / ``route_decorator_only`` /
+    ``repo_level_fallback``) is not implementation-grade code — it stays the
+    repo-level fallback so a stale import / docstring / constant / bare-decorator
+    line can never be counted as precise implementation proof (and so can never
+    inflate the Synthesis Agent's confidence tier). A row with no grade at all
+    (unknown) keeps ``precise_code`` for backward compatibility.
     """
     if item.get("display_mode") == "code_line" and item.get("has_precise_line_evidence"):
+        if is_weak_grade(item.get("evidence_quality_grade")):
+            return STRENGTH_REPO_LEVEL
         return STRENGTH_PRECISE_CODE
     return STRENGTH_REPO_LEVEL
 
@@ -462,6 +482,23 @@ def normalize_skill_report(report: dict[str, Any]) -> list[NormalizedEvidenceArt
 def has_precise_code(artifacts: list[NormalizedEvidenceArtifact]) -> bool:
     """True when any normalized GitHub artifact is precise, line-level code."""
     return any(a.proof_strength == STRENGTH_PRECISE_CODE for a in artifacts)
+
+
+def has_implementation_body(artifacts: list[NormalizedEvidenceArtifact]) -> bool:
+    """True when any precise GitHub artifact is a real implementation *body*.
+
+    The strongest GitHub proof band: a located function/method/class body (Smart
+    Evidence grade ``implementation_body``), as opposed to merely ``supporting_logic``
+    or a weaker precise line. Used by the Synthesis Agent to decide whether GitHub
+    evidence is *primary* implementation proof or only *supporting* code, so it
+    never over-claims when only supporting/weak GitHub evidence exists.
+    """
+    return any(
+        a.source_type == SOURCE_GITHUB
+        and a.proof_strength == STRENGTH_PRECISE_CODE
+        and a.metadata.get("evidence_quality_grade") == GRADE_IMPLEMENTATION_BODY
+        for a in artifacts
+    )
 
 
 def has_source(artifacts: list[NormalizedEvidenceArtifact], *source_types: str) -> bool:

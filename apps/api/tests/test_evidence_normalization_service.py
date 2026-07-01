@@ -41,6 +41,7 @@ from app.services.evidence_normalization_service import (
     STRENGTH_SELF_EXPLANATION,
     STRENGTH_SUPPORTING_MOMENT,
     NormalizedEvidenceArtifact,
+    has_implementation_body,
     has_precise_code,
     has_source,
     normalize_chain,
@@ -133,6 +134,37 @@ def test_github_repo_level_is_fallback_only() -> None:
     assert art is not None
     assert art.proof_strength == STRENGTH_REPO_LEVEL
     assert not has_precise_code([art])
+
+
+# ── 2b. Smart-Evidence grade gates precise_code (weak precise line ≠ code) ─────
+
+
+def test_weak_graded_precise_line_is_not_precise_code() -> None:
+    # A precise code_line row whose deterministic Smart-Evidence grade is a WEAK
+    # band (e.g. a bare route decorator) must NOT be treated as implementation code
+    # — it stays the repo-level fallback so it can never inflate the confidence tier.
+    art = normalize_report_item(_gh_code_item(evidence_quality_grade="route_decorator_only"))
+    assert art is not None
+    assert art.proof_strength == STRENGTH_REPO_LEVEL
+    assert not has_precise_code([art])
+    assert not has_implementation_body([art])
+
+
+def test_implementation_body_grade_is_primary_precise_code() -> None:
+    art = normalize_report_item(_gh_code_item(evidence_quality_grade="implementation_body"))
+    assert art is not None
+    assert art.proof_strength == STRENGTH_PRECISE_CODE
+    assert has_precise_code([art])
+    assert has_implementation_body([art]), "an implementation body is primary GitHub proof"
+
+
+def test_supporting_logic_grade_is_precise_but_not_primary_body() -> None:
+    art = normalize_report_item(_gh_code_item(evidence_quality_grade="supporting_logic"))
+    assert art is not None
+    assert art.proof_strength == STRENGTH_PRECISE_CODE
+    assert has_precise_code([art])
+    # Supporting logic is precise code, but it is NOT a primary implementation body.
+    assert not has_implementation_body([art])
 
 
 # ── 3. Website / Defense / Video / Skill Graph strengths ──────────────────────

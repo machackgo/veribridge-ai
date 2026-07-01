@@ -449,6 +449,22 @@ class NormalizedEvidenceArtifact(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class GitHubEvidenceAssessment(BaseModel):
+    """Smart GitHub Evidence quality assessment for one proof chain.
+
+    Deterministic, qualitative (never a numeric score). ``strength`` is one of
+    ``implementation`` / ``supporting`` / ``weak`` / ``none``; ``label`` and
+    ``note`` are recruiter-facing honest proof wording ("Primary GitHub
+    implementation evidence: …", "Supporting GitHub evidence: …", or an honest
+    insufficiency limitation)."""
+
+    strength: str = "none"
+    label: str = ""
+    note: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
 class SkillReportProjectChain(BaseModel):
     """One project's connected proof chain for a skill — artifacts + corroboration.
 
@@ -502,6 +518,13 @@ class SkillReportProjectChain(BaseModel):
     synthesis_statements: list[SkillProofSynthesisStatement] = Field(default_factory=list)
     # Step 2: this chain's evidence collapsed into the uniform normalized model.
     normalized_evidence: list[NormalizedEvidenceArtifact] = Field(default_factory=list)
+    # Smart GitHub Evidence assessment for this chain: whether GitHub is primary
+    # implementation proof (``implementation_body``), supporting code
+    # (``supporting_logic``), or only weak/repo-level — with honest wording.
+    github_evidence_assessment: GitHubEvidenceAssessment | None = None
+    # True only when this chain has a real GitHub implementation *body* (the
+    # strongest artifact proof) — never merely supporting/weak precise lines.
+    has_primary_github_implementation: bool = False
 
     model_config = {"extra": "forbid"}
 
