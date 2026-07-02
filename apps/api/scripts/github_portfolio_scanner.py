@@ -34,6 +34,8 @@ try:
         ANALYZER_VERSION,
         TRUSTED_ANALYSIS_TABLE,
         build_server_provenance,
+        classify_code_role,
+        describe_code_role,
         describe_grade,
         docstring_and_comment_lines,
         focus_python_range,
@@ -44,6 +46,8 @@ except Exception:  # pragma: no cover - standalone fallback
     focus_python_range = None  # type: ignore
     is_strong_grade = None  # type: ignore
     grade_evidence = None  # type: ignore
+    classify_code_role = None  # type: ignore
+    describe_code_role = None  # type: ignore
     build_server_provenance = None  # type: ignore
     describe_grade = None  # type: ignore
     docstring_and_comment_lines = None  # type: ignore
@@ -91,6 +95,11 @@ class EvidenceCandidate:
     focused_start_line: int | None = None       # provenance: AST-focused range
     focused_end_line: int | None = None
     focused_reason: str | None = None           # why this range was selected
+    # Conservative DESCRIPTIVE role of the focused block (documentation_header /
+    # imports_setup / model_training / …). A label only — never proof strength;
+    # the grade above still governs that, and a weak structural band keeps its
+    # honest grade-derived role whatever the detection reason claims.
+    code_role_key: str | None = None
 
 
 @dataclass
@@ -1231,6 +1240,7 @@ class PortfolioScanner:
         # carries no secret/token/private metadata.
         code_snippet: str | None = None
         evidence_quality_grade: str | None = None
+        code_role_key: str | None = None
         if content is not None:
             window = content.splitlines()[line_start - 1 : line_end]
             code_snippet = "\n".join(window) or None
@@ -1241,6 +1251,17 @@ class PortfolioScanner:
                     selection_reason=detection_reason,
                     line_start=line_start,
                     line_end=line_end,
+                )
+            if classify_code_role is not None:
+                # Descriptive role of the persisted window. Fail-closed: a weak
+                # structural band (docstring / import / config / bare decorator)
+                # keeps its grade-derived role even when the detection reason
+                # reads like implementation ("ML training call").
+                code_role_key = classify_code_role(
+                    grade=evidence_quality_grade,
+                    code_snippet=code_snippet,
+                    selection_reason=detection_reason,
+                    file_path=file_path,
                 )
         highlight_url = build_github_highlight_url(
             repo.owner, repo.name, branch, file_path, line_start, line_end
@@ -1273,6 +1294,7 @@ class PortfolioScanner:
             focused_start_line=line_start,
             focused_end_line=line_end,
             focused_reason=detection_reason,
+            code_role_key=code_role_key,
         )
 
 

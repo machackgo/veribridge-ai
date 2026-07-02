@@ -181,6 +181,12 @@ class VaultProofItem(BaseModel):
     display_mode: str | None = None
     evidence_strength: str | None = None
     evidence_quality_grade: str | None = None
+    # Conservative DESCRIPTIVE code role (``documentation_header`` /
+    # ``imports_setup`` / ``model_training`` / …) + its recruiter-readable label
+    # ("Documentation / usage header"). Says what the block appears to be — never
+    # proof strength; the quality grade above still governs that.
+    code_role_key: str | None = None
+    code_role_label: str | None = None
     # Grade-time ML verdict from the trusted provenance body (plain tri-state bool /
     # None — never the raw snippet). Drives read-time ML semantic validation.
     ml_executable_signal: bool | None = None
@@ -304,6 +310,13 @@ class SkillReportEvidenceItem(BaseModel):
     display_mode: str | None = None
     evidence_strength: str | None = None
     evidence_quality_grade: str | None = None
+    # Conservative DESCRIPTIVE code role, resolved at read time against the
+    # VALIDATED grade (``documentation_header`` / ``imports_setup`` /
+    # ``model_training`` / …) + its recruiter-readable label ("Documentation /
+    # usage header"). Says what the block appears to be — never proof strength;
+    # a weak row keeps an honest role label while staying under Needs review.
+    code_role_key: str | None = None
+    code_role_label: str | None = None
     # Grade-time ML verdict from the trusted provenance body (a plain tri-state
     # bool / None — never the raw snippet). Drives read-time ML semantic validation
     # so a deployment-only body can never present as ML primary implementation proof.
@@ -557,6 +570,13 @@ class SkillReportStandaloneGitHubRow(BaseModel):
     # a route-decorator / docstring / import / fallback row never renders like real
     # implementation code when a strong row exists for the same repo.
     evidence_quality_grade: str | None = None
+    # Conservative DESCRIPTIVE code role for this block (already resolved against
+    # the validated grade): key ("documentation_header" / "imports_setup" /
+    # "model_training" / …) + recruiter-readable label ("Documentation / usage
+    # header"). A weak row renders this honest role instead of a stale
+    # ``selection_reason``; it never changes the quality grade above.
+    code_role_key: str | None = None
+    code_role_label: str | None = None
     # Precise "why selected" reason ("ML training call"), when the analyzer set it.
     selection_reason: str | None = None
     github_line_url: str | None = None

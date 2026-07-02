@@ -2904,3 +2904,190 @@ def test_github_groups_preserve_quality_grade_and_filter_visible_rows(
     weak = next(r for r in group["rows"] if r["file_path"] == "src/model/imports.py")
     assert weak["evidence_quality_grade"] not in _STRONG_GRADES
     assert weak not in _visible_rows(group)
+
+
+# ── Code role labels on Skill Report GitHub rows (descriptive, never strength) ─
+
+from app.services.github_python_evidence_focus import (  # noqa: E402
+    GRADE_COMMENT_OR_DOCSTRING,
+    GRADE_IMPORT_ONLY,
+    GRADE_ROUTE_DECORATOR_ONLY,
+)
+
+
+def _grouped_rows(report: dict) -> list[dict]:
+    """All grouped GitHub rows across standalone groups + chain groups."""
+    rows: list[dict] = []
+    for g in (report.get("standalone_evidence") or {}).get("github_groups") or []:
+        rows += g.get("rows") or []
+    for p in report.get("projects") or []:
+        for g in p.get("github_groups") or []:
+            rows += g.get("rows") or []
+    return rows
+
+
+def test_weak_docstring_row_gets_documentation_header_role(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A usage-header docstring that MENTIONS model.fit — trusted provenance grades
+    # it comment_or_docstring; the role label must be documentation, never training.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="scripts/pipeline_retrain.py",
+        line_start=2,
+        line_end=20,
+        selection_reason="ML training call",
+        evidence_quality_grade=GRADE_COMMENT_OR_DOCSTRING,
+        code_snippet='"""Usage: model.fit(X, y) then model.predict(X)."""',
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["evidence_quality_grade"] == GRADE_COMMENT_OR_DOCSTRING
+    assert item["code_role_key"] == "documentation_header"
+    assert item["code_role_label"] == "Documentation / usage header"
+    # Grouped rows carry the same safe role fields for the frontend.
+    row = next(r for r in _grouped_rows(report) if r.get("file_path") == "scripts/pipeline_retrain.py")
+    assert row["code_role_key"] == "documentation_header"
+    assert row["code_role_label"] == "Documentation / usage header"
+    # The stale overclaiming reason is never the recruiter-facing label.
+    assert item["selection_reason"] != "ML training call"
+
+
+def test_weak_import_row_gets_imports_setup_role(mem_store: dict, pipeline_db: dict) -> None:
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="scripts/pipeline_retrain.py",
+        line_start=29,
+        line_end=47,
+        selection_reason="ML training call",
+        evidence_quality_grade=GRADE_IMPORT_ONLY,
+        code_snippet="import pandas as pd\nfrom lightgbm import LGBMClassifier\n",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["code_role_key"] == "imports_setup"
+    assert item["code_role_label"] == "Imports / setup context"
+    assert item["evidence_quality_grade"] == GRADE_IMPORT_ONLY
+
+
+def test_route_shell_row_gets_api_route_shell_role(mem_store: dict, pipeline_db: dict) -> None:
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="API Development",
+        file_path="api.py",
+        line_start=12,
+        line_end=14,
+        selection_reason="API endpoint decorator",
+        evidence_quality_grade=GRADE_ROUTE_DECORATOR_ONLY,
+        code_snippet="@app.post('/predict')\ndef predict(req):\n    ...",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "api-development")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["code_role_key"] == "api_route_shell"
+    assert item["code_role_label"] == "API route shell"
+    assert item["evidence_quality_grade"] == GRADE_ROUTE_DECORATOR_ONLY
+
+
+def test_stale_ungraded_row_with_overclaiming_reason_gets_repository_context_role(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A legacy row with NO trusted provenance at all — only a stale, overclaiming
+    # stored reason. It must fall to repository-level context: the stale reason is
+    # never trusted as the role, and never surfaces as the main label.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="legacy/model_pipeline.py",
+        line_start=1,
+        line_end=9,
+        selection_reason="ML training call",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["code_role_key"] == "repository_context"
+    assert item["code_role_label"] == "Repository-level context"
+    assert item["selection_reason"] != "ML training call"
+    row = next(r for r in _grouped_rows(report) if r.get("file_path") == "legacy/model_pipeline.py")
+    assert row["code_role_label"] == "Repository-level context"
+    # Safe location + link survive for inspection.
+    assert row["label"]
+    assert row["github_line_url"]
+
+
+def test_real_training_body_gets_model_training_role_and_stays_primary(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="src/model/train.py",
+        line_start=19,
+        line_end=37,
+        selection_reason="ML training call",
+        evidence_quality_grade=GRADE_IMPLEMENTATION_BODY,
+        code_snippet=(
+            "clf = LGBMClassifier(n_estimators=200)\n"
+            "clf.fit(X_train, y_train)\n"
+            "joblib.dump(clf, MODEL_PATH)\n"
+        ),
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    # The validated strong grade stands, and the role describes the body honestly.
+    assert item["evidence_quality_grade"] == GRADE_IMPLEMENTATION_BODY
+    assert item["code_role_key"] == "model_training"
+    assert item["code_role_label"] == "Model training context"
+
+
+def test_deployment_only_trusted_body_downgraded_with_deployment_role(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # Persisted as implementation_body but the TRUSTED body is deployment-only
+    # plumbing: the ML gate downgrades the grade at read time, and the role reads
+    # honestly as deployment/serving — never ML primary implementation.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="serving/main.py",
+        line_start=8,
+        line_end=26,
+        selection_reason="ML model serving",
+        evidence_quality_grade=GRADE_IMPLEMENTATION_BODY,
+        code_snippet='uvicorn.run(app, host="0.0.0.0", port=8080)\n',
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["evidence_quality_grade"] != GRADE_IMPLEMENTATION_BODY
+    assert item["code_role_key"] == "deployment_serving"
+    assert item["code_role_label"] == "Deployment / serving context"
+
+
+def test_code_role_fields_never_leak_raw_snippet_or_private_metadata(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # The role fields are enum-derived strings; the payload still never carries
+    # the raw provenance snippet or the seeded secret metadata.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="src/model/train.py",
+        line_start=19,
+        line_end=37,
+        evidence_quality_grade=GRADE_IMPLEMENTATION_BODY,
+        code_snippet="clf.fit(X_train, y_train)  # SECRET_TRAIN_MARKER\n",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    import json
+
+    payload = json.dumps(report)
+    assert "SECRET_TRAIN_MARKER" not in payload
+    assert "should-never-leak" not in payload
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["code_role_key"] in {
+        "documentation_header", "imports_setup", "config_constants", "api_route_shell",
+        "data_loading", "feature_engineering", "model_training", "evaluation_metrics",
+        "prediction_inference", "deployment_serving", "repository_context",
+        "unknown_needs_review",
+    }

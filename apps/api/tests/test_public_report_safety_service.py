@@ -1386,3 +1386,61 @@ def test_public_linked_chain_does_not_claim_precise_code_for_weak_grade() -> Non
         assert summary.get("has_precise_code") is not True, (
             "a weak-graded precise line must never read as precise implementation code"
         )
+
+
+def test_public_skill_report_code_role_fields_never_leak_private_data() -> None:
+    """Code-role fields ride on internal GitHub evidence rows; the public projection
+    must stay whitelist-only — role fields never smuggle a raw snippet, a stale
+    overclaiming reason, or a private source id onto the recruiter surface."""
+    from app.services.proof_synthesis_agent_service import synthesize_skill_report
+
+    internal = synthesize_skill_report(
+        {
+            "skill": "Machine Learning",
+            "source_counts": {"GitHub Proof": 1},
+            "projects": [
+                {
+                    "attached": True,
+                    "project_id": "p-secret-uuid",
+                    "project_title": "Boston Model Trainer",
+                    "github_evidence": [
+                        {
+                            "proof_type": "GitHub Proof",
+                            "source_id": "gh-secret-uuid",
+                            "skill_name": "Machine Learning",
+                            "display_mode": "code_line",
+                            "has_precise_line_evidence": True,
+                            "file_path": "scripts/pipeline_retrain.py",
+                            "line_start": 29,
+                            "line_end": 47,
+                            "evidence_quality_grade": "import_only",
+                            # Descriptive role fields (weak row → imports role).
+                            "code_role_key": "imports_setup",
+                            "code_role_label": "Imports / setup context",
+                            # Stale overclaiming reason + raw snippet that must
+                            # never surface publicly.
+                            "selection_reason": "ML training call SECRET_REASON_MARKER",
+                            "safe_summary": "imports",
+                            "safe_snippet": "import lightgbm  # SECRET_SNIPPET_MARKER",
+                            "public_safe": True,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    public = public_safe_skill_report(internal)
+    payload = json.dumps(public)
+    # No private ids, raw snippet, or stale reason text on the public surface.
+    assert "gh-secret-uuid" not in payload
+    assert "p-secret-uuid" not in payload
+    assert "SECRET_SNIPPET_MARKER" not in payload
+    assert "SECRET_REASON_MARKER" not in payload
+    # Role keys are internal enums; the public whitelist does not echo them today —
+    # if that ever changes, only the two safe fields may appear (never raw fields).
+    for key in ("code_role_key", "code_role_label"):
+        if key in payload:
+            assert '"code_role_key": "imports_setup"' in payload or (
+                '"code_role_label": "Imports / setup context"' in payload
+            )

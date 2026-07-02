@@ -35,7 +35,10 @@ from typing import Any
 from app.services.github_python_evidence_focus import (
     EVIDENCE_QUALITY_GRADES,
     GRADE_REPO_LEVEL_FALLBACK,
+    ROLE_REPOSITORY_CONTEXT,
     TRUSTED_ANALYSIS_TABLE,
+    classify_code_role,
+    describe_code_role,
     grade_evidence,
     grade_rank,
     has_ml_executable_signal,
@@ -126,6 +129,12 @@ class CanonicalGitHubEvidence:
     evidence_kind: str = "portfolio_skill_evidence"
     evidence_strength: str = "strong"
     evidence_quality_grade: str = GRADE_REPO_LEVEL_FALLBACK
+    # Conservative DESCRIPTIVE role for the code block (documentation_header /
+    # imports_setup / config_constants / model_training / prediction_inference /
+    # deployment_serving / repository_context …). Separate from the quality grade:
+    # it says what the block *appears to be*, never how strong the proof is. A weak
+    # row may carry a useful role label while remaining a needs-review signal.
+    code_role_key: str = ROLE_REPOSITORY_CONTEXT
     public_safe: bool = False
     # Grade-time ML verdict from the TRUSTED provenance body (the raw snippet is
     # discarded rather than re-exposed). Tri-state: True = the trusted executable
@@ -137,6 +146,11 @@ class CanonicalGitHubEvidence:
     @property
     def skill_key(self) -> str:
         return _norm(self.skill_name)
+
+    @property
+    def code_role_label(self) -> str:
+        """Human, recruiter-readable role label for :attr:`code_role_key`."""
+        return describe_code_role(self.code_role_key)
 
     @property
     def location_label(self) -> str:
@@ -173,6 +187,8 @@ class CanonicalGitHubEvidence:
             "evidence_kind": self.evidence_kind,
             "evidence_strength": self.evidence_strength,
             "evidence_quality_grade": self.evidence_quality_grade,
+            "code_role_key": self.code_role_key,
+            "code_role_label": self.code_role_label,
             "ml_executable_signal": self.ml_executable_signal,
             "public_safe": self.public_safe,
         }
@@ -416,6 +432,17 @@ def _build_item(
     if not is_strong_grade(quality_grade) and strength == "strong":
         strength = "medium"
 
+    # Conservative DESCRIPTIVE role label. Computed here where the TRUSTED executable
+    # excerpt is available (so a real training / inference / evaluation body reads
+    # accurately), but it NEVER promotes the grade above: a docstring/import/config/
+    # route row keeps its honest grade-derived role even if a stale reason overclaims.
+    code_role_key = classify_code_role(
+        grade=quality_grade,
+        code_snippet=trusted_snippet,
+        selection_reason=selection_reason or evidence_description,
+        file_path=file_path,
+    )
+
     return CanonicalGitHubEvidence(
         source_id=str(row.get("id") or ""),
         skill_name=skill,
@@ -436,6 +463,7 @@ def _build_item(
         skill_graph_node=graph_node,
         evidence_strength=strength,
         evidence_quality_grade=quality_grade,
+        code_role_key=code_role_key,
         ml_executable_signal=ml_executable_signal,
         public_safe=public_safe,
     )
