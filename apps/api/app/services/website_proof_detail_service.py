@@ -197,7 +197,7 @@ def _load_workflow(db: Any, user_id: str, proof_session_id: str) -> dict[str, An
                 "target_website,workflow_summary,recruiter_summary,demonstrated_actions,"
                 "observed_demonstration,page_context_summary,dom_evidence_status,"
                 "visible_evidence_status,frame_ocr_evidence_summary,visual_reasoning_summary,"
-                "visual_summary,visual_analysis_status,visual_analysis_provider"
+                "visual_summary,visual_analysis_status,visual_analysis_provider,created_at"
             )
             .eq("user_id", user_id)
             .eq("proof_session_id", proof_session_id)
@@ -223,6 +223,7 @@ def get_website_proof_detail(db: Any, user_id: str, proof_session_id: str) -> di
           "ocr_summary": str | None,        # safe OCR text summary
           "visual_summary": str | None,     # safe visual / Qwen reasoning
           "live_check": {...} | None,       # live reachability check
+          "observed_at": str | None,        # date-only (YYYY-MM-DD) capture date
         }
 
     Returns ``None`` when no workflow analysis row exists for the session.
@@ -240,8 +241,13 @@ def get_website_proof_detail(db: Any, user_id: str, proof_session_id: str) -> di
         str(wf.get("workflow_summary") or wf.get("recruiter_summary") or ""), 320
     ).strip() or None
 
+    # Date precision only — a full timestamp is provenance metadata the report
+    # does not need.
+    observed_at = str(wf.get("created_at") or "").strip()[:10] or None
+
     return {
         "workflow_summary": workflow_summary,
+        "observed_at": observed_at,
         "workflow_steps": _safe_steps(
             _coerce_dict(wf.get("observed_demonstration")),
             wf.get("demonstrated_actions"),

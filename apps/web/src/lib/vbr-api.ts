@@ -768,6 +768,82 @@ export type SkillReportEvidenceItem = {
   ocr_summary?: string | null
   visual_summary?: string | null
   live_check?: Record<string, unknown> | null
+  /**
+   * Website PURPOSE: what the recorded page/app demonstrably showed
+   * ("Chat / prompt interface", "Prediction / result display", "Interactive
+   * form flow", …), from a closed backend vocabulary derived only from
+   * already-safe summaries — never raw DOM/OCR/provider text.
+   */
+  website_purpose_key?: string | null
+  website_purpose_label?: string | null
+  website_purpose_summary?: string | null
+  /**
+   * Website SKILL RELEVANCE: how the observed behaviour relates to the report's
+   * selected skill, recomputed server-side per report ("Direct React evidence",
+   * "Machine Learning product behaviour context — not implementation proof",
+   * "Deployed application availability evidence"). Closed template vocabulary;
+   * descriptive only — never proof strength.
+   */
+  website_skill_relevance_key?: string | null
+  website_skill_relevance_label?: string | null
+  website_skill_relevance_summary?: string | null
+  /**
+   * ONE structured, recruiter-inspectable Website Evidence Card — the Website
+   * counterpart of GitHub's "View code lines" row. Built server-side from
+   * closed vocabularies + already-safe summaries; never raw DOM/OCR/frame/
+   * provider payloads, storage paths, or signed URLs.
+   */
+  website_evidence_card?: WebsiteEvidenceCard | null
+}
+
+/**
+ * A recruiter-verifiable Website Proof evidence card. Every field is a closed
+ * backend vocabulary label, an already-sanitized summary, or a revalidated safe
+ * public URL. OCR/DOM/visual evidence appears only as derived closed-template
+ * sentences. `screenshot_preview_url` is always null in the MVP — keyframes
+ * stay in private storage behind the candidate-permission thumbnail proxy, so
+ * the UI renders `screenshot_access_label` instead.
+ */
+export type WebsiteEvidenceCard = {
+  card_key: string
+  route_or_page: string
+  page_title?: string | null
+  /** Date-only (YYYY-MM-DD) observation date. */
+  observed_at?: string | null
+  /**
+   * Recruiter-first behaviour claim (closed backend vocabulary keyed by
+   * purpose) — the first line the card renders: what live behaviour was
+   * demonstrably shown, phrased as a checkable statement.
+   */
+  behavior_claim?: string | null
+  website_purpose_key: string
+  website_purpose_label: string
+  website_purpose_summary: string
+  skill_relevance_key: string
+  skill_relevance_label: string
+  skill_relevance_summary: string
+  observed_behavior_summary?: string | null
+  visual_evidence_summary?: string | null
+  ocr_evidence_summary_safe?: string | null
+  dom_evidence_summary_safe?: string | null
+  evidence_basis_chips: string[]
+  limitation: string
+  open_website_url?: string | null
+  screenshot_available: boolean
+  /** "private_candidate_permission_required" | "unavailable" (closed enum). */
+  screenshot_access_label: string
+  screenshot_preview_url?: string | null
+  /**
+   * Cross-proof corroboration — set server-side ONLY when this website proof
+   * sits inside a confirmed VBR project chain holding the companion source.
+   * `corroboration_note` is a closed-fragment sentence naming those companions;
+   * `connected_project_title` is the already-safe project title.
+   */
+  corroborates_github?: boolean
+  corroborates_defense?: boolean
+  corroborates_document?: boolean
+  corroboration_note?: string | null
+  connected_project_title?: string | null
 }
 
 export type SkillReportProjectUsage = {
@@ -834,6 +910,13 @@ export type SkillReportProjectChain = {
   document_more_count: number
   defense_evidence: SkillReportEvidenceItem[]
   video_evidence: SkillReportEvidenceItem[]
+  /**
+   * One safe sentence explaining how this chain's Website Proof corroborates its
+   * other sources ("the website demonstrates the behaviour, GitHub code shows the
+   * implementation, …"). Null when the chain has no website evidence or nothing
+   * to connect it to.
+   */
+  website_connection_note?: string | null
   /** Project Defense + Video evidence collapsed into ONE grouped section (no repeated cards). */
   defense_group?: SkillReportDefenseGroup | null
   limitations: string[]

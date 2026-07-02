@@ -91,6 +91,18 @@ from app.services.vbr_student_report import (
     _website_evidence_label,
 )
 from app.services.website_proof_detail_service import get_website_proof_detail
+from app.services.website_skill_proof_focus import (
+    attach_website_corroboration,
+    build_website_evidence_card,
+    classify_website_purpose,
+    classify_website_skill_relevance,
+    describe_website_purpose,
+    describe_website_skill_relevance,
+    website_chain_connection_note,
+    website_limitation_for,
+    website_purpose_summary,
+    website_skill_relevance_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1457,6 +1469,16 @@ def _report_item(
         "ocr_summary": None,
         "visual_summary": None,
         "live_check": None,
+        # Website semantic proof fields (closed vocabularies; None for every
+        # other proof type) — what the recorded page showed and how that
+        # observed behaviour relates to the report's SELECTED skill.
+        "website_purpose_key": None,
+        "website_purpose_label": None,
+        "website_purpose_summary": None,
+        "website_skill_relevance_key": None,
+        "website_skill_relevance_label": None,
+        "website_skill_relevance_summary": None,
+        "website_evidence_card": None,
     }
     if item["proof_type"] == PROOF_GITHUB:
         # Read-time ML semantic validation FIRST: a trusted ``implementation_body``
@@ -1540,6 +1562,56 @@ def _report_item(
         row["ocr_summary"] = hydrated.get("ocr_summary")
         row["visual_summary"] = hydrated.get("visual_summary")
         row["live_check"] = hydrated.get("live_check")
+    if item["proof_type"] == PROOF_WEBSITE:
+        # Website semantic proof: classify WHAT the recorded page demonstrably
+        # showed from the already-safe summaries (never raw DOM/OCR/provider
+        # payloads), then recompute how that observed behaviour relates to the
+        # report's SELECTED skill (never trusted from storage — the same session
+        # supporting "React" and "Machine Learning" must read differently in
+        # each report). Both are closed vocabularies; the honest per-family
+        # limitation replaces the generic website caveat so an ML/GenAI/DevOps
+        # report always states that the UI alone does not prove implementation.
+        purpose_key = classify_website_purpose(
+            workflow_summary=row.get("workflow_summary"),
+            workflow_steps=row.get("workflow_steps") or [],
+            dom_summary=row.get("dom_summary"),
+            ocr_summary=row.get("ocr_summary"),
+            visual_summary=row.get("visual_summary"),
+            live_check=row.get("live_check") if isinstance(row.get("live_check"), dict) else None,
+            fallback_summary=row.get("safe_summary"),
+        )
+        row["website_purpose_key"] = purpose_key
+        row["website_purpose_label"] = describe_website_purpose(purpose_key)
+        row["website_purpose_summary"] = website_purpose_summary(purpose_key)
+        relevance_skill = skill or str(item.get("skill_name") or "")
+        relevance_key = classify_website_skill_relevance(purpose_key, skill=relevance_skill)
+        row["website_skill_relevance_key"] = relevance_key
+        row["website_skill_relevance_label"] = describe_website_skill_relevance(
+            relevance_key, relevance_skill
+        )
+        row["website_skill_relevance_summary"] = website_skill_relevance_summary(
+            relevance_key, relevance_skill
+        )
+        row["limitation"] = website_limitation_for(relevance_key, relevance_skill)
+        # ONE recruiter-inspectable Website Evidence Card (the Website "View code
+        # lines" equivalent): route/page + basis chips + derived-only OCR/DOM/
+        # visual sentences + honest screenshot access status. The raw-ish
+        # sanitized summaries are passed as PRESENCE booleans only — they never
+        # enter the card — and the open link is revalidated inside the builder.
+        row["website_evidence_card"] = build_website_evidence_card(
+            purpose_key=purpose_key,
+            relevance_key=relevance_key,
+            skill=relevance_skill,
+            workflow_summary=row.get("workflow_summary"),
+            workflow_steps=row.get("workflow_steps") or [],
+            has_dom_summary=bool(row.get("dom_summary")),
+            has_ocr_summary=bool(row.get("ocr_summary")),
+            has_visual_summary=bool(row.get("visual_summary")),
+            live_check=row.get("live_check") if isinstance(row.get("live_check"), dict) else None,
+            open_website_url=item.get("public_url") if item.get("public_safe") else None,
+            safe_location=item.get("safe_location"),
+            observed_at=(hydrated or {}).get("observed_at"),
+        )
     return row
 
 
@@ -2330,7 +2402,11 @@ def collect_skill_report(
         sid = str(i["source_id"])
         if sid not in hydrated_cache:
             hydrated_cache[sid] = get_website_proof_detail(db, str(user_id), sid)
-        website.append(_report_item(i, titles, hydrated=hydrated_cache[sid]))
+        # ``skill=canon`` drives the website semantic layer: the recorded page's
+        # purpose plus its relevance TO THIS report's skill (an ML report labels
+        # the same session "product behaviour context", a React report "direct
+        # Frontend evidence") — recomputed here, never trusted from storage.
+        website.append(_report_item(i, titles, hydrated=hydrated_cache[sid], skill=canon))
 
     # De-duplicate document evidence up front (kills repeated identical snippets).
     documents = _dedupe_doc_items(documents)
@@ -2551,6 +2627,42 @@ def collect_skill_report(
             chain.get("defense_evidence") or [], chain.get("video_evidence") or []
         )
         chain["github_groups"] = _group_github_evidence(chain.get("github_evidence") or [])
+        # One safe sentence explaining how this chain's Website Proof connects to
+        # its other sources ("website demonstrates the behaviour, GitHub shows the
+        # implementation, the Defense shows understanding"). Emitted ONLY for a
+        # real project chain: the standalone vault bucket mixes UNATTACHED proofs
+        # that share no confirmed project, so claiming they corroborate each
+        # other there would overstate the connection. ``None`` when the chain has
+        # no website evidence or nothing to connect it to.
+        chain["website_connection_note"] = (
+            website_chain_connection_note(
+                has_github=bool(chain.get("github_evidence")),
+                has_defense=bool(chain.get("defense_evidence") or chain.get("video_evidence")),
+                has_document=bool(chain.get("document_correlations")),
+            )
+            if chain.get("website_evidence") and chain.get("project_id")
+            else None
+        )
+        # Per-CARD cross-proof corroboration, for confirmed project chains only:
+        # each website evidence card learns which companion sources exist in the
+        # SAME chain (GitHub implementation / Defense explanation / Document
+        # objective) plus the safe project title, and gains the matching
+        # closed-vocabulary "Corroborates …" chips. The standalone bucket is
+        # skipped for the same reason as the connection note — unattached proofs
+        # share no confirmed project, so their cards stay honestly standalone.
+        if chain.get("project_id"):
+            for web_item in chain.get("website_evidence") or []:
+                card = web_item.get("website_evidence_card")
+                if isinstance(card, dict):
+                    attach_website_corroboration(
+                        card,
+                        project_title=chain.get("project_title"),
+                        has_github=bool(chain.get("github_evidence")),
+                        has_defense=bool(
+                            chain.get("defense_evidence") or chain.get("video_evidence")
+                        ),
+                        has_document=bool(chain.get("document_correlations")),
+                    )
 
     # ── Overview + gaps ──────────────────────────────────────────────────────
     proof_source_counts: dict[str, int] = {}

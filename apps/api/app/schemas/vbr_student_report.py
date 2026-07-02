@@ -291,6 +291,61 @@ class VaultSkillSummary(BaseModel):
 # ── Student Proof Vault: Layer 2 (full Skill Report) ─────────────────────────
 
 
+class WebsiteEvidenceCard(BaseModel):
+    """ONE recruiter-inspectable Website Evidence Card — the Website counterpart
+    of GitHub's "View code lines" row.
+
+    Answers: what page/route was observed, what behaviour was visible, what
+    evidence backs it (basis chips), how it relates to THIS report's skill, and
+    what it does NOT prove. Every field is a closed-vocabulary label, an
+    already-sanitized summary, or a revalidated safe public URL. OCR/DOM/visual
+    evidence appears ONLY as derived closed-template sentences — never raw
+    payloads. Screenshot/keyframe evidence is an availability flag + closed
+    access status; ``screenshot_preview_url`` stays ``None`` while keyframes
+    live in private storage behind the candidate-permission thumbnail proxy."""
+
+    # Stable key over safe display fields only — never a session/private ID.
+    card_key: str
+    route_or_page: str = "Recorded session"
+    page_title: str | None = None
+    # Date-only (YYYY-MM-DD) observation date; full timestamps are provenance
+    # metadata the card does not carry.
+    observed_at: str | None = None
+    # Recruiter-first behaviour claim (closed vocabulary keyed by purpose) — the
+    # first line the card renders: what live behaviour was demonstrably shown,
+    # phrased as a checkable statement.
+    behavior_claim: str = ""
+    website_purpose_key: str
+    website_purpose_label: str
+    website_purpose_summary: str
+    skill_relevance_key: str
+    skill_relevance_label: str
+    skill_relevance_summary: str
+    observed_behavior_summary: str | None = None
+    visual_evidence_summary: str | None = None
+    ocr_evidence_summary_safe: str | None = None
+    dom_evidence_summary_safe: str | None = None
+    evidence_basis_chips: list[str] = Field(default_factory=list)
+    limitation: str
+    open_website_url: str | None = None
+    screenshot_available: bool = False
+    # "private_candidate_permission_required" | "unavailable" (closed enum).
+    screenshot_access_label: str = "unavailable"
+    screenshot_preview_url: str | None = None
+    # Cross-proof corroboration — set ONLY by the vault service's confirmed
+    # project-chain pass (``attach_website_corroboration``): whether GitHub /
+    # Defense / Document evidence for the SAME VBR project backs this behaviour,
+    # a closed-fragment sentence naming those companions, and the already-safe
+    # connected project title. Always false/None for unattached proofs.
+    corroborates_github: bool = False
+    corroborates_defense: bool = False
+    corroborates_document: bool = False
+    corroboration_note: str | None = None
+    connected_project_title: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class SkillReportEvidenceItem(BaseModel):
     """One rich, recruiter-verifiable evidence item inside a Skill Report section.
 
@@ -382,6 +437,25 @@ class SkillReportEvidenceItem(BaseModel):
     ocr_summary: str | None = None
     visual_summary: str | None = None
     live_check: dict | None = None
+    # Website semantic proof fields (website items only; ``None`` for every other
+    # proof type). PURPOSE: what the recorded page demonstrably showed, from a
+    # closed vocabulary ("Chat / prompt interface", "Prediction / result
+    # display") derived only from already-safe summaries. SKILL RELEVANCE: how
+    # that observed behaviour relates to THIS report's selected skill, recomputed
+    # at read time ("Direct React evidence", "Machine Learning product behaviour
+    # context — not implementation proof"). Labels only — never proof strength,
+    # and a UI demo can never read as ML/GenAI/DevOps implementation proof.
+    website_purpose_key: str | None = None
+    website_purpose_label: str | None = None
+    website_purpose_summary: str | None = None
+    website_skill_relevance_key: str | None = None
+    website_skill_relevance_label: str | None = None
+    website_skill_relevance_summary: str | None = None
+    # ONE structured, recruiter-inspectable Website Evidence Card (website items
+    # only) — the Website counterpart of GitHub's "View code lines" row. Built
+    # entirely from closed vocabularies + already-safe summaries; never raw
+    # DOM/OCR/frame/provider payloads, storage paths, signed URLs or private IDs.
+    website_evidence_card: WebsiteEvidenceCard | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -545,6 +619,12 @@ class SkillReportProjectChain(BaseModel):
     # chain never renders many repeated "the candidate explained their work"
     # cards. ``None`` when the chain has no defense/video evidence.
     defense_group: SkillReportDefenseGroup | None = None
+    # One safe sentence explaining how this chain's Website Proof corroborates
+    # its other sources ("the website demonstrates the product behaviour, GitHub
+    # code shows the implementation, the Project Defense shows the candidate's
+    # own understanding"). ``None`` when the chain has no website evidence or
+    # nothing to connect it to.
+    website_connection_note: str | None = None
     limitations: list[str] = Field(default_factory=list)
     # When several VBR project rows share the same proof package, duplicate chains
     # are collapsed into one representative; these record how many were merged.

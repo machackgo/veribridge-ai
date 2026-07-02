@@ -49,6 +49,16 @@ from app.services.project_defense_evidence_chips import _sanitize_transcript_tex
 from app.services.safe_public_url import is_safe_public_url
 from app.services.skill_normalization import canonical_skill
 from app.services.vbr_student_report import _scrub_score_fragments, _trace_text
+from app.services.website_skill_proof_focus import (
+    ALLOWED_WEBSITE_EVIDENCE_CHIPS,
+    ALLOWED_WEBSITE_PURPOSE_KEYS,
+    ALLOWED_WEBSITE_RELEVANCE_KEYS,
+    describe_website_purpose,
+    describe_website_skill_relevance,
+    public_screenshot_access_label,
+    website_behavior_claim,
+    website_corroboration_note,
+)
 
 # ── Source types (one per proof surface) ──────────────────────────────────────
 SOURCE_GITHUB = "github"
@@ -193,11 +203,22 @@ class NormalizedEvidenceArtifact:
         public_url = self.metadata.get("github_line_url") or self.metadata.get("public_url")
         if not (public_url and self.public_safe and is_safe_public_url(str(public_url))):
             public_url = None
+        # Website semantic proof labels: only a KEY from the closed vocabularies
+        # survives (fail-closed — an arbitrary/stale key is dropped), and the
+        # public label is DERIVED from that vocabulary at projection time — never
+        # echoed from stored text. The relevance label interpolates only the
+        # already-public canonical skill name.
+        purpose_key = str(self.metadata.get("website_purpose_key") or "") or None
+        if purpose_key not in ALLOWED_WEBSITE_PURPOSE_KEYS:
+            purpose_key = None
+        relevance_key = str(self.metadata.get("website_skill_relevance_key") or "") or None
+        if relevance_key not in ALLOWED_WEBSITE_RELEVANCE_KEYS:
+            relevance_key = None
         # Re-scrub every retained public string defensively: even though these
         # fields are meant to be already-safe, a hostile upstream item could have
         # smuggled a token / signed URL / storage or local path into them. The
         # private source_id and the whole metadata bag are dropped entirely.
-        return {
+        view = {
             "evidence_id": self.evidence_id,
             "source_type": self.source_type,
             "source_label": self.source_label,
@@ -211,6 +232,52 @@ class NormalizedEvidenceArtifact:
             "limitations": [_scrub_sensitive(lim) for lim in self.limitations],
             "public_url": public_url,
         }
+        # Website fields are only ever PRESENT on a website artifact carrying a
+        # validated key (other artifacts never grow website-shaped keys).
+        if purpose_key:
+            view["website_purpose_key"] = purpose_key
+            view["website_purpose_label"] = describe_website_purpose(purpose_key)
+            # Recruiter-first behaviour claim — DERIVED from the validated
+            # purpose key's closed vocabulary, never echoed from stored text.
+            view["website_behavior_claim"] = website_behavior_claim(purpose_key)
+        if relevance_key:
+            view["website_skill_relevance_key"] = relevance_key
+            view["website_skill_relevance_label"] = describe_website_skill_relevance(
+                relevance_key, self.canonical_skill_name
+            )
+        # Website evidence-card extras (chips + screenshot access), each validated
+        # against its closed vocabulary here — a smuggled chip is dropped and any
+        # preview-shaped access label collapses to the permission-gated status.
+        # The public card never carries preview URLs, page titles, or the
+        # observed-behaviour narrative — only closed-vocabulary facts.
+        chips = [
+            str(c)
+            for c in (self.metadata.get("website_evidence_chips") or [])
+            if str(c) in ALLOWED_WEBSITE_EVIDENCE_CHIPS
+        ]
+        if chips:
+            view["website_evidence_chips"] = chips
+        if purpose_key or chips:
+            available = bool(self.metadata.get("website_screenshot_available"))
+            view["website_screenshot_available"] = available
+            view["website_screenshot_access_label"] = public_screenshot_access_label(
+                self.metadata.get("website_screenshot_access_label"),
+                screenshot_available=available,
+            )
+            # Cross-proof corroboration: booleans only, and the public note is
+            # RE-DERIVED from those booleans through the closed fragments —
+            # stored note text is never echoed to the public surface.
+            gh = bool(self.metadata.get("website_corroborates_github"))
+            dfn = bool(self.metadata.get("website_corroborates_defense"))
+            doc = bool(self.metadata.get("website_corroborates_document"))
+            if gh or dfn or doc:
+                view["website_corroborates_github"] = gh
+                view["website_corroborates_defense"] = dfn
+                view["website_corroborates_document"] = doc
+                view["website_corroboration_note"] = website_corroboration_note(
+                    has_github=gh, has_defense=dfn, has_document=doc
+                )
+        return view
 
 
 # ── Small deterministic helpers ───────────────────────────────────────────────
@@ -351,6 +418,37 @@ def normalize_report_item(
         subskill = None
         if source_type == SOURCE_WEBSITE and item.get("public_url"):
             metadata["public_url"] = item.get("public_url")
+        if source_type == SOURCE_WEBSITE:
+            # Website semantic proof KEYS only (closed vocabularies, validated
+            # again at public projection time) — never the free-text summaries.
+            for key in ("website_purpose_key", "website_skill_relevance_key"):
+                if item.get(key):
+                    metadata[key] = str(item.get(key))
+            # Evidence-card extras: closed-vocabulary basis chips + screenshot
+            # availability/access. Chips are filtered against the closed set
+            # already here; the free-text card fields (narrative, page title,
+            # derived sentences) deliberately never enter the metadata bag.
+            card = item.get("website_evidence_card")
+            if isinstance(card, dict):
+                chips = [
+                    str(c)
+                    for c in (card.get("evidence_basis_chips") or [])
+                    if str(c) in ALLOWED_WEBSITE_EVIDENCE_CHIPS
+                ]
+                if chips:
+                    metadata["website_evidence_chips"] = chips
+                metadata["website_screenshot_available"] = bool(card.get("screenshot_available"))
+                metadata["website_screenshot_access_label"] = str(
+                    card.get("screenshot_access_label") or ""
+                )
+                # Corroboration BOOLEANS only — the note itself is re-derived
+                # from these at projection time, never carried as text.
+                for corr in (
+                    "corroborates_github",
+                    "corroborates_defense",
+                    "corroborates_document",
+                ):
+                    metadata[f"website_{corr}"] = bool(card.get(corr))
         if source_type == SOURCE_DEFENSE and item.get("question_text"):
             metadata["question_text"] = _safe_text(item.get("question_text"), 160)
         if source_type == SOURCE_VIDEO and item.get("timestamp_label"):
