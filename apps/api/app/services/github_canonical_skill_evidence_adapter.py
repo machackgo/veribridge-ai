@@ -35,10 +35,18 @@ from typing import Any
 from app.services.github_python_evidence_focus import (
     EVIDENCE_QUALITY_GRADES,
     GRADE_REPO_LEVEL_FALLBACK,
+    PURPOSE_REPOSITORY_CONTEXT,
+    RELEVANCE_CONTEXT_ONLY,
     ROLE_REPOSITORY_CONTEXT,
     TRUSTED_ANALYSIS_TABLE,
+    classify_code_block_purpose,
     classify_code_role,
+    classify_skill_relevance,
+    code_block_purpose_summary,
+    describe_code_block_purpose,
     describe_code_role,
+    describe_skill_relevance,
+    skill_relevance_summary,
     grade_evidence,
     grade_rank,
     has_ml_executable_signal,
@@ -135,6 +143,17 @@ class CanonicalGitHubEvidence:
     # it says what the block *appears to be*, never how strong the proof is. A weak
     # row may carry a useful role label while remaining a needs-review signal.
     code_role_key: str = ROLE_REPOSITORY_CONTEXT
+    # Block-level PURPOSE (finer than the role): what THIS exact focused block
+    # appears to do ("Documentation describing retraining pipeline", "Imports /
+    # dependency setup", "Model training"). A closed, safe vocabulary — never a
+    # stale reason or raw prose — and, like the role, never proof strength.
+    code_block_purpose_key: str = PURPOSE_REPOSITORY_CONTEXT
+    # SKILL RELEVANCE of this block relative to ITS OWN ``skill_name`` (the skill
+    # the analyzer filed the row under): a closed template key ("Direct …
+    # implementation evidence", "Setup context, not … implementation proof").
+    # Recomputed at read time against the report's selected skill — this stored
+    # value is a display default, never trusted over the read-time resolution.
+    skill_relevance_key: str = RELEVANCE_CONTEXT_ONLY
     public_safe: bool = False
     # Grade-time ML verdict from the TRUSTED provenance body (the raw snippet is
     # discarded rather than re-exposed). Tri-state: True = the trusted executable
@@ -151,6 +170,26 @@ class CanonicalGitHubEvidence:
     def code_role_label(self) -> str:
         """Human, recruiter-readable role label for :attr:`code_role_key`."""
         return describe_code_role(self.code_role_key)
+
+    @property
+    def code_block_purpose_label(self) -> str:
+        """Recruiter-readable purpose label for :attr:`code_block_purpose_key`."""
+        return describe_code_block_purpose(self.code_block_purpose_key)
+
+    @property
+    def code_block_purpose_summary(self) -> str:
+        """One short, safe helper sentence for :attr:`code_block_purpose_key`."""
+        return code_block_purpose_summary(self.code_block_purpose_key)
+
+    @property
+    def skill_relevance_label(self) -> str:
+        """Recruiter-readable relevance label for :attr:`skill_relevance_key`."""
+        return describe_skill_relevance(self.skill_relevance_key, self.skill_name)
+
+    @property
+    def skill_relevance_summary(self) -> str:
+        """One short, safe helper sentence for :attr:`skill_relevance_key`."""
+        return skill_relevance_summary(self.skill_relevance_key, self.skill_name)
 
     @property
     def location_label(self) -> str:
@@ -189,6 +228,12 @@ class CanonicalGitHubEvidence:
             "evidence_quality_grade": self.evidence_quality_grade,
             "code_role_key": self.code_role_key,
             "code_role_label": self.code_role_label,
+            "code_block_purpose_key": self.code_block_purpose_key,
+            "code_block_purpose_label": self.code_block_purpose_label,
+            "code_block_purpose_summary": self.code_block_purpose_summary,
+            "skill_relevance_key": self.skill_relevance_key,
+            "skill_relevance_label": self.skill_relevance_label,
+            "skill_relevance_summary": self.skill_relevance_summary,
             "ml_executable_signal": self.ml_executable_signal,
             "public_safe": self.public_safe,
         }
@@ -442,6 +487,25 @@ def _build_item(
         selection_reason=selection_reason or evidence_description,
         file_path=file_path,
     )
+    # Block-level PURPOSE, computed beside the role while the trusted excerpt is
+    # available (so a retraining-pipeline docstring refines to its documentation
+    # topic and a real training body reads as "Model training"). Fail-closed the
+    # same way: it never promotes the grade, and a stale reason never decides it.
+    code_block_purpose_key = classify_code_block_purpose(
+        grade=quality_grade,
+        code_snippet=trusted_snippet,
+        selection_reason=selection_reason or evidence_description,
+        file_path=file_path,
+    )
+    # Skill relevance relative to the row's OWN filed skill (recomputed at read
+    # time against the report's selected skill — this is only a display default).
+    # Derived from the closed purpose × skill family × grade, so it can never
+    # upgrade the grade or echo stored prose.
+    skill_relevance_key = classify_skill_relevance(
+        code_block_purpose_key,
+        skill=skill,
+        grade=quality_grade,
+    )
 
     return CanonicalGitHubEvidence(
         source_id=str(row.get("id") or ""),
@@ -464,6 +528,8 @@ def _build_item(
         evidence_strength=strength,
         evidence_quality_grade=quality_grade,
         code_role_key=code_role_key,
+        code_block_purpose_key=code_block_purpose_key,
+        skill_relevance_key=skill_relevance_key,
         ml_executable_signal=ml_executable_signal,
         public_safe=public_safe,
     )

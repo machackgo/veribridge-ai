@@ -1444,3 +1444,131 @@ def test_public_skill_report_code_role_fields_never_leak_private_data() -> None:
             assert '"code_role_key": "imports_setup"' in payload or (
                 '"code_role_label": "Imports / setup context"' in payload
             )
+
+
+def test_public_skill_report_purpose_fields_never_leak_private_data() -> None:
+    """Block-purpose fields ride on internal GitHub evidence rows exactly like the
+    role fields; the public projection stays whitelist-only — a purpose surface can
+    never smuggle a raw snippet, a stale overclaiming reason, or a private id."""
+    from app.services.proof_synthesis_agent_service import synthesize_skill_report
+
+    internal = synthesize_skill_report(
+        {
+            "skill": "Machine Learning",
+            "source_counts": {"GitHub Proof": 1},
+            "projects": [
+                {
+                    "attached": True,
+                    "project_id": "p-secret-uuid",
+                    "project_title": "Boston Model Trainer",
+                    "github_evidence": [
+                        {
+                            "proof_type": "GitHub Proof",
+                            "source_id": "gh-secret-uuid",
+                            "skill_name": "Machine Learning",
+                            "display_mode": "code_line",
+                            "has_precise_line_evidence": True,
+                            "file_path": "scripts/pipeline_retrain.py",
+                            "line_start": 2,
+                            "line_end": 20,
+                            "evidence_quality_grade": "comment_or_docstring",
+                            # Closed-vocabulary purpose fields (weak docstring row).
+                            "code_block_purpose_key": "retraining_documentation",
+                            "code_block_purpose_label": (
+                                "Documentation describing retraining pipeline"
+                            ),
+                            "code_block_purpose_summary": (
+                                "This header describes the planned retraining workflow "
+                                "and artifacts, but it is not executable training code."
+                            ),
+                            # Stale overclaiming reason + raw snippet that must
+                            # never surface publicly.
+                            "selection_reason": "ML training call SECRET_REASON_MARKER",
+                            "safe_summary": "module docstring",
+                            "safe_snippet": '"""retrain SECRET_SNIPPET_MARKER"""',
+                            "public_safe": True,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    public = public_safe_skill_report(internal)
+    payload = json.dumps(public)
+    assert "gh-secret-uuid" not in payload
+    assert "p-secret-uuid" not in payload
+    assert "SECRET_SNIPPET_MARKER" not in payload
+    assert "SECRET_REASON_MARKER" not in payload
+    # Purpose fields are internal closed enums; the public whitelist does not echo
+    # them today — if that ever changes, only the safe static strings may appear.
+    for key in ("code_block_purpose_key", "code_block_purpose_label", "code_block_purpose_summary"):
+        if key in payload:
+            assert '"code_block_purpose_key": "retraining_documentation"' in payload or (
+                "Documentation describing retraining pipeline" in payload
+            )
+
+
+def test_public_skill_report_skill_relevance_fields_never_leak_private_data() -> None:
+    """Skill-relevance fields ride on internal GitHub evidence rows exactly like the
+    purpose fields; the public projection stays whitelist-only — a relevance surface
+    can never smuggle a raw snippet, a stale overclaiming reason, or a private id."""
+    from app.services.proof_synthesis_agent_service import synthesize_skill_report
+
+    internal = synthesize_skill_report(
+        {
+            "skill": "Machine Learning",
+            "source_counts": {"GitHub Proof": 1},
+            "projects": [
+                {
+                    "attached": True,
+                    "project_id": "p-secret-uuid",
+                    "project_title": "Boston Model Trainer",
+                    "github_evidence": [
+                        {
+                            "proof_type": "GitHub Proof",
+                            "source_id": "gh-secret-uuid",
+                            "skill_name": "Machine Learning",
+                            "display_mode": "code_line",
+                            "has_precise_line_evidence": True,
+                            "file_path": "scripts/pipeline_retrain.py",
+                            "line_start": 2,
+                            "line_end": 20,
+                            "evidence_quality_grade": "comment_or_docstring",
+                            "code_block_purpose_key": "retraining_documentation",
+                            # Closed-template relevance fields (weak docstring row).
+                            "skill_relevance_key": "documentation_context",
+                            "skill_relevance_label": (
+                                "Documentation context, not executable Machine Learning proof"
+                            ),
+                            "skill_relevance_summary": (
+                                "This is documentation prose — context for Machine "
+                                "Learning, never executable proof."
+                            ),
+                            # Stale overclaiming reason + raw snippet that must
+                            # never surface publicly.
+                            "selection_reason": "ML training call SECRET_REASON_MARKER",
+                            "safe_summary": "module docstring",
+                            "safe_snippet": '"""retrain SECRET_SNIPPET_MARKER"""',
+                            "public_safe": True,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    public = public_safe_skill_report(internal)
+    payload = json.dumps(public)
+    assert "gh-secret-uuid" not in payload
+    assert "p-secret-uuid" not in payload
+    assert "SECRET_SNIPPET_MARKER" not in payload
+    assert "SECRET_REASON_MARKER" not in payload
+    # Relevance fields are internal closed templates; the public whitelist does not
+    # echo them today — if that ever changes, only the safe rendered strings may
+    # appear (never braces/markup/stored prose).
+    for key in ("skill_relevance_key", "skill_relevance_label", "skill_relevance_summary"):
+        if key in payload:
+            assert '"skill_relevance_key": "documentation_context"' in payload or (
+                "Documentation context, not executable Machine Learning proof" in payload
+            )

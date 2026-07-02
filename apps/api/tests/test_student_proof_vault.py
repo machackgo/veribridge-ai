@@ -1278,13 +1278,16 @@ def _item(proof_type: str, *, pid: str | None, grade: str | None = None) -> dict
 
 
 def test_coherent_chain_true_for_impl_body_plus_corroboration_same_project() -> None:
-    """A single attached project with a GitHub implementation body AND a defense
-    (>= 2 distinct sources) is a coherent chain → eligible for Demonstrated."""
+    """A single attached project with a SKILL-RELEVANT GitHub implementation body
+    AND a defense (>= 2 distinct sources) is a coherent chain → eligible for
+    Demonstrated. The body must prove the selected skill's own work (here: an
+    authoritative grade-time ML signal for a Machine Learning report) — a bare
+    implementation_body grade with no skill relevance no longer qualifies."""
     items = [
-        _item("GitHub Proof", pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY),
+        _ml_github_item(pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY, ml_signal=True),
         _item("Project Defense", pid="proj-a"),
     ]
-    assert _has_coherent_impl_chain(items) is True
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is True
 
 
 def test_coherent_chain_false_when_impl_body_standalone_and_weak_attached_elsewhere() -> None:
@@ -1329,16 +1332,17 @@ def test_skill_status_standalone_impl_plus_weak_boston_not_demonstrated() -> Non
 
 
 def test_skill_status_coherent_ml_chain_is_demonstrated() -> None:
-    """A single coherent project (implementation body + defense) reads Demonstrated."""
+    """A single coherent project (skill-relevant implementation body + defense)
+    reads Demonstrated — the known-skill happy path stays intact."""
     items = [
-        _item("GitHub Proof", pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY),
+        _ml_github_item(pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY, ml_signal=True),
         _item("Project Defense", pid="proj-a"),
     ]
     status = _skill_status(
         ["GitHub Proof", "Project Defense"],
         attached_count=2,
         skill="Machine Learning",
-        has_implementation_body=_has_coherent_impl_chain(items),
+        has_implementation_body=_has_coherent_impl_chain(items, skill="Machine Learning"),
     )
     assert status == "Demonstrated"
 
@@ -1433,6 +1437,198 @@ def test_coherent_chain_downgraded_standalone_ml_cannot_upgrade_weak_attached() 
         _item("Project Defense", pid="boston"),
     ]
     assert _has_coherent_impl_chain(items, skill="Machine Learning") is False
+
+
+# ── Skill-relevance gate on "Demonstrated" (Codex must-fix regressions) ────────
+#
+# A coherent implementation chain now requires the implementation body to be the
+# SELECTED skill's own work (read-time relevance), never just any strong grade.
+
+
+def _purpose_github_item(
+    *,
+    pid: str | None,
+    grade: str | None,
+    purpose_key: str | None = None,
+    snippet: str = "",
+    ml_signal: bool | None = None,
+) -> dict:
+    """A GitHub vault item carrying the trusted purpose/relevance inputs."""
+    item = _ml_github_item(pid=pid, grade=grade, snippet=snippet, ml_signal=ml_signal)
+    item["code_block_purpose_key"] = purpose_key
+    return item
+
+
+def test_coherent_chain_false_for_cross_skill_impl_body_in_devops_report() -> None:
+    """CROSS-SKILL REGRESSION: a real, executable ML training implementation body
+    plus a document AND a defense in the same project must NOT produce Demonstrated
+    for a DevOps report — model training is cross_skill_context for DevOps."""
+    items = [
+        _purpose_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            snippet="clf = LGBMClassifier()\nclf.fit(X_train, y_train)",
+        ),
+        _item("Document Proof", pid="proj-a"),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="DevOps") is False
+    status = _skill_status(
+        ["GitHub Proof", "Document Proof", "Project Defense"],
+        attached_count=3,
+        skill="DevOps",
+        has_implementation_body=_has_coherent_impl_chain(items, skill="DevOps"),
+    )
+    assert status == "Evidence observed"
+    # The SAME chain still demonstrates Machine Learning — relevance is per skill.
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is True
+
+
+def test_coherent_chain_false_for_frontend_ui_row_in_ml_report() -> None:
+    """A React risk-input form (frontend UI purpose) + document + defense can never
+    produce Demonstrated for Machine Learning — it is product UI context."""
+    items = [
+        _purpose_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            purpose_key="frontend_ui_component",
+            snippet="const RiskForm = () => {\n  return <form onSubmit={submit} />\n}",
+        ),
+        _item("Document Proof", pid="proj-a"),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is False
+    # For a React report the same row IS direct implementation → coherent chain.
+    assert _has_coherent_impl_chain(items, skill="React") is True
+
+
+def test_coherent_chain_relevance_blocks_even_when_grade_survives() -> None:
+    """Defense in depth: even a contradictory stale row whose grade survives via the
+    grade-time ML verdict is still blocked for the selected skill when its resolved
+    purpose is another skill's (API route shell → cross_skill_context for ML)."""
+    items = [
+        _purpose_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            purpose_key="api_route_shell",
+            ml_signal=True,
+        ),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is False
+
+
+def test_coherent_chain_ml_signal_row_without_snippet_stays_demonstrated() -> None:
+    """A canonical ML row whose raw snippet is not re-exposed at read time (purpose
+    unknown) but whose grade-time verdict proved executable ML stays a coherent
+    implementation chain for Machine Learning."""
+    items = [
+        _purpose_github_item(pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY, ml_signal=True),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is True
+
+
+def test_coherent_chain_python_language_skill_still_demonstrable() -> None:
+    """A real executable Python implementation body (language family → supporting
+    implementation relevance) still forms a coherent chain for a Python report."""
+    items = [
+        _purpose_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            snippet="clf = LGBMClassifier()\nclf.fit(X_train, y_train)",
+        ),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="Python") is True
+
+
+# ── Unknown/unmapped skill fail-closed (Codex blocker regressions) ─────────────
+#
+# An unknown/future IT skill (no family regex, no code profile) must FAIL CLOSED:
+# its relevance resolves to at most supporting_context, so an implementation_body
+# grade ALONE can never anchor a coherent chain or "Demonstrated". The grade-only
+# bypass (`skill_family(skill) == general → True`) is removed.
+
+
+def test_unknown_skill_impl_body_supporting_context_not_demonstrated() -> None:
+    """BLOCKER TEST 1: unknown skill + implementation_body whose relevance resolves
+    only to supporting_context → no coherent chain, capped at Evidence observed."""
+    items = [
+        _purpose_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            snippet=(
+                "def transfer_funds(a, b, amount):\n"
+                "    ledger.apply(a, b, amount)\n"
+                "    return ledger.balance(a)"
+            ),
+        ),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="Blockchain Development") is False
+    status = _skill_status(
+        ["GitHub Proof", "Project Defense"],
+        attached_count=2,
+        skill="Blockchain Development",
+        has_implementation_body=_has_coherent_impl_chain(
+            items, skill="Blockchain Development"
+        ),
+    )
+    assert status == "Evidence observed"
+
+
+def test_unknown_skill_impl_body_document_defense_not_demonstrated() -> None:
+    """BLOCKER TEST 2: unknown skill + implementation_body + document + defense
+    (three attached sources, same project) is still NOT Demonstrated — GitHub-backed
+    skills require direct skill relevance even when no code profile knows the name."""
+    items = [
+        _purpose_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            snippet="def handle(event):\n    queue.push(event)\n    return ack(event.id)",
+        ),
+        _item("Document Proof", pid="proj-a"),
+        _item("Project Defense", pid="proj-a"),
+    ]
+    assert _has_coherent_impl_chain(items, skill="Elixir") is False
+    status = _skill_status(
+        ["GitHub Proof", "Document Proof", "Project Defense"],
+        attached_count=3,
+        skill="Elixir",
+        has_implementation_body=_has_coherent_impl_chain(items, skill="Elixir"),
+    )
+    assert status == "Evidence observed"
+
+
+def test_unknown_skill_without_github_evidence_keeps_original_rule() -> None:
+    """A skill proven WITHOUT GitHub code (document + defense, e.g. Communication)
+    keeps the original multi-source demonstration rule — the implementation gate
+    only applies to code-backed claims."""
+    status = _skill_status(
+        ["Document Proof", "Project Defense"],
+        attached_count=2,
+        skill="Communication",
+        has_implementation_body=False,
+    )
+    assert status == "Demonstrated"
+
+
+def test_supporting_logic_never_anchors_demonstrated() -> None:
+    """BLOCKER TEST 6 (vault half): supporting_logic remains supporting — even with
+    an in-family purpose it is not an implementation body, so it can never anchor
+    a coherent chain / Demonstrated, for known AND unknown skills."""
+    for skill in ("React", "Blockchain Development"):
+        items = [
+            _purpose_github_item(
+                pid="proj-a",
+                grade="supporting_logic",
+                purpose_key="frontend_form_component",
+                snippet="const [risk, setRisk] = useState(0)",
+            ),
+            _item("Project Defense", pid="proj-a"),
+        ]
+        assert _has_coherent_impl_chain(items, skill=skill) is False
 
 
 def test_group_github_evidence_keeps_distinct_owner_repos_apart() -> None:
@@ -3091,3 +3287,295 @@ def test_code_role_fields_never_leak_raw_snippet_or_private_metadata(
         "prediction_inference", "deployment_serving", "repository_context",
         "unknown_needs_review",
     }
+
+
+# ── Code block purpose on Skill Report GitHub rows (block-level, never proof) ──
+
+from app.services.github_python_evidence_focus import (  # noqa: E402
+    CODE_BLOCK_PURPOSE_KEYS,
+    CODE_BLOCK_PURPOSE_LABELS,
+)
+
+
+def test_retraining_docstring_row_gets_specific_documentation_purpose(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # The manual-validation flagship: scripts/pipeline_retrain.py lines 2-20 is a
+    # module docstring describing the retraining pipeline. The row must say so —
+    # "Documentation describing retraining pipeline" — while staying weak.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="scripts/pipeline_retrain.py",
+        line_start=2,
+        line_end=20,
+        selection_reason="ML training call",
+        evidence_quality_grade=GRADE_COMMENT_OR_DOCSTRING,
+        code_snippet=(
+            '"""Retraining pipeline.\n\n'
+            "Reads the merged challenger dataset, runs spatial features +\n"
+            "preprocessing + LightGBM + threshold tuning, evaluates against the\n"
+            'champion, and writes artifacts/reports to GCS.\n"""'
+        ),
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["evidence_quality_grade"] == GRADE_COMMENT_OR_DOCSTRING
+    assert item["code_block_purpose_key"] == "retraining_documentation"
+    assert item["code_block_purpose_label"] == "Documentation describing retraining pipeline"
+    assert "not executable training code" in item["code_block_purpose_summary"]
+    # Grouped rows carry the same purpose fields for the frontend.
+    row = next(r for r in _grouped_rows(report) if r.get("file_path") == "scripts/pipeline_retrain.py")
+    assert row["code_block_purpose_label"] == "Documentation describing retraining pipeline"
+    assert row["code_block_purpose_summary"]
+    # Still weak / never primary, and the stale reason never surfaces.
+    assert item["evidence_quality_grade"] not in _STRONG_GRADES
+    assert item["selection_reason"] != "ML training call"
+    assert row["github_line_url"]
+
+
+def test_import_block_row_gets_imports_dependency_purpose(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # scripts/pipeline_retrain.py lines 29-47: imports/setup — the purpose says
+    # "Imports / dependency setup", never model training.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="scripts/pipeline_retrain.py",
+        line_start=29,
+        line_end=47,
+        selection_reason="ML training call",
+        evidence_quality_grade=GRADE_IMPORT_ONLY,
+        code_snippet="import pandas as pd\nfrom lightgbm import LGBMClassifier\n",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["code_block_purpose_key"] == "imports_dependencies"
+    assert item["code_block_purpose_label"] == "Imports / dependency setup"
+    assert "not implementation proof" in item["code_block_purpose_summary"]
+    assert item["evidence_quality_grade"] == GRADE_IMPORT_ONLY
+
+
+def test_training_body_row_gets_model_training_purpose_and_stays_primary(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="src/model/train.py",
+        line_start=19,
+        line_end=37,
+        selection_reason="ML training call",
+        evidence_quality_grade=GRADE_IMPLEMENTATION_BODY,
+        code_snippet="clf = LGBMClassifier(n_estimators=200)\nclf.fit(X_train, y_train)\n",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["evidence_quality_grade"] == GRADE_IMPLEMENTATION_BODY
+    assert item["code_block_purpose_key"] == "model_training"
+    assert item["code_block_purpose_label"] == "Model training"
+
+
+def test_deployment_only_row_purpose_reads_deployment_never_ml_implementation(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # Persisted as implementation_body but the trusted body is serving plumbing:
+    # the ML gate downgrades the grade, and the purpose reads deployment/serving.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="scripts/vertex_deploy.py",
+        line_start=85,
+        line_end=103,
+        selection_reason="ML model serving",
+        evidence_quality_grade=GRADE_IMPLEMENTATION_BODY,
+        code_snippet='uvicorn.run(app, host="0.0.0.0", port=8080)\n',
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["evidence_quality_grade"] != GRADE_IMPLEMENTATION_BODY
+    assert item["code_block_purpose_key"] == "deployment_serving"
+    assert item["code_block_purpose_label"] == "Deployment / serving"
+    assert "not ML" in item["code_block_purpose_summary"]
+
+
+def test_stale_ungraded_row_purpose_fails_closed_to_repository_context(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A legacy row with no trusted provenance and only a stale overclaiming
+    # reason: the purpose fails closed and the stale text never surfaces.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="legacy/model_pipeline.py",
+        line_start=1,
+        line_end=9,
+        selection_reason="ML training call",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["code_block_purpose_key"] == "repository_context"
+    assert item["code_block_purpose_label"] == "Repository-level context"
+    assert item["selection_reason"] != "ML training call"
+    row = next(r for r in _grouped_rows(report) if r.get("file_path") == "legacy/model_pipeline.py")
+    assert row["code_block_purpose_label"] == "Repository-level context"
+
+
+def test_purpose_fields_are_closed_vocabulary_and_never_leak_raw_data(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # Purpose fields are enum-derived strings from the closed vocabulary; the
+    # payload never carries the raw provenance snippet or secret metadata.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="scripts/pipeline_retrain.py",
+        line_start=2,
+        line_end=20,
+        evidence_quality_grade=GRADE_COMMENT_OR_DOCSTRING,
+        code_snippet='"""Retraining pipeline SECRET_DOC_MARKER."""',
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    import json
+
+    payload = json.dumps(report)
+    assert "SECRET_DOC_MARKER" not in payload
+    assert "should-never-leak" not in payload
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["code_block_purpose_key"] in set(CODE_BLOCK_PURPOSE_KEYS)
+    assert item["code_block_purpose_label"] in set(CODE_BLOCK_PURPOSE_LABELS.values())
+
+
+# ── Skill relevance on Skill Report GitHub rows (selected-skill relation) ─────
+
+from app.services.github_python_evidence_focus import (  # noqa: E402
+    SKILL_RELEVANCE_KEYS,
+)
+
+
+def test_training_row_reads_direct_ml_relevance_on_validated_strong_grade(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # Tree.py-style executable training body: for a Machine Learning report the
+    # relevance reads direct implementation — computed at read time, in the
+    # closed vocabulary, alongside (never instead of) the validated grade.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="Tree.py",
+        line_start=13,
+        line_end=72,
+        selection_reason="ML training call",
+        evidence_quality_grade=GRADE_IMPLEMENTATION_BODY,
+        code_snippet=(
+            "model = DecisionTreeClassifier(max_depth=5)\n"
+            "model.fit(X_train, y_train)\n"
+        ),
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["evidence_quality_grade"] == GRADE_IMPLEMENTATION_BODY
+    assert item["code_block_purpose_key"] == "model_training"
+    assert item["skill_relevance_key"] == "direct_implementation"
+    assert item["skill_relevance_label"] == "Direct Machine Learning implementation evidence"
+    assert "directly implements Machine Learning" in item["skill_relevance_summary"]
+    # Grouped rows carry the same relevance fields for the frontend.
+    row = next(r for r in _grouped_rows(report) if r.get("file_path") == "Tree.py")
+    assert row["skill_relevance_key"] == "direct_implementation"
+    assert row["skill_relevance_label"] == "Direct Machine Learning implementation evidence"
+
+
+def test_docstring_and_import_rows_read_context_relevance_never_direct(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="scripts/pipeline_retrain.py",
+        line_start=2,
+        line_end=20,
+        selection_reason="ML training call",
+        evidence_quality_grade=GRADE_COMMENT_OR_DOCSTRING,
+        code_snippet='"""Retraining pipeline for the champion model."""',
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["skill_relevance_key"] == "documentation_context"
+    assert (
+        item["skill_relevance_label"]
+        == "Documentation context, not executable Machine Learning proof"
+    )
+    assert item["evidence_quality_grade"] not in _STRONG_GRADES
+
+
+def test_stale_stored_relevance_is_recomputed_at_read_time(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # HARD RULE: a stored (stale/forged) "direct_implementation" relevance riding
+    # on an import-only row is discarded — read time recomputes from the resolved
+    # purpose × validated grade, and imports are setup context for every skill.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="scripts/pipeline_retrain.py",
+        line_start=29,
+        line_end=47,
+        selection_reason="ML training call",
+        evidence_quality_grade=GRADE_IMPORT_ONLY,
+        code_snippet="import pandas as pd\nfrom lightgbm import LGBMClassifier\n",
+        skill_relevance_key="direct_implementation",
+        skill_relevance_label="Direct Machine Learning implementation evidence",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["skill_relevance_key"] == "setup_context"
+    assert item["skill_relevance_label"] == "Setup context, not Machine Learning implementation proof"
+
+
+def test_relevance_is_relative_to_the_reports_selected_skill(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # The same executable training row filed under "Python": in the Python report
+    # it reads as supporting language evidence, never as a direct-Python claim.
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Python",
+        file_path="src/model/train.py",
+        line_start=19,
+        line_end=37,
+        selection_reason="ML training call",
+        evidence_quality_grade=GRADE_IMPLEMENTATION_BODY,
+        code_snippet="clf = LGBMClassifier(n_estimators=200)\nclf.fit(X_train, y_train)\n",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "python")
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["code_block_purpose_key"] == "model_training"
+    assert item["skill_relevance_key"] == "supporting_implementation"
+    assert item["skill_relevance_label"] == "Supporting Python implementation evidence"
+
+
+def test_relevance_fields_are_closed_vocabulary_and_never_leak_raw_data(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    _seed_skill_evidence(
+        mem_store,
+        skill_name="Machine Learning",
+        file_path="scripts/pipeline_retrain.py",
+        line_start=2,
+        line_end=20,
+        evidence_quality_grade=GRADE_COMMENT_OR_DOCSTRING,
+        code_snippet='"""Retraining pipeline SECRET_REL_MARKER."""',
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning")
+    import json
+
+    payload = json.dumps(report)
+    assert "SECRET_REL_MARKER" not in payload
+    assert "should-never-leak" not in payload
+    item = next(i for i in _github_items(report) if i.get("display_mode") == "code_line")
+    assert item["skill_relevance_key"] in set(SKILL_RELEVANCE_KEYS)
+    # Rendered labels never carry template braces or markup.
+    for banned in ("{", "}", "<", ">"):
+        assert banned not in item["skill_relevance_label"]
+        assert banned not in item["skill_relevance_summary"]

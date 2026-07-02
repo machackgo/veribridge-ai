@@ -749,6 +749,34 @@ describe("SkillReportView — flat legacy weak GitHub code_line rows", () => {
     expect(screen.getByTestId("github-code-role-label")).toHaveTextContent("Repository-level context")
     expect(screen.getByTestId("github-needs-review-badge")).toBeInTheDocument()
   })
+
+  // ── Block-level purpose labels (preferred over the broader role label) ──────
+
+  it("prefers code_block_purpose_label over code_role_label on a weak flat row", () => {
+    renderWeakFlat({
+      code_block_purpose_key: "retraining_documentation",
+      code_block_purpose_label: "Documentation describing retraining pipeline",
+      code_block_purpose_summary:
+        "This header describes the planned retraining workflow and artifacts, but it is not executable training code.",
+    })
+    expect(screen.getByTestId("github-code-role-label")).toHaveTextContent(
+      "Documentation describing retraining pipeline",
+    )
+    // The short safe purpose summary renders as helper text — never raw code.
+    const summary = screen.getByTestId("github-purpose-summary")
+    expect(summary).toHaveTextContent("not executable training code")
+    expect(summary.textContent).not.toMatch(/import |def |\.fit\(/)
+    // Still a Needs-review signal with the code-line link — never promoted.
+    expect(screen.getByTestId("github-needs-review-badge")).toBeInTheDocument()
+    expect(screen.queryByTestId("github-precise-badge")).not.toBeInTheDocument()
+    expect(screen.getByTestId("evidence-public-link")).toHaveTextContent("View code lines →")
+  })
+
+  it("falls back to code_role_label when the purpose label is missing, without a summary line", () => {
+    renderWeakFlat({ code_block_purpose_label: null, code_block_purpose_summary: null })
+    expect(screen.getByTestId("github-code-role-label")).toHaveTextContent("Documentation / usage header")
+    expect(screen.queryByTestId("github-purpose-summary")).not.toBeInTheDocument()
+  })
 })
 
 // ── Missing evidence_quality_grade fails closed (never "Precise code evidence") ─
@@ -1874,6 +1902,137 @@ describe("SkillReportView — connected chain GitHub grouped by repository", () 
     expect(weak).not.toHaveTextContent("Model serving inference handler")
   })
 
+  // ── Block-level purpose labels on grouped rows (preferred, never promoting) ───
+
+  it("renders the code_block_purpose_label on weak grouped rows, preferred over the role label", () => {
+    const chain = groupedChain([
+      ghRow({
+        source_id: "p1",
+        label: "scripts/pipeline_retrain.py · lines 2-20",
+        file_path: "scripts/pipeline_retrain.py",
+        evidence_quality_grade: "comment_or_docstring",
+        code_role_key: "documentation_header",
+        code_role_label: "Documentation / usage header",
+        code_block_purpose_key: "retraining_documentation",
+        code_block_purpose_label: "Documentation describing retraining pipeline",
+        code_block_purpose_summary:
+          "This header describes the planned retraining workflow and artifacts, but it is not executable training code.",
+        selection_reason: "ML training call",
+      }),
+      ghRow({
+        source_id: "p2",
+        label: "scripts/pipeline_retrain.py · lines 29-47",
+        file_path: "scripts/pipeline_retrain.py",
+        evidence_quality_grade: "import_only",
+        code_role_key: "imports_setup",
+        code_role_label: "Imports / setup context",
+        code_block_purpose_key: "imports_dependencies",
+        code_block_purpose_label: "Imports / dependency setup",
+        code_block_purpose_summary:
+          "This block imports libraries used elsewhere; it is not implementation proof by itself.",
+      }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const weakRows = screen.getAllByTestId("standalone-github-weak-row")
+    expect(weakRows).toHaveLength(2)
+    // The purpose label wins over the broader role label.
+    expect(weakRows[0]).toHaveTextContent("Documentation describing retraining pipeline")
+    expect(weakRows[0]).not.toHaveTextContent("Documentation / usage header")
+    expect(weakRows[1]).toHaveTextContent("Imports / dependency setup")
+    // The short safe purpose summary rides as a hover tooltip (kept compact).
+    const purposes = screen.getAllByTestId("github-row-purpose")
+    expect(purposes[0]).toHaveAttribute("title", expect.stringContaining("not executable training code"))
+    // Still Needs review, never precise/primary, stale reason never surfaces.
+    expect(screen.getByTestId("github-weak-heading")).toHaveTextContent("Needs review")
+    const section = screen.getByTestId("chain-github")
+    expect(section).toHaveTextContent("GitHub code signals")
+    expect(section).not.toHaveTextContent("Code implementation")
+    expect(section).not.toHaveTextContent("Precise code evidence")
+    expect(section).not.toHaveTextContent("ML training call")
+    // Rows keep their safe location + "View code lines" links.
+    expect(weakRows[0]).toHaveTextContent("scripts/pipeline_retrain.py · lines 2-20")
+    expect(screen.getAllByText("View code lines →").length).toBeGreaterThanOrEqual(2)
+  })
+
+  it("weak grouped rows fall back to role label then grade label when the purpose is missing", () => {
+    const chain = groupedChain([
+      ghRow({
+        source_id: "f1",
+        label: "a.py · lines 1-5",
+        evidence_quality_grade: "comment_or_docstring",
+        code_role_label: "Documentation / usage header",
+      }),
+      ghRow({
+        source_id: "f2",
+        label: "b.py · lines 1-5",
+        file_path: "b.py",
+        evidence_quality_grade: "import_only",
+      }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const weakRows = screen.getAllByTestId("standalone-github-weak-row")
+    expect(weakRows[0]).toHaveTextContent("Documentation / usage header")
+    expect(weakRows[1]).toHaveTextContent("Imports / setup context")
+  })
+
+  it("primary and supporting rows still render their bands when purpose fields are present", () => {
+    const chain = groupedChain([
+      ghRow({
+        source_id: "pr1",
+        label: "src/model/train.py · lines 19-37",
+        file_path: "src/model/train.py",
+        evidence_quality_grade: "implementation_body",
+        code_block_purpose_key: "model_training",
+        code_block_purpose_label: "Model training",
+        selection_reason: "ML training call",
+      }),
+      ghRow({
+        source_id: "su1",
+        label: "src/model/eval.py · lines 10-22",
+        file_path: "src/model/eval.py",
+        evidence_quality_grade: "supporting_logic",
+        code_block_purpose_key: "model_evaluation",
+        code_block_purpose_label: "Evaluation / metrics",
+      }),
+      ghRow({
+        source_id: "wk1",
+        label: "scripts/pipeline_retrain.py · lines 29-47",
+        file_path: "scripts/pipeline_retrain.py",
+        evidence_quality_grade: "import_only",
+        code_block_purpose_label: "Imports / dependency setup",
+      }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    // Strong rows render in their bands; the strong row keeps its validated reason,
+    // and the supporting row falls back to its purpose label.
+    expect(screen.getByTestId("github-primary-band")).toHaveTextContent("ML training call")
+    expect(screen.getByTestId("github-supporting-band")).toHaveTextContent("Evaluation / metrics")
+    // The weak import row stays under Needs review with its purpose label.
+    expect(screen.getByTestId("github-weak-signals")).toHaveTextContent("Imports / dependency setup")
+    // A group WITH a primary body still titles as Code implementation.
+    expect(screen.getByTestId("chain-github")).toHaveTextContent("Code implementation")
+  })
+
+  it("collapses extra weak purpose-labelled rows behind '+N more weak code locations'", () => {
+    const rows = Array.from({ length: 5 }, (_, i) =>
+      ghRow({
+        source_id: `pw${i}`,
+        label: `w${i}.py · lines 1-5`,
+        file_path: `w${i}.py`,
+        evidence_quality_grade: "import_only",
+        code_block_purpose_label: "Imports / dependency setup",
+      }),
+    )
+    const chain = groupedChain(rows)
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    // First 3 visible, the rest behind the toggle.
+    expect(screen.getAllByTestId("standalone-github-weak-row")).toHaveLength(3)
+    const toggle = screen.getByTestId("github-weak-more")
+    expect(toggle).toHaveTextContent("+2 more weak code locations")
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId("standalone-github-weak-row")).toHaveLength(5)
+  })
+
   it("shows the first weak rows and collapses the rest behind '+N more weak code locations'", () => {
     const rows = Array.from({ length: 6 }, (_, i) =>
       ghRow({ source_id: `w${i}`, label: `w${i}.py · lines 1-5`, file_path: `w${i}.py`, evidence_quality_grade: "import_only" }),
@@ -2060,5 +2219,306 @@ describe("PublicPassportView — no private vault", () => {
     expect(screen.queryByTestId("vault-proof-list")).not.toBeInTheDocument()
     expect(screen.queryByTestId("vault-proof")).not.toBeInTheDocument()
     expect(screen.queryByTestId("vault-unattached-badge")).not.toBeInTheDocument()
+  })
+})
+
+// ── Skill relevance helpers (closed backend templates, never proof strength) ───
+//
+// ``skill_relevance_label`` explains how a block relates to the report's skill
+// ("Product UI context, not Machine Learning implementation"). Weak rows render
+// it as a compact helper; it never promotes a row out of Needs review.
+describe("SkillReportView — skill relevance helpers on GitHub rows", () => {
+  const WEAK_RELEVANCE_ITEM: SkillReport["github"][number] = {
+    ...GITHUB_ITEM,
+    source_id: "gh-weak-rel",
+    safe_location: "stroke-risk-prediction-app/page.tsx · lines 31-58",
+    safe_snippet: null,
+    file_path: "stroke-risk-prediction-app/page.tsx",
+    line_start: 31,
+    line_end: 58,
+    function_name: null,
+    display_mode: "code_line",
+    has_precise_line_evidence: true,
+    evidence_strength: "weak",
+    evidence_quality_grade: "repo_level_fallback",
+    code_role_label: "Repository-level context",
+    code_block_purpose_key: "frontend_ui_component",
+    code_block_purpose_label: "Frontend UI component",
+    code_block_purpose_summary: "This block is frontend UI code supporting the application.",
+    skill_relevance_key: "product_ui_context",
+    skill_relevance_label: "Product UI context, not Machine Learning implementation",
+    skill_relevance_summary:
+      "This is frontend/product UI around the application — context for Machine Learning, not implementation proof.",
+    selection_reason: "ML training call",
+    github_line_url:
+      "https://github.com/octocat/Hello-World/blob/main/stroke-risk-prediction-app/page.tsx#L31-L58",
+    repo_url: "https://github.com/octocat/Hello-World",
+    public_url:
+      "https://github.com/octocat/Hello-World/blob/main/stroke-risk-prediction-app/page.tsx#L31-L58",
+  }
+
+  function renderWeakItem(overrides: Partial<SkillReport["github"][number]> = {}) {
+    render(
+      <SkillReportView
+        report={skillReport({
+          github: [],
+          standalone_evidence: {
+            ...emptyStandalone(),
+            github: [{ ...WEAK_RELEVANCE_ITEM, ...overrides }],
+          },
+        })}
+      />,
+    )
+  }
+
+  it("renders the skill relevance helper on a weak UI-context row (UI ≠ ML implementation)", () => {
+    renderWeakItem()
+    const relevance = screen.getByTestId("github-skill-relevance")
+    expect(relevance).toHaveTextContent("Product UI context, not Machine Learning implementation")
+    expect(relevance).toHaveAttribute("title", expect.stringContaining("not implementation proof"))
+    // The purpose label still renders as the descriptive label.
+    expect(screen.getByTestId("github-code-role-label")).toHaveTextContent("Frontend UI component")
+    // Still Needs review — the relevance helper never promotes the row.
+    expect(screen.getByTestId("github-needs-review-badge")).toBeInTheDocument()
+    expect(screen.queryByTestId("github-precise-badge")).not.toBeInTheDocument()
+    // The stale overclaiming reason never surfaces.
+    expect(screen.queryByText(/ML training call/)).not.toBeInTheDocument()
+  })
+
+  it("omits the relevance helper when the backend did not provide one", () => {
+    renderWeakItem({ skill_relevance_key: null, skill_relevance_label: null, skill_relevance_summary: null })
+    expect(screen.queryByTestId("github-skill-relevance")).not.toBeInTheDocument()
+    expect(screen.getByTestId("github-needs-review-badge")).toBeInTheDocument()
+  })
+
+  // The frontend is fully generic: any purpose label from the backend's closed
+  // vocabulary renders as-is — new skill families (React sub-purposes, Docker
+  // instructions, geospatial purposes) need NO per-skill rendering changes.
+  it.each([
+    ["frontend_form_component", "Input form and form state handling"],
+    ["container_dependency_install", "Container dependency installation"],
+    ["geospatial_distance_calculation", "Distance / proximity calculation"],
+  ])("renders the specific %s purpose label instead of a generic one", (key, label) => {
+    renderWeakItem({
+      code_block_purpose_key: key,
+      code_block_purpose_label: label,
+      code_role_label: null,
+    })
+    expect(screen.getByTestId("github-code-role-label")).toHaveTextContent(label)
+    // Proof strength is untouched by the richer label.
+    expect(screen.getByTestId("github-needs-review-badge")).toBeInTheDocument()
+  })
+
+  function relChain(rows: SkillReportStandaloneGitHubRow[], rowMore = 0): SkillReportProjectChain {
+    return {
+      project_id: "proj-rel",
+      project_title: "Stroke Risk Prediction",
+      attached: true,
+      attached_status: "Attached to a VBR project",
+      sources: ["GitHub Proof"],
+      evidence_chain_summary: "ML is supported by GitHub implementation.",
+      github_evidence: [{ ...GITHUB_ITEM, source_id: rows[0]?.source_id ?? "gh-rel" }],
+      github_groups: [
+        {
+          repo_label: "octocat/Hello-World",
+          repo_url: "https://github.com/octocat/Hello-World",
+          repo_is_public: true,
+          row_more_count: rowMore,
+          rows,
+        },
+      ],
+      website_evidence: [],
+      document_correlations: [],
+      document_more_count: 0,
+      defense_evidence: [],
+      video_evidence: [],
+      limitations: [],
+    }
+  }
+
+  it("weak grouped rows show the compact relevance suffix; strong rows do not", () => {
+    const chain = relChain([
+      {
+        source_id: "s1",
+        label: "Tree.py · lines 13-72",
+        file_path: "Tree.py",
+        line_start: 13,
+        line_end: 72,
+        evidence_quality_grade: "implementation_body",
+        code_block_purpose_key: "model_training",
+        code_block_purpose_label: "Model training",
+        skill_relevance_key: "direct_implementation",
+        skill_relevance_label: "Direct Machine Learning implementation evidence",
+        selection_reason: "Decision tree training / splitting logic",
+        github_line_url: "https://github.com/octocat/Hello-World/blob/main/Tree.py#L13-L72",
+      } as SkillReportStandaloneGitHubRow,
+      {
+        source_id: "w1",
+        label: "stroke-risk-prediction-app/page.tsx · lines 31-58",
+        file_path: "stroke-risk-prediction-app/page.tsx",
+        line_start: 31,
+        line_end: 58,
+        evidence_quality_grade: "repo_level_fallback",
+        code_block_purpose_key: "frontend_ui_component",
+        code_block_purpose_label: "Frontend UI component",
+        skill_relevance_key: "product_ui_context",
+        skill_relevance_label: "Product UI context, not Machine Learning implementation",
+        skill_relevance_summary:
+          "This is frontend/product UI around the application — context for Machine Learning, not implementation proof.",
+        github_line_url:
+          "https://github.com/octocat/Hello-World/blob/main/stroke-risk-prediction-app/page.tsx#L31-L58",
+      } as SkillReportStandaloneGitHubRow,
+    ])
+    render(
+      <SkillReportView
+        report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })}
+      />,
+    )
+    // The weak UI row carries the compact italic relevance suffix + tooltip.
+    const suffixes = screen.getAllByTestId("github-row-skill-relevance")
+    expect(suffixes).toHaveLength(1)
+    expect(suffixes[0]).toHaveTextContent("Product UI context, not Machine Learning implementation")
+    expect(suffixes[0]).toHaveAttribute("title", expect.stringContaining("not implementation proof"))
+    // The strong Tree.py row keeps its validated precise reason — no suffix.
+    const strongRow = screen.getAllByTestId("standalone-github-row")[0]
+    expect(strongRow).toHaveTextContent("Decision tree training / splitting logic")
+    expect(strongRow).not.toHaveTextContent("Direct Machine Learning implementation evidence")
+    // The weak row stays under Needs review with its "View code lines" link.
+    expect(screen.getByTestId("github-weak-heading")).toHaveTextContent("Needs review")
+    expect(screen.getAllByText("View code lines →").length).toBeGreaterThanOrEqual(2)
+  })
+
+  it("keeps '+N more weak code locations' collapse behaviour when weak rows carry relevance helpers", () => {
+    // 4 weak rows against the GITHUB_BAND_CAP of 3 -> one collapses behind the toggle.
+    const weakRows = [1, 2, 3, 4].map(
+      (n) =>
+        ({
+          source_id: `w${n}`,
+          label: `mod_${n}.py · lines 1-5`,
+          file_path: `mod_${n}.py`,
+          evidence_quality_grade: "import_only",
+          code_block_purpose_label: "Imports / dependency setup",
+          skill_relevance_key: "setup_context",
+          skill_relevance_label: "Setup context, not Machine Learning implementation proof",
+          github_line_url: `https://github.com/octocat/Hello-World/blob/main/mod_${n}.py#L1-L5`,
+        }) as SkillReportStandaloneGitHubRow,
+    )
+    const chain = relChain(weakRows)
+    render(
+      <SkillReportView
+        report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })}
+      />,
+    )
+    // Visible weak rows carry the relevance helper; the remainder still collapses.
+    expect(screen.getAllByTestId("github-row-skill-relevance")).toHaveLength(3)
+    expect(
+      screen.getAllByTestId("github-row-skill-relevance")[0],
+    ).toHaveTextContent("Setup context, not Machine Learning implementation proof")
+    expect(screen.getByTestId("github-weak-more")).toHaveTextContent("+1 more weak code location")
+  })
+
+  it("demotes a cross-skill implementation_body row out of Primary implementation", () => {
+    // Codex must-fix regression: an implementation body whose skill relevance says
+    // "another skill's code" (cross_skill_context) must render under Needs review,
+    // never inside the Primary implementation band; the direct ML body stays primary.
+    const chain = relChain([
+      {
+        source_id: "s1",
+        label: "Tree.py · lines 13-72",
+        file_path: "Tree.py",
+        line_start: 13,
+        line_end: 72,
+        evidence_quality_grade: "implementation_body",
+        code_block_purpose_key: "model_training",
+        code_block_purpose_label: "Model training",
+        skill_relevance_key: "direct_implementation",
+        skill_relevance_label: "Direct Machine Learning implementation evidence",
+        selection_reason: "Decision tree training / splitting logic",
+        github_line_url: "https://github.com/octocat/Hello-World/blob/main/Tree.py#L13-L72",
+      } as SkillReportStandaloneGitHubRow,
+      {
+        source_id: "x1",
+        label: "app/page.tsx · lines 31-58",
+        file_path: "app/page.tsx",
+        line_start: 31,
+        line_end: 58,
+        evidence_quality_grade: "implementation_body",
+        code_block_purpose_key: "frontend_ui_component",
+        code_block_purpose_label: "Frontend UI component",
+        skill_relevance_key: "cross_skill_context",
+        skill_relevance_label: "Adjacent code context, not direct Machine Learning evidence",
+        github_line_url: "https://github.com/octocat/Hello-World/blob/main/app/page.tsx#L31-L58",
+      } as SkillReportStandaloneGitHubRow,
+    ])
+    render(
+      <SkillReportView
+        report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })}
+      />,
+    )
+    const primary = screen.getByTestId("github-primary-band")
+    expect(primary).toHaveTextContent("Tree.py · lines 13-72")
+    expect(primary).not.toHaveTextContent("app/page.tsx")
+    // The demoted row sits under Needs review, with its honest purpose + relevance.
+    const weakBand = screen.getByTestId("github-weak-signals")
+    expect(weakBand).toHaveTextContent("app/page.tsx · lines 31-58")
+    expect(weakBand).toHaveTextContent("Frontend UI component")
+    expect(weakBand).toHaveTextContent("Adjacent code context, not direct Machine Learning evidence")
+  })
+
+  it("demotes a product-UI implementation_body group entirely and keeps supporting rows honest", () => {
+    // A group whose ONLY strong rows are another skill's code renders no Primary
+    // band at all; a cross-skill supporting_logic row is also kept out of the
+    // Supporting band.
+    const chain = relChain([
+      {
+        source_id: "x1",
+        label: "app/page.tsx · lines 31-58",
+        file_path: "app/page.tsx",
+        evidence_quality_grade: "implementation_body",
+        code_block_purpose_label: "Frontend UI component",
+        skill_relevance_key: "product_ui_context",
+        skill_relevance_label: "Product UI context, not Machine Learning implementation",
+        github_line_url: "https://github.com/octocat/Hello-World/blob/main/app/page.tsx#L31-L58",
+      } as SkillReportStandaloneGitHubRow,
+      {
+        source_id: "x2",
+        label: "app/api-client.ts · lines 5-40",
+        file_path: "app/api-client.ts",
+        evidence_quality_grade: "supporting_logic",
+        code_block_purpose_label: "Frontend UI component",
+        skill_relevance_key: "cross_skill_context",
+        skill_relevance_label: "Adjacent code context, not direct Machine Learning evidence",
+        github_line_url: "https://github.com/octocat/Hello-World/blob/main/app/api-client.ts#L5-L40",
+      } as SkillReportStandaloneGitHubRow,
+    ])
+    render(
+      <SkillReportView
+        report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })}
+      />,
+    )
+    expect(screen.queryByTestId("github-primary-band")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("github-supporting-band")).not.toBeInTheDocument()
+    const weakBand = screen.getByTestId("github-weak-signals")
+    expect(weakBand).toHaveTextContent("app/page.tsx · lines 31-58")
+    expect(weakBand).toHaveTextContent("app/api-client.ts · lines 5-40")
+  })
+
+  it("keeps grade-based placement for strong rows without a relevance key (legacy payloads)", () => {
+    const chain = relChain([
+      {
+        source_id: "s1",
+        label: "train.py · lines 1-40",
+        file_path: "train.py",
+        evidence_quality_grade: "implementation_body",
+        selection_reason: "model training loop",
+        github_line_url: "https://github.com/octocat/Hello-World/blob/main/train.py#L1-L40",
+      } as SkillReportStandaloneGitHubRow,
+    ])
+    render(
+      <SkillReportView
+        report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })}
+      />,
+    )
+    expect(screen.getByTestId("github-primary-band")).toHaveTextContent("train.py · lines 1-40")
   })
 })

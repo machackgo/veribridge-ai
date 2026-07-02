@@ -264,8 +264,10 @@ function GitHubSnippet({ snippet }: { snippet: string }) {
  *   back to the repo URL unless the line URL is missing).
  * * ``code_line`` with a WEAK or missing grade → a "Needs review —
  *   repository-level signal" badge that KEEPS the safe file/line location, the
- *   descriptive ``code_role_label`` (grade-derived fallback when absent) and the
- *   "View code lines →" link — inspectable, but never implementation proof.
+ *   descriptive block label (``code_block_purpose_label``, else
+ *   ``code_role_label``, else a grade-derived fallback), the short safe purpose
+ *   summary when present, and the "View code lines →" link — inspectable, but
+ *   never implementation proof.
  * * ``repo_level`` → a "Repo-level support only" badge, the repo name, a clear
  *   limitation, and a "View repository →" link to ``repo_url`` — NO snippet, NO
  *   line range, and never implies precise implementation proof.
@@ -355,9 +357,26 @@ function GitHubEvidence({ item, ghLocation }: { item: SkillReportEvidenceItem; g
           )}
           <span data-testid="github-code-role-label" style={{ fontSize: 11, color: TOKEN.muted }}>
             {ghLocation ? "— " : ""}
-            {weakRowRoleLabel(item)}
+            {weakRowDescriptiveLabel(item)}
           </span>
         </div>
+        {item.code_block_purpose_summary && (
+          <p
+            data-testid="github-purpose-summary"
+            style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
+          >
+            {item.code_block_purpose_summary}
+          </p>
+        )}
+        {item.skill_relevance_label && (
+          <p
+            data-testid="github-skill-relevance"
+            title={item.skill_relevance_summary || undefined}
+            style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5, fontStyle: "italic" }}
+          >
+            {item.skill_relevance_label}
+          </p>
+        )}
         <SafeLink
           url={item.github_line_url ?? item.public_url}
           label={item.github_line_url ? "View code lines →" : "View on GitHub →"}
@@ -1032,6 +1051,44 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
 // repository-level signals" summary.
 const STRONG_GITHUB_GRADES = new Set(["implementation_body", "supporting_logic"])
 
+// Skill-relevance keys (closed backend vocabulary) that mark a block as the
+// REPORT's own implementation work. An implementation_body row may only sit
+// under "Primary implementation evidence" when its relevance agrees — a
+// cross-skill row (React UI code in a Machine Learning report), product-UI or
+// deployment context can never render as this skill's primary proof, no matter
+// how strong its grade. Rows WITHOUT a relevance key (older payloads) keep
+// their grade-based placement.
+const SKILL_IMPLEMENTATION_RELEVANCE = new Set(["direct_implementation", "supporting_implementation"])
+// Relevance keys that POSITIVELY mark a block as another skill's code or
+// non-code context — such rows are demoted to the Needs-review band even on a
+// strong grade (mirrors the backend's non-skill-code exclusion set).
+const NON_SKILL_CODE_RELEVANCE = new Set([
+  "cross_skill_context",
+  "product_ui_context",
+  "deployment_context",
+  "documentation_context",
+  "setup_context",
+])
+
+/** True when a STRONG-graded row must be demoted to Needs review because its
+ *  skill relevance says the code belongs to another skill / is context only. */
+function isDemotedByRelevance(row: {
+  evidence_quality_grade?: string | null
+  skill_relevance_key?: string | null
+}): boolean {
+  const key = row.skill_relevance_key
+  if (!key) return false // legacy payload without relevance → grade decides
+  if (isImplementationBody(row.evidence_quality_grade)) {
+    // Primary claims need the strict implementation allowlist.
+    return !SKILL_IMPLEMENTATION_RELEVANCE.has(key)
+  }
+  if (row.evidence_quality_grade === "supporting_logic") {
+    // Supporting claims are blocked only by a POSITIVE other-skill context.
+    return NON_SKILL_CODE_RELEVANCE.has(key)
+  }
+  return false
+}
+
 // Conservative, grade-derived role labels for WEAK repository-level rows. A weak
 // row must never echo its raw ``selection_reason`` (which can overclaim — e.g. "ML
 // training call", "Cloud deployment command") because it was NOT validated as an
@@ -1047,11 +1104,18 @@ const WEAK_GRADE_ROLE_LABEL: Record<string, string> = {
   route_decorator_only: "API route shell",
   repo_level_fallback: "Repository-level context",
 }
-function weakRowRoleLabel(row: {
+// Preference order for the descriptive label on a WEAK row: the block-level
+// ``code_block_purpose_label`` (the most specific safe explanation — "Documentation
+// describing retraining pipeline", "Imports / dependency setup"), else the broader
+// ``code_role_label``, else the conservative grade-derived fallback above. All
+// three are closed backend vocabularies — never the raw ``selection_reason``.
+function weakRowDescriptiveLabel(row: {
+  code_block_purpose_label?: string | null
   code_role_label?: string | null
   evidence_quality_grade?: string | null
 }): string {
   return (
+    row.code_block_purpose_label ||
     row.code_role_label ||
     (row.evidence_quality_grade && WEAK_GRADE_ROLE_LABEL[row.evidence_quality_grade]) ||
     "Repository-level context"
@@ -1073,7 +1137,11 @@ function isWeakGitHubRow(row: { evidence_quality_grade?: string | null }): boole
   return !!row.evidence_quality_grade && !STRONG_GITHUB_GRADES.has(row.evidence_quality_grade)
 }
 function groupsHaveImplementationBody(groups?: SkillReportStandaloneGitHubGroup[] | null): boolean {
-  return !!groups?.some((g) => g.rows.some((r) => isImplementationBody(r.evidence_quality_grade)))
+  // A cross-skill / context implementation body (relevance-demoted) does not let
+  // the section claim "Code implementation" for THIS skill.
+  return !!groups?.some((g) =>
+    g.rows.some((r) => isImplementationBody(r.evidence_quality_grade) && !isDemotedByRelevance(r))
+  )
 }
 /** Use the honest "GitHub code signals" title whenever NO group isolates a primary
  *  implementation body — whether the rows are weak-graded OR fully ungraded (legacy).
@@ -1088,20 +1156,47 @@ function useSignalsTitle(groups?: SkillReportStandaloneGitHubGroup[] | null): bo
  *  ``weak`` rows are repository-level signals — rendered muted, never framed as
  *  precise "View code lines" implementation proof. */
 function StandaloneGitHubRowItem({ row, weak = false }: { row: SkillReportStandaloneGitHubRow; weak?: boolean }) {
-  // Weak rows show the conservative role label ("Documentation / usage header",
-  // "Imports / setup context", …) — never the raw ``selection_reason`` (which can
-  // overclaim). They still expose the safe file/line label and a "View code
-  // lines" link so the location is inspectable, but they are muted and never
-  // framed as primary implementation proof. Strong rows keep their validated
-  // precise reason, falling back to the role label when no reason is stored.
-  const reason = weak ? weakRowRoleLabel(row) : row.selection_reason || row.code_role_label
+  // Weak rows show the safest specific descriptive label — the block-level
+  // purpose ("Documentation describing retraining pipeline", "Imports /
+  // dependency setup"), else the broader role, else a grade-derived fallback —
+  // never the raw ``selection_reason`` (which can overclaim). They still expose
+  // the safe file/line label and a "View code lines" link so the location is
+  // inspectable, but they are muted and never framed as primary implementation
+  // proof. Strong rows keep their validated precise reason, falling back to the
+  // purpose/role labels when no reason is stored. The short purpose summary
+  // (a closed safe sentence, never code) rides as a hover tooltip so rows stay
+  // compact and recruiter-readable.
+  const reason = weak
+    ? weakRowDescriptiveLabel(row)
+    : row.selection_reason || row.code_block_purpose_label || row.code_role_label
   return (
     <div
       data-testid={weak ? "standalone-github-weak-row" : "standalone-github-row"}
       style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}
     >
       <Mono style={{ fontSize: 12, color: weak ? TOKEN.muted : TOKEN.inkSoft }}>{row.label}</Mono>
-      {reason && <span style={{ fontSize: 11, color: TOKEN.muted }}>— {reason}</span>}
+      {reason && (
+        <span
+          data-testid="github-row-purpose"
+          title={row.code_block_purpose_summary || undefined}
+          style={{ fontSize: 11, color: TOKEN.muted }}
+        >
+          — {reason}
+        </span>
+      )}
+      {weak && row.skill_relevance_label && (
+        // Compact skill-relevance helper on WEAK rows only ("Product UI context,
+        // not Machine Learning implementation") — a closed backend template, so a
+        // weak row honestly states its relation to the report's skill without
+        // adding a paragraph per row. Strong rows keep their validated reason.
+        <span
+          data-testid="github-row-skill-relevance"
+          title={row.skill_relevance_summary || undefined}
+          style={{ fontSize: 11, color: TOKEN.muted, fontStyle: "italic" }}
+        >
+          · {row.skill_relevance_label}
+        </span>
+      )}
       <SafeLink
         url={row.github_line_url ?? row.public_url}
         label={weak && !row.github_line_url ? "View on GitHub →" : "View code lines →"}
@@ -1206,7 +1301,8 @@ function WeakGitHubSignals({ rows }: { rows: SkillReportStandaloneGitHubRow[] })
         Needs review — {rows.length} weak/repository-level signal{rows.length === 1 ? "" : "s"}
       </span>
       <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
-        Mostly imports, comments, configuration, or endpoint scaffolding — not primary implementation proof.
+        Mostly imports, comments, configuration, endpoint scaffolding, or code for a different skill — not
+        primary implementation proof for this skill.
       </p>
       {visible.map((row, i) => (
         <StandaloneGitHubRowItem key={`${row.source_id}-${row.label}-${i}`} row={row} weak />
@@ -1239,18 +1335,32 @@ function GitHubGroupCard({
   const [expanded, setExpanded] = useState(false)
   // Split this repo's rows into quality bands so weak repository-level signals
   // (imports/comments/config/route-decorator) never render beside real code as if
-  // they were implementation proof. Primary = implementation_body; Supporting =
-  // supporting_logic; the rest collapse into a "Needs review" summary.
-  const primaryRows = group.rows.filter((r) => isImplementationBody(r.evidence_quality_grade))
-  const supportingRows = group.rows.filter((r) => r.evidence_quality_grade === "supporting_logic")
+  // they were implementation proof. Primary = implementation_body AND
+  // skill-relevant; Supporting = supporting_logic not positively cross-skill;
+  // strong rows whose RELEVANCE marks them as another skill's code (a React form
+  // in a Machine Learning report) are demoted to Needs review; the rest collapse
+  // into the "Needs review" summary.
+  const primaryRows = group.rows.filter(
+    (r) => isImplementationBody(r.evidence_quality_grade) && !isDemotedByRelevance(r)
+  )
+  const supportingRows = group.rows.filter(
+    (r) => r.evidence_quality_grade === "supporting_logic" && !isDemotedByRelevance(r)
+  )
+  const relevanceDemotedRows = group.rows.filter((r) => isDemotedByRelevance(r))
   const explicitWeakRows = group.rows.filter((r) => isWeakGitHubRow(r))
   const ungradedRows = group.rows.filter((r) => !r.evidence_quality_grade)
   // "Only fail closed when mixed": a MIXED group (at least one graded row) demotes
   // its ungraded rows into the Needs-review band — an unvalidated legacy line can
   // never sit under "Code implementation" beside real graded evidence. A
   // FULLY-ungraded (legacy) group keeps the prior flat "+N more" list unchanged.
-  const hasGraded = primaryRows.length > 0 || supportingRows.length > 0 || explicitWeakRows.length > 0
-  const needsReviewRows = hasGraded ? [...explicitWeakRows, ...ungradedRows] : explicitWeakRows
+  const hasGraded =
+    primaryRows.length > 0 ||
+    supportingRows.length > 0 ||
+    explicitWeakRows.length > 0 ||
+    relevanceDemotedRows.length > 0
+  const needsReviewRows = hasGraded
+    ? [...relevanceDemotedRows, ...explicitWeakRows, ...ungradedRows]
+    : explicitWeakRows
   const legacyRows = hasGraded ? [] : ungradedRows
   // Legacy flat "+N more" expansion — ONLY for a fully-ungraded legacy group.
   const moreCount = group.row_more_count

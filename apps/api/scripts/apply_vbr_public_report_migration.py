@@ -68,15 +68,20 @@ params = _parse_pg_url(database_url)
 
 # The direct db.<ref>.supabase.co host resolves here; try it first, then the
 # pooler as a fallback (pooler username format is postgres.<project-ref>).
-pooler_host = "aws-0-us-east-1.pooler.supabase.com"
+# Newer Supabase projects live behind the ``aws-1-…`` pooler generation (the
+# old ``aws-0-…`` host rejects their tenant), so both generations are attempted.
 ref = params["host"].removeprefix("db.").split(".supabase.co")[0]
 pooler_user = f"postgres.{ref}" if ref else params["user"]
 
 connect_attempts = [
     {"host": params["host"], "port": params["port"], "user": params["user"]},
-    {"host": pooler_host, "port": 5432, "user": pooler_user},
-    {"host": pooler_host, "port": 6543, "user": pooler_user},
 ]
+for pooler_host in (
+    "aws-1-us-east-1.pooler.supabase.com",
+    "aws-0-us-east-1.pooler.supabase.com",
+):
+    connect_attempts.append({"host": pooler_host, "port": 5432, "user": pooler_user})
+    connect_attempts.append({"host": pooler_host, "port": 6543, "user": pooler_user})
 
 conn = None
 for attempt in connect_attempts:

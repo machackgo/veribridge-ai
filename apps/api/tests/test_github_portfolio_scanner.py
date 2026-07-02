@@ -803,6 +803,102 @@ class TestImportPipeline:
         assert len(result.skipped) == 0
 
 
+# ── Owner/repo-scoped trusted-provenance refresh for existing rows ─────────────
+#
+# Stale rows imported BEFORE the trusted-provenance table (migration 053) are
+# duplicate-skipped by the importer, so they could never gain trusted grades /
+# purpose labels. ``refresh_provenance=True`` re-stamps ONLY the service-role
+# provenance for the user's own matching row — the user-owned skill_evidence row
+# is never modified, deleted or re-created, and dry-run only reports.
+
+class TestProvenanceRefresh:
+    def _existing_row_db(self, candidate) -> dict:
+        return {
+            "skill_evidence": {
+                "ev-1": {
+                    "id": "ev-1",
+                    "user_id": "u1",
+                    "skill_name": candidate.skill_name,
+                    "repository_url": candidate.repo_url,
+                    "file_path": candidate.file_path,
+                    "line_start": candidate.line_start,
+                    "line_end": candidate.line_end,
+                    "metadata": {"import_key": candidate.import_key},
+                }
+            }
+        }
+
+    def _graded_candidate(self, **over):
+        cand = _make_candidate(user_id="u1", **over)
+        cand.evidence_quality_grade = "implementation_body"
+        cand.code_snippet = "clf = DecisionTreeClassifier()\nclf.fit(X_train, y_train)"
+        cand.focused_start_line = 13
+        cand.focused_end_line = 72
+        cand.focused_reason = "model training body"
+        return cand
+
+    def test_default_behaviour_still_skips_duplicates_without_refresh(self):
+        cand = self._graded_candidate()
+        db = self._existing_row_db(cand)
+        result = import_candidates(db, "u1", [cand], dry_run=False)
+        assert len(result.skipped) == 1
+        assert result.refreshed == []
+        assert TRUSTED_ANALYSIS_TABLE not in db  # nothing stamped
+
+    def test_refresh_dry_run_reports_but_writes_nothing(self):
+        cand = self._graded_candidate()
+        db = self._existing_row_db(cand)
+        result = import_candidates(db, "u1", [cand], dry_run=True, refresh_provenance=True)
+        assert len(result.refreshed) == 1
+        assert "would refresh" in result.refreshed[0]
+        assert result.skipped == [] and result.created == []
+        assert TRUSTED_ANALYSIS_TABLE not in db  # dry-run: no provenance written
+        assert len(db["skill_evidence"]) == 1  # evidence untouched
+
+    def test_refresh_stamps_provenance_for_existing_row_only(self):
+        cand = self._graded_candidate()
+        db = self._existing_row_db(cand)
+        before = dict(db["skill_evidence"]["ev-1"])
+        result = import_candidates(db, "u1", [cand], dry_run=False, refresh_provenance=True)
+        assert len(result.refreshed) == 1 and "ev-1" in result.refreshed[0]
+        assert result.created == [] and result.skipped == []
+        # Provenance stamped against the EXISTING evidence id (identity preserved).
+        stamped = db[TRUSTED_ANALYSIS_TABLE]["ev-1"]
+        assert stamped["skill_evidence_id"] == "ev-1"
+        assert stamped["user_id"] == "u1"
+        assert stamped["evidence_quality_grade"] == "implementation_body"
+        # The user-owned evidence row itself is byte-for-byte untouched.
+        assert db["skill_evidence"]["ev-1"] == before
+
+    def test_refresh_is_owner_scoped_never_touches_other_users_rows(self):
+        cand = self._graded_candidate()
+        db = self._existing_row_db(cand)
+        # Same location, DIFFERENT owner — must never be matched or stamped.
+        db["skill_evidence"]["ev-other"] = {
+            **db["skill_evidence"]["ev-1"],
+            "id": "ev-other",
+            "user_id": "someone-else",
+        }
+        import_candidates(db, "u1", [cand], dry_run=False, refresh_provenance=True)
+        assert "ev-1" in db[TRUSTED_ANALYSIS_TABLE]
+        assert "ev-other" not in db[TRUSTED_ANALYSIS_TABLE]
+
+    def test_refresh_without_scanner_provenance_fails_closed_to_skip(self):
+        cand = _make_candidate(user_id="u1")  # no grade, no snippet
+        db = self._existing_row_db(cand)
+        result = import_candidates(db, "u1", [cand], dry_run=False, refresh_provenance=True)
+        assert len(result.skipped) == 1
+        assert result.refreshed == []
+        assert TRUSTED_ANALYSIS_TABLE not in db
+
+    def test_refresh_new_candidate_is_still_created_normally(self):
+        cand = self._graded_candidate()
+        db = {"skill_evidence": {}}
+        result = import_candidates(db, "u1", [cand], dry_run=True, refresh_provenance=True)
+        assert len(result.created) == 1
+        assert result.refreshed == []
+
+
 # ── Portfolio scanner (end-to-end with mock) ────────────────────────────────────
 
 class TestPortfolioScanner:
@@ -1551,5 +1647,68 @@ class TestScannerCodeRoleClassification:
         assert payload["code_role_key"] == ROLE_MODEL_TRAINING
         assert payload["code_role_label"] == "Model training context"
         # No raw snippet/provenance rides out on the payload surface.
+        assert "code_snippet" not in payload
+        assert "safe_excerpt" not in payload
+
+
+# ── Code block purpose classification on scanner candidates ────────────────────
+
+from app.services.github_python_evidence_focus import (  # noqa: E402
+    PURPOSE_IMPORTS_DEPENDENCIES,
+    PURPOSE_MODEL_TRAINING,
+    describe_code_block_purpose,
+)
+
+
+class TestScannerCodeBlockPurposeClassification:
+    _USER = "00000000-0000-0000-0000-0000000000cf"
+
+    def test_training_body_candidate_gets_model_training_purpose(self):
+        scanner = PortfolioScanner(github_client=None)  # type: ignore[arg-type]
+        repo = _make_repo(name="boston-accident-risk", owner="alice")
+        candidates = scanner._extract_candidates_from_file(
+            repo, "main", "src/model/train.py", _BOSTON_TRAIN_SOURCE,
+            ["Machine Learning"], None,
+        )
+        assert candidates
+        cand = candidates[0]
+        assert cand.code_block_purpose_key == PURPOSE_MODEL_TRAINING
+        assert describe_code_block_purpose(cand.code_block_purpose_key) == "Model training"
+
+    def test_weak_import_candidate_purpose_follows_grade_not_reason(self):
+        # An import-only window keeps its honest imports purpose even with an
+        # ML-sounding detection reason.
+        scanner = PortfolioScanner(github_client=None)  # type: ignore[arg-type]
+        repo = _make_repo(name="stroke-prediction", owner="alice")
+        cand = scanner._make_candidate(
+            repo, "main", "scripts/retrain.py", 1, 3,
+            "Machine Learning", "ML training call", None,
+            content="import pandas as pd\nfrom lightgbm import LGBMClassifier\nimport joblib\n",
+        )
+        assert cand.evidence_quality_grade == GRADE_IMPORT_ONLY
+        assert cand.code_block_purpose_key == PURPOSE_IMPORTS_DEPENDENCIES
+        assert describe_code_block_purpose(cand.code_block_purpose_key) == "Imports / dependency setup"
+
+    def test_import_pipeline_carries_purpose_through_to_canonical_adapter(self):
+        # E2E: scan-time purpose → import → protected provenance → canonical
+        # adapter rows expose the purpose key/label/summary for the report layer.
+        scanner = PortfolioScanner(github_client=None)  # type: ignore[arg-type]
+        repo = _make_repo(name="boston-accident-risk", owner="alice")
+        candidates = scanner._extract_candidates_from_file(
+            repo, "main", "src/model/train.py", _BOSTON_TRAIN_SOURCE,
+            ["Machine Learning"], None,
+        )
+        db: dict = {"skill_evidence": {}}
+        result = import_candidates(db, self._USER, candidates[:1], dry_run=False)
+        assert result.created, result.errors
+        evs = collect_canonical_github_skill_evidence(db, self._USER)
+        assert evs
+        assert evs[0].code_block_purpose_key == PURPOSE_MODEL_TRAINING
+        assert evs[0].code_block_purpose_label == "Model training"
+        payload = evs[0].to_dict()
+        assert payload["code_block_purpose_key"] == PURPOSE_MODEL_TRAINING
+        assert payload["code_block_purpose_label"] == "Model training"
+        assert payload["code_block_purpose_summary"]
+        # Still no raw snippet/provenance on the payload surface.
         assert "code_snippet" not in payload
         assert "safe_excerpt" not in payload

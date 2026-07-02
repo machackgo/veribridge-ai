@@ -151,11 +151,35 @@ def test_weak_graded_precise_line_is_not_precise_code() -> None:
 
 
 def test_implementation_body_grade_is_primary_precise_code() -> None:
-    art = normalize_report_item(_gh_code_item(evidence_quality_grade="implementation_body"))
+    # Hydrated rows always carry the read-time ``skill_relevance_key``; a
+    # skill-relevant implementation body is primary GitHub proof.
+    art = normalize_report_item(
+        _gh_code_item(
+            evidence_quality_grade="implementation_body",
+            skill_relevance_key="direct_implementation",
+        )
+    )
     assert art is not None
     assert art.proof_strength == STRENGTH_PRECISE_CODE
     assert has_precise_code([art])
     assert has_implementation_body([art]), "an implementation body is primary GitHub proof"
+    assert art.metadata["skill_relevance_key"] == "direct_implementation"
+
+
+def test_implementation_body_without_skill_relevance_fails_closed() -> None:
+    # Codex must-fix regression: an implementation body whose relevance marks it
+    # as ANOTHER skill's code (cross_skill_context), product UI context, or one
+    # with no resolved relevance at all is NEVER primary proof for this skill.
+    for relevance in (None, "cross_skill_context", "product_ui_context", "deployment_context"):
+        art = normalize_report_item(
+            _gh_code_item(
+                evidence_quality_grade="implementation_body",
+                skill_relevance_key=relevance,
+            )
+        )
+        assert art is not None
+        assert art.proof_strength == STRENGTH_PRECISE_CODE
+        assert not has_implementation_body([art]), relevance
 
 
 def test_supporting_logic_grade_is_precise_but_not_primary_body() -> None:

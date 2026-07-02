@@ -42,6 +42,7 @@ from typing import Any
 
 from app.services.github_python_evidence_focus import (
     GRADE_IMPLEMENTATION_BODY,
+    is_skill_implementation_relevance,
     is_weak_grade,
 )
 from app.services.project_defense_evidence_chips import _sanitize_transcript_text
@@ -96,6 +97,12 @@ _GITHUB_META_KEYS = (
     # supporting_logic / … / repo_level_fallback). Carried so the Synthesis Agent
     # can distinguish primary implementation code from weaker precise lines.
     "evidence_quality_grade",
+    # Closed-vocabulary semantic keys resolved at hydration against the report's
+    # selected skill (never stored text): what the block does, and how it relates
+    # to THIS skill. Carried so the Synthesis Agent can require skill-relevant
+    # implementation before treating a body as primary proof.
+    "code_block_purpose_key",
+    "skill_relevance_key",
 )
 
 __all__ = [
@@ -485,18 +492,23 @@ def has_precise_code(artifacts: list[NormalizedEvidenceArtifact]) -> bool:
 
 
 def has_implementation_body(artifacts: list[NormalizedEvidenceArtifact]) -> bool:
-    """True when any precise GitHub artifact is a real implementation *body*.
+    """True when any precise GitHub artifact is a real, SKILL-RELEVANT
+    implementation *body*.
 
     The strongest GitHub proof band: a located function/method/class body (Smart
     Evidence grade ``implementation_body``), as opposed to merely ``supporting_logic``
-    or a weaker precise line. Used by the Synthesis Agent to decide whether GitHub
-    evidence is *primary* implementation proof or only *supporting* code, so it
-    never over-claims when only supporting/weak GitHub evidence exists.
+    or a weaker precise line — AND its hydration-time ``skill_relevance_key`` must
+    mark it as the selected skill's own implementation work. A cross-skill
+    implementation row (React UI code in a Machine Learning report), product-UI /
+    deployment context, or a row with no resolved relevance at all FAILS CLOSED, so
+    the Synthesis Agent never treats code for a different skill as *primary*
+    implementation proof for this one.
     """
     return any(
         a.source_type == SOURCE_GITHUB
         and a.proof_strength == STRENGTH_PRECISE_CODE
         and a.metadata.get("evidence_quality_grade") == GRADE_IMPLEMENTATION_BODY
+        and is_skill_implementation_relevance(a.metadata.get("skill_relevance_key"))
         for a in artifacts
     )
 

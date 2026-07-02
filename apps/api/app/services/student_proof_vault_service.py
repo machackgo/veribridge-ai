@@ -53,12 +53,22 @@ from app.services.github_canonical_skill_evidence_adapter import (
 from app.services.github_python_evidence_focus import (
     GRADE_IMPLEMENTATION_BODY,
     GRADE_REPO_LEVEL_FALLBACK,
+    PURPOSE_REPOSITORY_CONTEXT,
+    RELEVANCE_CONTEXT_ONLY,
     ROLE_REPOSITORY_CONTEXT,
+    classify_code_block_purpose,
     classify_code_role,
+    classify_skill_relevance,
+    code_block_purpose_summary,
+    describe_code_block_purpose,
     describe_code_role,
+    describe_skill_relevance,
+    effective_code_block_purpose,
     effective_code_role,
+    skill_relevance_summary,
     effective_evidence_grade,
     grade_rank,
+    is_skill_implementation_relevance,
     is_strong_grade,
     safe_selection_reason,
 )
@@ -266,6 +276,18 @@ _LOCATOR_KEYS = (
     # strength; the grade above still governs that.
     "code_role_key",
     "code_role_label",
+    # Block-level PURPOSE (finer than the role): what THIS exact block appears
+    # to do, as a closed safe key/label/summary ("Documentation describing
+    # retraining pipeline", "Imports / dependency setup"). Never proof strength.
+    "code_block_purpose_key",
+    "code_block_purpose_label",
+    "code_block_purpose_summary",
+    # SKILL RELEVANCE relative to the skill the row is filed under (closed
+    # template key/label/summary, recomputed at read time against the report's
+    # selected skill). Never proof strength.
+    "skill_relevance_key",
+    "skill_relevance_label",
+    "skill_relevance_summary",
     # Grade-time ML verdict from the trusted provenance body (tri-state bool / None).
     # Drives read-time ML semantic validation without ever re-exposing the snippet.
     "ml_executable_signal",
@@ -438,6 +460,12 @@ def _canonical_github_items(
                     "evidence_quality_grade": ev.evidence_quality_grade,
                     "code_role_key": ev.code_role_key,
                     "code_role_label": ev.code_role_label,
+                    "code_block_purpose_key": ev.code_block_purpose_key,
+                    "code_block_purpose_label": ev.code_block_purpose_label,
+                    "code_block_purpose_summary": ev.code_block_purpose_summary,
+                    "skill_relevance_key": ev.skill_relevance_key,
+                    "skill_relevance_label": ev.skill_relevance_label,
+                    "skill_relevance_summary": ev.skill_relevance_summary,
                     "ml_executable_signal": ev.ml_executable_signal,
                     "evidence_kind": ev.evidence_kind,
                     "selection_reason": ev.selection_reason,
@@ -504,6 +532,14 @@ def _collect_github(db: Any, user_id: str, attach: dict[tuple[str, str], list[st
             "evidence_quality_grade": "repo_level_fallback",
             "code_role_key": ROLE_REPOSITORY_CONTEXT,
             "code_role_label": describe_code_role(ROLE_REPOSITORY_CONTEXT),
+            "code_block_purpose_key": PURPOSE_REPOSITORY_CONTEXT,
+            "code_block_purpose_label": describe_code_block_purpose(PURPOSE_REPOSITORY_CONTEXT),
+            "code_block_purpose_summary": code_block_purpose_summary(PURPOSE_REPOSITORY_CONTEXT),
+            # Repo-level context is context-only whatever the skill; the label is
+            # re-resolved per selected skill at read time by ``_report_item``.
+            "skill_relevance_key": RELEVANCE_CONTEXT_ONLY,
+            "skill_relevance_label": describe_skill_relevance(RELEVANCE_CONTEXT_ONLY),
+            "skill_relevance_summary": skill_relevance_summary(RELEVANCE_CONTEXT_ONLY),
         }
 
         if not all_skill_keys:
@@ -560,6 +596,22 @@ def _collect_github(db: Any, user_id: str, attach: dict[tuple[str, str], list[st
                         file_path=strong.file_path,
                         function_name=strong.function_name,
                     )
+                    # Block-level purpose, computed beside the role from the same
+                    # safe signals. A label only — never promotes the grade.
+                    purpose_key = classify_code_block_purpose(
+                        grade=strong.evidence_quality_grade,
+                        code_snippet=strong.code_snippet,
+                        selection_reason=selection_reason,
+                        file_path=strong.file_path,
+                        function_name=strong.function_name,
+                    )
+                    # Relevance of this block to the skill it is filed under (a
+                    # display default; recomputed per report skill at read time).
+                    relevance_key = classify_skill_relevance(
+                        purpose_key,
+                        skill=display,
+                        grade=strong.evidence_quality_grade,
+                    )
                     items.append(
                         _make_item(
                             skill_name=display,
@@ -589,6 +641,12 @@ def _collect_github(db: Any, user_id: str, attach: dict[tuple[str, str], list[st
                                 "evidence_quality_grade": strong.evidence_quality_grade,
                                 "code_role_key": code_role_key,
                                 "code_role_label": describe_code_role(code_role_key),
+                                "code_block_purpose_key": purpose_key,
+                                "code_block_purpose_label": describe_code_block_purpose(purpose_key),
+                                "code_block_purpose_summary": code_block_purpose_summary(purpose_key),
+                                "skill_relevance_key": relevance_key,
+                                "skill_relevance_label": describe_skill_relevance(relevance_key, display),
+                                "skill_relevance_summary": skill_relevance_summary(relevance_key, display),
                                 "evidence_kind": strong.evidence_kind,
                                 "selection_reason": selection_reason,
                             },
@@ -1062,18 +1120,27 @@ def _skill_status(
     More distinct evidence sources (and any attached to a real project) ⇒ a
     stronger qualitative label. This is a grouping heuristic, not a trust score.
 
-    For an IMPLEMENTATION-ORIENTED skill (one with a code profile — Machine
-    Learning, API, React, Security, DevOps, MLOps …), "Demonstrated" additionally
-    requires a real GitHub *implementation body*. Weak GitHub (imports / docstrings
-    / config / bare route decorator) plus a document and a defense must NOT read as
-    "Demonstrated" — that would contradict the honest "no primary implementation
-    body was isolated" limitation. Such a skill is capped at "Evidence observed"
-    until a primary implementation body exists. Skills with no code profile (e.g.
-    Communication) are unaffected.
+    For an IMPLEMENTATION-ORIENTED skill, "Demonstrated" additionally requires a
+    real, SKILL-RELEVANT GitHub *implementation body*. A skill counts as
+    implementation-oriented when it has a code profile (Machine Learning, API,
+    React, Security, DevOps, MLOps …) OR when its evidence itself includes
+    GitHub code proof — an unknown/unmapped IT skill claimed through code is
+    still a code skill and must not escape the gate just because no profile
+    regex knows its name. Weak GitHub (imports / docstrings / config / bare
+    route decorator), cross-skill code, or an implementation body whose
+    relevance never resolves past supporting/needs-review, plus a document and
+    a defense, must NOT read as "Demonstrated" — that would contradict the
+    honest "no primary implementation body was isolated" limitation. Such a
+    skill is capped at "Evidence observed" until a skill-relevant primary
+    implementation body exists. Skills with no code profile AND no GitHub
+    evidence (e.g. Communication proven via documents + defense) are unaffected.
     """
     distinct = len({t for t in proof_types})
     if distinct >= 2 and attached_count:
-        if skill and skill_profile(skill) and not has_implementation_body:
+        implementation_oriented = bool(skill) and (
+            bool(skill_profile(skill)) or PROOF_GITHUB in proof_types
+        )
+        if implementation_oriented and not has_implementation_body:
             return "Evidence observed"
         return "Demonstrated"
     if distinct >= 2 or attached_count:
@@ -1106,12 +1173,60 @@ def _effective_item_grade(item: dict[str, Any], skill: str | None) -> str | None
     )
 
 
+def _item_is_skill_relevant_implementation(item: dict[str, Any], skill: str | None) -> bool:
+    """True when a vault item is a validated GitHub implementation body whose
+    SKILL RELEVANCE marks it as the selected skill's own implementation work.
+
+    Both halves are recomputed at read time and fail closed:
+
+    * the grade must survive :func:`_effective_item_grade` as
+      ``implementation_body`` (an ML deployment-only body is downgraded), and
+    * the block's resolved purpose × the selected skill's family must classify
+      as direct/supporting implementation RELEVANCE — a ``cross_skill_context``
+      implementation row (React UI code in a Machine Learning report, ML
+      training code in a DevOps report), product UI context, deployment
+      context, docs/setup/tests, or an unvalidated needs-review candidate can
+      NEVER satisfy this, so it can never gate "Demonstrated".
+
+    Skills with NO recognizable family (``general`` — an unknown/unmapped or
+    future IT skill, or a niche name like "OAuth" the family regexes don't
+    know) FAIL CLOSED like every other skill: :func:`classify_skill_relevance`
+    resolves a ``general`` family to at most ``supporting_context`` /
+    ``context_only_needs_review``, so an ``implementation_body`` grade ALONE can
+    never satisfy this gate. Direct relevance requires a deterministic
+    purpose × family mapping — an unmapped skill must first be added to the
+    taxonomy (one place: the family regexes + purpose relevance maps in
+    ``github_python_evidence_focus``) before its code can anchor "Demonstrated".
+    """
+    if item.get("proof_type") != PROOF_GITHUB:
+        return False
+    grade = _effective_item_grade(item, skill)
+    if grade != GRADE_IMPLEMENTATION_BODY:
+        return False
+    purpose_key = effective_code_block_purpose(
+        item.get("code_block_purpose_key"),
+        grade=grade,
+        code_snippet=item.get("safe_snippet"),
+        selection_reason=item.get("selection_reason"),
+        file_path=item.get("file_path"),
+        function_name=item.get("function_name"),
+    )
+    return is_skill_implementation_relevance(
+        classify_skill_relevance(
+            purpose_key,
+            skill=skill,
+            grade=grade,
+            ml_signal=item.get("ml_executable_signal"),
+        )
+    )
+
+
 def _has_coherent_impl_chain(
     items: list[dict[str, Any]], *, skill: str | None = None
 ) -> bool:
-    """True when a SINGLE attached project carries BOTH a GitHub implementation body
-    AND independent corroboration (>= 2 distinct proof types), all attached to that
-    same project.
+    """True when a SINGLE attached project carries BOTH a skill-relevant GitHub
+    implementation body AND independent corroboration (>= 2 distinct proof types),
+    all attached to that same project.
 
     Skill status must be derived from the strongest COHERENT project chain, never
     from mixed global evidence: a standalone implementation body from project A plus
@@ -1120,12 +1235,14 @@ def _has_coherent_impl_chain(
     its corroboration inside the same chain, so an unrelated attached chain cannot
     be upgraded by a standalone implementation elsewhere.
 
-    The implementation-body test uses the read-time VALIDATED grade
-    (:func:`_effective_item_grade`), never the raw persisted
-    ``evidence_quality_grade``: an ML ``implementation_body`` row that is downgraded
-    at read time because its trusted body lacks executable ML signals (a
-    deployment-only body) must NOT count as coherent implementation evidence, so it
-    can never combine with a defense / document to fabricate "Demonstrated".
+    The implementation-body test uses
+    :func:`_item_is_skill_relevant_implementation` — the read-time VALIDATED grade
+    AND the read-time skill relevance, never the raw persisted
+    ``evidence_quality_grade`` alone: an ML ``implementation_body`` row that is
+    downgraded at read time (deployment-only body), or one whose relevance is
+    ``cross_skill_context`` / product-UI / deployment context for THIS skill, must
+    NOT count as coherent implementation evidence, so it can never combine with a
+    defense / document to fabricate "Demonstrated".
     """
     by_project: dict[str, list[dict[str, Any]]] = {}
     for it in items:
@@ -1136,8 +1253,7 @@ def _has_coherent_impl_chain(
     for chain_items in by_project.values():
         types = {i["proof_type"] for i in chain_items}
         has_impl = any(
-            _effective_item_grade(i, skill) == GRADE_IMPLEMENTATION_BODY
-            for i in chain_items
+            _item_is_skill_relevant_implementation(i, skill) for i in chain_items
         )
         if has_impl and len(types) >= 2:
             return True
@@ -1311,6 +1427,12 @@ def _report_item(
         "evidence_quality_grade": item.get("evidence_quality_grade"),
         "code_role_key": item.get("code_role_key"),
         "code_role_label": item.get("code_role_label"),
+        "code_block_purpose_key": item.get("code_block_purpose_key"),
+        "code_block_purpose_label": item.get("code_block_purpose_label"),
+        "code_block_purpose_summary": item.get("code_block_purpose_summary"),
+        "skill_relevance_key": item.get("skill_relevance_key"),
+        "skill_relevance_label": item.get("skill_relevance_label"),
+        "skill_relevance_summary": item.get("skill_relevance_summary"),
         "ml_executable_signal": item.get("ml_executable_signal"),
         "evidence_kind": item.get("evidence_kind"),
         "has_precise_line_evidence": item.get("has_precise_line_evidence"),
@@ -1368,6 +1490,38 @@ def _report_item(
         )
         row["code_role_key"] = role_key
         row["code_role_label"] = describe_code_role(role_key)
+        # Read-time block purpose, resolved against the VALIDATED grade. A weak
+        # structural band keeps an upstream purpose only when it is inside that
+        # band's honest family (a snippet-refined documentation topic survives;
+        # "Model training" riding on an import row is discarded), and a stale
+        # legacy row with no purpose falls closed to repository-level context.
+        # Label + summary come from the closed vocabulary — never stored text.
+        purpose_key = effective_code_block_purpose(
+            item.get("code_block_purpose_key"),
+            grade=grade,
+            code_snippet=item.get("safe_snippet"),
+            selection_reason=item.get("selection_reason"),
+            file_path=item.get("file_path"),
+            function_name=item.get("function_name"),
+        )
+        row["code_block_purpose_key"] = purpose_key
+        row["code_block_purpose_label"] = describe_code_block_purpose(purpose_key)
+        row["code_block_purpose_summary"] = code_block_purpose_summary(purpose_key)
+        # Read-time SKILL RELEVANCE, recomputed HERE against the report's selected
+        # skill (never trusted from storage — a row filed under "Python" must not
+        # carry a Python-relative relevance into a Machine Learning report). It is
+        # derived only from the resolved purpose × skill family × the VALIDATED
+        # grade, so cross-family evidence can never read as direct proof and a
+        # weak row can never be promoted by its relevance wording.
+        relevance_key = classify_skill_relevance(
+            purpose_key,
+            skill=skill,
+            grade=grade,
+            ml_signal=item.get("ml_executable_signal"),
+        )
+        row["skill_relevance_key"] = relevance_key
+        row["skill_relevance_label"] = describe_skill_relevance(relevance_key, skill)
+        row["skill_relevance_summary"] = skill_relevance_summary(relevance_key, skill)
         # Read-time neutralisation of a STALE persisted selection reason / summary. A
         # WEAK / fallback / ungraded GitHub row can never keep its stored reason —
         # even one that reads as technical ("model serving inference handler") — it is
@@ -1654,6 +1808,17 @@ def _group_github_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # instead of a stale/overclaiming ``selection_reason``.
                 "code_role_key": e.get("code_role_key"),
                 "code_role_label": e.get("code_role_label"),
+                # Block-level purpose (already resolved against the validated
+                # grade by ``_report_item``): what this exact block appears to
+                # do, plus one short safe helper sentence. Labels only.
+                "code_block_purpose_key": e.get("code_block_purpose_key"),
+                "code_block_purpose_label": e.get("code_block_purpose_label"),
+                "code_block_purpose_summary": e.get("code_block_purpose_summary"),
+                # Skill relevance (already recomputed against the report's
+                # selected skill by ``_report_item``). Labels only.
+                "skill_relevance_key": e.get("skill_relevance_key"),
+                "skill_relevance_label": e.get("skill_relevance_label"),
+                "skill_relevance_summary": e.get("skill_relevance_summary"),
                 "selection_reason": e.get("selection_reason"),
                 "github_line_url": e.get("github_line_url"),
                 "public_url": e.get("public_url"),
