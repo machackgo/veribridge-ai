@@ -73,6 +73,16 @@ from app.services.evidence_normalization_service import (
     STRENGTH_AGGREGATED,
     STRENGTH_CORROBORATION,
 )
+from app.services.website_skill_proof_focus import (
+    ALLOWED_WEBSITE_EVIDENCE_CHIPS,
+    ALLOWED_WEBSITE_PURPOSE_KEYS,
+    ALLOWED_WEBSITE_RELEVANCE_KEYS,
+    describe_website_purpose,
+    describe_website_skill_relevance,
+    public_screenshot_access_label,
+    website_behavior_claim,
+    website_corroboration_note,
+)
 from app.services.proof_synthesis_agent_service import (
     PROOF_GITHUB,
     PROOF_WEBSITE,
@@ -648,13 +658,24 @@ def public_safe_evidence_artifact(item: dict[str, Any]) -> dict[str, Any]:
     """
     if not isinstance(item, dict):
         return {}
-    return {
+    # Website semantic proof: only KEYS from the closed vocabularies survive
+    # (fail-closed — anything else becomes None) and the public labels are
+    # DERIVED from those vocabularies here, never echoed from the payload. The
+    # relevance label interpolates only the already-scrubbed skill name.
+    safe_skill = public_safe_skill_name(item.get("canonical_skill_name"))
+    purpose_key = str(item.get("website_purpose_key") or "") or None
+    if purpose_key not in ALLOWED_WEBSITE_PURPOSE_KEYS:
+        purpose_key = None
+    relevance_key = str(item.get("website_skill_relevance_key") or "") or None
+    if relevance_key not in ALLOWED_WEBSITE_RELEVANCE_KEYS:
+        relevance_key = None
+    projected = {
         "evidence_id": _public_id(item.get("evidence_id"), _is_public_safe_evidence_id),
         "source_type": _safe_enum(
             item.get("source_type"), _ALLOWED_SOURCE_TYPES, _SOURCE_TYPE_FALLBACK
         ),
         "source_label": _scrub_text_or_none(item.get("source_label")) or "",
-        "canonical_skill_name": public_safe_skill_name(item.get("canonical_skill_name")),
+        "canonical_skill_name": safe_skill,
         "subskill_name": public_safe_skill_name(item.get("subskill_name")),
         "project_title": public_safe_skill_name(item.get("project_title")),
         "exact_location": _scrub_text_or_none(item.get("exact_location")),
@@ -666,6 +687,50 @@ def public_safe_evidence_artifact(item: dict[str, Any]) -> dict[str, Any]:
         "limitations": _scrub_str_list(item.get("limitations")),
         "public_url": _safe_url(item.get("public_url")),
     }
+    # Website fields appear ONLY when a validated closed-vocabulary key exists —
+    # non-website artifacts never grow website-shaped keys.
+    if purpose_key:
+        projected["website_purpose_key"] = purpose_key
+        projected["website_purpose_label"] = describe_website_purpose(purpose_key)
+        # Recruiter-first behaviour claim — DERIVED from the validated purpose
+        # key's closed vocabulary at projection time, never echoed from payload.
+        projected["website_behavior_claim"] = website_behavior_claim(purpose_key)
+    if relevance_key:
+        projected["website_skill_relevance_key"] = relevance_key
+        projected["website_skill_relevance_label"] = describe_website_skill_relevance(
+            relevance_key, safe_skill
+        )
+    # Website evidence-card extras: basis chips filtered against the closed chip
+    # vocabulary (a smuggled chip string is dropped) and the screenshot access
+    # label re-coerced for the public surface — never a preview URL, and any
+    # preview-shaped label collapses to the permission-gated status.
+    chips = [
+        str(c)
+        for c in (item.get("website_evidence_chips") or [])
+        if str(c) in ALLOWED_WEBSITE_EVIDENCE_CHIPS
+    ]
+    if chips:
+        projected["website_evidence_chips"] = chips
+    if purpose_key or chips:
+        available = bool(item.get("website_screenshot_available"))
+        projected["website_screenshot_available"] = available
+        projected["website_screenshot_access_label"] = public_screenshot_access_label(
+            item.get("website_screenshot_access_label"), screenshot_available=available
+        )
+        # Cross-proof corroboration: BOOLEANS only, with the public note
+        # RE-DERIVED from those booleans through the closed fragments — any
+        # note text in the payload is ignored, never echoed.
+        gh = bool(item.get("website_corroborates_github"))
+        dfn = bool(item.get("website_corroborates_defense"))
+        doc = bool(item.get("website_corroborates_document"))
+        if gh or dfn or doc:
+            projected["website_corroborates_github"] = gh
+            projected["website_corroborates_defense"] = dfn
+            projected["website_corroborates_document"] = doc
+            projected["website_corroboration_note"] = website_corroboration_note(
+                has_github=gh, has_defense=dfn, has_document=doc
+            )
+    return projected
 
 
 # ── Step 3 — linked proof chain ───────────────────────────────────────────────

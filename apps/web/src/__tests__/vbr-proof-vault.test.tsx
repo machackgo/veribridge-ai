@@ -376,6 +376,309 @@ describe("Skill Report page (separate route)", () => {
     expect(screen.getByTestId("website-dom")).toHaveTextContent("Dashboard rendered")
     expect(screen.getByTestId("website-visual")).toHaveTextContent("working ML dashboard")
   })
+
+  function websiteSemanticItem(overrides: Record<string, unknown> = {}) {
+    return {
+      proof_type: "Website Proof",
+      source_id: "sess-sem-1",
+      title: "https://demo.example.com",
+      safe_summary: "",
+      safe_location: "demo.example.com",
+      public_safe: true,
+      is_attached_to_project: false,
+      attached_project_ids: [],
+      project_titles: [],
+      limitation:
+        "Website prediction/output demonstrates product behaviour at inspection time; it does not, by itself, prove model training or ML implementation.",
+      workflow_summary: "Accident details were entered and a crash-risk prediction was displayed.",
+      workflow_steps: [],
+      public_url: "https://demo.example.com",
+      website_purpose_key: "prediction_result_display",
+      website_purpose_label: "Prediction / result display",
+      website_purpose_summary:
+        "The recorded session shows an input → prediction/result flow: values were entered and a computed result was displayed.",
+      website_skill_relevance_key: "ml_product_context",
+      website_skill_relevance_label:
+        "Machine Learning product behaviour context — not Machine Learning implementation proof",
+      website_skill_relevance_summary:
+        "The website shows model-powered product behaviour; it does not, by itself, prove model training.",
+      ...overrides,
+    }
+  }
+
+  it("renders website purpose / skill-relevance labels and honest ML limitation", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: { ...emptyStandalone(), website: [websiteSemanticItem()] },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("skill-report-website")).toBeInTheDocument()
+    expect(screen.getByTestId("website-purpose-label")).toHaveTextContent("Prediction / result display")
+    expect(screen.getByTestId("website-purpose-summary")).toHaveTextContent("prediction/result flow")
+    // ML report: the relevance says product behaviour context — never implementation proof.
+    expect(screen.getByTestId("website-skill-relevance")).toHaveTextContent(
+      "not Machine Learning implementation proof",
+    )
+    expect(screen.getByText(/does not, by itself, prove model training/)).toBeInTheDocument()
+    // The open-website link renders only the safe public URL.
+    expect(screen.getByTestId("evidence-public-link")).toHaveAttribute("href", "https://demo.example.com")
+  })
+
+  it("renders direct Frontend relevance for a React report's website proof", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              limitation:
+                "Confirms observed behaviour at inspection time, not source-code authorship or ongoing uptime.",
+              website_skill_relevance_key: "direct_frontend_evidence",
+              website_skill_relevance_label: "Direct React evidence — interactive product UI demonstrated",
+              website_skill_relevance_summary:
+                "The recorded interactive UI behaviour is itself the subject of React.",
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="react" />)
+
+    expect(await screen.findByTestId("skill-report-website")).toBeInTheDocument()
+    expect(screen.getByTestId("website-skill-relevance")).toHaveTextContent("Direct React evidence")
+  })
+
+  function websiteEvidenceCard(overrides: Record<string, unknown> = {}) {
+    return {
+      card_key: "web-abc123def456",
+      route_or_page: "demo.example.com/dashboard",
+      page_title: "Risk Dashboard",
+      observed_at: "2026-06-30",
+      behavior_claim: "User input produces a prediction/result display.",
+      website_purpose_key: "prediction_result_display",
+      website_purpose_label: "Prediction / result display",
+      website_purpose_summary:
+        "The recorded session shows an input → prediction/result flow: values were entered and a computed result was displayed.",
+      skill_relevance_key: "ml_product_context",
+      skill_relevance_label:
+        "Machine Learning product behaviour context — not Machine Learning implementation proof",
+      skill_relevance_summary:
+        "The website shows model-powered product behaviour; it does not, by itself, prove model training.",
+      observed_behavior_summary: "Accident details were entered and a crash-risk prediction was displayed.",
+      visual_evidence_summary:
+        "Visual frame analysis of the recorded session is consistent with: Prediction / result display.",
+      ocr_evidence_summary_safe: null,
+      dom_evidence_summary_safe: null,
+      evidence_basis_chips: ["Route observed", "Visual frame", "Workflow navigation", "Output / result visible"],
+      limitation:
+        "Website prediction/output demonstrates product behaviour at inspection time; it does not, by itself, prove model training or ML implementation.",
+      open_website_url: "https://demo.example.com",
+      screenshot_available: true,
+      screenshot_access_label: "private_candidate_permission_required",
+      screenshot_preview_url: null,
+      corroborates_github: false,
+      corroborates_defense: false,
+      corroborates_document: false,
+      corroboration_note: null,
+      connected_project_title: null,
+      ...overrides,
+    }
+  }
+
+  it("renders the Website Evidence Card: route, chips, permission-gated frame, safe link", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              // Raw-ish hydrated summaries present on the item — the card view
+              // must suppress them in favour of the structured card.
+              ocr_summary: "RAW-OCR-TEXT",
+              dom_summary: "RAW-DOM-TEXT",
+              visual_summary: "RAW-VISUAL-TEXT",
+              website_evidence_card: websiteEvidenceCard(),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
+    expect(screen.getByTestId("website-card-route")).toHaveTextContent(
+      "Website Behavior Evidence · demo.example.com/dashboard",
+    )
+    expect(screen.getByTestId("website-card-observed-at")).toHaveTextContent("observed 2026-06-30")
+    // Claim-first: the recruiter reads WHAT behaviour was demonstrated first.
+    expect(screen.getByTestId("website-behavior-claim")).toHaveTextContent(
+      "Claim: User input produces a prediction/result display.",
+    )
+    expect(screen.getByTestId("website-purpose-label")).toHaveTextContent("Prediction / result display")
+    // ML report: product behaviour context, never implementation proof.
+    expect(screen.getByTestId("website-skill-relevance")).toHaveTextContent(
+      "not Machine Learning implementation proof",
+    )
+    expect(screen.getByTestId("website-skill-relevance")).toHaveTextContent(/^Supports:/)
+    // Standalone card: no corroboration line is invented.
+    expect(screen.queryByTestId("website-corroboration")).not.toBeInTheDocument()
+    // Evidence basis chips render from the closed vocabulary.
+    const chips = screen.getAllByTestId("website-evidence-chip").map((c) => c.textContent)
+    expect(chips).toEqual(["Route observed", "Visual frame", "Workflow navigation", "Output / result visible"])
+    // Frames exist but are private → permission-gated status, never a link.
+    expect(screen.getByTestId("website-screenshot-status")).toHaveTextContent(
+      "available with candidate permission",
+    )
+    // The open-website link renders only the safe public URL.
+    expect(screen.getByTestId("evidence-public-link")).toHaveAttribute("href", "https://demo.example.com")
+    expect(screen.getByTestId("evidence-public-link")).toHaveTextContent("Open website →")
+    // Limitation renders via the item row.
+    expect(screen.getByText(/does not, by itself, prove model training/)).toBeInTheDocument()
+    // Raw hydrated payloads never render when the card is present.
+    expect(screen.queryByTestId("website-ocr")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("website-dom")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("website-visual")).not.toBeInTheDocument()
+    expect(screen.queryByText(/RAW-OCR-TEXT|RAW-DOM-TEXT|RAW-VISUAL-TEXT/)).not.toBeInTheDocument()
+  })
+
+  it("renders the evidence-frame link ONLY for a safe preview URL", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              website_evidence_card: websiteEvidenceCard({
+                screenshot_preview_url: "https://cdn.veribridge.app/frames/safe-frame.jpg",
+                open_website_url: null,
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
+    // A safe preview URL upgrades the permission status to a real link.
+    expect(screen.queryByTestId("website-screenshot-status")).not.toBeInTheDocument()
+    expect(screen.getByText("View evidence frame →")).toHaveAttribute(
+      "href",
+      "https://cdn.veribridge.app/frames/safe-frame.jpg",
+    )
+  })
+
+  it("never renders unsafe card URLs (frame or website)", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              public_url: null,
+              website_evidence_card: websiteEvidenceCard({
+                screenshot_preview_url: "https://storage.internal/frame.jpg?sig=SECRET",
+                open_website_url: "javascript:alert(1)",
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
+    // Unsafe preview URL → falls back to the permission-gated status; unsafe
+    // open URL → no link at all.
+    expect(screen.getByTestId("website-screenshot-status")).toBeInTheDocument()
+    expect(screen.queryByText("View evidence frame →")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-public-link")).not.toBeInTheDocument()
+  })
+
+  it("shows direct Frontend evidence on the card for a React report", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              website_evidence_card: websiteEvidenceCard({
+                skill_relevance_key: "direct_frontend_evidence",
+                skill_relevance_label: "Direct React evidence — interactive product UI demonstrated",
+                screenshot_available: false,
+                screenshot_access_label: "unavailable",
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="react" />)
+
+    expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
+    expect(screen.getByTestId("website-skill-relevance")).toHaveTextContent("Direct React evidence")
+    // No frames → no status line and no frame link (fails safe, renders nothing).
+    expect(screen.queryByTestId("website-screenshot-status")).not.toBeInTheDocument()
+    expect(screen.queryByText("View evidence frame →")).not.toBeInTheDocument()
+  })
+
+  it("renders the cross-proof corroboration line and chips on a connected card", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              website_evidence_card: websiteEvidenceCard({
+                evidence_basis_chips: [
+                  "Route observed",
+                  "Output / result visible",
+                  "Attached project",
+                  "Corroborates GitHub",
+                  "Corroborates Defense",
+                ],
+                corroborates_github: true,
+                corroborates_defense: true,
+                corroboration_note:
+                  "GitHub provides implementation evidence for the same project; the candidate explained this behaviour in the Project Defense.",
+                connected_project_title: "Boston Smart Accident Risk Rerouting",
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
+    expect(screen.getByTestId("website-corroboration")).toHaveTextContent(
+      "Corroborates: GitHub provides implementation evidence for the same project",
+    )
+    expect(screen.getByTestId("website-corroboration")).toHaveTextContent("Project Defense")
+    expect(screen.getByTestId("website-connected-project")).toHaveTextContent(
+      "Boston Smart Accident Risk Rerouting",
+    )
+    const chips = screen.getAllByTestId("website-evidence-chip").map((c) => c.textContent)
+    expect(chips).toContain("Corroborates GitHub")
+    expect(chips).toContain("Corroborates Defense")
+    expect(chips).toContain("Attached project")
+  })
 })
 
 describe("SkillReportView — connected proof chains & document corroboration", () => {
@@ -1166,6 +1469,8 @@ describe("SkillReportView — Proof Synthesis Agent", () => {
         },
       ],
       video_evidence: [],
+      website_connection_note:
+        "The website demonstrates the working product behaviour; GitHub code shows the implementation; the Project Defense shows the candidate's own understanding.",
       limitations: [],
     }
     return skillReport({
@@ -1195,6 +1500,10 @@ describe("SkillReportView — Proof Synthesis Agent", () => {
     // Code implementation + runtime behavior + defense explanation + document corroboration.
     expect(screen.getByTestId("chain-github")).toHaveTextContent("Code implementation")
     expect(screen.getByTestId("chain-website")).toHaveTextContent("Runtime / website behavior")
+    // The chain explains how Website Proof connects to the other sources.
+    expect(screen.getByTestId("chain-website-note")).toHaveTextContent(
+      "GitHub code shows the implementation",
+    )
     expect(screen.getByTestId("website-workflow")).toHaveTextContent("risk prediction")
     expect(screen.getByTestId("chain-defense")).toHaveTextContent("Defense / video explanation")
     expect(screen.getByTestId("document-corroborates")).toHaveTextContent("GitHub implementation")
