@@ -156,6 +156,16 @@ def _parse_args() -> argparse.Namespace:
         help="Print what would be imported without writing to the database",
     )
     parser.add_argument(
+        "--refresh-provenance", action="store_true",
+        help=(
+            "For candidates that already exist as this user's evidence rows, "
+            "re-stamp the server-only trusted provenance (analyzer grade + "
+            "redacted excerpt) instead of skipping them. Owner/repo-scoped and "
+            "non-destructive: the user-owned skill_evidence rows are never "
+            "modified or deleted. Combine with --dry-run to preview."
+        ),
+    )
+    parser.add_argument(
         "--output",
         help="Write dry-run JSON report to this path instead of stdout",
     )
@@ -209,6 +219,26 @@ def main() -> None:
     report = build_dry_run_report(args.github_user, candidates)
 
     if args.dry_run:
+        if args.refresh_provenance:
+            # READ-ONLY preview of the refresh path: which existing rows would
+            # gain re-stamped trusted provenance, which candidates are new.
+            target_user_id = _resolve_target_user_id(args)
+            supabase_client = _build_supabase_client()
+            preview = import_candidates(
+                supabase_client=supabase_client,
+                user_id=target_user_id,
+                candidates=candidates,
+                dry_run=True,
+                refresh_provenance=True,
+            )
+            report["refresh_preview"] = {
+                "would_create": preview.created,
+                "would_refresh": preview.refreshed,
+                "skipped": preview.skipped,
+            }
+            print(f"[dry-run] would create : {len(preview.created)}")
+            print(f"[dry-run] would refresh: {len(preview.refreshed)}")
+            print(f"[dry-run] skipped      : {len(preview.skipped)}")
         # Print or write report
         report_json = json.dumps(report, indent=2)
         if args.output:
@@ -235,17 +265,21 @@ def main() -> None:
         user_id=target_user_id,
         candidates=candidates,
         dry_run=False,
+        refresh_provenance=args.refresh_provenance,
     )
 
     print()
     print("=" * 46)
-    print(f"[created ] {len(result.created)}")
-    print(f"[skipped ] {len(result.skipped)}")
-    print(f"[errors  ] {len(result.errors)}")
+    print(f"[created  ] {len(result.created)}")
+    print(f"[refreshed] {len(result.refreshed)}")
+    print(f"[skipped  ] {len(result.skipped)}")
+    print(f"[errors   ] {len(result.errors)}")
     print()
 
     for msg in result.created:
         print(f"  ✓ {msg}")
+    for msg in result.refreshed:
+        print(f"  ↻ {msg}")
     for msg in result.skipped:
         print(f"  ~ {msg}")
     for msg in result.errors:
@@ -255,6 +289,7 @@ def main() -> None:
         # Also write a final report to the output path
         report["import_result"] = {
             "created": result.created,
+            "refreshed": result.refreshed,
             "skipped": result.skipped,
             "errors": result.errors,
         }

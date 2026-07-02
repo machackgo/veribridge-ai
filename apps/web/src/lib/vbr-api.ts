@@ -730,6 +730,24 @@ export type SkillReportEvidenceItem = {
    */
   code_role_key?: string | null
   code_role_label?: string | null
+  /**
+   * Block-level PURPOSE (finer than the role): what THIS exact block appears to
+   * do, from a closed safe vocabulary ("Documentation describing retraining
+   * pipeline", "Imports / dependency setup"), plus one short helper sentence.
+   * Descriptive only — never proof strength; weak rows stay under Needs review.
+   */
+  code_block_purpose_key?: string | null
+  code_block_purpose_label?: string | null
+  code_block_purpose_summary?: string | null
+  /**
+   * SKILL RELEVANCE: how this block relates to the report's selected skill
+   * ("Direct Machine Learning implementation evidence", "Product UI context,
+   * not Machine Learning implementation"), from a closed template vocabulary.
+   * Descriptive only — never proof strength; weak rows stay under Needs review.
+   */
+  skill_relevance_key?: string | null
+  skill_relevance_label?: string | null
+  skill_relevance_summary?: string | null
   has_precise_line_evidence?: boolean | null
   github_line_url?: string | null
   repo_url?: string | null
@@ -990,6 +1008,22 @@ export type SkillReportStandaloneGitHubRow = {
    */
   code_role_key?: string | null
   code_role_label?: string | null
+  /**
+   * Block-level PURPOSE for this exact row (closed safe vocabulary + one short
+   * helper sentence). Preferred over `code_role_label` on weak rows; it is a
+   * label only and never promotes a row out of Needs review.
+   */
+  code_block_purpose_key?: string | null
+  code_block_purpose_label?: string | null
+  code_block_purpose_summary?: string | null
+  /**
+   * SKILL RELEVANCE for this row relative to the report's skill (closed template
+   * vocabulary + one short helper sentence). Descriptive only; it never promotes
+   * a weak row out of Needs review.
+   */
+  skill_relevance_key?: string | null
+  skill_relevance_label?: string | null
+  skill_relevance_summary?: string | null
   /** Precise "why selected" reason ("ML training call"), when the analyzer set it. */
   selection_reason?: string | null
   github_line_url?: string | null

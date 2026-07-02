@@ -38,8 +38,12 @@ from app.services.cross_proof_linking_service import link_proof_chains
 from app.services.github_python_evidence_focus import (
     GRADE_IMPLEMENTATION_BODY,
     GRADE_SUPPORTING_LOGIC,
+    classify_skill_relevance,
+    effective_code_block_purpose,
     effective_evidence_grade,
     grade_rank,
+    is_skill_code_relevance,
+    is_skill_implementation_relevance,
     is_weak_grade,
     safe_selection_reason,
 )
@@ -51,7 +55,6 @@ from app.services.evidence_normalization_service import (
     SOURCE_GITHUB,
     SOURCE_VIDEO,
     SOURCE_WEBSITE,
-    has_implementation_body,
     has_precise_code,
     has_source,
     normalize_chain,
@@ -157,6 +160,54 @@ def _row_effective_grade(skill: str, row: dict[str, Any]) -> str | None:
     )
 
 
+def _row_skill_relevance(skill: str, row: dict[str, Any], grade: str | None) -> str:
+    """Read-time SKILL RELEVANCE of a GitHub row for the report's selected skill.
+
+    Recomputed here (defense in depth, exactly like :func:`_row_effective_grade`)
+    from the row's resolved block purpose × the skill's family × the VALIDATED
+    grade — never trusted from a stored label — so a cross-skill implementation
+    row (React UI code in a Machine Learning report, ML training in a DevOps
+    report) can never be consumed as the selected skill's own implementation.
+    """
+    purpose_key = effective_code_block_purpose(
+        row.get("code_block_purpose_key"),
+        grade=grade,
+        code_snippet=row.get("safe_snippet"),
+        selection_reason=row.get("selection_reason"),
+        file_path=row.get("file_path"),
+        function_name=row.get("function_name"),
+    )
+    return classify_skill_relevance(
+        purpose_key,
+        skill=skill,
+        grade=grade,
+        ml_signal=row.get("ml_executable_signal"),
+    )
+
+
+def _row_is_skill_implementation(
+    skill: str, row: dict[str, Any], grade: str | None = None
+) -> bool:
+    """True when a row is a VALIDATED implementation body whose RELEVANCE marks it
+    as the selected skill's OWN implementation work (grade + relevance, both
+    recomputed at read time, fail closed). Only such rows may anchor the strongest
+    confidence tier or be synthesized as primary implementation proof — a
+    cross-skill / product-UI / deployment-context implementation row never can.
+
+    Skills with no recognizable family (``general`` — unknown/unmapped/future
+    IT skills) FAIL CLOSED like every other skill (mirrors the Vault's
+    coherent-chain gate): relevance for a ``general`` family resolves to at
+    most ``supporting_context``, so an ``implementation_body`` grade ALONE can
+    never mark a row as primary/direct proof — direct relevance requires a
+    deterministic purpose × family mapping in the central taxonomy.
+    ``grade`` may be passed when already computed."""
+    if grade is None:
+        grade = _row_effective_grade(skill, row)
+    if grade != GRADE_IMPLEMENTATION_BODY:
+        return False
+    return is_skill_implementation_relevance(_row_skill_relevance(skill, row, grade))
+
+
 def _github_evidence_assessment(skill: str, github: list[dict[str, Any]]) -> dict[str, Any]:
     """Classify a chain's GitHub code evidence by Smart-Evidence quality band.
 
@@ -176,13 +227,28 @@ def _github_evidence_assessment(skill: str, github: list[dict[str, Any]]) -> dic
     an honest ``note`` sentence (empty when the chain has no GitHub evidence).
     """
     rows = _github_code_rows(github)
-    # Read-time ML-validate each row so a deployment-only body stored as
-    # implementation_body is never classified as Machine Learning primary proof.
-    impl = [g for g in rows if _row_effective_grade(skill, g) == GRADE_IMPLEMENTATION_BODY]
-    support = [g for g in rows if _row_effective_grade(skill, g) == GRADE_SUPPORTING_LOGIC]
-    # A precise line with no grade at all is precise but its quality is unproven —
-    # treat as supporting, never promote to primary implementation.
-    ungraded = [g for g in rows if not g.get("evidence_quality_grade")]
+    # Read-time ML-validate each row AND require the selected skill's own
+    # relevance: a deployment-only body stored as implementation_body, or a
+    # cross-skill implementation row (React UI code in an ML report), is never
+    # classified as the skill's primary — or even supporting — code proof.
+    impl: list[dict[str, Any]] = []
+    support: list[dict[str, Any]] = []
+    ungraded: list[dict[str, Any]] = []
+    for g in rows:
+        grade = _row_effective_grade(skill, g)
+        if _row_is_skill_implementation(skill, g, grade=grade):
+            impl.append(g)
+        elif not is_skill_code_relevance(_row_skill_relevance(skill, g, grade)):
+            continue  # cross-skill / UI / deployment / docs — not code proof here
+        elif grade in (GRADE_SUPPORTING_LOGIC, GRADE_IMPLEMENTATION_BODY):
+            # A real body whose relevance never resolves past supporting/needs-
+            # review (unknown/unmapped skill family) is honest supporting code,
+            # never this skill's primary implementation proof.
+            support.append(g)
+        elif not g.get("evidence_quality_grade"):
+            # A precise line with no grade at all is precise but its quality is
+            # unproven — treat as supporting, never promote to primary.
+            ungraded.append(g)
 
     if impl:
         best = min(impl, key=lambda g: grade_rank(g.get("evidence_quality_grade")))
@@ -211,9 +277,9 @@ def _github_evidence_assessment(skill: str, github: list[dict[str, Any]]) -> dic
             "strength": "weak",
             "label": GH_INSUFFICIENT,
             "note": (
-                "GitHub evidence is repository- or weak-level only "
-                "(imports/config/decorators/no located line); precise implementation "
-                "evidence is insufficient by itself."
+                "GitHub evidence is repository-level, weak, or not relevant to this "
+                "skill (imports/config/decorators/cross-skill code/no located line); "
+                "precise implementation evidence is insufficient by itself."
             ),
         }
     return {"strength": "none", "label": "", "note": ""}
@@ -328,13 +394,19 @@ def _build_statements(
     weak_line_rows: list[dict[str, Any]] = []
     repo_level_rows: list[dict[str, Any]] = []
     for g in github:
-        # Read-time ML-validated grade: a deployment-only implementation_body is
-        # downgraded so it is synthesized as supporting code, never primary ML proof.
+        # Read-time ML-validated grade AND skill relevance: a deployment-only
+        # implementation_body is downgraded, and a cross-skill implementation row
+        # (React UI code in an ML report) is never synthesized as this skill's
+        # primary — or supporting — code proof; it joins the weak/limitation band.
         grade = _row_effective_grade(skill, g)
         is_code_line = g.get("display_mode") == "code_line" and g.get("has_precise_line_evidence")
-        if is_code_line and grade == GRADE_IMPLEMENTATION_BODY:
+        if is_code_line and _row_is_skill_implementation(skill, g, grade=grade):
             primary_rows.append(g)
-        elif is_code_line and not is_weak_grade(grade):
+        elif (
+            is_code_line
+            and not is_weak_grade(grade)
+            and is_skill_code_relevance(_row_skill_relevance(skill, g, grade))
+        ):
             supporting_rows.append(g)
         elif is_code_line:
             weak_line_rows.append(g)
@@ -360,16 +432,18 @@ def _build_statements(
             _ids(supporting_rows),
         )
     if weak_line_rows:
-        # ONE aggregated limitation for every weak precise line (import/docstring/
-        # config/route-decorator), never one paragraph per weak row. A representative
-        # row's location + reason is named so the honest limitation is still concrete.
+        # ONE aggregated limitation for every weak or non-skill-relevant precise
+        # line (import/docstring/config/route-decorator/cross-skill code), never one
+        # paragraph per weak row. A representative row's location + reason is named
+        # so the honest limitation is still concrete.
         n = len(weak_line_rows)
         best = weak_line_rows[0]
         noun = "GitHub code signal was" if n == 1 else "GitHub code signals were"
         _add(
             f"{n} weak/repository-level {noun} found (e.g. {_github_location(best)} — "
-            f"{_github_reason(best)}): imports, comments, configuration, or endpoint "
-            "scaffolding that is not sufficient by itself as implementation proof.",
+            f"{_github_reason(best)}): imports, comments, configuration, endpoint "
+            "scaffolding, or code for a different skill — not sufficient by itself "
+            f"as {skill} implementation proof.",
             PROOF_GITHUB,
             _ids(weak_line_rows),
         )
@@ -496,10 +570,13 @@ def _enrich_chain(skill: str, chain: dict[str, Any]) -> dict[str, Any]:
     # source/strength logic lives in one place (the normalizer), not per-source here.
     artifacts = normalize_chain(chain, skill)
 
-    # Only a located implementation *body* is primary GitHub implementation proof;
-    # a precise line that is only supporting_logic / not-yet-graded corroborates but
-    # can never anchor the strongest tier (kept separate so the tier stays honest).
-    impl_body = has_implementation_body(artifacts)
+    # Only a located, SKILL-RELEVANT implementation *body* is primary GitHub
+    # implementation proof; a precise line that is only supporting_logic /
+    # not-yet-graded / cross-skill corroborates but can never anchor the strongest
+    # tier (kept separate so the tier stays honest). Grade AND relevance are
+    # recomputed per row (read-time, fail-closed) exactly as the assessment and
+    # statement builders do, so the tier can never disagree with them.
+    impl_body = any(_row_is_skill_implementation(skill, g) for g in _github_code_rows(github))
     tier = _confidence_tier(
         has_implementation_body=impl_body,
         has_supporting_code=has_precise_code(artifacts) and not impl_body,
@@ -521,7 +598,7 @@ def _enrich_chain(skill: str, chain: dict[str, Any]) -> dict[str, Any]:
     chain["subskills"] = _subskills(github)
     chain["synthesis_statements"] = statements
     chain["github_evidence_assessment"] = gh_assessment
-    chain["has_primary_github_implementation"] = has_implementation_body(artifacts)
+    chain["has_primary_github_implementation"] = impl_body
     chain["synthesis_result"] = _synthesis_result(
         skill,
         chain.get("project_title") or "this project",

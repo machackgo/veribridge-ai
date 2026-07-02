@@ -187,6 +187,20 @@ class VaultProofItem(BaseModel):
     # proof strength; the quality grade above still governs that.
     code_role_key: str | None = None
     code_role_label: str | None = None
+    # Block-level PURPOSE (finer than the role): what THIS exact block appears
+    # to do, from a closed safe vocabulary ("Documentation describing retraining
+    # pipeline", "Imports / dependency setup"), plus one short helper sentence.
+    # Never proof strength; the quality grade above still governs that.
+    code_block_purpose_key: str | None = None
+    code_block_purpose_label: str | None = None
+    code_block_purpose_summary: str | None = None
+    # SKILL RELEVANCE: how this block relates to the skill it is filed under
+    # ("Direct … implementation evidence", "Product UI context, not …
+    # implementation"), from a closed template vocabulary. Descriptive only —
+    # it never changes the quality grade above.
+    skill_relevance_key: str | None = None
+    skill_relevance_label: str | None = None
+    skill_relevance_summary: str | None = None
     # Grade-time ML verdict from the trusted provenance body (plain tri-state bool /
     # None — never the raw snippet). Drives read-time ML semantic validation.
     ml_executable_signal: bool | None = None
@@ -317,6 +331,23 @@ class SkillReportEvidenceItem(BaseModel):
     # a weak row keeps an honest role label while staying under Needs review.
     code_role_key: str | None = None
     code_role_label: str | None = None
+    # Block-level PURPOSE, resolved at read time against the VALIDATED grade:
+    # what THIS exact block appears to do (closed vocabulary — "Documentation
+    # describing retraining pipeline", "Imports / dependency setup", "Model
+    # training") plus one short safe helper sentence. A label only; it never
+    # promotes a weak row out of Needs review.
+    code_block_purpose_key: str | None = None
+    code_block_purpose_label: str | None = None
+    code_block_purpose_summary: str | None = None
+    # SKILL RELEVANCE, computed at read time from the resolved purpose × this
+    # report's skill family × the VALIDATED grade ("Direct Machine Learning
+    # implementation evidence", "Product UI context, not Machine Learning
+    # implementation"), plus one short safe helper sentence. A label only; it
+    # never promotes a weak row out of Needs review, and cross-family evidence
+    # never counts toward the selected skill.
+    skill_relevance_key: str | None = None
+    skill_relevance_label: str | None = None
+    skill_relevance_summary: str | None = None
     # Grade-time ML verdict from the trusted provenance body (a plain tri-state
     # bool / None — never the raw snippet). Drives read-time ML semantic validation
     # so a deployment-only body can never present as ML primary implementation proof.
@@ -577,6 +608,18 @@ class SkillReportStandaloneGitHubRow(BaseModel):
     # ``selection_reason``; it never changes the quality grade above.
     code_role_key: str | None = None
     code_role_label: str | None = None
+    # Block-level PURPOSE for this exact row (closed safe vocabulary + one short
+    # helper sentence). The frontend prefers this over the role label on weak
+    # rows; it is descriptive only and never changes the quality grade above.
+    code_block_purpose_key: str | None = None
+    code_block_purpose_label: str | None = None
+    code_block_purpose_summary: str | None = None
+    # SKILL RELEVANCE for this row relative to the report's skill (closed template
+    # vocabulary + one short helper sentence). Descriptive only; it never promotes
+    # a weak row out of Needs review.
+    skill_relevance_key: str | None = None
+    skill_relevance_label: str | None = None
+    skill_relevance_summary: str | None = None
     # Precise "why selected" reason ("ML training call"), when the analyzer set it.
     selection_reason: str | None = None
     github_line_url: str | None = None

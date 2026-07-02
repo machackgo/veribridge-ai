@@ -22,6 +22,7 @@ from app.services.proof_synthesis_agent_service import (
     TIER_NEEDS_REVIEW,
     TIER_STRONG,
     _build_statements,
+    _github_evidence_assessment,
     build_skill_proof_synthesis,
     synthesize_skill_report,
 )
@@ -205,6 +206,190 @@ def test_build_statements_keeps_ml_body_with_grade_time_signal() -> None:
     statements = _build_statements("Machine Learning", {"github_evidence": [row]}, {"p1"})
     primary = [s for s in statements if s["text"].startswith("Primary GitHub implementation")]
     assert len(primary) == 1
+
+
+def test_build_statements_cross_skill_impl_body_is_never_primary_or_supporting() -> None:
+    """CROSS-SKILL REGRESSION (Codex must-fix): a real executable ML training body is
+    NOT synthesized as primary — or even supporting — code proof for a DevOps
+    report; it joins the honest weak/limitation band instead."""
+    row = {
+        "source_id": "x1",
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "evidence_quality_grade": GRADE_IMPLEMENTATION_BODY,
+        "file_path": "Tree.py",
+        "line_start": 13,
+        "line_end": 72,
+        "selection_reason": "decision tree training",
+        "safe_snippet": "clf = DecisionTreeClassifier()\nclf.fit(X_train, y_train)",
+    }
+    statements = _build_statements("DevOps", {"github_evidence": [row]}, {"x1"})
+    assert not any(s["text"].startswith("Primary GitHub implementation") for s in statements)
+    assert not any(s["text"].startswith("Supporting GitHub evidence") for s in statements)
+    weak = [s for s in statements if "not sufficient by itself" in s["text"]]
+    assert len(weak) == 1 and "DevOps implementation proof" in weak[0]["text"]
+    # The SAME row IS primary for a Machine Learning report — relevance is per skill.
+    ml_statements = _build_statements("Machine Learning", {"github_evidence": [row]}, {"x1"})
+    assert any(s["text"].startswith("Primary GitHub implementation") for s in ml_statements)
+
+
+def test_build_statements_supporting_logic_cross_skill_not_supporting() -> None:
+    """A supporting_logic row whose purpose belongs to another skill (frontend UI in
+    a Machine Learning report) must not read as Supporting GitHub evidence for it."""
+    row = {
+        "source_id": "ui1",
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "evidence_quality_grade": GRADE_SUPPORTING_LOGIC,
+        "file_path": "app/page.tsx",
+        "line_start": 31,
+        "line_end": 58,
+        "selection_reason": "risk input form",
+        "code_block_purpose_key": "frontend_ui_component",
+    }
+    statements = _build_statements("Machine Learning", {"github_evidence": [row]}, {"ui1"})
+    assert not any(s["text"].startswith("Supporting GitHub evidence") for s in statements)
+    assert not any(s["text"].startswith("Primary GitHub implementation") for s in statements)
+
+
+def test_cross_skill_impl_body_plus_website_and_defense_is_not_strong() -> None:
+    """Tier regression: a chain whose only implementation body is ANOTHER skill's
+    code can never reach "Strongly corroborated" for the selected skill, even with
+    a website workflow and a defense attached."""
+    gh = {
+        "proof_type": "GitHub Proof",
+        "source_id": "gh-cross",
+        "skill_name": "DevOps",
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "file_path": "Tree.py",
+        "line_start": 13,
+        "line_end": 72,
+        "evidence_quality_grade": GRADE_IMPLEMENTATION_BODY,
+        "selection_reason": "decision tree training",
+        "safe_snippet": "clf = DecisionTreeClassifier()\nclf.fit(X_train, y_train)",
+        "public_safe": True,
+        "attached_project_ids": ["p1"],
+    }
+    chain = {
+        "attached": True,
+        "project_id": "p1",
+        "project_title": "Boston Deploys",
+        "github_evidence": [gh],
+        "website_evidence": [_website_row()],
+        "defense_evidence": [_defense_row()],
+    }
+    report = synthesize_skill_report(
+        {"skill": "DevOps", "projects": [chain], "source_counts": {"GitHub Proof": 1}}
+    )
+    enriched = report["proof_chains"][0]
+    assert enriched["has_primary_github_implementation"] is False
+    assert enriched["confidence_tier"] != TIER_STRONG
+
+
+# ── Unknown/unmapped skill fail-closed (Codex blocker regressions) ─────────────
+#
+# The grade-only bypass (`skill_family(skill) == general → primary`) is removed:
+# an unknown/future IT skill's implementation_body is synthesized as SUPPORTING
+# code evidence at most, never as this skill's primary/direct implementation.
+
+
+def _unknown_skill_row(sid: str = "u1") -> dict:
+    """A real executable implementation body under an UNMAPPED skill name."""
+    return {
+        "source_id": sid,
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "evidence_quality_grade": GRADE_IMPLEMENTATION_BODY,
+        "file_path": "lib/ledger.ex",
+        "line_start": 4,
+        "line_end": 18,
+        "selection_reason": "ledger transfer handler",
+        "safe_snippet": (
+            "def transfer_funds(a, b, amount):\n"
+            "    ledger.apply(a, b, amount)\n"
+            "    return ledger.balance(a)"
+        ),
+    }
+
+
+def test_unknown_skill_impl_body_synthesized_as_supporting_never_primary() -> None:
+    """BLOCKER TEST 3: unknown skill synthesis never calls an implementation_body
+    row primary/direct — it reads as honest supporting code evidence."""
+    row = _unknown_skill_row()
+    statements = _build_statements(
+        "Blockchain Development", {"github_evidence": [row]}, {"u1"}
+    )
+    assert not any(
+        s["text"].startswith("Primary GitHub implementation") for s in statements
+    )
+    supporting = [
+        s for s in statements if s["text"].startswith("Supporting GitHub evidence")
+    ]
+    assert len(supporting) == 1
+
+
+def test_unknown_skill_assessment_is_supporting_not_primary() -> None:
+    """The chain-level GitHub assessment for an unknown skill's implementation_body
+    is 'supporting' — never 'implementation' (primary), never dropped to 'weak'."""
+    assessment = _github_evidence_assessment(
+        "Blockchain Development", [_unknown_skill_row()]
+    )
+    assert assessment["strength"] == "supporting"
+    assert "No primary implementation body was isolated" in assessment["note"]
+
+
+def test_unknown_skill_chain_never_reaches_strong_tier() -> None:
+    """Unknown skill + implementation_body + website + defense: the strongest tier
+    requires a SKILL-RELEVANT primary body, so the chain stays below TIER_STRONG."""
+    gh = {
+        "proof_type": "GitHub Proof",
+        "skill_name": "Blockchain Development",
+        "public_safe": True,
+        "attached_project_ids": ["p1"],
+        **_unknown_skill_row("gh-unknown"),
+    }
+    chain = {
+        "attached": True,
+        "project_id": "p1",
+        "project_title": "Ledger App",
+        "github_evidence": [gh],
+        "website_evidence": [_website_row()],
+        "defense_evidence": [_defense_row()],
+    }
+    report = synthesize_skill_report(
+        {
+            "skill": "Blockchain Development",
+            "projects": [chain],
+            "source_counts": {"GitHub Proof": 1},
+        }
+    )
+    enriched = report["proof_chains"][0]
+    assert enriched["has_primary_github_implementation"] is False
+    assert enriched["confidence_tier"] != TIER_STRONG
+
+
+def test_supporting_logic_in_family_reads_supporting_not_direct() -> None:
+    """BLOCKER TEST 6 (synthesis half): an in-family supporting_logic row is
+    synthesized as Supporting GitHub evidence — never as primary implementation."""
+    row = {
+        "source_id": "s1",
+        "display_mode": "code_line",
+        "has_precise_line_evidence": True,
+        "evidence_quality_grade": GRADE_SUPPORTING_LOGIC,
+        "file_path": "src/model/metrics.py",
+        "line_start": 10,
+        "line_end": 24,
+        "selection_reason": "evaluation metrics helper",
+        "safe_snippet": "score = f1_score(y_true, y_pred, average='macro')",
+    }
+    statements = _build_statements("Machine Learning", {"github_evidence": [row]}, {"s1"})
+    assert not any(
+        s["text"].startswith("Primary GitHub implementation") for s in statements
+    )
+    assert any(
+        s["text"].startswith("Supporting GitHub evidence") for s in statements
+    )
 
 
 def test_build_statements_aggregates_documents_into_one_statement() -> None:

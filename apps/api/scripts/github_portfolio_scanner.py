@@ -34,7 +34,9 @@ try:
         ANALYZER_VERSION,
         TRUSTED_ANALYSIS_TABLE,
         build_server_provenance,
+        classify_code_block_purpose,
         classify_code_role,
+        describe_code_block_purpose,
         describe_code_role,
         describe_grade,
         docstring_and_comment_lines,
@@ -48,6 +50,8 @@ except Exception:  # pragma: no cover - standalone fallback
     grade_evidence = None  # type: ignore
     classify_code_role = None  # type: ignore
     describe_code_role = None  # type: ignore
+    classify_code_block_purpose = None  # type: ignore
+    describe_code_block_purpose = None  # type: ignore
     build_server_provenance = None  # type: ignore
     describe_grade = None  # type: ignore
     docstring_and_comment_lines = None  # type: ignore
@@ -100,6 +104,9 @@ class EvidenceCandidate:
     # the grade above still governs that, and a weak structural band keeps its
     # honest grade-derived role whatever the detection reason claims.
     code_role_key: str | None = None
+    # Block-level PURPOSE of the focused window (finer than the role): what this
+    # exact block appears to do, from a closed safe vocabulary. A label only.
+    code_block_purpose_key: str | None = None
 
 
 @dataclass
@@ -107,6 +114,10 @@ class ImportResult:
     created: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Existing rows whose SERVER-ONLY trusted provenance was (or, in dry-run,
+    # would be) refreshed in place — the user-owned skill_evidence row itself is
+    # never modified, deleted or re-created.
+    refreshed: list[str] = field(default_factory=list)
 
 
 # ── GitHub API client (injectable / mockable) ─────────────────────────────────
@@ -871,6 +882,45 @@ def check_duplicate(
     return len(rows) > 0
 
 
+def find_existing_evidence_id(
+    supabase_client: Any,
+    user_id: str,
+    candidate: EvidenceCandidate,
+) -> str | None:
+    """The id of the user's OWN existing skill_evidence row matching this candidate.
+
+    Strictly owner/location-scoped — the same exact identity used by
+    :func:`check_duplicate` (user + repo URL + file + line range + skill), so a
+    provenance refresh can never attach to another user's row, another repo, or a
+    different code location.
+    """
+    if isinstance(supabase_client, dict):
+        table = supabase_client.get("skill_evidence", {})
+        for row_id, row in table.items():
+            if row.get("user_id") != user_id:
+                continue
+            meta = row.get("metadata") or {}
+            if isinstance(meta, dict) and meta.get("import_key") == candidate.import_key:
+                return str(row.get("id") or row_id)
+        return None
+
+    result = (
+        supabase_client.table("skill_evidence")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("repository_url", candidate.repo_url)
+        .eq("file_path", candidate.file_path)
+        .eq("line_start", candidate.line_start)
+        .eq("line_end", candidate.line_end)
+        .eq("skill_name", candidate.skill_name)
+        .execute()
+    )
+    rows = getattr(result, "data", []) or []
+    if not rows:
+        return None
+    return str(rows[0].get("id") or "") or None
+
+
 # ── High-signal file filter ───────────────────────────────────────────────────
 
 _HIGH_SIGNAL_EXTENSIONS = {
@@ -1241,6 +1291,7 @@ class PortfolioScanner:
         code_snippet: str | None = None
         evidence_quality_grade: str | None = None
         code_role_key: str | None = None
+        code_block_purpose_key: str | None = None
         if content is not None:
             window = content.splitlines()[line_start - 1 : line_end]
             code_snippet = "\n".join(window) or None
@@ -1258,6 +1309,16 @@ class PortfolioScanner:
                 # keeps its grade-derived role even when the detection reason
                 # reads like implementation ("ML training call").
                 code_role_key = classify_code_role(
+                    grade=evidence_quality_grade,
+                    code_snippet=code_snippet,
+                    selection_reason=detection_reason,
+                    file_path=file_path,
+                )
+            if classify_code_block_purpose is not None:
+                # Block-level purpose of the same persisted window (finer than
+                # the role, same fail-closed rules): a docstring window refines
+                # only to a documentation topic, never to an executable purpose.
+                code_block_purpose_key = classify_code_block_purpose(
                     grade=evidence_quality_grade,
                     code_snippet=code_snippet,
                     selection_reason=detection_reason,
@@ -1295,6 +1356,7 @@ class PortfolioScanner:
             focused_end_line=line_end,
             focused_reason=detection_reason,
             code_role_key=code_role_key,
+            code_block_purpose_key=code_block_purpose_key,
         )
 
 
@@ -1305,12 +1367,29 @@ def import_candidates(
     user_id: str,
     candidates: list[EvidenceCandidate],
     dry_run: bool = True,
+    refresh_provenance: bool = False,
 ) -> ImportResult:
     """
     Create skill_evidence records for each candidate.
 
     In dry_run mode, returns what WOULD be created without inserting anything.
     Uses SkillEvidenceService for real inserts (same path as the UI).
+
+    ``refresh_provenance`` re-stamps the SERVER-ONLY trusted provenance (analyzer
+    grade + redacted focused excerpt) for candidates that already exist as this
+    user's evidence rows, instead of skipping them outright. This is how STALE
+    rows imported before the trusted-provenance table (migration 053) gain
+    trusted grades / purpose labels without being deleted or re-created:
+
+    * strictly owner/repo/location-scoped — the row is matched by the exact
+      duplicate identity (user + repo URL + file + line range + skill);
+    * NON-destructive — the user-owned ``skill_evidence`` row itself is never
+      updated or deleted; only the service-role-only provenance table is
+      upserted (``on_conflict=skill_evidence_id``);
+    * dry-run capable — with ``dry_run=True`` it only reports what WOULD be
+      refreshed; and
+    * fail-closed — a candidate with no scanner provenance (no grade and no
+      snippet) is still skipped, never blank-stamped.
     """
     result = ImportResult()
 
@@ -1329,9 +1408,38 @@ def import_candidates(
         )
 
         if check_duplicate(supabase_client, user_id, candidate_with_key):
-            result.skipped.append(
-                f"SKIP (duplicate): {candidate.skill_name} in {candidate.file_path}:{candidate.line_start}-{candidate.line_end}"
+            location = (
+                f"{candidate.skill_name} in "
+                f"{candidate.file_path}:{candidate.line_start}-{candidate.line_end}"
             )
+            has_provenance = build_server_provenance is not None and (
+                candidate.evidence_quality_grade or candidate.code_snippet
+            )
+            if refresh_provenance and has_provenance:
+                evidence_id = find_existing_evidence_id(
+                    supabase_client, user_id, candidate_with_key
+                )
+                if evidence_id:
+                    if dry_run:
+                        result.refreshed.append(
+                            f"DRY-RUN: would refresh trusted provenance for {location}"
+                        )
+                    else:
+                        provenance = build_server_provenance(
+                            grade=candidate.evidence_quality_grade,
+                            code_snippet=candidate.code_snippet,
+                            focused_start_line=candidate.focused_start_line,
+                            focused_end_line=candidate.focused_end_line,
+                            focused_reason=candidate.focused_reason,
+                        )
+                        _stamp_server_provenance(
+                            supabase_client, user_id, evidence_id, provenance
+                        )
+                        result.refreshed.append(
+                            f"REFRESHED provenance: {evidence_id} — {location}"
+                        )
+                    continue
+            result.skipped.append(f"SKIP (duplicate): {location}")
             continue
 
         if dry_run:
