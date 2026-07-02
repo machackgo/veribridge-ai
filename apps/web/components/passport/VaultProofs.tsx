@@ -258,10 +258,14 @@ function GitHubSnippet({ snippet }: { snippet: string }) {
 /**
  * GitHub evidence rendered from the backend's explicit ``display_mode``:
  *
- * * ``code_line`` + ``has_precise_line_evidence`` → a "Precise code evidence"
- *   badge, the file/function/line location, the safe snippet, and a "View code
- *   lines →" link to the exact ``github_line_url`` (never falls back to the repo
- *   URL unless the line URL is missing).
+ * * ``code_line`` + ``has_precise_line_evidence`` + STRONG grade → a "Precise
+ *   code evidence" badge, the file/function/line location, the safe snippet, and
+ *   a "View code lines →" link to the exact ``github_line_url`` (never falls
+ *   back to the repo URL unless the line URL is missing).
+ * * ``code_line`` with a WEAK or missing grade → a "Needs review —
+ *   repository-level signal" badge that KEEPS the safe file/line location, the
+ *   descriptive ``code_role_label`` (grade-derived fallback when absent) and the
+ *   "View code lines →" link — inspectable, but never implementation proof.
  * * ``repo_level`` → a "Repo-level support only" badge, the repo name, a clear
  *   limitation, and a "View repository →" link to ``repo_url`` — NO snippet, NO
  *   line range, and never implies precise implementation proof.
@@ -270,21 +274,17 @@ function GitHubSnippet({ snippet }: { snippet: string }) {
 function GitHubEvidence({ item, ghLocation }: { item: SkillReportEvidenceItem; ghLocation: string | null }) {
   // A code_line row only renders as "Precise code evidence" when its quality grade
   // is explicitly STRONG (implementation_body / supporting_logic). It FAILS CLOSED:
-  //  * an explicitly WEAK grade (import/docstring/config/route-decorator/fallback)
-  //    → the honest "Repo-level support only" treatment; and
-  //  * a MISSING / ungraded grade is NEVER treated as precise implementation proof —
-  //    it renders as a conservative "Needs review — repository-level signal" that
-  //    keeps the safe location + "View code lines" link but clearly states it has
-  //    not been validated as primary implementation proof.
+  // any WEAK grade (import/docstring/config/route-decorator/fallback) AND any
+  // MISSING / ungraded grade render as a conservative "Needs review —
+  // repository-level signal" that keeps the safe file/line location, the
+  // descriptive role label ("Documentation / usage header", …) and the "View
+  // code lines" link — but never claims primary implementation proof.
   const grade = item.evidence_quality_grade
   const strongGrade = !!grade && STRONG_GITHUB_GRADES.has(grade)
-  const weakGrade = !!grade && !STRONG_GITHUB_GRADES.has(grade)
   const isCodeLine = item.display_mode === "code_line" && item.has_precise_line_evidence === true
   const precise = isCodeLine && strongGrade
-  const repoLevel = item.display_mode === "repo_level" || (isCodeLine && weakGrade)
-  // A precise located line with NO grade fails closed to "needs review": it is a
-  // repository-level signal, never validated primary/precise implementation proof.
-  const needsReview = isCodeLine && !grade
+  const repoLevel = item.display_mode === "repo_level"
+  const needsReview = isCodeLine && !strongGrade
 
   if (precise) {
     return (
@@ -330,10 +330,12 @@ function GitHubEvidence({ item, ghLocation }: { item: SkillReportEvidenceItem; g
   }
 
   if (needsReview) {
-    // Ungraded precise line: fail closed. The "View code lines" link may remain, but
-    // the surrounding label makes clear this is a repository-level signal, NOT
-    // validated primary/precise implementation proof. No "Precise code evidence"
-    // badge, no snippet framed as proof.
+    // Weak-graded or ungraded precise line: fail closed. The exact location stays
+    // inspectable — safe file/line label, descriptive role label ("Documentation /
+    // usage header", "Imports / setup context", …) and the "View code lines" link —
+    // but the row is clearly a repository-level signal, NOT validated primary /
+    // precise implementation proof. No "Precise code evidence" badge, no snippet
+    // framed as proof, and never the raw ``selection_reason`` (which can overclaim).
     return (
       <>
         <span data-testid="github-needs-review-badge">
@@ -345,12 +347,21 @@ function GitHubEvidence({ item, ghLocation }: { item: SkillReportEvidenceItem; g
         >
           This code link is a repository-level signal and has not been validated as primary implementation proof.
         </p>
-        {ghLocation && (
-          <Mono data-testid="github-location" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
-            {ghLocation}
-          </Mono>
-        )}
-        <SafeLink url={item.github_line_url ?? item.public_url} label="View code lines →" />
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+          {ghLocation && (
+            <Mono data-testid="github-location" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
+              {ghLocation}
+            </Mono>
+          )}
+          <span data-testid="github-code-role-label" style={{ fontSize: 11, color: TOKEN.muted }}>
+            {ghLocation ? "— " : ""}
+            {weakRowRoleLabel(item)}
+          </span>
+        </div>
+        <SafeLink
+          url={item.github_line_url ?? item.public_url}
+          label={item.github_line_url ? "View code lines →" : "View on GitHub →"}
+        />
       </>
     )
   }
@@ -1021,6 +1032,32 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
 // repository-level signals" summary.
 const STRONG_GITHUB_GRADES = new Set(["implementation_body", "supporting_logic"])
 
+// Conservative, grade-derived role labels for WEAK repository-level rows. A weak
+// row must never echo its raw ``selection_reason`` (which can overclaim — e.g. "ML
+// training call", "Cloud deployment command") because it was NOT validated as an
+// implementation body. The backend now sends a role-aware ``code_role_label``
+// ("Documentation / usage header", "Imports / setup context", "Deployment /
+// serving context", …) describing what the block appears to be; this map is the
+// fallback for stale payloads that carry only a grade. Either way the label is
+// DESCRIPTIVE only — weak rows stay under Needs review and never promote.
+const WEAK_GRADE_ROLE_LABEL: Record<string, string> = {
+  comment_or_docstring: "Documentation / usage header",
+  import_only: "Imports / setup context",
+  config_or_constant: "Config / constants",
+  route_decorator_only: "API route shell",
+  repo_level_fallback: "Repository-level context",
+}
+function weakRowRoleLabel(row: {
+  code_role_label?: string | null
+  evidence_quality_grade?: string | null
+}): string {
+  return (
+    row.code_role_label ||
+    (row.evidence_quality_grade && WEAK_GRADE_ROLE_LABEL[row.evidence_quality_grade]) ||
+    "Repository-level context"
+  )
+}
+
 // Visible rows per quality band before a "+N more" control appears. Each band
 // (primary / supporting / needs-review) caps independently, so a graded group can
 // never render every row uncapped — and weak rows never surface above primary.
@@ -1051,16 +1088,23 @@ function useSignalsTitle(groups?: SkillReportStandaloneGitHubGroup[] | null): bo
  *  ``weak`` rows are repository-level signals — rendered muted, never framed as
  *  precise "View code lines" implementation proof. */
 function StandaloneGitHubRowItem({ row, weak = false }: { row: SkillReportStandaloneGitHubRow; weak?: boolean }) {
+  // Weak rows show the conservative role label ("Documentation / usage header",
+  // "Imports / setup context", …) — never the raw ``selection_reason`` (which can
+  // overclaim). They still expose the safe file/line label and a "View code
+  // lines" link so the location is inspectable, but they are muted and never
+  // framed as primary implementation proof. Strong rows keep their validated
+  // precise reason, falling back to the role label when no reason is stored.
+  const reason = weak ? weakRowRoleLabel(row) : row.selection_reason || row.code_role_label
   return (
     <div
       data-testid={weak ? "standalone-github-weak-row" : "standalone-github-row"}
       style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}
     >
       <Mono style={{ fontSize: 12, color: weak ? TOKEN.muted : TOKEN.inkSoft }}>{row.label}</Mono>
-      {row.selection_reason && <span style={{ fontSize: 11, color: TOKEN.muted }}>— {row.selection_reason}</span>}
+      {reason && <span style={{ fontSize: 11, color: TOKEN.muted }}>— {reason}</span>}
       <SafeLink
         url={row.github_line_url ?? row.public_url}
-        label={weak ? "View on GitHub →" : "View code lines →"}
+        label={weak && !row.github_line_url ? "View on GitHub →" : "View code lines →"}
       />
     </div>
   )
@@ -1072,11 +1116,13 @@ function RowMoreToggle({
   expanded,
   moreCount,
   onToggle,
+  noun = "code location",
 }: {
   testId: string
   expanded: boolean
   moreCount: number
   onToggle: () => void
+  noun?: string
 }) {
   if (moreCount <= 0) return null
   return (
@@ -1097,8 +1143,8 @@ function RowMoreToggle({
       }}
     >
       {expanded
-        ? "Show fewer code locations"
-        : `+${moreCount} more code location${moreCount === 1 ? "" : "s"}`}
+        ? `Show fewer ${noun}s`
+        : `+${moreCount} more ${noun}${moreCount === 1 ? "" : "s"}`}
     </button>
   )
 }
@@ -1136,47 +1182,42 @@ function GitHubRowBand({
 }
 
 /**
- * Collapsed "Needs review / repository-level signals" summary for a repo's WEAK
- * (and, in a mixed group, ungraded) GitHub rows — imports, comments, configuration,
- * endpoint scaffolding, or unvalidated legacy lines. These are never primary
- * implementation proof, so they render as one honest summary line; expanding
- * reveals up to ``GITHUB_BAND_CAP`` muted rows plus a "+N more" for the rest — never
- * precise code evidence, and always below any primary/supporting rows.
+ * The "Needs review / repository-level signals" band for a repo's WEAK (and, in a
+ * mixed group, ungraded) GitHub rows — imports, comments, configuration, endpoint
+ * scaffolding, or unvalidated legacy lines. These are never primary implementation
+ * proof, so they stay muted, carry an honest "Needs review" heading + limitation
+ * note, and never claim precise code evidence — always below any primary/supporting
+ * rows.
+ *
+ * Crucially, the first ``GITHUB_BAND_CAP`` rows are ALWAYS visible (they render even
+ * in a static / PDF snapshot with no JS interaction), so a recruiter/student can
+ * still inspect the weak code locations — each row keeps its safe file/line label
+ * and a "View code lines" link. Any remaining rows collapse behind a
+ * "+N more weak code locations" toggle.
  */
 function WeakGitHubSignals({ rows }: { rows: SkillReportStandaloneGitHubRow[] }) {
-  const [open, setOpen] = useState(false)
   const [showAll, setShowAll] = useState(false)
   if (rows.length === 0) return null
   const moreCount = Math.max(0, rows.length - GITHUB_BAND_CAP)
   const visible = showAll ? rows : rows.slice(0, GITHUB_BAND_CAP)
   return (
     <div data-testid="github-weak-signals" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        style={{
-          alignSelf: "flex-start",
-          padding: 0,
-          border: "none",
-          background: "none",
-          cursor: "pointer",
-          fontSize: 11,
-          color: TOKEN.muted,
-          fontWeight: 600,
-        }}
-      >
-        {open ? "Hide repository-level signals" : `Needs review — ${rows.length} weak/repository-level signal${rows.length === 1 ? "" : "s"}`}
-      </button>
-      {!open && (
-        <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
-          Mostly imports, comments, configuration, or endpoint scaffolding — not sufficient as implementation proof.
-        </p>
-      )}
-      {open && visible.map((row, i) => <StandaloneGitHubRowItem key={`${row.source_id}-${row.label}-${i}`} row={row} weak />)}
-      {open && (
-        <RowMoreToggle testId="github-weak-more" expanded={showAll} moreCount={moreCount} onToggle={() => setShowAll((v) => !v)} />
-      )}
+      <span data-testid="github-weak-heading" style={{ fontSize: 11, fontWeight: 700, color: TOKEN.muted }}>
+        Needs review — {rows.length} weak/repository-level signal{rows.length === 1 ? "" : "s"}
+      </span>
+      <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+        Mostly imports, comments, configuration, or endpoint scaffolding — not primary implementation proof.
+      </p>
+      {visible.map((row, i) => (
+        <StandaloneGitHubRowItem key={`${row.source_id}-${row.label}-${i}`} row={row} weak />
+      ))}
+      <RowMoreToggle
+        testId="github-weak-more"
+        expanded={showAll}
+        moreCount={moreCount}
+        onToggle={() => setShowAll((v) => !v)}
+        noun="weak code location"
+      />
     </div>
   )
 }

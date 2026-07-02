@@ -1452,3 +1452,104 @@ def test_migration_053_has_no_authenticated_or_anon_write_policy(
     assert "to public" not in migration_053_sql
     # Exactly one policy exists on the table, and it is the service-role policy.
     assert migration_053_sql.count("create policy") == 1
+
+
+# ── Code role classification on scanner candidates ─────────────────────────────
+
+from app.services.github_python_evidence_focus import (  # noqa: E402
+    ROLE_MODEL_TRAINING,
+    ROLE_PREDICTION_INFERENCE,
+    describe_code_role,
+)
+
+_SERVE_API_SOURCE = "\n".join([
+    '"""Stroke risk serving API."""',
+    "from fastapi import FastAPI",
+    "import joblib",
+    "import numpy as np",
+    "",
+    "app = FastAPI()",
+    "model = joblib.load('stroke_model.pkl')",
+    "",
+    "@app.post('/predict')",
+    "async def predict(data: dict):",
+    "    features = np.array([[data['age'], data['bmi']]])",
+    "    proba = model.predict_proba(features)[0][1]",
+    "    return {'risk': float(proba)}",
+])
+
+
+class TestScannerCodeRoleClassification:
+    _USER = "00000000-0000-0000-0000-0000000000ce"
+
+    def _candidates_for(self, source: str, path: str) -> list[EvidenceCandidate]:
+        scanner = PortfolioScanner(github_client=None)  # type: ignore[arg-type]
+        repo = _make_repo(name="stroke-prediction", owner="alice")
+        return scanner._extract_candidates_from_file(
+            repo, "main", path, source, ["Machine Learning"], None,
+        )
+
+    def test_training_body_candidate_is_model_training_role(self):
+        scanner = PortfolioScanner(github_client=None)  # type: ignore[arg-type]
+        repo = _make_repo(name="boston-accident-risk", owner="alice")
+        candidates = scanner._extract_candidates_from_file(
+            repo, "main", "src/model/train.py", _BOSTON_TRAIN_SOURCE,
+            ["Machine Learning"], None,
+        )
+        assert candidates
+        cand = candidates[0]
+        assert cand.evidence_quality_grade == GRADE_IMPLEMENTATION_BODY
+        assert cand.code_role_key == ROLE_MODEL_TRAINING
+        assert describe_code_role(cand.code_role_key) == "Model training context"
+
+    def test_predict_proba_handler_candidate_is_prediction_inference_role(self):
+        candidates = self._candidates_for(_SERVE_API_SOURCE, "serving/api.py")
+        assert candidates
+        # The focused handler body performs real model inference.
+        inference = [c for c in candidates if c.code_role_key == ROLE_PREDICTION_INFERENCE]
+        assert inference, [c.code_role_key for c in candidates]
+        assert describe_code_role(inference[0].code_role_key) == "Prediction / inference context"
+        # A prediction body is executable ML — a strong grade is allowed here,
+        # but the ROLE never invents one: whatever the grade says stands.
+        assert inference[0].evidence_quality_grade in (
+            GRADE_IMPLEMENTATION_BODY, GRADE_SUPPORTING_LOGIC
+        )
+
+    def test_weak_structural_candidate_role_follows_grade_not_reason(self):
+        # A candidate whose window graded as a weak structural band keeps its
+        # honest grade-derived role even with an ML-sounding detection reason.
+        scanner = PortfolioScanner(github_client=None)  # type: ignore[arg-type]
+        repo = _make_repo(name="stroke-prediction", owner="alice")
+        cand = scanner._make_candidate(
+            repo, "main", "scripts/retrain.py", 1, 3,
+            "Machine Learning", "ML training call", None,
+            content="import pandas as pd\nfrom lightgbm import LGBMClassifier\nimport joblib\n",
+        )
+        assert cand.evidence_quality_grade == GRADE_IMPORT_ONLY
+        assert cand.code_role_key == "imports_setup"
+        assert describe_code_role(cand.code_role_key) == "Imports / setup context"
+
+    def test_import_pipeline_carries_role_through_to_canonical_adapter(self):
+        # E2E: scan-time role → import → protected provenance → canonical adapter
+        # rows expose code_role_key/label for the report layer.
+        scanner = PortfolioScanner(github_client=None)  # type: ignore[arg-type]
+        repo = _make_repo(name="boston-accident-risk", owner="alice")
+        candidates = scanner._extract_candidates_from_file(
+            repo, "main", "src/model/train.py", _BOSTON_TRAIN_SOURCE,
+            ["Machine Learning"], None,
+        )
+        db: dict = {"skill_evidence": {}}
+        result = import_candidates(db, self._USER, candidates[:1], dry_run=False)
+        assert result.created, result.errors
+        evs = collect_canonical_github_skill_evidence(db, self._USER)
+        assert evs
+        assert evs[0].code_role_key == ROLE_MODEL_TRAINING
+        assert evs[0].code_role_label == "Model training context"
+        # The role is descriptive only — the strong grade still comes from the
+        # trusted provenance, and to_dict exposes both safe fields.
+        payload = evs[0].to_dict()
+        assert payload["code_role_key"] == ROLE_MODEL_TRAINING
+        assert payload["code_role_label"] == "Model training context"
+        # No raw snippet/provenance rides out on the payload surface.
+        assert "code_snippet" not in payload
+        assert "safe_excerpt" not in payload

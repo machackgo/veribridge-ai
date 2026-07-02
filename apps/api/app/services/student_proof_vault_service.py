@@ -53,6 +53,10 @@ from app.services.github_canonical_skill_evidence_adapter import (
 from app.services.github_python_evidence_focus import (
     GRADE_IMPLEMENTATION_BODY,
     GRADE_REPO_LEVEL_FALLBACK,
+    ROLE_REPOSITORY_CONTEXT,
+    classify_code_role,
+    describe_code_role,
+    effective_code_role,
     effective_evidence_grade,
     grade_rank,
     is_strong_grade,
@@ -257,6 +261,11 @@ _LOCATOR_KEYS = (
     "display_mode",
     "evidence_strength",
     "evidence_quality_grade",
+    # Conservative DESCRIPTIVE code role (documentation_header / imports_setup /
+    # model_training / …). Says what the block appears to be — never proof
+    # strength; the grade above still governs that.
+    "code_role_key",
+    "code_role_label",
     # Grade-time ML verdict from the trusted provenance body (tri-state bool / None).
     # Drives read-time ML semantic validation without ever re-exposing the snippet.
     "ml_executable_signal",
@@ -427,6 +436,8 @@ def _canonical_github_items(
                     "repo_url": ev.repo_url if ev.public_safe else None,
                     "evidence_strength": ev.evidence_strength,
                     "evidence_quality_grade": ev.evidence_quality_grade,
+                    "code_role_key": ev.code_role_key,
+                    "code_role_label": ev.code_role_label,
                     "ml_executable_signal": ev.ml_executable_signal,
                     "evidence_kind": ev.evidence_kind,
                     "selection_reason": ev.selection_reason,
@@ -491,6 +502,8 @@ def _collect_github(db: Any, user_id: str, attach: dict[tuple[str, str], list[st
             "has_precise_line_evidence": False,
             "evidence_kind": "repo_level_summary",
             "evidence_quality_grade": "repo_level_fallback",
+            "code_role_key": ROLE_REPOSITORY_CONTEXT,
+            "code_role_label": describe_code_role(ROLE_REPOSITORY_CONTEXT),
         }
 
         if not all_skill_keys:
@@ -536,6 +549,17 @@ def _collect_github(db: Any, user_id: str, attach: dict[tuple[str, str], list[st
                         if strong.mapping_reason
                         else None
                     )
+                    # Conservative DESCRIPTIVE role for the focused block — computed
+                    # here where the extractor's snippet is available, but it never
+                    # promotes the grade (a docstring/import/config/route row keeps
+                    # its honest grade-derived role whatever the reason claims).
+                    code_role_key = classify_code_role(
+                        grade=strong.evidence_quality_grade,
+                        code_snippet=strong.code_snippet,
+                        selection_reason=selection_reason,
+                        file_path=strong.file_path,
+                        function_name=strong.function_name,
+                    )
                     items.append(
                         _make_item(
                             skill_name=display,
@@ -563,6 +587,8 @@ def _collect_github(db: Any, user_id: str, attach: dict[tuple[str, str], list[st
                                 "repo_url": repo_public_url,
                                 "evidence_strength": strong.evidence_strength,
                                 "evidence_quality_grade": strong.evidence_quality_grade,
+                                "code_role_key": code_role_key,
+                                "code_role_label": describe_code_role(code_role_key),
                                 "evidence_kind": strong.evidence_kind,
                                 "selection_reason": selection_reason,
                             },
@@ -1283,6 +1309,8 @@ def _report_item(
         "display_mode": item.get("display_mode"),
         "evidence_strength": item.get("evidence_strength"),
         "evidence_quality_grade": item.get("evidence_quality_grade"),
+        "code_role_key": item.get("code_role_key"),
+        "code_role_label": item.get("code_role_label"),
         "ml_executable_signal": item.get("ml_executable_signal"),
         "evidence_kind": item.get("evidence_kind"),
         "has_precise_line_evidence": item.get("has_precise_line_evidence"),
@@ -1324,6 +1352,22 @@ def _report_item(
             ml_signal=item.get("ml_executable_signal"),
         )
         row["evidence_quality_grade"] = grade
+        # Read-time code role, resolved against the VALIDATED grade. A weak /
+        # fallback / ungraded row (including a stale legacy row with no role at
+        # all) gets an honest grade-derived role — "Documentation / usage header",
+        # "Imports / setup context", "Repository-level context" — never a role
+        # inferred from a stale overclaiming ``selection_reason``. This is a LABEL
+        # only; it never changes the grade above.
+        role_key = effective_code_role(
+            item.get("code_role_key"),
+            grade=grade,
+            code_snippet=item.get("safe_snippet"),
+            selection_reason=item.get("selection_reason"),
+            file_path=item.get("file_path"),
+            function_name=item.get("function_name"),
+        )
+        row["code_role_key"] = role_key
+        row["code_role_label"] = describe_code_role(role_key)
         # Read-time neutralisation of a STALE persisted selection reason / summary. A
         # WEAK / fallback / ungraded GitHub row can never keep its stored reason —
         # even one that reads as technical ("model serving inference handler") — it is
@@ -1605,6 +1649,11 @@ def _group_github_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # rows (route_decorator_only / docstring / import / config /
                 # repo-level fallback) instead of rendering them like real code.
                 "evidence_quality_grade": e.get("evidence_quality_grade"),
+                # Conservative DESCRIPTIVE role (already resolved against the
+                # validated grade by ``_report_item``). Weak rows render this
+                # instead of a stale/overclaiming ``selection_reason``.
+                "code_role_key": e.get("code_role_key"),
+                "code_role_label": e.get("code_role_label"),
                 "selection_reason": e.get("selection_reason"),
                 "github_line_url": e.get("github_line_url"),
                 "public_url": e.get("public_url"),

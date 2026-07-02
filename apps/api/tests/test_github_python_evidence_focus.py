@@ -835,3 +835,213 @@ def test_effective_grade_is_noop_for_non_ml_and_non_implementation() -> None:
     )
     assert not ml_implementation_is_valid(code_snippet="model serving inference handler")
     assert ml_implementation_is_valid(code_snippet="clf.fit(X, y)")
+
+
+# ── Code role classifier (descriptive label, never proof strength) ────────────
+
+from app.services.github_python_evidence_focus import (  # noqa: E402
+    CODE_ROLE_KEYS,
+    CODE_ROLE_LABELS,
+    ROLE_API_ROUTE_SHELL,
+    ROLE_CONFIG_CONSTANTS,
+    ROLE_DATA_LOADING,
+    ROLE_DEPLOYMENT_SERVING,
+    ROLE_DOCUMENTATION_HEADER,
+    ROLE_EVALUATION_METRICS,
+    ROLE_FEATURE_ENGINEERING,
+    ROLE_IMPORTS_SETUP,
+    ROLE_MODEL_TRAINING,
+    ROLE_PREDICTION_INFERENCE,
+    ROLE_REPOSITORY_CONTEXT,
+    ROLE_UNKNOWN_NEEDS_REVIEW,
+    classify_code_role,
+    code_role_from_grade,
+    describe_code_role,
+    effective_code_role,
+)
+
+
+def test_code_role_labels_cover_every_key_and_fail_closed() -> None:
+    assert set(CODE_ROLE_KEYS) == set(CODE_ROLE_LABELS)
+    assert describe_code_role(ROLE_DOCUMENTATION_HEADER) == "Documentation / usage header"
+    assert describe_code_role(ROLE_IMPORTS_SETUP) == "Imports / setup context"
+    assert describe_code_role(ROLE_CONFIG_CONSTANTS) == "Config / constants"
+    assert describe_code_role(ROLE_API_ROUTE_SHELL) == "API route shell"
+    assert describe_code_role(ROLE_DATA_LOADING) == "Data loading context"
+    assert describe_code_role(ROLE_FEATURE_ENGINEERING) == "Feature engineering context"
+    assert describe_code_role(ROLE_MODEL_TRAINING) == "Model training context"
+    assert describe_code_role(ROLE_EVALUATION_METRICS) == "Evaluation / metrics context"
+    assert describe_code_role(ROLE_PREDICTION_INFERENCE) == "Prediction / inference context"
+    assert describe_code_role(ROLE_DEPLOYMENT_SERVING) == "Deployment / serving context"
+    assert describe_code_role(ROLE_REPOSITORY_CONTEXT) == "Repository-level context"
+    assert describe_code_role(ROLE_UNKNOWN_NEEDS_REVIEW) == "Unknown / needs review"
+    # Unknown / missing keys fail closed to the honest "Unknown / needs review".
+    assert describe_code_role(None) == "Unknown / needs review"
+    assert describe_code_role("made_up_role") == "Unknown / needs review"
+
+
+def test_docstring_mentioning_model_fit_is_documentation_header_never_training() -> None:
+    # Scenario 1: a usage header whose PROSE mentions model.fit — the grade is
+    # comment_or_docstring, so the role is documentation, never model training,
+    # and the row can never be implementation_body.
+    snippet = '"""Retrain pipeline.\n\nUsage: model.fit(X, y) then model.predict(X).\n"""'
+    grade = grade_python_snippet(snippet)
+    assert grade == GRADE_COMMENT_OR_DOCSTRING
+    role = classify_code_role(grade=grade, code_snippet=snippet, selection_reason="ML training call")
+    assert role == ROLE_DOCUMENTATION_HEADER
+    assert not is_strong_grade(grade)
+
+
+def test_import_block_is_imports_setup_never_training() -> None:
+    # Scenario 2: sklearn imports mention classifiers, but an import-only block
+    # keeps its honest imports role whatever the stale reason claims.
+    snippet = (
+        "import pandas as pd\n"
+        "from sklearn.ensemble import RandomForestClassifier\n"
+        "from lightgbm import LGBMClassifier\n"
+    )
+    grade = grade_python_snippet(snippet)
+    assert grade == GRADE_IMPORT_ONLY
+    role = classify_code_role(grade=grade, code_snippet=snippet, selection_reason="ML training call")
+    assert role == ROLE_IMPORTS_SETUP
+    assert not is_strong_grade(grade)
+
+
+def test_config_constants_block_is_config_role_never_implementation() -> None:
+    # Scenario 3.
+    snippet = 'MODEL_PATH = "models/stroke.joblib"\nRANDOM_STATE = 42\nTHRESHOLD = 0.5\n'
+    grade = grade_python_snippet(snippet)
+    assert grade == GRADE_CONFIG_OR_CONSTANT
+    role = classify_code_role(grade=grade, code_snippet=snippet, selection_reason="Model configuration")
+    assert role == ROLE_CONFIG_CONSTANTS
+    assert not is_strong_grade(grade)
+
+
+def test_route_decorator_shell_is_api_route_shell_not_ml_implementation() -> None:
+    # Scenario 4: a bare endpoint shell (decorator + signature, no inference).
+    snippet = '@app.post("/predict")\ndef predict(req: PredictRequest):\n    ...\n'
+    grade = grade_python_snippet(snippet)
+    assert grade == GRADE_ROUTE_DECORATOR_ONLY
+    role = classify_code_role(grade=grade, code_snippet=snippet)
+    assert role == ROLE_API_ROUTE_SHELL
+    assert not is_strong_grade(grade)
+    # And an ungraded route-shell snippet still reads as an API route shell from
+    # its executable structure (never ML training).
+    assert (
+        classify_code_role(grade=None, code_snippet='@router.get("/health")\ndef health():\n    return {"ok": True}\n')
+        == ROLE_API_ROUTE_SHELL
+    )
+
+
+def test_real_training_body_is_model_training_and_valid_ml_implementation() -> None:
+    # Scenario 5: real executable LGBMClassifier + fit.
+    snippet = (
+        "clf = LGBMClassifier(n_estimators=200)\n"
+        "clf.fit(X_train, y_train)\n"
+        "joblib.dump(clf, MODEL_PATH)\n"
+    )
+    role = classify_code_role(grade=GRADE_IMPLEMENTATION_BODY, code_snippet=snippet)
+    assert role == ROLE_MODEL_TRAINING
+    # Existing executable-ML validation accepts it as implementation_body.
+    assert ml_implementation_is_valid(code_snippet=snippet)
+    assert (
+        effective_evidence_grade(GRADE_IMPLEMENTATION_BODY, is_ml=True, code_snippet=snippet)
+        == GRADE_IMPLEMENTATION_BODY
+    )
+
+
+def test_real_predict_proba_body_is_prediction_inference() -> None:
+    # Scenario 6.
+    snippet = "features = build_features(payload)\nproba = model.predict_proba(features)[:, 1]\nreturn {\"risk\": float(proba)}\n"
+    role = classify_code_role(grade=GRADE_IMPLEMENTATION_BODY, code_snippet=snippet)
+    assert role == ROLE_PREDICTION_INFERENCE
+    assert ml_implementation_is_valid(code_snippet=snippet)
+
+
+def test_evaluation_metrics_body_is_evaluation_role() -> None:
+    # Scenario 7 (no .fit/.predict in the body — metrics only).
+    snippet = "acc = accuracy_score(y_te, y_pred)\nprint(classification_report(y_te, y_pred))\n"
+    assert classify_code_role(grade=GRADE_SUPPORTING_LOGIC, code_snippet=snippet) == ROLE_EVALUATION_METRICS
+
+
+def test_training_body_that_also_scores_still_reads_as_model_training() -> None:
+    # Priority order: training beats evaluation when both appear in one body.
+    snippet = "model.fit(X_tr, y_tr)\nacc = accuracy_score(y_te, model.predict(X_te))\n"
+    assert classify_code_role(grade=GRADE_IMPLEMENTATION_BODY, code_snippet=snippet) == ROLE_MODEL_TRAINING
+
+
+def test_deployment_only_body_is_deployment_serving_not_ml_implementation() -> None:
+    # Scenario 8: serving/cloud plumbing with no ML inference/training.
+    snippet = 'uvicorn.run(app, host="0.0.0.0", port=8080)\n'
+    role = classify_code_role(grade=GRADE_SUPPORTING_LOGIC, code_snippet=snippet)
+    assert role == ROLE_DEPLOYMENT_SERVING
+    assert not ml_implementation_is_valid(code_snippet=snippet)
+    # The existing ML gate still downgrades it out of implementation_body.
+    assert (
+        effective_evidence_grade(GRADE_IMPLEMENTATION_BODY, is_ml=True, code_snippet=snippet)
+        != GRADE_IMPLEMENTATION_BODY
+    )
+
+
+def test_data_loading_block_is_data_loading_role() -> None:
+    # Scenario 9.
+    snippet = 'df = pd.read_csv("data/stroke.csv")\ndf = df.dropna()\n'
+    assert classify_code_role(grade=GRADE_SUPPORTING_LOGIC, code_snippet=snippet) == ROLE_DATA_LOADING
+
+
+def test_feature_engineering_block_is_feature_role() -> None:
+    # Scenario 10.
+    snippet = "scaler = StandardScaler()\nX_scaled = scaler.fit_transform(X)\n"
+    assert classify_code_role(grade=GRADE_SUPPORTING_LOGIC, code_snippet=snippet) == ROLE_FEATURE_ENGINEERING
+
+
+def test_docstring_only_snippet_never_yields_a_semantic_role() -> None:
+    # Comments/docstrings are structurally stripped: prose mentioning fit/predict
+    # in an otherwise weak/ungraded row falls to repository context, not training.
+    snippet = "# model.fit(X, y) then model.predict_proba(X)\n"
+    assert classify_code_role(grade=None, code_snippet=snippet) == ROLE_REPOSITORY_CONTEXT
+
+
+def test_code_role_from_grade_conservative_fallbacks() -> None:
+    assert code_role_from_grade(GRADE_COMMENT_OR_DOCSTRING) == ROLE_DOCUMENTATION_HEADER
+    assert code_role_from_grade(GRADE_IMPORT_ONLY) == ROLE_IMPORTS_SETUP
+    assert code_role_from_grade(GRADE_CONFIG_OR_CONSTANT) == ROLE_CONFIG_CONSTANTS
+    assert code_role_from_grade(GRADE_ROUTE_DECORATOR_ONLY) == ROLE_API_ROUTE_SHELL
+    assert code_role_from_grade(GRADE_REPO_LEVEL_FALLBACK) == ROLE_REPOSITORY_CONTEXT
+    assert code_role_from_grade(None) == ROLE_REPOSITORY_CONTEXT
+    assert code_role_from_grade("nonsense") == ROLE_REPOSITORY_CONTEXT
+    # A strong grade alone says nothing about WHICH kind of body it is.
+    assert code_role_from_grade(GRADE_IMPLEMENTATION_BODY) == ROLE_UNKNOWN_NEEDS_REVIEW
+
+
+def test_effective_code_role_stale_weak_row_never_keeps_overclaiming_role() -> None:
+    # Scenario 11: a stale weak row — whatever role/reason it carries, the
+    # validated weak structural grade wins (fail closed).
+    assert (
+        effective_code_role(ROLE_MODEL_TRAINING, grade=GRADE_IMPORT_ONLY, selection_reason="ML training call")
+        == ROLE_IMPORTS_SETUP
+    )
+    assert (
+        effective_code_role(None, grade=GRADE_COMMENT_OR_DOCSTRING, selection_reason="Cloud deployment command")
+        == ROLE_DOCUMENTATION_HEADER
+    )
+    # Ungraded legacy row with only a stale overclaiming reason → repository
+    # context; the reason is never trusted for a weak/ungraded row.
+    assert effective_code_role(None, grade=None, selection_reason="ML training call") == ROLE_REPOSITORY_CONTEXT
+    assert (
+        effective_code_role(None, grade=GRADE_REPO_LEVEL_FALLBACK, selection_reason="Model serving handler")
+        == ROLE_REPOSITORY_CONTEXT
+    )
+
+
+def test_effective_code_role_keeps_server_derived_role_and_reason_hint_for_strong_rows() -> None:
+    # A server-derived role on a strong row is kept as-is.
+    assert effective_code_role(ROLE_MODEL_TRAINING, grade=GRADE_IMPLEMENTATION_BODY) == ROLE_MODEL_TRAINING
+    # A strong row with no role and no snippet may use a conservative reason hint
+    # (descriptive only — the grade is already validated elsewhere).
+    assert (
+        effective_code_role(None, grade=GRADE_IMPLEMENTATION_BODY, selection_reason="ML training call")
+        == ROLE_MODEL_TRAINING
+    )
+    # A strong row with nothing to describe it stays honest.
+    assert effective_code_role(None, grade=GRADE_IMPLEMENTATION_BODY) == ROLE_UNKNOWN_NEEDS_REVIEW

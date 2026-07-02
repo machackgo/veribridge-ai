@@ -722,6 +722,14 @@ export type SkillReportEvidenceItem = {
    * precise "Precise code evidence".
    */
   evidence_quality_grade?: string | null
+  /**
+   * Conservative DESCRIPTIVE code role, resolved server-side against the
+   * validated grade: key ("documentation_header" / "imports_setup" /
+   * "model_training" / …) + recruiter-readable label ("Documentation / usage
+   * header"). Says what the block appears to be — never proof strength.
+   */
+  code_role_key?: string | null
+  code_role_label?: string | null
   has_precise_line_evidence?: boolean | null
   github_line_url?: string | null
   repo_url?: string | null
@@ -973,6 +981,15 @@ export type SkillReportStandaloneGitHubRow = {
    * rows rather than render them like real implementation code.
    */
   evidence_quality_grade?: string | null
+  /**
+   * Conservative DESCRIPTIVE code role for this block, resolved server-side
+   * against the validated grade: key ("documentation_header" / "imports_setup" /
+   * "model_training" / …) + recruiter-readable label ("Documentation / usage
+   * header"). Weak rows render this instead of the raw `selection_reason`; it is
+   * a label only and never promotes a row out of Needs review.
+   */
+  code_role_key?: string | null
+  code_role_label?: string | null
   /** Precise "why selected" reason ("ML training call"), when the analyzer set it. */
   selection_reason?: string | null
   github_line_url?: string | null

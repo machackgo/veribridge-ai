@@ -60,6 +60,24 @@ __all__ = [
     "describe_grade",
     "is_overclaiming_reason",
     "safe_selection_reason",
+    "CODE_ROLE_KEYS",
+    "CODE_ROLE_LABELS",
+    "ROLE_DOCUMENTATION_HEADER",
+    "ROLE_IMPORTS_SETUP",
+    "ROLE_CONFIG_CONSTANTS",
+    "ROLE_API_ROUTE_SHELL",
+    "ROLE_DATA_LOADING",
+    "ROLE_FEATURE_ENGINEERING",
+    "ROLE_MODEL_TRAINING",
+    "ROLE_EVALUATION_METRICS",
+    "ROLE_PREDICTION_INFERENCE",
+    "ROLE_DEPLOYMENT_SERVING",
+    "ROLE_REPOSITORY_CONTEXT",
+    "ROLE_UNKNOWN_NEEDS_REVIEW",
+    "describe_code_role",
+    "code_role_from_grade",
+    "classify_code_role",
+    "effective_code_role",
     "has_ml_executable_signal",
     "ml_implementation_is_valid",
     "effective_evidence_grade",
@@ -561,6 +579,295 @@ def has_ml_executable_signal(*parts: str | None) -> bool:
     executable = _strip_comments_and_docstrings(haystack)
     return bool(executable.strip()) and bool(
         _ML_EXECUTABLE_SIGNAL_RE.search(executable)
+    )
+
+
+# ── Code role classification (descriptive label, NOT proof strength) ──────────
+#
+# ``code_role_label`` describes WHAT a focused code block *appears to be*
+# (documentation header / imports / config / a model-training body / a
+# prediction body / a deployment stanza …). It is deliberately SEPARATE from
+# ``evidence_quality_grade``, which decides proof STRENGTH. A weak row (a
+# docstring, an import block) may carry a useful role label — "Documentation /
+# usage header", "Imports / setup context" — while STILL remaining a weak,
+# needs-review signal that is never primary implementation proof.
+#
+# Classification is conservative and fails closed:
+#  * a KNOWN weak structural band (docstring / import / config / bare route
+#    decorator) takes its role FROM THE GRADE — a docstring that merely *mentions*
+#    ``model.fit(...)`` stays "Documentation / usage header", never "Model
+#    training"; and
+#  * a richer semantic role (training / inference / evaluation / feature /
+#    data-loading / deployment / API) is only assigned from a real EXECUTABLE code
+#    signal (or, for a grade that is already STRONG, a conservative reason/path
+#    hint). A role label NEVER promotes a row's grade — proof strength still
+#    requires ``evidence_quality_grade`` + executable validation.
+
+ROLE_DOCUMENTATION_HEADER = "documentation_header"
+ROLE_IMPORTS_SETUP = "imports_setup"
+ROLE_CONFIG_CONSTANTS = "config_constants"
+ROLE_API_ROUTE_SHELL = "api_route_shell"
+ROLE_DATA_LOADING = "data_loading"
+ROLE_FEATURE_ENGINEERING = "feature_engineering"
+ROLE_MODEL_TRAINING = "model_training"
+ROLE_EVALUATION_METRICS = "evaluation_metrics"
+ROLE_PREDICTION_INFERENCE = "prediction_inference"
+ROLE_DEPLOYMENT_SERVING = "deployment_serving"
+ROLE_REPOSITORY_CONTEXT = "repository_context"
+ROLE_UNKNOWN_NEEDS_REVIEW = "unknown_needs_review"
+
+CODE_ROLE_LABELS: dict[str, str] = {
+    ROLE_DOCUMENTATION_HEADER: "Documentation / usage header",
+    ROLE_IMPORTS_SETUP: "Imports / setup context",
+    ROLE_CONFIG_CONSTANTS: "Config / constants",
+    ROLE_API_ROUTE_SHELL: "API route shell",
+    ROLE_DATA_LOADING: "Data loading context",
+    ROLE_FEATURE_ENGINEERING: "Feature engineering context",
+    ROLE_MODEL_TRAINING: "Model training context",
+    ROLE_EVALUATION_METRICS: "Evaluation / metrics context",
+    ROLE_PREDICTION_INFERENCE: "Prediction / inference context",
+    ROLE_DEPLOYMENT_SERVING: "Deployment / serving context",
+    ROLE_REPOSITORY_CONTEXT: "Repository-level context",
+    ROLE_UNKNOWN_NEEDS_REVIEW: "Unknown / needs review",
+}
+CODE_ROLE_KEYS = tuple(CODE_ROLE_LABELS.keys())
+
+# A KNOWN weak structural band → its honest, grade-derived role. These fail closed:
+# whatever the snippet or a stale reason claims, the block IS what its grade says.
+_GRADE_ROLE: dict[str, str] = {
+    GRADE_COMMENT_OR_DOCSTRING: ROLE_DOCUMENTATION_HEADER,
+    GRADE_IMPORT_ONLY: ROLE_IMPORTS_SETUP,
+    GRADE_CONFIG_OR_CONSTANT: ROLE_CONFIG_CONSTANTS,
+    GRADE_ROUTE_DECORATOR_ONLY: ROLE_API_ROUTE_SHELL,
+    GRADE_REPO_LEVEL_FALLBACK: ROLE_REPOSITORY_CONTEXT,
+}
+
+# Executable-code signals for each SEMANTIC role. Matched ONLY against text that has
+# had comments + docstrings structurally stripped, so a docstring/comment mention is
+# never a signal. Evaluated in priority order (training → evaluation → inference →
+# feature → data → route → deployment), so a training body that also computes a
+# metric still reads as "Model training context".
+_ROLE_MODEL_TRAINING_RE = re.compile(
+    r"\.(?:fit|fit_predict|partial_fit)\s*\("
+    r"|\b(?:train_test_split|GridSearchCV|RandomizedSearchCV|cross_val_score|"
+    r"cross_validate|StratifiedKFold|KFold)\s*\("
+    r"|\b(?:RandomForest(?:Classifier|Regressor)|XGB(?:Classifier|Regressor)|"
+    r"LGBM(?:Classifier|Regressor)|LightGBM|GradientBoosting(?:Classifier|Regressor)|"
+    r"LogisticRegression|LinearRegression|DecisionTree(?:Classifier|Regressor)|"
+    r"KMeans|KNeighbors(?:Classifier|Regressor)|SVC|SVR|GaussianNB|MLPClassifier|"
+    r"Sequential)\s*\("
+    r"|\.compile\s*\(|\.backward\s*\(|optimizer\.(?:step|zero_grad)\s*\(",
+    re.IGNORECASE,
+)
+_ROLE_EVALUATION_RE = re.compile(
+    r"\b(?:accuracy_score|f1_score|precision_score|recall_score|roc_auc_score|"
+    r"roc_curve|confusion_matrix|classification_report|mean_squared_error|"
+    r"mean_absolute_error|r2_score|log_loss)\s*\("
+    r"|\.(?:evaluate|score)\s*\(",
+    re.IGNORECASE,
+)
+_ROLE_PREDICTION_RE = re.compile(
+    r"\.(?:predict|predict_proba|predict_log_proba|decision_function)\s*\(",
+    re.IGNORECASE,
+)
+_ROLE_FEATURE_RE = re.compile(
+    r"\b(?:StandardScaler|MinMaxScaler|RobustScaler|OneHotEncoder|LabelEncoder|"
+    r"OrdinalEncoder|CountVectorizer|TfidfVectorizer|ColumnTransformer|Pipeline|"
+    r"make_pipeline|PCA|SelectKBest)\s*\("
+    r"|\.(?:fit_transform|transform)\s*\(",
+    re.IGNORECASE,
+)
+_ROLE_DATA_LOADING_RE = re.compile(
+    r"\b(?:read_csv|read_parquet|read_json|read_excel|read_sql|read_table|"
+    r"load_dataset|fetch_openml|load_svmlight_file|loadtxt|DataLoader)\s*\(",
+    re.IGNORECASE,
+)
+_ROLE_DEPLOYMENT_RE = re.compile(
+    r"\b(?:boto3|sagemaker|docker|kubernetes|uvicorn|gunicorn|mlflow)\b"
+    r"|\.deploy\s*\(|\b(?:s3|ecr|ecs)\.\w+\s*\(",
+    re.IGNORECASE,
+)
+# Route decorator ANYWHERE in the executable block (multiline — the per-line
+# ``_ROUTE_DECORATOR_RE`` below is ``^``-anchored for single-line kind checks).
+_ROLE_ROUTE_RE = re.compile(
+    r"^\s*@(?:app|router|api|bp|blueprint|\w+)\.(?:get|post|put|delete|patch|route|websocket)\s*\(",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Natural-language reason / path hints (a DESCRIPTIVE fallback used ONLY for a row
+# whose grade is already STRONG and that carries no executable snippet at read
+# time). This never changes proof strength — the grade already governs that — it
+# only produces an honest role LABEL when no executable body is available to read.
+_REASON_ROLE_RES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"train(?:ing)?\b|\.fit\b|model\s+(?:instantiat|construct|definit)", re.IGNORECASE),
+     ROLE_MODEL_TRAINING),
+    (re.compile(r"eval(?:uat)?|metric|accuracy|f1|precision|recall|roc|auc|confusion", re.IGNORECASE),
+     ROLE_EVALUATION_METRICS),
+    (re.compile(r"predict|inference|serv\w*\s+model|model\s+serv", re.IGNORECASE),
+     ROLE_PREDICTION_INFERENCE),
+    (re.compile(r"feature[\s_-]*engineer|preprocess|scal(?:er|ing)|encod|vectoriz", re.IGNORECASE),
+     ROLE_FEATURE_ENGINEERING),
+    (re.compile(r"data\s+load|load\s+data|read_csv|dataset|dataloader|ingest", re.IGNORECASE),
+     ROLE_DATA_LOADING),
+    (re.compile(r"deploy|docker|kubernetes|sagemaker|cloud\s+(?:deploy|serv)|serving", re.IGNORECASE),
+     ROLE_DEPLOYMENT_SERVING),
+    (re.compile(r"route|endpoint|api\s+handler|fastapi|flask", re.IGNORECASE),
+     ROLE_API_ROUTE_SHELL),
+)
+
+
+def describe_code_role(key: str | None) -> str:
+    """Human, recruiter-readable label for a ``code_role_key`` (fail-closed)."""
+    return CODE_ROLE_LABELS.get(key or "", CODE_ROLE_LABELS[ROLE_UNKNOWN_NEEDS_REVIEW])
+
+
+def code_role_from_grade(grade: str | None) -> str:
+    """Conservative role derived from an ``evidence_quality_grade`` ALONE.
+
+    For a stale/legacy row that carries no snippet (Part B), the grade is the only
+    honest structural signal:
+
+    * ``comment_or_docstring`` → Documentation / usage header
+    * ``import_only`` → Imports / setup context
+    * ``config_or_constant`` → Config / constants
+    * ``route_decorator_only`` → API route shell
+    * ``repo_level_fallback`` / ungraded / unknown → Repository-level context
+
+    A STRONG grade (implementation/supporting) with no other signal is left as
+    ``unknown_needs_review`` — it is a real body, but nothing here says which kind.
+    """
+    g = str(grade or "").strip().lower()
+    if g in _GRADE_ROLE:
+        return _GRADE_ROLE[g]
+    if is_strong_grade(g):
+        return ROLE_UNKNOWN_NEEDS_REVIEW
+    return ROLE_REPOSITORY_CONTEXT
+
+
+def _semantic_role_from_code(code_snippet: str | None) -> str | None:
+    """The semantic role of an EXECUTABLE code body, or ``None``.
+
+    Comments + docstrings are structurally stripped first (via
+    :func:`_strip_comments_and_docstrings`) so prose that merely mentions ``fit`` /
+    ``predict`` is never a signal. Roles are checked in priority order so a
+    training body that also scores a metric still reads as model training.
+    """
+    if not code_snippet or not code_snippet.strip():
+        return None
+    executable = _strip_comments_and_docstrings(code_snippet)
+    if not executable.strip():
+        return None
+    if _ROLE_MODEL_TRAINING_RE.search(executable):
+        return ROLE_MODEL_TRAINING
+    if _ROLE_EVALUATION_RE.search(executable):
+        return ROLE_EVALUATION_METRICS
+    if _ROLE_PREDICTION_RE.search(executable):
+        return ROLE_PREDICTION_INFERENCE
+    if _ROLE_FEATURE_RE.search(executable):
+        return ROLE_FEATURE_ENGINEERING
+    if _ROLE_DATA_LOADING_RE.search(executable):
+        return ROLE_DATA_LOADING
+    if _ROLE_ROUTE_RE.search(executable):
+        return ROLE_API_ROUTE_SHELL
+    if _ROLE_DEPLOYMENT_RE.search(executable):
+        return ROLE_DEPLOYMENT_SERVING
+    return None
+
+
+def _semantic_role_from_reason(*parts: str | None) -> str | None:
+    """A descriptive role guessed from a reason / file path / function name.
+
+    Used ONLY as a fallback for a STRONG row with no executable snippet at read
+    time — a stale reason can never be trusted for proof strength, but it can still
+    describe what a validated body is about. Returns ``None`` when nothing matches.
+    """
+    haystack = " ".join(p for p in parts if p).strip()
+    if not haystack:
+        return None
+    for pattern, role in _REASON_ROLE_RES:
+        if pattern.search(haystack):
+            return role
+    return None
+
+
+def classify_code_role(
+    *,
+    grade: str | None = None,
+    code_snippet: str | None = None,
+    selection_reason: str | None = None,
+    file_path: str | None = None,
+    function_name: str | None = None,
+) -> str:
+    """Return a conservative ``code_role_key`` describing what a code block IS.
+
+    This is a LABEL, never a strength verdict. It fails closed:
+
+    1. A KNOWN weak structural band (docstring / import / config / bare route
+       decorator) takes its role from the GRADE — a docstring that mentions
+       ``model.fit(...)`` stays "Documentation / usage header", never "Model
+       training". This is the primary safety rule (weak rows keep honest labels).
+    2. Otherwise, the strongest honest signal is a real EXECUTABLE snippet — its
+       semantic role (training / evaluation / inference / feature / data / route /
+       deployment) is used.
+    3. A STRONG grade with no executable snippet falls back to a conservative
+       reason/path HINT (descriptive only — never promotes the grade); if nothing
+       matches it is ``unknown_needs_review``.
+    4. Anything else (``repo_level_fallback`` / ungraded / unknown) → repository
+       context.
+    """
+    g = str(grade or "").strip().lower()
+    # 1. Known weak structural band → grade-derived role wins (fail closed).
+    if g in _GRADE_ROLE and g != GRADE_REPO_LEVEL_FALLBACK:
+        return _GRADE_ROLE[g]
+    # 2. Executable snippet is the most honest semantic signal for the rest.
+    role = _semantic_role_from_code(code_snippet)
+    if role:
+        return role
+    # 3. Strong grade, no snippet → a descriptive reason/path hint (label only).
+    if is_strong_grade(g):
+        hint = _semantic_role_from_reason(selection_reason, file_path, function_name)
+        return hint or ROLE_UNKNOWN_NEEDS_REVIEW
+    # 4. repo_level_fallback / ungraded / unknown → repository-level context.
+    return ROLE_REPOSITORY_CONTEXT
+
+
+def effective_code_role(
+    role_key: str | None,
+    *,
+    grade: str | None = None,
+    code_snippet: str | None = None,
+    selection_reason: str | None = None,
+    file_path: str | None = None,
+    function_name: str | None = None,
+) -> str:
+    """Read-time resolution of a row's code role against its VALIDATED grade.
+
+    Applied where a report row is projected (after :func:`effective_evidence_grade`
+    has validated the persisted grade), so a stale persisted row can never carry an
+    inconsistent role out to a recruiter surface:
+
+    * a VALIDATED weak structural band (docstring / import / config / bare route
+      decorator) always wins — whatever an upstream role claims, the row IS what
+      its validated grade says (fail closed);
+    * otherwise a role computed upstream from the trusted executable body is kept
+      as-is (it is server-derived, never user metadata); and
+    * a row with NO role (a stale/legacy item) is classified conservatively from
+      the validated grade + whatever safe signals remain — for a weak/ungraded row
+      with no snippet that is always repository-level context, never a stale
+      overclaiming ``selection_reason``.
+    """
+    g = str(grade or "").strip().lower()
+    if g in _GRADE_ROLE and g != GRADE_REPO_LEVEL_FALLBACK:
+        return _GRADE_ROLE[g]
+    key = str(role_key or "").strip().lower()
+    if key in CODE_ROLE_LABELS:
+        return key
+    return classify_code_role(
+        grade=g,
+        code_snippet=code_snippet,
+        selection_reason=selection_reason,
+        file_path=file_path,
+        function_name=function_name,
     )
 
 

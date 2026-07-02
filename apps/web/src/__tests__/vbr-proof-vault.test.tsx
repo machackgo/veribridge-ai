@@ -642,6 +642,115 @@ describe("SkillReportView — explicit GitHub display_mode", () => {
   })
 })
 
+// ── Flat legacy weak code_line rows: role-aware, inspectable, still Needs review ─
+//
+// A weak-graded flat ``code_line`` row must NOT collapse into a bare "Repo-level
+// support only" card: it keeps the safe file/line location, the descriptive
+// ``code_role_label`` (grade-derived fallback when absent) and the "View code
+// lines" link — while staying clearly a Needs-review repository-level signal,
+// never primary implementation proof.
+describe("SkillReportView — flat legacy weak GitHub code_line rows", () => {
+  const WEAK_FLAT_ITEM: SkillReport["github"][number] = {
+    ...GITHUB_ITEM,
+    source_id: "gh-weak-flat",
+    safe_location: "scripts/pipeline_retrain.py · lines 2-20",
+    safe_snippet: null,
+    file_path: "scripts/pipeline_retrain.py",
+    line_start: 2,
+    line_end: 20,
+    function_name: null,
+    display_mode: "code_line",
+    has_precise_line_evidence: true,
+    evidence_strength: "weak",
+    evidence_quality_grade: "comment_or_docstring",
+    code_role_label: "Documentation / usage header",
+    // Stale overclaiming reason — a weak row must NEVER echo it.
+    selection_reason: "ML training call",
+    github_line_url: "https://github.com/octocat/Hello-World/blob/main/scripts/pipeline_retrain.py#L2-L20",
+    repo_url: "https://github.com/octocat/Hello-World",
+    public_url: "https://github.com/octocat/Hello-World/blob/main/scripts/pipeline_retrain.py#L2-L20",
+  }
+
+  function renderWeakFlat(overrides: Partial<SkillReport["github"][number]> = {}) {
+    render(
+      <SkillReportView
+        report={skillReport({
+          github: [],
+          standalone_evidence: { ...emptyStandalone(), github: [{ ...WEAK_FLAT_ITEM, ...overrides }] },
+        })}
+      />,
+    )
+  }
+
+  it("renders the backend code_role_label for a weak flat row", () => {
+    renderWeakFlat()
+    expect(screen.getByTestId("github-code-role-label")).toHaveTextContent("Documentation / usage header")
+  })
+
+  it("renders the exact file/line location for a weak flat row", () => {
+    renderWeakFlat()
+    expect(screen.getByTestId("github-location")).toHaveTextContent("scripts/pipeline_retrain.py · lines 2-20")
+  })
+
+  it("renders the function-based location when a function name is present", () => {
+    renderWeakFlat({
+      file_path: "api.py",
+      function_name: "predict",
+      evidence_quality_grade: "route_decorator_only",
+      code_role_label: "API route shell",
+    })
+    expect(screen.getByTestId("github-location")).toHaveTextContent("api.py · predict()")
+    expect(screen.getByTestId("github-code-role-label")).toHaveTextContent("API route shell")
+  })
+
+  it("renders a 'View code lines' link to the exact line URL", () => {
+    renderWeakFlat()
+    const link = screen.getByTestId("evidence-public-link")
+    expect(link).toHaveTextContent("View code lines →")
+    expect(link).toHaveAttribute("href", expect.stringContaining("#L2-L20"))
+  })
+
+  it("does NOT render 'Repo-level support only' as the row label — it stays Needs review", () => {
+    renderWeakFlat()
+    expect(screen.queryByText("Repo-level support only")).not.toBeInTheDocument()
+    expect(screen.getByTestId("github-needs-review-badge")).toHaveTextContent(
+      "Needs review — repository-level signal",
+    )
+    expect(screen.getByTestId("github-needs-review-note")).toHaveTextContent(
+      "not been validated as primary implementation proof",
+    )
+  })
+
+  it("never shows 'Precise code evidence' for a weak flat row", () => {
+    renderWeakFlat()
+    expect(screen.queryByTestId("github-precise-badge")).not.toBeInTheDocument()
+    expect(screen.queryByText("Precise code evidence")).not.toBeInTheDocument()
+  })
+
+  it("never shows 'Code implementation' or 'Primary implementation' for a weak flat row", () => {
+    renderWeakFlat()
+    expect(screen.queryByText(/Code implementation/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Primary implementation/)).not.toBeInTheDocument()
+  })
+
+  it("never echoes the stale overclaiming selection_reason on a weak flat row", () => {
+    renderWeakFlat()
+    expect(screen.queryByText(/ML training call/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId("github-selection-reason")).not.toBeInTheDocument()
+  })
+
+  it("falls back to a conservative grade-derived role label when code_role_label is missing", () => {
+    renderWeakFlat({ code_role_label: null, evidence_quality_grade: "import_only", selection_reason: null })
+    expect(screen.getByTestId("github-code-role-label")).toHaveTextContent("Imports / setup context")
+  })
+
+  it("falls back to 'Repository-level context' when both role label and grade are missing", () => {
+    renderWeakFlat({ code_role_label: null, evidence_quality_grade: null, selection_reason: null })
+    expect(screen.getByTestId("github-code-role-label")).toHaveTextContent("Repository-level context")
+    expect(screen.getByTestId("github-needs-review-badge")).toBeInTheDocument()
+  })
+})
+
 // ── Missing evidence_quality_grade fails closed (never "Precise code evidence") ─
 describe("SkillReportView — ungraded GitHub code_line fails closed", () => {
   const MISSING_GRADE_ITEM: SkillReport["github"][number] = {
@@ -1614,13 +1723,12 @@ describe("SkillReportView — connected chain GitHub grouped by repository", () 
       ghRow({ source_id: "u1", label: "legacy_helper.py · lines 1-5", file_path: "legacy_helper.py", selection_reason: "prior heuristic" }),
     ])
     render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
-    // The ungraded row is inside the Needs-review summary (collapsed), never a
-    // precise primary row, and never carries the "Precise code evidence" badge.
+    // The ungraded row is inside the Needs-review band, never a precise primary row,
+    // and never carries the "Precise code evidence" badge.
     expect(screen.getByTestId("github-weak-signals")).toBeInTheDocument()
     expect(screen.queryByTestId("github-precise-badge")).not.toBeInTheDocument()
-    expect(screen.queryByText("legacy_helper.py · lines 1-5")).not.toBeInTheDocument()
-    // Expand Needs review → the ungraded row surfaces as a muted weak row.
-    fireEvent.click(screen.getByRole("button", { name: /Needs review/i }))
+    // The ungraded row is inspectable by default (visible without any interaction),
+    // surfaced as a muted weak row — never as a primary implementation row.
     expect(screen.getByText("legacy_helper.py · lines 1-5")).toBeInTheDocument()
     expect(screen.getAllByTestId("standalone-github-weak-row").length).toBeGreaterThanOrEqual(1)
   })
@@ -1636,6 +1744,169 @@ describe("SkillReportView — connected chain GitHub grouped by repository", () 
     expect(section).not.toHaveTextContent("Code implementation")
     expect(screen.getByTestId("github-weak-signals")).toBeInTheDocument()
     expect(screen.queryByTestId("standalone-github-row")).not.toBeInTheDocument()
+  })
+
+  // ── Weak-only group: weak code signals stay conservative but inspectable ──────
+
+  it("keeps a weak-only group inspectable: safe file/line rows + 'View code lines' visible by default", () => {
+    const chain = groupedChain([
+      ghRow({ source_id: "w1", label: "a.py · lines 1-5", evidence_quality_grade: "import_only", selection_reason: "ML training call" }),
+      ghRow({ source_id: "w2", label: "b.py · lines 8-12", file_path: "b.py", evidence_quality_grade: "comment_or_docstring", selection_reason: "Cloud deployment command" }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const section = screen.getByTestId("chain-github")
+    // Conservative framing.
+    expect(section).toHaveTextContent("GitHub code signals")
+    expect(section).not.toHaveTextContent("Code implementation")
+    expect(section).not.toHaveTextContent("Primary implementation")
+    expect(screen.queryByTestId("github-precise-badge")).not.toBeInTheDocument()
+    expect(section).not.toHaveTextContent("Precise code evidence")
+    // Needs-review heading names the weak signal count.
+    expect(screen.getByTestId("github-weak-heading")).toHaveTextContent("Needs review — 2 weak/repository-level signals")
+    // BUT the weak rows are inspectable WITHOUT any interaction (works in a PDF):
+    // safe file/line labels + a "View code lines" link on each row.
+    const weakRows = screen.getAllByTestId("standalone-github-weak-row")
+    expect(weakRows).toHaveLength(2)
+    expect(weakRows[0]).toHaveTextContent("a.py · lines 1-5")
+    expect(weakRows[1]).toHaveTextContent("b.py · lines 8-12")
+    expect(screen.getAllByText("View code lines →").length).toBeGreaterThanOrEqual(2)
+    // Overclaiming raw selection_reason is replaced by a conservative grade-derived
+    // role label describing what the block appears to be.
+    expect(section).not.toHaveTextContent("ML training call")
+    expect(section).not.toHaveTextContent("Cloud deployment command")
+    expect(weakRows[0]).toHaveTextContent("Imports / setup context")
+    expect(weakRows[1]).toHaveTextContent("Documentation / usage header")
+  })
+
+  // ── Code role labels: role-aware weak rows (never proof-strength promotion) ───
+
+  it("renders the backend code_role_label on weak rows (docstring / imports / route shell)", () => {
+    const chain = groupedChain([
+      ghRow({
+        source_id: "r1",
+        label: "scripts/pipeline_retrain.py · lines 2-20",
+        file_path: "scripts/pipeline_retrain.py",
+        evidence_quality_grade: "comment_or_docstring",
+        code_role_key: "documentation_header",
+        code_role_label: "Documentation / usage header",
+        selection_reason: "ML training call",
+      }),
+      ghRow({
+        source_id: "r2",
+        label: "scripts/pipeline_retrain.py · lines 29-47",
+        file_path: "scripts/pipeline_retrain.py",
+        evidence_quality_grade: "import_only",
+        code_role_key: "imports_setup",
+        code_role_label: "Imports / setup context",
+      }),
+      ghRow({
+        source_id: "r3",
+        label: "api.py · predict()",
+        file_path: "api.py",
+        function_name: "predict",
+        evidence_quality_grade: "route_decorator_only",
+        code_role_key: "api_route_shell",
+        code_role_label: "API route shell",
+      }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    // All three stay in the Needs-review band — role labels never promote a row.
+    const weak = screen.getByTestId("github-weak-signals")
+    const weakRows = screen.getAllByTestId("standalone-github-weak-row")
+    expect(weakRows).toHaveLength(3)
+    expect(weakRows[0]).toHaveTextContent("Documentation / usage header")
+    expect(weakRows[1]).toHaveTextContent("Imports / setup context")
+    expect(weakRows[2]).toHaveTextContent("API route shell")
+    // The stale overclaiming reason never renders as the row label.
+    expect(weak).not.toHaveTextContent("ML training call")
+    // No implementation framing, no precise-evidence badge for weak-only groups.
+    const section = screen.getByTestId("chain-github")
+    expect(section).not.toHaveTextContent("Code implementation")
+    expect(section).not.toHaveTextContent("Precise code evidence")
+    expect(screen.queryByTestId("github-precise-badge")).not.toBeInTheDocument()
+    // Rows keep their safe location label + "View code lines" link.
+    expect(weakRows[0]).toHaveTextContent("scripts/pipeline_retrain.py · lines 2-20")
+    expect(screen.getAllByText("View code lines →").length).toBeGreaterThanOrEqual(3)
+  })
+
+  it("renders semantic context roles (evaluation / deployment) on weak rows without promoting them", () => {
+    const chain = groupedChain([
+      ghRow({
+        source_id: "m1",
+        label: "src/model/train.py · lines 19-37",
+        file_path: "src/model/train.py",
+        evidence_quality_grade: "repo_level_fallback",
+        code_role_key: "evaluation_metrics",
+        code_role_label: "Evaluation / metrics context",
+      }),
+      ghRow({
+        source_id: "d1",
+        label: "serving/main.py · lines 8-26",
+        file_path: "serving/main.py",
+        evidence_quality_grade: "repo_level_fallback",
+        code_role_key: "deployment_serving",
+        code_role_label: "Deployment / serving context",
+      }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const weakRows = screen.getAllByTestId("standalone-github-weak-row")
+    expect(weakRows[0]).toHaveTextContent("Evaluation / metrics context")
+    expect(weakRows[1]).toHaveTextContent("Deployment / serving context")
+    // Still under Needs review — a context role never becomes primary ML proof.
+    expect(screen.getByTestId("github-weak-heading")).toHaveTextContent("Needs review")
+    expect(screen.queryByTestId("github-primary-band")).not.toBeInTheDocument()
+    const section = screen.getByTestId("chain-github")
+    expect(section).not.toHaveTextContent("Code implementation")
+  })
+
+  it("derives a conservative role label from the grade when code_role_label is missing (stale payload)", () => {
+    const chain = groupedChain([
+      ghRow({ source_id: "s1", label: "cfg.py · lines 1-4", file_path: "cfg.py", evidence_quality_grade: "config_or_constant", selection_reason: "ML model configuration" }),
+      ghRow({ source_id: "s2", label: "legacy.py · lines 1-9", file_path: "legacy.py", evidence_quality_grade: "repo_level_fallback", selection_reason: "Model serving inference handler" }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const weakRows = screen.getAllByTestId("standalone-github-weak-row")
+    expect(weakRows[0]).toHaveTextContent("Config / constants")
+    expect(weakRows[1]).toHaveTextContent("Repository-level context")
+    // Stale overclaiming reasons never surface as the main label.
+    const weak = screen.getByTestId("github-weak-signals")
+    expect(weak).not.toHaveTextContent("ML model configuration")
+    expect(weak).not.toHaveTextContent("Model serving inference handler")
+  })
+
+  it("shows the first weak rows and collapses the rest behind '+N more weak code locations'", () => {
+    const rows = Array.from({ length: 6 }, (_, i) =>
+      ghRow({ source_id: `w${i}`, label: `w${i}.py · lines 1-5`, file_path: `w${i}.py`, evidence_quality_grade: "import_only" }),
+    )
+    const chain = groupedChain(rows)
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    // First 3 weak rows visible by default; a "+3 more weak code locations" toggle.
+    expect(screen.getAllByTestId("standalone-github-weak-row")).toHaveLength(3)
+    const more = screen.getByTestId("github-weak-more")
+    expect(more).toHaveTextContent("+3 more weak code locations")
+    fireEvent.click(more)
+    expect(screen.getAllByTestId("standalone-github-weak-row")).toHaveLength(6)
+    expect(more).toHaveTextContent("Show fewer weak code locations")
+  })
+
+  it("orders a mixed graded group primary → supporting → needs-review, all inspectable", () => {
+    const chain = groupedChain([
+      ghRow({ source_id: "p1", label: "src/train.py · train_model()", file_path: "src/train.py", function_name: "train_model", evidence_quality_grade: "implementation_body" }),
+      ghRow({ source_id: "s1", label: "src/util.py · helper()", file_path: "src/util.py", function_name: "helper", evidence_quality_grade: "supporting_logic" }),
+      ghRow({ source_id: "w1", label: "imp.py · lines 1-3", file_path: "imp.py", evidence_quality_grade: "import_only" }),
+    ])
+    render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
+    const section = screen.getByTestId("chain-github")
+    // A real implementation body → "Code implementation" title + primary band.
+    expect(section).toHaveTextContent("Code implementation")
+    expect(screen.getByTestId("github-primary-band")).toHaveTextContent("train_model()")
+    expect(screen.getByTestId("github-supporting-band")).toHaveTextContent("helper()")
+    // The weak row is demoted to the Needs-review band, but still inspectable.
+    const weak = screen.getByTestId("github-weak-signals")
+    expect(weak).toHaveTextContent("imp.py · lines 1-3")
+    // DOM order: primary band appears before the needs-review band.
+    const primary = screen.getByTestId("github-primary-band")
+    expect(primary.compareDocumentPosition(weak) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   // ── Fix #4: each band caps visible rows with a "+N more" control ──────────────
@@ -1662,11 +1933,11 @@ describe("SkillReportView — connected chain GitHub grouped by repository", () 
     )
     const chain = groupedChain(rows)
     render(<SkillReportView report={skillReport({ projects: [chain], proof_chains: [chain], github: [], standalone_evidence: emptyStandalone() })} />)
-    // Collapsed summary first; open it, then only 3 rows show + a "+2 more".
-    fireEvent.click(screen.getByRole("button", { name: /Needs review/i }))
+    // The first 3 weak rows are visible by default (inspectable in a static/PDF
+    // render); the rest collapse behind a "+2 more weak code locations" toggle.
     expect(screen.getAllByTestId("standalone-github-weak-row")).toHaveLength(3)
     const more = screen.getByTestId("github-weak-more")
-    expect(more).toHaveTextContent("+2 more code locations")
+    expect(more).toHaveTextContent("+2 more weak code locations")
     fireEvent.click(more)
     expect(screen.getAllByTestId("standalone-github-weak-row")).toHaveLength(5)
   })
