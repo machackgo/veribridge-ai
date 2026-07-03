@@ -552,6 +552,74 @@ def _public_evidence_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]
     return safe
 
 
+# Evidence-trace ``source_type`` values that are DERIVED FROM the Project Defense
+# transcript (mirrors ``vbr_student_report._SRC_DEFENSE`` / ``_SRC_VIDEO``). Kept
+# as local constants so the public builder does not import private names from the
+# student-report module. Both must fail closed when the transcript is privacy-
+# flagged: the "Project Defense" trace's ``safe_summary`` can fall back to the
+# transcript summary and its ``answer_excerpt`` / ``question_text`` echo answer
+# content; the "Video Evidence" (timestamped chip) trace's ``safe_summary`` is a
+# snippet of a raw transcript segment. A non-transcript trace (GitHub / Website /
+# Document) is never touched.
+_DEFENSE_TRACE_SOURCE_TYPE = "Project Defense"
+_VIDEO_TRACE_SOURCE_TYPE = "Video Evidence"
+_TRANSCRIPT_DERIVED_TRACE_SOURCE_TYPES = frozenset(
+    {_DEFENSE_TRACE_SOURCE_TYPE, _VIDEO_TRACE_SOURCE_TYPE}
+)
+
+# Non-leaking replacement for a Project Defense trace's free text when the
+# defense privacy review is not clean — carries no transcript-derived content.
+_DEFENSE_TRACE_HIDDEN_SUMMARY = (
+    "Project Defense answer content is hidden from this public report because the "
+    "transcript did not pass privacy review."
+)
+
+# Non-leaking replacement for a timestamped video-chip trace's free text — the
+# timestamp/label structure is kept, but the transcript-derived snippet is not.
+_VIDEO_TRACE_HIDDEN_SUMMARY = (
+    "This Project Defense video moment is hidden from the public report because "
+    "the transcript did not pass privacy review."
+)
+
+
+def _redact_unsafe_defense_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Blank transcript-derived trace free-text when the defense privacy review failed.
+
+    Fail-closed companion to :func:`public_safe_defense_analysis`: the analysis
+    object is not the only public surface that carries transcript-derived text. The
+    evidence-trace list also holds a Project Defense overview/question trace whose
+    ``safe_summary`` can fall back to the transcript summary (and whose
+    ``answer_excerpt`` / ``question_text`` echo answer content), AND timestamped
+    "Video Evidence" traces whose ``safe_summary`` is a snippet of a raw transcript
+    segment. When the transcript is privacy-flagged, every such trace's derived
+    free text is replaced with a fixed placeholder (non-transcript traces —
+    GitHub / Website / Document — pass through untouched). Timestamp/label fields
+    are left intact so the report still shows *that* a moment exists, never *what*
+    was said.
+    """
+    redacted: list[dict[str, Any]] = []
+    for trace in traces:
+        if not isinstance(trace, dict):
+            continue
+        source_type = trace.get("source_type")
+        if source_type in _TRANSCRIPT_DERIVED_TRACE_SOURCE_TYPES:
+            placeholder = (
+                _DEFENSE_TRACE_HIDDEN_SUMMARY
+                if source_type == _DEFENSE_TRACE_SOURCE_TYPE
+                else _VIDEO_TRACE_HIDDEN_SUMMARY
+            )
+            row = dict(trace)
+            row["safe_summary"] = placeholder
+            row["safe_detail"] = ""
+            row["answer_excerpt"] = None
+            row["question_text"] = None
+            row["private_evidence_note"] = placeholder
+            redacted.append(row)
+        else:
+            redacted.append(trace)
+    return redacted
+
+
 def _public_limitations(limitations: list[str]) -> list[str]:
     """Keep honest empty-state / disclaimer lines, drop preview-only wording."""
     return [
@@ -578,6 +646,37 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
 
     owner_id = str(project.get("user_id") or "")
     report = build_student_vbr_report(db, pipeline_db, project, owner_id)
+
+    # Central Public Safety layer. Lazily imported because that module imports this
+    # module's low-level primitives (``_scrub_text`` / ``_contains_unsafe_fields``),
+    # so a top-level import would be circular.
+    from app.services.public_report_safety_service import (
+        PublicReportUnsafeError,
+        defense_privacy_is_clean,
+        enforce_public_safe,
+        public_safe_defense_analysis,
+    )
+
+    # ── Project Defense privacy fail-closed (must-fix) ────────────────────────
+    # A privacy-flagged Project Defense transcript must never leak transcript-
+    # derived text (its ``transcript_summary`` is the raw transcript's first
+    # sentence). The analysis object is projected fail-closed to a placeholder, and
+    # the defense evidence traces are stripped of their derived text, whenever the
+    # transcript's privacy review is not clean.
+    raw_defense_analysis = report.get("project_defense_analysis")
+    defense_analysis = public_safe_defense_analysis(raw_defense_analysis)
+    defense_privacy_clean = defense_privacy_is_clean(raw_defense_analysis)
+
+    evidence_traces = _public_evidence_traces(report.get("evidence_traces") or [])
+    # Video evidence chips are built from the SAME Project Defense transcript
+    # segments, so their ``short_summary`` / ``label`` are transcript-derived. When
+    # the transcript is privacy-flagged they must fail closed too: the timestamped
+    # chips are omitted entirely (and their "Video Evidence" traces are redacted
+    # alongside the "Project Defense" traces below).
+    raw_video_chips = report.get("video_evidence_chips") or []
+    if not defense_privacy_clean:
+        evidence_traces = _redact_unsafe_defense_traces(evidence_traces)
+        raw_video_chips = []
 
     # ── Direct verification links: public-safe gate (must-fix) ───────────────
     # Only genuinely public http(s) targets may be linked from an anonymous
@@ -606,10 +705,10 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         "github_proof": _public_github_proof(report.get("github_proof")),
         "documents": list(report.get("documents") or []),
         "website_proofs": website_proofs,
-        "project_defense_analysis": report.get("project_defense_analysis"),
+        "project_defense_analysis": defense_analysis,
         "skill_evidence": list(report.get("skill_evidence") or []),
-        "evidence_traces": _public_evidence_traces(report.get("evidence_traces") or []),
-        "video_evidence_chips": _sanitize_video_chips(report.get("video_evidence_chips") or []),
+        "evidence_traces": evidence_traces,
+        "video_evidence_chips": _sanitize_video_chips(raw_video_chips),
         "limitations": limitations,
         "published_at": project.get("public_report_published_at"),
         "generated_at": report.get("generated_at"),
@@ -626,13 +725,8 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     # a strict superset of the inline scan that also strengthens scrubbing
     # (rank/rating/percentile + emails) and rejects private source_id / metadata /
     # raw-payload / provider-config keys, ``/Users/…`` & ``file://`` paths, and raw
-    # emails. Lazily imported because the safety service imports this module's
-    # low-level primitives (``_scrub_text`` / ``_contains_unsafe_fields``).
-    from app.services.public_report_safety_service import (
-        PublicReportUnsafeError,
-        enforce_public_safe,
-    )
-
+    # emails. (``enforce_public_safe`` / ``PublicReportUnsafeError`` were imported
+    # with the defense fail-closed helpers above.)
     try:
         public = enforce_public_safe(public)
     except PublicReportUnsafeError:

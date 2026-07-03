@@ -24,9 +24,12 @@ import pytest
 from app.services.public_report_safety_service import (
     _NO_PUBLIC_SYNTHESIS_LIMITATION,
     _NO_PUBLIC_SYNTHESIS_SUMMARY,
+    DEFENSE_PRIVACY_HIDDEN_MESSAGE,
     PublicReportUnsafeError,
     contains_unsafe_fields,
+    defense_privacy_is_clean,
     enforce_public_safe,
+    public_safe_defense_analysis,
     public_safe_evidence_artifact,
     public_safe_linked_chain,
     public_safe_skill_name,
@@ -1572,3 +1575,187 @@ def test_public_skill_report_skill_relevance_fields_never_leak_private_data() ->
             assert '"skill_relevance_key": "documentation_context"' in payload or (
                 "Documentation context, not executable Machine Learning proof" in payload
             )
+
+
+# ── Project Defense privacy fail-closed ───────────────────────────────────────
+
+# A synthetic, SSN-shaped value the scrubbers do NOT recognise (not a token,
+# path, URL, email, or score) — it survives generic scrubbing, so the ONLY thing
+# that keeps it out of a public report is the privacy fail-closed projection.
+_SSN_MARKER = "123-45-6789"
+
+
+def _flagged_defense_analysis(status: str = "flagged") -> dict:
+    """A Project Defense analysis whose transcript failed privacy review."""
+    return {
+        "transcript_summary": f"Transcript (11 words): my social security number is {_SSN_MARKER} and I built it.",
+        "skills_mentioned": ["Python"],
+        "skills_explained_well": ["Python"],
+        "skills_missing_from_explanation": [],
+        "overall_assessment": "Partially demonstrated",
+        "explanation_clarity": "Demonstrated",
+        "ownership_signal": "Partially demonstrated",
+        "technical_depth": "Supporting evidence",
+        "consistency_with_evidence": "Needs review",
+        "risk_flags": ["Transcript contains potential sensitive data."],
+        "recruiter_summary": "Project defense transcript analyzed. NOTE: hidden from recruiter view.",
+        "recommended_improvements": [],
+        "privacy_scan_status": status,
+    }
+
+
+def _clean_defense_analysis() -> dict:
+    analysis = _flagged_defense_analysis(status="clean")
+    analysis["transcript_summary"] = "Transcript (11 words): I built a task manager with FastAPI and React."
+    analysis["risk_flags"] = []
+    analysis["recruiter_summary"] = "Project defense transcript analyzed. Clear technical explanation."
+    return analysis
+
+
+def test_defense_privacy_is_clean_true_only_for_clean_status() -> None:
+    assert defense_privacy_is_clean(_clean_defense_analysis()) is True
+    # An explicit clean status (case/whitespace tolerant) still passes.
+    assert defense_privacy_is_clean({"privacy_scan_status": " Clean "}) is True
+
+
+def test_defense_privacy_is_clean_fails_closed_on_none_and_non_dict() -> None:
+    # A missing (``None``) or non-dict analysis carries NO explicit clean status,
+    # so it must fail CLOSED — any orphaned transcript-derived artifacts that exist
+    # without a clean analysis object are withheld by the caller.
+    assert defense_privacy_is_clean(None) is False
+    assert defense_privacy_is_clean("not a dict") is False
+    assert defense_privacy_is_clean([]) is False
+    assert defense_privacy_is_clean(123) is False
+
+
+@pytest.mark.parametrize(
+    "analysis",
+    [
+        {"privacy_scan_status": "flagged"},
+        {"privacy_scan_status": "sensitive"},
+        {"privacy_scan_status": "review_required"},
+        {"privacy_scan_status": "redacted"},
+        {"privacy_scan_status": "clean", "contains_sensitive_data": True},
+        {"privacy_scan_status": "clean", "hidden": True},
+        {"privacy_scan_status": "clean", "privacy_flagged": True},
+    ],
+)
+def test_defense_privacy_is_clean_false_on_any_unsafe_signal(analysis: dict) -> None:
+    assert defense_privacy_is_clean(analysis) is False
+
+
+# ── P0 #1 — missing / None / unknown privacy status fails CLOSED ───────────────
+
+
+@pytest.mark.parametrize(
+    "analysis",
+    [
+        {"transcript_summary": "hi"},                       # status key entirely missing
+        {"privacy_scan_status": None},                       # explicit None
+        {"privacy_scan_status": ""},                         # empty string
+        {"privacy_scan_status": "   "},                      # whitespace only
+        {"privacy_scan_status": "unknown_status_value"},     # unrecognized string
+        {"privacy_scan_status": 123},                        # non-string junk
+    ],
+)
+def test_defense_privacy_is_clean_fails_closed_on_missing_none_unknown(analysis: dict) -> None:
+    # Fail-closed: only an allowlisted clean status is shareable; anything else —
+    # missing / None / empty / unrecognized — is NOT clean.
+    assert defense_privacy_is_clean(analysis) is False
+
+
+@pytest.mark.parametrize(
+    "status_kwargs",
+    [
+        {},                                          # missing privacy_scan_status
+        {"privacy_scan_status": None},               # None privacy_scan_status
+        {"privacy_scan_status": "unknown_value"},    # unrecognized privacy_scan_status
+    ],
+)
+def test_missing_or_unknown_status_withholds_ssn_summary(status_kwargs: dict) -> None:
+    # An SSN-shaped transcript summary with no allowlisted-clean status must be
+    # withheld publicly — the legacy/malformed fail-open leak is closed.
+    analysis = _flagged_defense_analysis()
+    analysis.pop("privacy_scan_status", None)
+    analysis.update(status_kwargs)
+    projected = public_safe_defense_analysis(analysis)
+    assert projected is not None
+    assert _SSN_MARKER not in json.dumps(projected)
+    assert projected["transcript_summary"] == DEFENSE_PRIVACY_HIDDEN_MESSAGE
+    assert projected["skills_mentioned"] == []
+
+
+def test_explicit_clean_status_renders_safe_content() -> None:
+    # Positive control: an explicit clean status with safe content still renders.
+    clean = _clean_defense_analysis()
+    assert defense_privacy_is_clean(clean) is True
+    projected = public_safe_defense_analysis(clean)
+    assert projected == clean
+    assert "fastapi" in projected["transcript_summary"].lower()
+
+
+def test_public_safe_defense_analysis_hides_flagged_transcript() -> None:
+    """Fail-closed: a flagged analysis has its transcript-derived text replaced
+    with the safe placeholder (the SSN-shaped value never survives)."""
+    projected = public_safe_defense_analysis(_flagged_defense_analysis())
+    assert projected is not None
+    # P0 #2: the public status is the fixed neutral value, never the raw status.
+    assert projected["privacy_scan_status"] == "withheld"
+    # transcript_summary / recruiter_summary become the safe placeholder wording.
+    assert projected["transcript_summary"] == DEFENSE_PRIVACY_HIDDEN_MESSAGE
+    assert projected["recruiter_summary"] == DEFENSE_PRIVACY_HIDDEN_MESSAGE
+
+    payload = json.dumps(projected)
+    assert _SSN_MARKER not in payload
+    # Every derived list/label field is emptied or neutralized — no flagged content.
+    assert projected["skills_mentioned"] == []
+    assert projected["skills_explained_well"] == []
+    assert projected["risk_flags"] == []
+    assert projected["recommended_improvements"] == []
+    assert projected["overall_assessment"] == "Not assessed"
+
+
+# ── P0 #2 — raw / internal status text is never echoed publicly ────────────────
+
+_HOSTILE_STATUS = "flagged<script>alert(1)</script> INTERNAL_LEAK_MARKER token=sk-secret"
+
+
+def test_public_safe_defense_analysis_never_echoes_raw_status_text() -> None:
+    # A hostile / internal privacy_scan_status must NOT appear in the public output;
+    # the withheld projection reports only the fixed allowlisted "withheld".
+    analysis = _flagged_defense_analysis(status=_HOSTILE_STATUS)
+    projected = public_safe_defense_analysis(analysis)
+    assert projected is not None
+    payload = json.dumps(projected)
+    assert "INTERNAL_LEAK_MARKER" not in payload
+    assert "<script>" not in payload
+    assert "sk-secret" not in payload
+    assert projected["privacy_scan_status"] == "withheld"
+
+
+def test_public_safe_defense_uses_fixed_withheld_value() -> None:
+    # Whatever the raw status, the withheld public projection collapses it to the
+    # single allowlisted neutral value.
+    for status in ("flagged", "redacted", "sensitive", "needs_review", "surprise"):
+        projected = public_safe_defense_analysis(_flagged_defense_analysis(status=status))
+        assert projected is not None
+        assert projected["privacy_scan_status"] == "withheld"
+
+
+def test_public_safe_defense_analysis_passes_clean_through() -> None:
+    """A clean analysis is returned unchanged for the caller's normal scrub/gate."""
+    clean = _clean_defense_analysis()
+    assert public_safe_defense_analysis(clean) == clean
+
+
+def test_public_safe_defense_analysis_none_for_no_defense() -> None:
+    assert public_safe_defense_analysis(None) is None
+    assert public_safe_defense_analysis("not a dict") is None
+
+
+def test_public_safe_defense_analysis_is_enforce_public_safe_clean() -> None:
+    """The fail-closed placeholder itself passes the whole-payload unsafe scan."""
+    projected = public_safe_defense_analysis(_flagged_defense_analysis())
+    # enforce_public_safe would raise if the placeholder still smelled unsafe.
+    assert enforce_public_safe(projected) == projected
+    assert contains_unsafe_fields(projected) is False
