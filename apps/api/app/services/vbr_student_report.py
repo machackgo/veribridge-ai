@@ -30,6 +30,9 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from app.services.defense_answer_evidence_service import (
+    MISSING_IMPLEMENTATION_EVIDENCE_LIMITATION,
+)
 from app.services.github_skill_evidence_service import (
     is_strong_code_snippet as _is_strong_code_snippet,
 )
@@ -144,8 +147,113 @@ def _report_safe_analysis(analysis: dict[str, Any] | None) -> dict[str, Any] | N
         "risk_flags": [str(s) for s in (analysis.get("risk_flags") or [])],
         "recruiter_summary": str(analysis.get("recruiter_summary") or ""),
         "recommended_improvements": [str(s) for s in (analysis.get("recommended_improvements") or [])],
-        "privacy_scan_status": str(analysis.get("privacy_scan_status") or "clean"),
+        # Preserve the stored status verbatim — never manufacture "clean" for a row
+        # that has no explicit status. A missing / None / empty status must reach
+        # the public builder as-is so its fail-closed privacy gate
+        # (``defense_privacy_is_clean``) treats a legacy or malformed analysis as
+        # NOT shareable rather than publishing its transcript-derived summary.
+        "privacy_scan_status": str(analysis.get("privacy_scan_status") or ""),
     }
+
+
+# Cap the owner-visible answer evidence cards so a corrupt/inflated telemetry
+# blob cannot balloon the report payload.
+_MAX_ANSWER_EVIDENCE_CARDS = 20
+
+# Privacy statuses under which an answer object's summary is safe to render on the
+# owner card. Anything else (a flagged / redacted / sensitive scan, an unknown or
+# empty legacy status) is treated as privacy-flagged and its summary is
+# neutralized — the owner still learns privacy was flagged, but no raw PII is
+# retained in a field named "safe".
+_ANSWER_PRIVACY_CLEAN_STATUSES = frozenset({"clean"})
+
+# Neutral notice shown in place of a privacy-flagged / sensitive answer summary
+# on the owner card. It never echoes the raw content or the internal scan status.
+_ANSWER_SUMMARY_WITHHELD = (
+    "Answer summary withheld because privacy review flagged sensitive content."
+)
+
+# Defense-in-depth PII backstop for the owner-visible summary. The raw-transcript
+# sanitizer that produced ``safe_answer_summary`` only strips paths / URLs /
+# tokens / env pairs — it leaves SSN- and payment-card-shaped values intact — so
+# even a summary whose object status looks clean is neutralized if it still
+# carries such a value. SSN allows space/hyphen separators; the digit-run pattern
+# is a separator-tolerant 13-19 digit (card-shaped) candidate.
+_ANSWER_SUMMARY_SSN_RE = re.compile(r"\b\d{3}[-\s]\d{2}[-\s]\d{4}\b")
+_ANSWER_SUMMARY_CARD_RE = re.compile(r"\d(?:[ \t\-]*\d){12,18}")
+
+
+def _answer_summary_privacy_flagged(item: dict[str, Any], summary_text: str) -> bool:
+    """``True`` when an answer object's summary must be neutralized on the owner card.
+
+    Flagged when the object's privacy scan is not explicitly clean, or when the
+    summary text still carries an SSN- / payment-card-shaped value (defense in
+    depth). A contradiction alone is NOT a privacy flag: a contradicted-but-clean
+    answer keeps its summary so the owner can review it.
+    """
+    status = str(item.get("privacy_status") or "").strip().lower()
+    if status not in _ANSWER_PRIVACY_CLEAN_STATUSES:
+        return True
+    if _ANSWER_SUMMARY_SSN_RE.search(summary_text):
+        return True
+    if _ANSWER_SUMMARY_CARD_RE.search(summary_text):
+        return True
+    return False
+
+
+def _report_safe_answer_evidence(items: Any) -> list[dict[str, Any]]:
+    """Project stored ``telemetry.defense_answer_evidence`` to owner-safe cards.
+
+    The stored objects are already built from safe inputs (deterministic
+    question text, sanitized answer snippets, fixed taxonomies), but the report
+    re-projects them through an allowlist anyway (defence in depth): bounded
+    text, score fragments scrubbed, unknown keys dropped. The owner card keeps
+    ``question_id`` (the owner already sees question IDs in
+    ``defense_questions``); the public surface strips it separately.
+    """
+    if not isinstance(items, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in items[:_MAX_ANSWER_EVIDENCE_CARDS]:
+        if not isinstance(item, dict):
+            continue
+        raw_summary = str(item.get("safe_answer_summary") or "")
+        # A privacy-flagged / sensitive answer summary is neutralized even on the
+        # private owner card — a field named "safe" must never retain raw PII.
+        if _answer_summary_privacy_flagged(item, raw_summary):
+            safe_answer_summary = _ANSWER_SUMMARY_WITHHELD
+        else:
+            safe_answer_summary = _trace_text(_scrub_score_fragments(raw_summary))
+        out.append(
+            {
+                "evidence_id_safe": str(item.get("evidence_id_safe") or f"defense-answer-{len(out) + 1}"),
+                "question_id": str(item["question_id"]) if item.get("question_id") else None,
+                "question_kind": str(item.get("question_kind") or "unknown_or_generic"),
+                "question_text": _trace_text(_scrub_score_fragments(str(item.get("question_text") or ""))),
+                "target_ref_kind": str(item["target_ref_kind"]) if item.get("target_ref_kind") else None,
+                "target_ref_label_safe": (
+                    _trace_text(str(item["target_ref_label_safe"]), 120)
+                    if item.get("target_ref_label_safe")
+                    else None
+                ),
+                "project_title": _trace_text(str(item.get("project_title") or ""), 200),
+                "mapped_skill": str(item["mapped_skill"]) if item.get("mapped_skill") else None,
+                "claim_type": str(item.get("claim_type") or "project_architecture"),
+                "answer_purpose": str(item.get("answer_purpose") or "unknown_or_generic"),
+                "evidence_role": str(item.get("evidence_role") or "insufficient_or_generic"),
+                "qualitative_status": str(item.get("qualitative_status") or "Not explained"),
+                "safe_answer_summary": safe_answer_summary,
+                "evidence_basis_chips": [str(c) for c in (item.get("evidence_basis_chips") or [])][:8],
+                "corroborates_github": bool(item.get("corroborates_github")),
+                "corroborates_website": bool(item.get("corroborates_website")),
+                "corroborates_document": bool(item.get("corroborates_document")),
+                "contradiction_flag": bool(item.get("contradiction_flag")),
+                "limitation": _trace_text(str(item.get("limitation") or "")),
+                "public_shareable": bool(item.get("public_shareable")),
+                "privacy_status": str(item.get("privacy_status") or "unknown"),
+            }
+        )
+    return out
 
 
 def _now_iso() -> str:
@@ -203,15 +311,29 @@ def _skill_evidence_row(
     supporting_sources: list[str] = []
     normalized = _norm(skill)
 
+    # Project Defense is explanation/corroboration evidence: on its own it can
+    # at most PARTIALLY demonstrate a skill (a targeted, well-explained answer)
+    # and never marks an implementation-heavy claim "Demonstrated" without
+    # artifact evidence. A bare keyword mention is only weak supporting context.
     if analysis is not None:
         explained_well = {_norm(s) for s in analysis.get("skills_explained_well") or []}
         mentioned = {_norm(s) for s in analysis.get("skills_mentioned") or []}
         if normalized in explained_well:
-            candidates.append((_DEMONSTRATED, "Explained clearly during the Project Defense."))
+            candidates.append(
+                (
+                    _PARTIALLY_DEMONSTRATED,
+                    "Project Defense explanation supports this skill claim "
+                    "(explanation evidence, not implementation proof).",
+                )
+            )
             supporting_sources.append(_SRC_DEFENSE)
         elif normalized in mentioned:
             candidates.append(
-                (_PARTIALLY_DEMONSTRATED, "Mentioned during the Project Defense but not fully explained.")
+                (
+                    _SUPPORTING_EVIDENCE,
+                    "Mentioned during the Project Defense, but not explained through "
+                    "a targeted defense answer.",
+                )
             )
             supporting_sources.append(_SRC_DEFENSE)
 
@@ -254,6 +376,12 @@ def _skill_evidence_row(
     limitations: list[str] = []
     if best_status in {_NEEDS_REVIEW, _NOT_ASSESSED}:
         limitations.append(_SKILL_UNEVIDENCED_LIMITATION)
+    # Defense-only support (no GitHub/Website/Document artifact and no Skill
+    # Graph pipeline) is honest about the missing implementation evidence.
+    if _SRC_DEFENSE in supporting_sources and pipeline is None and not (
+        set(supporting_sources) & {_SRC_GITHUB, _SRC_WEBSITE, _SRC_DOCUMENT}
+    ):
+        limitations.append(MISSING_IMPLEMENTATION_EVIDENCE_LIMITATION)
 
     # De-dupe while preserving the canonical order above.
     ordered_sources = [
@@ -1563,6 +1691,12 @@ def build_student_vbr_report(
     video_chips_raw = telemetry.get("video_evidence_chips")
     video_chips: list[dict[str, Any]] = video_chips_raw if isinstance(video_chips_raw, list) else []
 
+    # Claim-level Defense Answer Evidence cards (owner view). Empty for
+    # sessions analyzed before the answer-evidence engine existed.
+    defense_answer_evidence = _report_safe_answer_evidence(
+        telemetry.get("defense_answer_evidence")
+    )
+
     questions: list[dict[str, Any]] = []
     chunk_count = 0
     answer_excerpts: dict[str, str] = {}
@@ -1741,6 +1875,7 @@ def build_student_vbr_report(
         "website_proofs": website_proofs,
         "project_defense_analysis": _report_safe_analysis(analysis),
         "defense_questions": defense_questions,
+        "defense_answer_evidence": defense_answer_evidence,
         "video_evidence_chips": video_chips,
         "skill_evidence": skill_evidence,
         "evidence_traces": evidence_traces,

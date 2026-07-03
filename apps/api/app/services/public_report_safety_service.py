@@ -107,7 +107,9 @@ __all__ = [
     "public_safe_skill_report",
     "defense_privacy_is_clean",
     "public_safe_defense_analysis",
+    "public_safe_defense_answer_evidence",
     "DEFENSE_PRIVACY_HIDDEN_MESSAGE",
+    "DEFENSE_ANSWER_WITHHELD_MESSAGE",
 ]
 
 _TEXT_LIMIT = 400
@@ -1221,3 +1223,278 @@ def public_safe_defense_analysis(analysis: Any) -> dict[str, Any] | None:
         # Fixed neutral value — never the raw/internal status string.
         "privacy_scan_status": _DEFENSE_PRIVACY_WITHHELD_STATUS,
     }
+
+
+# ── Project Defense Answer Evidence (privacy fail-closed) ─────────────────────
+#
+# Claim-level answer evidence objects (``defense_answer_evidence_service``) are
+# built from the SAME transcript the defense analysis is built from: their
+# ``safe_answer_summary`` is answer-derived text. They may therefore reach a
+# public recruiter surface only when the defense analysis EXPLICITLY passed
+# privacy review (:func:`defense_privacy_is_clean`) AND the individual object is
+# marked shareable. Everything else fails closed to a fixed withheld card that
+# carries no answer-derived text, no internal IDs, and no raw status strings.
+
+# Fixed public wording for a withheld answer evidence card. Names no answer
+# content and no reason beyond the privacy review outcome.
+DEFENSE_ANSWER_WITHHELD_MESSAGE = (
+    "This Project Defense answer is hidden from the public report because "
+    "privacy review did not pass."
+)
+
+_ANSWER_WITHHELD_STATUS = "Withheld for privacy"
+
+# Bound the public list so a hostile/inflated telemetry blob cannot balloon the
+# public payload.
+_MAX_PUBLIC_ANSWER_EVIDENCE = 12
+
+# Taxonomy allowlists — public cards only ever echo these fixed vocabulary
+# values, never arbitrary producer strings.
+_ALLOWED_QUESTION_KINDS = frozenset(
+    {
+        "architecture_explanation",
+        "implementation_explanation",
+        "contribution_explanation",
+        "skill_explanation",
+        "website_behavior_explanation",
+        "document_explanation",
+        "challenge_debugging",
+        "tradeoff_decision",
+        "evaluation_result",
+        "improvement_next_step",
+        "unknown_or_generic",
+    }
+)
+_ALLOWED_CLAIM_TYPES = frozenset(
+    {
+        "project_architecture",
+        "personal_contribution",
+        "skill_understanding",
+        "implementation_reasoning",
+        "runtime_behavior_explanation",
+        "document_claim_explanation",
+        "challenge_resolution",
+        "tradeoff_reasoning",
+        "evaluation_interpretation",
+        "future_improvement",
+    }
+)
+_ALLOWED_EVIDENCE_ROLES = frozenset(
+    {
+        "candidate_explanation",
+        "implementation_explanation_context",
+        "runtime_behavior_explanation_context",
+        "document_corroboration_context",
+        "process_reflection",
+        "challenge_tradeoff_context",
+        "generic_project_context",
+        "insufficient_or_generic",
+    }
+)
+_ALLOWED_ANSWER_STATUSES = frozenset(
+    {
+        "Explained with evidence",
+        "Partially explained",
+        "Generic explanation",
+        "Not explained",
+        "Needs review",
+        _ANSWER_WITHHELD_STATUS,
+    }
+)
+# Fixed basis-chip vocabulary (see ``defense_answer_evidence_service``).
+_ALLOWED_BASIS_CHIPS = frozenset(
+    {
+        "Targeted question",
+        "Candidate answer",
+        "Project skill claim",
+        "Attached GitHub proof",
+        "Attached Website proof",
+        "Attached Document proof",
+        "Challenge/tradeoff explanation",
+        "Privacy-safe summary",
+    }
+)
+
+
+def _withheld_answer_evidence_card(item: dict[str, Any], index: int) -> dict[str, Any]:
+    """Fixed, neutral public card for one withheld answer evidence object.
+
+    Keeps only the deterministic, non-transcript-derived structure (a stable
+    safe id and the question kind, which comes from the generated question's
+    ``target_ref`` — never from the answer). Everything answer-derived is
+    dropped; free text is the fixed withheld message.
+    """
+    kind = str(item.get("question_kind") or "")
+    return {
+        "evidence_id_safe": f"defense-answer-{index}",
+        "question_kind": kind if kind in _ALLOWED_QUESTION_KINDS else "unknown_or_generic",
+        "question_text": None,
+        "target_ref_label_safe": None,
+        "mapped_skill": None,
+        "claim_type": "project_architecture",
+        "answer_purpose": "unknown_or_generic",
+        "evidence_role": "insufficient_or_generic",
+        "qualitative_status": _ANSWER_WITHHELD_STATUS,
+        "safe_answer_summary": DEFENSE_ANSWER_WITHHELD_MESSAGE,
+        "evidence_basis_chips": [],
+        "corroborates_github": False,
+        "corroborates_website": False,
+        "corroborates_document": False,
+        "limitation": DEFENSE_ANSWER_WITHHELD_MESSAGE,
+        # Fixed neutral value — never the raw/internal status string.
+        "privacy_status": _DEFENSE_PRIVACY_WITHHELD_STATUS,
+    }
+
+
+def _safe_vocab(value: Any, allowed: frozenset[str], fallback: str) -> str:
+    text = str(value or "").strip()
+    return text if text in allowed else fallback
+
+
+# Deterministic public wording per question kind. The public surface NEVER
+# echoes the candidate's answer text — not even sanitized (the same rule that
+# strips ``answer_excerpt`` from public evidence traces). A public card only
+# ever *describes* the explanation and its corroboration.
+_PUBLIC_ANSWER_KIND_WORDING: dict[str, str] = {
+    "architecture_explanation": "The candidate explained the project architecture in their own words.",
+    "implementation_explanation": (
+        "The candidate explained the implementation approach behind this claim in a targeted defense answer."
+    ),
+    "contribution_explanation": "The candidate described their personal contribution in their own words.",
+    "skill_explanation": "The candidate explained this claimed skill in a targeted defense answer.",
+    "website_behavior_explanation": (
+        "The candidate explained the live website behavior in a targeted defense answer."
+    ),
+    "document_explanation": (
+        "The candidate explained the attached document's claim in a targeted defense answer."
+    ),
+    "challenge_debugging": "The candidate explained a technical challenge and how they addressed it.",
+    "tradeoff_decision": "The candidate explained a design tradeoff decision in their own words.",
+    "evaluation_result": "The candidate explained the project's evaluation results in their own words.",
+    "improvement_next_step": "The candidate described what they would improve next.",
+    "unknown_or_generic": "The candidate provided a general project explanation.",
+}
+
+_PUBLIC_ANSWER_GENERIC_WORDING = (
+    "The answer was generic, so it is treated as project context only."
+)
+
+
+def _public_answer_summary(
+    kind: str,
+    mapped_skill: str | None,
+    status: str,
+    corroborates_github: bool,
+    corroborates_website: bool,
+    corroborates_document: bool,
+) -> str:
+    """Fixed, derived public summary for one clean answer evidence card.
+
+    Composed ONLY from the deterministic taxonomy + corroboration flags — no
+    transcript/answer-derived text ever reaches this string.
+    """
+    parts: list[str] = []
+    base = _PUBLIC_ANSWER_KIND_WORDING.get(kind, _PUBLIC_ANSWER_KIND_WORDING["unknown_or_generic"])
+    if mapped_skill and kind == "skill_explanation":
+        base = f"The candidate explained their {mapped_skill} skill claim in a targeted defense answer."
+    parts.append(base)
+    if status in ("Generic explanation", "Not explained"):
+        parts.append(_PUBLIC_ANSWER_GENERIC_WORDING)
+    if corroborates_github:
+        parts.append("GitHub proof for the same project is attached and corroborates this explanation.")
+    if corroborates_website:
+        parts.append("Website proof shows the observed runtime workflow for the same project.")
+    if corroborates_document:
+        parts.append("Document proof corroborates the related project claim.")
+    return " ".join(parts)
+
+
+def public_safe_defense_answer_evidence(
+    items: Any, analysis: Any
+) -> list[dict[str, Any]]:
+    """Project Defense Answer Evidence to recruiter-safe cards, fail-closed.
+
+    ``items`` is the stored ``telemetry.defense_answer_evidence`` list;
+    ``analysis`` is the (raw) defense analysis whose ``privacy_scan_status``
+    gates the whole session. A card's answer-derived content is published ONLY
+    when the session analysis is explicitly clean (:func:`defense_privacy_is_clean`)
+    AND the object itself is marked ``public_shareable`` with a clean
+    ``privacy_status``. Any other object — flagged, contradicted, malformed,
+    legacy (no status), or attached to a missing/unclean analysis — is replaced
+    with a fixed withheld card (:func:`_withheld_answer_evidence_card`).
+
+    Public cards never carry ``question_id`` or any internal ID; enum-ish
+    fields are allowlisted to the fixed taxonomy; free text is scrubbed through
+    :func:`scrub_public_text`. The deterministic ``question_text`` (generated
+    template wording, not transcript-derived) is kept only on a clean card.
+    """
+    if not isinstance(items, list) or not items:
+        return []
+
+    session_clean = defense_privacy_is_clean(analysis)
+
+    out: list[dict[str, Any]] = []
+    for index, item in enumerate(items[:_MAX_PUBLIC_ANSWER_EVIDENCE], start=1):
+        if not isinstance(item, dict):
+            continue
+        item_status = str(item.get("privacy_status") or "").strip().lower()
+        shareable = (
+            session_clean
+            and bool(item.get("public_shareable"))
+            and item_status in _DEFENSE_PRIVACY_CLEAN_STATUSES
+            and not item.get("contradiction_flag")
+        )
+        if not shareable:
+            out.append(_withheld_answer_evidence_card(item, index))
+            continue
+
+        mapped_skill = _scrub_text_or_none(item.get("mapped_skill"))
+        question_kind = _safe_vocab(
+            item.get("question_kind"), _ALLOWED_QUESTION_KINDS, "unknown_or_generic"
+        )
+        qualitative_status = _safe_vocab(
+            item.get("qualitative_status"), _ALLOWED_ANSWER_STATUSES, "Not explained"
+        )
+        corroborates_github = bool(item.get("corroborates_github"))
+        corroborates_website = bool(item.get("corroborates_website"))
+        corroborates_document = bool(item.get("corroborates_document"))
+        out.append(
+            {
+                "evidence_id_safe": f"defense-answer-{index}",
+                "question_kind": question_kind,
+                "question_text": _scrub_text_or_none(item.get("question_text")),
+                "target_ref_label_safe": _scrub_text_or_none(item.get("target_ref_label_safe")),
+                "mapped_skill": mapped_skill,
+                "claim_type": _safe_vocab(
+                    item.get("claim_type"), _ALLOWED_CLAIM_TYPES, "project_architecture"
+                ),
+                "answer_purpose": _safe_vocab(
+                    item.get("answer_purpose"), _ALLOWED_QUESTION_KINDS, "unknown_or_generic"
+                ),
+                "evidence_role": _safe_vocab(
+                    item.get("evidence_role"), _ALLOWED_EVIDENCE_ROLES, "insufficient_or_generic"
+                ),
+                "qualitative_status": qualitative_status,
+                # Derived description only — the candidate's answer text (even
+                # sanitized) is never echoed on the public surface.
+                "safe_answer_summary": _public_answer_summary(
+                    question_kind,
+                    mapped_skill,
+                    qualitative_status,
+                    corroborates_github,
+                    corroborates_website,
+                    corroborates_document,
+                ),
+                "evidence_basis_chips": [
+                    chip
+                    for chip in (item.get("evidence_basis_chips") or [])
+                    if isinstance(chip, str) and chip in _ALLOWED_BASIS_CHIPS
+                ],
+                "corroborates_github": corroborates_github,
+                "corroborates_website": corroborates_website,
+                "corroborates_document": corroborates_document,
+                "limitation": scrub_public_text(item.get("limitation")),
+                "privacy_status": "clean",
+            }
+        )
+    return out

@@ -32,6 +32,10 @@ from app.services.github_evidence_service import parse_github_repo_url
 from app.services.github_proof_service import GitHubProofNotFoundError, GitHubProofService
 from app.services.optional_evidence_service import OptionalEvidenceService
 from app.services.safe_public_url import safe_repo_relative_path
+from app.services.defense_answer_evidence_service import (
+    build_defense_answer_evidence,
+    explained_skills_from_answer_evidence,
+)
 from app.services.project_defense_analysis_service import analyze_defense_transcript
 from app.services.project_defense_evidence_chips import build_evidence_chips
 from app.services.website_proof_summary_service import get_website_proof_summary
@@ -676,19 +680,56 @@ def submit_defense_answers(
     metadata = project.get("metadata") or {}
     claimed_skills = _clean_list(metadata.get("claimed_skills") or [])
     attached = metadata.get("attached_proofs") or {}
-    github_proof = attached.get("github_proof") if isinstance(attached, dict) else None
+    if not isinstance(attached, dict):
+        attached = {}
+    github_proof = attached.get("github_proof")
     github_summary = ""
     if isinstance(github_proof, dict):
         github_summary = str(github_proof.get("public_safe_summary") or "")
+
+    # ── Claim-level Defense Answer Evidence (question_id / target_ref grounded) ──
+    # Built from the SAME segments that were persisted: manual answers carry
+    # their answering question_id (targeted evidence); an auto video transcript
+    # has no question_id, so its text honestly stays untargeted/generic and can
+    # never promote a skill.
+    evidence_segments = segments if segments else list(saved_segments)
+    answer_evidence = build_defense_answer_evidence(
+        questions=questions,
+        segments=evidence_segments,
+        claimed_skills=claimed_skills,
+        attached_proofs=attached,
+        project_title=str(project.get("title") or ""),
+    )
+
+    # Question-grounded skill mapping replaces the keyword heuristic whenever
+    # at least one answer was tied to a question; a purely untargeted
+    # submission (combined text / auto transcript only) passes None and keeps
+    # the conservative transcript-only fallback.
+    grounded_explained = (
+        explained_skills_from_answer_evidence(answer_evidence)
+        if answered_question_ids
+        else None
+    )
 
     analysis_result = analyze_defense_transcript(
         transcript_text=full_text,
         claimed_skills=claimed_skills,
         github_summary=github_summary,
+        question_grounded_explained_skills=grounded_explained,
     )
     analysis_dict = asdict(analysis_result)
 
-    telemetry_update: dict[str, Any] = {"project_defense_analysis": analysis_dict}
+    # Stamp the transcript privacy verdict onto every answer evidence object so
+    # the public projection can fail closed per item.
+    privacy_status = str(analysis_result.privacy_scan_status or "").strip().lower() or "unknown"
+    for item in answer_evidence:
+        item["privacy_status"] = privacy_status
+        item["public_shareable"] = privacy_status == "clean" and not item.get("contradiction_flag")
+
+    telemetry_update: dict[str, Any] = {
+        "project_defense_analysis": analysis_dict,
+        "defense_answer_evidence": answer_evidence,
+    }
     if auto_video_transcript is not None:
         # A real video transcript is available — (re)compute chips from it.
         # Note: if this run also persists manual answers (below),
@@ -711,4 +752,5 @@ def submit_defense_answers(
         "answered_question_count": len(answered_question_ids),
         "analysis": analysis_dict,
         "video_evidence_chips": video_evidence_chips,
+        "defense_answer_evidence": answer_evidence,
     }

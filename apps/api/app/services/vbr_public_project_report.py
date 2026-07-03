@@ -655,6 +655,7 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         defense_privacy_is_clean,
         enforce_public_safe,
         public_safe_defense_analysis,
+        public_safe_defense_answer_evidence,
     )
 
     # ── Project Defense privacy fail-closed (must-fix) ────────────────────────
@@ -666,6 +667,15 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     raw_defense_analysis = report.get("project_defense_analysis")
     defense_analysis = public_safe_defense_analysis(raw_defense_analysis)
     defense_privacy_clean = defense_privacy_is_clean(raw_defense_analysis)
+
+    # Claim-level Defense Answer Evidence rides the same fail-closed gate: the
+    # projection publishes an answer summary only when the session analysis is
+    # explicitly clean AND the object itself is marked shareable; everything
+    # else becomes a fixed withheld card with no answer-derived text and no
+    # internal question_id.
+    defense_answer_evidence = public_safe_defense_answer_evidence(
+        report.get("defense_answer_evidence") or [], raw_defense_analysis
+    )
 
     evidence_traces = _public_evidence_traces(report.get("evidence_traces") or [])
     # Video evidence chips are built from the SAME Project Defense transcript
@@ -706,6 +716,7 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         "documents": list(report.get("documents") or []),
         "website_proofs": website_proofs,
         "project_defense_analysis": defense_analysis,
+        "defense_answer_evidence": defense_answer_evidence,
         "skill_evidence": list(report.get("skill_evidence") or []),
         "evidence_traces": evidence_traces,
         "video_evidence_chips": _sanitize_video_chips(raw_video_chips),

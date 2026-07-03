@@ -338,6 +338,54 @@ class TestAnalyzeDefenseTranscript:
                 f"{skill!r} in skills_explained_well but not in skills_mentioned"
             )
 
+    def test_transcript_only_generic_tech_vocab_does_not_promote_skill(self) -> None:
+        """Fallback: keyword + generic tech vocab is NOT an explanation.
+
+        "Python uses an API endpoint and database" is exactly the generic
+        infrastructure vocabulary that must remain project-level context, never
+        an explained-skill promotion, when no question-grounded answers exist.
+        """
+        result = analyze_defense_transcript(
+            transcript_text=(
+                "Python uses an API endpoint and database. "
+                "The project was built over a few weeks and everyone contributed. "
+                "It runs online and users can open it in their browser any time."
+            ),
+            claimed_skills=["Python"],
+        )
+        assert "Python" in result.skills_mentioned
+        assert result.skills_explained_well == []
+
+    def test_transcript_only_generic_stack_mentions_do_not_promote(self) -> None:
+        """Fallback: broad React/FastAPI/Python name-drops with only generic
+        infrastructure nouns (frontend/backend/api/endpoint/database) do not
+        promote any of those skills."""
+        result = analyze_defense_transcript(
+            transcript_text=(
+                "React renders the frontend and FastAPI serves the API endpoints "
+                "from the database. Python is used across the backend too. "
+                "The application looks clean and the interface is easy to use."
+            ),
+            claimed_skills=["React", "FastAPI", "Python"],
+        )
+        assert set(result.skills_mentioned) >= {"React", "FastAPI", "Python"}
+        assert result.skills_explained_well == []
+
+    def test_transcript_only_substantive_explanation_still_counts(self) -> None:
+        """Fallback: a substantive, project-specific implementation explanation
+        (multiple distinct non-generic depth signals in one sentence) can still
+        promote the skill."""
+        result = analyze_defense_transcript(
+            transcript_text=(
+                "In Python I built the ingestion pipeline with a caching layer, "
+                "authentication middleware, and schema validation before writing "
+                "records, using an asynchronous queue to keep latency low. "
+                "It took a few weeks to get right."
+            ),
+            claimed_skills=["Python"],
+        )
+        assert "Python" in result.skills_explained_well
+
     def test_evidence_context_consistency_improves_score(self) -> None:
         """Mentioning the same tech as in evidence summaries should boost consistency."""
         result_with_context = analyze_defense_transcript(

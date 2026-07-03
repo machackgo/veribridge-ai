@@ -222,6 +222,34 @@ _TECH_DEPTH_RE: list[re.Pattern[str]] = [
     re.compile(p, re.IGNORECASE) for p in _TECH_DEPTH_PHRASES
 ]
 
+# ── Transcript-only fallback: substantive (non-generic) technical-depth signals ─
+# Generic infrastructure vocabulary ("API endpoint database frontend backend")
+# names *what kind of thing* a project has, not *how a skill was used*. On its
+# own, sitting next to a keyword, it is NOT evidence a skill was explained. When
+# no question_id/target_ref-grounded answer exists we grade conservatively: a
+# skill is promoted from the raw transcript only when a single sentence carries
+# the skill AND at least ``_MIN_FALLBACK_SUBSTANTIVE_DEPTH`` *distinct*
+# technical-depth signals that go beyond these generic infrastructure nouns.
+_GENERIC_TECH_PHRASES: frozenset[str] = frozenset(
+    {
+        r"\bapi\b",
+        r"\bendpoint\b",
+        r"\bdatabase\b",
+        r"\binterface\b",
+        r"\bcomponent\b",
+        r"\bdeployment\b",
+        r"\bperformance\b",
+        r"\bsecurity\b",
+        r"\btesting\b",
+    }
+)
+_SUBSTANTIVE_DEPTH_RE: list[re.Pattern[str]] = [
+    re.compile(p, re.IGNORECASE)
+    for p in _TECH_DEPTH_PHRASES
+    if p not in _GENERIC_TECH_PHRASES
+]
+_MIN_FALLBACK_SUBSTANTIVE_DEPTH: int = 2
+
 
 # ── Limitations / future improvements signal ──────────────────────────────────
 
@@ -325,12 +353,21 @@ def analyze_defense_transcript(
     workflow_summary: str = "",
     github_summary: str = "",
     live_check_summary: str = "",
+    question_grounded_explained_skills: list[str] | None = None,
 ) -> DefenseAnalysisResult:
     """
     Analyse a project defense transcript and return a structured result.
 
     This function is pure (no DB, no side effects) and project-agnostic.
     It does NOT hardcode any project name, URL, framework, or discipline.
+
+    ``question_grounded_explained_skills`` — when the caller has claim-level
+    Defense Answer Evidence (``defense_answer_evidence_service``), it passes
+    the skills whose OWN targeted question was answered with a real
+    explanation. That question-grounded mapping then becomes the source of
+    truth for ``skills_explained_well`` (intersected with ``claimed_skills``),
+    replacing the sentence-level keyword heuristic entirely. Pass ``None``
+    (not ``[]``) only when no per-question answer data exists at all.
 
     Scoring:
         +20  transcript exists and is long enough (≥100 words)
@@ -430,26 +467,53 @@ def analyze_defense_transcript(
             "FastAPI, PostgreSQL) directly in your explanation."
         )
 
-    # Skills explained well = mentioned + clarity from context
     skills_explained_well: list[str] = []
-    for skill in skills_mentioned:
-        # A skill is "explained well" if it appears in a sentence that also
-        # contains at least one ownership or depth signal.
+    if question_grounded_explained_skills is not None:
+        # Question-grounded mode (preferred): a skill is explained well ONLY
+        # when its own targeted defense question was answered with a real
+        # explanation. Keyword overlap plays no part here.
+        claimed_by_norm = {s.strip().lower(): s for s in claimed_skills}
+        for skill in question_grounded_explained_skills:
+            canonical = claimed_by_norm.get(str(skill).strip().lower())
+            if canonical:
+                skills_explained_well.append(canonical)
+        # Keep the "explained ⊆ mentioned" invariant: a skill explained via its
+        # targeted question counts as mentioned even if the answer paraphrased
+        # the skill name instead of repeating it verbatim.
+        mentioned_norm = {s.strip().lower() for s in skills_mentioned}
+        for skill in skills_explained_well:
+            if skill.strip().lower() not in mentioned_norm:
+                skills_mentioned.append(skill)
+        skills_missing = [
+            s for s in skills_missing
+            if s.strip().lower() not in {x.strip().lower() for x in skills_mentioned}
+        ]
+    else:
+        # Legacy transcript-only fallback (no per-question answers exist). This
+        # path has no question_id/target_ref grounding, so it is deliberately
+        # conservative: a keyword mention sitting next to generic infrastructure
+        # vocabulary ("Python uses an API endpoint and database") is NOT an
+        # explanation and must not promote the skill. A skill is "explained well"
+        # here only when a single sentence carries the skill AND at least
+        # ``_MIN_FALLBACK_SUBSTANTIVE_DEPTH`` *distinct* technical-depth signals
+        # that go *beyond* generic infrastructure nouns (i.e. a substantive,
+        # project-specific mechanism). Broad keyword mentions, generic tech
+        # vocabulary, and first-person ownership wording alone are NOT
+        # explanation — they remain project-level context / Needs review, and no
+        # portion of merely-mentioned skills is ever promoted by default.
         sentences = re.split(r"[.!?]", text)
-        for sentence in sentences:
-            s_lower = sentence.lower()
-            skill_words = [w for w in re.split(r"[\s/._-]+", skill) if len(w) >= 3]
-            skill_pat = "|".join(re.escape(w) for w in skill_words) if skill_words else re.escape(skill)
-            if not re.search(skill_pat, sentence, re.IGNORECASE):
-                continue
-            has_ownership = any(p.search(s_lower) for p in _OWNERSHIP_RE)
-            has_depth = any(p.search(s_lower) for p in _TECH_DEPTH_RE)
-            if has_ownership or has_depth:
-                skills_explained_well.append(skill)
-                break
-    # If no explanation context: every mentioned skill defaults to partially explained
-    if skills_mentioned and not skills_explained_well:
-        skills_explained_well = skills_mentioned[:max(1, len(skills_mentioned) // 2)]
+        for skill in skills_mentioned:
+            for sentence in sentences:
+                skill_words = [w for w in re.split(r"[\s/._-]+", skill) if len(w) >= 3]
+                skill_pat = "|".join(re.escape(w) for w in skill_words) if skill_words else re.escape(skill)
+                if not re.search(skill_pat, sentence, re.IGNORECASE):
+                    continue
+                substantive_signals = sum(
+                    1 for p in _SUBSTANTIVE_DEPTH_RE if p.search(sentence)
+                )
+                if substantive_signals >= _MIN_FALLBACK_SUBSTANTIVE_DEPTH:
+                    skills_explained_well.append(skill)
+                    break
 
     result.skills_mentioned = skills_mentioned
     result.skills_explained_well = list(dict.fromkeys(skills_explained_well))
