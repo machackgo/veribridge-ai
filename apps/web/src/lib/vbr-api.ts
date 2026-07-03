@@ -1545,8 +1545,80 @@ export type PassportSkillSummary = {
   evidence_chips: PassportSkillEvidenceChip[]
   /** Aggregated claim→evidence traces across this candidate's projects. */
   evidence_traces?: EvidenceTrace[]
+  /** The project where this skill is most strongly evidenced (owner-only). */
+  strongest_project_title?: string | null
+  strongest_project_status?: string | null
   notes: string
   limitations: string[]
+}
+
+/**
+ * Proof-chain completeness for one project card. Derived from the already-safe
+ * evidence source badges — booleans + missing labels only, never a score.
+ */
+export type PassportProofChain = {
+  github: boolean
+  website: boolean
+  document: boolean
+  project_defense: boolean
+  video: boolean
+  attached_count: number
+  total_count: number
+  missing: string[]
+}
+
+/** One of the strongest skills a project demonstrates — qualitative label only. */
+export type PassportProjectTopSkill = {
+  skill: string
+  status: string
+}
+
+/** The five attachable proof-chain steps, in canonical render order. */
+export const PROOF_CHAIN_STEPS: ReadonlyArray<{
+  key: "github" | "website" | "document" | "project_defense" | "video"
+  label: string
+}> = [
+  { key: "github", label: "GitHub Proof" },
+  { key: "website", label: "Website Proof" },
+  { key: "document", label: "Document Proof" },
+  { key: "project_defense", label: "Project Defense" },
+  { key: "video", label: "Video Evidence" },
+]
+
+/**
+ * Derive proof-chain completeness from evidence source badges — the client-side
+ * fallback for payloads that don't carry `proof_chain` yet.
+ */
+export function proofChainFromSources(sources: string[]): PassportProofChain {
+  const present = new Set(sources)
+  const chain = {
+    github: present.has("GitHub Proof"),
+    website: present.has("Website Proof"),
+    document: present.has("Document Proof"),
+    project_defense: present.has("Project Defense"),
+    video: present.has("Video Evidence"),
+  }
+  const attached = PROOF_CHAIN_STEPS.filter((s) => chain[s.key]).length
+  return {
+    ...chain,
+    attached_count: attached,
+    total_count: PROOF_CHAIN_STEPS.length,
+    missing: PROOF_CHAIN_STEPS.filter((s) => !chain[s.key]).map((s) => s.label),
+  }
+}
+
+/**
+ * Compact top-of-passport summary of the evidence graph
+ * (projects ↔ skills ↔ proofs). Counts and next actions only — no scores.
+ */
+export type EvidenceGraphOverview = {
+  project_count: number
+  published_report_count: number
+  skills_with_evidence: number
+  proof_count: number
+  attached_proof_count: number
+  unattached_proof_count: number
+  next_actions: string[]
 }
 
 /** Owner-only publish status for one project's recruiter link. */
@@ -1566,6 +1638,11 @@ export type PassportProjectSummary = {
   claimed_skills: string[]
   evidence_sources: string[]
   evidence_package: VBRReportEvidencePackageSummary
+  /** Proof-chain completeness across the five attachable evidence sources.
+   *  May be absent on older payloads — derive from `evidence_sources`. */
+  proof_chain?: PassportProofChain
+  /** Strongest evidence-backed skills this project demonstrates (capped). */
+  top_skills?: PassportProjectTopSkill[]
   /** How many duplicate evidence attempts merged into this card (≥1). */
   attempt_count: number
   report: PassportProjectReportStatus
@@ -1601,6 +1678,11 @@ export type PrivateWorkPassport = {
   public_slug: string | null
   public_path: string | null
   published_at: string | null
+  /**
+   * Compact evidence-graph summary rendered at the top of the passport. May be
+   * absent on older payloads — the view derives a fallback from other fields.
+   */
+  evidence_graph_overview?: EvidenceGraphOverview | null
   skills: PassportSkillSummary[]
   projects: PassportProjectSummary[]
   evidence_source_counts: Record<string, number>
@@ -1649,6 +1731,8 @@ export type PublicPassportProject = {
   project_summary: string
   claimed_skills: string[]
   evidence_sources: string[]
+  /** Safe proof-chain completeness (booleans + source labels; no ids/scores). */
+  proof_chain?: PassportProofChain
   public_report_path: string
   published_at: string | null
 }

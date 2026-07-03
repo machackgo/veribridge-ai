@@ -1966,13 +1966,23 @@ function fallbackSlug(skill: string): string {
   return skill.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "skill"
 }
 
+/** The project where a skill is most strongly evidenced (from the passport
+ *  project↔skill aggregate) — connects the skill lens back to the project lens. */
+export type StrongestProjectRef = { title: string; status: string }
+
 /**
  * Layer 1 — a compact skill card. Shows counts + a few previews, and a
  * "View Skill Report" link that NAVIGATES to the separate Skill Report page
  * (the full evidence — and the expensive website hydration — only loads there).
  * Never renders the full report inline.
  */
-export function VaultSkillSummaryCard({ summary }: { summary: VaultSkillSummary }) {
+export function VaultSkillSummaryCard({
+  summary,
+  strongestProject,
+}: {
+  summary: VaultSkillSummary
+  strongestProject?: StrongestProjectRef | null
+}) {
   const sourceCounts = Object.entries(summary.proof_source_counts ?? {})
   const slug = summary.skill_slug || fallbackSlug(summary.skill)
 
@@ -2013,6 +2023,14 @@ export function VaultSkillSummaryCard({ summary }: { summary: VaultSkillSummary 
           </Badge>
         ))}
       </div>
+
+      {/* The project where this skill is most strongly evidenced */}
+      {strongestProject && (
+        <div data-testid="vault-summary-strongest-project" style={{ fontSize: 11, color: TOKEN.inkSoft }}>
+          Strongest project: <strong>{strongestProject.title}</strong>
+          {strongestProject.status ? ` — ${strongestProject.status}` : ""}
+        </div>
+      )}
 
       {summary.summary && (
         <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0 }}>{summary.summary}</p>
@@ -2057,7 +2075,14 @@ export function VaultSkillSummaryCard({ summary }: { summary: VaultSkillSummary 
  * skill summary cards grouped under category headings. Renders nothing when
  * there are no summaries.
  */
-export function VaultSkillDashboard({ summaries }: { summaries?: VaultSkillSummary[] | null }) {
+export function VaultSkillDashboard({
+  summaries,
+  strongestBySkill,
+}: {
+  summaries?: VaultSkillSummary[] | null
+  /** skill (lowercased) → strongest related project, from the passport aggregate. */
+  strongestBySkill?: Record<string, StrongestProjectRef>
+}) {
   if (!summaries || summaries.length === 0) return null
 
   const byCategory = new Map<string, VaultSkillSummary[]>()
@@ -2080,7 +2105,11 @@ export function VaultSkillDashboard({ summaries }: { summaries?: VaultSkillSumma
           </h3>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {byCategory.get(category)!.map((summary) => (
-              <VaultSkillSummaryCard key={summary.skill} summary={summary} />
+              <VaultSkillSummaryCard
+                key={summary.skill}
+                summary={summary}
+                strongestProject={strongestBySkill?.[summary.skill.toLowerCase()] ?? null}
+              />
             ))}
           </div>
         </div>

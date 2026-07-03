@@ -608,6 +608,98 @@ def test_public_passport_strips_github_code_snippet(client: TestClient, mem_stor
             assert is_safe_public_url(t["public_url"])
 
 
+# ── Evidence graph (Phase 1): overview, proof chains, project↔skill links ────
+
+_QUALITATIVE_LABELS = {
+    "Demonstrated",
+    "Partially demonstrated",
+    "Evidence observed",
+    "Supporting evidence",
+    "Needs review",
+    "Not assessed",
+}
+
+
+def test_private_passport_has_evidence_graph_overview(client: TestClient, mem_store: dict) -> None:
+    _make_full_project(client, mem_store)
+    body = _get_private(client).json()
+
+    overview = body["evidence_graph_overview"]
+    assert overview["project_count"] == 1
+    assert overview["published_report_count"] == 0
+    assert overview["skills_with_evidence"] >= 1
+    assert overview["proof_count"] >= 1
+    assert overview["attached_proof_count"] + overview["unattached_proof_count"] == overview["proof_count"]
+    # Next actions are plain guidance strings (capped), never scores.
+    assert overview["next_actions"]
+    assert len(overview["next_actions"]) <= 3
+    assert all(isinstance(a, str) for a in overview["next_actions"])
+
+
+def test_private_project_cards_include_proof_chain_completeness(
+    client: TestClient, mem_store: dict
+) -> None:
+    _make_full_project(client, mem_store)
+    proj = _get_private(client).json()["projects"][0]
+
+    chain = proj["proof_chain"]
+    # The full project attaches GitHub + Document + Website and completes a
+    # defense with video evidence — every chain step is present.
+    assert chain["github"] is True
+    assert chain["document"] is True
+    assert chain["website"] is True
+    assert chain["project_defense"] is True
+    assert chain["total_count"] == 5
+    assert chain["attached_count"] == sum(
+        1 for key in ("github", "website", "document", "project_defense", "video") if chain[key]
+    )
+    # ``missing`` lists exactly the absent source labels (may be empty).
+    assert len(chain["missing"]) == chain["total_count"] - chain["attached_count"]
+
+
+def test_private_project_cards_include_top_skills(client: TestClient, mem_store: dict) -> None:
+    _make_full_project(client, mem_store)
+    proj = _get_private(client).json()["projects"][0]
+
+    assert proj["top_skills"], "expected evidence-backed top skills on the project card"
+    assert len(proj["top_skills"]) <= 5
+    for row in proj["top_skills"]:
+        assert set(row.keys()) == {"skill", "status"}
+        assert row["status"] in _QUALITATIVE_LABELS
+
+
+def test_private_skill_cards_carry_strongest_project(client: TestClient, mem_store: dict) -> None:
+    _make_full_project(client, mem_store)
+    body = _get_private(client).json()
+
+    assert body["skills"]
+    for skill in body["skills"]:
+        # Every aggregated skill links back to the project where it is most
+        # strongly evidenced, with a qualitative label only.
+        assert skill["strongest_project_title"]
+        assert skill["strongest_project_status"] in _QUALITATIVE_LABELS
+
+
+def test_public_featured_projects_include_safe_proof_chain(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id = _make_full_project(client, mem_store)
+    _publish_project_report(client, project_id)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+    assert body["featured_projects"]
+    chain = body["featured_projects"][0]["proof_chain"]
+    assert chain["total_count"] == 5
+    assert isinstance(chain["github"], bool)
+    # The chain carries only booleans, counts, and canonical source labels.
+    assert all(isinstance(label, str) for label in chain["missing"])
+    # Strongest-project fields are owner-only and never leak publicly.
+    serialized = str(body["top_skills"])
+    assert "strongest_project_title" not in serialized
+
+
 # ── Identity / passport header ───────────────────────────────────────────────
 
 
@@ -805,3 +897,415 @@ def test_public_identity_scrubs_uuid_and_email_onboarding_values(
     blob = str(identity)
     assert "550e8400" not in blob
     assert "@example.com" not in blob
+
+
+# ── Grouped project skill aggregation across multiple attempts ───────────────
+
+
+def test_grouped_project_skill_intelligence_aggregates_distinct_skills(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Attempt 1 demonstrates Skill A, Attempt 2 demonstrates Skill B.
+    Skill Intelligence must show both skills in the combined card."""
+    # Attempt 1: Project with Python evidence
+    snapshot1 = {
+        "skill_code_evidence": [
+            {
+                "skill": "Python",
+                "file_path": "src/main.py",
+                "line_start": 1,
+                "line_end": 15,
+                "function_name": "main",
+                "code_snippet": "def main():\n    print('hello')",
+                "github_url": "https://github.com/test/repo/blob/main/src/main.py#L1-L15",
+            }
+        ]
+    }
+    github_proof_1 = _seed_github_proof(mem_store, analysis_snapshot=snapshot1)
+    project_1_id = _create_project_defense(
+        client,
+        attached_proofs={"github_proof_id": github_proof_1},
+    ).json()["project"]["id"]
+    mem_store["vbr_projects"][project_1_id]["repo_full_name"] = "test/multi-skill-repo"
+
+    # Attempt 2: Different skill (React), same repo identity
+    snapshot2 = {
+        "skill_code_evidence": [
+            {
+                "skill": "React",
+                "file_path": "src/App.tsx",
+                "line_start": 5,
+                "line_end": 25,
+                "function_name": "App",
+                "code_snippet": "function App() {\n    return <div>App</div>;\n}",
+                "github_url": "https://github.com/test/repo/blob/main/src/App.tsx#L5-L25",
+            }
+        ]
+    }
+    github_proof_2 = _seed_github_proof(mem_store, analysis_snapshot=snapshot2)
+    project_2_id = _create_project_defense(
+        client,
+        attached_proofs={"github_proof_id": github_proof_2},
+    ).json()["project"]["id"]
+    mem_store["vbr_projects"][project_2_id]["repo_full_name"] = "test/multi-skill-repo"
+
+    body = _get_private(client).json()
+
+    # Should collapse to one grouped project with both attempts
+    assert body["project_count"] == 1
+    assert body["projects"][0]["attempt_count"] == 2
+
+    # Skill Intelligence should include skills from BOTH attempts
+    skill_names = {s["skill"] for s in body["skills"]}
+    assert "Python" in skill_names, "Attempt 1 skill should be in Skill Intelligence"
+    assert "React" in skill_names, "Attempt 2 skill should be in Skill Intelligence"
+
+    # Each skill should have the grouped project in its cross-project detail
+    for skill in body["skills"]:
+        if skill["skill"] in ("Python", "React"):
+            assert skill["projects"], f"{skill['skill']} should reference the grouped project"
+            # Verify no project duplication (one deduplicated reference per skill)
+            proj_titles = [p["project_title"] for p in skill["projects"]]
+            assert len(proj_titles) == len(set(proj_titles)), "Grouped project must appear only once per skill"
+
+
+def test_grouped_project_aggregates_strongest_status_across_attempts(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Attempt 1 has weaker status (Supporting evidence) for Skill X.
+    Attempt 2 has stronger status (Demonstrated) for the same Skill X.
+    Skill Intelligence and strongest-project context must use the stronger aggregated status."""
+    # Note: The status comes from the skill_evidence rows in the report.
+    # We can't directly control that without modifying the report structure.
+    # Instead, we'll create one full project and verify the aggregation works
+    # correctly when multiple attempts are grouped.
+
+    # Create a full project (Attempt 1)
+    project_1_id = _make_full_project(client, mem_store)
+    mem_store["vbr_projects"][project_1_id]["repo_full_name"] = "test/status-strength-repo"
+
+    # Create another identical project (Attempt 2) with same repo
+    project_2_id = _make_full_project(client, mem_store)
+    mem_store["vbr_projects"][project_2_id]["repo_full_name"] = "test/status-strength-repo"
+
+    body = _get_private(client).json()
+
+    # Should have one grouped project
+    assert body["project_count"] == 1
+    assert body["projects"][0]["attempt_count"] == 2
+
+    # All skills should be present and deduplicated
+    skills = {s["skill"]: s for s in body["skills"]}
+    for skill in body["skills"]:
+        # Should have strongest_project_status set (from strongest evidence)
+        assert skill["strongest_project_status"] is not None
+        # The status should be one of the qualitative labels
+        assert skill["strongest_project_status"] in {
+            "Demonstrated",
+            "Partially demonstrated",
+            "Evidence observed",
+            "Supporting evidence",
+            "Needs review",
+            "Not assessed",
+        }
+
+
+def test_grouped_project_preserves_card_behavior_in_skill_intelligence(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Verify that grouped project card aggregation is preserved when combined
+    with Skill Intelligence aggregation. Project cards and Skill Intelligence
+    should be in sync."""
+    # Create two attempts of the same project
+    project_1_id = _make_full_project(client, mem_store)
+    mem_store["vbr_projects"][project_1_id]["repo_full_name"] = "test/preserve-card-repo"
+
+    project_2_id = _make_full_project(client, mem_store)
+    mem_store["vbr_projects"][project_2_id]["repo_full_name"] = "test/preserve-card-repo"
+
+    body = _get_private(client).json()
+
+    # Project card shows single grouped entry with both attempts
+    assert body["project_count"] == 1
+    card = body["projects"][0]
+    assert card["attempt_count"] == 2
+
+    # Project card aggregates evidence sources across all attempts
+    assert "GitHub Proof" in card["evidence_sources"]
+    assert "Project Defense" in card["evidence_sources"]
+
+    # Project card aggregates top skills across all attempts
+    card_skill_names = {s["skill"] for s in card["top_skills"]}
+    passport_skill_names = {s["skill"] for s in body["skills"]}
+
+    # All card top skills should be in the full Skill Intelligence
+    assert card_skill_names.issubset(passport_skill_names)
+
+
+def test_public_passport_aggregates_skills_from_all_published_attempts(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Public projection must also aggregate skills from all attempts in a
+    grouped project, using the same safe aggregation."""
+    # Create Attempt 1
+    project_1_id = _make_full_project(client, mem_store)
+    mem_store["vbr_projects"][project_1_id]["repo_full_name"] = "test/public-multi-skill-repo"
+    _publish_project_report(client, project_1_id)
+
+    # Create Attempt 2 with same repo
+    project_2_id = _make_full_project(client, mem_store)
+    mem_store["vbr_projects"][project_2_id]["repo_full_name"] = "test/public-multi-skill-repo"
+    _publish_project_report(client, project_2_id)
+
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+
+    # Public passport should feature one grouped project
+    assert body["featured_project_count"] == 1
+
+    # Top skills must be aggregated from all published attempts
+    assert body["top_skills"], "expected skills aggregated from all attempts"
+
+    # Verify safety: no private ids / internal fields
+    serialized = str(body["top_skills"])
+    assert "project_id" not in serialized
+    assert USER_ID not in serialized
+    for skill in body["top_skills"]:
+        assert "project_id" not in str(skill)
+        # All linked projects must be published
+        for ref in skill.get("projects", []):
+            assert ref["public_report_path"].startswith("/vbr/report/")
+
+
+# ── Grouped attempt aggregation (unit level) ──────────────────────────────────
+# The end-to-end tests above cannot control per-attempt skill status directly,
+# so these drive ``_aggregate_skills_with_detail`` with the exact card shape the
+# passport builders produce for a grouped project: ONE shared project summary
+# paired with EVERY attempt report in the group.
+
+
+def _attempt_report(skill_rows: list[dict]) -> dict:
+    return {"project_title": "Grouped Project", "skill_evidence": skill_rows, "evidence_traces": []}
+
+
+_GROUPED_SUMMARY_PRIVATE = {
+    "project_id": "proj-1",
+    "project_title": "Grouped Project",
+    "evidence_sources": ["GitHub Proof"],
+    "report": {"is_public": False, "public_path": None},
+}
+
+
+def test_aggregation_upgrades_per_project_status_from_later_attempt() -> None:
+    """Attempt 1 has a weaker label for a skill; attempt 2 has a stronger one.
+    The single deduplicated project reference (and strongest-project context)
+    must carry the stronger label, not the representative's weaker one."""
+    from app.services.vbr_work_passport_service import _aggregate_skills_with_detail
+
+    weak = _attempt_report(
+        [{"skill": "Python", "status": "Supporting evidence", "evidence_chip_count": 1}]
+    )
+    strong = _attempt_report(
+        [{"skill": "Python", "status": "Demonstrated", "evidence_chip_count": 2}]
+    )
+    skills = _aggregate_skills_with_detail(
+        [(_GROUPED_SUMMARY_PRIVATE, weak), (_GROUPED_SUMMARY_PRIVATE, strong)],
+        public=False,
+    )
+
+    assert len(skills) == 1
+    entry = skills[0]
+    assert entry["skill"] == "Python"
+    assert entry["status"] == "Demonstrated"
+    # One deduplicated grouped project reference — not one per attempt.
+    assert entry["project_count"] == 1
+    assert len(entry["projects"]) == 1
+    # The per-project label reflects the strongest attempt in the group.
+    assert entry["projects"][0]["skill_status"] == "Demonstrated"
+    assert entry["strongest_project_title"] == "Grouped Project"
+    assert entry["strongest_project_status"] == "Demonstrated"
+
+
+def test_aggregation_order_independent_for_strongest_status() -> None:
+    """The stronger attempt wins whether it is grouped first or last."""
+    from app.services.vbr_work_passport_service import _aggregate_skills_with_detail
+
+    strong = _attempt_report([{"skill": "Python", "status": "Demonstrated"}])
+    weak = _attempt_report([{"skill": "Python", "status": "Needs review"}])
+    skills = _aggregate_skills_with_detail(
+        [(_GROUPED_SUMMARY_PRIVATE, strong), (_GROUPED_SUMMARY_PRIVATE, weak)],
+        public=False,
+    )
+
+    assert skills[0]["projects"][0]["skill_status"] == "Demonstrated"
+    assert skills[0]["strongest_project_status"] == "Demonstrated"
+
+
+def test_aggregation_unions_distinct_skills_across_attempts() -> None:
+    """Attempt 1 evidences Skill A, attempt 2 evidences Skill B: both must
+    appear, each pointing at the same single grouped project reference."""
+    from app.services.vbr_work_passport_service import _aggregate_skills_with_detail
+
+    attempt1 = _attempt_report([{"skill": "Python", "status": "Demonstrated"}])
+    attempt2 = _attempt_report([{"skill": "React", "status": "Evidence observed"}])
+    skills = _aggregate_skills_with_detail(
+        [(_GROUPED_SUMMARY_PRIVATE, attempt1), (_GROUPED_SUMMARY_PRIVATE, attempt2)],
+        public=False,
+    )
+
+    by_name = {s["skill"]: s for s in skills}
+    assert set(by_name) == {"Python", "React"}
+    for entry in by_name.values():
+        assert entry["project_count"] == 1
+        assert len(entry["projects"]) == 1
+        assert entry["projects"][0]["project_title"] == "Grouped Project"
+
+
+# ── Project-reference identity (same-title / different-repo dedupe) ────────────
+# Two genuinely different projects can share a human-readable title but live in
+# different repositories / have different public report paths. They must stay as
+# separate skill references (never collapsed by title), while repeated attempts
+# of ONE grouped project (same summary) still dedupe to a single reference.
+
+_SAME_TITLE_REPO_A = {
+    "project_id": "proj-a",
+    "project_title": "Portfolio",
+    "repo_full_name": "octo/alpha",
+    "evidence_sources": ["GitHub Proof"],
+    "report": {"is_public": False, "public_path": None},
+}
+
+_SAME_TITLE_REPO_B = {
+    "project_id": "proj-b",
+    "project_title": "Portfolio",
+    "repo_full_name": "octo/beta",
+    "evidence_sources": ["GitHub Proof"],
+    "report": {"is_public": False, "public_path": None},
+}
+
+
+def test_same_title_different_repo_projects_do_not_collapse_private() -> None:
+    """Two DISTINCT projects sharing a title but differing by repository must
+    both be counted in a skill's project_count and kept as separate references —
+    never merged by title alone (which would undercount and merge statuses)."""
+    from app.services.vbr_work_passport_service import _aggregate_skills_with_detail
+
+    report_a = _attempt_report([{"skill": "Python", "status": "Demonstrated"}])
+    report_b = _attempt_report([{"skill": "Python", "status": "Evidence observed"}])
+    skills = _aggregate_skills_with_detail(
+        [(_SAME_TITLE_REPO_A, report_a), (_SAME_TITLE_REPO_B, report_b)],
+        public=False,
+    )
+
+    assert len(skills) == 1
+    entry = skills[0]
+    assert entry["skill"] == "Python"
+    # Both distinct projects count — references are NOT collapsed by title.
+    assert entry["project_count"] == 2
+    assert len(entry["projects"]) == 2
+    assert {p["project_id"] for p in entry["projects"]} == {"proj-a", "proj-b"}
+    # Display titles stay human-readable (both legitimately "Portfolio").
+    assert [p["project_title"] for p in entry["projects"]] == ["Portfolio", "Portfolio"]
+    # Distinct per-project statuses are preserved, not merged into one.
+    assert {p["skill_status"] for p in entry["projects"]} == {"Demonstrated", "Evidence observed"}
+
+
+def test_same_grouped_project_attempts_dedupe_to_one_reference() -> None:
+    """Repeated attempts of ONE grouped project (same representative summary)
+    must still collapse to a single skill project reference."""
+    from app.services.vbr_work_passport_service import _aggregate_skills_with_detail
+
+    attempt1 = _attempt_report([{"skill": "Python", "status": "Supporting evidence"}])
+    attempt2 = _attempt_report([{"skill": "Python", "status": "Demonstrated"}])
+    skills = _aggregate_skills_with_detail(
+        [(_GROUPED_SUMMARY_PRIVATE, attempt1), (_GROUPED_SUMMARY_PRIVATE, attempt2)],
+        public=False,
+    )
+
+    assert len(skills) == 1
+    entry = skills[0]
+    assert entry["project_count"] == 1
+    assert len(entry["projects"]) == 1
+    # The single reference keeps the strongest attempt's label.
+    assert entry["projects"][0]["skill_status"] == "Demonstrated"
+
+
+_PUBLIC_SUMMARY_ALPHA = {
+    "project_title": "Portfolio",
+    "evidence_sources": ["GitHub Proof"],
+    "public_report_path": "/vbr/report/alpha-token",
+}
+
+_PUBLIC_SUMMARY_BETA = {
+    "project_title": "Portfolio",
+    "evidence_sources": ["GitHub Proof"],
+    "public_report_path": "/vbr/report/beta-token",
+}
+
+
+def test_public_same_title_different_report_path_preserved_without_private_ids() -> None:
+    """Public projection must keep two same-title projects that differ by public
+    report path as SEPARATE references — using the public-safe path identity —
+    and must never carry a private project_id/internal id in the output."""
+    from app.services.vbr_work_passport_service import (
+        _aggregate_skills_with_detail,
+        _to_public_skill,
+    )
+
+    report_a = _attempt_report([{"skill": "Python", "status": "Demonstrated"}])
+    report_b = _attempt_report([{"skill": "Python", "status": "Evidence observed"}])
+    skills = _aggregate_skills_with_detail(
+        [(_PUBLIC_SUMMARY_ALPHA, report_a), (_PUBLIC_SUMMARY_BETA, report_b)],
+        public=True,
+    )
+
+    assert len(skills) == 1
+    entry = skills[0]
+    # Both distinct projects preserved via the public-safe (path) identity.
+    assert entry["project_count"] == 2
+    assert len(entry["projects"]) == 2
+    # No private id leaks into the public aggregation refs.
+    for ref in entry["projects"]:
+        assert "project_id" not in ref
+
+    public_skill = _to_public_skill(entry)
+    # Both published references survive the recruiter-safe projection, distinct
+    # by their public report path (never by a private id).
+    assert len(public_skill["projects"]) == 2
+    paths = {p["public_report_path"] for p in public_skill["projects"]}
+    assert paths == {"/vbr/report/alpha-token", "/vbr/report/beta-token"}
+    assert all(p["project_title"] == "Portfolio" for p in public_skill["projects"])
+    # Defence in depth: no private id / internal id anywhere in the public shape.
+    assert "project_id" not in str(public_skill)
+
+
+def test_public_projection_uses_upgraded_grouped_status_safely() -> None:
+    """The public skill shape must carry the stronger aggregated per-project
+    label from a later attempt while staying recruiter-safe (no project_id)."""
+    from app.services.vbr_work_passport_service import (
+        _aggregate_skills_with_detail,
+        _to_public_skill,
+    )
+
+    public_summary = {
+        "project_title": "Grouped Project",
+        "evidence_sources": ["GitHub Proof"],
+        "public_report_path": "/vbr/report/tok-123",
+    }
+    weak = _attempt_report([{"skill": "Python", "status": "Supporting evidence"}])
+    strong = _attempt_report([{"skill": "Python", "status": "Demonstrated"}])
+    skills = _aggregate_skills_with_detail(
+        [(public_summary, weak), (public_summary, strong)],
+        public=True,
+    )
+    public = [_to_public_skill(s) for s in skills]
+
+    assert len(public) == 1
+    entry = public[0]
+    assert entry["status"] == "Demonstrated"
+    assert len(entry["projects"]) == 1
+    assert entry["projects"][0]["skill_status"] == "Demonstrated"
+    assert entry["projects"][0]["public_report_path"] == "/vbr/report/tok-123"
+    assert "project_id" not in str(entry)

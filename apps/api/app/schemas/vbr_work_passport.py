@@ -92,6 +92,10 @@ class PassportSkillSummary(BaseModel):
     evidence_chips: list[PassportSkillEvidenceChip] = Field(default_factory=list)
     # Aggregated claim→evidence traces across this candidate's projects.
     evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
+    # The single project where this skill is most strongly evidenced (title +
+    # that project's qualitative label for this skill). Owner-only.
+    strongest_project_title: str | None = None
+    strongest_project_status: str | None = None
     notes: str = ""
     limitations: list[str] = Field(default_factory=list)
 
@@ -141,6 +145,35 @@ class PassportProjectReportStatus(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PassportProofChain(BaseModel):
+    """Proof-chain completeness for one project card.
+
+    Derived purely from the already-safe evidence source badges — booleans and
+    missing-source labels only, never a numeric completeness score.
+    """
+
+    github: bool = False
+    website: bool = False
+    document: bool = False
+    project_defense: bool = False
+    video: bool = False
+    attached_count: int = 0
+    total_count: int = 5
+    missing: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class PassportProjectTopSkill(BaseModel):
+    """One of the strongest skills a project's evidence demonstrates —
+    qualitative label only."""
+
+    skill: str
+    status: str = "Not assessed"
+
+    model_config = {"extra": "forbid"}
+
+
 class PassportProjectSummary(BaseModel):
     """Owner-only project evidence card."""
 
@@ -151,6 +184,10 @@ class PassportProjectSummary(BaseModel):
     claimed_skills: list[str] = Field(default_factory=list)
     evidence_sources: list[str] = Field(default_factory=list)
     evidence_package: dict = Field(default_factory=dict)
+    # Proof-chain completeness across the five attachable evidence sources.
+    proof_chain: PassportProofChain = Field(default_factory=PassportProofChain)
+    # The strongest evidence-backed skills this project demonstrates (capped).
+    top_skills: list[PassportProjectTopSkill] = Field(default_factory=list)
     # How many underlying evidence attempts (duplicate rows) merged into this
     # card. 1 when the project is a single row.
     attempt_count: int = 1
@@ -166,8 +203,25 @@ class PublicPassportProject(BaseModel):
     project_summary: str = ""
     claimed_skills: list[str] = Field(default_factory=list)
     evidence_sources: list[str] = Field(default_factory=list)
+    # Safe proof-chain completeness (booleans + source labels; no ids/scores).
+    proof_chain: PassportProofChain = Field(default_factory=PassportProofChain)
     public_report_path: str
     published_at: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class EvidenceGraphOverview(BaseModel):
+    """Compact top-of-passport summary of the evidence graph
+    (projects ↔ skills ↔ proofs). Counts and next actions only — no scores."""
+
+    project_count: int = 0
+    published_report_count: int = 0
+    skills_with_evidence: int = 0
+    proof_count: int = 0
+    attached_proof_count: int = 0
+    unattached_proof_count: int = 0
+    next_actions: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -220,6 +274,9 @@ class PrivateWorkPassportResponse(BaseModel):
     public_path: str | None = None
     published_at: str | None = None
 
+    # Compact evidence-graph summary rendered at the top of the passport.
+    evidence_graph_overview: EvidenceGraphOverview | None = None
+
     skills: list[PassportSkillSummary] = Field(default_factory=list)
     projects: list[PassportProjectSummary] = Field(default_factory=list)
     evidence_source_counts: dict[str, int] = Field(default_factory=dict)
@@ -269,6 +326,9 @@ __all__ = [
     "PublicPassportSkillProjectRef",
     "PublicPassportSkill",
     "PassportProjectReportStatus",
+    "PassportProofChain",
+    "PassportProjectTopSkill",
+    "EvidenceGraphOverview",
     "PassportProjectSummary",
     "PublicPassportProject",
     "PrivateWorkPassportResponse",

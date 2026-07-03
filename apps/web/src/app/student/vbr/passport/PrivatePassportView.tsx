@@ -8,6 +8,9 @@ import {
   publishWorkPassport,
   unpublishWorkPassport,
   publishVBRProjectReport,
+  proofChainFromSources,
+  PROOF_CHAIN_STEPS,
+  type EvidenceGraphOverview,
   type PassportProjectSummary,
   type PrivateWorkPassport,
   type WorkPassportStatus,
@@ -23,7 +26,7 @@ import {
   TOKEN,
   type BadgeTone,
 } from "../../../../../components/passport/shared"
-import { VaultSkillDashboard } from "../../../../../components/passport/VaultProofs"
+import { VaultSkillDashboard, type StrongestProjectRef } from "../../../../../components/passport/VaultProofs"
 
 const SOURCE_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
@@ -32,6 +35,15 @@ const SOURCE_TONE: Record<string, BadgeTone> = {
   "Project Defense": "emerald",
   "Video Evidence": "amber",
   "VBR Report": "emerald",
+}
+
+const SKILL_STATUS_TONE: Record<string, BadgeTone> = {
+  Demonstrated: "emerald",
+  "Partially demonstrated": "amber",
+  "Evidence observed": "emerald",
+  "Supporting evidence": "sky",
+  "Needs review": "rose",
+  "Not assessed": "slate",
 }
 
 const primaryBtnStyle: CSSProperties = {
@@ -196,6 +208,138 @@ function PassportPublishControls({
   )
 }
 
+// ── Evidence Graph Overview (Projects ↔ Skills ↔ Proofs) ─────────────────────
+
+function OverviewStat({ stat, label, value }: { stat: string; label: string; value: number }) {
+  return (
+    <div
+      data-testid="overview-stat"
+      data-stat={stat}
+      style={{
+        flex: "1 1 120px",
+        minWidth: 108,
+        padding: "10px 12px",
+        border: `1px solid ${TOKEN.line}`,
+        borderRadius: 10,
+        background: TOKEN.bg,
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+      }}
+    >
+      <span style={{ fontSize: 20, fontWeight: 700, color: TOKEN.ink, fontVariantNumeric: "tabular-nums" }}>
+        {value}
+      </span>
+      <span style={{ fontSize: 11, color: TOKEN.muted, lineHeight: 1.3 }}>{label}</span>
+    </div>
+  )
+}
+
+/**
+ * The compact evidence-graph summary at the top of the Passport: how many
+ * projects, published reports, evidence-backed skills, and proof sources exist,
+ * plus the top next actions. Counts only — never a numeric trust score.
+ */
+function EvidenceGraphOverviewCard({ passport }: { passport: PrivateWorkPassport }) {
+  const overview: EvidenceGraphOverview = passport.evidence_graph_overview ?? {
+    project_count: passport.project_count,
+    published_report_count: passport.published_report_count,
+    skills_with_evidence: passport.vault_skill_summaries?.length ?? passport.skills.length,
+    proof_count: passport.vault_proof_count ?? 0,
+    attached_proof_count: (passport.vault_proof_count ?? 0) - (passport.vault_unattached_count ?? 0),
+    unattached_proof_count: passport.vault_unattached_count ?? 0,
+    next_actions: [],
+  }
+  const sourceCounts = Object.entries(passport.evidence_source_counts).filter(([, n]) => n > 0)
+
+  return (
+    <Card>
+      <div data-testid="evidence-graph-overview" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <CardHeader title="Evidence Graph Overview" eyebrow="Projects ↔ skills ↔ proofs" icon="🕸️" />
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          Your passport is an evidence graph: each project proves skills, and each skill points back to concrete,
+          inspectable proof. This is where it stands today.
+        </p>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <OverviewStat stat="projects" label="Projects" value={overview.project_count} />
+          <OverviewStat stat="published-reports" label="Published reports" value={overview.published_report_count} />
+          <OverviewStat stat="skills-with-evidence" label="Skills with evidence" value={overview.skills_with_evidence} />
+          <OverviewStat stat="attached-proofs" label="Proofs attached to projects" value={overview.attached_proof_count} />
+          <OverviewStat stat="unattached-proofs" label="Unattached proofs" value={overview.unattached_proof_count} />
+        </div>
+
+        {/* Evidence by source */}
+        {sourceCounts.length === 0 ? (
+          <p data-testid="passport-no-evidence" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+            No evidence assessed yet. Add proof sources and run a Project Defense to populate your passport.
+          </p>
+        ) : (
+          <div data-testid="evidence-source-counts" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {sourceCounts.map(([label, count]) => (
+              <span key={label} data-testid="evidence-source-count">
+                <Badge tone={SOURCE_TONE[label] ?? "slate"}>
+                  {label} · {count}
+                </Badge>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {overview.next_actions.length > 0 && (
+          <div data-testid="overview-next-actions" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              Next actions
+            </Mono>
+            <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
+              {overview.next_actions.map((action, i) => (
+                <li key={i} style={{ fontSize: 12, color: TOKEN.inkSoft }}>
+                  {action}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+// ── Project Portfolio ─────────────────────────────────────────────────────────
+
+/** The five-step proof-chain completeness row on a project card. */
+function ProofChainRow({ project }: { project: PassportProjectSummary }) {
+  const chain = project.proof_chain ?? proofChainFromSources(project.evidence_sources)
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+        Proof chain · {chain.attached_count} of {chain.total_count} sources attached
+      </Mono>
+      <div data-testid="project-proof-chain" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {PROOF_CHAIN_STEPS.map((step) => (
+          <span
+            key={step.key}
+            data-testid="proof-chain-item"
+            data-source={step.label}
+            data-present={chain[step.key] ? "true" : "false"}
+          >
+            <Badge tone={chain[step.key] ? (SOURCE_TONE[step.label] ?? "emerald") : "slate"}>
+              {chain[step.key] ? "✓ " : "– "}
+              {step.label}
+            </Badge>
+          </span>
+        ))}
+      </div>
+      {chain.missing.length > 0 && (
+        <p data-testid="project-gaps" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
+          Not yet attached: {chain.missing.join(", ")}. Attach these sources to strengthen this project&apos;s
+          evidence.
+        </p>
+      )}
+    </div>
+  )
+}
+
 function ProjectCard({ project }: { project: PassportProjectSummary }) {
   const [report, setReport] = useState(project.report)
   const [busy, setBusy] = useState(false)
@@ -207,6 +351,7 @@ function ProjectCard({ project }: { project: PassportProjectSummary }) {
     isPublic && report.public_token
       ? `${typeof window !== "undefined" ? window.location.origin : ""}/vbr/report/${report.public_token}`
       : ""
+  const topSkills = project.top_skills ?? []
 
   const publish = () => {
     setBusy(true)
@@ -251,14 +396,24 @@ function ProjectCard({ project }: { project: PassportProjectSummary }) {
           <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{project.project_summary}</p>
         )}
 
-        {/* Evidence source badges */}
-        {project.evidence_sources.length > 0 && (
-          <div data-testid="project-evidence-sources" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {project.evidence_sources.map((src) => (
-              <span key={src} data-testid="evidence-source-badge">
-                <Badge tone={SOURCE_TONE[src] ?? "slate"}>{src}</Badge>
-              </span>
-            ))}
+        {/* Proof chain completeness + gaps */}
+        <ProofChainRow project={project} />
+
+        {/* Strongest evidence-backed skills this project demonstrates */}
+        {topSkills.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              Top skills demonstrated
+            </Mono>
+            <div data-testid="project-top-skills" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {topSkills.map((row) => (
+                <span key={row.skill} data-testid="project-top-skill">
+                  <Badge tone={SKILL_STATUS_TONE[row.status] ?? "slate"}>
+                    {row.skill} · {row.status}
+                  </Badge>
+                </span>
+              ))}
+            </div>
           </div>
         )}
 
@@ -291,6 +446,11 @@ function ProjectCard({ project }: { project: PassportProjectSummary }) {
             >
               {busy ? "Publishing…" : "Publish recruiter-safe report"}
             </button>
+          )}
+          {topSkills.length > 0 && (
+            <a data-testid="view-connected-skills-link" href="#skill-intelligence" style={secondaryBtnStyle}>
+              View connected skills ↓
+            </a>
           )}
         </div>
       </div>
@@ -328,11 +488,24 @@ export function PrivatePassportView() {
     summary: passport.summary,
   }
 
-  const sourceCounts = Object.entries(passport.evidence_source_counts).filter(([, n]) => n > 0)
+  // Connect the skill lens back to the project lens: for each skill, the
+  // project where it is most strongly evidenced (from the passport aggregate).
+  const strongestBySkill: Record<string, StrongestProjectRef> = {}
+  for (const s of passport.skills) {
+    if (s.strongest_project_title) {
+      strongestBySkill[s.skill.toLowerCase()] = {
+        title: s.strongest_project_title,
+        status: s.strongest_project_status ?? "",
+      }
+    }
+  }
+
+  const unattachedCount = passport.vault_unattached_count ?? 0
+  const hasVault = (passport.vault_proof_count ?? 0) > 0 || unattachedCount > 0
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Candidate identity header — passport-style identity area */}
+      {/* 1 — Candidate identity header */}
       <Card>
         <div data-testid="passport-header" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <PassportIdentityHeader
@@ -347,57 +520,12 @@ export function PrivatePassportView() {
       {/* Publish controls */}
       <PassportPublishControls initialStatus={status} candidateName={passport.candidate_display_name} />
 
-      {/* Evidence source counts */}
-      <Card>
-        <CardHeader title="Evidence by Source" eyebrow="Across all your projects" icon="📎" />
-        {sourceCounts.length === 0 ? (
-          <p data-testid="passport-no-evidence" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-            No evidence assessed yet. Add proof sources and run a Project Defense to populate your passport.
-          </p>
-        ) : (
-          <div data-testid="evidence-source-counts" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {sourceCounts.map(([label, count]) => (
-              <span key={label} data-testid="evidence-source-count">
-                <Badge tone={SOURCE_TONE[label] ?? "slate"}>
-                  {label} · {count}
-                </Badge>
-              </span>
-            ))}
-          </div>
-        )}
-      </Card>
+      {/* 2 — Evidence Graph Overview */}
+      <EvidenceGraphOverviewCard passport={passport} />
 
-      {/* Student Proof Vault — Layer 1: a COMPACT skill-intelligence dashboard.
-          Every proof you own is grouped by canonical skill (attached AND
-          unattached) into compact cards under category headings. The main page
-          shows only counts + a few previews; the full stored evidence for one
-          skill loads lazily when you click "View Skill Report". */}
-      {(passport.vault_skill_summaries?.length ?? 0) > 0 && (
-        <Card>
-          <CardHeader
-            title="Skill Intelligence"
-            eyebrow="Every proof you own, distilled into compact skill cards"
-            icon="🗂️"
-          />
-          <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
-            All your safe proof evidence — GitHub, Document, Website, Project Defense, Video, and Skill Graph — grouped
-            by skill. Open any skill to see its concrete, recruiter-verifiable evidence. Proofs you have not attached to
-            a VBR project are clearly labelled <strong>not attached to a VBR project</strong>, so nothing you have built
-            is ever lost.
-            {typeof passport.vault_unattached_count === "number" && passport.vault_unattached_count > 0 && (
-              <span data-testid="vault-unattached-summary">
-                {" "}
-                You have {passport.vault_unattached_count} unattached proof item(s).
-              </span>
-            )}
-          </p>
-          <VaultSkillDashboard summaries={passport.vault_skill_summaries} />
-        </Card>
-      )}
-
-      {/* Projects */}
+      {/* 3 — Project Portfolio (first-class, no longer buried at the bottom) */}
       <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Project Evidence</h2>
+        <h2 style={{ fontSize: 16, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Project Portfolio</h2>
         {passport.projects.length === 0 ? (
           <Card>
             <p data-testid="passport-no-projects" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
@@ -409,7 +537,59 @@ export function PrivatePassportView() {
         )}
       </section>
 
-      {/* Limitations */}
+      {/* 4 — Skill Intelligence (the equal second lens on the same evidence graph).
+          Layer 1 of the Student Proof Vault: every proof grouped by canonical
+          skill into COMPACT cards; the full stored evidence for one skill loads
+          lazily on the Skill Report page. */}
+      {(passport.vault_skill_summaries?.length ?? 0) > 0 && (
+        <Card id="skill-intelligence">
+          <CardHeader
+            title="Skill Intelligence"
+            eyebrow="Every proof you own, distilled into compact skill cards"
+            icon="🗂️"
+          />
+          <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
+            All your safe proof evidence — GitHub, Document, Website, Project Defense, Video, and Skill Graph — grouped
+            by skill. Open any skill to see its concrete, recruiter-verifiable evidence. Proofs you have not attached to
+            a VBR project are clearly labelled <strong>not attached to a VBR project</strong>, so nothing you have built
+            is ever lost.
+            {unattachedCount > 0 && (
+              <span data-testid="vault-unattached-summary">
+                {" "}
+                You have {unattachedCount} unattached proof item(s).
+              </span>
+            )}
+          </p>
+          <VaultSkillDashboard summaries={passport.vault_skill_summaries} strongestBySkill={strongestBySkill} />
+        </Card>
+      )}
+
+      {/* 5 — Evidence Vault: unattached proof management */}
+      {hasVault && (
+        <Card>
+          <div data-testid="evidence-vault-section" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <CardHeader title="Evidence Vault" eyebrow="Unattached proof management" icon="🧰" />
+            <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+              Every proof you own is preserved here — attached to a project or not. Unattached proofs still appear
+              under their skill above, but they do not count as project evidence and never feature in a recruiter
+              report until you attach them.
+            </p>
+            {unattachedCount > 0 ? (
+              <p data-testid="vault-unattached-action" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                <strong>Next action:</strong> you have {unattachedCount} unattached proof item(s). Attach them to a
+                project when you create or update a Project Defense so they strengthen that project&apos;s proof
+                chain.
+              </p>
+            ) : (
+              <p data-testid="vault-all-attached" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0 }}>
+                Every proof in your vault is attached to a project — nothing is sitting unused.
+              </p>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* 6 — Limitations */}
       <Card>
         <CardHeader title="Transparency" eyebrow="Be honest" icon="⚠️" />
         <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>

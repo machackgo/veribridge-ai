@@ -4,6 +4,8 @@ import { useEffect, useState } from "react"
 import {
   getPublicWorkPassportBySlug,
   matrixTraceLabel,
+  proofChainFromSources,
+  PROOF_CHAIN_STEPS,
   type PublicPassportProject,
   type PublicPassportSkill,
   type PublicWorkPassport,
@@ -207,6 +209,7 @@ function SkillChip({ skill }: { skill: PublicPassportSkill }) {
 }
 
 function FeaturedProject({ project }: { project: PublicPassportProject }) {
+  const chain = project.proof_chain ?? proofChainFromSources(project.evidence_sources)
   return (
     <Card>
       <div data-testid="public-passport-project" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -223,15 +226,33 @@ function FeaturedProject({ project }: { project: PublicPassportProject }) {
             ))}
           </div>
         )}
-        {project.evidence_sources.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {project.evidence_sources.map((src) => (
-              <span key={src} data-testid="public-evidence-source-badge">
-                <Badge tone={SOURCE_TONE[src] ?? "slate"}>{src}</Badge>
+        {/* Proof-chain completeness: what evidence backs this project, and what
+            is missing — honest transparency, labels only, never a number grade. */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+            Evidence included
+          </Mono>
+          <div data-testid="public-project-proof-chain" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {PROOF_CHAIN_STEPS.map((step) => (
+              <span
+                key={step.key}
+                data-testid="public-proof-chain-item"
+                data-source={step.label}
+                data-present={chain[step.key] ? "true" : "false"}
+              >
+                <Badge tone={chain[step.key] ? (SOURCE_TONE[step.label] ?? "emerald") : "slate"}>
+                  {chain[step.key] ? "✓ " : "– "}
+                  {step.label}
+                </Badge>
               </span>
             ))}
           </div>
-        )}
+          {chain.missing.length > 0 && (
+            <p data-testid="public-project-gaps" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
+              Not included: {chain.missing.join(", ")}.
+            </p>
+          )}
+        </div>
         <a
           data-testid="public-passport-report-link"
           href={project.public_report_path}
@@ -324,10 +345,16 @@ export function PublicPassportView({ slug }: { slug: string }) {
         )}
       </div>
 
-      {/* Evidence source counts */}
+      {/* Evidence graph at a glance + evidence source counts */}
       {sourceCounts.length > 0 && (
         <Card>
           <CardHeader title="Evidence by Source" eyebrow="Across featured projects" icon="📎" />
+          <p data-testid="public-passport-overview" style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
+            {passport.featured_project_count} verified project
+            {passport.featured_project_count === 1 ? "" : "s"} · {passport.top_skills.length} evidence-backed skill
+            {passport.top_skills.length === 1 ? "" : "s"}. Every claim below links to inspectable evidence in a
+            published Verified Build Report.
+          </p>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             {sourceCounts.map(([label, count]) => (
               <span key={label} data-testid="public-evidence-source-count">
@@ -340,23 +367,7 @@ export function PublicPassportView({ slug }: { slug: string }) {
         </Card>
       )}
 
-      {/* Top skills */}
-      <Card>
-        <CardHeader title="Top Evidence-Backed Skills" eyebrow="Qualitative labels" icon="🧩" />
-        {passport.top_skills.length === 0 ? (
-          <p data-testid="public-passport-no-skills" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-            Evidence not assessed yet.
-          </p>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {passport.top_skills.map((skill) => (
-              <SkillChip key={skill.skill} skill={skill} />
-            ))}
-          </div>
-        )}
-      </Card>
-
-      {/* Featured projects + reports */}
+      {/* Featured projects + reports — what this candidate built comes first */}
       <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <h2 style={{ fontSize: 16, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Featured Verified Build Reports</h2>
         {passport.featured_projects.length === 0 ? (
@@ -371,6 +382,22 @@ export function PublicPassportView({ slug }: { slug: string }) {
           ))
         )}
       </section>
+
+      {/* Top skills — the second lens: what those projects prove */}
+      <Card>
+        <CardHeader title="Top Evidence-Backed Skills" eyebrow="Qualitative labels" icon="🧩" />
+        {passport.top_skills.length === 0 ? (
+          <p data-testid="public-passport-no-skills" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+            Evidence not assessed yet.
+          </p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {passport.top_skills.map((skill) => (
+              <SkillChip key={skill.skill} skill={skill} />
+            ))}
+          </div>
+        )}
+      </Card>
 
       {/* Limitations / transparency */}
       <Card>
