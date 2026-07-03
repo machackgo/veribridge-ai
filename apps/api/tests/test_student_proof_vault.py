@@ -3579,3 +3579,118 @@ def test_relevance_fields_are_closed_vocabulary_and_never_leak_raw_data(
     for banned in ("{", "}", "<", ">"):
         assert banned not in item["skill_relevance_label"]
         assert banned not in item["skill_relevance_summary"]
+
+
+# ── Phase 3: skill strengthening actions (Proof Attachment Intelligence) ──────
+#
+# Each compact skill card carries owner-only, deterministic "strengthen this
+# skill" sentences derived from the already-computed counts / status — never a
+# score, never counting unattached evidence as attached project proof.
+
+
+def _vault_item(
+    skill: str,
+    proof_type: str,
+    *,
+    pid: str | None = None,
+    source_id: str = "src-1",
+    source_table: str = "tbl",
+    title: str = "Proof",
+) -> dict:
+    return {
+        "skill_name": skill,
+        "proof_type": proof_type,
+        "source_id": source_id,
+        "source_table": source_table,
+        "project_id": pid,
+        "attached_project_ids": [pid] if pid else [],
+        "title": title,
+        "safe_summary": "",
+        "safe_location": None,
+        "public_safe": False,
+        "limitation": "",
+        "is_attached_to_project": pid is not None,
+    }
+
+
+def test_skill_summary_unattached_only_action_without_counting_as_attached(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A skill whose evidence is entirely unattached gets an honest attach
+    action, while attached_count stays 0 — unattached proof never reads as
+    attached project proof."""
+    items = [_vault_item("Kubernetes", "Document Proof")]
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+
+    card = next(s for s in summaries if s["skill"] == "Kubernetes")
+    assert card["attached_count"] == 0
+    assert card["unattached_count"] == 1
+    actions = card["strengthening_actions"]
+    assert actions
+    assert any("none of it is attached to a project" in a for a in actions)
+
+
+def test_skill_summary_demonstrated_action_names_strongest_project(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A demonstrated skill names the attached project it is proven through."""
+    project_id = "proj-strong"
+    mem_store["vbr_projects"] = {
+        project_id: {"id": project_id, "user_id": USER_ID, "title": "Stroke Prediction App"}
+    }
+    # Non-code skill: two distinct attached sources → Demonstrated.
+    items = [
+        _vault_item("Communication", "Document Proof", pid=project_id, source_id="d1"),
+        _vault_item("Communication", "Project Defense", pid=project_id, source_id="s1"),
+    ]
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+
+    card = next(s for s in summaries if s["skill"] == "Communication")
+    assert card["status"] == "Demonstrated"
+    assert any(
+        "strong attached project proof through Stroke Prediction App" in a
+        for a in card["strengthening_actions"]
+    )
+
+
+def test_skill_summary_mixed_attached_and_unattached_gets_review_action(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    project_id = "proj-1"
+    mem_store["vbr_projects"] = {
+        project_id: {"id": project_id, "user_id": USER_ID, "title": "ML Project"}
+    }
+    items = [
+        _vault_item("Machine Learning", "Project Defense", pid=project_id, source_id="s1"),
+        _vault_item("Machine Learning", "Document Proof", source_id="d9"),
+    ]
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+
+    card = next(s for s in summaries if s["skill"] == "Machine Learning")
+    assert card["unattached_count"] == 1
+    assert any("1 proof item(s) are not attached" in a for a in card["strengthening_actions"])
+
+
+def test_skill_summary_implementation_skill_hints_github_proof(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """An implementation-oriented skill with no GitHub proof is told to attach
+    repository implementation evidence (qualitative copy, no scores)."""
+    items = [_vault_item("Kubernetes", "Document Proof")]
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+
+    card = next(s for s in summaries if s["skill"] == "Kubernetes")
+    assert any("attach GitHub proof" in a for a in card["strengthening_actions"])
+    # Never numeric: qualitative sentences only.
+    for action in card["strengthening_actions"]:
+        assert "%" not in action and "score" not in action.lower()
+
+
+def test_skill_summary_non_code_skill_never_told_to_attach_code(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    items = [_vault_item("Communication", "Document Proof")]
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+
+    card = next(s for s in summaries if s["skill"] == "Communication")
+    assert not any("GitHub" in a for a in card["strengthening_actions"])

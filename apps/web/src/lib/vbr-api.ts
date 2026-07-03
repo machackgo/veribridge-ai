@@ -686,6 +686,9 @@ export type VaultSkillSummary = {
   previews: VaultSkillPreview[]
   more_count: number
   limitations: string[]
+  /** Owner-only "strengthen this skill" sentences (Proof Attachment
+   *  Intelligence). Qualitative only; may be absent on older payloads. */
+  strengthening_actions?: string[]
 }
 
 // ── Student Proof Vault — Layer 2 (full Skill Report) ───────────────────────
@@ -1664,6 +1667,60 @@ export type EvidenceGraphOverview = {
   next_actions: string[]
 }
 
+/** One missing proof-chain source on a project card — qualitative gap + safe
+ *  action copy (owner-only, never numeric). */
+export type PassportProofChainGap = {
+  source: string
+  gap_label: string
+  action: string
+}
+
+/** A compact per-project attachment suggestion (owner-only, non-destructive —
+ *  it only describes a next action; nothing is attached automatically). */
+export type PassportSuggestedAttachment = {
+  suggestion_id_safe: string
+  proof_type: string
+  proof_title: string
+  /** Closed qualitative label: "Likely match" / "Possible match" / "Needs review". */
+  confidence_label: string
+  suggestion_reason: string
+  action_label: string
+}
+
+/**
+ * One owner-only Proof Attachment Intelligence suggestion: which unattached
+ * proof likely belongs to which project, the deterministic evidence-basis
+ * chips behind the match, an honest hedged reason and limitation, and a closed
+ * qualitative confidence label — never a numeric score, never on the public
+ * passport.
+ */
+export type ProofAttachmentSuggestion = {
+  suggestion_id_safe: string
+  proof_type: string
+  proof_title: string
+  /** How many underlying vault rows grouped into this one suggestion. */
+  proof_count: number
+  likely_project_title: string
+  /** Owner-only project-report route (absent when the project id is unknown). */
+  likely_project_ref_safe?: string | null
+  likely_skill_names: string[]
+  suggestion_reason: string
+  evidence_basis_chips: string[]
+  confidence_label: string
+  attachment_status: string
+  limitation: string
+  action_label: string
+}
+
+/** Owner-only summary of unattached vault evidence + attachment suggestions. */
+export type UnattachedProofSummary = {
+  unattached_count: number
+  suggestion_count: number
+  /** Unattached proofs no suggestion could safely match (never guessed). */
+  unmatched_count: number
+  suggestions: ProofAttachmentSuggestion[]
+}
+
 /** Owner-only publish status for one project's recruiter link. */
 export type PassportProjectReportStatus = {
   is_public: boolean
@@ -1684,6 +1741,14 @@ export type PassportProjectSummary = {
   /** Proof-chain completeness across the five attachable evidence sources.
    *  May be absent on older payloads — derive from `evidence_sources`. */
   proof_chain?: PassportProofChain
+  /** Qualitative proof-chain label ("Strong chain", "Missing runtime proof", …). */
+  chain_label?: string
+  /** Missing proof-chain sources as qualitative gaps with safe action copy. */
+  proof_chain_gaps?: PassportProofChainGap[]
+  /** Suggested proof attachments targeting THIS project (owner-only, capped). */
+  suggested_attachments?: PassportSuggestedAttachment[]
+  /** One safe "do this next" sentence for this project, when anything is left. */
+  next_best_action?: string | null
   /** Strongest evidence-backed skills this project demonstrates (capped).
    *  Each entry links to its owner-only Skill Report route (Project → Skill). */
   top_skills?: PassportProjectTopSkill[]
@@ -1742,6 +1807,12 @@ export type PrivateWorkPassport = {
   vault_skill_summaries?: VaultSkillSummary[]
   vault_proof_count?: number
   vault_unattached_count?: number
+  /**
+   * Proof Attachment Intelligence (owner-only): unattached vault evidence with
+   * deterministic, qualitative attachment suggestions. Never present on the
+   * public passport; may be absent on older payloads.
+   */
+  unattached_proof_summary?: UnattachedProofSummary | null
   project_count: number
   published_report_count: number
   limitations: string[]

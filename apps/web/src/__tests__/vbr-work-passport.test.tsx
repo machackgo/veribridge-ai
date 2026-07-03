@@ -579,3 +579,174 @@ describe("PrivatePassportView — project ↔ skill cross-linking (Phase 2)", ()
     expect(screen.queryByTestId("vault-summary-unattached-note")).not.toBeInTheDocument()
   })
 })
+
+// ── Proof Attachment Intelligence (Phase 3) ───────────────────────────────────
+
+function makeIntelligencePassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  const base = makeGraphPassport()
+  return makeGraphPassport({
+    projects: [
+      {
+        ...base.projects[0],
+        chain_label: "Missing runtime proof",
+        proof_chain_gaps: [
+          {
+            source: "Website Proof",
+            gap_label: "Missing runtime proof",
+            action: "Attach Website Proof to complete runtime behavior evidence.",
+          },
+        ],
+        suggested_attachments: [
+          {
+            suggestion_id_safe: "attach-abc123",
+            proof_type: "Website Proof",
+            proof_title: "https://skill-evidence-tracker.vercel.app",
+            confidence_label: "Likely match",
+            suggestion_reason:
+              "Website Proof may belong to “Skill Evidence Tracker” because the website domain matches the project title.",
+            action_label: "Review and attach proof",
+          },
+        ],
+        next_best_action:
+          "Review and attach the suggested Website Proof “https://skill-evidence-tracker.vercel.app” (likely match).",
+      },
+    ],
+    unattached_proof_summary: {
+      unattached_count: 3,
+      suggestion_count: 1,
+      unmatched_count: 2,
+      suggestions: [
+        {
+          suggestion_id_safe: "attach-abc123",
+          proof_type: "Website Proof",
+          proof_title: "https://skill-evidence-tracker.vercel.app",
+          proof_count: 1,
+          likely_project_title: "Skill Evidence Tracker",
+          likely_project_ref_safe: "/student/vbr/projects/proj-1/report",
+          likely_skill_names: ["React"],
+          suggestion_reason:
+            "Website Proof may belong to “Skill Evidence Tracker” because the website domain matches the project title and the proof and the project share claimed skills (React).",
+          evidence_basis_chips: ["Matching website domain", "Matching skill"],
+          confidence_label: "Likely match",
+          attachment_status: "Not attached to a VBR project",
+          limitation:
+            "Suggested match only — based on matching safe metadata (titles, repository, domain, skills), not verified evidence. Review before attaching; nothing is attached automatically.",
+          action_label: "Review and attach proof",
+        },
+      ],
+    },
+    vault_skill_summaries: [
+      makeVaultSummary({
+        strengthening_actions: [
+          "Python has evidence, but 1 proof item(s) are not attached to a project — review and attach them to strengthen a project's proof chain.",
+        ],
+      }),
+    ],
+    ...overrides,
+  })
+}
+
+describe("PrivatePassportView — Proof Attachment Intelligence (Phase 3)", () => {
+  beforeEach(() => {
+    const p = makeIntelligencePassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("renders the Proof Attachment Intelligence section with a suggestion card", async () => {
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("proof-attachment-intelligence")).toBeInTheDocument()
+    const suggestion = screen.getByTestId("attachment-suggestion")
+    expect(suggestion).toHaveAttribute("data-proof-type", "Website Proof")
+    expect(screen.getByTestId("suggestion-confidence")).toHaveTextContent("Likely match")
+    expect(screen.getByTestId("suggestion-project")).toHaveTextContent("Skill Evidence Tracker")
+    expect(screen.getByTestId("suggestion-action-label")).toHaveTextContent("Review and attach proof")
+    expect(screen.getByTestId("suggestion-open-project")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-1/report",
+    )
+  })
+
+  it("renders the suggestion reason, evidence basis chips and honest limitation", async () => {
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("suggestion-reason")).toHaveTextContent("may belong to")
+    const chips = screen.getAllByTestId("suggestion-basis-chip")
+    expect(chips.map((c) => c.textContent)).toEqual(["Matching website domain", "Matching skill"])
+    expect(screen.getByTestId("suggestion-limitation")).toHaveTextContent(
+      "nothing is attached automatically",
+    )
+  })
+
+  it("lists projects to strengthen and skills with unattached evidence", async () => {
+    render(<PrivatePassportView />)
+
+    const projectRow = await screen.findByTestId("project-to-strengthen")
+    expect(projectRow).toHaveTextContent("Skill Evidence Tracker")
+    expect(projectRow).toHaveTextContent("Missing runtime proof")
+    const skillChip = screen.getByTestId("skill-with-unattached")
+    expect(skillChip).toHaveTextContent("Python · 1 unattached")
+    expect(skillChip).toHaveAttribute("href", "/student/vbr/passport/skills/python")
+    // Unmatched proofs are stated honestly — never guessed onto a project.
+    expect(screen.getByTestId("suggestions-unmatched-note")).toHaveTextContent(
+      "2 unattached proof item(s) had no safe project match",
+    )
+  })
+
+  it("renders chain label, gap actions and next best action on the project card", async () => {
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("project-chain-label")).toHaveTextContent("Missing runtime proof")
+    const gap = screen.getByTestId("project-chain-gap")
+    expect(gap).toHaveAttribute("data-source", "Website Proof")
+    expect(gap).toHaveTextContent("Attach Website Proof to complete runtime behavior evidence.")
+    expect(screen.getByTestId("project-next-action")).toHaveTextContent("Suggested next action:")
+    const row = screen.getByTestId("project-suggested-attachment")
+    expect(row).toHaveTextContent("Likely match")
+    expect(row).toHaveTextContent("https://skill-evidence-tracker.vercel.app")
+  })
+
+  it("renders strengthening actions on the skill card", async () => {
+    render(<PrivatePassportView />)
+
+    const action = await screen.findByTestId("skill-strengthening-action")
+    expect(action).toHaveTextContent("review and attach them to strengthen")
+  })
+
+  it("hides the section entirely when nothing is unattached and nothing is suggested", async () => {
+    const p = makeIntelligencePassport({
+      unattached_proof_summary: {
+        unattached_count: 0,
+        suggestion_count: 0,
+        unmatched_count: 0,
+        suggestions: [],
+      },
+      vault_unattached_count: 0,
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("evidence-graph-overview")
+
+    expect(screen.queryByTestId("proof-attachment-intelligence")).not.toBeInTheDocument()
+  })
+
+  it("keeps Phase 2 cross-links working alongside Phase 3 (skill report + project report links)", async () => {
+    render(<PrivatePassportView />)
+
+    // Project → Skill Report links still render.
+    const chips = await screen.findAllByTestId("project-top-skill")
+    expect(chips[0]).toHaveAttribute("href", "/student/vbr/passport/skills/python")
+    // Skill card → Skill Report link still works.
+    expect(screen.getByTestId("view-skill-report")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/skills/python",
+    )
+    // Project report preview link still works.
+    expect(screen.getByTestId("view-report-preview-link")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-1/report",
+    )
+  })
+})

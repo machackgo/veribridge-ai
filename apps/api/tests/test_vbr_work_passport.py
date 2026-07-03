@@ -1580,3 +1580,443 @@ def test_public_projection_uses_upgraded_grouped_status_safely() -> None:
     assert entry["projects"][0]["skill_status"] == "Demonstrated"
     assert entry["projects"][0]["public_report_path"] == "/vbr/report/tok-123"
     assert "project_id" not in str(entry)
+
+
+# ── Phase 3: Proof Attachment Intelligence ─────────────────────────────────────
+#
+# Unattached proof becomes actionable: deterministic safe-metadata matching
+# (repository / website domain / document & project titles / shared skills)
+# produces owner-only suggestions with qualitative labels. Nothing is ever
+# attached automatically, and none of it reaches the public projection.
+
+_QUALITATIVE_CONFIDENCE_LABELS = {"Likely match", "Possible match", "Needs review"}
+
+
+def _suggestions_of(body: dict) -> list[dict]:
+    summary = body.get("unattached_proof_summary") or {}
+    return summary.get("suggestions") or []
+
+
+def test_private_passport_includes_attachment_suggestions(client: TestClient, mem_store: dict) -> None:
+    """The private payload carries unattached_proof_summary with deterministic,
+    qualitative suggestions for unattached proof."""
+    _make_full_project(client, mem_store)
+    # An UNATTACHED website proof whose domain names the project title.
+    _seed_workflow_analysis(
+        mem_store,
+        target_website="https://skill-evidence-tracker.vercel.app",
+        supported_skills=["React"],
+    )
+
+    body = _get_private(client).json()
+    summary = body["unattached_proof_summary"]
+    assert summary is not None
+    assert summary["unattached_count"] >= 1
+    assert summary["suggestion_count"] == len(summary["suggestions"]) >= 1
+    for suggestion in summary["suggestions"]:
+        # Qualitative closed-set labels only — never numeric confidence.
+        assert suggestion["confidence_label"] in _QUALITATIVE_CONFIDENCE_LABELS
+        assert suggestion["suggestion_reason"]
+        assert suggestion["evidence_basis_chips"]
+        assert suggestion["limitation"]
+        assert suggestion["action_label"] == "Review and attach proof"
+        assert suggestion["attachment_status"] == "Not attached to a VBR project"
+        # The safe suggestion id never embeds a raw source id (it is a digest).
+        assert suggestion["suggestion_id_safe"].startswith("attach-")
+
+
+def test_website_proof_with_matching_domain_suggests_correct_project(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id = _make_full_project(client, mem_store)
+    _seed_workflow_analysis(
+        mem_store,
+        target_website="https://skill-evidence-tracker.vercel.app",
+        supported_skills=["React"],
+    )
+
+    body = _get_private(client).json()
+    website = [s for s in _suggestions_of(body) if s["proof_type"] == "Website Proof"]
+    assert website, "expected a Website Proof suggestion"
+    suggestion = website[0]
+    assert suggestion["likely_project_title"] == "Skill Evidence Tracker"
+    assert suggestion["likely_project_ref_safe"] == f"/student/vbr/projects/{project_id}/report"
+    assert "Matching website domain" in suggestion["evidence_basis_chips"]
+    assert "Matching skill" in suggestion["evidence_basis_chips"]
+    assert suggestion["confidence_label"] == "Likely match"
+    # Honest hedged phrasing — never a guaranteed-link claim.
+    assert "may belong to" in suggestion["suggestion_reason"]
+
+
+def test_document_proof_with_matching_title_suggests_correct_project(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id = _make_full_project(client, mem_store)
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Skill Evidence Tracker — Final Report"},
+        evidence_objects=[{"skill_name": "Python", "page_number": 2, "snippet": "built the API"}],
+    )
+
+    body = _get_private(client).json()
+    docs = [s for s in _suggestions_of(body) if s["proof_type"] == "Document Proof"]
+    assert docs, "expected a Document Proof suggestion"
+    suggestion = docs[0]
+    assert suggestion["likely_project_title"] == "Skill Evidence Tracker"
+    assert suggestion["likely_project_ref_safe"] == f"/student/vbr/projects/{project_id}/report"
+    assert "Matching document title" in suggestion["evidence_basis_chips"]
+    assert suggestion["confidence_label"] == "Likely match"
+
+
+def test_github_proof_with_matching_repo_suggests_correct_project(
+    client: TestClient, mem_store: dict
+) -> None:
+    # Project WITHOUT an attached GitHub proof, pointing at octocat/Hello-World.
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    # An unattached GitHub proof for the SAME repository.
+    _seed_github_proof(mem_store)
+
+    body = _get_private(client).json()
+    github = [s for s in _suggestions_of(body) if s["proof_type"] == "GitHub Proof"]
+    assert github, "expected a GitHub Proof suggestion"
+    suggestion = github[0]
+    assert suggestion["likely_project_title"] == "Skill Evidence Tracker"
+    assert suggestion["likely_project_ref_safe"] == f"/student/vbr/projects/{project_id}/report"
+    assert "Matching repository" in suggestion["evidence_basis_chips"]
+    assert suggestion["confidence_label"] == "Likely match"
+
+
+def test_suggestions_group_duplicate_rows_of_one_proof_source(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Many vault rows from ONE unattached proof source (a repo's per-skill
+    rows) collapse into a single suggestion — never a suggestion per row."""
+    _create_project_defense(client)
+    _seed_github_proof(mem_store)  # detected_skills Python + React → 2+ vault rows
+
+    body = _get_private(client).json()
+    github = [s for s in _suggestions_of(body) if s["proof_type"] == "GitHub Proof"]
+    assert len(github) == 1
+    assert github[0]["proof_count"] >= 2
+
+
+def test_skill_only_overlap_never_reads_as_likely_match(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A proof whose ONLY signal is one shared skill must stay conservative
+    (Needs review) — a skill name alone is not a project match."""
+    _create_project_defense(client)
+    # Unattached website proof: unrelated domain, one overlapping skill (React).
+    _seed_workflow_analysis(
+        mem_store,
+        target_website="https://unrelated-domain-zzz.example.com",
+        supported_skills=["React"],
+    )
+
+    body = _get_private(client).json()
+    website = [s for s in _suggestions_of(body) if s["proof_type"] == "Website Proof"]
+    assert website
+    assert website[0]["evidence_basis_chips"] == ["Matching skill"]
+    assert website[0]["confidence_label"] == "Needs review"
+
+
+def test_skill_only_tie_across_projects_stays_unmatched(
+    client: TestClient, mem_store: dict
+) -> None:
+    """When an unattached proof's ONLY signal is a shared skill and several
+    projects tie, no project is suggested — never a guess at the first one."""
+    from app.services.passport_attachment_intelligence import SKILL_TIE_REVIEW_REASON
+
+    _create_project_defense(
+        client,
+        title="Alpha Inventory Platform",
+        repo_url="https://github.com/student/alpha-inventory",
+    )
+    _create_project_defense(
+        client,
+        title="Beta Payments Engine",
+        repo_url="https://github.com/student/beta-payments",
+    )
+    # Unattached website proof: unrelated domain, one skill both projects claim.
+    _seed_workflow_analysis(
+        mem_store,
+        target_website="https://unrelated-domain-zzz.example.com",
+        supported_skills=["React"],
+    )
+
+    body = _get_private(client).json()
+    website = [s for s in _suggestions_of(body) if s["proof_type"] == "Website Proof"]
+    assert website, "the tied proof must still surface as a review row"
+    suggestion = website[0]
+    # No project is picked — not the first one, not any one.
+    assert suggestion["likely_project_title"] == ""
+    assert suggestion["likely_project_ref_safe"] is None
+    assert suggestion["confidence_label"] == "Needs review"
+    assert suggestion["suggestion_reason"] == SKILL_TIE_REVIEW_REASON
+    assert "Alpha" not in suggestion["suggestion_reason"]
+    assert "Beta" not in suggestion["suggestion_reason"]
+    # The tie row never lands on any project card either.
+    for project in body["projects"]:
+        assert all(
+            row["proof_type"] != "Website Proof" for row in project["suggested_attachments"]
+        )
+
+
+def test_ownerless_github_rows_do_not_merge_by_title() -> None:
+    """GitHub rows WITHOUT a stable repo identity (no repo URL, no owner/name)
+    never merge just because their titles match."""
+    from app.services.passport_attachment_intelligence import build_attachment_suggestions
+
+    def gh_row(source_id: str, skill: str) -> dict:
+        return {
+            "proof_type": "GitHub Proof",
+            "source_table": "skill_evidence",
+            "source_id": source_id,
+            "title": "Portfolio Website",
+            "skill_name": skill,
+            "repo_url": None,
+            "public_url": None,
+            "is_attached_to_project": False,
+        }
+
+    project = {
+        "project_id": "proj-1",
+        "project_title": "Portfolio Website",
+        "repo_full_name": None,
+        "claimed_skills": ["Python", "React"],
+    }
+    suggestions = build_attachment_suggestions(
+        [gh_row("ev-1", "Python"), gh_row("ev-2", "React")], [project]
+    )
+    assert len(suggestions) == 2, "ownerless rows must stay separate suggestions"
+    assert all(s["proof_count"] == 1 for s in suggestions)
+    assert len({s["suggestion_id_safe"] for s in suggestions}) == 2
+
+
+def test_github_rows_with_stable_repo_identity_still_group() -> None:
+    """Rows that DO share a stable ``owner/name`` identity keep collapsing
+    into one suggestion (the ownerless fix must not break real grouping)."""
+    from app.services.passport_attachment_intelligence import build_attachment_suggestions
+
+    def gh_row(source_id: str, skill: str) -> dict:
+        return {
+            "proof_type": "GitHub Proof",
+            "source_table": "skill_evidence",
+            "source_id": source_id,
+            "title": "octocat/Hello-World",
+            "skill_name": skill,
+            "repo_url": None,
+            "public_url": None,
+            "is_attached_to_project": False,
+        }
+
+    project = {
+        "project_id": "proj-1",
+        "project_title": "Skill Evidence Tracker",
+        "repo_full_name": "octocat/Hello-World",
+        "claimed_skills": ["Python", "React"],
+    }
+    suggestions = build_attachment_suggestions(
+        [gh_row("ev-1", "Python"), gh_row("ev-2", "React")], [project]
+    )
+    assert len(suggestions) == 1
+    assert suggestions[0]["proof_count"] == 2
+    assert "Matching repository" in suggestions[0]["evidence_basis_chips"]
+
+
+def test_same_title_distinct_proofs_get_distinct_suggestion_ids() -> None:
+    """Two distinct proofs that happen to share a title must never collide on
+    ``suggestion_id_safe``."""
+    from app.services.passport_attachment_intelligence import build_attachment_suggestions
+
+    def doc_row(source_id: str) -> dict:
+        return {
+            "proof_type": "Document Proof",
+            "source_table": "optional_evidence_submissions",
+            "source_id": source_id,
+            "title": "Skill Evidence Tracker Report",
+            "skill_name": "Python",
+            "safe_summary": "",
+            "safe_snippet": "",
+            "is_attached_to_project": False,
+        }
+
+    project = {
+        "project_id": "proj-1",
+        "project_title": "Skill Evidence Tracker",
+        "repo_full_name": None,
+        "claimed_skills": ["Python"],
+    }
+    suggestions = build_attachment_suggestions([doc_row("doc-1"), doc_row("doc-2")], [project])
+    assert len(suggestions) == 2
+    ids = {s["suggestion_id_safe"] for s in suggestions}
+    assert len(ids) == 2, "same-title distinct proofs must get distinct suggestion ids"
+    assert all(i.startswith("attach-") for i in ids)
+    # The digest never embeds the raw source id.
+    assert all("doc-1" not in i and "doc-2" not in i for i in ids)
+
+
+def test_project_cards_show_proof_chain_gaps_and_next_action(
+    client: TestClient, mem_store: dict
+) -> None:
+    _create_project_defense(client)
+
+    proj = _get_private(client).json()["projects"][0]
+    # Qualitative chain label + concrete gaps (labels/actions only, no scores).
+    assert proj["chain_label"]
+    assert not any(ch.isdigit() for ch in proj["chain_label"])
+    assert proj["proof_chain_gaps"]
+    gap_sources = {g["source"] for g in proj["proof_chain_gaps"]}
+    assert gap_sources == set(proj["proof_chain"]["missing"])
+    for gap in proj["proof_chain_gaps"]:
+        assert gap["gap_label"]
+        assert gap["action"]
+    # The next best action is the first gap's action when nothing is suggested.
+    assert proj["next_best_action"] == proj["proof_chain_gaps"][0]["action"]
+
+
+def test_complete_chain_has_no_gaps_and_strong_label(client: TestClient, mem_store: dict) -> None:
+    _make_full_project(client, mem_store)
+
+    proj = _get_private(client).json()["projects"][0]
+    assert proj["proof_chain"]["missing"] == []
+    assert proj["chain_label"] == "Strong chain"
+    assert proj["proof_chain_gaps"] == []
+    assert proj["next_best_action"] is None
+
+
+def _proof_chain_with(**present: bool) -> dict:
+    """A proof_chain dict in the passport-service shape, from source flags."""
+    keys = ("github", "website", "document", "project_defense", "video")
+    chain: dict = {key: bool(present.get(key)) for key in keys}
+    chain["attached_count"] = sum(1 for key in keys if chain[key])
+    chain["total_count"] = len(keys)
+    chain["missing"] = [key for key in keys if not chain[key]]
+    return chain
+
+
+def test_four_source_chain_without_github_is_not_strong() -> None:
+    """Source count alone never makes a Strong chain — implementation proof
+    (GitHub) is core evidence."""
+    from app.services.passport_attachment_intelligence import chain_label
+
+    chain = _proof_chain_with(website=True, document=True, project_defense=True, video=True)
+    assert chain["attached_count"] == 4
+    assert chain_label(chain) == "Needs implementation proof"
+
+
+def test_four_source_chain_without_runtime_proof_is_not_strong() -> None:
+    """Four sources missing runtime/product behavior evidence (Website) must
+    not read as Strong chain."""
+    from app.services.passport_attachment_intelligence import chain_label
+
+    chain = _proof_chain_with(github=True, document=True, project_defense=True, video=True)
+    assert chain["attached_count"] == 4
+    assert chain_label(chain) == "Needs runtime proof"
+
+
+def test_document_and_defense_alone_never_read_strong() -> None:
+    from app.services.passport_attachment_intelligence import chain_label
+
+    chain = _proof_chain_with(document=True, project_defense=True)
+    label = chain_label(chain)
+    assert label != "Strong chain"
+    assert label == "Needs implementation proof"
+
+
+def test_core_evidence_with_three_sources_reads_good_supporting_chain() -> None:
+    from app.services.passport_attachment_intelligence import chain_label
+
+    chain = _proof_chain_with(github=True, website=True, project_defense=True)
+    assert chain_label(chain) == "Good supporting chain"
+    # Core evidence + four sources is where Strong begins.
+    strong = _proof_chain_with(github=True, website=True, document=True, project_defense=True)
+    assert chain_label(strong) == "Strong chain"
+
+
+def test_project_card_lists_suggested_attachments_for_it(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    _seed_github_proof(mem_store)
+
+    proj = next(
+        p for p in _get_private(client).json()["projects"] if p["project_id"] == project_id
+    )
+    assert proj["suggested_attachments"], "expected the repo-matched suggestion on the card"
+    row = proj["suggested_attachments"][0]
+    assert row["proof_type"] == "GitHub Proof"
+    assert row["confidence_label"] in _QUALITATIVE_CONFIDENCE_LABELS
+    assert row["suggestion_reason"]
+    # The card's next action points at reviewing the suggestion (review-only).
+    assert proj["next_best_action"].startswith("Review and attach")
+
+
+def test_suggestions_never_mutate_projects_or_attach_proof(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Building the passport (with suggestions present) is read-only: no
+    project metadata changes, and the proof stays unattached on re-read."""
+    import copy
+
+    _create_project_defense(client)
+    _seed_github_proof(mem_store)
+    before = copy.deepcopy(mem_store.get("vbr_projects", {}))
+
+    first = _get_private(client).json()
+    second = _get_private(client).json()
+
+    assert mem_store.get("vbr_projects", {}) == before
+    assert first["vault_unattached_count"] == second["vault_unattached_count"] > 0
+    assert len(_suggestions_of(first)) == len(_suggestions_of(second)) > 0
+
+
+def test_public_passport_strips_attachment_suggestions_and_private_ids(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id = _make_full_project(client, mem_store)
+    _seed_workflow_analysis(
+        mem_store,
+        target_website="https://skill-evidence-tracker.vercel.app",
+        supported_skills=["React"],
+    )
+    _publish_project_report(client, project_id)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+    dump = str(body)
+
+    # No suggestion objects, owner-only routes, matching chips, or private ids.
+    assert "unattached_proof_summary" not in body
+    assert "suggestion" not in dump.lower()
+    assert "Likely match" not in dump
+    assert "/student/vbr/projects/" not in dump
+    assert project_id not in dump
+    for project in body["featured_projects"]:
+        assert "suggested_attachments" not in project
+        assert "next_best_action" not in project
+        assert "proof_chain_gaps" not in project
+        assert "chain_label" not in project
+
+
+def test_public_passport_keeps_safe_unattached_limitation_only(
+    client: TestClient, mem_store: dict
+) -> None:
+    from app.services.passport_attachment_intelligence import PUBLIC_UNATTACHED_LIMITATION
+
+    project_id = _make_full_project(client, mem_store)
+    _seed_workflow_analysis(
+        mem_store,
+        target_website="https://skill-evidence-tracker.vercel.app",
+        supported_skills=["React"],
+    )
+    _publish_project_report(client, project_id)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+    assert PUBLIC_UNATTACHED_LIMITATION in body["limitations"]
+    # The limitation is count-free and id-free (an honest sentence only).
+    assert not any(ch.isdigit() for ch in PUBLIC_UNATTACHED_LIMITATION)

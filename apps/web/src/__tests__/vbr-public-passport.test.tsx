@@ -397,3 +397,46 @@ describe("Canonical public passport route", () => {
     }
   })
 })
+
+// ── Proof Attachment Intelligence (Phase 3) — public safety ──────────────────
+
+describe("PublicPassportView — Phase 3 public safety", () => {
+  it("never renders private attachment suggestions or management UI", async () => {
+    // Even if a malformed payload carried suggestion-shaped extras, the public
+    // view has no code path that renders them.
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.queryByTestId("proof-attachment-intelligence")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("attachment-suggestion")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("suggested-attachments")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("project-suggested-attachments")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("project-next-action")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-strengthening-action")).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain("Review and attach proof")
+    expect(document.body.textContent).not.toContain("Likely match")
+  })
+
+  it("renders the safe unattached-evidence limitation when present", async () => {
+    const limitation =
+      "Additional proof evidence exists in the candidate's private vault that is not attached to the featured projects, so it is not shown here."
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        limitations: [
+          "This passport links only to reports the candidate has chosen to make public.",
+          limitation,
+        ],
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.getByText(limitation)).toBeInTheDocument()
+    // No private ids, owner-only routes, or suggestion logic ride along.
+    expect(document.body.innerHTML).not.toContain("/student/vbr/projects/")
+    expect(document.body.textContent).not.toContain("suggestion")
+  })
+})
