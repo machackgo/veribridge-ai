@@ -201,6 +201,79 @@ class PassportProofChain(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PassportProofChainGap(BaseModel):
+    """One missing proof-chain source on a project card, as a qualitative gap
+    with safe action copy. Owner-only (never on the public projection)."""
+
+    source: str = ""
+    gap_label: str = ""
+    action: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class PassportSuggestedAttachment(BaseModel):
+    """A compact per-project attachment suggestion (owner-only).
+
+    Derived deterministically from safe metadata; ``confidence_label`` is a
+    closed qualitative label ("Likely match" / "Possible match" / "Needs
+    review") — never a numeric score. Suggestions never attach anything —
+    they only describe a safe next action for the student to review.
+    """
+
+    suggestion_id_safe: str = ""
+    proof_type: str = ""
+    proof_title: str = ""
+    confidence_label: str = ""
+    suggestion_reason: str = ""
+    action_label: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class ProofAttachmentSuggestion(BaseModel):
+    """One owner-only Proof Attachment Intelligence suggestion.
+
+    Connects an *unattached* proof group to the project it likely belongs to,
+    with the deterministic evidence-basis chips that produced the match, an
+    honest hedged reason, a closed qualitative confidence label, and an explicit
+    limitation. Never carries a raw source id, raw evidence, or a numeric
+    confidence — and never appears on the public projection.
+    """
+
+    suggestion_id_safe: str = ""
+    proof_type: str = ""
+    proof_title: str = ""
+    # How many underlying vault rows grouped into this one suggestion.
+    proof_count: int = 1
+    likely_project_title: str = ""
+    # Owner-only project-report route (private passport surface only).
+    likely_project_ref_safe: str | None = None
+    likely_skill_names: list[str] = Field(default_factory=list)
+    suggestion_reason: str = ""
+    evidence_basis_chips: list[str] = Field(default_factory=list)
+    confidence_label: str = ""
+    attachment_status: str = ""
+    limitation: str = ""
+    action_label: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class UnattachedProofSummary(BaseModel):
+    """Owner-only summary of unattached vault evidence + attachment suggestions.
+
+    ``unmatched_count`` counts unattached proofs no suggestion could safely
+    match — they stay visible in the vault, honestly labelled, never guessed."""
+
+    unattached_count: int = 0
+    suggestion_count: int = 0
+    unmatched_count: int = 0
+    suggestions: list[ProofAttachmentSuggestion] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
 class PassportProjectTopSkill(BaseModel):
     """One of the strongest skills a project's evidence demonstrates —
     qualitative label only.
@@ -241,6 +314,13 @@ class PassportProjectSummary(BaseModel):
     evidence_package: dict = Field(default_factory=dict)
     # Proof-chain completeness across the five attachable evidence sources.
     proof_chain: PassportProofChain = Field(default_factory=PassportProofChain)
+    # Qualitative proof-chain label ("Strong chain", "Missing runtime proof", …)
+    # plus the concrete gaps and per-project attachment suggestions. Owner-only,
+    # deterministic, never numeric.
+    chain_label: str = ""
+    proof_chain_gaps: list[PassportProofChainGap] = Field(default_factory=list)
+    suggested_attachments: list[PassportSuggestedAttachment] = Field(default_factory=list)
+    next_best_action: str | None = None
     # The strongest evidence-backed skills this project demonstrates (capped).
     # Each entry links to its owner-only Skill Report route (Project → Skill).
     top_skills: list[PassportProjectTopSkill] = Field(default_factory=list)
@@ -354,6 +434,11 @@ class PrivateWorkPassportResponse(BaseModel):
     vault_proof_count: int = 0
     vault_unattached_count: int = 0
 
+    # Proof Attachment Intelligence (owner-only): unattached evidence with
+    # deterministic, qualitative attachment suggestions. Never on the public
+    # projection.
+    unattached_proof_summary: UnattachedProofSummary | None = None
+
     project_count: int = 0
     published_report_count: int = 0
     limitations: list[str] = Field(default_factory=list)
@@ -393,6 +478,10 @@ __all__ = [
     "PublicPassportSkill",
     "PassportProjectReportStatus",
     "PassportProofChain",
+    "PassportProofChainGap",
+    "PassportSuggestedAttachment",
+    "ProofAttachmentSuggestion",
+    "UnattachedProofSummary",
     "PassportProjectTopSkill",
     "PublicPassportProjectTopSkill",
     "EvidenceGraphOverview",

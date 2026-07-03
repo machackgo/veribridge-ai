@@ -40,6 +40,14 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.services.passport_attachment_intelligence import (
+    PUBLIC_UNATTACHED_LIMITATION,
+    build_attachment_suggestions,
+    chain_label,
+    next_best_action,
+    proof_chain_gaps,
+    suggested_attachments_for_project,
+)
 from app.services.public_report_safety_service import (
     PublicReportUnsafeError,
     enforce_public_safe,
@@ -1221,6 +1229,34 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     vault_skill_summaries = collect_skill_summaries(db, pipeline_db, str(user_id), items=vault_items)
     vault_unattached_count = sum(1 for item in vault_items if not item.get("is_attached_to_project"))
 
+    # ── Proof Attachment Intelligence (owner-only, deterministic) ────────────
+    # Match unattached vault proofs to the project they likely belong to using
+    # safe metadata only (repo identity, website domain, titles, shared skills).
+    # Purely derived: nothing is attached automatically, no data is mutated, and
+    # none of this reaches the public projection.
+    attachment_suggestions = build_attachment_suggestions(vault_items, project_summaries)
+    for summary in project_summaries:
+        summary["chain_label"] = chain_label(summary["proof_chain"])
+        summary["proof_chain_gaps"] = proof_chain_gaps(summary["proof_chain"])
+        summary["suggested_attachments"] = suggested_attachments_for_project(
+            summary["project_id"], attachment_suggestions
+        )
+        summary["next_best_action"] = next_best_action(
+            summary["proof_chain"], summary["suggested_attachments"]
+        )
+    unattached_proof_summary = {
+        "unattached_count": vault_unattached_count,
+        "suggestion_count": len(attachment_suggestions),
+        # Unattached proof rows no suggestion covers (still shown in the vault,
+        # honestly labelled — never silently guessed onto a project).
+        "unmatched_count": max(
+            0,
+            vault_unattached_count
+            - sum(int(s.get("proof_count") or 1) for s in attachment_suggestions),
+        ),
+        "suggestions": attachment_suggestions,
+    }
+
     # ── Evidence Graph Overview ──────────────────────────────────────────────
     # The passport is an evidence graph (Project ↔ Skill ↔ Proof). This compact
     # summary answers "what's here and what's next" at the top of the page —
@@ -1236,7 +1272,12 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
             f"{incomplete_chains} project(s) have missing proof sources — attach more evidence "
             "to complete their proof chains."
         )
-    if vault_unattached_count:
+    if attachment_suggestions:
+        next_actions.append(
+            f"Review {len(attachment_suggestions)} suggested proof attachment(s) — "
+            "likely project matches were found for unattached proof."
+        )
+    elif vault_unattached_count:
         next_actions.append(
             f"Attach {vault_unattached_count} unattached proof item(s) to a project so they "
             "count as project evidence."
@@ -1296,6 +1337,7 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         "vault_skill_summaries": vault_skill_summaries,
         "vault_proof_count": len(vault_items),
         "vault_unattached_count": vault_unattached_count,
+        "unattached_proof_summary": unattached_proof_summary,
         "project_count": len(project_summaries),
         "published_report_count": published_report_count,
         "limitations": limitations,
@@ -1401,6 +1443,19 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     limitations.append(
         "This passport links only to reports the candidate has chosen to make public."
     )
+    # Honest, count-free public note when unattached private vault evidence
+    # exists. This is the ONLY Proof Attachment Intelligence artifact allowed on
+    # the public surface — never suggestion objects, private ids, routes, or
+    # internal matching logic. Best-effort: a vault read problem never breaks
+    # the public passport.
+    try:
+        if any(
+            not item.get("is_attached_to_project")
+            for item in collect_vault_items(db, pipeline_db, owner_id)
+        ):
+            limitations.append(PUBLIC_UNATTACHED_LIMITATION)
+    except Exception:  # pragma: no cover - the note is optional context
+        pass
     limitations.append(
         "Evidence is shown with qualitative labels only — never numeric scores or rankings."
     )

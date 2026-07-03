@@ -15,6 +15,7 @@ import {
   type EvidenceGraphOverview,
   type PassportProjectSummary,
   type PrivateWorkPassport,
+  type ProofAttachmentSuggestion,
   type WorkPassportStatus,
 } from "@/lib/vbr-api"
 import {
@@ -307,6 +308,205 @@ function EvidenceGraphOverviewCard({ passport }: { passport: PrivateWorkPassport
   )
 }
 
+// ── Proof Attachment Intelligence (owner-only) ────────────────────────────────
+
+/** Closed qualitative confidence labels → badge tone (never numeric). */
+const CONFIDENCE_TONE: Record<string, BadgeTone> = {
+  "Likely match": "emerald",
+  "Possible match": "sky",
+  "Needs review": "amber",
+}
+
+const CHAIN_LABEL_TONE: Record<string, BadgeTone> = {
+  "Strong chain": "emerald",
+  "Good chain": "sky",
+}
+
+const MAX_RENDERED_SUGGESTIONS = 6
+
+/** One suggested-attachment card: proof → likely project, why, basis chips,
+ *  honest limitation, and non-destructive review actions only. */
+function SuggestionCard({ suggestion }: { suggestion: ProofAttachmentSuggestion }) {
+  return (
+    <div
+      data-testid="attachment-suggestion"
+      data-proof-type={suggestion.proof_type}
+      data-confidence={suggestion.confidence_label}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: "10px 12px",
+        border: `1px solid ${TOKEN.line}`,
+        borderRadius: 8,
+        background: "#fff",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <Badge tone={SOURCE_TONE[suggestion.proof_type] ?? "slate"}>{suggestion.proof_type}</Badge>
+        <span data-testid="suggestion-confidence">
+          <Badge tone={CONFIDENCE_TONE[suggestion.confidence_label] ?? "slate"}>
+            {suggestion.confidence_label}
+          </Badge>
+        </span>
+        {suggestion.proof_count > 1 && (
+          <span style={{ fontSize: 11, color: TOKEN.muted }}>{suggestion.proof_count} proof items grouped</span>
+        )}
+      </div>
+
+      <div style={{ fontSize: 13, color: TOKEN.ink }}>
+        <strong>{suggestion.proof_title}</strong>
+        <span style={{ color: TOKEN.muted }}> → </span>
+        <span data-testid="suggestion-project">{suggestion.likely_project_title}</span>
+      </div>
+
+      {suggestion.likely_skill_names.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {suggestion.likely_skill_names.map((skill) => (
+            <span key={skill} data-testid="suggestion-skill">
+              <Badge tone="indigo">{skill}</Badge>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p data-testid="suggestion-reason" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+        {suggestion.suggestion_reason}
+      </p>
+
+      {suggestion.evidence_basis_chips.length > 0 && (
+        <div data-testid="suggestion-basis-chips" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, color: TOKEN.muted }}>Based on:</span>
+          {suggestion.evidence_basis_chips.map((chip) => (
+            <span key={chip} data-testid="suggestion-basis-chip">
+              <Badge tone="slate">{chip}</Badge>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {suggestion.limitation && (
+        <p data-testid="suggestion-limitation" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          {suggestion.limitation}
+        </p>
+      )}
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <span data-testid="suggestion-action-label" style={{ fontSize: 12, fontWeight: 600, color: TOKEN.inkSoft }}>
+          {suggestion.action_label}
+        </span>
+        {suggestion.likely_project_ref_safe && (
+          <Link
+            href={suggestion.likely_project_ref_safe}
+            data-testid="suggestion-open-project"
+            style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+          >
+            Open project report →
+          </Link>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The owner-only "Proof Attachment Intelligence" section: suggested proof
+ * attachments (deterministic safe-metadata matches, qualitative labels only),
+ * the projects worth strengthening next, and the skills whose evidence is
+ * still unattached. Review-only — nothing here mutates or attaches anything.
+ */
+function ProofAttachmentIntelligenceCard({ passport }: { passport: PrivateWorkPassport }) {
+  const summary = passport.unattached_proof_summary
+  const suggestions = summary?.suggestions ?? []
+  const unattachedCount = summary?.unattached_count ?? passport.vault_unattached_count ?? 0
+  if (suggestions.length === 0 && unattachedCount === 0) return null
+
+  const projectsToStrengthen = passport.projects.filter((p) => p.next_best_action).slice(0, 4)
+  const skillsWithUnattached = (passport.vault_skill_summaries ?? [])
+    .filter((s) => s.has_unattached)
+    .slice(0, 6)
+  const moreSuggestions = Math.max(0, suggestions.length - MAX_RENDERED_SUGGESTIONS)
+
+  return (
+    <Card>
+      <div data-testid="proof-attachment-intelligence" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <CardHeader title="Proof Attachment Intelligence" eyebrow="What to attach next" icon="🧭" />
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          VeriBridge matched your unattached proof to the projects it likely belongs to using safe metadata only
+          (repository, website domain, titles, shared skills). Suggestions are qualitative and never applied
+          automatically — you review and attach.
+        </p>
+
+        {suggestions.length > 0 && (
+          <div data-testid="suggested-attachments" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              Suggested attachments
+            </Mono>
+            {suggestions.slice(0, MAX_RENDERED_SUGGESTIONS).map((s) => (
+              <SuggestionCard key={s.suggestion_id_safe} suggestion={s} />
+            ))}
+            {moreSuggestions > 0 && (
+              <span data-testid="suggestions-more" style={{ fontSize: 11, color: TOKEN.muted }}>
+                +{moreSuggestions} more suggestion{moreSuggestions === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
+        )}
+
+        {projectsToStrengthen.length > 0 && (
+          <div data-testid="projects-to-strengthen" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              Projects to strengthen
+            </Mono>
+            {projectsToStrengthen.map((p) => (
+              <div
+                key={p.project_id}
+                data-testid="project-to-strengthen"
+                style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", fontSize: 12, color: TOKEN.inkSoft }}
+              >
+                <strong style={{ color: TOKEN.ink }}>{p.project_title || "Untitled project"}</strong>
+                {p.chain_label && (
+                  <Badge tone={CHAIN_LABEL_TONE[p.chain_label] ?? "amber"}>{p.chain_label}</Badge>
+                )}
+                <span>{p.next_best_action}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {skillsWithUnattached.length > 0 && (
+          <div data-testid="skills-with-unattached" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              Skills with unattached evidence
+            </Mono>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {skillsWithUnattached.map((s) => (
+                <Link
+                  key={s.skill}
+                  href={skillReportPath(s.skill_slug || fallbackSkillSlug(s.skill))}
+                  data-testid="skill-with-unattached"
+                  style={{ textDecoration: "none" }}
+                >
+                  <Badge tone="amber">
+                    {s.skill} · {s.unattached_count} unattached
+                  </Badge>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(summary?.unmatched_count ?? 0) > 0 && (
+          <p data-testid="suggestions-unmatched-note" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+            {summary?.unmatched_count} unattached proof item(s) had no safe project match. They stay in your vault
+            under their skill — nothing is guessed onto a project.
+          </p>
+        )}
+      </div>
+    </Card>
+  )
+}
+
 // ── Project Portfolio ─────────────────────────────────────────────────────────
 
 /** The five-step proof-chain completeness row on a project card. */
@@ -314,9 +514,16 @@ function ProofChainRow({ project }: { project: PassportProjectSummary }) {
   const chain = project.proof_chain ?? proofChainFromSources(project.evidence_sources)
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-        Proof chain · {chain.attached_count} of {chain.total_count} sources attached
-      </Mono>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+          Proof chain · {chain.attached_count} of {chain.total_count} sources attached
+        </Mono>
+        {project.chain_label && (
+          <span data-testid="project-chain-label">
+            <Badge tone={CHAIN_LABEL_TONE[project.chain_label] ?? "amber"}>{project.chain_label}</Badge>
+          </span>
+        )}
+      </div>
       <div data-testid="project-proof-chain" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         {PROOF_CHAIN_STEPS.map((step) => (
           <span
@@ -337,6 +544,16 @@ function ProofChainRow({ project }: { project: PassportProjectSummary }) {
           Not yet attached: {chain.missing.join(", ")}. Attach these sources to strengthen this project&apos;s
           evidence.
         </p>
+      )}
+      {(project.proof_chain_gaps?.length ?? 0) > 0 && (
+        <ul data-testid="project-chain-gaps" style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 2 }}>
+          {project.proof_chain_gaps!.map((gap) => (
+            <li key={gap.source} data-testid="project-chain-gap" data-source={gap.source} style={{ fontSize: 11, color: TOKEN.muted }}>
+              <strong style={{ color: TOKEN.inkSoft }}>{gap.gap_label}: </strong>
+              {gap.action}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )
@@ -400,6 +617,34 @@ function ProjectCard({ project }: { project: PassportProjectSummary }) {
 
         {/* Proof chain completeness + gaps */}
         <ProofChainRow project={project} />
+
+        {/* Proof Attachment Intelligence: the single next best action for this
+            project, plus the unattached proofs suggested for it (review-only). */}
+        {project.next_best_action && (
+          <p data-testid="project-next-action" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+            <strong style={{ color: TOKEN.ink }}>Suggested next action: </strong>
+            {project.next_best_action}
+          </p>
+        )}
+        {(project.suggested_attachments?.length ?? 0) > 0 && (
+          <div data-testid="project-suggested-attachments" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+              Suggested proof attachments
+            </Mono>
+            {project.suggested_attachments!.map((s) => (
+              <div
+                key={s.suggestion_id_safe}
+                data-testid="project-suggested-attachment"
+                style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap", fontSize: 11, color: TOKEN.muted }}
+              >
+                <Badge tone={SOURCE_TONE[s.proof_type] ?? "slate"}>{s.proof_type}</Badge>
+                <Badge tone={CONFIDENCE_TONE[s.confidence_label] ?? "slate"}>{s.confidence_label}</Badge>
+                <span style={{ color: TOKEN.inkSoft, fontWeight: 600 }}>{s.proof_title}</span>
+                <span>{s.suggestion_reason}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Project → Skill links: the strongest evidence-backed skills this
             project demonstrates, each linking into its full Skill Report. */}
@@ -555,6 +800,10 @@ export function PrivatePassportView() {
 
       {/* 2 — Evidence Graph Overview */}
       <EvidenceGraphOverviewCard passport={passport} />
+
+      {/* 2b — Proof Attachment Intelligence: suggested attachments, projects to
+          strengthen, skills with unattached evidence (owner-only, review-only). */}
+      <ProofAttachmentIntelligenceCard passport={passport} />
 
       {/* 3 — Project Portfolio (first-class, no longer buried at the bottom) */}
       <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
