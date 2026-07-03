@@ -3,11 +3,13 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react"
 import Link from "next/link"
 import {
+  fallbackSkillSlug,
   getVBRProjectReport,
   getVBRProjectReportPublishStatus,
   isSafePublicUrl,
   matrixTraceLabel,
   publishVBRProjectReport,
+  skillReportPath,
   unpublishVBRProjectReport,
   type EvidenceTrace,
   type ProjectReportPublishStatus,
@@ -80,7 +82,20 @@ function SkillEvidenceRow({ row, tracesById }: { row: VBRReportSkillEvidenceRow;
     .filter((t): t is EvidenceTrace => Boolean(t))
   return (
     <tr data-testid="skill-evidence-row">
-      <td style={{ padding: "8px 10px", fontSize: 13, fontWeight: 600, color: TOKEN.ink, verticalAlign: "top" }}>{row.skill}</td>
+      <td style={{ padding: "8px 10px", fontSize: 13, fontWeight: 600, color: TOKEN.ink, verticalAlign: "top" }}>
+        {row.skill}
+        {/* Project → Skill cross-link: every project skill row opens the full
+            Skill Report showing all projects/proofs behind this skill. */}
+        <div>
+          <Link
+            href={skillReportPath(fallbackSkillSlug(row.skill))}
+            data-testid="matrix-skill-report-link"
+            style={{ fontSize: 11, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none", whiteSpace: "nowrap" }}
+          >
+            View skill evidence →
+          </Link>
+        </div>
+      </td>
       <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
         <Badge tone={SKILL_STATUS_TONE[row.status] ?? "slate"}>{row.status}</Badge>
       </td>

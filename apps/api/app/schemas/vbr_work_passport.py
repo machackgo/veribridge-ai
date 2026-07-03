@@ -78,6 +78,27 @@ class PassportSkillProjectRef(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PassportStrongestProjectLink(BaseModel):
+    """Skill → Project cross-link: the project where a skill is most strongly
+    evidenced, as a linkable reference.
+
+    ``project_id`` / ``project_report_path`` are owner-only (the private report
+    preview route) and are never present on the public projection — the public
+    shape carries only the published ``public_report_path``.
+    """
+
+    project_title: str = ""
+    # This project's qualitative label FOR THIS SKILL (never a numeric score).
+    skill_status: str = "Not assessed"
+    evidence_sources: list[str] = Field(default_factory=list)
+    report_is_public: bool = False
+    public_report_path: str | None = None
+    project_id: str | None = None
+    project_report_path: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class PassportSkillSummary(BaseModel):
     """A grouped, evidence-backed skill. ``status`` is always a qualitative
     label — never a numeric trust/confidence score."""
@@ -96,8 +117,22 @@ class PassportSkillSummary(BaseModel):
     # that project's qualitative label for this skill). Owner-only.
     strongest_project_title: str | None = None
     strongest_project_status: str | None = None
+    # The same strongest project as a linkable reference (owner-only routes).
+    strongest_project: PassportStrongestProjectLink | None = None
     notes: str = ""
     limitations: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class PublicPassportStrongestProject(BaseModel):
+    """Public strongest-project reference — title, per-skill qualitative label
+    and the published report path only. Never an internal id or private route."""
+
+    project_title: str = ""
+    skill_status: str = "Not assessed"
+    evidence_sources: list[str] = Field(default_factory=list)
+    public_report_path: str
 
     model_config = {"extra": "forbid"}
 
@@ -129,6 +164,8 @@ class PublicPassportSkill(BaseModel):
     evidence_chips: list[PassportSkillEvidenceChip] = Field(default_factory=list)
     # Claim→evidence traces sourced ONLY from published public reports.
     evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
+    # Where this skill is most strongly evidenced — published projects only.
+    strongest_project: PublicPassportStrongestProject | None = None
     limitations: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
@@ -166,10 +203,28 @@ class PassportProofChain(BaseModel):
 
 class PassportProjectTopSkill(BaseModel):
     """One of the strongest skills a project's evidence demonstrates —
-    qualitative label only."""
+    qualitative label only.
+
+    ``skill_slug`` is the skill's stable, URL-safe slug (derived from the
+    canonical skill name — safe on both surfaces). ``skill_report_path`` is the
+    owner-only Skill Report route and is stripped from the public projection.
+    """
 
     skill: str
     status: str = "Not assessed"
+    skill_slug: str | None = None
+    skill_report_path: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class PublicPassportProjectTopSkill(BaseModel):
+    """Public Project → Skill chip: skill + qualitative status + stable slug
+    only. Never carries the owner-only ``skill_report_path`` route."""
+
+    skill: str
+    status: str = "Not assessed"
+    skill_slug: str | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -187,7 +242,11 @@ class PassportProjectSummary(BaseModel):
     # Proof-chain completeness across the five attachable evidence sources.
     proof_chain: PassportProofChain = Field(default_factory=PassportProofChain)
     # The strongest evidence-backed skills this project demonstrates (capped).
+    # Each entry links to its owner-only Skill Report route (Project → Skill).
     top_skills: list[PassportProjectTopSkill] = Field(default_factory=list)
+    # One safe sentence relating this project's skills to its proof sources —
+    # composed from qualitative labels only (never ids, scores, raw evidence).
+    evidence_relationship_note: str | None = None
     # How many underlying evidence attempts (duplicate rows) merged into this
     # card. 1 when the project is a single row.
     attempt_count: int = 1
@@ -205,6 +264,11 @@ class PublicPassportProject(BaseModel):
     evidence_sources: list[str] = Field(default_factory=list)
     # Safe proof-chain completeness (booleans + source labels; no ids/scores).
     proof_chain: PassportProofChain = Field(default_factory=PassportProofChain)
+    # Public Project → Skill chips: skill + qualitative status + stable slug
+    # only. ``skill_report_path`` (an owner-only route) is never present here.
+    top_skills: list[PublicPassportProjectTopSkill] = Field(default_factory=list)
+    # Safe relationship sentence (qualitative labels only).
+    evidence_relationship_note: str | None = None
     public_report_path: str
     published_at: str | None = None
 
@@ -322,12 +386,15 @@ __all__ = [
     "WorkPassportStatusResponse",
     "PassportSkillEvidenceChip",
     "PassportSkillProjectRef",
+    "PassportStrongestProjectLink",
     "PassportSkillSummary",
+    "PublicPassportStrongestProject",
     "PublicPassportSkillProjectRef",
     "PublicPassportSkill",
     "PassportProjectReportStatus",
     "PassportProofChain",
     "PassportProjectTopSkill",
+    "PublicPassportProjectTopSkill",
     "EvidenceGraphOverview",
     "PassportProjectSummary",
     "PublicPassportProject",

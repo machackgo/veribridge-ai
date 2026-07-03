@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import {
+  fallbackSkillSlug,
   getPublicWorkPassportBySlug,
   matrixTraceLabel,
   proofChainFromSources,
@@ -41,9 +42,15 @@ const SOURCE_TONE: Record<string, BadgeTone> = {
   "VBR Report": "emerald",
 }
 
+/** Stable in-page anchor id for a public skill row (safe slug only). */
+function publicSkillAnchor(skillOrSlug: string): string {
+  return `public-skill-${fallbackSkillSlug(skillOrSlug)}`
+}
+
 function SkillChip({ skill }: { skill: PublicPassportSkill }) {
   const [open, setOpen] = useState(false)
   const traces = skill.evidence_traces ?? []
+  const strongest = skill.strongest_project ?? null
   const hasDetail =
     skill.projects.length > 0 ||
     skill.evidence_sources.length > 0 ||
@@ -72,7 +79,11 @@ function SkillChip({ skill }: { skill: PublicPassportSkill }) {
   )
 
   return (
-    <div data-testid="public-passport-skill" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <div
+      data-testid="public-passport-skill"
+      id={publicSkillAnchor(skill.skill)}
+      style={{ display: "flex", flexDirection: "column", gap: 8, scrollMarginTop: 96 }}
+    >
       {/* Skills with no safe drilldown stay non-interactive so the public
           passport exposes no buttons beyond intentional expand toggles. */}
       {hasDetail ? (
@@ -109,6 +120,27 @@ function SkillChip({ skill }: { skill: PublicPassportSkill }) {
                   {src}
                 </Badge>
               ))}
+            </div>
+          )}
+
+          {/* Skill → Project: where this skill is most strongly evidenced —
+              published report link only, never a private route or id. */}
+          {strongest && (
+            <div
+              data-testid="public-skill-strongest-project"
+              style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", fontSize: 12, color: TOKEN.inkSoft }}
+            >
+              <span>
+                This skill is strongest in <strong>{strongest.project_title}</strong>
+                {strongest.skill_status ? ` — ${strongest.skill_status}` : ""}
+              </span>
+              <a
+                href={strongest.public_report_path}
+                data-testid="public-strongest-project-link"
+                style={{ fontSize: 11, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none", whiteSpace: "nowrap" }}
+              >
+                View project evidence →
+              </a>
             </div>
           )}
 
@@ -208,8 +240,16 @@ function SkillChip({ skill }: { skill: PublicPassportSkill }) {
   )
 }
 
-function FeaturedProject({ project }: { project: PublicPassportProject }) {
+function FeaturedProject({
+  project,
+  availableSkillAnchors,
+}: {
+  project: PublicPassportProject
+  /** Anchor ids of skills rendered in the Top Skills section below. */
+  availableSkillAnchors: Set<string>
+}) {
   const chain = project.proof_chain ?? proofChainFromSources(project.evidence_sources)
+  const topSkills = project.top_skills ?? []
   return (
     <Card>
       <div data-testid="public-passport-project" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -217,14 +257,54 @@ function FeaturedProject({ project }: { project: PublicPassportProject }) {
         {project.project_summary && (
           <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{project.project_summary}</p>
         )}
-        {project.claimed_skills.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {project.claimed_skills.map((skill) => (
-              <Badge key={skill} tone="indigo">
-                {skill}
-              </Badge>
-            ))}
+        {/* Project → Skill links: chips anchor to this skill's evidence in the
+            Top Skills section on this same page — never to a private route. */}
+        {topSkills.length > 0 ? (
+          <div data-testid="public-project-top-skills" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {topSkills.map((row) => {
+              // Derive the anchor from the display name (matching the Top
+              // Skills section) so both sides always agree.
+              const anchor = publicSkillAnchor(row.skill)
+              const linked = availableSkillAnchors.has(anchor)
+              const chip = (
+                <Badge tone={QUALITATIVE_LABEL_TONE[row.status] ?? "indigo"}>
+                  {row.skill} · {row.status}
+                </Badge>
+              )
+              return linked ? (
+                <a
+                  key={row.skill}
+                  href={`#${anchor}`}
+                  data-testid="public-project-skill-link"
+                  title={`See the evidence behind ${row.skill}`}
+                  style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}
+                >
+                  {chip}
+                  <span style={{ fontSize: 11, fontWeight: 600, color: TOKEN.indigo }}>View skill evidence ↓</span>
+                </a>
+              ) : (
+                <span key={row.skill}>{chip}</span>
+              )
+            })}
           </div>
+        ) : (
+          project.claimed_skills.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {project.claimed_skills.map((skill) => (
+                <Badge key={skill} tone="indigo">
+                  {skill}
+                </Badge>
+              ))}
+            </div>
+          )
+        )}
+        {project.evidence_relationship_note && (
+          <p
+            data-testid="public-project-relationship-note"
+            style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
+          >
+            {project.evidence_relationship_note}
+          </p>
         )}
         {/* Proof-chain completeness: what evidence backs this project, and what
             is missing — honest transparency, labels only, never a number grade. */}
@@ -321,6 +401,9 @@ export function PublicPassportView({ slug }: { slug: string }) {
   if (error || !passport) return <ErrorState message={error ?? "Passport not found."} onRetry={load} />
 
   const sourceCounts = Object.entries(passport.evidence_source_counts).filter(([, n]) => n > 0)
+  // Skills actually rendered in the Top Skills section — a project skill chip
+  // only becomes an in-page link when its target anchor exists.
+  const availableSkillAnchors = new Set(passport.top_skills.map((s) => publicSkillAnchor(s.skill)))
 
   return (
     <div
@@ -378,7 +461,11 @@ export function PublicPassportView({ slug }: { slug: string }) {
           </Card>
         ) : (
           passport.featured_projects.map((project, i) => (
-            <FeaturedProject key={`${project.public_report_path}-${i}`} project={project} />
+            <FeaturedProject
+              key={`${project.public_report_path}-${i}`}
+              project={project}
+              availableSkillAnchors={availableSkillAnchors}
+            />
           ))
         )}
       </section>

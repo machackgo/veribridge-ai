@@ -4,7 +4,9 @@ import { useState, type ReactNode } from "react"
 import Link from "next/link"
 
 import {
+  fallbackSkillSlug,
   isSafePublicUrl,
+  PROOF_SOURCE_RELATIONSHIP,
   skillReportPath,
   type SkillProofSynthesisStatement,
   type SkillProofSynthesisUnlinkedItem,
@@ -1105,6 +1107,25 @@ function AgentSummary({ results, publicSafe }: { results: SkillSynthesisResult[]
   )
 }
 
+/**
+ * The proof-source relationship line for a connected chain: how each present
+ * source relates to the claim, using the neutral, evidence-strength-safe
+ * vocabulary in PROOF_SOURCE_RELATIONSHIP (source is *attached for review* —
+ * never inferring implementation/authorship/time-based proof from presence
+ * alone). Closed vocabulary, labels only.
+ */
+function ChainSourceRelationships({ sources }: { sources: string[] }) {
+  const phrases = [...new Set(sources)]
+    .map((src) => PROOF_SOURCE_RELATIONSHIP[src])
+    .filter((p): p is string => Boolean(p))
+  if (phrases.length === 0) return null
+  return (
+    <p data-testid="chain-source-relationships" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+      {phrases.join(" · ")}
+    </p>
+  )
+}
+
 /** One project's connected proof chain: artifacts + corroborating documents. */
 function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
   const evidenceResolver = buildChainEvidenceResolver(chain)
@@ -1123,6 +1144,14 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
         background: TOKEN.bg,
       }}
     >
+      {chain.attached && (
+        <Mono
+          data-testid="chain-connected-project-label"
+          style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}
+        >
+          Connected project
+        </Mono>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <span style={{ fontSize: 14, fontWeight: 700, color: TOKEN.ink }}>{chain.project_title}</span>
         {chain.confidence_tier && (
@@ -1156,6 +1185,8 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
           </span>
         )}
       </div>
+      {/* How each proof source relates to this skill claim (safe labels only). */}
+      <ChainSourceRelationships sources={chain.sources} />
       {chain.evidence_chain_summary && (
         <p data-testid="chain-summary" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
           {chain.evidence_chain_summary}
@@ -1962,13 +1993,19 @@ function PreviewRow({ preview }: { preview: VaultSkillPreview }) {
 }
 
 /** Slugify a skill name client-side as a fallback when the API omits the slug. */
-function fallbackSlug(skill: string): string {
-  return skill.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "skill"
-}
+const fallbackSlug = fallbackSkillSlug
 
 /** The project where a skill is most strongly evidenced (from the passport
- *  project↔skill aggregate) — connects the skill lens back to the project lens. */
-export type StrongestProjectRef = { title: string; status: string }
+ *  project↔skill aggregate) — connects the skill lens back to the project lens.
+ *  `reportPath` is the owner-only project report preview route; `publicPath`
+ *  the published recruiter link (either may be absent). */
+export type StrongestProjectRef = {
+  title: string
+  status: string
+  reportPath?: string | null
+  publicPath?: string | null
+  reportIsPublic?: boolean
+}
 
 /**
  * Layer 1 — a compact skill card. Shows counts + a few previews, and a
@@ -1976,6 +2013,39 @@ export type StrongestProjectRef = { title: string; status: string }
  * (the full evidence — and the expensive website hydration — only loads there).
  * Never renders the full report inline.
  */
+/** The five attachable proof sources, in canonical order, for the compact
+ *  skill-card proof-chain preview. */
+const SKILL_CHAIN_SOURCES = [
+  "GitHub Proof",
+  "Website Proof",
+  "Document Proof",
+  "Project Defense",
+  "Video Evidence",
+]
+
+/**
+ * Compact proof-chain preview for a skill card: which of the five attachable
+ * proof sources back this skill (from the already-safe source counts). Labels
+ * and check marks only — never raw evidence or a numeric score.
+ */
+function SkillProofChainPreview({ counts }: { counts: Record<string, number> }) {
+  return (
+    <div data-testid="skill-proof-chain-preview" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      {SKILL_CHAIN_SOURCES.map((label) => {
+        const present = (counts[label] ?? 0) > 0
+        return (
+          <span key={label} data-testid="skill-chain-item" data-source={label} data-present={present ? "true" : "false"}>
+            <Badge tone={present ? (PROOF_TONE[label] ?? "emerald") : "slate"}>
+              {present ? "✓ " : "– "}
+              {label}
+            </Badge>
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
 export function VaultSkillSummaryCard({
   summary,
   strongestProject,
@@ -1985,6 +2055,9 @@ export function VaultSkillSummaryCard({
 }) {
   const sourceCounts = Object.entries(summary.proof_source_counts ?? {})
   const slug = summary.skill_slug || fallbackSlug(summary.skill)
+  // Honest unattached framing: when this skill is mostly (or only) supported
+  // by unattached vault proof, that evidence must never read as project proof.
+  const mostlyUnattached = summary.unattached_count > summary.attached_count
 
   return (
     <div
@@ -2024,12 +2097,38 @@ export function VaultSkillSummaryCard({
         ))}
       </div>
 
-      {/* The project where this skill is most strongly evidenced */}
+      {/* Compact proof-chain preview across the five attachable sources */}
+      <SkillProofChainPreview counts={summary.proof_source_counts ?? {}} />
+
+      {/* Skill → Project link: the project where this skill is most strongly
+          evidenced, with a direct route into that project's evidence. */}
       {strongestProject && (
-        <div data-testid="vault-summary-strongest-project" style={{ fontSize: 11, color: TOKEN.inkSoft }}>
-          Strongest project: <strong>{strongestProject.title}</strong>
-          {strongestProject.status ? ` — ${strongestProject.status}` : ""}
+        <div
+          data-testid="vault-summary-strongest-project"
+          style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", fontSize: 11, color: TOKEN.inkSoft }}
+        >
+          <span>
+            This skill is strongest in <strong>{strongestProject.title}</strong>
+            {strongestProject.status ? ` — ${strongestProject.status}` : ""}
+            {summary.project_count > 1 ? ` (+${summary.project_count - 1} related project${summary.project_count === 2 ? "" : "s"})` : ""}
+          </span>
+          {strongestProject.reportPath && (
+            <Link
+              href={strongestProject.reportPath}
+              data-testid="strongest-project-evidence-link"
+              style={{ fontSize: 11, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none", whiteSpace: "nowrap" }}
+            >
+              View project evidence →
+            </Link>
+          )}
         </div>
+      )}
+
+      {/* Unattached honesty: vault-only evidence never reads as project proof. */}
+      {mostlyUnattached && (
+        <p data-testid="vault-summary-unattached-note" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          Additional vault evidence exists but is not attached to a project report.
+        </p>
       )}
 
       {summary.summary && (

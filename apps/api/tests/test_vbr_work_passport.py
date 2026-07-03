@@ -664,7 +664,7 @@ def test_private_project_cards_include_top_skills(client: TestClient, mem_store:
     assert proj["top_skills"], "expected evidence-backed top skills on the project card"
     assert len(proj["top_skills"]) <= 5
     for row in proj["top_skills"]:
-        assert set(row.keys()) == {"skill", "status"}
+        assert set(row.keys()) == {"skill", "status", "skill_slug", "skill_report_path"}
         assert row["status"] in _QUALITATIVE_LABELS
 
 
@@ -698,6 +698,277 @@ def test_public_featured_projects_include_safe_proof_chain(
     # Strongest-project fields are owner-only and never leak publicly.
     serialized = str(body["top_skills"])
     assert "strongest_project_title" not in serialized
+
+
+# ── Phase 2: Project ↔ Skill cross-linking ────────────────────────────────────
+
+
+def test_private_project_top_skills_link_to_skill_reports(
+    client: TestClient, mem_store: dict
+) -> None:
+    _make_full_project(client, mem_store)
+    proj = _get_private(client).json()["projects"][0]
+
+    assert proj["top_skills"]
+    for row in proj["top_skills"]:
+        # Project → Skill link: stable slug + the owner-only Skill Report route.
+        assert row["skill_slug"]
+        assert row["skill_report_path"] == f"/student/vbr/passport/skills/{row['skill_slug']}"
+
+
+def test_private_project_cards_carry_relationship_note(
+    client: TestClient, mem_store: dict
+) -> None:
+    _make_full_project(client, mem_store)
+    proj = _get_private(client).json()["projects"][0]
+
+    note = proj["evidence_relationship_note"]
+    assert note and note.startswith("This project demonstrates ")
+    # Composed from safe labels only — never a score-style fragment.
+    assert "%" not in note and "score" not in note.lower()
+
+
+def test_relationship_note_demonstrated_status_uses_demonstrates() -> None:
+    """A purely "Demonstrated" skill reads as something the project
+    "demonstrates" — the strongest, full-strength claim tier."""
+    from app.services.vbr_work_passport_service import _project_relationship_note
+
+    note = _project_relationship_note(
+        [
+            {"skill": "React", "status": "Demonstrated"},
+            {"skill": "API Development", "status": "Demonstrated"},
+        ],
+        ["GitHub Proof"],
+    )
+    assert note is not None
+    assert note.startswith("This project demonstrates React and API Development")
+    # "demonstrates" here is the full-strength verb, not "partially demonstrates".
+    assert "partially demonstrates" not in note
+    assert "%" not in note and "score" not in note.lower()
+
+
+def test_relationship_note_partial_status_is_not_promoted_to_demonstrates() -> None:
+    """"Partially demonstrated" must keep its own weaker wording — it is never
+    promoted into the full "This project demonstrates …" claim."""
+    from app.services.vbr_work_passport_service import _project_relationship_note
+
+    note = _project_relationship_note(
+        [
+            {"skill": "React", "status": "Partially demonstrated"},
+            {"skill": "API Development", "status": "Partially demonstrated"},
+        ],
+        ["GitHub Proof"],
+    )
+    assert note is not None
+    assert note.startswith(
+        "This project partially demonstrates React and API Development"
+    )
+    # Must NOT be dressed up as a full demonstrated claim.
+    assert not note.startswith("This project demonstrates ")
+    assert "%" not in note and "score" not in note.lower()
+
+
+def test_relationship_note_evidence_observed_uses_its_own_wording() -> None:
+    """"Evidence observed" must read as "Evidence was observed for …", never as
+    something the project "demonstrates"."""
+    from app.services.vbr_work_passport_service import _project_relationship_note
+
+    note = _project_relationship_note(
+        [
+            {"skill": "React", "status": "Evidence observed"},
+            {"skill": "API Development", "status": "Evidence observed"},
+        ],
+        ["GitHub Proof"],
+    )
+    assert note is not None
+    assert note.startswith(
+        "Evidence was observed for React and API Development in this project"
+    )
+    # Never promoted into a "demonstrates" claim.
+    assert "demonstrates" not in note.lower()
+    assert "%" not in note and "score" not in note.lower()
+
+
+def test_relationship_note_mixed_statuses_preserve_each_wording_tier() -> None:
+    """When several tiers co-exist, each keeps its own distinct wording — the
+    full "demonstrates" claim only covers "Demonstrated" skills; "Partially
+    demonstrated" and "Evidence observed" keep their own weaker phrasing; weak
+    statuses stay under review."""
+    from app.services.vbr_work_passport_service import _project_relationship_note
+
+    note = _project_relationship_note(
+        [
+            {"skill": "React", "status": "Demonstrated"},
+            {"skill": "API Development", "status": "Partially demonstrated"},
+            {"skill": "Machine Learning", "status": "Evidence observed"},
+        ],
+        ["GitHub Proof"],
+    )
+    assert note is not None
+    # Each tier keeps its own verb clause — none collapsed into another.
+    assert "demonstrates React" in note
+    assert "partially demonstrates API Development" in note
+    assert "has observed evidence for Machine Learning" in note
+    # The full "demonstrates" claim covers ONLY the Demonstrated skill.
+    demonstrates_clause = note.split("demonstrates ", 1)[1]
+    assert demonstrates_clause.startswith("React")
+    assert "API Development" not in demonstrates_clause.split(",")[0]
+    assert "Machine Learning" not in demonstrates_clause.split(",")[0]
+    assert "%" not in note and "score" not in note.lower()
+
+
+def test_relationship_note_weak_statuses_stay_under_review_alongside_positive() -> None:
+    """Weak statuses (Needs review / Not assessed / Insufficient evidence) never
+    appear as demonstrated even beside positive tiers — they get a separate,
+    under-review sentence."""
+    from app.services.vbr_work_passport_service import _project_relationship_note
+
+    top_skills = [
+        {"skill": "React", "status": "Demonstrated"},
+        {"skill": "API Development", "status": "Evidence observed"},
+        {"skill": "Kubernetes", "status": "Needs review"},
+    ]
+    note = _project_relationship_note(top_skills, ["GitHub Proof"])
+    assert note is not None
+    assert note.startswith("This project demonstrates React")
+    assert "has observed evidence for API Development" in note
+    # The weak skill is described under review, never as demonstrated.
+    assert "Additional evidence is under review for Kubernetes." in note
+    positive_part = note.split(" Additional evidence is under review for")[0]
+    assert "Kubernetes" not in positive_part
+    assert "%" not in note and "score" not in note.lower()
+
+
+def test_relationship_note_supporting_evidence_gets_its_own_tier() -> None:
+    """"Supporting evidence" skills are never called demonstrated — they read
+    as "has supporting evidence for", both alongside supported skills and when
+    they lead the note."""
+    from app.services.vbr_work_passport_service import _project_relationship_note
+
+    # Mixed: supported + supporting + weak, each in its own clause.
+    note = _project_relationship_note(
+        [
+            {"skill": "React", "status": "Demonstrated"},
+            {"skill": "Docker", "status": "Supporting evidence"},
+            {"skill": "Kubernetes", "status": "Not assessed"},
+        ],
+        ["GitHub Proof"],
+    )
+    assert note is not None
+    assert note.startswith("This project demonstrates React")
+    assert "has supporting evidence for Docker" in note
+    assert "Docker" not in note.split("has supporting evidence for")[0]
+    assert "Additional evidence is under review for Kubernetes." in note
+
+    # Supporting-only: leads with the supporting phrasing, never "demonstrates".
+    note = _project_relationship_note(
+        [{"skill": "Docker", "status": "Supporting evidence"}], ["GitHub Proof"]
+    )
+    assert note is not None
+    assert "demonstrates" not in note.lower()
+    assert note.startswith("This project has supporting evidence for Docker")
+    assert "%" not in note and "score" not in note.lower()
+
+
+def test_relationship_note_never_demonstrates_weak_only_skills() -> None:
+    """When a project's top skills are ALL weak (Needs review / Not assessed /
+    Insufficient evidence), the note must not use "demonstrates" at all — only
+    preliminary / under-review wording."""
+    from app.services.vbr_work_passport_service import _project_relationship_note
+
+    for status in ("Needs review", "Not assessed", "Insufficient evidence"):
+        top_skills = [
+            {"skill": "Machine Learning", "status": status},
+            {"skill": "Kubernetes", "status": "Not assessed"},
+        ]
+        note = _project_relationship_note(top_skills, ["GitHub Proof"])
+        assert note is not None
+        assert "demonstrates" not in note.lower(), status
+        assert note.startswith("This project has preliminary or under-review evidence for")
+        assert "Machine Learning" in note and "Kubernetes" in note
+        assert "%" not in note and "score" not in note.lower()
+
+
+def test_private_skill_cards_include_strongest_project_link(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id = _make_full_project(client, mem_store)
+    body = _get_private(client).json()
+
+    assert body["skills"]
+    for skill in body["skills"]:
+        link = skill["strongest_project"]
+        assert link is not None
+        assert link["project_title"] == skill["strongest_project_title"]
+        assert link["skill_status"] in _QUALITATIVE_LABELS
+        # Owner-only project report route for "View project evidence →".
+        assert link["project_id"] == project_id
+        assert link["project_report_path"] == f"/student/vbr/projects/{project_id}/report"
+        # Unpublished project → no public path yet.
+        assert link["report_is_public"] is False
+        assert link["public_report_path"] is None
+
+
+def test_public_skill_strongest_project_is_safe_and_published_only(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id = _make_full_project(client, mem_store)
+    _publish_project_report(client, project_id)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+
+    assert body["top_skills"]
+    for skill in body["top_skills"]:
+        link = skill["strongest_project"]
+        assert link is not None
+        # Public shape: title / per-skill label / published path ONLY.
+        assert set(link.keys()) == {
+            "project_title",
+            "skill_status",
+            "evidence_sources",
+            "public_report_path",
+        }
+        assert link["public_report_path"].startswith("/vbr/report/")
+        assert project_id not in str(link)
+
+
+def test_public_projection_never_carries_private_routes(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id = _make_full_project(client, mem_store)
+    _publish_project_report(client, project_id)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, slug).json()
+
+    serialized = str(body)
+    # Owner-only app routes and internal ids never ride on the public surface.
+    assert "/student/vbr/" not in serialized
+    assert "skill_report_path" not in serialized
+    assert "project_report_path" not in serialized
+    assert project_id not in serialized
+
+
+def test_public_featured_projects_carry_safe_skill_chips_and_note(
+    client: TestClient, mem_store: dict
+) -> None:
+    project_id = _make_full_project(client, mem_store)
+    _publish_project_report(client, project_id)
+    slug = _publish(client).json()["public_slug"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    proj = _get_public(client, slug).json()["featured_projects"][0]
+
+    assert proj["top_skills"]
+    for row in proj["top_skills"]:
+        # Skill + qualitative label + stable slug only — no private route.
+        assert set(row.keys()) == {"skill", "status", "skill_slug"}
+        assert row["skill_slug"]
+    note = proj["evidence_relationship_note"]
+    assert note and note.startswith("This project demonstrates ")
 
 
 # ── Identity / passport header ───────────────────────────────────────────────

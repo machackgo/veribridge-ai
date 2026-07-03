@@ -248,6 +248,99 @@ describe("PublicPassportView", () => {
     expect(overview).toHaveTextContent("2 evidence-backed skills")
   })
 
+  it("links featured-project skill chips to the matching public skill section (Phase 2)", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        featured_projects: [
+          {
+            ...makePublicPassport().featured_projects[0],
+            top_skills: [
+              { skill: "Python", status: "Demonstrated", skill_slug: "python" },
+              // Not in top_skills below → renders as a plain, unlinked chip.
+              { skill: "GraphQL", status: "Supporting evidence", skill_slug: "graphql" },
+            ],
+            evidence_relationship_note:
+              "This project demonstrates Python through GitHub code and Project Defense explanation.",
+          },
+        ],
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    // Python exists in the Top Skills section → in-page anchor link.
+    const links = screen.getAllByTestId("public-project-skill-link")
+    expect(links).toHaveLength(1)
+    expect(links[0]).toHaveAttribute("href", "#public-skill-python")
+    // The anchor target exists on the skill row.
+    expect(document.getElementById("public-skill-python")).toBeTruthy()
+    // The relationship note renders with safe labels only.
+    expect(screen.getByTestId("public-project-relationship-note")).toHaveTextContent(
+      "This project demonstrates Python",
+    )
+  })
+
+  it("shows the strongest project with a public report link in the skill drilldown (Phase 2)", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        top_skills: [
+          {
+            skill: "Python",
+            status: "Demonstrated",
+            evidence_sources: ["GitHub Proof"],
+            projects: [
+              {
+                project_title: "Skill Evidence Tracker",
+                evidence_sources: ["GitHub Proof"],
+                public_report_path: "/vbr/report/tok-abc",
+              },
+            ],
+            evidence_chips: [],
+            strongest_project: {
+              project_title: "Skill Evidence Tracker",
+              skill_status: "Demonstrated",
+              evidence_sources: ["GitHub Proof"],
+              public_report_path: "/vbr/report/tok-abc",
+            },
+            limitations: [],
+          },
+        ],
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+    fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
+
+    const strongest = await screen.findByTestId("public-skill-strongest-project")
+    expect(strongest).toHaveTextContent("This skill is strongest in Skill Evidence Tracker")
+    expect(screen.getByTestId("public-strongest-project-link")).toHaveAttribute(
+      "href",
+      "/vbr/report/tok-abc",
+    )
+  })
+
+  it("public cross-links never point at private student routes (Phase 2)", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        featured_projects: [
+          {
+            ...makePublicPassport().featured_projects[0],
+            top_skills: [{ skill: "Python", status: "Demonstrated", skill_slug: "python" }],
+          },
+        ],
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    for (const a of Array.from(document.querySelectorAll("a"))) {
+      expect(a.getAttribute("href") ?? "").not.toMatch(/^\/student\//)
+    }
+  })
+
   it("never renders raw/private fields, numeric scores, /100, percentages, or 'fully verified'", async () => {
     vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
 
