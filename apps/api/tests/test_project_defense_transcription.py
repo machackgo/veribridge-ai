@@ -658,6 +658,221 @@ class TestLocalWhisperProviderUnit:
                 with pytest.raises(RuntimeError, match="Local Whisper transcription failed"):
                     svc.transcribe_audio(b"audio-bytes", "talk.wav")
 
+    def test_local_whisper_forces_configured_language(self):
+        """
+        For the MVP the configured language (default 'en') is forced — Whisper's
+        auto-detection is bypassed so short/quiet clips never misfire to obscure
+        low-confidence languages (e.g. 'nn'). The forced language is passed to
+        model.transcribe() and reported back on the result.
+        """
+        import app.services.transcription_service as svc
+
+        mock_fw = _make_mock_faster_whisper(["I built a data pipeline."])
+        # Give the info object a bogus auto-detected language to prove it is NOT used.
+        mock_fw.WhisperModel.return_value.transcribe.return_value = (
+            mock_fw.WhisperModel.return_value.transcribe.return_value[0],
+            MagicMock(language="nn"),
+        )
+
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw}):
+            with patch.object(svc, "_PROVIDER", "local_whisper"), \
+                 patch.object(svc, "_LOCAL_WHISPER_LANGUAGE", "en"):
+                result = svc.transcribe_audio(b"quiet-audio-bytes", "defense.webm")
+
+        # The forced language is what gets sent to Whisper AND reported back —
+        # never the low-confidence auto-detected 'nn'.
+        _args, kwargs = mock_fw.WhisperModel.return_value.transcribe.call_args
+        assert kwargs.get("language") == "en"
+        assert result.language == "en"
+
+    def test_local_whisper_auto_detects_when_language_unset(self):
+        """
+        Setting LOCAL_WHISPER_LANGUAGE="" restores Whisper auto-detection:
+        language=None is passed to transcribe() and the detected language is used.
+        """
+        import app.services.transcription_service as svc
+
+        mock_fw = _make_mock_faster_whisper(["Segment text."])
+        mock_fw.WhisperModel.return_value.transcribe.return_value = (
+            mock_fw.WhisperModel.return_value.transcribe.return_value[0],
+            MagicMock(language="es"),
+        )
+
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw}):
+            with patch.object(svc, "_PROVIDER", "local_whisper"), \
+                 patch.object(svc, "_LOCAL_WHISPER_LANGUAGE", ""):
+                result = svc.transcribe_audio(b"audio-bytes", "clip.webm")
+
+        _args, kwargs = mock_fw.WhisperModel.return_value.transcribe.call_args
+        assert kwargs.get("language") is None
+        assert result.language == "es"
+
+
+class TestMediaClassificationAndNormalization:
+    """Content-type-first media classification + video/webm normalization.
+
+    Root cause these cover: VBR Project Defense records a combined screen+mic
+    ``video/webm`` (VP8/VP9 + Opus). Before this fix a bare ``.webm`` was mapped
+    to audio and handed straight to faster-whisper, which crashed on the video
+    container. Now the caller's content_type routes video/webm through ffmpeg
+    audio extraction to clean 16 kHz mono WAV, while audio/webm (Extension Proof
+    microphone recordings) is still decoded directly.
+    """
+
+    def test_is_video_input_classifier(self):
+        from app.services.transcription_service import _is_video_input
+
+        # content_type wins and disambiguates .webm
+        assert _is_video_input("full.webm", "video/webm") is True
+        assert _is_video_input("rec.webm", "audio/webm") is False
+        assert _is_video_input("demo.mp4", "video/mp4") is True
+        assert _is_video_input("clip.mov", "video/quicktime") is True
+        # No content_type → conservative extension fallback
+        assert _is_video_input("demo.mp4", None) is True
+        assert _is_video_input("clip.mov", None) is True
+        # Bare .webm with no content_type stays audio (Extension Proof default)
+        assert _is_video_input("recording.webm", None) is False
+        assert _is_video_input("voice.mp3", None) is False
+        assert _is_video_input("voice.wav", None) is False
+
+    def test_transcribe_audio_forwards_content_type_to_local_whisper(self):
+        """transcribe_audio must forward content_type to the local provider."""
+        import app.services.transcription_service as svc
+
+        captured: dict = {}
+
+        def _spy(file_bytes, filename, content_type=None):
+            captured["content_type"] = content_type
+            return TranscriptionResult(transcript_text="ok", provider_used="local_whisper")
+
+        with patch.object(svc, "_PROVIDER", "local_whisper"), \
+             patch.object(svc, "_transcribe_local_whisper", _spy):
+            svc.transcribe_audio(b"bytes", "full.webm", content_type="video/webm")
+
+        assert captured["content_type"] == "video/webm"
+
+    def test_video_webm_triggers_ffmpeg_extraction_to_wav(self):
+        """video/webm → ffmpeg extracts + normalizes to 16 kHz mono WAV, and the
+        extracted WAV path (not the original webm) is handed to Whisper."""
+        import app.services.transcription_service as svc
+
+        mock_fw = _make_mock_faster_whisper(["Candidate explained the architecture."])
+        mock_run = MagicMock(return_value=MagicMock(returncode=0, stderr=b""))
+
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw}), \
+             patch.object(svc, "_PROVIDER", "local_whisper"), \
+             patch("subprocess.run", mock_run):
+            result = svc.transcribe_audio(
+                b"fake-video-webm-bytes", "full.webm", content_type="video/webm"
+            )
+
+        assert result.provider_used == "local_whisper"
+        assert "architecture" in result.transcript_text
+
+        # ffmpeg was invoked with the expected normalization parameters.
+        mock_run.assert_called_once()
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == "ffmpeg"
+        assert "-vn" in argv                 # drop the video stream
+        assert "16000" in argv               # 16 kHz (Whisper native)
+        assert "1" in argv and "-ac" in argv  # mono
+        assert "wav" in argv                 # WAV output
+
+        # Whisper received the extracted WAV, not the raw .webm container.
+        whisper_input = mock_fw.WhisperModel.return_value.transcribe.call_args[0][0]
+        assert whisper_input.endswith("audio_extracted.wav")
+
+    def test_audio_webm_is_decoded_directly_no_ffmpeg(self):
+        """audio/webm (Extension Proof mic recording) must NOT invoke ffmpeg."""
+        import app.services.transcription_service as svc
+
+        mock_fw = _make_mock_faster_whisper(["I built the API layer."])
+
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw}), \
+             patch.object(svc, "_PROVIDER", "local_whisper"), \
+             patch("subprocess.run", side_effect=AssertionError("ffmpeg must not run")) as mock_sp:
+            result = svc.transcribe_audio(b"mic-webm", "rec.webm", content_type="audio/webm")
+
+        mock_sp.assert_not_called()
+        assert "API layer" in result.transcript_text
+
+    def test_bare_webm_without_content_type_is_conservatively_audio(self):
+        """.webm with no content_type stays on the audio path (no ffmpeg) —
+        preserves prior Extension Proof behaviour and stays safe."""
+        import app.services.transcription_service as svc
+
+        mock_fw = _make_mock_faster_whisper(["Segment."])
+
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw}), \
+             patch.object(svc, "_PROVIDER", "local_whisper"), \
+             patch("subprocess.run", side_effect=AssertionError("ffmpeg must not run")) as mock_sp:
+            svc.transcribe_audio(b"webm", "recording.webm")
+
+        mock_sp.assert_not_called()
+
+    def test_video_webm_missing_ffmpeg_raises_unavailable(self):
+        """video/webm with ffmpeg absent → TranscriptionUnavailableError (safe
+        fallback), never a raw crash."""
+        import app.services.transcription_service as svc
+
+        mock_fw = _make_mock_faster_whisper(["Unreachable."])
+
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw}), \
+             patch.object(svc, "_PROVIDER", "local_whisper"), \
+             patch("subprocess.run", side_effect=FileNotFoundError("ffmpeg not found")):
+            with pytest.raises(svc.TranscriptionUnavailableError, match="ffmpeg"):
+                svc.transcribe_audio(b"video-webm", "full.webm", content_type="video/webm")
+
+
+class TestAudioStreamSummary:
+    """Unit tests for the safe ffmpeg audio-stream diagnostic parser.
+
+    This is server-side-only telemetry used to investigate whether a screen+mic
+    recording actually carried a microphone/audio track. It must parse only
+    booleans/duration and never log the raw stderr (which contains temp paths),
+    and it must never raise.
+    """
+
+    def test_detects_audio_stream_and_duration(self, caplog):
+        import logging
+
+        from app.services.transcription_service import _log_audio_stream_summary
+
+        stderr = (
+            b"Input #0, matroska,webm, from '/tmp/whatever/full.webm':\n"
+            b"  Duration: 00:00:23.45, start: 0.000000, bitrate: 512 kb/s\n"
+            b"  Stream #0:0(eng): Video: vp9, yuv420p, 1280x720\n"
+            b"  Stream #0:1(eng): Audio: opus, 48000 Hz, mono, fltp\n"
+        )
+        with caplog.at_level(logging.INFO):
+            _log_audio_stream_summary(stderr)
+
+        assert "audio_stream_detected=True" in caplog.text
+        assert "duration_s=23.45" in caplog.text
+        # The raw stderr (with the temp path) must never be logged.
+        assert "/tmp/whatever/full.webm" not in caplog.text
+
+    def test_reports_missing_audio_stream(self, caplog):
+        import logging
+
+        from app.services.transcription_service import _log_audio_stream_summary
+
+        stderr = (
+            b"  Duration: 00:00:10.00, start: 0.000000, bitrate: 400 kb/s\n"
+            b"  Stream #0:0(eng): Video: vp9, yuv420p, 1280x720\n"
+        )
+        with caplog.at_level(logging.INFO):
+            _log_audio_stream_summary(stderr)
+
+        assert "audio_stream_detected=False" in caplog.text
+
+    def test_never_raises_on_garbage(self):
+        from app.services.transcription_service import _log_audio_stream_summary
+
+        # None and non-UTF-8 bytes must not raise.
+        _log_audio_stream_summary(None)
+        _log_audio_stream_summary(b"\xff\xfe not ffmpeg output")
+
 
 class TestCleanTranscript:
     """Unit tests for clean_transcript_for_project_defense()."""

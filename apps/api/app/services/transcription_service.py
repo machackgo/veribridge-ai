@@ -26,8 +26,10 @@ Optional system dependencies
 -----------------------------
 faster-whisper  — required for local_whisper; install with:
                   pip install faster-whisper
-ffmpeg          — required only for video files (mp4/mov) with local_whisper;
-                  audio formats (mp3/wav/webm/m4a) do not need it.
+ffmpeg          — required for video files (mp4/mov/video-webm) with
+                  local_whisper; the audio track is extracted and normalised to
+                  16 kHz mono WAV before Whisper runs.  Audio-only formats
+                  (mp3/wav/audio-webm/m4a) are passed straight through.
                   Install: brew install ffmpeg  /  apt install ffmpeg
 
 Design principles
@@ -73,10 +75,17 @@ _OPENAI_MODEL = settings.openai_transcription_model.strip()
 _LOCAL_WHISPER_MODEL_SIZE   = settings.local_whisper_model_size.strip()
 _LOCAL_WHISPER_DEVICE       = settings.local_whisper_device.strip()
 _LOCAL_WHISPER_COMPUTE_TYPE = settings.local_whisper_compute_type.strip()
+# Forced transcription language ("" → auto-detect). Defaults to English for the
+# Project Defense MVP so short/quiet clips do not misfire to obscure
+# low-confidence languages (e.g. 'nn'), which destabilises transcription.
+_LOCAL_WHISPER_LANGUAGE     = settings.local_whisper_language.strip().lower()
 
 _OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 
-# File extensions whose transcription requires ffmpeg audio extraction
+# File extensions that are UNAMBIGUOUSLY video containers. Used only when the
+# caller gives no content_type; a bare ".webm" is intentionally NOT here because
+# it is ambiguous (browser screen+mic recordings are video/webm while
+# microphone-only recordings are audio/webm) — see _is_video_input().
 _VIDEO_EXTS: frozenset[str] = frozenset({"mp4", "mov"})
 
 # MIME-type map (matches ALLOWED_MEDIA_EXTENSIONS in schemas)
@@ -170,7 +179,7 @@ def transcribe_audio(
         return _transcribe_openai(file_bytes, filename, content_type)
 
     if provider == "local_whisper":
-        return _transcribe_local_whisper(file_bytes, filename)
+        return _transcribe_local_whisper(file_bytes, filename, content_type)
 
     raise TranscriptionUnavailableError(
         f"Unknown transcription provider '{provider}'. "
@@ -207,6 +216,43 @@ def clean_transcript_for_project_defense(
     text = re.sub(r"\.{3,}", "…", text)           # long ellipsis → unicode …
     text = re.sub(r"([.!?])([A-Z])", r"\1 \2", text)  # missing space after sentence
     return text
+
+
+# ── Meaningful-speech detection ────────────────────────────────────────────────
+#
+# Whisper (local or API) run over a silent / near-silent recording does not
+# return an empty string — it emits punctuation-only segments, typically a run of
+# "." tokens ("00:00 .", "00:07 .", …). Those are NOT a successful transcript and
+# must never be persisted or shown as "Transcript saved". These helpers let a
+# caller distinguish real speech from that no-speech output before deciding
+# success.
+
+# Minimum number of meaningful (alphanumeric-bearing) words a transcript must
+# contain to be treated as real speech. Below this we treat the output as
+# no-speech / punctuation-only and fail safely.
+MEANINGFUL_WORD_THRESHOLD = 3
+
+# Runs of letters/digits (Unicode-aware, underscore excluded). Punctuation-only
+# or whitespace-only tokens (".", "...", "?!", "-") produce zero matches, so a
+# dot-only transcript counts as zero meaningful words.
+_MEANINGFUL_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def count_meaningful_words(text: str) -> int:
+    """Count words that contain at least one letter or digit.
+
+    Punctuation-only / whitespace-only output yields 0 (e.g. Whisper's "."
+    no-speech segments). Used to tell a real transcript apart from a no-speech
+    result before it is persisted as a success.
+    """
+    if not text:
+        return 0
+    return len(_MEANINGFUL_WORD_RE.findall(text))
+
+
+def is_meaningful_transcript(text: str, threshold: int = MEANINGFUL_WORD_THRESHOLD) -> bool:
+    """True when ``text`` contains at least ``threshold`` meaningful words."""
+    return count_meaningful_words(text) >= threshold
 
 
 # ── OpenAI provider ───────────────────────────────────────────────────────────
@@ -275,9 +321,34 @@ def _transcribe_openai(
 
 # ── local_whisper provider ────────────────────────────────────────────────────
 
+def _is_video_input(filename: str, content_type: str | None) -> bool:
+    """Decide whether media needs ffmpeg audio extraction before Whisper.
+
+    content_type wins when present: ``video/*`` → video, ``audio/*`` → audio.
+    This is what disambiguates ``.webm``: a browser screen+mic recording arrives
+    as ``video/webm`` (VP8/VP9 video + Opus audio) and MUST have its audio track
+    extracted, while a microphone-only recording arrives as ``audio/webm`` and
+    can be decoded directly.
+
+    Only when there is NO content_type do we fall back to the file extension, and
+    there we stay conservative: just the unambiguous video containers (mp4/mov)
+    are treated as video. A bare ``.webm`` with no content_type is treated as
+    audio (the Extension Proof microphone default) so existing behaviour is
+    preserved.
+    """
+    ct = (content_type or "").strip().lower()
+    if ct.startswith("video/"):
+        return True
+    if ct.startswith("audio/"):
+        return False
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return ext in _VIDEO_EXTS
+
+
 def _transcribe_local_whisper(
     file_bytes: bytes,
     filename: str,
+    content_type: str | None = None,
 ) -> TranscriptionResult:
     """
     Transcribe using faster-whisper running locally on CPU or GPU.
@@ -285,10 +356,16 @@ def _transcribe_local_whisper(
     Requires:
       pip install faster-whisper
 
-    For video files (mp4/mov), requires ffmpeg to extract the audio track first:
+    Video inputs (mp4/mov and browser ``video/webm`` screen+mic recordings)
+    require ffmpeg: the audio track is extracted and normalised to 16 kHz mono
+    WAV before Whisper runs.  Classification is content_type-first via
+    ``_is_video_input`` — this is what lets a VBR ``video/webm`` recording be
+    handled as video while an Extension Proof ``audio/webm`` recording is decoded
+    directly.
+
       brew install ffmpeg   /   apt install ffmpeg
 
-    Audio files (mp3/wav/webm/m4a) are passed directly to Whisper — no ffmpeg needed.
+    Audio inputs (mp3/wav/audio-webm/m4a) are passed directly to Whisper.
     """
     # ── Check optional dependency ─────────────────────────────────────────────
     try:
@@ -303,18 +380,23 @@ def _transcribe_local_whisper(
     import subprocess
     import tempfile
 
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "wav"
+    # Keep the original extension on the temp input file so ffmpeg (and Whisper's
+    # own decoder for the audio path) can identify the container.
+    safe_name = os.path.basename(filename) or "input"
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        input_path = os.path.join(tmpdir, filename)
+        input_path = os.path.join(tmpdir, safe_name)
         with open(input_path, "wb") as fh:
             fh.write(file_bytes)
 
-        # ── Video → audio extraction via ffmpeg ───────────────────────────────
-        if ext in _VIDEO_EXTS:
+        # ── Video → audio extraction + normalisation via ffmpeg ───────────────
+        # content_type-first so a browser video/webm (screen+mic) recording is
+        # extracted to clean 16 kHz mono WAV instead of being handed to Whisper
+        # as an undecodable video container.
+        if _is_video_input(filename, content_type):
             audio_path = os.path.join(tmpdir, "audio_extracted.wav")
             try:
-                subprocess.run(
+                extract = subprocess.run(
                     [
                         "ffmpeg", "-y",
                         "-i", input_path,
@@ -328,6 +410,12 @@ def _transcribe_local_whisper(
                     capture_output=True,
                     timeout=120,
                 )
+                # Server-side diagnostic only: did the recording actually carry a
+                # microphone/audio stream, and how long is it? A screen capture
+                # with no mic track produces silence → a no-speech transcript.
+                # We log booleans/duration parsed from ffmpeg's probe output; we
+                # never log the raw stderr (it contains temp file paths).
+                _log_audio_stream_summary(extract.stderr)
             except FileNotFoundError:
                 raise TranscriptionUnavailableError(
                     "Video transcription requires ffmpeg. "
@@ -348,19 +436,37 @@ def _transcribe_local_whisper(
             audio_path = input_path
 
         # ── Whisper transcription ─────────────────────────────────────────────
+        # Force a language (default English for the MVP) so short/quiet clips do
+        # not misfire to obscure low-confidence languages; language=None restores
+        # Whisper auto-detection.
+        forced_language = _LOCAL_WHISPER_LANGUAGE or None
         try:
             model = WhisperModel(
                 _LOCAL_WHISPER_MODEL_SIZE,
                 device=_LOCAL_WHISPER_DEVICE,
                 compute_type=_LOCAL_WHISPER_COMPUTE_TYPE,
             )
-            segments_iter, info = model.transcribe(audio_path, beam_size=5, word_timestamps=False)
+            segments_iter, info = model.transcribe(
+                audio_path,
+                language=forced_language,
+                beam_size=5,
+                word_timestamps=False,
+            )
             # Materialise the generator so we can iterate twice
             raw_segments = list(segments_iter)
             raw_text = " ".join(seg.text for seg in raw_segments).strip()
-            detected_language: str | None = getattr(info, "language", None)
+            detected_language: str | None = forced_language or getattr(info, "language", None)
         except Exception as exc:
-            logger.error("local_whisper transcription error: %s", exc)
+            # logger.exception records the full traceback for local/server debugging.
+            # The message contains no transcript text, storage paths, or signed URLs.
+            logger.exception(
+                "local_whisper transcription failed (stage=transcribe, model=%s, device=%s, "
+                "compute_type=%s, language=%s)",
+                _LOCAL_WHISPER_MODEL_SIZE,
+                _LOCAL_WHISPER_DEVICE,
+                _LOCAL_WHISPER_COMPUTE_TYPE,
+                forced_language or "auto",
+            )
             raise RuntimeError(
                 f"Local Whisper transcription failed: {exc}. "
                 "Try again or paste your transcript manually."
@@ -397,3 +503,37 @@ def _guess_mime(filename: str) -> str:
     """Infer MIME type from filename extension."""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     return _MIME_MAP.get(ext, "application/octet-stream")
+
+
+# ffmpeg prints stream/duration info to stderr, e.g.
+#   Duration: 00:00:23.45, start: ...
+#   Stream #0:1(eng): Audio: opus, 48000 Hz, mono ...
+_FFMPEG_AUDIO_STREAM_RE = re.compile(r"Stream #\d+:\d+.*: Audio:", re.IGNORECASE)
+_FFMPEG_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def _log_audio_stream_summary(stderr: bytes | None) -> None:
+    """Log a safe yes/no audio-stream + duration summary from ffmpeg stderr.
+
+    Diagnostics only — used to investigate whether a screen+mic recording
+    actually carried a microphone/audio track (a mic-less screen capture
+    produces silence → a no-speech transcript). Only parsed booleans and a
+    duration are logged; the raw stderr (which contains temp file paths) is
+    never logged, and nothing here reaches any API response. Never raises.
+    """
+    try:
+        text = (stderr or b"").decode(errors="replace")
+        audio_stream_detected = bool(_FFMPEG_AUDIO_STREAM_RE.search(text))
+        duration_match = _FFMPEG_DURATION_RE.search(text)
+        duration_s: float | None = None
+        if duration_match:
+            hours, minutes, seconds = duration_match.groups()
+            duration_s = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        logger.info(
+            "audio extraction summary (stage=ffmpeg_extract, audio_stream_detected=%s, duration_s=%s)",
+            audio_stream_detected,
+            f"{duration_s:.2f}" if duration_s is not None else "unknown",
+        )
+    except Exception:
+        # A diagnostic log must never break transcription.
+        logger.debug("audio extraction summary parse skipped", exc_info=True)

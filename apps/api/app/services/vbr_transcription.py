@@ -36,11 +36,22 @@ _NOT_CONFIGURED_MESSAGE = "Transcription provider is not configured. Use manual 
 _TRANSCRIPTION_FAILED_MESSAGE = (
     "Transcription failed. Please try again later or use the manual transcript fallback."
 )
+_NO_SPEECH_MESSAGE = (
+    "No useful speech was detected. Please retry with clearer audio or use the "
+    "manual transcript fallback."
+)
 
 __all__ = [
     "TranscriptResult",
+    "get_session_transcript",
     "transcribe_session",
 ]
+
+# Owner-only private preview cap. The private recorder/workspace page may show
+# the student their own transcript, but we never render an unbounded blob — this
+# keeps the payload small and predictable. This is the OWNER view only; the
+# public report path sanitizes independently and never receives raw text.
+_PREVIEW_CHAR_LIMIT = 4000
 
 
 @dataclass
@@ -211,6 +222,25 @@ def _delete_transcript_segments(db: Any, transcript_id: str) -> None:
     db.table(_TRANSCRIPT_SEGMENTS_TABLE).delete().eq("transcript_id", transcript_id).execute()
 
 
+def _list_transcript_segments(db: Any, transcript_id: str) -> list[dict[str, Any]]:
+    if isinstance(db, dict):
+        rows = [
+            row
+            for row in db.setdefault(_TRANSCRIPT_SEGMENTS_TABLE, {}).values()
+            if str(row.get("transcript_id")) == transcript_id
+        ]
+        return sorted(rows, key=lambda row: float(row.get("start_s") or 0.0))
+
+    result = (
+        db.table(_TRANSCRIPT_SEGMENTS_TABLE)
+        .select("*")
+        .eq("transcript_id", transcript_id)
+        .order("start_s")
+        .execute()
+    )
+    return getattr(result, "data", []) or []
+
+
 def _insert_transcript_segments(
     db: Any, transcript_id: str, segments: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -325,13 +355,25 @@ def transcribe_session(db: Any, session_id: str, user_id: str) -> dict[str, Any]
         )
 
     from app.services.transcription_service import (
+        MEANINGFUL_WORD_THRESHOLD,
         TranscriptionUnavailableError,
+        count_meaningful_words,
         transcribe_audio,
     )
 
+    # The processed full-session recording is a browser screen+mic capture
+    # (VP8/VP9 video + Opus audio) uploaded as video/webm. Passing the content
+    # type explicitly is what routes it through the shared provider's ffmpeg
+    # audio-extraction path instead of being handed to Whisper as an
+    # undecodable video container. Prefer a recorded content type from media
+    # telemetry if present, else default to video/webm.
+    full_video_content_type = full_video.get("content_type") or "video/webm"
+
     try:
         video_bytes = _download_full_video_bytes(db, storage_path)
-        tx_result = transcribe_audio(video_bytes, "full.webm")
+        tx_result = transcribe_audio(
+            video_bytes, "full.webm", content_type=full_video_content_type
+        )
     except TranscriptionUnavailableError:
         _mark_session_transcript_status(db, session_id, "not_configured")
         return {
@@ -346,7 +388,11 @@ def transcribe_session(db: Any, session_id: str, user_id: str) -> dict[str, Any]
         }
     except RuntimeError as exc:
         _mark_session_transcript_status(db, session_id, "failed")
-        logger.warning(
+        # logger.exception captures the full traceback + provider error text for
+        # local/server debugging. It contains no transcript text, storage paths,
+        # or signed URLs — and the client still only receives the safe message
+        # below, so raw internals are never exposed.
+        logger.exception(
             "[VBR] Transcription failed for session %s "
             "(stage=transcribe, provider=%s, exc_type=%s)",
             session_id,
@@ -357,6 +403,49 @@ def transcribe_session(db: Any, session_id: str, user_id: str) -> dict[str, Any]
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={"code": "vbr_transcription_failed", "message": _TRANSCRIPTION_FAILED_MESSAGE},
         ) from exc
+
+    # ── No-speech / punctuation-only guard ────────────────────────────────────
+    # Whisper over a silent or near-silent recording does not error — it emits
+    # punctuation-only segments (a run of "." tokens: "00:00 .", "00:07 .", …).
+    # That is NOT a successful transcript: persisting it would show the student
+    # "Transcript saved" over meaningless dots. We measure meaningful
+    # (alphanumeric) words across the provider's full text AND its raw segment
+    # texts; below the threshold we fail safely with a no_speech status so the UI
+    # offers retry / manual fallback instead of a false success.
+    # Take the max of the two sources rather than summing — a provider usually
+    # returns the same content in both full_text and its segments, so summing
+    # would double-count and inflate borderline low-word output past the gate.
+    segment_source_text = " ".join(seg.text for seg in tx_result.transcript_segments)
+    meaningful_word_count = max(
+        count_meaningful_words(tx_result.transcript_text),
+        count_meaningful_words(segment_source_text),
+    )
+    raw_segment_count = len(tx_result.transcript_segments)
+    punctuation_only = meaningful_word_count < MEANINGFUL_WORD_THRESHOLD
+
+    # Server-side diagnostics only — counts and a boolean, never transcript text,
+    # storage paths, or provider traces.
+    logger.info(
+        "[VBR] Transcript speech check for session %s "
+        "(meaningful_word_count=%d, segment_count=%d, punctuation_only=%s)",
+        session_id,
+        meaningful_word_count,
+        raw_segment_count,
+        punctuation_only,
+    )
+
+    if punctuation_only:
+        _mark_session_transcript_status(db, session_id, "no_speech")
+        return {
+            "session_id": session_id,
+            "status": "no_speech",
+            "transcript_id": None,
+            "segment_count": 0,
+            "duration_s": None,
+            "provider": tx_result.provider_used,
+            "configured": True,
+            "message": _NO_SPEECH_MESSAGE,
+        }
 
     language = tx_result.language or "en"
     segments = [
@@ -416,4 +505,73 @@ def transcribe_session(db: Any, session_id: str, user_id: str) -> dict[str, Any]
         "provider": tx_result.provider_used,
         "configured": True,
         "message": f"Transcript generated using {tx_result.provider_used}.",
+    }
+
+
+def get_session_transcript(db: Any, session_id: str, user_id: str) -> dict[str, Any]:
+    """Return the owner's private transcript preview for a session.
+
+    Owner-scoped: ``get_owned_vbr_session_or_404`` enforces that only the
+    student who owns the session can read it. This powers the private recorder /
+    workspace page so the student can see and confirm their generated transcript
+    (rule: the private owner page may show a transcript preview). The public
+    recruiter report is served by a separate, sanitized code path and never uses
+    this function — no raw transcript is ever exposed publicly here.
+
+    Returns the persisted transcript text (capped at ``_PREVIEW_CHAR_LIMIT``)
+    plus its timestamped segments. If no transcript has been generated yet, the
+    status reflects telemetry (e.g. ``not_generated``/``failed``) and the
+    ``segments``/``preview_text`` are empty rather than raising.
+    """
+    session, _project = get_owned_vbr_session_or_404(db, session_id, user_id)
+
+    telemetry = session.get("telemetry") or {}
+    transcript_meta = telemetry.get("transcript") or {}
+    status_value = transcript_meta.get("status") or "not_generated"
+
+    transcript = _get_transcript_by_session(db, session_id)
+    if transcript is None:
+        return {
+            "session_id": session_id,
+            "status": status_value,
+            "transcript_id": None,
+            "provider": transcript_meta.get("provider"),
+            "language": None,
+            "segment_count": 0,
+            "duration_s": transcript_meta.get("duration_s"),
+            "preview_text": "",
+            "truncated": False,
+            "segments": [],
+        }
+
+    transcript_id = str(transcript["id"])
+    segment_rows = _list_transcript_segments(db, transcript_id)
+    segments = [
+        {
+            "start_s": float(row.get("start_s") or 0.0),
+            "end_s": float(row.get("end_s") or 0.0),
+            "text": row.get("text") or "",
+        }
+        for row in segment_rows
+    ]
+
+    full_text = transcript.get("full_text") or ""
+    preview_text = full_text[:_PREVIEW_CHAR_LIMIT]
+    truncated = len(full_text) > _PREVIEW_CHAR_LIMIT
+
+    duration_s = transcript_meta.get("duration_s")
+    if duration_s is None and segments:
+        duration_s = max((segment["end_s"] for segment in segments), default=0.0)
+
+    return {
+        "session_id": session_id,
+        "status": status_value,
+        "transcript_id": transcript_id,
+        "provider": transcript.get("provider") or transcript_meta.get("provider"),
+        "language": transcript.get("language"),
+        "segment_count": len(segments),
+        "duration_s": duration_s,
+        "preview_text": preview_text,
+        "truncated": truncated,
+        "segments": segments,
     }

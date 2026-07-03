@@ -13,6 +13,7 @@ import {
   attachProjectDefenseProofs,
   createProjectDefense,
   generateDefenseQuestions,
+  getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
   submitDefenseAnswers,
@@ -20,6 +21,7 @@ import {
   type DefenseAnalysisResponse,
   type ProjectDefenseContextResponse,
   type ProjectDefenseCreateResponse,
+  type ProjectDefenseMetadataResponse,
   type SubmitDefenseAnswersResponse,
   type VBRRecordingReadinessResponse,
   type VBRSessionQuestionResponse,
@@ -1231,6 +1233,52 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
         setWebsiteProofs(websites)
       })
       .catch((e: Error) => setLoadError(e.message))
+  }, [])
+
+  // Resume an existing workspace when returning from the recorder page.
+  // The recorder links back with ?projectId=&sessionId= so this page shows the
+  // same saved Project Defense (title, questions, recording/analysis steps)
+  // instead of a blank Step A form. Browser-only; no-op when the params are
+  // absent, so the normal "create a new defense" flow is unchanged.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    const projectId = params.get("projectId")
+    const resumeSessionId = params.get("sessionId")
+    if (!projectId) return
+
+    let active = true
+    ;(async () => {
+      try {
+        const project = await getVBRProject(projectId)
+        if (!active || !project) return
+        const rawMeta = (project.metadata ?? {}) as Partial<ProjectDefenseMetadataResponse>
+        const metadata: ProjectDefenseMetadataResponse = {
+          description: rawMeta.description ?? "",
+          claimed_skills: rawMeta.claimed_skills ?? [],
+          student_role: rawMeta.student_role ?? "",
+          individual_project_only: rawMeta.individual_project_only ?? true,
+          attached_proofs: rawMeta.attached_proofs ?? {},
+          phase: rawMeta.phase ?? "",
+        }
+        setCreated({ project, metadata })
+        // The resumed defense already exists — drop any stale working draft.
+        clearProjectDefenseDraft()
+
+        if (resumeSessionId) {
+          const session = await getVBRSession(resumeSessionId)
+          if (active && session) {
+            setSessionId(session.id)
+            setQuestions(session.questions)
+          }
+        }
+      } catch {
+        // Fall back to the normal (blank) create flow if the resume fails.
+      }
+    })()
+    return () => {
+      active = false
+    }
   }, [])
 
   // Restore a saved draft once on mount (browser-only). Selected proof IDs are

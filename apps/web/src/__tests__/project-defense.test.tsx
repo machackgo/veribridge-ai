@@ -26,6 +26,7 @@ vi.mock("@/lib/vbr-api", () => ({
   generateDefenseQuestions: vi.fn(),
   submitDefenseAnswers: vi.fn(),
   syncProjectDefenseToSkillGraph: vi.fn(),
+  getVBRProject: vi.fn(),
   getVBRSession: vi.fn(),
   getVBRSessionRecordingReadiness: vi.fn(),
 }))
@@ -49,6 +50,7 @@ import {
   generateDefenseQuestions,
   submitDefenseAnswers,
   syncProjectDefenseToSkillGraph,
+  getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
 } from "@/lib/vbr-api"
@@ -250,10 +252,13 @@ beforeEach(() => {
     code: null,
     message: "Recording upload storage is ready.",
   })
+  vi.mocked(getVBRProject).mockReset().mockResolvedValue(null)
   mockRouterPush.mockReset()
   // The panel now persists a draft to sessionStorage on every change; clear it
   // between tests so a draft from one test never rehydrates the next one's form.
   clearProjectDefenseDraft()
+  // Reset the URL so a resume test's ?projectId= never leaks into the next test.
+  window.history.replaceState({}, "", "/student/proofs/project-defense")
 })
 
 describe("ProjectDefensePanel", () => {
@@ -1888,6 +1893,40 @@ describe("ProjectDefensePanel", () => {
       expect(safeReturnTo("javascript:alert(1)")).toBeNull()
       expect(safeReturnTo("/student/proofs/project-defense")).toBe("/student/proofs/project-defense")
     })
+  })
+})
+
+describe("ProjectDefensePanel resume from recorder", () => {
+  it("rehydrates the saved workspace from ?projectId=&sessionId= instead of a blank form", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/student/proofs/project-defense?projectId=proj-1&sessionId=sess-1"
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(makeCreated().project)
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "recording", questions: makeQuestions().questions })
+    )
+
+    render(<ProjectDefensePanel />)
+
+    // The resumed project title appears (workspace view), and the blank Step A
+    // "Project title *" input is no longer shown.
+    expect(await screen.findByText("Skill Evidence Tracker")).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/skill evidence tracker/i)).not.toBeInTheDocument()
+    expect(getVBRProject).toHaveBeenCalledWith("proj-1")
+
+    // The restored session's questions are visible (workspace, not blank form).
+    expect(
+      await screen.findByText(/describe the overall architecture/i)
+    ).toBeInTheDocument()
+  })
+
+  it("falls back to the blank create form when no projectId is present", async () => {
+    render(<ProjectDefensePanel />)
+
+    expect(await screen.findByPlaceholderText(/skill evidence tracker/i)).toBeInTheDocument()
+    expect(getVBRProject).not.toHaveBeenCalled()
   })
 })
 

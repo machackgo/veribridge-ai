@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useEffect, useRef, useState, type CSSProperties } from "react"
 import {
   cancelVBRSessionRecording,
@@ -8,6 +9,7 @@ import {
   getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
+  getVBRSessionTranscript,
   processVBRSession,
   requestVBRChunkUploadUrl,
   startVBRSession,
@@ -17,6 +19,7 @@ import {
   uploadVBRSessionChunk,
   type VBRProjectResponse,
   type VBRSessionDetailResponse,
+  type VBRSessionTranscriptResponse,
 } from "@/lib/vbr-api"
 
 type PreflightStatus = "idle" | "testing" | "granted" | "denied"
@@ -44,6 +47,7 @@ const TRANSCRIPT_STATUS_LABELS: Record<string, string> = {
   not_configured: "Provider not configured",
   transcribed: "Ready",
   failed: "Generation failed",
+  no_speech: "No clear speech detected",
 }
 
 // Preferred MediaRecorder mimeTypes, in order of preference. Browsers vary in
@@ -225,6 +229,12 @@ export function VBRSessionRecorder({
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
   const [transcriptMessage, setTranscriptMessage] = useState<string | null>(null)
 
+  // Owner-only private transcript preview (fetched separately from the
+  // transcribe POST, whose response deliberately omits transcript text).
+  const [transcript, setTranscript] = useState<VBRSessionTranscriptResponse | null>(null)
+  const [transcriptPreviewLoading, setTranscriptPreviewLoading] = useState(false)
+  const [transcriptPreviewError, setTranscriptPreviewError] = useState<string | null>(null)
+
 
   const [telemetryStatus, setTelemetryStatus] = useState<string | null>(null)
   const [telemetryError, setTelemetryError] = useState<string | null>(null)
@@ -331,6 +341,16 @@ export function VBRSessionRecorder({
     const id = setInterval(tick, 1000)
     return () => clearInterval(id)
   }, [session?.status, session?.started_at, session?.duration_s])
+
+  // When the session is already transcribed (e.g. the student navigated back to
+  // this page after generating a transcript), load the saved transcript preview
+  // so it renders without requiring a re-run.
+  useEffect(() => {
+    if (session?.transcript_status !== "transcribed") return
+    if (transcript || transcriptPreviewLoading) return
+    loadTranscriptPreview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.transcript_status])
 
   async function refreshSession() {
     try {
@@ -676,6 +696,19 @@ export function VBRSessionRecorder({
   }
 
 
+  async function loadTranscriptPreview() {
+    setTranscriptPreviewLoading(true)
+    setTranscriptPreviewError(null)
+    try {
+      const data = await getVBRSessionTranscript(sessionId)
+      setTranscript(data)
+    } catch (err) {
+      setTranscriptPreviewError(err instanceof Error ? err.message : "Failed to load the saved transcript.")
+    } finally {
+      setTranscriptPreviewLoading(false)
+    }
+  }
+
   async function handleGenerateTranscript() {
     setTranscriptLoading(true)
     setTranscriptError(null)
@@ -685,7 +718,20 @@ export function VBRSessionRecorder({
         await processVBRSession(sessionId)
       }
       const result = await transcribeVBRSession(sessionId)
-      setTranscriptMessage(result.message)
+      if (result.status === "transcribed") {
+        // Real speech was transcribed — show the success message and preview.
+        setTranscriptMessage(result.message)
+        await loadTranscriptPreview()
+      } else if (result.status === "not_configured") {
+        // No provider configured is a safe, informational fallback — not a
+        // success and not an error.
+        setTranscriptMessage(result.message)
+      } else {
+        // "no_speech" (punctuation-only / silent recording) or any other
+        // non-success status is a failure: surface retry / manual fallback and
+        // never render the "Transcript saved" preview.
+        setTranscriptError(result.message)
+      }
     } catch (err) {
       setTranscriptError(err instanceof Error ? err.message : "Failed to generate transcript.")
     } finally {
@@ -1049,12 +1095,25 @@ export function VBRSessionRecorder({
             disabled={transcriptLoading}
             onClick={handleGenerateTranscript}
           >
-            {transcriptLoading ? "Generating transcript…" : "Generate transcript"}
+            {transcriptLoading
+              ? "Generating transcript…"
+              : session.transcript_status === "failed" ||
+                  session.transcript_status === "no_speech" ||
+                  transcriptError
+                ? "Retry transcript generation"
+                : "Generate transcript"}
           </button>
           {transcriptMessage && (
             <p style={{ fontSize: 12, color: "var(--emerald)", marginTop: 8 }}>{transcriptMessage}</p>
           )}
-          {transcriptError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{transcriptError}</p>}
+          {transcriptError && (
+            <div data-testid="vbr-transcript-error">
+              <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8, marginBottom: 4 }}>{transcriptError}</p>
+              <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 0 }}>
+                Please retry, or paste your explanation using the manual transcript fallback.
+              </p>
+            </div>
+          )}
 
           {session.transcript_status === "transcribed" && (
             <div style={{ marginTop: 12 }} data-testid="vbr-video-evidence-preview">
@@ -1078,6 +1137,112 @@ export function VBRSessionRecorder({
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {session.transcript_status === "transcribed" && (
+            <div style={{ marginTop: 16 }} data-testid="vbr-transcript-preview">
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div style={{ ...sectionTitleStyle, margin: 0 }}>Your transcript</div>
+                <span style={{ fontSize: 12, color: "var(--emerald)", fontWeight: 600 }}>✓ Transcript saved</span>
+              </div>
+              <p style={{ fontSize: 11, color: "var(--muted)", marginTop: 0, marginBottom: 8 }}>
+                This preview is private to you. It is never shown on your public report.
+              </p>
+
+              {transcriptPreviewLoading && (
+                <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>Loading transcript…</p>
+              )}
+
+              {transcriptPreviewError && (
+                <div style={{ marginTop: 4 }}>
+                  <p style={{ fontSize: 12, color: "var(--rose)", margin: "0 0 8px" }}>{transcriptPreviewError}</p>
+                  <button type="button" style={buttonStyle} onClick={loadTranscriptPreview}>
+                    Reload transcript
+                  </button>
+                </div>
+              )}
+
+              {!transcriptPreviewLoading && !transcriptPreviewError && transcript && (
+                transcript.segments.length > 0 ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      maxHeight: 260,
+                      overflowY: "auto",
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      padding: 10,
+                      background: "var(--bg-2)",
+                    }}
+                  >
+                    {transcript.segments.map((segment, i) => (
+                      <div
+                        key={`${segment.start_s}-${i}`}
+                        data-testid="vbr-transcript-segment"
+                        style={{ fontSize: 12, color: "var(--ink)", display: "flex", gap: 8, alignItems: "baseline" }}
+                      >
+                        <span style={{ ...chipStyle, flexShrink: 0 }}>{formatDuration(segment.start_s)}</span>
+                        <span>{segment.text}</span>
+                      </div>
+                    ))}
+                    {transcript.truncated && (
+                      <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0" }}>
+                        Preview truncated — the full transcript is saved to your evidence.
+                      </p>
+                    )}
+                  </div>
+                ) : transcript.preview_text ? (
+                  <p
+                    data-testid="vbr-transcript-text"
+                    style={{
+                      fontSize: 12,
+                      color: "var(--ink)",
+                      whiteSpace: "pre-wrap",
+                      margin: 0,
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      padding: 10,
+                      background: "var(--bg-2)",
+                    }}
+                  >
+                    {transcript.preview_text}
+                    {transcript.truncated ? "…" : ""}
+                  </p>
+                ) : (
+                  <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>
+                    Transcript saved. No spoken text was detected in this recording.
+                  </p>
+                )
+              )}
+            </div>
+          )}
+
+          {variant === "project_defense" && session.transcript_status === "transcribed" && (
+            <div style={{ marginTop: 16 }} data-testid="vbr-transcript-next-actions">
+              <div style={{ ...sectionTitleStyle, marginBottom: 8 }}>Next steps</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                <Link
+                  href={`/student/proofs/project-defense?projectId=${encodeURIComponent(session.project_id)}&sessionId=${encodeURIComponent(session.id)}#analyze`}
+                  style={{ ...primaryButtonStyle, textDecoration: "none", display: "inline-block" }}
+                >
+                  Analyze Project Defense
+                </Link>
+                <Link
+                  href={`/student/proofs/project-defense?projectId=${encodeURIComponent(session.project_id)}&sessionId=${encodeURIComponent(session.id)}`}
+                  style={{ ...buttonStyle, textDecoration: "none", display: "inline-block" }}
+                >
+                  Return to Project Defense workspace
+                </Link>
+                <Link
+                  href={`/student/vbr/projects/${encodeURIComponent(session.project_id)}/report`}
+                  style={{ ...buttonStyle, textDecoration: "none", display: "inline-block" }}
+                >
+                  View Project Report
+                </Link>
+              </div>
             </div>
           )}
         </section>

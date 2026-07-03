@@ -328,6 +328,39 @@ export async function transcribeVBRSession(sessionId: string): Promise<VBRTransc
   return res.json()
 }
 
+export type VBRTranscriptSegment = {
+  start_s: number
+  end_s: number
+  text: string
+}
+
+/**
+ * Owner-only private transcript preview. Served to the student who owns the
+ * session so the recorder/workspace page can render their generated transcript.
+ * Never exposed on the public recruiter report (sanitized separately).
+ */
+export type VBRSessionTranscriptResponse = {
+  session_id: string
+  status: string
+  transcript_id: string | null
+  provider: string | null
+  language: string | null
+  segment_count: number
+  duration_s: number | null
+  preview_text: string
+  truncated: boolean
+  segments: VBRTranscriptSegment[]
+}
+
+/** Fetch the owner's private transcript preview for a session. */
+export async function getVBRSessionTranscript(
+  sessionId: string
+): Promise<VBRSessionTranscriptResponse> {
+  const res = await fetchAPI(`/api/v1/student/vbr/sessions/${encodeURIComponent(sessionId)}/transcript`)
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load transcript (HTTP ${res.status}).`))
+  return res.json()
+}
+
 // ─── Project Defense (Phase 1 — individual project defense) ────────────────
 
 export type ProjectDefenseAttachedProofsRequest = {

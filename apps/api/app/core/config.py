@@ -268,6 +268,15 @@ class Settings(BaseSettings):
         default="int8",
         alias="LOCAL_WHISPER_COMPUTE_TYPE",
     )
+    # Language forced for local_whisper transcription.
+    # For the Project Defense MVP we default to English rather than relying on
+    # Whisper's auto-detection, which on short/quiet clips misfires to obscure
+    # low-confidence languages (e.g. 'nn') and destabilises transcription.
+    # Set LOCAL_WHISPER_LANGUAGE="" (empty) to restore Whisper auto-detection.
+    local_whisper_language: str = Field(
+        default="en",
+        alias="LOCAL_WHISPER_LANGUAGE",
+    )
 
     # ── LLM Proof Synthesis Layer (Step 4) ───────────────────────────────────
     # Provider-agnostic, recruiter-readable synthesis of already-linked proof

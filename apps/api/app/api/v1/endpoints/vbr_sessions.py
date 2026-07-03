@@ -38,6 +38,7 @@ from app.schemas.vbr_sessions import (
     VBRReportUnpublishResponse,
     VBRSessionDetailResponse,
     VBRSessionResponse,
+    VBRSessionTranscriptResponse,
     VBRTelemetryRequest,
     VBRTelemetryResponse,
     VBRTranscriptionResponse,
@@ -54,7 +55,7 @@ from app.services.vbr_report_publish import (
     submit_report_review,
     unpublish_report,
 )
-from app.services.vbr_transcription import transcribe_session
+from app.services.vbr_transcription import get_session_transcript, transcribe_session
 from app.services.vbr_session_recording import (
     cancel_recording_session,
     check_recording_storage_readiness,
@@ -388,6 +389,20 @@ def transcribe_session_route(
 ) -> VBRTranscriptionResponse:
     result = transcribe_session(db, session_id, user_id)
     return VBRTranscriptionResponse(**result)
+
+
+@router.get(
+    "/{session_id}/transcript",
+    response_model=VBRSessionTranscriptResponse,
+    summary="Get the owner's private transcript preview for a session",
+)
+def get_session_transcript_route(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> VBRSessionTranscriptResponse:
+    result = get_session_transcript(db, session_id, user_id)
+    return VBRSessionTranscriptResponse(**result)
 
 
 @router.post(

@@ -8,6 +8,7 @@ import {
   getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
+  getVBRSessionTranscript,
   processVBRSession,
   requestVBRChunkUploadUrl,
   startVBRSession,
@@ -15,6 +16,7 @@ import {
   uploadVBRChunkBytes,
   uploadVBRSessionChunk,
   type VBRSessionDetailResponse,
+  type VBRSessionTranscriptResponse,
 } from "@/lib/vbr-api"
 
 vi.mock("@/lib/vbr-api", () => ({
@@ -23,6 +25,7 @@ vi.mock("@/lib/vbr-api", () => ({
   createVBRSessionConsent: vi.fn(),
   startVBRSession: vi.fn(),
   getVBRSessionRecordingReadiness: vi.fn(),
+  getVBRSessionTranscript: vi.fn(),
   cancelVBRSessionRecording: vi.fn(),
   requestVBRChunkUploadUrl: vi.fn(),
   uploadVBRChunkBytes: vi.fn(),
@@ -221,7 +224,30 @@ beforeEach(() => {
     code: null,
     message: "Recording upload storage is ready.",
   })
+
+  vi.mocked(getVBRSessionTranscript).mockResolvedValue(makeTranscript())
 })
+
+function makeTranscript(
+  overrides: Partial<VBRSessionTranscriptResponse> = {}
+): VBRSessionTranscriptResponse {
+  return {
+    session_id: "session-1",
+    status: "transcribed",
+    transcript_id: "transcript-1",
+    provider: "openai",
+    language: "en",
+    segment_count: 2,
+    duration_s: 20,
+    preview_text: "Candidate introduced the project. Candidate explained a decision.",
+    truncated: false,
+    segments: [
+      { start_s: 0, end_s: 8, text: "Candidate introduced the project." },
+      { start_s: 8, end_s: 20, text: "Candidate explained a decision." },
+    ],
+    ...overrides,
+  }
+}
 
 async function startRecordingSession(options?: { onBeforeStart?: () => void }) {
   const createdSession = makeSession({ status: "created" })
@@ -1009,6 +1035,50 @@ describe("Transcript generation", () => {
     expect(text).not.toMatch(/vbr\/sessions/)
   })
 
+  it("treats a no-speech (punctuation-only) result as a failure, not a saved transcript", async () => {
+    vi.mocked(getVBRSession)
+      .mockResolvedValueOnce(makeSession({ status: "processed", chunk_count: 1, transcript_status: null }))
+      .mockResolvedValue(makeSession({ status: "processed", chunk_count: 1, transcript_status: "no_speech" }))
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+    vi.mocked(transcribeVBRSession).mockResolvedValue({
+      session_id: "session-1",
+      status: "no_speech",
+      transcript_id: null,
+      segment_count: 0,
+      duration_s: null,
+      provider: "local_whisper",
+      configured: true,
+      message:
+        "No useful speech was detected. Please retry with clearer audio or use the manual transcript fallback.",
+    })
+
+    render(<VBRSessionRecorder sessionId="session-1" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate transcript" }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "No useful speech was detected. Please retry with clearer audio or use the manual transcript fallback."
+        )
+      ).toBeInTheDocument()
+    )
+
+    // Failure surface: the error/retry block, never the "Transcript saved" preview.
+    expect(screen.getByTestId("vbr-transcript-error")).toBeInTheDocument()
+    expect(screen.queryByText(/Transcript saved/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId("vbr-transcript-preview")).not.toBeInTheDocument()
+    // The owner transcript preview is never fetched for a no-speech result.
+    expect(getVBRSessionTranscript).not.toHaveBeenCalled()
+
+    // The action becomes a retry once the no_speech status is reflected.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Retry transcript generation" })).toBeInTheDocument()
+    )
+  })
+
   it("shows an error message if transcript generation fails", async () => {
     vi.mocked(getVBRSession).mockResolvedValue(
       makeSession({ status: "processed", chunk_count: 1, transcript_status: null })
@@ -1136,5 +1206,136 @@ describe("Transcript generation", () => {
     await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
 
     expect(screen.queryByTestId("vbr-video-evidence-preview")).not.toBeInTheDocument()
+  })
+})
+
+describe("Transcript preview and next actions", () => {
+  it("renders the saved transcript segments after generation succeeds", async () => {
+    vi.mocked(getVBRSession)
+      .mockResolvedValueOnce(makeSession({ status: "uploaded", chunk_count: 1, transcript_status: null }))
+      .mockResolvedValue(makeSession({ status: "processed", chunk_count: 1, transcript_status: "transcribed" }))
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+    vi.mocked(processVBRSession).mockResolvedValue({
+      session_id: "session-1",
+      status: "processed",
+      chunk_count: 1,
+      total_bytes: 2048,
+      full_video_bytes: 2048,
+      full_video_sha256: "abc123",
+      next_steps: [],
+      message: "Media processed.",
+    })
+    vi.mocked(transcribeVBRSession).mockResolvedValue({
+      session_id: "session-1",
+      status: "transcribed",
+      transcript_id: "transcript-1",
+      segment_count: 2,
+      duration_s: 20,
+      provider: "local_whisper",
+      configured: true,
+      message: "Transcript generated using local_whisper.",
+    })
+
+    render(<VBRSessionRecorder sessionId="session-1" variant="project_defense" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+    fireEvent.click(screen.getByRole("button", { name: "Generate transcript" }))
+
+    await waitFor(() => expect(getVBRSessionTranscript).toHaveBeenCalledWith("session-1"))
+
+    const preview = await screen.findByTestId("vbr-transcript-preview")
+    expect(within(preview).getByText(/Transcript saved/i)).toBeInTheDocument()
+    const segments = within(preview).getAllByTestId("vbr-transcript-segment")
+    expect(segments).toHaveLength(2)
+    expect(within(segments[0]).getByText(/Candidate introduced the project\./)).toBeInTheDocument()
+  })
+
+  it("shows the three next-action buttons with projectId/session context after transcription", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: "transcribed" })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+
+    render(<VBRSessionRecorder sessionId="session-1" variant="project_defense" />)
+
+    const actions = await screen.findByTestId("vbr-transcript-next-actions")
+
+    const analyze = within(actions).getByRole("link", { name: "Analyze Project Defense" })
+    const workspace = within(actions).getByRole("link", { name: "Return to Project Defense workspace" })
+    const report = within(actions).getByRole("link", { name: "View Project Report" })
+
+    expect(workspace).toHaveAttribute(
+      "href",
+      "/student/proofs/project-defense?projectId=project-1&sessionId=session-1"
+    )
+    expect(analyze.getAttribute("href")).toContain("projectId=project-1")
+    expect(analyze.getAttribute("href")).toContain("sessionId=session-1")
+    expect(report).toHaveAttribute("href", "/student/vbr/projects/project-1/report")
+  })
+
+  it("does not render the project-defense next actions for the walkthrough variant", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: "transcribed" })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+
+    render(<VBRSessionRecorder sessionId="session-1" variant="walkthrough" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript-preview")).toBeInTheDocument())
+    expect(screen.queryByTestId("vbr-transcript-next-actions")).not.toBeInTheDocument()
+  })
+
+  it("shows a reload button and no transcript text if the preview fails to load", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: "transcribed" })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+    vi.mocked(getVBRSessionTranscript)
+      .mockRejectedValueOnce(new Error("Failed to load transcript (HTTP 500)."))
+      .mockResolvedValue(makeTranscript())
+
+    render(<VBRSessionRecorder sessionId="session-1" variant="project_defense" />)
+
+    const preview = await screen.findByTestId("vbr-transcript-preview")
+    await waitFor(() =>
+      expect(within(preview).getByText("Failed to load transcript (HTTP 500).")).toBeInTheDocument()
+    )
+    expect(within(preview).queryByTestId("vbr-transcript-segment")).not.toBeInTheDocument()
+
+    fireEvent.click(within(preview).getByRole("button", { name: "Reload transcript" }))
+    await waitFor(() =>
+      expect(within(preview).getAllByTestId("vbr-transcript-segment").length).toBe(2)
+    )
+  })
+
+  it("does not render a transcript preview when the provider is not configured", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: null })
+    )
+    vi.mocked(getVBRProject).mockResolvedValue(null)
+    vi.mocked(transcribeVBRSession).mockResolvedValue({
+      session_id: "session-1",
+      status: "not_configured",
+      transcript_id: null,
+      segment_count: 0,
+      duration_s: null,
+      provider: null,
+      configured: false,
+      message: "Transcription provider is not configured. Use manual transcript fallback.",
+    })
+
+    render(<VBRSessionRecorder sessionId="session-1" variant="project_defense" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+    fireEvent.click(screen.getByRole("button", { name: "Generate transcript" }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Transcription provider is not configured. Use manual transcript fallback.")
+      ).toBeInTheDocument()
+    )
+    expect(getVBRSessionTranscript).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("vbr-transcript-preview")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("vbr-transcript-next-actions")).not.toBeInTheDocument()
   })
 })
