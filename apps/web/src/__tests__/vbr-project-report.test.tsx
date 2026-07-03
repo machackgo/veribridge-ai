@@ -388,6 +388,24 @@ describe("ProjectReportView", () => {
     expect(raw).not.toMatch(/trust score/i)
   })
 
+  it("links each skill matrix row to its full Skill Report (Phase 2)", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        skill_evidence: [
+          { skill: "Python", status: "Demonstrated", evidence_chip_count: 2, notes: "" },
+          { skill: "Machine Learning", status: "Supporting evidence", evidence_chip_count: 1, notes: "" },
+        ],
+      })
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+
+    const links = await screen.findAllByTestId("matrix-skill-report-link")
+    expect(links).toHaveLength(2)
+    expect(links[0]).toHaveAttribute("href", "/student/vbr/passport/skills/python")
+    expect(links[1]).toHaveAttribute("href", "/student/vbr/passport/skills/machine-learning")
+  })
+
   it("renders timestamped video evidence chips when available", async () => {
     vi.mocked(getVBRProjectReport).mockResolvedValue(
       makeReport({
