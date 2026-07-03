@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react"
 import Link from "next/link"
 import {
+  fallbackSkillSlug,
   getPrivateWorkPassport,
   getWorkPassportStatus,
   publishWorkPassport,
   unpublishWorkPassport,
   publishVBRProjectReport,
   proofChainFromSources,
+  skillReportPath,
   PROOF_CHAIN_STEPS,
   type EvidenceGraphOverview,
   type PassportProjectSummary,
@@ -399,21 +401,45 @@ function ProjectCard({ project }: { project: PassportProjectSummary }) {
         {/* Proof chain completeness + gaps */}
         <ProofChainRow project={project} />
 
-        {/* Strongest evidence-backed skills this project demonstrates */}
+        {/* Project → Skill links: the strongest evidence-backed skills this
+            project demonstrates, each linking into its full Skill Report. */}
         {topSkills.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
               Top skills demonstrated
             </Mono>
             <div data-testid="project-top-skills" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {topSkills.map((row) => (
-                <span key={row.skill} data-testid="project-top-skill">
-                  <Badge tone={SKILL_STATUS_TONE[row.status] ?? "slate"}>
-                    {row.skill} · {row.status}
-                  </Badge>
-                </span>
-              ))}
+              {topSkills.map((row) => {
+                const href = row.skill_report_path ?? skillReportPath(row.skill_slug || fallbackSkillSlug(row.skill))
+                return (
+                  <Link
+                    key={row.skill}
+                    href={href}
+                    data-testid="project-top-skill"
+                    title={`Open the ${row.skill} Skill Report`}
+                    style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}
+                  >
+                    <Badge tone={SKILL_STATUS_TONE[row.status] ?? "slate"}>
+                      {row.skill} · {row.status}
+                    </Badge>
+                    <span
+                      data-testid="project-skill-evidence-label"
+                      style={{ fontSize: 11, fontWeight: 600, color: TOKEN.indigo }}
+                    >
+                      View skill evidence →
+                    </span>
+                  </Link>
+                )
+              })}
             </div>
+            {project.evidence_relationship_note && (
+              <p
+                data-testid="project-relationship-note"
+                style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
+              >
+                {project.evidence_relationship_note}
+              </p>
+            )}
           </div>
         )}
 
@@ -489,13 +515,20 @@ export function PrivatePassportView() {
   }
 
   // Connect the skill lens back to the project lens: for each skill, the
-  // project where it is most strongly evidenced (from the passport aggregate).
+  // project where it is most strongly evidenced (from the passport aggregate),
+  // including the owner-only project report route for "View project evidence".
   const strongestBySkill: Record<string, StrongestProjectRef> = {}
   for (const s of passport.skills) {
     if (s.strongest_project_title) {
+      const link = s.strongest_project
       strongestBySkill[s.skill.toLowerCase()] = {
         title: s.strongest_project_title,
         status: s.strongest_project_status ?? "",
+        reportPath:
+          link?.project_report_path ??
+          (link?.project_id ? `/student/vbr/projects/${link.project_id}/report` : null),
+        publicPath: link?.public_report_path ?? null,
+        reportIsPublic: link?.report_is_public ?? false,
       }
     }
   }

@@ -45,6 +45,7 @@ from app.services.public_report_safety_service import (
     enforce_public_safe,
     public_safe_skill_name,
 )
+from app.services.skill_normalization import skill_slug
 from app.services.safe_public_url import is_safe_public_url
 from app.services.vbr_public_project_report import (
     _lookup_display_name,
@@ -74,6 +75,11 @@ _VERIFICATION_LABEL = "Verified Work Passport"
 _SLUG_GENERATION_ATTEMPTS = 5
 _PUBLIC_PATH_PREFIX = "/p/"
 _REPORT_PATH_PREFIX = "/vbr/report/"
+# Owner-only (private) app routes for cross-linking the passport's lenses.
+# These NEVER appear in the public projection — the public surface links only
+# through ``/vbr/report/{token}`` paths.
+_PRIVATE_PROJECT_REPORT_PREFIX = "/student/vbr/projects/"
+_PRIVATE_SKILL_REPORT_PREFIX = "/student/vbr/passport/skills/"
 _MAX_TOP_SKILLS = 16
 
 # Evidence source badge labels (the canonical, recruiter-facing set).
@@ -324,10 +330,152 @@ def _proof_chain(evidence_sources: list[str]) -> dict[str, Any]:
     return chain
 
 
+def _private_project_report_path(project_id: Any) -> str | None:
+    """Owner-only route to a project's report preview. Private surface only."""
+    pid = str(project_id or "").strip()
+    return f"{_PRIVATE_PROJECT_REPORT_PREFIX}{pid}/report" if pid else None
+
+
+def _private_skill_report_path(skill: str) -> str | None:
+    """Owner-only route to a skill's full Skill Report. Private surface only."""
+    slug = skill_slug(skill)
+    return f"{_PRIVATE_SKILL_REPORT_PREFIX}{slug}" if slug else None
+
+
+# How each attachable proof source relates to a project claim — the safe,
+# recruiter-facing relationship vocabulary used to compose relationship notes.
+_SOURCE_RELATIONSHIP = {
+    _SRC_GITHUB: "GitHub code",
+    _SRC_WEBSITE: "Website behavior evidence",
+    _SRC_DOCUMENT: "Document corroboration",
+    _SRC_DEFENSE: "Project Defense explanation",
+    _SRC_VIDEO: "Video evidence",
+}
+
+# Each qualitative status maps to its OWN recruiter-facing claim tier — they are
+# never collapsed together. "Demonstrated" is the only status that reads as
+# "demonstrates"; "Partially demonstrated" and "Evidence observed" keep their own
+# weaker wording so they are never promoted to a full demonstrated claim.
+# "Supporting evidence" gets a middle tier ("has supporting evidence for"), and
+# everything weaker (Needs review, Not assessed, Insufficient evidence, or
+# unknown) is only ever described with neutral, under-review wording so the
+# relationship note never overclaims proof.
+_DEMONSTRATED_STATUS = "Demonstrated"
+_PARTIAL_STATUS = "Partially demonstrated"
+_OBSERVED_STATUS = "Evidence observed"
+_SUPPORTING_SKILL_STATUSES = {"Supporting evidence"}
+
+# Statuses strong enough to make a positive (non–under-review) skill claim, each
+# in its own wording tier.
+_POSITIVE_SKILL_STATUSES = {
+    _DEMONSTRATED_STATUS,
+    _PARTIAL_STATUS,
+    _OBSERVED_STATUS,
+} | _SUPPORTING_SKILL_STATUSES
+
+
+def _join_labels(labels: list[str]) -> str:
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    return ", ".join(labels[:-1]) + " and " + labels[-1]
+
+
+def _join_clauses(clauses: list[str]) -> str:
+    """Join status-specific verb clauses (e.g. "demonstrates React", "partially
+    demonstrates API Development") into one natural phrase, keeping each tier's
+    wording intact. Oxford-comma style for three or more."""
+    if len(clauses) == 1:
+        return clauses[0]
+    if len(clauses) == 2:
+        return clauses[0] + " and " + clauses[1]
+    return ", ".join(clauses[:-1]) + ", and " + clauses[-1]
+
+
+def _project_relationship_note(
+    top_skills: list[dict[str, Any]], evidence_sources: list[str]
+) -> str | None:
+    """A single safe sentence connecting a project's skills to its proof
+    sources — built ONLY from qualitative skill names and the canonical source
+    labels (never ids, scores, or raw evidence).
+
+    Status-aware, and each qualitative tier keeps its OWN recruiter-facing
+    wording — they are never collapsed together:
+      • Demonstrated            → "demonstrates X"
+      • Partially demonstrated  → "partially demonstrates X"
+      • Evidence observed       → "has observed evidence for X"
+        (or, when it is the only tier, "Evidence was observed for X in this
+        project")
+      • Supporting evidence     → "has supporting evidence for X"
+      • Needs review / Not assessed / Insufficient evidence / unknown →
+        "Additional evidence is under review for X" (or, when no positive tier
+        exists at all, a preliminary / under-review sentence).
+    Partially demonstrated and Evidence observed are never promoted into the
+    full "demonstrates" claim."""
+    considered = top_skills[:3]
+    present = set(evidence_sources)
+    source_phrases = [
+        _SOURCE_RELATIONSHIP[label] for _, label in _PROOF_CHAIN_STEPS if label in present
+    ]
+    if not considered or not source_phrases:
+        return None
+
+    def _skills_with(status: str) -> list[str]:
+        return [s["skill"] for s in considered if s.get("status") == status]
+
+    demonstrated = _skills_with(_DEMONSTRATED_STATUS)
+    partial = _skills_with(_PARTIAL_STATUS)
+    observed = _skills_with(_OBSERVED_STATUS)
+    supporting = [
+        s["skill"] for s in considered if s.get("status") in _SUPPORTING_SKILL_STATUSES
+    ]
+    weak = [
+        s["skill"]
+        for s in considered
+        if s.get("status") not in _POSITIVE_SKILL_STATUSES
+    ]
+    through = f"through {_join_labels(source_phrases)}"
+    weak_sentence = (
+        f" Additional evidence is under review for {_join_labels(weak)}." if weak else ""
+    )
+
+    # Each positive tier contributes its own verb clause — never merged.
+    clauses: list[str] = []
+    if demonstrated:
+        clauses.append(f"demonstrates {_join_labels(demonstrated)}")
+    if partial:
+        clauses.append(f"partially demonstrates {_join_labels(partial)}")
+    if observed:
+        clauses.append(f"has observed evidence for {_join_labels(observed)}")
+    if supporting:
+        clauses.append(f"has supporting evidence for {_join_labels(supporting)}")
+
+    if clauses:
+        # Evidence-observed only → its own natural standalone phrasing, so it is
+        # never dressed up as something the project "demonstrates".
+        if observed and not demonstrated and not partial and not supporting:
+            note = (
+                f"Evidence was observed for {_join_labels(observed)} in this "
+                f"project {through}"
+            )
+        else:
+            note = f"This project {_join_clauses(clauses)} {through}"
+        return note + "." + weak_sentence
+
+    # Only weak skills → neutral, under-review wording only.
+    return (
+        f"This project has preliminary or under-review evidence for "
+        f"{_join_labels(weak)} {through}."
+    )
+
+
 def _project_top_skills(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The strongest evidence-backed skills a project demonstrates, ranked by
     qualitative label (best first) and capped. Merged across duplicate-attempt
-    reports, keeping each skill's best label."""
+    reports, keeping each skill's best label. Each entry carries the skill's
+    stable slug + owner-only Skill Report route so the project lens can link
+    straight into the skill lens (private passport only)."""
     best: dict[str, dict[str, Any]] = {}
     for report in reports:
         for row in report.get("skill_evidence") or []:
@@ -339,7 +487,12 @@ def _project_top_skills(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if entry is None or _STATUS_ORDER.get(status_label, 99) < _STATUS_ORDER.get(
                 entry["status"], 99
             ):
-                best[skill.lower()] = {"skill": skill, "status": status_label}
+                best[skill.lower()] = {
+                    "skill": skill,
+                    "status": status_label,
+                    "skill_slug": skill_slug(skill),
+                    "skill_report_path": _private_skill_report_path(skill),
+                }
     ranked = sorted(
         best.values(),
         key=lambda s: (_STATUS_ORDER.get(s["status"], 99), s["skill"].lower()),
@@ -571,6 +724,26 @@ def _aggregate_skills_with_detail(
         )
         entry["strongest_project_title"] = strongest.get("project_title") if strongest else None
         entry["strongest_project_status"] = strongest.get("skill_status") if strongest else None
+        # Skill → Project cross-link: the strongest project as a linkable
+        # reference. The private shape carries the owner-only project id +
+        # report-preview route; the public projection re-derives a safe shape
+        # (title / status / public report path only) in ``_to_public_skill``.
+        if strongest is None:
+            entry["strongest_project"] = None
+        else:
+            link: dict[str, Any] = {
+                "project_title": strongest.get("project_title") or "",
+                "skill_status": strongest.get("skill_status") or "Not assessed",
+                "evidence_sources": list(strongest.get("evidence_sources") or []),
+                "report_is_public": bool(strongest.get("report_is_public")),
+                "public_report_path": strongest.get("public_report_path"),
+            }
+            if not public:
+                link["project_id"] = strongest.get("project_id")
+                link["project_report_path"] = _private_project_report_path(
+                    strongest.get("project_id")
+                )
+            entry["strongest_project"] = link
         if entry["status"] in {"Needs review", "Not assessed"}:
             entry["limitations"].append(
                 "This skill is not yet strongly evidenced — treat it as a claim pending more proof."
@@ -615,9 +788,23 @@ def _public_safe_trace(trace: dict[str, Any]) -> dict[str, Any]:
 def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
     """Project a rich skill detail entry to the recruiter-safe public shape
     (qualitative label only; no internal ids, counts, or private fields)."""
+    # Public strongest-project link: title / per-skill status / published report
+    # path only. Rebuilt from scratch (never passed through) so a private id or
+    # owner-only route can never ride along; omitted when the strongest project
+    # has no published public report.
+    strongest = entry.get("strongest_project") or {}
+    public_strongest = None
+    if strongest.get("public_report_path"):
+        public_strongest = {
+            "project_title": strongest.get("project_title") or "",
+            "skill_status": strongest.get("skill_status") or "Not assessed",
+            "evidence_sources": list(strongest.get("evidence_sources") or []),
+            "public_report_path": strongest.get("public_report_path"),
+        }
     return {
         "skill": entry["skill"],
         "status": entry["status"],
+        "strongest_project": public_strongest,
         "evidence_sources": list(entry.get("evidence_sources") or []),
         "projects": [
             {
@@ -976,6 +1163,7 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
             [report.get("evidence_package") or {} for _, report in group]
         )
 
+        top_skills = _project_top_skills([report for _, report in group])
         project_summaries.append(
             {
                 "project_id": str(representative_project["id"]),
@@ -987,8 +1175,14 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
                 "evidence_package": evidence_package,
                 # Proof-chain completeness across the five attachable sources.
                 "proof_chain": _proof_chain(evidence_sources),
-                # Strongest evidence-backed skills this project demonstrates.
-                "top_skills": _project_top_skills([report for _, report in group]),
+                # Project → Skill cross-links: each entry carries the skill's
+                # slug + owner-only Skill Report route (private surface only).
+                "top_skills": top_skills,
+                # One safe sentence relating this project's skills to its proof
+                # sources (labels only — never ids, scores, or raw evidence).
+                "evidence_relationship_note": _project_relationship_note(
+                    top_skills, evidence_sources
+                ),
                 # Number of underlying evidence attempts merged into this card.
                 "attempt_count": len(group),
                 # Owner-only publish status for this project's recruiter link.
@@ -1160,6 +1354,14 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         evidence_sources = _dedupe_preserve(
             [src for _, report in group for src in _evidence_sources(report, has_public_report=True)]
         )
+        # Public Project → Skill chips: skill name, qualitative status, and the
+        # skill's stable slug ONLY (used for in-page anchors to the public
+        # skills section). The owner-only skill_report_path is stripped — the
+        # public surface never links to private routes.
+        public_top_skills = [
+            {"skill": s["skill"], "status": s["status"], "skill_slug": s["skill_slug"]}
+            for s in _project_top_skills([report for _, report in group])
+        ]
         summary = {
             "project_title": representative_report.get("project_title") or "",
             "project_summary": representative_report.get("project_description") or "",
@@ -1168,6 +1370,10 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
             # Safe proof-chain completeness (booleans + source labels only) so a
             # recruiter can see what is verified and what is missing.
             "proof_chain": _proof_chain(evidence_sources),
+            "top_skills": public_top_skills,
+            "evidence_relationship_note": _project_relationship_note(
+                public_top_skills, evidence_sources
+            ),
             # The token is intentionally linked (the recruiter follows this path).
             # We never expose a bare token field — only the public report path.
             "public_report_path": f"{_REPORT_PATH_PREFIX}{token}",

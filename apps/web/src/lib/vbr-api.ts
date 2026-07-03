@@ -1534,6 +1534,22 @@ export type PassportSkillProjectRef = {
   evidence_traces?: EvidenceTrace[]
 }
 
+/**
+ * Skill → Project cross-link: the project where a skill is most strongly
+ * evidenced, as a linkable reference. `project_id` / `project_report_path`
+ * are owner-only and never present on the public projection.
+ */
+export type PassportStrongestProjectLink = {
+  project_title: string
+  /** This project's qualitative label FOR THIS SKILL (never a score). */
+  skill_status?: string
+  evidence_sources: string[]
+  report_is_public?: boolean
+  public_report_path?: string | null
+  project_id?: string | null
+  project_report_path?: string | null
+}
+
 /** A grouped, evidence-backed skill. `status` is always a qualitative label. */
 export type PassportSkillSummary = {
   skill: string
@@ -1548,6 +1564,8 @@ export type PassportSkillSummary = {
   /** The project where this skill is most strongly evidenced (owner-only). */
   strongest_project_title?: string | null
   strongest_project_status?: string | null
+  /** The same strongest project as a linkable reference (owner-only routes). */
+  strongest_project?: PassportStrongestProjectLink | null
   notes: string
   limitations: string[]
 }
@@ -1567,10 +1585,35 @@ export type PassportProofChain = {
   missing: string[]
 }
 
-/** One of the strongest skills a project demonstrates — qualitative label only. */
+/**
+ * One of the strongest skills a project demonstrates — qualitative label only.
+ * `skill_slug` is the stable slug; `skill_report_path` is the owner-only Skill
+ * Report route (absent on public payloads).
+ */
 export type PassportProjectTopSkill = {
   skill: string
   status: string
+  skill_slug?: string | null
+  skill_report_path?: string | null
+}
+
+/**
+ * How each proof source relates to a project/skill claim — the safe,
+ * recruiter-facing relationship vocabulary (labels only, never scores).
+ *
+ * Intentionally neutral: these labels describe only that a source is *attached*
+ * for review. They never infer evidence strength from source presence alone —
+ * e.g. GitHub is "attached for code/repository review" rather than "explains the
+ * implementation", and video is "recorded explanation moments" rather than
+ * "shows the work over time" — so a weak/repo-level source is never overclaimed
+ * as authorship, implementation, or time-based proof.
+ */
+export const PROOF_SOURCE_RELATIONSHIP: Record<string, string> = {
+  "GitHub Proof": "GitHub evidence is attached for code/repository review",
+  "Website Proof": "Website evidence shows observed runtime/product behavior",
+  "Document Proof": "Document evidence corroborates the project claim",
+  "Project Defense": "Project Defense provides candidate explanation",
+  "Video Evidence": "Video/timestamp evidence provides recorded explanation moments",
 }
 
 /** The five attachable proof-chain steps, in canonical render order. */
@@ -1641,8 +1684,11 @@ export type PassportProjectSummary = {
   /** Proof-chain completeness across the five attachable evidence sources.
    *  May be absent on older payloads — derive from `evidence_sources`. */
   proof_chain?: PassportProofChain
-  /** Strongest evidence-backed skills this project demonstrates (capped). */
+  /** Strongest evidence-backed skills this project demonstrates (capped).
+   *  Each entry links to its owner-only Skill Report route (Project → Skill). */
   top_skills?: PassportProjectTopSkill[]
+  /** One safe sentence relating this project's skills to its proof sources. */
+  evidence_relationship_note?: string | null
   /** How many duplicate evidence attempts merged into this card (≥1). */
   attempt_count: number
   report: PassportProjectReportStatus
@@ -1713,6 +1759,17 @@ export type PublicPassportSkillProjectRef = {
   evidence_traces?: EvidenceTrace[]
 }
 
+/**
+ * Public strongest-project reference — title, per-skill qualitative label and
+ * the published report path only. Never an internal id or private route.
+ */
+export type PublicPassportStrongestProject = {
+  project_title: string
+  skill_status?: string
+  evidence_sources: string[]
+  public_report_path: string
+}
+
 /** A public top-skill row — qualitative label only, with a safe drilldown. */
 export type PublicPassportSkill = {
   skill: string
@@ -1722,7 +1779,16 @@ export type PublicPassportSkill = {
   evidence_chips: PassportSkillEvidenceChip[]
   /** Claim→evidence traces sourced ONLY from published public reports. */
   evidence_traces?: EvidenceTrace[]
+  /** Where this skill is most strongly evidenced — published projects only. */
+  strongest_project?: PublicPassportStrongestProject | null
   limitations: string[]
+}
+
+/** Public Project → Skill chip: skill + qualitative status + stable slug only. */
+export type PublicPassportProjectTopSkill = {
+  skill: string
+  status: string
+  skill_slug?: string | null
 }
 
 /** A public featured project — links to its public VBR report. */
@@ -1733,6 +1799,10 @@ export type PublicPassportProject = {
   evidence_sources: string[]
   /** Safe proof-chain completeness (booleans + source labels; no ids/scores). */
   proof_chain?: PassportProofChain
+  /** Safe Project → Skill chips (anchor to the public skills section). */
+  top_skills?: PublicPassportProjectTopSkill[]
+  /** Safe relationship sentence (qualitative labels only). */
+  evidence_relationship_note?: string | null
   public_report_path: string
   published_at: string | null
 }
@@ -1767,6 +1837,15 @@ export async function getPrivateWorkPassport(): Promise<PrivateWorkPassport> {
 /** The private Skill Report route for a skill slug (a separate page, not inline). */
 export function skillReportPath(skillSlug: string): string {
   return `/student/vbr/passport/skills/${encodeURIComponent(skillSlug)}`
+}
+
+/**
+ * Client-side skill-name slugify, used ONLY when a payload omits `skill_slug`.
+ * The Skill Report endpoint resolves both canonical names and slugs, so a
+ * display-name slug still lands on the right skill.
+ */
+export function fallbackSkillSlug(skill: string): string {
+  return skill.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "skill"
 }
 
 /**

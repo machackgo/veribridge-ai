@@ -47,6 +47,7 @@ import {
   getVBRProjectReport,
   getVBRProjectReportPublishStatus,
   getPublicWorkPassportBySlug,
+  PROOF_SOURCE_RELATIONSHIP,
 } from "@/lib/vbr-api"
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -2829,5 +2830,43 @@ describe("SkillReportView — skill relevance helpers on GitHub rows", () => {
       />,
     )
     expect(screen.getByTestId("github-primary-band")).toHaveTextContent("train.py · lines 1-40")
+  })
+})
+
+// ── Proof-source relationship labels ─────────────────────────────────────────
+// The safe, recruiter-facing vocabulary that describes how each attached proof
+// source relates to a claim. It must NEVER infer evidence strength (authorship,
+// implementation, or time-based proof) from a source's mere presence.
+describe("PROOF_SOURCE_RELATIONSHIP — neutral, evidence-strength-safe labels", () => {
+  it("does not describe repo-level GitHub as implementation proof", () => {
+    const label = PROOF_SOURCE_RELATIONSHIP["GitHub Proof"]
+    // Weak/repo-level GitHub presence must not read as authorship/implementation.
+    expect(label).not.toMatch(/explains the implementation/i)
+    expect(label).not.toMatch(/\bimplement/i)
+    // Safe default: attached for code/repository review.
+    expect(label).toBe("GitHub evidence is attached for code/repository review")
+  })
+
+  it("does not describe timestamp/video evidence as showing work over time", () => {
+    const label = PROOF_SOURCE_RELATIONSHIP["Video Evidence"]
+    // Transcript/timestamp-only chips must not claim time-based proof of work.
+    expect(label).not.toMatch(/shows the work over time/i)
+    expect(label).not.toMatch(/over time/i)
+    // Safe default: recorded explanation moments.
+    expect(label).toBe("Video/timestamp evidence provides recorded explanation moments")
+  })
+
+  it("renders neutral, safe descriptions for every source", () => {
+    expect(PROOF_SOURCE_RELATIONSHIP).toEqual({
+      "GitHub Proof": "GitHub evidence is attached for code/repository review",
+      "Website Proof": "Website evidence shows observed runtime/product behavior",
+      "Document Proof": "Document evidence corroborates the project claim",
+      "Project Defense": "Project Defense provides candidate explanation",
+      "Video Evidence": "Video/timestamp evidence provides recorded explanation moments",
+    })
+    // No numeric scores leak through any label.
+    for (const label of Object.values(PROOF_SOURCE_RELATIONSHIP)) {
+      expect(label).not.toMatch(/%|\bscore\b/i)
+    }
   })
 })

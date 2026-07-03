@@ -456,3 +456,126 @@ describe("PrivatePassportView — evidence graph (Phase 1)", () => {
     expect(link).toHaveAttribute("href", "/student/vbr/passport/skills/python")
   })
 })
+
+// ── Project ↔ Skill cross-linking (Phase 2) ───────────────────────────────────
+
+function makeCrossLinkedPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  const base = makeGraphPassport()
+  return makeGraphPassport({
+    skills: [
+      {
+        ...base.skills[0],
+        strongest_project: {
+          project_title: "Skill Evidence Tracker",
+          skill_status: "Demonstrated",
+          evidence_sources: ["GitHub Proof"],
+          report_is_public: false,
+          public_report_path: null,
+          project_id: "proj-1",
+          project_report_path: "/student/vbr/projects/proj-1/report",
+        },
+      },
+    ],
+    projects: [
+      {
+        ...base.projects[0],
+        top_skills: [
+          {
+            skill: "Python",
+            status: "Demonstrated",
+            skill_slug: "python",
+            skill_report_path: "/student/vbr/passport/skills/python",
+          },
+          // No path/slug from the backend — the view derives a fallback slug.
+          { skill: "React", status: "Partially demonstrated" },
+        ],
+        evidence_relationship_note:
+          "This project demonstrates Python and React through GitHub code and Project Defense explanation.",
+      },
+    ],
+    ...overrides,
+  })
+}
+
+describe("PrivatePassportView — project ↔ skill cross-linking (Phase 2)", () => {
+  beforeEach(() => {
+    const p = makeCrossLinkedPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("renders project top skills as links into their Skill Reports", async () => {
+    render(<PrivatePassportView />)
+
+    const chips = await screen.findAllByTestId("project-top-skill")
+    expect(chips).toHaveLength(2)
+    expect(chips[0]).toHaveAttribute("href", "/student/vbr/passport/skills/python")
+    // Backend path missing → fallback slug still lands on the Skill Report route.
+    expect(chips[1]).toHaveAttribute("href", "/student/vbr/passport/skills/react")
+    expect(screen.getAllByTestId("project-skill-evidence-label")[0]).toHaveTextContent(
+      "View skill evidence →",
+    )
+  })
+
+  it("renders the project's evidence relationship note", async () => {
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("project-relationship-note")).toHaveTextContent(
+      "This project demonstrates Python and React through GitHub code and Project Defense explanation.",
+    )
+  })
+
+  it("links the skill card's strongest project to its project report preview", async () => {
+    render(<PrivatePassportView />)
+
+    const strongest = await screen.findByTestId("vault-summary-strongest-project")
+    expect(strongest).toHaveTextContent("This skill is strongest in Skill Evidence Tracker")
+    expect(screen.getByTestId("strongest-project-evidence-link")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-1/report",
+    )
+  })
+
+  it("renders a compact proof-chain preview on the skill card", async () => {
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("skill-proof-chain-preview")).toBeInTheDocument()
+    const items = screen.getAllByTestId("skill-chain-item")
+    expect(items).toHaveLength(5)
+    const bySource = Object.fromEntries(
+      items.map((el) => [el.getAttribute("data-source"), el.getAttribute("data-present")]),
+    )
+    // proof_source_counts: GitHub Proof only.
+    expect(bySource["GitHub Proof"]).toBe("true")
+    expect(bySource["Website Proof"]).toBe("false")
+  })
+
+  it("keeps unattached vault evidence honest on the skill card", async () => {
+    const p = makeCrossLinkedPassport({
+      vault_skill_summaries: [
+        makeVaultSummary({ attached_count: 0, unattached_count: 2, has_unattached: true }),
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("vault-summary-unattached-note")).toHaveTextContent(
+      "Additional vault evidence exists but is not attached to a project report.",
+    )
+  })
+
+  it("does not show the unattached note when attached proof dominates", async () => {
+    const p = makeCrossLinkedPassport({
+      vault_skill_summaries: [
+        makeVaultSummary({ attached_count: 3, unattached_count: 1, has_unattached: true }),
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("vault-skill-dashboard")
+
+    expect(screen.queryByTestId("vault-summary-unattached-note")).not.toBeInTheDocument()
+  })
+})
