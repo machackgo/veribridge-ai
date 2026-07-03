@@ -190,6 +190,90 @@ class TestAnalyzeDefenseTranscript:
         )
         assert result.privacy_scan_status == "flagged"
 
+    def test_spaced_card_number_in_transcript_is_flagged(self) -> None:
+        """A space/hyphen-grouped card number the shared scanner misses (its
+        credit-card regex only matches an unbroken digit run) still flags the
+        defense so the transcript summary fails closed on the public report."""
+        result = analyze_defense_transcript(
+            transcript_text=(
+                "I built a payment demo and accidentally read my card 4111 1111 1111 1111 out loud. "
+                "I implemented the checkout flow with Stripe. "
+                "I designed the React frontend and the FastAPI backend. "
+                "I set up the webhook handler for payment confirmation. "
+                "I would tokenize card entry with Stripe Elements next time. "
+                "My architecture keeps the secret key server-side only."
+            ),
+            claimed_skills=["React", "FastAPI", "Stripe"],
+        )
+        assert result.privacy_scan_status == "flagged"
+        assert any("sensitive" in flag.lower() for flag in result.risk_flags)
+
+    def test_hyphen_grouped_card_number_in_transcript_is_flagged(self) -> None:
+        """Hyphen-grouped variant is caught as well."""
+        result = analyze_defense_transcript(
+            transcript_text=(
+                "The test card 4111-1111-1111-1111 shows up in my transcript by mistake. "
+                "I built the billing service and the invoice generator. "
+                "I implemented retries on the payment webhook. "
+                "I designed the database schema for orders. "
+                "I would add idempotency keys in future. "
+                "My deployment runs the API behind a load balancer."
+            ),
+            claimed_skills=["Python"],
+        )
+        assert result.privacy_scan_status == "flagged"
+
+    def test_double_spaced_card_number_in_transcript_is_flagged(self) -> None:
+        """P0 #3: repeated-space grouping ("4111  1111 1111 1111") the old single
+        separator regex missed is now caught (Luhn-valid PAN, separator-tolerant)."""
+        result = analyze_defense_transcript(
+            transcript_text=(
+                "I accidentally read my card 4111  1111 1111 1111 during the demo. "
+                "I built the checkout flow and the order service. "
+                "I implemented the payment webhook handler. "
+                "I designed the React frontend and FastAPI backend. "
+                "I would tokenize card entry next time. "
+                "My architecture keeps secrets server-side only."
+            ),
+            claimed_skills=["React", "FastAPI"],
+        )
+        assert result.privacy_scan_status == "flagged"
+        assert any("sensitive" in flag.lower() for flag in result.risk_flags)
+
+    def test_alternate_grouped_card_number_in_transcript_is_flagged(self) -> None:
+        """P0 #3: alternate grouping ("6011 111 1111 1111") — a card-shaped test PAN
+        that is not Luhn-valid — is flagged via the known-test-number backstop."""
+        result = analyze_defense_transcript(
+            transcript_text=(
+                "The number 6011 111 1111 1111 slipped into my recording by mistake. "
+                "I built the billing dashboard and the reporting service. "
+                "I implemented the nightly reconciliation job. "
+                "I designed the Postgres schema for transactions. "
+                "I would add alerting on failed charges next. "
+                "My deployment runs the workers behind a queue."
+            ),
+            claimed_skills=["Python"],
+        )
+        assert result.privacy_scan_status == "flagged"
+        assert any("sensitive" in flag.lower() for flag in result.risk_flags)
+
+    def test_normal_technical_transcript_stays_clean(self) -> None:
+        """P0 #3 control: a normal technical transcript (version numbers, ports,
+        line counts, years) must NOT be mistaken for a card number — stays clean."""
+        result = analyze_defense_transcript(
+            transcript_text=(
+                "I built a FastAPI service running on port 8080 with Python 3.11. "
+                "I implemented 42 unit tests covering the 3 core endpoints. "
+                "I designed the schema in 2024 and deployed it behind nginx. "
+                "I optimized the query from 1200 ms down to 45 ms. "
+                "I would add caching for the top 100 requests next. "
+                "My architecture handles about 500 requests per second."
+            ),
+            claimed_skills=["Python", "FastAPI"],
+        )
+        assert result.privacy_scan_status == "clean"
+        assert not any("sensitive" in flag.lower() for flag in result.risk_flags)
+
     def test_extremely_short_transcript_penalised(self) -> None:
         """Fewer than 50 words should trigger a risk flag and score deduction."""
         result = analyze_defense_transcript(

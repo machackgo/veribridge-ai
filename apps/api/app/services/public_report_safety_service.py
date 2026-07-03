@@ -105,6 +105,9 @@ __all__ = [
     "public_safe_synthesis_result",
     "public_safe_stale_marker",
     "public_safe_skill_report",
+    "defense_privacy_is_clean",
+    "public_safe_defense_analysis",
+    "DEFENSE_PRIVACY_HIDDEN_MESSAGE",
 ]
 
 _TEXT_LIMIT = 400
@@ -1085,3 +1088,136 @@ def public_safe_skill_report(report: dict[str, Any]) -> dict[str, Any]:
         "limitations": _scrub_str_list(report.get("limitations")),
     }
     return enforce_public_safe(projected)
+
+
+# ── Project Defense analysis (privacy fail-closed) ────────────────────────────
+#
+# A Project Defense analysis is built from the student's spoken/written
+# transcript. Even after the numeric scores are mapped to qualitative labels for
+# the report, its ``transcript_summary`` is composed from the *first sentence of
+# the raw transcript* — so it can carry whatever private data (SSNs, addresses,
+# secrets) the student happened to say. When the transcript's privacy review does
+# NOT come back clean, none of that transcript-derived text may reach a public
+# recruiter surface. This is the single fail-closed projection every public
+# builder must route a defense analysis through, so a flagged transcript can
+# never leak its summary / first sentence / answer text again.
+
+# Public replacement wording shown when a Project Defense happened but its answer
+# content is withheld because privacy review did not pass. Carries NO
+# transcript-derived text of any kind.
+DEFENSE_PRIVACY_HIDDEN_MESSAGE = (
+    "Project Defense was completed, but answer content is hidden from the public "
+    "report because privacy review did not pass."
+)
+
+# Explicit boolean flags a producer may set to mark a defense analysis as
+# privacy-sensitive / hidden even when the status string is absent. Any truthy one
+# forces the fail-closed path.
+_DEFENSE_PRIVACY_UNSAFE_FLAGS = (
+    "privacy_flagged",
+    "sensitive",
+    "sensitive_data",
+    "contains_sensitive_data",
+    "hidden",
+    "is_hidden",
+    "transcript_hidden",
+    "privacy_hidden",
+)
+
+# The ONLY explicit statuses that mark a Project Defense transcript as safe to
+# share publicly. Everything else — a non-clean status ("flagged" / "redacted" /
+# "sensitive" / …), an unrecognized string, an empty / ``None`` status, or a
+# missing status key — is fail-closed to NOT shareable. This is the allowlist that
+# closes the fail-open gap where a legacy or malformed analysis with no explicit
+# status could publish its transcript-derived sensitive summary. (The transcript
+# scanner only ever emits "clean" / "redacted" / "flagged"; only "clean" is safe —
+# a "redacted" scan means sensitive data was present in the raw transcript the
+# summary is built from.)
+_DEFENSE_PRIVACY_CLEAN_STATUSES = frozenset({"clean"})
+
+# Fixed, neutral status echoed on a WITHHELD public defense projection. The raw /
+# internal ``privacy_scan_status`` is NEVER copied into public output (it could
+# carry arbitrary or hostile producer text); the public surface only ever sees
+# this single allowlisted value.
+_DEFENSE_PRIVACY_WITHHELD_STATUS = "withheld"
+
+
+def defense_privacy_is_clean(analysis: Any) -> bool:
+    """``True`` only when a Project Defense analysis EXPLICITLY passed privacy review.
+
+    Fail-closed: the ``privacy_scan_status`` must be present AND an exact match for
+    an allowlisted clean status (:data:`_DEFENSE_PRIVACY_CLEAN_STATUSES`). A status
+    that is missing, ``None``, empty, or unrecognized (e.g. ``"flagged"`` /
+    ``"redacted"`` / ``"sensitive"`` / ``"needs_review"`` / an arbitrary string) is
+    treated as NOT shareable, as is any truthy privacy / sensitive / hidden flag.
+    This closes the fail-open gap where a legacy or malformed analysis carrying no
+    explicit status could publish its transcript-derived summary.
+
+    A ``None`` / non-dict analysis is **not** clean: it is a missing/malformed
+    analysis object, which carries NO explicit clean/shareable status. Returning
+    ``False`` here fails closed so that any orphaned transcript-derived artifacts
+    (Project Defense / Video evidence chips and traces) that exist WITHOUT a clean
+    analysis object are withheld by the caller — only an explicit clean analysis
+    may unlock them.
+    """
+    if not isinstance(analysis, dict):
+        return False
+    raw_status = analysis.get("privacy_scan_status")
+    status = raw_status.strip().lower() if isinstance(raw_status, str) else ""
+    if status not in _DEFENSE_PRIVACY_CLEAN_STATUSES:
+        return False
+    if any(analysis.get(flag) for flag in _DEFENSE_PRIVACY_UNSAFE_FLAGS):
+        return False
+    return True
+
+
+# Neutral qualitative label used for every assessment field when the defense is
+# withheld — nothing about the flagged transcript's analysis is exposed.
+_DEFENSE_HIDDEN_LABEL = "Not assessed"
+
+
+def public_safe_defense_analysis(analysis: Any) -> dict[str, Any] | None:
+    """Project a Project Defense analysis to a recruiter-safe dict, fail-closed.
+
+    When the privacy review is not clean (see :func:`defense_privacy_is_clean`),
+    ALL transcript-derived content — ``transcript_summary`` (built from the raw
+    transcript's first sentence), recruiter / answer summaries, skill lists, risk
+    flags, and every qualitative label derived from the flagged transcript — is
+    dropped. The free-text fields are replaced with a single fixed placeholder
+    that names no answer content, the list fields are emptied, and the labels are
+    reset to a neutral value. When the review is clean, the analysis dict is
+    returned unchanged so the caller's normal scrub + fail-closed gate handles it
+    as before.
+
+    The returned shape only ever uses the documented report-safe defense fields
+    (matching ``VBRReportProjectDefenseAnalysis``) so it slots straight into the
+    public report response without leaking or introducing unexpected keys. The raw
+    internal ``privacy_scan_status`` is NEVER echoed publicly — the withheld
+    projection always reports the fixed, neutral
+    :data:`_DEFENSE_PRIVACY_WITHHELD_STATUS` so arbitrary / hostile producer status
+    text can never ride out on the public surface.
+
+    Returns ``None`` for a ``None`` / non-dict analysis (no defense to show).
+    """
+    if not isinstance(analysis, dict):
+        return None
+    if defense_privacy_is_clean(analysis):
+        return analysis
+    return {
+        # transcript_summary is REPLACED with safe placeholder wording — it must
+        # never carry the raw transcript's first sentence for a flagged defense.
+        "transcript_summary": DEFENSE_PRIVACY_HIDDEN_MESSAGE,
+        "skills_mentioned": [],
+        "skills_explained_well": [],
+        "skills_missing_from_explanation": [],
+        "overall_assessment": _DEFENSE_HIDDEN_LABEL,
+        "explanation_clarity": _DEFENSE_HIDDEN_LABEL,
+        "ownership_signal": _DEFENSE_HIDDEN_LABEL,
+        "technical_depth": _DEFENSE_HIDDEN_LABEL,
+        "consistency_with_evidence": _DEFENSE_HIDDEN_LABEL,
+        "risk_flags": [],
+        "recruiter_summary": DEFENSE_PRIVACY_HIDDEN_MESSAGE,
+        "recommended_improvements": [],
+        # Fixed neutral value — never the raw/internal status string.
+        "privacy_scan_status": _DEFENSE_PRIVACY_WITHHELD_STATUS,
+    }

@@ -24,6 +24,7 @@ All storage is in-memory (dict mode). No real network calls, no LLM calls.
 
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -918,9 +919,19 @@ def test_public_report_fail_closed_on_nested_source_id(
 def test_public_report_fail_closed_on_raw_metadata(
     client: TestClient, mem_store: dict, monkeypatch
 ) -> None:
-    """A raw ``metadata`` / ``raw_payload`` bag must never reach a public report."""
+    """A raw ``metadata`` / ``raw_payload`` bag must never reach a public report.
+
+    The defense carries an explicit clean privacy status so the fail-closed privacy
+    projection passes it through unchanged — the raw metadata bag therefore reaches
+    the whole-payload gate, which must still 404. (A missing/flagged status would
+    instead be withheld to a safe placeholder that drops the bag earlier; this
+    exercises the gate itself.)
+    """
     report = _minimal_report(
-        project_defense_analysis={"metadata": {"provider_response": {"model": "x"}}}
+        project_defense_analysis={
+            "privacy_scan_status": "clean",
+            "metadata": {"provider_response": {"model": "x"}},
+        }
     )
     response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
     assert response.status_code == 404, response.text
@@ -944,3 +955,355 @@ def test_public_report_scrubs_email_in_free_text(
     response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
     assert response.status_code == 200, response.text
     assert "private@example.com" not in response.text
+
+
+# ── Project Defense privacy fail-closed (audit finding) ──────────────────────
+
+# An SSN-shaped value the generic scrubbers do NOT catch (not a token/path/URL/
+# email/score). It survives generic scrubbing, so only the privacy fail-closed
+# projection keeps it out of the public report.
+_DEFENSE_SSN = "123-45-6789"
+
+
+def _flagged_defense_report(status: str = "flagged") -> dict:
+    """A student-report-shaped payload whose Project Defense failed privacy review.
+
+    The SSN-shaped marker appears in every place a flagged transcript could leak
+    it: the analysis ``transcript_summary`` (first sentence of the raw transcript)
+    and the defense evidence trace's ``safe_summary`` / ``answer_excerpt``.
+    """
+    first_sentence = f"Transcript (11 words): my social security number is {_DEFENSE_SSN} and I built it."
+    return _minimal_report(
+        claimed_skills=["Python"],
+        project_defense_analysis={
+            "transcript_summary": first_sentence,
+            "skills_mentioned": ["Python"],
+            "skills_explained_well": ["Python"],
+            "skills_missing_from_explanation": [],
+            "overall_assessment": "Partially demonstrated",
+            "explanation_clarity": "Demonstrated",
+            "ownership_signal": "Partially demonstrated",
+            "technical_depth": "Supporting evidence",
+            "consistency_with_evidence": "Needs review",
+            "risk_flags": ["Transcript contains potential sensitive data."],
+            "recruiter_summary": "Project defense transcript analyzed.",
+            "recommended_improvements": [],
+            "privacy_scan_status": status,
+        },
+        evidence_traces=[
+            {
+                "trace_id": "project-defense",
+                "source_type": "Project Defense",
+                "source_title": "Project Defense",
+                "skill_names": ["Python"],
+                "qualitative_status": "Supporting evidence",
+                "safe_summary": first_sentence,
+                "safe_detail": f"Answer text: my SSN is {_DEFENSE_SSN}.",
+                "answer_excerpt": f"my SSN is {_DEFENSE_SSN}",
+                "question_text": "What did you build?",
+                "location_type": "defense_overview",
+                "public_url": None,
+                "public_url_label": None,
+                "is_publicly_openable": False,
+            }
+        ],
+    )
+
+
+def test_public_report_hides_privacy_flagged_defense_transcript(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """The audit leak path: a privacy-flagged transcript's SSN-shaped value must
+    not appear ANYWHERE in the public project report payload."""
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, _flagged_defense_report())
+    assert response.status_code == 200, response.text
+
+    # The SSN-shaped value never appears anywhere in the serialized public payload.
+    assert _DEFENSE_SSN not in response.text
+
+    body = response.json()
+    analysis = body["project_defense_analysis"]
+    assert analysis is not None
+    # transcript_summary is replaced with the safe placeholder wording.
+    assert _DEFENSE_SSN not in analysis["transcript_summary"]
+    assert "privacy review did not pass" in analysis["transcript_summary"].lower()
+    assert "privacy review did not pass" in analysis["recruiter_summary"].lower()
+
+
+def test_public_report_flagged_defense_omits_all_derived_text(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """Raw transcript / first sentence / answer text / recruiter+risk summaries are
+    all absent from the public output when the defense privacy review is not clean."""
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, _flagged_defense_report())
+    assert response.status_code == 200, response.text
+    body = response.json()
+    raw = response.text
+
+    analysis = body["project_defense_analysis"]
+    # No transcript-derived content survives: free text is the safe placeholder,
+    # list fields are emptied, labels are neutralized.
+    assert _DEFENSE_SSN not in json.dumps(analysis)
+    assert analysis["skills_mentioned"] == []
+    assert analysis["skills_explained_well"] == []
+    assert analysis["risk_flags"] == []
+    assert analysis["overall_assessment"] == "Not assessed"
+    assert "privacy review did not pass" in analysis["transcript_summary"].lower()
+
+    # The defense evidence trace is scrubbed of its derived text.
+    defense_traces = [t for t in body["evidence_traces"] if t.get("source_type") == "Project Defense"]
+    assert defense_traces, "expected the project-defense trace to still be present"
+    for trace in defense_traces:
+        assert _DEFENSE_SSN not in json.dumps(trace)
+        assert trace.get("answer_excerpt") is None
+        assert trace.get("question_text") is None
+        assert "hidden from this public report" in (trace.get("safe_summary") or "").lower()
+
+    # Belt-and-braces: neither the first sentence nor the raw answer text leaks.
+    assert "social security number" not in raw.lower()
+    assert "answer text: my ssn" not in raw.lower()
+
+
+def test_public_report_safe_defense_still_shows_summary_and_traces(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A non-sensitive Project Defense (clean privacy scan) still produces the
+    expected public-safe summary and qualitative labels — the fail-closed path is
+    NOT triggered for clean transcripts."""
+    clean = _flagged_defense_report(status="clean")
+    clean["project_defense_analysis"]["transcript_summary"] = (
+        "Transcript (11 words): I built a task manager with FastAPI and a React frontend."
+    )
+    clean["project_defense_analysis"]["risk_flags"] = []
+    clean["evidence_traces"][0]["safe_summary"] = "The candidate explained how and why they built the project."
+    clean["evidence_traces"][0]["safe_detail"] = "Process/ownership evidence."
+    clean["evidence_traces"][0]["answer_excerpt"] = None
+
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, clean)
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    analysis = body["project_defense_analysis"]
+    # Clean analysis keeps its qualitative labels and its (safe) transcript summary.
+    assert analysis["overall_assessment"] == "Partially demonstrated"
+    assert analysis["explanation_clarity"] == "Demonstrated"
+    assert "content_hidden" not in analysis
+    assert "task manager" in analysis["transcript_summary"].lower()
+
+    # The defense trace keeps its safe summary (no hidden-content placeholder).
+    defense_traces = [t for t in body["evidence_traces"] if t.get("source_type") == "Project Defense"]
+    assert defense_traces
+    assert "hidden from this public report" not in (defense_traces[0].get("safe_summary") or "").lower()
+
+
+def _video_chip_with_ssn() -> dict:
+    """A timestamped video-evidence chip whose transcript-derived summary carries
+    the SSN-shaped marker (the chips are built from the SAME transcript segments)."""
+    return {
+        "label": "Video 00:12",
+        "timestamp_start_s": 12.0,
+        "timestamp_end_s": 25.0,
+        "short_summary": f"my social security number is {_DEFENSE_SSN}",
+        "related_skill": "Python",
+        "source": "project_defense_video",
+        "source_type": "video_transcript",
+    }
+
+
+def _video_trace_with_ssn() -> dict:
+    """A ``Video Evidence`` evidence trace derived from the flagged transcript."""
+    return {
+        "trace_id": "video-chip-001",
+        "source_type": "Video Evidence",
+        "source_title": "Video 00:12",
+        "skill_names": ["Python"],
+        "qualitative_status": "Supporting evidence",
+        "safe_summary": f"my social security number is {_DEFENSE_SSN}",
+        "safe_detail": "A timestamped moment in the recorded Project Defense.",
+        "location_type": "video_timestamp",
+        "timestamp_label": "Video 00:12",
+        "public_url": None,
+        "public_url_label": None,
+        "is_publicly_openable": False,
+    }
+
+
+def test_public_report_flagged_defense_omits_video_chips_and_traces(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """Requirement #3: video/timestamp chips (and their ``Video Evidence`` traces)
+    are DERIVED from the same Project Defense transcript, so when its privacy review
+    is not clean they must fail closed too — the SSN-shaped snippet must not leak."""
+    report = _flagged_defense_report()
+    report["video_evidence_chips"] = [_video_chip_with_ssn()]
+    report["evidence_traces"].append(_video_trace_with_ssn())
+
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    assert _DEFENSE_SSN not in response.text
+    assert "social security number" not in response.text.lower()
+
+    body = response.json()
+    # Video chips derived from the flagged transcript are omitted entirely.
+    assert body["video_evidence_chips"] == []
+    # The Video Evidence trace survives structurally but its derived text is gone.
+    video_traces = [t for t in body["evidence_traces"] if t.get("source_type") == "Video Evidence"]
+    assert video_traces, "expected the video-evidence trace to still be present"
+    for trace in video_traces:
+        assert _DEFENSE_SSN not in json.dumps(trace)
+        assert "hidden from the public report" in (trace.get("safe_summary") or "").lower()
+        assert trace.get("safe_detail") == ""
+
+
+def test_public_report_clean_defense_keeps_video_chips_and_traces(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A clean Project Defense keeps its (safe) video chips and their traces — the
+    video fail-closed path is NOT triggered for a clean transcript."""
+    clean = _flagged_defense_report(status="clean")
+    clean["project_defense_analysis"]["transcript_summary"] = (
+        "Transcript (9 words): I built a task manager with FastAPI."
+    )
+    clean["project_defense_analysis"]["risk_flags"] = []
+    clean["evidence_traces"][0]["safe_summary"] = "The candidate explained how they built the project."
+    clean["evidence_traces"][0]["safe_detail"] = "Process/ownership evidence."
+    clean["evidence_traces"][0]["answer_excerpt"] = None
+    clean["video_evidence_chips"] = [
+        {
+            "label": "Video 00:12",
+            "timestamp_start_s": 12.0,
+            "timestamp_end_s": 25.0,
+            "short_summary": "I built the backend API using FastAPI.",
+            "related_skill": "Python",
+            "source": "project_defense_video",
+            "source_type": "video_transcript",
+        }
+    ]
+    clean["evidence_traces"].append(
+        {
+            "trace_id": "video-chip-001",
+            "source_type": "Video Evidence",
+            "source_title": "Video 00:12",
+            "skill_names": ["Python"],
+            "qualitative_status": "Supporting evidence",
+            "safe_summary": "I built the backend API using FastAPI.",
+            "safe_detail": "A timestamped moment in the recorded Project Defense.",
+            "location_type": "video_timestamp",
+            "public_url": None,
+            "is_publicly_openable": False,
+        }
+    )
+
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, clean)
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    # Clean transcript: video chips are preserved (with their safe summary).
+    assert len(body["video_evidence_chips"]) == 1
+    assert "fastapi" in body["video_evidence_chips"][0]["short_summary"].lower()
+    video_traces = [t for t in body["evidence_traces"] if t.get("source_type") == "Video Evidence"]
+    assert video_traces
+    assert "hidden from the public report" not in (video_traces[0].get("safe_summary") or "").lower()
+
+
+# ── P0: orphaned transcript-derived artifacts with NO analysis object ─────────
+# A missing / non-dict ``project_defense_analysis`` carries NO explicit
+# clean/shareable status, yet transcript-derived Video chips + Project Defense /
+# Video Evidence traces can still exist (a legacy or partially-written row). These
+# must fail CLOSED: without a clean analysis object, none of their derived text may
+# reach the public report.
+
+
+def _orphaned_transcript_report() -> dict:
+    """A report with NO analysis object but live transcript-derived chips/traces.
+
+    ``project_defense_analysis`` is ``None`` (missing/orphaned), while the SSN-shaped
+    marker still rides on a Video chip ``short_summary``, a ``Project Defense`` trace
+    ``safe_summary`` / ``answer_excerpt``, and a ``Video Evidence`` trace summary.
+    """
+    return _minimal_report(
+        claimed_skills=["Python"],
+        project_defense_analysis=None,
+        video_evidence_chips=[_video_chip_with_ssn()],
+        evidence_traces=[
+            {
+                "trace_id": "project-defense",
+                "source_type": "Project Defense",
+                "source_title": "Project Defense",
+                "skill_names": ["Python"],
+                "qualitative_status": "Supporting evidence",
+                "safe_summary": (
+                    f"Transcript (11 words): my social security number is {_DEFENSE_SSN} and I built it."
+                ),
+                "safe_detail": f"Answer text: my SSN is {_DEFENSE_SSN}.",
+                "answer_excerpt": f"my SSN is {_DEFENSE_SSN}",
+                "question_text": "What did you build?",
+                "location_type": "defense_overview",
+                "public_url": None,
+                "public_url_label": None,
+                "is_publicly_openable": False,
+            },
+            _video_trace_with_ssn(),
+        ],
+    )
+
+
+def test_public_report_missing_analysis_withholds_orphaned_chips_and_traces(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """Requirements #3/#4/#5: with the analysis object missing (``None``), orphaned
+    transcript-derived video chips and Defense/Video traces must fail closed — the
+    SSN-shaped value must not appear anywhere, video chips are dropped, and the
+    neutral withheld wording appears instead."""
+    response = _publish_and_get_with_report(
+        client, mem_store, monkeypatch, _orphaned_transcript_report()
+    )
+    assert response.status_code == 200, response.text
+
+    # No transcript-derived sensitive text anywhere in the serialized payload.
+    assert _DEFENSE_SSN not in response.text
+    assert "social security number" not in response.text.lower()
+    assert "answer text: my ssn" not in response.text.lower()
+
+    body = response.json()
+    # No analysis object to project — the missing row stays absent, never fabricated.
+    assert body["project_defense_analysis"] is None
+    # Orphaned video chips (requirement #3) are withheld entirely.
+    assert body["video_evidence_chips"] == []
+
+    # The Project Defense trace (requirement #4) keeps its structure but its derived
+    # free text is replaced with the neutral withheld wording.
+    defense_traces = [t for t in body["evidence_traces"] if t.get("source_type") == "Project Defense"]
+    assert defense_traces
+    for trace in defense_traces:
+        assert _DEFENSE_SSN not in json.dumps(trace)
+        assert trace.get("answer_excerpt") is None
+        assert trace.get("question_text") is None
+        assert "hidden from this public report" in (trace.get("safe_summary") or "").lower()
+
+    # The Video Evidence trace is likewise redacted (requirement #4).
+    video_traces = [t for t in body["evidence_traces"] if t.get("source_type") == "Video Evidence"]
+    assert video_traces
+    for trace in video_traces:
+        assert _DEFENSE_SSN not in json.dumps(trace)
+        assert "hidden from the public report" in (trace.get("safe_summary") or "").lower()
+
+
+def test_public_report_non_dict_analysis_still_withholds_orphaned_artifacts(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A non-dict (malformed) analysis is treated exactly like a missing one:
+    transcript-derived artifacts still fail closed."""
+    report = _orphaned_transcript_report()
+    report["project_defense_analysis"] = "not-a-dict"
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    assert _DEFENSE_SSN not in response.text
+    body = response.json()
+    assert body["video_evidence_chips"] == []
+    defense_traces = [t for t in body["evidence_traces"] if t.get("source_type") == "Project Defense"]
+    assert defense_traces
+    assert all(
+        "hidden from this public report" in (t.get("safe_summary") or "").lower()
+        for t in defense_traces
+    )

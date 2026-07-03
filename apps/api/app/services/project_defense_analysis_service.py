@@ -47,6 +47,100 @@ _MIN_WORDS_FOR_SHORT_PENALTY: int = 50    # fewer → "extremely short" penalty
 _MIN_WORDS_FOR_LENGTH_BONUS: int = 100   # ≥ this → length bonus earned
 
 
+# ── Transcript-only sensitive patterns (grouped card numbers) ─────────────────
+# The shared ``scan_proof_data`` scanner catches SSN-shaped values and *unbroken*
+# payment-card digit runs, but NOT a card number a student reads aloud in groups
+# separated by spaces, repeated spaces, or hyphens ("4111 1111 1111 1111",
+# "4111  1111 1111 1111", "6011 111 1111 1111", "4111-1111-1111-1111", Amex
+# "3782 822463 10005"). Because the transcript summary is built from the raw
+# transcript's first sentence, a grouped card number would otherwise leave the
+# scan "clean" and ride out into the public report. This transcript-specific check
+# finds separator-tolerant 13-19 digit candidates, normalizes them to digits only,
+# and flags any that pass Luhn validation OR match a known card test number —
+# escalating the scan to ``flagged`` so the public fail-closed projection hides the
+# summary. Kept local so the shared workflow scanner (used by unrelated flows) is
+# left untouched, and deliberately conservative for public privacy without
+# over-flagging arbitrary short numeric strings.
+
+# A run of digits split into groups by spaces / repeated spaces / tabs / hyphens:
+# a first digit followed by 12-18 further digits, each preceded by zero or more
+# separators — i.e. a separator-tolerant 13-19 digit candidate. Normalizing the
+# match to digits only collapses "4111  1111 1111 1111" (double space),
+# "6011 111 1111 1111" (alternate grouping) and "4111-1111-1111-1111" (hyphens)
+# to the same underlying candidate before validation.
+_CARD_CANDIDATE_RE = re.compile(r"\d(?:[ \t\-]*\d){12,18}")
+
+# Well-known payment-card *test* numbers that are card-shaped but NOT Luhn-valid
+# (so a Luhn check alone would miss them). Real card numbers are Luhn-valid by
+# definition and are caught by ``_luhn_valid``; this set only backstops common
+# non-checksum test PANs. Digits-only, separators already stripped.
+_KNOWN_TEST_CARD_NUMBERS = frozenset(
+    {
+        "6011111111111111",  # Discover-style grouped test PAN (fails Luhn)
+    }
+)
+
+# Recognized major-card BIN prefixes. A 13-19 digit candidate beginning with one
+# of these is treated as card-like even when it fails the Luhn checksum — a spoken
+# card number is easily mis-grouped or partially misheard, so a strict checksum
+# would let a clearly card-shaped value (e.g. an alternately-grouped Discover PAN)
+# slip through into the public report. Conservative for public privacy; a normal
+# technical transcript has no 13-19 digit run for these to match against.
+_CARD_BIN_PREFIXES = ("4", "34", "37", "6011", "65", "35", "36", "38")
+
+
+def _luhn_valid(digits: str) -> bool:
+    """``True`` when a digit string satisfies the Luhn checksum (real card PANs)."""
+    total = 0
+    for index, char in enumerate(reversed(digits)):
+        value = ord(char) - 48
+        if index % 2 == 1:
+            value *= 2
+            if value > 9:
+                value -= 9
+        total += value
+    return total % 10 == 0
+
+
+def _looks_like_card_number(digits: str) -> bool:
+    """``True`` when a digits-only string is a card-like 13-19 digit PAN.
+
+    Accepts a candidate when it passes the Luhn checksum (real cards), matches a
+    known non-checksum test PAN, or begins with a recognized major-card BIN prefix
+    (Visa / Amex / Mastercard 51-55 / Discover / JCB / Diners). The prefix backstop
+    keeps a clearly card-shaped value from slipping through just because a spoken,
+    mis-grouped reading breaks its checksum.
+    """
+    if not (13 <= len(digits) <= 19):
+        return False
+    if _luhn_valid(digits) or digits in _KNOWN_TEST_CARD_NUMBERS:
+        return True
+    if digits.startswith(_CARD_BIN_PREFIXES):
+        return True
+    # Mastercard classic 51-55 BIN range.
+    if 51 <= int(digits[:2]) <= 55:
+        return True
+    return False
+
+
+def _transcript_has_spaced_card(text: str) -> bool:
+    """``True`` when the transcript contains a space/hyphen-grouped card number.
+
+    Complements the shared scanner (whose credit-card regex only matches an
+    unbroken digit run) so a spoken, grouped card number — including
+    double-spaced / alternately-grouped / hyphenated variants — still flags the
+    defense. Each separator-tolerant candidate is normalized to digits only and
+    accepted by :func:`_looks_like_card_number` (Luhn checksum, known test PAN, or
+    a recognized card BIN prefix). Conservative for public privacy without
+    over-flagging arbitrary short numeric strings.
+    """
+    for match in _CARD_CANDIDATE_RE.finditer(text or ""):
+        digits = re.sub(r"\D", "", match.group(0))
+        if _looks_like_card_number(digits):
+            return True
+    return False
+
+
 # ── Ownership signal patterns ─────────────────────────────────────────────────
 # Phrases that suggest the student personally built the project.
 # Each phrase is matched case-insensitively.
@@ -259,7 +353,12 @@ def analyze_defense_transcript(
     # ── Privacy scan on transcript ─────────────────────────────────────────────
     privacy_result = scan_proof_data({"transcript": transcript_text})
     result.privacy_scan_status = privacy_result.status
-    if privacy_result.contains_sensitive_data:
+    # Escalate on a grouped/spoken card number the shared scanner misses, so a
+    # flagged transcript can never leave the summary "clean" for the public report.
+    spaced_card = _transcript_has_spaced_card(transcript_text or "")
+    if spaced_card:
+        result.privacy_scan_status = "flagged"
+    if privacy_result.contains_sensitive_data or spaced_card:
         result.risk_flags.append(
             "Transcript contains potential sensitive data "
             "(API keys, tokens, credentials, or PII). "
