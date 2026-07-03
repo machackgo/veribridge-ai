@@ -8,7 +8,7 @@
 import { render, screen, waitFor, fireEvent } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
-import type { PrivateWorkPassport, WorkPassportStatus } from "@/lib/vbr-api"
+import type { PrivateWorkPassport, VaultSkillSummary, WorkPassportStatus } from "@/lib/vbr-api"
 
 vi.mock("@/lib/vbr-api", async (importActual) => ({
   ...(await importActual<typeof import("@/lib/vbr-api")>()),
@@ -251,5 +251,208 @@ describe("PrivatePassportView", () => {
     expect(screen.getByTestId("passport-no-evidence")).toBeInTheDocument()
     // The old "Evidence-Backed Skills" empty state no longer renders.
     expect(screen.queryByTestId("passport-no-skills")).not.toBeInTheDocument()
+  })
+})
+
+// ── Evidence graph redesign (Phase 1) ─────────────────────────────────────────
+
+function makeVaultSummary(overrides: Partial<VaultSkillSummary> = {}): VaultSkillSummary {
+  return {
+    skill: "Python",
+    skill_slug: "python",
+    category: "Programming Language",
+    status: "Demonstrated",
+    source_labels: ["GitHub Proof"],
+    project_ids: ["proj-1"],
+    project_titles: ["Skill Evidence Tracker"],
+    project_count: 1,
+    proof_source_counts: { "GitHub Proof": 2 },
+    proof_count: 2,
+    attached_count: 1,
+    unattached_count: 1,
+    has_unattached: true,
+    summary: "",
+    previews: [],
+    more_count: 0,
+    limitations: [],
+    ...overrides,
+  }
+}
+
+function makeGraphPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  return makePassport({
+    evidence_graph_overview: {
+      project_count: 1,
+      published_report_count: 0,
+      skills_with_evidence: 2,
+      proof_count: 3,
+      attached_proof_count: 2,
+      unattached_proof_count: 1,
+      next_actions: ["Publish a recruiter-safe report for your strongest project."],
+    },
+    skills: [
+      {
+        skill: "Python",
+        status: "Demonstrated",
+        evidence_chip_count: 2,
+        project_count: 1,
+        evidence_sources: ["GitHub Proof"],
+        projects: [],
+        evidence_chips: [],
+        strongest_project_title: "Skill Evidence Tracker",
+        strongest_project_status: "Demonstrated",
+        notes: "",
+        limitations: [],
+      },
+    ],
+    projects: [
+      {
+        ...makePassport().projects[0],
+        proof_chain: {
+          github: true,
+          website: false,
+          document: true,
+          project_defense: true,
+          video: true,
+          attached_count: 4,
+          total_count: 5,
+          missing: ["Website Proof"],
+        },
+        top_skills: [
+          { skill: "Python", status: "Demonstrated" },
+          { skill: "React", status: "Partially demonstrated" },
+        ],
+      },
+    ],
+    vault_skill_summaries: [makeVaultSummary()],
+    vault_proof_count: 3,
+    vault_unattached_count: 1,
+    ...overrides,
+  })
+}
+
+describe("PrivatePassportView — evidence graph (Phase 1)", () => {
+  beforeEach(() => {
+    const p = makeGraphPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("renders the Evidence Graph Overview with stats and next actions", async () => {
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("evidence-graph-overview")).toBeInTheDocument()
+    const stats = screen.getAllByTestId("overview-stat")
+    const byStat = Object.fromEntries(stats.map((el) => [el.getAttribute("data-stat"), el.textContent]))
+    expect(byStat["projects"]).toContain("1")
+    expect(byStat["published-reports"]).toContain("0")
+    expect(byStat["skills-with-evidence"]).toContain("2")
+    expect(byStat["attached-proofs"]).toContain("2")
+    expect(byStat["unattached-proofs"]).toContain("1")
+    expect(screen.getByTestId("overview-next-actions")).toHaveTextContent(
+      "Publish a recruiter-safe report",
+    )
+  })
+
+  it("derives an overview from base fields when the payload has none (older payloads)", async () => {
+    const p = makeGraphPassport({ evidence_graph_overview: undefined })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("evidence-graph-overview")).toBeInTheDocument()
+    const stats = screen.getAllByTestId("overview-stat")
+    const byStat = Object.fromEntries(stats.map((el) => [el.getAttribute("data-stat"), el.textContent]))
+    expect(byStat["projects"]).toContain("1")
+    expect(byStat["unattached-proofs"]).toContain("1")
+  })
+
+  it("renders the Project Portfolio before Skill Intelligence", async () => {
+    render(<PrivatePassportView />)
+
+    const portfolio = await screen.findByRole("heading", { name: "Project Portfolio" })
+    const skillIntelligence = screen.getByText("Skill Intelligence")
+    expect(
+      portfolio.compareDocumentPosition(skillIntelligence) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  it("shows proof-chain completeness with present and missing sources on the project card", async () => {
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("project-proof-chain")).toBeInTheDocument()
+    const items = screen.getAllByTestId("proof-chain-item")
+    expect(items).toHaveLength(5)
+    const bySource = Object.fromEntries(items.map((el) => [el.getAttribute("data-source"), el.getAttribute("data-present")]))
+    expect(bySource["GitHub Proof"]).toBe("true")
+    expect(bySource["Website Proof"]).toBe("false")
+    expect(bySource["Project Defense"]).toBe("true")
+    // Gaps are stated honestly.
+    expect(screen.getByTestId("project-gaps")).toHaveTextContent("Website Proof")
+  })
+
+  it("derives the proof chain from evidence sources when the payload has none", async () => {
+    const base = makeGraphPassport()
+    const p = makeGraphPassport({
+      projects: [{ ...base.projects[0], proof_chain: undefined }],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("project-proof-chain")).toBeInTheDocument()
+    const items = screen.getAllByTestId("proof-chain-item")
+    const bySource = Object.fromEntries(items.map((el) => [el.getAttribute("data-source"), el.getAttribute("data-present")]))
+    // evidence_sources: GitHub, Document, Project Defense, Video — no Website.
+    expect(bySource["GitHub Proof"]).toBe("true")
+    expect(bySource["Website Proof"]).toBe("false")
+  })
+
+  it("shows the project's top demonstrated skills with qualitative labels", async () => {
+    render(<PrivatePassportView />)
+
+    const topSkills = await screen.findByTestId("project-top-skills")
+    expect(topSkills).toHaveTextContent("Python · Demonstrated")
+    expect(topSkills).toHaveTextContent("React · Partially demonstrated")
+  })
+
+  it("links the project card to its connected skills section", async () => {
+    render(<PrivatePassportView />)
+
+    const link = await screen.findByTestId("view-connected-skills-link")
+    expect(link).toHaveAttribute("href", "#skill-intelligence")
+  })
+
+  it("shows the strongest related project on the skill card", async () => {
+    render(<PrivatePassportView />)
+
+    const strongest = await screen.findByTestId("vault-summary-strongest-project")
+    expect(strongest).toHaveTextContent("Skill Evidence Tracker")
+    expect(strongest).toHaveTextContent("Demonstrated")
+  })
+
+  it("renders the Evidence Vault section with an unattached-proof next action", async () => {
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("evidence-vault-section")).toBeInTheDocument()
+    expect(screen.getByTestId("vault-unattached-action")).toHaveTextContent("1 unattached proof item")
+  })
+
+  it("confirms all proofs attached when nothing is unattached", async () => {
+    const p = makeGraphPassport({ vault_unattached_count: 0 })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("evidence-vault-section")).toBeInTheDocument()
+    expect(screen.getByTestId("vault-all-attached")).toBeInTheDocument()
+    expect(screen.queryByTestId("vault-unattached-action")).not.toBeInTheDocument()
+  })
+
+  it("keeps the Skill Report link working from the skill card", async () => {
+    render(<PrivatePassportView />)
+
+    const link = await screen.findByTestId("view-skill-report")
+    expect(link).toHaveAttribute("href", "/student/vbr/passport/skills/python")
   })
 })

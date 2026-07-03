@@ -206,6 +206,48 @@ describe("PublicPassportView", () => {
     }
   })
 
+  it("renders featured projects before the skills section (projects-first)", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const projectsHeading = screen.getByRole("heading", { name: "Featured Verified Build Reports" })
+    const skillsSection = screen.getByText("Top Evidence-Backed Skills")
+    expect(
+      projectsHeading.compareDocumentPosition(skillsSection) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  it("shows a safe proof-chain on featured projects, derived from evidence sources", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.getByTestId("public-project-proof-chain")).toBeInTheDocument()
+    const items = screen.getAllByTestId("public-proof-chain-item")
+    expect(items).toHaveLength(5)
+    const bySource = Object.fromEntries(items.map((el) => [el.getAttribute("data-source"), el.getAttribute("data-present")]))
+    // evidence_sources: GitHub Proof + Project Defense (+ VBR Report, not a chain step).
+    expect(bySource["GitHub Proof"]).toBe("true")
+    expect(bySource["Project Defense"]).toBe("true")
+    expect(bySource["Website Proof"]).toBe("false")
+    // Missing sources are stated honestly, with labels only.
+    expect(screen.getByTestId("public-project-gaps")).toHaveTextContent("Website Proof")
+  })
+
+  it("renders the compact evidence-graph overview line", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const overview = screen.getByTestId("public-passport-overview")
+    expect(overview).toHaveTextContent("1 verified project")
+    expect(overview).toHaveTextContent("2 evidence-backed skills")
+  })
+
   it("never renders raw/private fields, numeric scores, /100, percentages, or 'fully verified'", async () => {
     vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
 

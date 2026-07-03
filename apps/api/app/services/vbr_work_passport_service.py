@@ -298,6 +298,55 @@ def _evidence_sources(report: dict[str, Any], has_public_report: bool) -> list[s
     return sources
 
 
+# The five attachable proof-chain sources a project card reports completeness
+# for. "VBR Report" is a publish outcome, not an attachable proof source, so it
+# is deliberately not part of the chain.
+_PROOF_CHAIN_STEPS = [
+    ("github", _SRC_GITHUB),
+    ("website", _SRC_WEBSITE),
+    ("document", _SRC_DOCUMENT),
+    ("project_defense", _SRC_DEFENSE),
+    ("video", _SRC_VIDEO),
+]
+
+_MAX_PROJECT_TOP_SKILLS = 5
+
+
+def _proof_chain(evidence_sources: list[str]) -> dict[str, Any]:
+    """Per-project proof-chain completeness, derived purely from the already
+    recruiter-safe evidence source badges. Booleans + missing labels only —
+    never a numeric completeness score."""
+    present = set(evidence_sources)
+    chain: dict[str, Any] = {key: label in present for key, label in _PROOF_CHAIN_STEPS}
+    chain["attached_count"] = sum(1 for _, label in _PROOF_CHAIN_STEPS if label in present)
+    chain["total_count"] = len(_PROOF_CHAIN_STEPS)
+    chain["missing"] = [label for _, label in _PROOF_CHAIN_STEPS if label not in present]
+    return chain
+
+
+def _project_top_skills(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The strongest evidence-backed skills a project demonstrates, ranked by
+    qualitative label (best first) and capped. Merged across duplicate-attempt
+    reports, keeping each skill's best label."""
+    best: dict[str, dict[str, Any]] = {}
+    for report in reports:
+        for row in report.get("skill_evidence") or []:
+            skill = str(row.get("skill") or "").strip()
+            if not skill:
+                continue
+            status_label = str(row.get("status") or "Not assessed")
+            entry = best.get(skill.lower())
+            if entry is None or _STATUS_ORDER.get(status_label, 99) < _STATUS_ORDER.get(
+                entry["status"], 99
+            ):
+                best[skill.lower()] = {"skill": skill, "status": status_label}
+    ranked = sorted(
+        best.values(),
+        key=lambda s: (_STATUS_ORDER.get(s["status"], 99), s["skill"].lower()),
+    )
+    return ranked[:_MAX_PROJECT_TOP_SKILLS]
+
+
 def _sanitize_skill_chips(report: dict[str, Any], skill: str) -> list[dict[str, Any]]:
     """Sanitized video-evidence snippets tied to a skill (no raw media URLs)."""
     skill_l = skill.strip().lower()
@@ -315,6 +364,40 @@ def _sanitize_skill_chips(report: dict[str, Any], skill: str) -> list[dict[str, 
                 }
             )
     return chips
+
+
+def _project_ref_identity(summary: dict[str, Any], *, public: bool) -> str:
+    """Stable identity for a project reference inside a skill drilldown.
+
+    Two genuinely different projects can share a human-readable title (e.g. two
+    repos both called "Portfolio"). Deduping references by title alone would
+    collapse them into one Skill Intelligence reference — undercounting
+    ``project_count`` and merging unrelated statuses/traces. This keys on a
+    stable per-project identity instead, so same-title / different-repository
+    projects stay distinct while repeated attempts of one grouped project (which
+    share the same representative summary) still collapse to one reference.
+
+    Priority:
+      1. private/internal ``project_id`` — strongest identity, private only.
+      2. ``public_report_path`` — unique per grouped project, public-safe.
+      3. repository ``owner/name`` — distinguishes same-title different repos.
+      4. normalized title — final human-readable fallback only.
+
+    The private id is never consulted for the public projection (it is absent
+    from public summaries and must not leak into public output).
+    """
+    if not public:
+        pid = str(summary.get("project_id") or "").strip()
+        if pid:
+            return f"id:{pid}"
+    path = str(summary.get("public_report_path") or "").strip().lower()
+    if path:
+        return f"path:{path}"
+    repo = str(summary.get("repo_full_name") or "").strip().lower()
+    if repo:
+        return f"repo:{repo}"
+    title = str(summary.get("project_title") or "").strip().lower()
+    return f"title:{title}"
 
 
 def _aggregate_skills_with_detail(
@@ -373,7 +456,7 @@ def _aggregate_skills_with_detail(
                     "evidence_traces": [],
                     "notes": notes,
                     "limitations": [],
-                    "_seen_projects": set(),
+                    "_ref_by_ident": {},
                 }
                 by_skill[key] = entry
             else:
@@ -391,9 +474,12 @@ def _aggregate_skills_with_detail(
                 if str(tid) in report_traces
             ]
 
-            title_key = project_title.strip().lower()
-            if title_key not in entry["_seen_projects"]:
-                entry["_seen_projects"].add(title_key)
+            # Dedupe references by a stable per-project identity, NOT by title:
+            # two distinct projects can share a title but differ by repository /
+            # public report path, and must stay as separate references.
+            ref_ident = _project_ref_identity(summary, public=public)
+            existing = entry["_ref_by_ident"].get(ref_ident)
+            if existing is None:
                 entry["project_count"] += 1
                 ref: dict[str, Any] = {
                     "project_title": project_title,
@@ -409,14 +495,19 @@ def _aggregate_skills_with_detail(
                 }
                 if not public:
                     ref["project_id"] = summary.get("project_id")
+                entry["_ref_by_ident"][ref_ident] = ref
                 entry["projects"].append(ref)
             else:
-                # Same project seen again (e.g. another claimed skill row): merge
-                # any additional traces into the existing per-project group.
-                for existing in entry["projects"]:
-                    if existing.get("project_title", "").strip().lower() == title_key:
-                        existing["evidence_traces"].extend(project_skill_traces)
-                        break
+                # Same project seen again (another attempt in the grouped
+                # project, or another skill row): merge any additional traces
+                # into the existing per-project group and keep the strongest
+                # qualitative label any attempt earned for this skill, so a
+                # later stronger attempt is never masked by the representative.
+                existing["evidence_traces"].extend(project_skill_traces)
+                if _STATUS_ORDER.get(status_label, 99) < _STATUS_ORDER.get(
+                    str(existing.get("skill_status")), 99
+                ):
+                    existing["skill_status"] = status_label
 
             for src in proj_sources:
                 if src not in entry["evidence_sources"]:
@@ -430,7 +521,7 @@ def _aggregate_skills_with_detail(
 
     skills: list[dict[str, Any]] = []
     for entry in by_skill.values():
-        entry.pop("_seen_projects", None)
+        entry.pop("_ref_by_ident", None)
         # Dedupe chips and cap so the drilldown stays scannable.
         seen: set[tuple[str, str]] = set()
         deduped: list[dict[str, Any]] = []
@@ -471,6 +562,15 @@ def _aggregate_skills_with_detail(
                 seen_ref.add(tk)
                 ref_traces.append(trace)
             ref["evidence_traces"] = ref_traces[:_MAX_SKILL_TRACES]
+        # The single project where this skill is most strongly evidenced —
+        # ranked by that project's qualitative label for THIS skill.
+        strongest = min(
+            entry["projects"],
+            key=lambda ref: _STATUS_ORDER.get(str(ref.get("skill_status")), 99),
+            default=None,
+        )
+        entry["strongest_project_title"] = strongest.get("project_title") if strongest else None
+        entry["strongest_project_status"] = strongest.get("skill_status") if strongest else None
         if entry["status"] in {"Needs review", "Not assessed"}:
             entry["limitations"].append(
                 "This skill is not yet strongly evidenced — treat it as a claim pending more proof."
@@ -885,6 +985,10 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
                 "claimed_skills": claimed_skills,
                 "evidence_sources": evidence_sources,
                 "evidence_package": evidence_package,
+                # Proof-chain completeness across the five attachable sources.
+                "proof_chain": _proof_chain(evidence_sources),
+                # Strongest evidence-backed skills this project demonstrates.
+                "top_skills": _project_top_skills([report for _, report in group]),
                 # Number of underlying evidence attempts merged into this card.
                 "attempt_count": len(group),
                 # Owner-only publish status for this project's recruiter link.
@@ -899,13 +1003,16 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
 
     published_report_count = sum(1 for p in project_summaries if p["report"]["is_public"])
 
-    # Skills aggregate over one representative report per distinct project (so
-    # ``project_count`` reflects distinct projects, not duplicate attempts), and
-    # carry the safe skill-drilldown detail.
-    skills = _aggregate_skills_with_detail(
-        list(zip(project_summaries, [group[0][1] for group in groups])),
-        public=False,
-    )
+    # Skills aggregate over all reports in each grouped project (so skills from
+    # all attempts are included), while ``project_count`` reflects distinct
+    # projects, not duplicate attempts. Each summary is paired with every report
+    # from its group; deduplication happens within the aggregation function.
+    skill_cards = [
+        (project_summaries[i], report)
+        for i, group in enumerate(groups)
+        for _, report in group
+    ]
+    skills = _aggregate_skills_with_detail(skill_cards, public=False)
 
     # ── Student Proof Vault (Layer 1 — compact skill dashboard) ──────────────
     # The passport is no longer attached-proof-only: it aggregates EVERY safe,
@@ -919,6 +1026,36 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     vault_items = collect_vault_items(db, pipeline_db, str(user_id))
     vault_skill_summaries = collect_skill_summaries(db, pipeline_db, str(user_id), items=vault_items)
     vault_unattached_count = sum(1 for item in vault_items if not item.get("is_attached_to_project"))
+
+    # ── Evidence Graph Overview ──────────────────────────────────────────────
+    # The passport is an evidence graph (Project ↔ Skill ↔ Proof). This compact
+    # summary answers "what's here and what's next" at the top of the page —
+    # counts and next actions only, never a numeric score.
+    next_actions: list[str] = []
+    if not project_summaries:
+        next_actions.append("Create a Project Defense to start your first evidence-backed project.")
+    elif published_report_count == 0:
+        next_actions.append("Publish a recruiter-safe report for your strongest project.")
+    incomplete_chains = sum(1 for p in project_summaries if p["proof_chain"]["missing"])
+    if incomplete_chains:
+        next_actions.append(
+            f"{incomplete_chains} project(s) have missing proof sources — attach more evidence "
+            "to complete their proof chains."
+        )
+    if vault_unattached_count:
+        next_actions.append(
+            f"Attach {vault_unattached_count} unattached proof item(s) to a project so they "
+            "count as project evidence."
+        )
+    evidence_graph_overview = {
+        "project_count": len(project_summaries),
+        "published_report_count": published_report_count,
+        "skills_with_evidence": len(vault_skill_summaries),
+        "proof_count": len(vault_items),
+        "attached_proof_count": len(vault_items) - vault_unattached_count,
+        "unattached_proof_count": vault_unattached_count,
+        "next_actions": next_actions[:3],
+    }
 
     limitations: list[str] = []
     if not projects:
@@ -958,6 +1095,7 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         "public_slug": status_part["public_slug"],
         "public_path": status_part["public_path"],
         "published_at": status_part["published_at"],
+        "evidence_graph_overview": evidence_graph_overview,
         "skills": skills,
         "projects": project_summaries,
         "evidence_source_counts": evidence_source_counts,
@@ -1011,9 +1149,9 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         if project.get("public_report_token")
     ]
 
-    featured_reports: list[dict[str, Any]] = []
     featured_summaries: list[dict[str, Any]] = []
-    for group in _group_project_pairs(published_pairs):
+    featured_groups = _group_project_pairs(published_pairs)
+    for group in featured_groups:
         representative_project, representative_report = group[0]
         token = representative_project.get("public_report_token")
         claimed_skills = _dedupe_preserve(
@@ -1027,22 +1165,27 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
             "project_summary": representative_report.get("project_description") or "",
             "claimed_skills": claimed_skills,
             "evidence_sources": evidence_sources,
+            # Safe proof-chain completeness (booleans + source labels only) so a
+            # recruiter can see what is verified and what is missing.
+            "proof_chain": _proof_chain(evidence_sources),
             # The token is intentionally linked (the recruiter follows this path).
             # We never expose a bare token field — only the public report path.
             "public_report_path": f"{_REPORT_PATH_PREFIX}{token}",
             "published_at": representative_project.get("public_report_published_at"),
         }
         featured_summaries.append(summary)
-        featured_reports.append(representative_report)
 
-    # Top skills are aggregated only from featured (published-report) projects,
-    # so the public passport reflects only published evidence. Qualitative only,
-    # with a safe drilldown sourced exclusively from published reports.
+    # Top skills are aggregated from all reports in each featured project group,
+    # so the public passport reflects all published evidence across attempts.
+    # Qualitative only, with a safe drilldown sourced exclusively from published reports.
+    skill_cards = [
+        (featured_summaries[i], report)
+        for i, group in enumerate(featured_groups)
+        for _, report in group
+    ]
     top_skills = [
         _to_public_skill(s)
-        for s in _aggregate_skills_with_detail(
-            list(zip(featured_summaries, featured_reports)), public=True
-        )[:_MAX_TOP_SKILLS]
+        for s in _aggregate_skills_with_detail(skill_cards, public=True)[:_MAX_TOP_SKILLS]
     ]
 
     limitations: list[str] = []
