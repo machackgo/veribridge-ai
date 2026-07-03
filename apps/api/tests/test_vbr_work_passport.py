@@ -34,7 +34,6 @@ from app.main import app
 from app.services.safe_public_url import is_safe_public_url
 
 from tests.test_vbr_project_defense import (
-    DEFENSE_TRANSCRIPT,
     OTHER_USER_ID,
     USER_ID,
     VIDEO_TRANSCRIPT_SEGMENTS,
@@ -104,6 +103,20 @@ def _unpublish_project_report(client: TestClient, project_id: str):
     return client.delete(f"/api/v1/student/vbr/projects/{project_id}/public-report")
 
 
+# A substantive, project-specific defense transcript that genuinely explains
+# Python and React under the tightened transcript-only fallback: each skill is
+# named in a sentence carrying multiple distinct *non-generic* technical-depth
+# signals (authentication/middleware/schema/validation, state management/caching/
+# optimization), not merely generic "API endpoint database" vocabulary.
+_SUBSTANTIVE_DEFENSE_TRANSCRIPT = (
+    "In Python I implemented the authentication middleware and the request schema "
+    "validation, and I refactored the asynchronous job queue to cut latency. "
+    "In React I built the dashboard state management with a caching layer and "
+    "optimized the data flow between the components. One limitation is that it "
+    "does not yet support real-time updates, which I would improve next."
+)
+
+
 def _make_full_project(client: TestClient, mem_store: dict) -> str:
     github_proof_id = _seed_github_proof(mem_store)
     document_id = _seed_document_evidence(mem_store)
@@ -128,7 +141,7 @@ def _make_full_project(client: TestClient, mem_store: dict) -> str:
         "sha256": "deadbeef",
     }
     _seed_auto_video_transcript(mem_store, session_id, VIDEO_TRANSCRIPT_SEGMENTS)
-    _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+    _submit_defense(client, session_id, combined_text=_SUBSTANTIVE_DEFENSE_TRANSCRIPT)
     return project_id
 
 
@@ -723,7 +736,9 @@ def test_private_project_cards_carry_relationship_note(
     proj = _get_private(client).json()["projects"][0]
 
     note = proj["evidence_relationship_note"]
-    assert note and note.startswith("This project demonstrates ")
+    # Project Defense is explanation evidence, so a defense-explained skill now
+    # reads "partially demonstrates" — the note stays honest, never inflated.
+    assert note and note.startswith("This project partially demonstrates ")
     # Composed from safe labels only — never a score-style fragment.
     assert "%" not in note and "score" not in note.lower()
 
@@ -968,7 +983,9 @@ def test_public_featured_projects_carry_safe_skill_chips_and_note(
         assert set(row.keys()) == {"skill", "status", "skill_slug"}
         assert row["skill_slug"]
     note = proj["evidence_relationship_note"]
-    assert note and note.startswith("This project demonstrates ")
+    # Defense-explained skills are conservative ("partially demonstrates") —
+    # the public note must never promote explanation evidence to a full claim.
+    assert note and note.startswith("This project partially demonstrates ")
 
 
 # ── Identity / passport header ───────────────────────────────────────────────

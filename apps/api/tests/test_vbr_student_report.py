@@ -289,12 +289,16 @@ def test_report_includes_project_defense_analysis_and_skill_evidence(client: Tes
         assert isinstance(q["question_text"], str)
         assert "answered" in q
 
-    # Both claimed skills were mentioned/explained in DEFENSE_TRANSCRIPT, so
-    # the skill evidence table should reflect Demonstrated / Partially demonstrated
-    # — never raw numeric scores.
+    # DEFENSE_TRANSCRIPT names Python/React only inside generic-infrastructure
+    # sentences ("REST API backend using Python … PostgreSQL database"), which the
+    # tightened transcript-only fallback treats as project context — not a
+    # substantive, project-specific skill explanation. Both skills are therefore
+    # *mentioned* but not *explained well*, so the matrix shows Supporting evidence
+    # (never a raw numeric score, and never promoted to Demonstrated on generic
+    # vocabulary alone).
     statuses = {row["skill"]: row["status"] for row in body["skill_evidence"]}
-    assert statuses["Python"] in {"Demonstrated", "Partially demonstrated"}
-    assert statuses["React"] in {"Demonstrated", "Partially demonstrated"}
+    assert statuses["Python"] == "Supporting evidence"
+    assert statuses["React"] == "Supporting evidence"
     for row in body["skill_evidence"]:
         assert row["status"] in {
             "Demonstrated",
@@ -834,6 +838,107 @@ def test_defense_answer_excerpt_present_in_private_report(
     assert q_traces, "expected an answered-question trace with a bounded answer excerpt"
     assert "routing layer" in q_traces[0]["answer_excerpt"]
     assert q_traces[0]["is_publicly_openable"] is False
+
+
+# ── Owner-card answer summary: privacy-flagged / sensitive content redaction ──
+
+
+def _answer_item(answer_text: str, privacy_scan_status: str) -> dict:
+    """Build one stored defense answer evidence object for a Python skill Q."""
+    from app.services.defense_answer_evidence_service import (
+        build_defense_answer_evidence,
+    )
+
+    return build_defense_answer_evidence(
+        questions=[
+            {
+                "id": "q1",
+                "question_text": "Explain your Python work.",
+                "target_ref": {"kind": "skill_link", "skill": "Python"},
+                "sort_order": 0,
+            }
+        ],
+        segments=[{"question_id": "q1", "text": answer_text}],
+        claimed_skills=["Python"],
+        attached_proofs={},
+        privacy_scan_status=privacy_scan_status,
+    )
+
+
+_SSN_ANSWER = (
+    "I built the FastAPI endpoint and the login schema validation with error "
+    "handling; my SSN is 123-45-6789 and it is stored in the request module."
+)
+
+
+def test_private_answer_summary_redacts_flagged_ssn() -> None:
+    """A privacy-flagged answer never keeps raw PII in the owner card's
+    ``safe_answer_summary`` — even though it is the private report."""
+    from app.services.vbr_student_report import (
+        _ANSWER_SUMMARY_WITHHELD,
+        _report_safe_answer_evidence,
+    )
+
+    items = _answer_item(_SSN_ANSWER, privacy_scan_status="flagged")
+    # Precondition: the raw stored summary still carries the SSN (the transcript
+    # sanitizer strips paths/tokens, not SSNs) — that is exactly what must not
+    # survive into the owner card.
+    assert "123-45-6789" in items[0]["safe_answer_summary"]
+
+    cards = _report_safe_answer_evidence(items)
+    assert cards[0]["safe_answer_summary"] == _ANSWER_SUMMARY_WITHHELD
+    assert "123-45-6789" not in cards[0]["safe_answer_summary"]
+    # The owner still learns privacy was flagged.
+    assert cards[0]["privacy_status"] == "flagged"
+
+
+def test_private_answer_summary_redacts_ssn_even_if_status_clean() -> None:
+    """Defense in depth: a summary carrying an SSN-shaped value is neutralized
+    even if the object's privacy status somehow reads clean."""
+    from app.services.vbr_student_report import (
+        _ANSWER_SUMMARY_WITHHELD,
+        _report_safe_answer_evidence,
+    )
+
+    items = _answer_item(_SSN_ANSWER, privacy_scan_status="clean")
+    cards = _report_safe_answer_evidence(items)
+    assert cards[0]["safe_answer_summary"] == _ANSWER_SUMMARY_WITHHELD
+    assert "123-45-6789" not in str(cards[0])
+
+
+def test_public_answer_evidence_withholds_flagged_ssn() -> None:
+    """The public projection still fails closed for the flagged SSN answer."""
+    from app.services.public_report_safety_service import (
+        DEFENSE_ANSWER_WITHHELD_MESSAGE,
+        public_safe_defense_answer_evidence,
+    )
+
+    items = _answer_item(_SSN_ANSWER, privacy_scan_status="flagged")
+    public = public_safe_defense_answer_evidence(items, {"privacy_scan_status": "flagged"})
+    assert public[0]["qualitative_status"] == "Withheld for privacy"
+    assert public[0]["safe_answer_summary"] == DEFENSE_ANSWER_WITHHELD_MESSAGE
+    assert "123-45-6789" not in str(public[0])
+
+
+def test_private_answer_summary_renders_for_clean_evidence() -> None:
+    """A clean, non-sensitive answer still renders its safe summary on the
+    owner card."""
+    from app.services.vbr_student_report import (
+        _ANSWER_SUMMARY_WITHHELD,
+        _report_safe_answer_evidence,
+    )
+
+    clean_answer = (
+        "I implemented the FastAPI endpoint in Python: it validates the request "
+        "schema, calls a service module, and returns a typed response with error "
+        "handling."
+    )
+    items = _answer_item(clean_answer, privacy_scan_status="clean")
+    cards = _report_safe_answer_evidence(items)
+    assert cards[0]["safe_answer_summary"]
+    assert cards[0]["safe_answer_summary"] != _ANSWER_SUMMARY_WITHHELD
+    # Real (sanitized) answer content is preserved for the owner.
+    assert "endpoint" in cards[0]["safe_answer_summary"].lower()
 
 
 # ── Phase 1: GitHub line/function code evidence (skill_code_evidence) ─────────

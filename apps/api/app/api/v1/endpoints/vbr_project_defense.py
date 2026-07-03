@@ -183,6 +183,7 @@ def submit_defense_answers_route(
         answered_question_count=result["answered_question_count"],
         analysis=DefenseAnalysisResponse(**result["analysis"]),
         video_evidence_chips=result.get("video_evidence_chips", []),
+        defense_answer_evidence=result.get("defense_answer_evidence", []),
     )
 
 

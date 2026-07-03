@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.defense_answer_evidence import DefenseAnswerEvidenceCard
 from app.schemas.vbr_project import VBRProjectResponse
 from app.schemas.vbr_questions import VBRSessionQuestionResponse
 from app.schemas.vbr_sessions import VideoEvidenceChipResponse
@@ -102,3 +103,5 @@ class SubmitDefenseAnswersResponse(BaseModel):
     answered_question_count: int
     analysis: DefenseAnalysisResponse
     video_evidence_chips: list[VideoEvidenceChipResponse] = Field(default_factory=list)
+    # Claim-level, question-grounded answer evidence (owner-visible shape).
+    defense_answer_evidence: list[DefenseAnswerEvidenceCard] = Field(default_factory=list)

@@ -180,7 +180,10 @@ def build_evidence_chips(
             skill_patterns.append((skill, pattern))
 
     question_patterns: list[tuple[str | None, str | None, re.Pattern[str]]] = []
+    questions_by_id: dict[str, dict[str, Any]] = {}
     for question in questions or []:
+        if question.get("id"):
+            questions_by_id[str(question["id"])] = question
         target_ref = question.get("target_ref") or {}
         skill = target_ref.get("skill") if isinstance(target_ref, dict) else None
         if not skill:
@@ -198,18 +201,29 @@ def build_evidence_chips(
             continue
 
         matched_skill: str | None = None
-        for skill, pattern in skill_patterns:
-            if pattern.search(text):
-                matched_skill = skill
-                break
-
         matched_question_id: str | None = None
-        if matched_skill is None:
-            for question_id, q_skill, pattern in question_patterns:
+
+        # A segment that answers a known question is anchored to that question:
+        # its chip maps to the question's own targeted skill (if any) and is
+        # never keyword-mapped onto an unrelated skill.
+        segment_question_id = str(segment.get("question_id") or "") or None
+        if segment_question_id and segment_question_id in questions_by_id:
+            matched_question_id = segment_question_id
+            target_ref = questions_by_id[segment_question_id].get("target_ref") or {}
+            q_skill = target_ref.get("skill") if isinstance(target_ref, dict) else None
+            matched_skill = str(q_skill) if q_skill else None
+        else:
+            for skill, pattern in skill_patterns:
                 if pattern.search(text):
-                    matched_question_id = str(question_id) if question_id else None
-                    matched_skill = q_skill
+                    matched_skill = skill
                     break
+
+            if matched_skill is None:
+                for question_id, q_skill, pattern in question_patterns:
+                    if pattern.search(text):
+                        matched_question_id = str(question_id) if question_id else None
+                        matched_skill = q_skill
+                        break
 
         if matched_skill is None and matched_question_id is None:
             continue
