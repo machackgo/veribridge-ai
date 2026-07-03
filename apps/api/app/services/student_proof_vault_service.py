@@ -1284,6 +1284,64 @@ def _preview_of(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _strengthening_actions(
+    *,
+    skill: str,
+    status: str,
+    proof_types: list[str],
+    attached_count: int,
+    unattached_count: int,
+    project_titles: list[str],
+) -> list[str]:
+    """Owner-only "strengthen this skill" sentences (Proof Attachment
+    Intelligence). Deterministic and qualitative: derived only from the already
+    computed counts / proof types / status — never a score, never a mutation.
+    Unattached evidence is always framed as unattached, never as project proof.
+    """
+    actions: list[str] = []
+
+    if attached_count > 0 and status == "Demonstrated" and project_titles:
+        actions.append(
+            f"{skill} has strong attached project proof through {project_titles[0]}."
+        )
+    if unattached_count > 0:
+        if attached_count > 0:
+            actions.append(
+                f"{skill} has evidence, but {unattached_count} proof item(s) are not "
+                "attached to a project — review and attach them to strengthen a "
+                "project's proof chain."
+            )
+        else:
+            actions.append(
+                f"{skill} has evidence, but none of it is attached to a project yet — "
+                "attach proof to a project so it counts as project evidence."
+            )
+
+    # At most ONE missing-proof-type hint, and only when the skill is not
+    # already strongly demonstrated. The GitHub hint is gated to
+    # implementation-oriented skills so e.g. Communication is never told to
+    # attach code.
+    if status != "Demonstrated":
+        implementation_oriented = bool(skill_profile(skill)) or PROOF_GITHUB in proof_types
+        if implementation_oriented and PROOF_GITHUB not in proof_types:
+            actions.append(
+                "No repository implementation proof yet — attach GitHub proof to "
+                "strengthen this skill."
+            )
+        elif PROOF_WEBSITE not in proof_types and implementation_oriented:
+            actions.append(
+                "No runtime behavior proof yet — attach Website proof to show this "
+                "skill working live."
+            )
+        elif PROOF_DEFENSE not in proof_types:
+            actions.append(
+                "No explanation proof yet — complete a Project Defense to explain "
+                "this skill in your own words."
+            )
+
+    return actions[:2]
+
+
 def collect_skill_summaries(
     db: Any, pipeline_db: Any, user_id: str, *, items: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]]:
@@ -1364,14 +1422,15 @@ def collect_skill_summaries(
             limitations.append(f"{unattached} proof(s) not attached to a VBR project.")
         if len(proof_types) == 1:
             limitations.append("Supported by a single evidence source — add another to strengthen it.")
+        status = _skill_status(
+            proof_types, attached, skill=group["skill"], has_implementation_body=has_impl_body
+        )
         summaries.append(
             {
                 "skill": group["skill"],
                 "skill_slug": skill_slug(group["skill"]),
                 "category": group["category"],
-                "status": _skill_status(
-                    proof_types, attached, skill=group["skill"], has_implementation_body=has_impl_body
-                ),
+                "status": status,
                 "source_labels": group["source_labels"],
                 "project_ids": group["project_ids"],
                 "project_titles": project_titles,
@@ -1387,6 +1446,16 @@ def collect_skill_summaries(
                 "previews": previews,
                 "more_count": max(0, total - len(previews)),
                 "limitations": limitations,
+                # Owner-only Proof Attachment Intelligence: how to strengthen
+                # this skill (qualitative sentences only, never a score).
+                "strengthening_actions": _strengthening_actions(
+                    skill=group["skill"],
+                    status=status,
+                    proof_types=proof_types,
+                    attached_count=attached,
+                    unattached_count=unattached,
+                    project_titles=project_titles,
+                ),
             }
         )
 

@@ -284,6 +284,10 @@ class VaultSkillSummary(BaseModel):
     previews: list[VaultSkillPreview] = Field(default_factory=list)
     more_count: int = 0
     limitations: list[str] = Field(default_factory=list)
+    # Owner-only "how to strengthen this skill" sentences — deterministic,
+    # qualitative, honest about unattached evidence. Never numeric, never on a
+    # public surface (the compact vault dashboard is private-only).
+    strengthening_actions: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 

@@ -2131,6 +2131,18 @@ export function VaultSkillSummaryCard({
         </p>
       )}
 
+      {/* Proof Attachment Intelligence: owner-only strengthening actions —
+          qualitative "do this next" sentences, never a score, never a mutation. */}
+      {(summary.strengthening_actions?.length ?? 0) > 0 && (
+        <div data-testid="skill-strengthening-actions" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {summary.strengthening_actions!.map((action, i) => (
+            <p key={i} data-testid="skill-strengthening-action" style={{ fontSize: 11, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+              💪 {action}
+            </p>
+          ))}
+        </div>
+      )}
+
       {summary.summary && (
         <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0 }}>{summary.summary}</p>
       )}
