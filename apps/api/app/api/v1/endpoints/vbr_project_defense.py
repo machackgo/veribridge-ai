@@ -27,19 +27,29 @@ from app.api.v1.endpoints.vbr_projects import (
     get_owned_vbr_project_or_404,
 )
 from app.schemas.vbr_project_defense import (
+    AttachedProofsRequest,
+    AttachProofsResponse,
     DefenseAnalysisResponse,
+    EligibleProjectResponse,
+    EligibleProjectsResponse,
     GenerateDefenseQuestionsResponse,
+    ProjectDefenseContextResponse,
     ProjectDefenseCreateRequest,
     ProjectDefenseCreateResponse,
     ProjectDefenseMetadataResponse,
+    SafeProjectDefenseMetadataResponse,
     SubmitDefenseAnswersRequest,
     SubmitDefenseAnswersResponse,
 )
 from app.schemas.vbr_public_project_report import ProjectReportPublishStatusResponse
 from app.schemas.vbr_student_report import VBRStudentProjectReportResponse
 from app.services.vbr_project_defense import (
+    attach_proofs_to_project,
+    build_project_defense_context,
     create_project_defense,
     generate_defense_questions,
+    list_deduped_eligible_summaries,
+    merge_owned_project,
     submit_defense_answers,
 )
 from app.services.vbr_public_project_report import (
@@ -87,6 +97,86 @@ _CREATE_ERROR_DETAILS: dict[str, tuple[int, str, str]] = {
 }
 
 
+@router.get(
+    "/project-defense/eligible-projects",
+    response_model=EligibleProjectsResponse,
+    summary="List the current user's projects that can be defended",
+)
+def list_eligible_projects_route(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> EligibleProjectsResponse:
+    summaries = list_deduped_eligible_summaries(db, user_id)
+    return EligibleProjectsResponse(
+        projects=[EligibleProjectResponse(**summary) for summary in summaries]
+    )
+
+
+@router.get(
+    "/project-defense/projects/{project_id}/context",
+    response_model=ProjectDefenseContextResponse,
+    summary="Get the defense context (evidence + status) for a selected project",
+)
+def get_project_defense_context_route(
+    project_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> ProjectDefenseContextResponse:
+    project = get_owned_vbr_project_or_404(db, project_id, user_id)
+    context = build_project_defense_context(db, project, user_id)
+    # Allowlisted metadata only — the raw stored ``metadata.attached_proofs`` may
+    # contain legacy unsafe fields (raw provider JSON, storage paths, signed
+    # URLs, private IDs, numeric scores) that must never reach the workspace UI.
+    # ``VBRProjectResponse.metadata`` echoes the raw project metadata, so it is
+    # replaced with the same safe projection before serializing the response.
+    safe_project = {**project, "metadata": context["safe_metadata"]}
+    return ProjectDefenseContextResponse(
+        project=_to_project_response(safe_project),
+        metadata=SafeProjectDefenseMetadataResponse(**context["safe_metadata"]),
+        evidence=context["evidence"],
+        defense_status=context["defense_status"],
+        report_ready=context["report_ready"],
+        session_id=context["session_id"],
+        questions=[_to_question_response(row) for row in context["questions"]],
+    )
+
+
+@router.post(
+    "/project-defense/projects/{project_id}/attach-proofs",
+    response_model=AttachProofsResponse,
+    summary="Attach existing owned proofs to a selected project",
+)
+def attach_project_defense_proofs_route(
+    project_id: str,
+    body: AttachedProofsRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> AttachProofsResponse:
+    project = get_owned_vbr_project_or_404(db, project_id, user_id)
+    try:
+        result = attach_proofs_to_project(db, pipeline_db, user_id, project, body)
+    except ValueError as exc:
+        detail = _CREATE_ERROR_DETAILS.get(str(exc))
+        if detail is None:
+            raise
+        code_status, code, message = detail
+        raise HTTPException(status_code=code_status, detail={"code": code, "message": message}) from exc
+
+    # Return the same safe projection as the context endpoint. The raw stored
+    # ``metadata.attached_proofs`` may carry legacy unsafe fields (raw provider
+    # JSON, storage paths, signed URLs, private ids, raw text, numeric scores);
+    # both the echoed ``project.metadata`` and the ``metadata`` DTO are replaced
+    # with the allowlisted/sanitized projection so none of it reaches the client.
+    safe_metadata = result["safe_metadata"]
+    safe_project = {**project, "metadata": safe_metadata}
+    return AttachProofsResponse(
+        project=_to_project_response(safe_project),
+        metadata=SafeProjectDefenseMetadataResponse(**safe_metadata),
+        evidence=result["evidence"],
+    )
+
+
 @router.post(
     "/project-defense",
     response_model=ProjectDefenseCreateResponse,
@@ -125,9 +215,14 @@ def generate_defense_questions_route(
     db: Any = Depends(get_db),
 ) -> GenerateDefenseQuestionsResponse:
     project = get_owned_vbr_project_or_404(db, project_id, user_id)
+    # Ground questions in the merged evidence across any duplicate rows for this
+    # logical project (keeps the canonical id, so the session still binds here)
+    # — the plan must reflect GitHub / documents / website attached to ANY
+    # duplicate, not only whatever the selected row happens to carry.
+    merged_project = merge_owned_project(db, user_id, project)
 
     try:
-        session_id, questions = generate_defense_questions(db, project)
+        session_id, questions = generate_defense_questions(db, merged_project)
     except ValueError as exc:
         if str(exc) == "active_session_already_started":
             raise HTTPException(

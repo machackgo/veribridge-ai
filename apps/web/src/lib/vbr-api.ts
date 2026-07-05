@@ -417,6 +417,91 @@ export type ProjectDefenseSyncResult = {
   errors: string[]
 }
 
+// ─── Project-first defense flow (defend an existing project) ────────────────
+//
+// Project Defense is a defense layer on top of an existing project, not a
+// fourth standalone proof form. These responses expose only safe, already-
+// derived summaries — never raw proof payloads, storage paths, or scores.
+
+export type DefenseStatus = "not_started" | "in_progress" | "completed"
+
+export type DefenseEvidenceTypeSummary = {
+  attached: boolean
+  count: number
+  /** Safe display label only (repo full name / doc titles / website URLs). */
+  label: string
+}
+
+export type ProjectDefenseEvidenceSummary = {
+  github_proof: DefenseEvidenceTypeSummary
+  documents: DefenseEvidenceTypeSummary
+  website_proof: DefenseEvidenceTypeSummary
+  project_defense: DefenseEvidenceTypeSummary
+}
+
+export type EligibleProjectResponse = {
+  id: string
+  title: string
+  description: string
+  claimed_skills: string[]
+  repo_full_name: string | null
+  defense_status: DefenseStatus
+  report_ready: boolean
+  evidence: ProjectDefenseEvidenceSummary
+  created_at: string
+  updated_at: string
+}
+
+export type EligibleProjectsResponse = {
+  projects: EligibleProjectResponse[]
+}
+
+export type ProjectDefenseContextResponse = {
+  project: VBRProjectResponse
+  metadata: ProjectDefenseMetadataResponse
+  evidence: ProjectDefenseEvidenceSummary
+  defense_status: DefenseStatus
+  report_ready: boolean
+  session_id: string | null
+  questions: VBRSessionQuestionResponse[]
+}
+
+export type AttachProofsResponse = {
+  project: VBRProjectResponse
+  metadata: ProjectDefenseMetadataResponse
+  evidence: ProjectDefenseEvidenceSummary
+}
+
+/** List the current user's projects that can be defended. */
+export async function listEligibleDefenseProjects(): Promise<EligibleProjectResponse[]> {
+  const res = await fetchAPI("/api/v1/student/vbr/project-defense/eligible-projects")
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load projects (HTTP ${res.status}).`))
+  const data: EligibleProjectsResponse = await res.json()
+  return data.projects
+}
+
+/** Fetch the defense context (evidence + status + any in-progress session) for a project. */
+export async function getProjectDefenseContext(projectId: string): Promise<ProjectDefenseContextResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/vbr/project-defense/projects/${encodeURIComponent(projectId)}/context`
+  )
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load project defense context (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Attach existing owned proofs to a selected project. */
+export async function attachProjectDefenseProofs(
+  projectId: string,
+  body: ProjectDefenseAttachedProofsRequest
+): Promise<AttachProofsResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/vbr/project-defense/projects/${encodeURIComponent(projectId)}/attach-proofs`,
+    { method: "POST", body: JSON.stringify(body) }
+  )
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to attach proofs (HTTP ${res.status}).`))
+  return res.json()
+}
+
 /** Create an individual Project Defense identity and attach existing proof sources. */
 export async function createProjectDefense(
   body: ProjectDefenseCreateRequest

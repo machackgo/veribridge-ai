@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.defense_answer_evidence import DefenseAnswerEvidenceCard
 from app.schemas.vbr_project import VBRProjectResponse
@@ -105,3 +105,141 @@ class SubmitDefenseAnswersResponse(BaseModel):
     video_evidence_chips: list[VideoEvidenceChipResponse] = Field(default_factory=list)
     # Claim-level, question-grounded answer evidence (owner-visible shape).
     defense_answer_evidence: list[DefenseAnswerEvidenceCard] = Field(default_factory=list)
+
+
+# ── Project-first defense flow ───────────────────────────────────────────────
+#
+# Project Defense is a defense layer on top of an existing project, not a
+# fourth standalone proof form. These schemas back the "choose a project to
+# defend" selection view and the selected-project workspace: they expose only
+# safe, already-derived summaries from ``vbr_projects.metadata`` — never raw
+# proof payloads, storage paths, signed URLs, provider JSON, or numeric scores.
+
+DefenseStatus = str  # "not_started" | "in_progress" | "completed"
+
+
+class DefenseEvidenceTypeSummary(BaseModel):
+    """Safe attached/missing summary for one evidence type on a project."""
+
+    attached: bool = False
+    count: int = 0
+    # Safe display label only (repo full name / document titles / website URLs).
+    # Never a storage path, signed URL, provider JSON, or numeric score.
+    label: str = ""
+
+
+class ProjectDefenseEvidenceSummary(BaseModel):
+    github_proof: DefenseEvidenceTypeSummary = Field(default_factory=DefenseEvidenceTypeSummary)
+    documents: DefenseEvidenceTypeSummary = Field(default_factory=DefenseEvidenceTypeSummary)
+    website_proof: DefenseEvidenceTypeSummary = Field(default_factory=DefenseEvidenceTypeSummary)
+    project_defense: DefenseEvidenceTypeSummary = Field(default_factory=DefenseEvidenceTypeSummary)
+
+
+class EligibleProjectResponse(BaseModel):
+    """A project the current user owns and can defend, with a safe evidence summary."""
+
+    id: str
+    title: str
+    description: str = ""
+    claimed_skills: list[str] = Field(default_factory=list)
+    repo_full_name: str | None = None
+    defense_status: DefenseStatus = "not_started"
+    report_ready: bool = False
+    evidence: ProjectDefenseEvidenceSummary = Field(default_factory=ProjectDefenseEvidenceSummary)
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class EligibleProjectsResponse(BaseModel):
+    projects: list[EligibleProjectResponse] = Field(default_factory=list)
+
+
+# ── Allowlisted safe projection of vbr_projects.metadata.attached_proofs ──────
+#
+# The selected-project *context* endpoint reads whatever was stored on the
+# project — including legacy rows that may carry unsafe fields (raw provider
+# JSON, storage paths, signed URLs, private proof IDs, raw document text, or
+# numeric evidence scores). These models are a strict allowlist: only the safe
+# display fields the workspace UI needs survive. ``extra="ignore"`` guarantees
+# any unknown/legacy field is silently dropped rather than echoed back.
+
+
+class SafeAttachedGitHubProofSummary(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    repo_url: str = ""
+    repo_owner: str | None = None
+    repo_name: str | None = None
+    status: str | None = None
+    detected_skills: list[str] = Field(default_factory=list)
+    public_safe_summary: str = ""
+
+
+class SafeAttachedDocumentSummary(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    title: str = "Document"
+    source_type: str | None = None
+    status: str | None = None
+    skills: list[str] = Field(default_factory=list)
+
+
+class SafeAttachedWebsiteProofSummary(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    target_website: str = ""
+    workflow_confidence: str | None = None
+    supported_skills: list[str] = Field(default_factory=list)
+
+
+class SafeAttachedProofsSummary(BaseModel):
+    """Allowlisted attached-proof summaries — never raw payloads/IDs/scores."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    github_proof: SafeAttachedGitHubProofSummary | None = None
+    documents: list[SafeAttachedDocumentSummary] = Field(default_factory=list)
+    website_proofs: list[SafeAttachedWebsiteProofSummary] = Field(default_factory=list)
+
+
+class SafeProjectDefenseMetadataResponse(BaseModel):
+    """Safe metadata projection for the selected-project context view.
+
+    Same owner-facing shape as ``ProjectDefenseMetadataResponse`` but with a
+    strictly typed, allowlisted ``attached_proofs`` (no raw dict passthrough).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    description: str = ""
+    claimed_skills: list[str] = Field(default_factory=list)
+    student_role: str = ""
+    individual_project_only: bool = True
+    attached_proofs: SafeAttachedProofsSummary = Field(default_factory=SafeAttachedProofsSummary)
+    phase: str = "project_defense_mvp_v1"
+
+
+class ProjectDefenseContextResponse(BaseModel):
+    """Full defense context for a selected project (workspace view)."""
+
+    project: VBRProjectResponse
+    metadata: SafeProjectDefenseMetadataResponse
+    evidence: ProjectDefenseEvidenceSummary = Field(default_factory=ProjectDefenseEvidenceSummary)
+    defense_status: DefenseStatus = "not_started"
+    report_ready: bool = False
+    session_id: str | None = None
+    questions: list[VBRSessionQuestionResponse] = Field(default_factory=list)
+
+
+class AttachProofsResponse(BaseModel):
+    """Attach-proofs response — same safe projection as the context endpoint.
+
+    ``metadata`` is the strictly-typed, allowlisted ``Safe`` DTO (no raw
+    ``attached_proofs`` passthrough) so the attach response never leaks storage
+    paths, signed URLs, private ids, provider JSON, raw text, or numeric scores
+    from legacy metadata already stored on the project.
+    """
+
+    project: VBRProjectResponse
+    metadata: SafeProjectDefenseMetadataResponse
+    evidence: ProjectDefenseEvidenceSummary = Field(default_factory=ProjectDefenseEvidenceSummary)

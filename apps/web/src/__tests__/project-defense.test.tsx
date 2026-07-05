@@ -35,6 +35,7 @@ vi.mock("@/lib/passport-api", () => ({
   listDocumentProofs: vi.fn(),
   listWebsiteProofs: vi.fn(),
   recommendWebsiteProofs: vi.fn(),
+  uploadDocumentProof: vi.fn(),
 }))
 
 const mockRouterPush = vi.fn()
@@ -727,8 +728,13 @@ describe("ProjectDefensePanel", () => {
     expect(within(checklistCard("Skill Graph")).getByText("Not saved")).toBeInTheDocument()
   })
 
-  it("shows a 'View VBR report preview' button after Project Defense creation and routes to the report", async () => {
+  it("never surfaces a report CTA in the Project Defense workspace — not after create, not after questions, not even after analysis completes", async () => {
+    // Product decision: report navigation lives outside the Project Defense
+    // workspace (Project Report pages / Passport project pages / Work Passport).
+    // The workspace itself must never render "View Project Report".
     vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+    vi.mocked(submitDefenseAnswers).mockResolvedValue(makeSubmitResult())
 
     render(<ProjectDefensePanel />)
 
@@ -737,10 +743,30 @@ describe("ProjectDefensePanel", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
 
-    const reportButton = await screen.findByRole("button", { name: /view vbr report preview/i })
-    fireEvent.click(reportButton)
+    await screen.findByText(/project evidence package/i)
+    // No report CTA right after create.
+    expect(screen.queryByRole("button", { name: /view project report/i })).not.toBeInTheDocument()
+    // The old, over-eager label is gone entirely.
+    expect(screen.queryByRole("button", { name: /view vbr report preview/i })).not.toBeInTheDocument()
 
-    expect(mockRouterPush).toHaveBeenCalledWith("/student/vbr/projects/proj-1/report")
+    // Generated (unanswered) questions do not surface a report CTA.
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    await screen.findByText(/describe the overall architecture/i)
+    expect(screen.queryByRole("button", { name: /view project report/i })).not.toBeInTheDocument()
+
+    // Even once the defense analysis is complete, no report CTA appears here.
+    fireEvent.change(screen.getByPlaceholderText(/explain your project, your role/i), {
+      target: { value: "I built the backend API using Python and FastAPI." },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /analyze my answers/i }))
+    await screen.findByText(/overall defense score/i)
+
+    // Analysis-complete status is reflected in the checklist…
+    expect(within(checklistCard("Manual Project Defense")).getByText("Completed")).toBeInTheDocument()
+    // …but the report CTAs stay absent.
+    expect(screen.queryByRole("button", { name: /view project report/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /view vbr report preview/i })).not.toBeInTheDocument()
+    expect(mockRouterPush).not.toHaveBeenCalledWith("/student/vbr/projects/proj-1/report")
   })
 
   it("shows GitHub Proof as attached in the checklist when a repo-wise proof is selected", async () => {

@@ -10,6 +10,7 @@ import {
   type ProjectDefenseDraft,
 } from "./project-defense-draft"
 import {
+  attachProjectDefenseProofs,
   createProjectDefense,
   generateDefenseQuestions,
   getVBRSession,
@@ -17,6 +18,7 @@ import {
   submitDefenseAnswers,
   syncProjectDefenseToSkillGraph,
   type DefenseAnalysisResponse,
+  type ProjectDefenseContextResponse,
   type ProjectDefenseCreateResponse,
   type SubmitDefenseAnswersResponse,
   type VBRRecordingReadinessResponse,
@@ -28,6 +30,7 @@ import {
   listGitHubProofs,
   listWebsiteProofs,
   recommendWebsiteProofs,
+  uploadDocumentProof,
   type DocumentProofResponse,
   type GitHubProofResponse,
   type RecommendedWebsiteProofResponse,
@@ -909,16 +912,111 @@ function DocumentProofRow({
   )
 }
 
+// Inline Document Proof uploader — used inside the Project Defense workspace so
+// a student can add a new document without navigating away to the standalone
+// Document Proof manager. It creates a normal Document Proof through the
+// existing upload API and hands the created proof back to the parent, which
+// attaches it to the selected project.
+function InlineDocumentUploader({
+  onUploaded,
+}: {
+  onUploaded: (doc: DocumentProofResponse) => void | Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [file, setFile] = useState<File | null>(null)
+  const [title, setTitle] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleUpload = async () => {
+    if (!file) {
+      setError("Choose a document file to upload.")
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const doc = await uploadDocumentProof(file, title.trim() ? { title: title.trim() } : undefined)
+      await onUploaded(doc)
+      setOpen(false)
+      setFile(null)
+      setTitle("")
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to upload document.")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <p style={{ fontSize: 12, color: TOKEN.muted, margin: "10px 0 0" }}>
+        No relevant document proof?{" "}
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          style={{ background: "none", border: "none", padding: 0, color: TOKEN.indigo, fontWeight: 600, cursor: "pointer", fontSize: 12 }}
+        >
+          Upload new document
+        </button>
+      </p>
+    )
+  }
+
+  return (
+    <div
+      data-testid="inline-document-uploader"
+      style={{ marginTop: 10, border: `1px solid ${TOKEN.line}`, borderRadius: 8, padding: "10px 12px", background: TOKEN.bg }}
+    >
+      <label style={labelStyle} htmlFor="inline-document-title">Document title (optional)</label>
+      <input
+        id="inline-document-title"
+        type="text"
+        placeholder="e.g. Final Year Project Report"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        style={{ ...inputStyle, marginBottom: 8 }}
+      />
+      <label style={labelStyle} htmlFor="inline-document-file">Document file</label>
+      <input
+        id="inline-document-file"
+        aria-label="Document file"
+        type="file"
+        accept=".pdf,.doc,.docx,.txt,.md"
+        onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        style={{ fontSize: 12, marginBottom: 8 }}
+      />
+      {error && (
+        <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "6px 8px", borderRadius: 6, margin: "0 0 8px" }}>
+          {error}
+        </p>
+      )}
+      <div style={{ display: "flex", gap: 8 }}>
+        <Btn variant="primary" size="sm" onClick={handleUpload} disabled={busy}>
+          {busy ? "Uploading…" : "Upload document"}
+        </Btn>
+        <Btn variant="secondary" size="sm" onClick={() => { setOpen(false); setError(null) }} disabled={busy}>
+          Cancel
+        </Btn>
+      </div>
+    </div>
+  )
+}
+
 function DocumentProofSelector({
   docs,
   selectedIds,
   onToggle,
   context,
+  enableInlineUpload = false,
+  onUploaded,
 }: {
   docs: DocumentProofResponse[]
   selectedIds: string[]
   onToggle: (id: string) => void
   context: WebsiteProofMatchContext
+  enableInlineUpload?: boolean
+  onUploaded?: (doc: DocumentProofResponse) => void | Promise<void>
 }) {
   const ranked = useMemo(() => rankDocumentProofs(docs, context), [docs, context])
   const recommended = ranked.filter((r) => r.tier === "recommended")
@@ -1012,21 +1110,40 @@ function DocumentProofSelector({
         </details>
       )}
 
-      <p style={{ fontSize: 12, color: TOKEN.muted, margin: "10px 0 0" }}>
-        No relevant document proof?{" "}
-        <Link
-          href={addHref}
-          style={{ color: TOKEN.indigo, textDecoration: "none", fontWeight: 600 }}
-        >
-          Add a new Document Proof
-        </Link>
-      </p>
+      {enableInlineUpload && onUploaded ? (
+        <InlineDocumentUploader onUploaded={onUploaded} />
+      ) : (
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: "10px 0 0" }}>
+          No relevant document proof?{" "}
+          <Link
+            href={addHref}
+            style={{ color: TOKEN.indigo, textDecoration: "none", fontWeight: 600 }}
+          >
+            Add a new Document Proof
+          </Link>
+        </p>
+      )}
     </div>
   )
 }
 
-export function ProjectDefensePanel() {
+export type ProjectDefensePanelProps = {
+  /**
+   * When present, the panel opens as the workspace for an *existing* project —
+   * pre-loaded with that project's context (identity, attached evidence, and any
+   * in-progress defense session) instead of the blank "create a project defense"
+   * form. Omit it for the legacy create-first flow.
+   */
+  initialContext?: ProjectDefenseContextResponse
+  /** Back to the "choose a project to defend" selection view. */
+  onBack?: () => void
+}
+
+export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePanelProps = {}) {
   const router = useRouter()
+
+  // Workspace mode — the panel is defending a project that already exists.
+  const workspaceMode = !!initialContext
 
   // Step A/B — project identity + attached proofs
   const [title, setTitle] = useState("")
@@ -1051,11 +1168,19 @@ export function ProjectDefensePanel() {
 
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
-  const [created, setCreated] = useState<ProjectDefenseCreateResponse | null>(null)
+  const [created, setCreated] = useState<ProjectDefenseCreateResponse | null>(
+    initialContext ? { project: initialContext.project, metadata: initialContext.metadata } : null,
+  )
 
-  // Step C — generated questions
-  const [questions, setQuestions] = useState<VBRSessionQuestionResponse[] | null>(null)
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  // Inline "add or update evidence" (workspace mode only)
+  const [attaching, setAttaching] = useState(false)
+  const [attachError, setAttachError] = useState<string | null>(null)
+
+  // Step C — generated questions (resumed from the context session when present)
+  const [questions, setQuestions] = useState<VBRSessionQuestionResponse[] | null>(
+    initialContext && initialContext.questions.length > 0 ? initialContext.questions : null,
+  )
+  const [sessionId, setSessionId] = useState<string | null>(initialContext?.session_id ?? null)
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
 
@@ -1240,6 +1365,53 @@ export function ProjectDefensePanel() {
     }
   }
 
+  // Workspace mode — attach existing owned proofs to this already-created project.
+  // Reuses the same proof selectors as the create form, but posts to the attach
+  // endpoint and refreshes the evidence package from the server's safe summary.
+  const handleAttachToProject = async () => {
+    if (!created) return
+    setAttaching(true)
+    setAttachError(null)
+    try {
+      const res = await attachProjectDefenseProofs(created.project.id, {
+        github_proof_id: selectedGithubProofId || null,
+        document_evidence_ids: selectedDocumentIds,
+        website_proof_session_ids: selectedWebsiteProofIds,
+      })
+      setCreated({ project: res.project, metadata: res.metadata })
+      setSelectedGithubProofId("")
+      setSelectedDocumentIds([])
+      setSelectedWebsiteProofIds([])
+    } catch (e: unknown) {
+      setAttachError(e instanceof Error ? e.message : "Failed to attach proof to this project.")
+    } finally {
+      setAttaching(false)
+    }
+  }
+
+  // Workspace mode — a document uploaded inline (no navigation away) becomes a
+  // normal Document Proof, is added to the local list, and is attached to this
+  // project so the Documents status updates without leaving the workspace.
+  const handleDocumentUploaded = async (doc: DocumentProofResponse) => {
+    setDocumentProofs((prev) => (prev ? [doc, ...prev.filter((d) => d.id !== doc.id)] : [doc]))
+    if (workspaceMode && created) {
+      setAttaching(true)
+      setAttachError(null)
+      try {
+        const res = await attachProjectDefenseProofs(created.project.id, {
+          document_evidence_ids: [doc.id],
+        })
+        setCreated({ project: res.project, metadata: res.metadata })
+      } catch (e: unknown) {
+        setAttachError(e instanceof Error ? e.message : "Failed to attach the uploaded document.")
+      } finally {
+        setAttaching(false)
+      }
+    } else {
+      setSelectedDocumentIds((prev) => (prev.includes(doc.id) ? prev : [...prev, doc.id]))
+    }
+  }
+
   const handleSubmitAnswers = async () => {
     if (!sessionId) return
     setSubmitting(true)
@@ -1298,7 +1470,10 @@ export function ProjectDefensePanel() {
   const githubProofAttached = !!githubAttached?.repo_url
   const documentsCount = documentsAttached?.length ?? 0
   const websiteProofsCount = websiteProofsAttached?.length ?? 0
-  const analysisCompleted = !!result
+  // Reflect a live analysis result OR a persisted completed defense context so
+  // the status card/analysis text stays consistent with the backend. This is
+  // display-only and never resurfaces the (now removed) report CTA.
+  const analysisCompleted = !!result || initialContext?.defense_status === "completed"
   const skillGraphSaved = syncStatus === "saved"
 
   const videoDefenseStatus: VideoDefenseStatus = !sessionId
@@ -1311,10 +1486,41 @@ export function ProjectDefensePanel() {
           ? "ready"
           : "storage_not_configured"
 
+  // Safe project context for the inline proof selectors in workspace mode.
+  const workspaceContext: WebsiteProofMatchContext = {
+    title: created?.project.title ?? "",
+    description: created?.metadata.description ?? "",
+    repoUrl: created?.project.repo_url ?? "",
+    studentRole: created?.metadata.student_role ?? "",
+    claimedSkills: created?.metadata.claimed_skills ?? [],
+  }
+  const hasEvidenceSelection =
+    !!selectedGithubProofId || selectedDocumentIds.length > 0 || selectedWebsiteProofIds.length > 0
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          style={{
+            alignSelf: "flex-start",
+            background: "none",
+            border: "none",
+            padding: 0,
+            fontSize: 13,
+            color: TOKEN.indigo,
+            cursor: "pointer",
+          }}
+        >
+          ← Back to project selection
+        </button>
+      )}
+
       <div>
-        <h2 style={{ fontSize: 18, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Project Defense</h2>
+        <h2 style={{ fontSize: 18, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>
+          {workspaceMode && created ? `Defend: ${created.project.title}` : "Project Defense"}
+        </h2>
         <p style={{ fontSize: 13, color: TOKEN.muted, margin: "4px 0 0" }}>
           Explain your individual contribution to a project in your own words. VeriBridge generates
           deterministic defense questions from your attached proof, and the answers become supporting
@@ -1489,6 +1695,11 @@ export function ProjectDefensePanel() {
         <Card>
           <CardHeader title={created.project.title} eyebrow="Project identity" icon="🧩" />
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {created.metadata.description && (
+              <p style={{ fontSize: 13, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                {created.metadata.description}
+              </p>
+            )}
             {created.project.repo_full_name && (
               <Mono style={{ fontSize: 12, color: TOKEN.muted }}>{created.project.repo_full_name}</Mono>
             )}
@@ -1539,19 +1750,18 @@ export function ProjectDefensePanel() {
       {/* Project Evidence Package — unified checklist + attached evidence summary */}
       {created && (
         <Card>
+          {/*
+            Intentionally no "View Project Report" CTA here. The Project Defense
+            workspace stays focused on selected-project evidence context and the
+            defense flow (questions, recording/manual defense, analysis/skill
+            graph sync). Report navigation lives elsewhere — Project Report pages,
+            Passport project pages, and the Work Passport project list — even when
+            the backend reports report_ready / defense_status completed.
+          */}
           <CardHeader
             title="Project Evidence Package"
             eyebrow="Evidence workspace"
             icon="🗂️"
-            action={
-              <Btn
-                size="sm"
-                variant="secondary"
-                onClick={() => router.push(`/student/vbr/projects/${created.project.id}/report`)}
-              >
-                View VBR report preview
-              </Btn>
-            }
           />
 
           <div
@@ -1654,6 +1864,92 @@ export function ProjectDefensePanel() {
             </div>
           </div>
         </Card>
+      )}
+
+      {/* Workspace mode — inline attach/update evidence for the selected project.
+          Missing evidence types can be strengthened without leaving Project
+          Defense: the same recommended-proof selectors as the create flow,
+          wired to the attach endpoint. Existing inline upload/attach behavior is
+          preserved (the "Add a new …" links inside each selector still work). */}
+      {workspaceMode && created && (
+        <details>
+          <summary
+            style={{ fontSize: 13, fontWeight: 600, color: TOKEN.indigo, cursor: "pointer" }}
+          >
+            Add or update evidence for this project
+          </summary>
+          <Card style={{ marginTop: 10 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                Attach existing GitHub, document, or website proof to strengthen this project. Only
+                proof you already own can be attached — nothing is re-verified here.
+              </p>
+
+              {githubProofs !== null && githubProofs.length > 0 && (
+                <div>
+                  <label style={labelStyle} htmlFor="workspace-github-proof">
+                    Attach a GitHub proof
+                  </label>
+                  <select
+                    id="workspace-github-proof"
+                    value={selectedGithubProofId}
+                    onChange={(e) => setSelectedGithubProofId(e.target.value)}
+                    style={inputStyle}
+                  >
+                    <option value="">— None —</option>
+                    {githubProofs.map((p) => {
+                      const repoLabel = p.repo_owner ? `${p.repo_owner}/${p.repo_name}` : p.repo_url
+                      const statusLabel = p.evidence_strength
+                        ? `${p.status} · ${p.evidence_strength}`
+                        : p.status
+                      return (
+                        <option key={p.id} value={p.id}>
+                          {repoLabel} — {statusLabel}
+                        </option>
+                      )
+                    })}
+                  </select>
+                </div>
+              )}
+
+              {documentProofs !== null && (
+                <DocumentProofSelector
+                  docs={documentProofs}
+                  selectedIds={selectedDocumentIds}
+                  onToggle={toggleDocument}
+                  context={workspaceContext}
+                  enableInlineUpload
+                  onUploaded={handleDocumentUploaded}
+                />
+              )}
+
+              {websiteProofs !== null && (
+                <WebsiteProofSelector
+                  proofs={websiteProofs}
+                  selectedIds={selectedWebsiteProofIds}
+                  onToggle={toggleWebsiteProof}
+                  context={workspaceContext}
+                />
+              )}
+
+              {attachError && (
+                <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "8px 10px", borderRadius: 6 }}>
+                  {attachError}
+                </p>
+              )}
+
+              <div>
+                <Btn
+                  variant="primary"
+                  onClick={handleAttachToProject}
+                  disabled={attaching || !hasEvidenceSelection}
+                >
+                  {attaching ? "Attaching…" : "Attach to this project"}
+                </Btn>
+              </div>
+            </div>
+          </Card>
+        </details>
       )}
 
       {/* Step C — Generate questions */}
