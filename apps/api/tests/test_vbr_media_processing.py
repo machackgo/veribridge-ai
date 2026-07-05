@@ -13,11 +13,14 @@ from app.api.deps import get_current_user_id, get_db
 from app.main import app
 from app.services.vbr_media_processing import (
     build_chunk_local_path,
-    build_ffmpeg_concat_manifest,
+    build_ffmpeg_remux_command,
     build_processing_work_dir,
-    build_safe_ffmpeg_concat_command,
     download_session_chunks_to_workdir,
     fake_chunk_bytes,
+    ffmpeg_available,
+    measure_media_duration_seconds,
+    reassemble_chunks_into_stream,
+    run_ffmpeg_concat,
     upload_processed_full_video,
     verify_full_video_output,
 )
@@ -337,7 +340,7 @@ def test_process_downloads_and_verifies_chunks(client: TestClient, mem_store: di
     media_processing = mem_store["vbr_verification_sessions"][session_id]["telemetry"]["media_processing"]
     assert media_processing["chunks_downloaded"] is True
     assert media_processing["download_verified"] is True
-    assert media_processing["concat_manifest_created"] is True
+    assert media_processing["chunks_reassembled"] is True
 
 
 def test_process_rejects_downloaded_hash_mismatch(client: TestClient, mem_store: dict) -> None:
@@ -372,22 +375,27 @@ def test_process_rejects_downloaded_size_mismatch(client: TestClient, mem_store:
     assert mem_store["vbr_verification_sessions"][session_id]["status"] == "uploaded"
 
 
-def test_build_ffmpeg_concat_manifest_uses_safe_local_paths(tmp_path) -> None:
+def test_reassemble_chunks_into_stream_byte_concatenates_in_order(tmp_path) -> None:
+    """MediaRecorder continuation fragments must be rebuilt by ordered raw byte
+    concatenation — the single header chunk followed by every headerless
+    continuation, byte-for-byte, with nothing dropped."""
     work_dir = tmp_path / "session-abc"
     work_dir.mkdir()
 
+    # chunk 0 = header fragment; chunks 1..2 = headerless continuation fragments.
+    fragments = [b"WEBM-HEADER+cluster0", b"cluster1-bytes", b"cluster2-bytes"]
     local_paths = []
-    for chunk_index in range(2):
+    for chunk_index, fragment in enumerate(fragments):
         path = build_chunk_local_path(work_dir, chunk_index)
-        path.write_bytes(b"x")
+        path.write_bytes(fragment)
         local_paths.append(path)
 
-    manifest_path = build_ffmpeg_concat_manifest(local_paths, work_dir)
+    output_path = work_dir / "reassembled.webm"
+    reassemble_chunks_into_stream(local_paths, output_path)
 
-    assert manifest_path.parent == work_dir
-    content = manifest_path.read_text()
-    for path in local_paths:
-        assert f"file '{path.as_posix()}'" in content
+    # Exact byte-concatenation in order — this is what the ffmpeg concat demuxer
+    # failed to do (it kept only the first fragment).
+    assert output_path.read_bytes() == b"".join(fragments)
 
 
 def test_download_fails_closed_without_configured_bucket() -> None:
@@ -583,18 +591,114 @@ def test_upload_full_video_fails_closed_without_configured_bucket(tmp_path) -> N
     assert exc_info.value.detail["code"] == "vbr_media_bucket_not_configured"
 
 
-def test_build_safe_ffmpeg_concat_command_returns_argv_list(tmp_path) -> None:
-    manifest_path = tmp_path / "concat_manifest.txt"
+def test_build_ffmpeg_remux_command_is_single_input_not_concat_demuxer(tmp_path) -> None:
+    input_path = tmp_path / "reassembled.webm"
     output_path = tmp_path / "full.webm"
 
-    command = build_safe_ffmpeg_concat_command(manifest_path, output_path)
+    command = build_ffmpeg_remux_command(input_path, output_path)
 
     assert isinstance(command, list)
     assert all(isinstance(part, str) for part in command)
     assert command[0] == "ffmpeg"
     assert "-c" in command and "copy" in command
-    assert str(manifest_path) in command
+    # Single-input remux of the byte-reassembled stream, NOT the concat demuxer.
+    assert "concat" not in command
+    assert command.count("-i") == 1
+    assert str(input_path) in command
     assert str(output_path) in command
+
+
+def test_duration_validation_fails_loudly_on_truncation(monkeypatch, tmp_path) -> None:
+    """If the remuxed output loses most of the reassembled stream's duration
+    (the ~81s → ~9s regression), assembly must fail with the controlled concat
+    error instead of silently continuing to transcription."""
+    from app.services import vbr_media_processing as mp
+
+    measured = iter([81.02, 9.33])  # (reassembled input, remuxed output)
+    monkeypatch.setattr(mp, "measure_media_duration_seconds", lambda _path: next(measured))
+
+    with pytest.raises(HTTPException) as exc_info:
+        mp._validate_reassembled_duration(tmp_path / "reassembled.webm", tmp_path / "full.webm")
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail["code"] == "vbr_media_concat_failed"
+
+
+def test_duration_validation_passes_when_duration_preserved(monkeypatch, tmp_path) -> None:
+    from app.services import vbr_media_processing as mp
+
+    measured = iter([81.02, 80.4])  # remux preserved essentially all duration
+    monkeypatch.setattr(mp, "measure_media_duration_seconds", lambda _path: next(measured))
+
+    # Must not raise.
+    mp._validate_reassembled_duration(tmp_path / "reassembled.webm", tmp_path / "full.webm")
+
+
+def test_duration_validation_skips_when_reference_too_short(monkeypatch, tmp_path) -> None:
+    """A genuinely tiny reassembled clip is below the judgement floor, so the
+    ratio guard is skipped rather than risk a false truncation failure."""
+    from app.services import vbr_media_processing as mp
+
+    measured = iter([1.2, 0.1])  # input under _DURATION_CHECK_FLOOR_SECONDS
+    monkeypatch.setattr(mp, "measure_media_duration_seconds", lambda _path: next(measured))
+
+    # Must not raise despite the low output/input ratio.
+    mp._validate_reassembled_duration(tmp_path / "reassembled.webm", tmp_path / "full.webm")
+
+
+@pytest.mark.skipif(not ffmpeg_available(), reason="ffmpeg is required for this regression test")
+def test_run_ffmpeg_concat_reassembles_full_duration_from_fragments(tmp_path) -> None:
+    """End-to-end regression for the MediaRecorder fragment-concatenation bug.
+
+    Synthesise ONE real ~6s WebM stream, then split it into a header chunk plus
+    headerless continuation fragments exactly the way MediaRecorder's timeslice
+    does (byte ranges of a single stream). run_ffmpeg_concat must byte-reassemble
+    them and produce a full ~6s recording — NOT the truncated first fragment the
+    old ffmpeg concat demuxer emitted.
+    """
+    import subprocess
+
+    source = tmp_path / "source.webm"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-nostdin",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+            "-c:a", "libopus",
+            "-f", "webm",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    source_bytes = source.read_bytes()
+    source_duration = measure_media_duration_seconds(source)
+    assert source_duration is not None and source_duration >= 5.0
+
+    # Split the single stream into 4 byte ranges: fragment 0 keeps the WebM
+    # header; fragments 1..3 are headerless continuations (not standalone files).
+    n_parts = 4
+    step = len(source_bytes) // n_parts
+    local_paths = []
+    for chunk_index in range(n_parts):
+        start = chunk_index * step
+        end = len(source_bytes) if chunk_index == n_parts - 1 else start + step
+        path = build_chunk_local_path(tmp_path, chunk_index)
+        path.write_bytes(source_bytes[start:end])
+        local_paths.append(path)
+
+    # A single continuation fragment is NOT decodable on its own — proof that the
+    # concat demuxer (one file at a time) could only ever recover the first one.
+    assert measure_media_duration_seconds(local_paths[1]) in (None, 0.0)
+
+    output_path = tmp_path / "full.webm"
+    run_ffmpeg_concat(local_paths, output_path)
+
+    assert output_path.is_file() and output_path.stat().st_size > 0
+    output_duration = measure_media_duration_seconds(output_path)
+    assert output_duration is not None
+    # Full recording recovered (~6s), not truncated to the first fragment (~1.5s).
+    assert output_duration >= source_duration * 0.9
 
 
 def test_process_fails_if_full_video_upload_returns_error(client: TestClient, mem_store: dict, monkeypatch) -> None:

@@ -5,14 +5,15 @@ session/project status transition that must happen before any real media
 processing runs.
 
 T5B scope: download the validated chunks from private storage into a
-controlled local temp directory, verify each downloaded file against its
-recorded size/sha256, and prepare an ffmpeg concat manifest.
+controlled local temp directory and verify each downloaded file against its
+recorded size/sha256.
 
-T5C scope: run the safe ffmpeg concat command to assemble the verified
-chunks into one full-session video, verify the output, and upload it to
-private storage. This module still does NOT run Whisper, OCR, keyframe
-extraction, or LLM calls, and never mints/exposes signed URLs or local temp
-paths to clients.
+T5C scope: reassemble the verified MediaRecorder chunks into one full-session
+recording by ORDERED RAW BYTE CONCATENATION (the chunks are fragments of a
+single WebM stream, not standalone files), remux the reassembled stream with
+ffmpeg, validate that no duration was lost, then upload the result to private
+storage. This module still does NOT run Whisper, OCR, keyframe extraction, or
+LLM calls, and never mints/exposes signed URLs or local temp paths to clients.
 """
 
 from __future__ import annotations
@@ -66,6 +67,22 @@ _CONCAT_FAILED_DETAIL = {
     "message": "Could not assemble the recording. Please try again.",
 }
 
+# Duration-truncation guard. The historical assembly bug (the ffmpeg concat
+# demuxer over MediaRecorder continuation fragments) turned an ~81s recording
+# into ~9s of media — only the first fragment. After reassembly we require the
+# remuxed full recording to preserve at least this fraction of the decodable
+# duration of the byte-reassembled input; below it we fail loudly instead of
+# handing Whisper a clip that silently lost most of the defense.
+_MIN_DURATION_RETENTION = 0.75
+
+# Below this many seconds the reassembled reference is too short to make a
+# reliable retention judgement (a genuinely tiny clip), so the ratio check is
+# skipped rather than risk a false truncation failure.
+_DURATION_CHECK_FLOOR_SECONDS = 3.0
+
+# Matches ffmpeg's progress/summary timestamps in stderr, e.g. "time=00:01:21.02".
+_FFMPEG_TIME_RE = re.compile(rb"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+
 NEXT_STEPS: list[str] = ["transcribe_audio", "extract_keyframes"]
 
 __all__ = [
@@ -78,8 +95,9 @@ __all__ = [
     "build_chunk_local_path",
     "download_session_chunks_to_workdir",
     "verify_downloaded_chunk_files",
-    "build_ffmpeg_concat_manifest",
-    "build_safe_ffmpeg_concat_command",
+    "reassemble_chunks_into_stream",
+    "build_ffmpeg_remux_command",
+    "measure_media_duration_seconds",
     "ffmpeg_available",
     "validate_ffmpeg_binary",
     "run_ffmpeg_concat",
@@ -260,7 +278,7 @@ def mark_session_media_processed(
             "manifest_verified": True,
             "chunks_downloaded": True,
             "download_verified": True,
-            "concat_manifest_created": True,
+            "chunks_reassembled": True,
             "chunk_count": manifest_summary["chunk_count"],
             "total_bytes": manifest_summary["total_bytes"],
             "full_video_created": True,
@@ -489,45 +507,86 @@ def verify_downloaded_chunk_files(
             )
 
 
-def build_ffmpeg_concat_manifest(local_paths: list[Path], work_dir: Path) -> Path:
-    """Write an ffmpeg concat-demuxer manifest listing chunks in order.
+def reassemble_chunks_into_stream(local_paths: list[Path], output_path: Path) -> None:
+    """Byte-concatenate MediaRecorder chunk files, in order, into one stream.
 
-    The manifest references only local paths produced by
-    ``build_chunk_local_path`` under ``work_dir`` — never user input.
+    MediaRecorder emits ONE continuous WebM stream split across ``dataavailable``
+    events (its ``timeslice``): only the FIRST chunk carries the EBML/WebM header
+    and Segment start; every later chunk is a headerless continuation — a raw run
+    of Matroska clusters that is NOT a standalone media file. The only correct
+    way to rebuild the original recording is ORDERED RAW BYTE CONCATENATION.
+
+    This deliberately does NOT use the ffmpeg concat demuxer: that demuxer opens
+    each listed file as an independent container, cannot parse the headerless
+    continuation fragments, and silently keeps only the first fragment — the
+    truncation bug this function exists to prevent (an ~81s recording collapsing
+    to ~9s / just chunk 0).
+
+    ``local_paths`` must already be in chunk-index order (the caller sorts them).
     """
-    manifest_path = work_dir / "concat_manifest.txt"
-
-    lines: list[str] = []
-    for path in local_paths:
-        # ffmpeg concat demuxer: wrap in single quotes, escape embedded quotes.
-        escaped = path.as_posix().replace("'", "'\\''")
-        lines.append(f"file '{escaped}'")
-
-    content = "\n".join(lines)
-    if content:
-        content += "\n"
-    manifest_path.write_text(content, encoding="utf-8")
-    return manifest_path
+    with output_path.open("wb") as out:
+        for path in local_paths:
+            with path.open("rb") as handle:
+                shutil.copyfileobj(handle, out)
 
 
-def build_safe_ffmpeg_concat_command(manifest_path: Path, output_path: Path) -> list[str]:
-    """Return an argv list for an ffmpeg concat command.
+def build_ffmpeg_remux_command(input_path: Path, output_path: Path) -> list[str]:
+    """Return an argv list that remuxes a single reassembled WebM stream.
 
-    This is a command builder only — callers must pass the result directly
-    to ``subprocess.run`` (never ``shell=True``).
+    Single-input remux (NOT the concat demuxer): it stream-copies the already
+    byte-reassembled WebM into a normalised container with a correct duration
+    index, preserving the original VP8/VP9 video + Opus audio so downstream
+    keyframe extraction and audio transcription both receive the full recording.
+
+    This is a command builder only — callers must pass the result directly to
+    ``subprocess.run`` (never ``shell=True``).
     """
     return [
         "ffmpeg",
         "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(manifest_path),
+        "-nostdin",
+        "-i", str(input_path),
         "-c", "copy",
         str(output_path),
     ]
 
 
-# ── ffmpeg concat execution + output verification (T5C) ─────────────────────
+def measure_media_duration_seconds(path: Path) -> float | None:
+    """Measure a media file's decodable duration in seconds via ffmpeg.
+
+    Decodes the audio stream to the null muxer and parses the furthest progress
+    timestamp ffmpeg reports on stderr. This works even on a byte-reassembled
+    WebM whose header carries no duration element (MediaRecorder streams are
+    written live), where ``ffprobe``'s container duration is often unavailable.
+
+    Returns ``None`` if ffmpeg is unavailable, times out, errors, or emits no
+    parseable timestamp. Never raises and never surfaces raw stderr.
+    """
+    if not ffmpeg_available():
+        return None
+
+    command = ["ffmpeg", "-nostdin", "-i", str(path), "-vn", "-f", "null", "-"]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=_FFMPEG_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+    durations: list[float] = []
+    for hours, minutes, seconds in _FFMPEG_TIME_RE.findall(result.stderr or b""):
+        try:
+            durations.append(int(hours) * 3600 + int(minutes) * 60 + float(seconds))
+        except ValueError:
+            continue
+
+    return max(durations) if durations else None
+
+
+# ── ffmpeg reassembly + remux execution + output verification (T5C) ─────────
 
 
 def ffmpeg_available() -> bool:
@@ -544,18 +603,47 @@ def validate_ffmpeg_binary() -> None:
         )
 
 
-def run_ffmpeg_concat(manifest_path: Path, output_path: Path) -> None:
-    """Run the safe ffmpeg concat command to assemble ``output_path``.
+def run_ffmpeg_concat(local_paths: list[Path], output_path: Path) -> None:
+    """Reassemble MediaRecorder chunks and remux them into one full recording.
 
-    Uses ``subprocess.run`` with an argv list only (never ``shell=True``)
-    and a bounded timeout. Raises a controlled ``HTTPException`` (500,
-    ``vbr_media_concat_failed``) on any failure. Raw stderr is never
-    included in the exception or logged.
+    Steps:
+      1. Byte-concatenate the ordered chunk files into a single reassembled
+         WebM stream — MediaRecorder continuation fragments are NOT standalone
+         files, so the ffmpeg concat demuxer is deliberately never used here.
+      2. Remux that single stream into ``output_path`` with ffmpeg (stream
+         copy), producing a normalised container with a correct duration index.
+      3. Validate that the remuxed output preserves the reassembled stream's
+         decodable duration; fail loudly on truncation rather than hand Whisper
+         a 9-second clip cut from an 80-second recording.
+
+    Uses ``subprocess.run`` with an argv list only (never ``shell=True``) and a
+    bounded timeout. Raises a controlled ``HTTPException`` (500,
+    ``vbr_media_concat_failed``) on any failure. Raw stderr is never included in
+    the exception or logged.
     """
     validate_ffmpeg_binary()
 
-    command = build_safe_ffmpeg_concat_command(manifest_path, output_path)
+    if not local_paths:
+        logger.warning("[VBR] media reassembly received no chunks (stage=reassemble)")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=dict(_CONCAT_FAILED_DETAIL),
+        )
 
+    reassembled_path = output_path.parent / "reassembled.webm"
+    try:
+        reassemble_chunks_into_stream(local_paths, reassembled_path)
+    except OSError as exc:
+        logger.warning(
+            "[VBR] chunk byte-reassembly failed (stage=reassemble, reason=%s)",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=dict(_CONCAT_FAILED_DETAIL),
+        ) from exc
+
+    command = build_ffmpeg_remux_command(reassembled_path, output_path)
     try:
         result = subprocess.run(
             command,
@@ -564,14 +652,50 @@ def run_ffmpeg_concat(manifest_path: Path, output_path: Path) -> None:
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        logger.warning("[VBR] ffmpeg concat failed (stage=run, reason=%s)", type(exc).__name__)
+        logger.warning("[VBR] ffmpeg remux failed (stage=remux, reason=%s)", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=dict(_CONCAT_FAILED_DETAIL),
         ) from exc
 
     if result.returncode != 0:
-        logger.warning("[VBR] ffmpeg concat exited non-zero (stage=run)")
+        logger.warning("[VBR] ffmpeg remux exited non-zero (stage=remux)")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=dict(_CONCAT_FAILED_DETAIL),
+        )
+
+    _validate_reassembled_duration(reassembled_path, output_path)
+
+
+def _validate_reassembled_duration(reassembled_path: Path, output_path: Path) -> None:
+    """Fail loudly if the remuxed output dropped most of the recording.
+
+    The historical truncation bug turned an ~81s recording into ~9s of media
+    (only the first MediaRecorder fragment). We measure the decodable duration
+    of both the byte-reassembled input and the remuxed output; if the output
+    retains less than ``_MIN_DURATION_RETENTION`` of a non-trivial input, we
+    treat it as a truncated assembly and fail (500, ``vbr_media_concat_failed``)
+    rather than sending Whisper media that silently lost most of the defense.
+
+    Only measured durations and the retention ratio are logged — never raw
+    stderr, storage paths, or transcript text. If the reassembled reference
+    cannot be measured or is too short to judge, no truncation decision is made.
+    """
+    input_duration = measure_media_duration_seconds(reassembled_path)
+    output_duration = measure_media_duration_seconds(output_path)
+
+    if input_duration is None or input_duration < _DURATION_CHECK_FLOOR_SECONDS:
+        return
+
+    if output_duration is None or output_duration < input_duration * _MIN_DURATION_RETENTION:
+        logger.warning(
+            "[VBR] media duration mismatch after reassembly "
+            "(stage=duration_check, input_s=%.2f, output_s=%s, min_retention=%.2f)",
+            input_duration,
+            f"{output_duration:.2f}" if output_duration is not None else "unknown",
+            _MIN_DURATION_RETENTION,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=dict(_CONCAT_FAILED_DETAIL),
@@ -703,10 +827,9 @@ def process_uploaded_session_skeleton(db: Any, session_id: str, user_id: str) ->
     try:
         local_paths = download_session_chunks_to_workdir(db, session_id, chunks)
         verify_downloaded_chunk_files(local_paths, chunks)
-        manifest_path = build_ffmpeg_concat_manifest(local_paths, work_dir)
 
         output_path = work_dir / "full.webm"
-        run_ffmpeg_concat(manifest_path, output_path)
+        run_ffmpeg_concat(local_paths, output_path)
         full_video_summary = verify_full_video_output(output_path)
         storage_path = upload_processed_full_video(db, session_id, output_path)
     finally:
