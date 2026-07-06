@@ -1096,3 +1096,239 @@ describe("PrivatePassportView — browser polish (dedupe + clean counts)", () =>
     expect(container).not.toHaveTextContent("519")
   })
 })
+
+describe("PrivatePassportView — Step 5 recruiter-ready publishing", () => {
+  it("shows 'Report private' with a not-on-public-passport note and a publish CTA", async () => {
+    const p = makePassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-project-card")
+
+    const state = screen.getByTestId("project-report-state")
+    expect(state).toHaveAttribute("data-state", "private")
+    expect(state).toHaveTextContent("Report private")
+    expect(screen.getByTestId("publish-report-button")).toBeInTheDocument()
+    expect(screen.getByTestId("report-visibility-note")).toHaveTextContent(
+      "will not appear on your public Passport until you publish",
+    )
+    expect(screen.queryByTestId("open-public-report-link")).not.toBeInTheDocument()
+  })
+
+  // Report publishing and Passport publishing are independent (Step 5): a report
+  // can be publicly live by direct link while the public Passport is unpublished.
+  // The visibility note must stay correct in both Passport states.
+  function makePublishedReportPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+    return makePassport({
+      published_report_count: 1,
+      projects: [
+        {
+          ...makePassport().projects[0],
+          report: {
+            is_public: true,
+            public_token: "tok-abc",
+            public_path: "/vbr/report/tok-abc",
+            published_at: "2026-01-02T00:00:00Z",
+          },
+        },
+      ],
+      ...overrides,
+    })
+  }
+
+  // The published-report visibility note now uses state-independent wording so it
+  // can never go stale when the Passport is published/unpublished without a reload.
+  // ("featured whenever your public Passport is published" is true in every state.)
+  const PUBLISHED_NOTE = "featured whenever your public Passport is published"
+  // Phrasing that would be false/stale if it depended on a possibly-stale Passport state.
+  const STALE_PHRASE = "appears on your public Passport"
+
+  it("published report + published Passport: note uses correct state-independent wording", async () => {
+    const p = makePublishedReportPassport({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-project-card")
+
+    const state = screen.getByTestId("project-report-state")
+    expect(state).toHaveAttribute("data-state", "published")
+    expect(state).toHaveTextContent("Report published")
+    expect(screen.getByTestId("copy-report-link-button")).toBeInTheDocument()
+    expect(screen.getByTestId("open-public-report-link")).toHaveAttribute(
+      "href",
+      expect.stringContaining("/vbr/report/tok-abc"),
+    )
+    const note = screen.getByTestId("report-visibility-note")
+    expect(note).toHaveTextContent("public link is live")
+    expect(note).toHaveTextContent(PUBLISHED_NOTE)
+    // Never uses the state-dependent phrasing that could go stale.
+    expect(note).not.toHaveTextContent(STALE_PHRASE)
+    expect(screen.queryByTestId("publish-report-button")).not.toBeInTheDocument()
+  })
+
+  it("published report + unpublished Passport: note uses correct state-independent wording", async () => {
+    // Default makePassport() is is_published:false, so the Passport is unpublished.
+    const p = makePublishedReportPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-project-card")
+
+    const state = screen.getByTestId("project-report-state")
+    expect(state).toHaveAttribute("data-state", "published")
+    // The direct public report link is still live independent of the Passport.
+    expect(screen.getByTestId("open-public-report-link")).toHaveAttribute(
+      "href",
+      expect.stringContaining("/vbr/report/tok-abc"),
+    )
+    const note = screen.getByTestId("report-visibility-note")
+    // Must NOT claim it appears on the public Passport while the Passport is unpublished.
+    expect(note).not.toHaveTextContent(STALE_PHRASE)
+    // Same wording regardless of Passport state — always correct.
+    expect(note).toHaveTextContent("public link is live")
+    expect(note).toHaveTextContent(PUBLISHED_NOTE)
+  })
+
+  it("does not render the stale project-card phrase anywhere for a published report", async () => {
+    const p = makePublishedReportPassport({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    const { container } = render(<PrivatePassportView />)
+    await screen.findByTestId("passport-project-card")
+
+    expect(container).not.toHaveTextContent(STALE_PHRASE)
+  })
+
+  it("publish transition without reload keeps correct (non-stale) project-card wording", async () => {
+    // Start: report published, Passport unpublished. Then publish the Passport in
+    // PassportPublishControls (local state only — ProjectCard receives the static
+    // initial passport.is_published, so its wording must not depend on it).
+    const p = makePublishedReportPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+    vi.mocked(publishWorkPassport).mockResolvedValue({
+      is_published: true,
+      public_slug: "slug123",
+      public_path: "/p/slug123",
+      published_at: "2026-01-03T00:00:00Z",
+      headline: p.headline,
+      summary: p.summary,
+    })
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-project-card")
+
+    const noteBefore = screen.getByTestId("report-visibility-note").textContent
+    fireEvent.click(screen.getByTestId("publish-passport-button"))
+
+    // Passport controls flip to the published state...
+    await screen.findByTestId("passport-public-badge")
+
+    // ...but the project-card note is unchanged and never shows the stale phrase.
+    const note = screen.getByTestId("report-visibility-note")
+    expect(note).not.toHaveTextContent(STALE_PHRASE)
+    expect(note).toHaveTextContent(PUBLISHED_NOTE)
+    expect(note.textContent).toBe(noteBefore)
+  })
+
+  it("unpublish transition without reload keeps correct (non-stale) project-card wording", async () => {
+    // Start: report published, Passport published. Then unpublish the Passport in
+    // PassportPublishControls. The project-card wording must stay correct.
+    const p = makePublishedReportPassport({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+    vi.mocked(unpublishWorkPassport).mockResolvedValue({
+      is_published: false,
+      public_slug: null,
+      public_path: null,
+      published_at: null,
+      headline: p.headline,
+      summary: p.summary,
+    })
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-project-card")
+
+    const noteBefore = screen.getByTestId("report-visibility-note").textContent
+    fireEvent.click(screen.getByTestId("unpublish-passport-button"))
+
+    // Passport controls flip to the private state...
+    await screen.findByTestId("passport-private-badge")
+
+    // ...and the project-card note is unchanged — still correct, never overclaims.
+    const note = screen.getByTestId("report-visibility-note")
+    expect(note).not.toHaveTextContent(STALE_PHRASE)
+    expect(note).toHaveTextContent(PUBLISHED_NOTE)
+    expect(note.textContent).toBe(noteBefore)
+  })
+
+  it("publishing a report flips the card to the published state with correct wording", async () => {
+    const p = makePassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+    vi.mocked(publishVBRProjectReport).mockResolvedValue({
+      project_id: "proj-1",
+      is_public: true,
+      public_token: "tok-new",
+      public_path: "/vbr/report/tok-new",
+      published_at: "2026-01-03T00:00:00Z",
+    })
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-project-card")
+    fireEvent.click(screen.getByTestId("publish-report-button"))
+
+    await waitFor(() =>
+      expect(screen.getByTestId("project-report-state")).toHaveAttribute("data-state", "published"),
+    )
+    expect(screen.getByTestId("open-public-report-link")).toHaveAttribute(
+      "href",
+      expect.stringContaining("/vbr/report/tok-new"),
+    )
+    // Passport is unpublished (default), so the note must not overclaim public-Passport visibility.
+    const note = screen.getByTestId("report-visibility-note")
+    expect(note).not.toHaveTextContent(STALE_PHRASE)
+    expect(note).toHaveTextContent("public link is live")
+    expect(note).toHaveTextContent(PUBLISHED_NOTE)
+  })
+
+  it("shows 'Needs report' and no publish CTA when the project has no attached proof", async () => {
+    const base = makePassport().projects[0]
+    const p = makePassport({
+      projects: [
+        {
+          ...base,
+          evidence_sources: [],
+          evidence_package: {
+            github_proof_attached: false,
+            documents_count: 0,
+            website_proofs_count: 0,
+            project_defense_completed: false,
+            video_defense_recorded: false,
+            video_evidence_chip_count: 0,
+          },
+        },
+      ],
+      evidence_source_counts: {},
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-project-card")
+
+    const state = screen.getByTestId("project-report-state")
+    expect(state).toHaveAttribute("data-state", "needs-report")
+    expect(state).toHaveTextContent("Needs report")
+    expect(screen.queryByTestId("publish-report-button")).not.toBeInTheDocument()
+    expect(screen.getByTestId("report-visibility-note")).toHaveTextContent(
+      "no attached proof yet",
+    )
+    // The student can always open the (empty) preview to see what is missing.
+    expect(screen.getByTestId("view-report-preview-link")).toBeInTheDocument()
+  })
+})

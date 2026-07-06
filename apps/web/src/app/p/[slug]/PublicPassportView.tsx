@@ -456,7 +456,7 @@ export function PublicPassportView({ slug }: { slug: string }) {
         {passport.featured_projects.length === 0 ? (
           <Card>
             <p data-testid="public-passport-no-projects" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-              No public reports published yet.
+              No published project reports yet.
             </p>
           </Card>
         ) : (

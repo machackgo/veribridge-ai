@@ -440,3 +440,37 @@ describe("PublicPassportView — Phase 3 public safety", () => {
     expect(document.body.textContent).not.toContain("suggestion")
   })
 })
+
+describe("PublicPassportView — Step 5 recruiter-ready publishing", () => {
+  it("shows the exact safe empty state when no project reports are published", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        top_skills: [],
+        featured_projects: [],
+        evidence_source_counts: {},
+        featured_project_count: 0,
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+
+    const empty = await screen.findByTestId("public-passport-no-projects")
+    expect(empty).toHaveTextContent("No published project reports yet.")
+    // No publish/report CTAs leak into the recruiter-facing empty state.
+    expect(screen.queryByTestId("publish-report-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("view-report-preview-link")).not.toBeInTheDocument()
+  })
+
+  it("never renders unattached-proof counts or suggested-evidence cards", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.queryByTestId("attachment-suggestion")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("suggested-attachments")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-vault-section")).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/unattached proof item/i)
+    expect(document.body.textContent).not.toMatch(/suggested attachments/i)
+  })
+})

@@ -162,6 +162,20 @@ _SECRET_KV_RE = re.compile(
 # The token run requires ≥6 chars so the bare English word "bearer" is untouched.
 _BEARER_RE = re.compile(r"(?i)(?:authorization\s*:\s*)?\bbearer\s+[\w.\-~+/=]{6,}")
 
+# GitHub personal-access / OAuth / app tokens (``ghp_…`` / ``gho_…`` / ``ghs_…`` /
+# ``github_pat_…``) are self-identifying credentials that carry no ``key=value``
+# shape, so the key=value matcher above never sees them.
+_GITHUB_TOKEN_RE = re.compile(r"\bgh[pousr]_[A-Za-z0-9]{8,}\b|\bgithub_pat_[A-Za-z0-9_]{8,}\b")
+
+# Relative storage paths (``uploads/user-123/report.pdf``) are neither absolute
+# ``/Users/…`` paths, storage URLs, nor credentials, so no other matcher catches
+# them. Two path segments are required (so prose like "uploads/downloads" is left
+# alone), and the lookbehind skips ``…/uploads/…`` inside a legitimately public
+# http(s) URL path — those are gated by the safe-url checks instead.
+_RELATIVE_STORAGE_PATH_RE = re.compile(
+    r"(?<![\w/])uploads?/[\w.@%-]+/[^\s\"'<>]+", re.IGNORECASE
+)
+
 # Any http(s) URL — used to strip a secret-bearing query string while keeping the
 # safe base, and to scan for secret query params in the fail-closed gate.
 _URL_RE = re.compile(r"https?://[^\s\"'<>)\]}]+", re.IGNORECASE)
@@ -191,6 +205,8 @@ def _redact_secrets(text: str) -> str:
     out = _URL_RE.sub(_strip_secret_query, text)
     out = _BEARER_RE.sub("[redacted]", out)
     out = _SECRET_KV_RE.sub("[redacted]", out)
+    out = _GITHUB_TOKEN_RE.sub("[redacted]", out)
+    out = _RELATIVE_STORAGE_PATH_RE.sub("[redacted]", out)
     return out
 
 
@@ -401,6 +417,8 @@ def _contains_secret_material(value: Any) -> bool:
         return any(_contains_secret_material(item) for item in value)
     if isinstance(value, str):
         if _SECRET_KV_RE.search(value) or _BEARER_RE.search(value):
+            return True
+        if _GITHUB_TOKEN_RE.search(value) or _RELATIVE_STORAGE_PATH_RE.search(value):
             return True
         for match in _URL_RE.finditer(value):
             _, sep, query = match.group(0).partition("?")

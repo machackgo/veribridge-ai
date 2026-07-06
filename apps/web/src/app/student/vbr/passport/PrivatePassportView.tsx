@@ -604,7 +604,13 @@ function ProofChainRow({ project }: { project: PassportProjectSummary }) {
   )
 }
 
-function ProjectCard({ project }: { project: PassportProjectSummary }) {
+function ProjectCard({
+  project,
+  passportPublished,
+}: {
+  project: PassportProjectSummary
+  passportPublished: boolean
+}) {
   const [report, setReport] = useState(project.report)
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -616,6 +622,10 @@ function ProjectCard({ project }: { project: PassportProjectSummary }) {
       ? `${typeof window !== "undefined" ? window.location.origin : ""}/vbr/report/${report.public_token}`
       : ""
   const topSkills = project.top_skills ?? []
+  const chain = project.proof_chain ?? proofChainFromSources(project.evidence_sources)
+  // A project with no attached proof sources has nothing for a recruiter-safe
+  // report to show yet — its report state is "Needs report", not "private".
+  const hasEvidence = chain.attached_count > 0
 
   const publish = () => {
     setBusy(true)
@@ -648,11 +658,18 @@ function ProjectCard({ project }: { project: PassportProjectSummary }) {
                 <Badge tone="slate">{project.attempt_count} attempts merged</Badge>
               </span>
             )}
-            {isPublic ? (
-              <Badge tone="emerald">Report public</Badge>
-            ) : (
-              <Badge tone="slate">Report private</Badge>
-            )}
+            <span
+              data-testid="project-report-state"
+              data-state={isPublic ? "published" : hasEvidence ? "private" : "needs-report"}
+            >
+              {isPublic ? (
+                <Badge tone="emerald">Report published</Badge>
+              ) : hasEvidence ? (
+                <Badge tone="slate">Report private</Badge>
+              ) : (
+                <Badge tone="amber">Needs report</Badge>
+              )}
+            </span>
           </div>
         </div>
 
@@ -749,19 +766,32 @@ function ProjectCard({ project }: { project: PassportProjectSummary }) {
             View report preview
           </Link>
           {isPublic ? (
-            <button type="button" data-testid="copy-report-link-button" onClick={copyLink} style={primaryBtnStyle}>
-              {copied ? "Copied!" : "Copy public report link"}
-            </button>
+            <>
+              <button type="button" data-testid="copy-report-link-button" onClick={copyLink} style={primaryBtnStyle}>
+                {copied ? "Copied!" : "Copy public report link"}
+              </button>
+              <a
+                data-testid="open-public-report-link"
+                href={publicUrl || "#"}
+                target="_blank"
+                rel="noreferrer"
+                style={secondaryBtnStyle}
+              >
+                Open public report
+              </a>
+            </>
           ) : (
-            <button
-              type="button"
-              data-testid="publish-report-button"
-              disabled={busy}
-              onClick={publish}
-              style={primaryBtnStyle}
-            >
-              {busy ? "Publishing…" : "Publish recruiter-safe report"}
-            </button>
+            hasEvidence && (
+              <button
+                type="button"
+                data-testid="publish-report-button"
+                disabled={busy}
+                onClick={publish}
+                style={primaryBtnStyle}
+              >
+                {busy ? "Publishing…" : "Publish recruiter-safe report"}
+              </button>
+            )
           )}
           {topSkills.length > 0 && (
             <a data-testid="view-connected-skills-link" href="#skill-intelligence" style={secondaryBtnStyle}>
@@ -769,6 +799,23 @@ function ProjectCard({ project }: { project: PassportProjectSummary }) {
             </a>
           )}
         </div>
+
+        {/* Public-passport visibility: report publishing and Passport publishing
+            are independent. A published report's public link is always live by
+            direct URL, but it is only featured on the public Passport while the
+            Passport itself is published. The copy must stay correct in both states. */}
+        <p
+          data-testid="report-visibility-note"
+          data-visibility={isPublic ? "public" : "private"}
+          data-passport-published={isPublic ? String(passportPublished) : undefined}
+          style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
+        >
+          {isPublic
+            ? "This report’s public link is live and it is featured whenever your public Passport is published."
+            : hasEvidence
+              ? "This project will not appear on your public Passport until you publish its recruiter-safe report."
+              : "This project has no attached proof yet, so there is no report to publish — it will not appear on your public Passport. Attach proof or record a Project Defense first."}
+        </p>
       </div>
     </Card>
   )
@@ -866,7 +913,13 @@ export function PrivatePassportView() {
             </p>
           </Card>
         ) : (
-          passport.projects.map((project) => <ProjectCard key={project.project_id} project={project} />)
+          passport.projects.map((project) => (
+            <ProjectCard
+              key={project.project_id}
+              project={project}
+              passportPublished={Boolean(passport.is_published && passport.public_slug)}
+            />
+          ))
         )}
       </section>
 
