@@ -707,6 +707,55 @@ class TestLocalWhisperProviderUnit:
         assert kwargs.get("language") is None
         assert result.language == "es"
 
+    def test_local_whisper_passes_anti_hallucination_decoding_config(self):
+        """The env-driven anti-hallucination decoding config is forwarded to
+        faster-whisper: VAD on, condition_on_previous_text off, temperature 0, and
+        the confidence/compression thresholds — this is what stops the "new new
+        new …" repeated-token loop at the source."""
+        import app.services.transcription_service as svc
+
+        mock_fw = _make_mock_faster_whisper(["I built a data pipeline."])
+
+        with patch.dict(sys.modules, {"faster_whisper": mock_fw}):
+            with patch.object(svc, "_PROVIDER", "local_whisper"), \
+                 patch.object(svc, "_LOCAL_WHISPER_VAD", True), \
+                 patch.object(svc, "_LOCAL_WHISPER_CONDITION_ON_PREVIOUS_TEXT", False), \
+                 patch.object(svc, "_LOCAL_WHISPER_TEMPERATURE", 0.0), \
+                 patch.object(svc, "_LOCAL_WHISPER_BEAM_SIZE", 5), \
+                 patch.object(svc, "_LOCAL_WHISPER_NO_SPEECH_THRESHOLD", 0.6), \
+                 patch.object(svc, "_LOCAL_WHISPER_COMPRESSION_RATIO_THRESHOLD", 2.4), \
+                 patch.object(svc, "_LOCAL_WHISPER_LOG_PROB_THRESHOLD", -1.0):
+                svc.transcribe_audio(b"audio-bytes", "defense.webm")
+
+        _args, kwargs = mock_fw.WhisperModel.return_value.transcribe.call_args
+        assert kwargs.get("vad_filter") is True
+        assert kwargs.get("condition_on_previous_text") is False
+        assert kwargs.get("temperature") == 0.0
+        assert kwargs.get("beam_size") == 5
+        assert kwargs.get("no_speech_threshold") == 0.6
+        assert kwargs.get("compression_ratio_threshold") == 2.4
+        assert kwargs.get("log_prob_threshold") == -1.0
+
+    def test_stt_config_reads_provider_and_model_from_settings(self):
+        """Provider/model/decoding config comes from Settings (env-driven), not
+        hardcoded — so LOCAL_WHISPER_* / TRANSCRIPTION_PROVIDER select them."""
+        import app.services.transcription_service as svc
+        from app.core.config import settings
+
+        assert svc._LOCAL_WHISPER_MODEL_SIZE == settings.local_whisper_model_size.strip()
+        assert svc._LOCAL_WHISPER_DEVICE == settings.local_whisper_device.strip()
+        assert svc._LOCAL_WHISPER_VAD == settings.local_whisper_vad
+        assert (
+            svc._LOCAL_WHISPER_CONDITION_ON_PREVIOUS_TEXT
+            == settings.local_whisper_condition_on_previous_text
+        )
+        # The field default (used when no env override is present) is the
+        # recommended MVP model.
+        assert (
+            type(settings).model_fields["local_whisper_model_size"].default
+            == "large-v3-turbo"
+        )
+
 
 class TestMediaClassificationAndNormalization:
     """Content-type-first media classification + video/webm normalization.

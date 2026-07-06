@@ -11,9 +11,10 @@ import {
 } from "./project-defense-draft"
 import {
   attachProjectDefenseProofs,
+  createNewDefenseSession,
   createProjectDefense,
   generateDefenseQuestions,
-  getVBRProject,
+  getProjectDefenseContext,
   getVBRSession,
   getVBRSessionRecordingReadiness,
   submitDefenseAnswers,
@@ -21,7 +22,6 @@ import {
   type DefenseAnalysisResponse,
   type ProjectDefenseContextResponse,
   type ProjectDefenseCreateResponse,
-  type ProjectDefenseMetadataResponse,
   type SubmitDefenseAnswersResponse,
   type VBRRecordingReadinessResponse,
   type VBRSessionQuestionResponse,
@@ -1204,6 +1204,10 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
   const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "saved" | "error">("idle")
   const [syncSkills, setSyncSkills] = useState<string[]>([])
 
+  // "Record another defense" — creates a fresh recording session (new attempt).
+  const [recordAnotherLoading, setRecordAnotherLoading] = useState(false)
+  const [recordAnotherError, setRecordAnotherError] = useState<string | null>(null)
+
   // Project Evidence Package — Video Defense recording status
   const [recordingReadiness, setRecordingReadiness] = useState<VBRRecordingReadinessResponse | null>(null)
   const [recordingChunkCount, setRecordingChunkCount] = useState(0)
@@ -1254,18 +1258,15 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
     let active = true
     ;(async () => {
       try {
-        const project = await getVBRProject(projectId)
-        if (!active || !project) return
-        const rawMeta = (project.metadata ?? {}) as Partial<ProjectDefenseMetadataResponse>
-        const metadata: ProjectDefenseMetadataResponse = {
-          description: rawMeta.description ?? "",
-          claimed_skills: rawMeta.claimed_skills ?? [],
-          student_role: rawMeta.student_role ?? "",
-          individual_project_only: rawMeta.individual_project_only ?? true,
-          attached_proofs: rawMeta.attached_proofs ?? {},
-          phase: rawMeta.phase ?? "",
-        }
-        setCreated({ project, metadata })
+        // Use the sanitized Project Defense context — never raw project
+        // metadata. The context endpoint returns an allowlisted `metadata`
+        // (no storage paths, signed URLs, provider JSON, private IDs, raw
+        // text, or numeric scores) and a `project` whose metadata is the same
+        // safe projection, so nothing unsafe from `metadata.attached_proofs`
+        // can reach the workspace UI.
+        const context = await getProjectDefenseContext(projectId)
+        if (!active || !context) return
+        setCreated({ project: context.project, metadata: context.metadata })
         // The resumed defense already exists — drop any stale working draft.
         clearProjectDefenseDraft()
 
@@ -1275,6 +1276,9 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
             setSessionId(session.id)
             setQuestions(session.questions)
           }
+        } else if (context.session_id) {
+          setSessionId(context.session_id)
+          setQuestions(context.questions)
         }
       } catch {
         // Fall back to the normal (blank) create flow if the resume fails.
@@ -1512,9 +1516,24 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
     else router.push("/student/proofs/project-defense")
   }
 
-  // "Record another defense" links to the recorder for the same session.
-  const handleRecordAnother = () => {
-    if (sessionId) router.push(`/student/proofs/project-defense/record/${sessionId}`)
+  // "Record another defense" — a completed/processed session is non-retryable
+  // (the recorder only starts from a "created" session), so this creates a NEW
+  // session attempt for the same project and routes to that new session's record
+  // URL rather than reopening the finished one.
+  const handleRecordAnother = async () => {
+    if (!created) return
+    setRecordAnotherLoading(true)
+    setRecordAnotherError(null)
+    try {
+      const response = await createNewDefenseSession(created.project.id)
+      router.push(`/student/proofs/project-defense/record/${response.session_id}`)
+    } catch (e: unknown) {
+      setRecordAnotherError(
+        e instanceof Error ? e.message : "Failed to start a new defense session."
+      )
+    } finally {
+      setRecordAnotherLoading(false)
+    }
   }
 
   // "Add or update evidence" expands the existing inline attach section.
@@ -1687,17 +1706,20 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
             <Btn variant="primary" onClick={handleBackHome}>
               Back to Project Defense home
             </Btn>
-            {sessionId && (
-              <Btn variant="secondary" onClick={handleRecordAnother}>
-                Record another defense
-              </Btn>
-            )}
+            <Btn variant="secondary" onClick={handleRecordAnother} disabled={recordAnotherLoading}>
+              {recordAnotherLoading ? "Starting new session…" : "Record another defense"}
+            </Btn>
             {workspaceMode && (
               <Btn variant="secondary" onClick={handleAddEvidence}>
                 Add or update evidence
               </Btn>
             )}
           </div>
+          {recordAnotherError && (
+            <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "8px 10px", borderRadius: 6, marginTop: 10 }}>
+              {recordAnotherError}
+            </p>
+          )}
           <p style={{ fontSize: 11, color: TOKEN.muted, margin: "12px 0 0", lineHeight: 1.5 }}>
             Project Defense is supporting explanation evidence — it does not replace your GitHub,
             document, or website proof.

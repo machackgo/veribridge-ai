@@ -1,11 +1,13 @@
 "use client"
 
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useEffect, useRef, useState, type CSSProperties } from "react"
 import {
   cancelVBRSessionRecording,
   createVBRSessionConsent,
   finalizeVBRSession,
+  getProjectDefenseContext,
   getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
@@ -13,10 +15,12 @@ import {
   processVBRSession,
   requestVBRChunkUploadUrl,
   startVBRSession,
+  submitDefenseAnswers,
   transcribeVBRSession,
   updateVBRSessionTelemetry,
   uploadVBRChunkBytes,
   uploadVBRSessionChunk,
+  type ProjectDefenseContextResponse,
   type VBRProjectResponse,
   type VBRSessionDetailResponse,
   type VBRSessionTranscriptResponse,
@@ -48,6 +52,7 @@ const TRANSCRIPT_STATUS_LABELS: Record<string, string> = {
   transcribed: "Ready",
   failed: "Generation failed",
   no_speech: "No clear speech detected",
+  low_quality: "Transcript quality too low",
 }
 
 // Preferred MediaRecorder mimeTypes, in order of preference. Browsers vary in
@@ -90,18 +95,6 @@ function describeTargetRef(targetRef: Record<string, unknown>): string | null {
   if (typeof targetRef.commit === "string") return `commit: ${targetRef.commit.slice(0, 7)}`
   if (typeof targetRef.url === "string") return `url: ${targetRef.url}`
   return null
-}
-
-type AttachedProofsSummary = {
-  github_proof?: { repo_url?: string; repo_owner?: string; repo_name?: string; status?: string }
-  documents?: Array<{ title?: string }>
-  website_proofs?: Array<{ target_website?: string; workflow_confidence?: string }>
-}
-
-/** Read the safe attached-proofs summary from a Project Defense project's metadata. */
-function getAttachedProofs(project: VBRProjectResponse | null): AttachedProofsSummary {
-  const metadata = project?.metadata as { attached_proofs?: AttachedProofsSummary } | undefined
-  return metadata?.attached_proofs ?? {}
 }
 
 const cardStyle: CSSProperties = {
@@ -204,8 +197,14 @@ export function VBRSessionRecorder({
   sessionId: string
   variant?: VBRSessionRecorderVariant
 }) {
+  const router = useRouter()
   const [session, setSession] = useState<VBRSessionDetailResponse | null>(null)
+  // Walkthrough variant shows only the project title. Project Defense uses the
+  // sanitized defense context below — never raw project metadata.
   const [project, setProject] = useState<VBRProjectResponse | null>(null)
+  // Project Defense context — allowlisted evidence summary (safe title, repo
+  // label, document/website counts). Never raw metadata.attached_proofs.
+  const [defenseContext, setDefenseContext] = useState<ProjectDefenseContextResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -234,6 +233,12 @@ export function VBRSessionRecorder({
   const [transcript, setTranscript] = useState<VBRSessionTranscriptResponse | null>(null)
   const [transcriptPreviewLoading, setTranscriptPreviewLoading] = useState(false)
   const [transcriptPreviewError, setTranscriptPreviewError] = useState<string | null>(null)
+
+  // "Analyze Project Defense" — runs deterministic analysis against the
+  // recorded video transcript, then routes back to the selected project
+  // workspace (which shows the "Project Defense analyzed" completion panel).
+  const [analyzeLoading, setAnalyzeLoading] = useState(false)
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null)
 
 
   const [telemetryStatus, setTelemetryStatus] = useState<string | null>(null)
@@ -311,11 +316,24 @@ export function VBRSessionRecorder({
           return
         }
         setSession(sessionData)
-        try {
-          const projectData = await getVBRProject(sessionData.project_id)
-          if (active) setProject(projectData)
-        } catch {
-          // Project title is a nice-to-have — don't fail the whole page if it can't load.
+        if (variant === "project_defense") {
+          // Sanitized defense context only — never raw project metadata. The
+          // context endpoint returns an allowlisted evidence summary (safe repo
+          // label, document/website counts), so no storage paths, signed URLs,
+          // provider JSON, private IDs, raw text, or scores can reach the UI.
+          try {
+            const context = await getProjectDefenseContext(sessionData.project_id)
+            if (active) setDefenseContext(context)
+          } catch {
+            // Context is a nice-to-have — don't fail the whole page if it can't load.
+          }
+        } else {
+          try {
+            const projectData = await getVBRProject(sessionData.project_id)
+            if (active) setProject(projectData)
+          } catch {
+            // Project title is a nice-to-have — don't fail the whole page if it can't load.
+          }
         }
       } catch (err) {
         if (active) setLoadError(err instanceof Error ? err.message : "Failed to load session.")
@@ -328,7 +346,7 @@ export function VBRSessionRecorder({
     return () => {
       active = false
     }
-  }, [sessionId])
+  }, [sessionId, variant])
 
   useEffect(() => {
     if (session?.status !== "recording" || !session.started_at) {
@@ -740,6 +758,31 @@ export function VBRSessionRecorder({
     }
   }
 
+  // Run analysis over the saved video transcript, then return to the selected
+  // project workspace. An empty submit body makes the backend fall back to the
+  // auto-generated transcript as the analysis source and mark the project's
+  // defense as completed — so the workspace renders the completion panel
+  // instead of another blank manual answer box. On failure we stay on the
+  // recorder and surface a safe retry / manual fallback message.
+  async function handleAnalyzeDefense() {
+    if (!session) return
+    setAnalyzeLoading(true)
+    setAnalyzeError(null)
+    try {
+      await submitDefenseAnswers(sessionId, {})
+      router.push(
+        `/student/proofs/project-defense?projectId=${encodeURIComponent(session.project_id)}&sessionId=${encodeURIComponent(session.id)}`
+      )
+    } catch (err) {
+      setAnalyzeError(
+        err instanceof Error
+          ? err.message
+          : "Couldn't analyze your defense. Please retry, or paste your explanation in the Project Defense workspace."
+      )
+      setAnalyzeLoading(false)
+    }
+  }
+
   async function handleResetRecording() {
     setResetLoading(true)
     setResetError(null)
@@ -870,18 +913,21 @@ export function VBRSessionRecorder({
       {variant === "project_defense" && (
         <section style={cardStyle} data-testid="project-defense-context">
           <div style={sectionTitleStyle}>Project context</div>
-          {project ? (
+          {defenseContext ? (
             (() => {
-              const attached = getAttachedProofs(project)
-              const repoLabel = attached.github_proof?.repo_url
-                ? `${attached.github_proof.repo_owner ?? ""}/${attached.github_proof.repo_name ?? ""}`.replace(/^\/|\/$/g, "") +
-                  (attached.github_proof.status ? ` (${attached.github_proof.status})` : "")
-                : project.repo_full_name || project.repo_url || "Repository URL only — no attached GitHub Proof"
-              const documentCount = attached.documents?.length ?? 0
-              const websiteProofCount = attached.website_proofs?.length ?? 0
+              // Everything here comes from the sanitized context DTO: the repo
+              // label is the allowlisted evidence label (safe owner/repo), and
+              // documents/website are safe counts — never raw storage paths,
+              // signed URLs, provider JSON, private IDs, or scores.
+              const { evidence } = defenseContext
+              const repoLabel = evidence.github_proof.attached
+                ? evidence.github_proof.label || "GitHub proof attached"
+                : defenseContext.project.repo_full_name || "Repository URL only — no attached GitHub Proof"
+              const documentCount = evidence.documents.count
+              const websiteProofCount = evidence.website_proof.count
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "var(--ink)" }}>
-                  <div><strong>Project:</strong> {project.title}</div>
+                  <div><strong>Project:</strong> {defenseContext.project.title}</div>
                   <div><strong>Repository:</strong> {repoLabel}</div>
                   <div><strong>Documents:</strong> {documentCount > 0 ? `${documentCount} attached` : "none attached"}</div>
                   <div><strong>Website Proof:</strong> {websiteProofCount > 0 ? `${websiteProofCount} attached` : "none attached"}</div>
@@ -1099,6 +1145,7 @@ export function VBRSessionRecorder({
               ? "Generating transcript…"
               : session.transcript_status === "failed" ||
                   session.transcript_status === "no_speech" ||
+                  session.transcript_status === "low_quality" ||
                   transcriptError
                 ? "Retry transcript generation"
                 : "Generate transcript"}
@@ -1223,26 +1270,37 @@ export function VBRSessionRecorder({
           {variant === "project_defense" && session.transcript_status === "transcribed" && (
             <div style={{ marginTop: 16 }} data-testid="vbr-transcript-next-actions">
               <div style={{ ...sectionTitleStyle, marginBottom: 8 }}>Next steps</div>
+              {/*
+                Deliberately no "View Project Report" / report-preview CTA here.
+                "Analyze Project Defense" runs the analysis against the saved
+                video transcript and then routes back to the selected project
+                workspace, which shows the "Project Defense analyzed" completion
+                panel — never a blank manual answer box. */}
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                <Link
-                  href={`/student/proofs/project-defense?projectId=${encodeURIComponent(session.project_id)}&sessionId=${encodeURIComponent(session.id)}#analyze`}
-                  style={{ ...primaryButtonStyle, textDecoration: "none", display: "inline-block" }}
+                <button
+                  type="button"
+                  style={analyzeLoading ? disabledButtonStyle : primaryButtonStyle}
+                  disabled={analyzeLoading}
+                  onClick={handleAnalyzeDefense}
                 >
-                  Analyze Project Defense
-                </Link>
+                  {analyzeLoading ? "Analyzing…" : "Analyze Project Defense"}
+                </button>
                 <Link
                   href={`/student/proofs/project-defense?projectId=${encodeURIComponent(session.project_id)}&sessionId=${encodeURIComponent(session.id)}`}
                   style={{ ...buttonStyle, textDecoration: "none", display: "inline-block" }}
                 >
                   Return to Project Defense workspace
                 </Link>
-                <Link
-                  href={`/student/vbr/projects/${encodeURIComponent(session.project_id)}/report`}
-                  style={{ ...buttonStyle, textDecoration: "none", display: "inline-block" }}
-                >
-                  View Project Report
-                </Link>
               </div>
+              {analyzeError && (
+                <div data-testid="vbr-analyze-error">
+                  <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8, marginBottom: 4 }}>{analyzeError}</p>
+                  <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 0 }}>
+                    Please retry, or paste your explanation using the manual transcript fallback in the
+                    Project Defense workspace.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </section>

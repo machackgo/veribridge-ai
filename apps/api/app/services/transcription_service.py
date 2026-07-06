@@ -17,10 +17,19 @@ TRANSCRIPTION_PROVIDER      = none | openai | local_whisper   (default: none)
 OPENAI_API_KEY              =                  (required for openai provider)
 OPENAI_TRANSCRIPTION_MODEL  = whisper-1        (default: whisper-1)
 
-# local_whisper provider (all optional — defaults are CPU-friendly)
-LOCAL_WHISPER_MODEL_SIZE    = base             (tiny|base|small|medium|large-v3)
-LOCAL_WHISPER_DEVICE        = cpu              (cpu|cuda)
+# local_whisper provider (all optional — defaults tuned for English quality)
+LOCAL_WHISPER_MODEL_SIZE    = large-v3-turbo   (tiny|base|small|medium|large-v3|large-v3-turbo)
+LOCAL_WHISPER_DEVICE        = cpu              (cpu|cuda|auto — no Metal/MPS backend)
 LOCAL_WHISPER_COMPUTE_TYPE  = int8             (int8|float16|float32)
+LOCAL_WHISPER_LANGUAGE      = en               ("" → auto-detect)
+# Anti-hallucination decoding tuning (defaults suppress "new new new …" loops):
+LOCAL_WHISPER_BEAM_SIZE                   = 5
+LOCAL_WHISPER_VAD                         = true    (strip silence before decode)
+LOCAL_WHISPER_CONDITION_ON_PREVIOUS_TEXT  = false   (stop repeated-token feedback)
+LOCAL_WHISPER_TEMPERATURE                 = 0.0     (greedy, deterministic)
+LOCAL_WHISPER_NO_SPEECH_THRESHOLD         = 0.6
+LOCAL_WHISPER_COMPRESSION_RATIO_THRESHOLD = 2.4
+LOCAL_WHISPER_LOG_PROB_THRESHOLD          = -1.0
 
 Optional system dependencies
 -----------------------------
@@ -79,6 +88,14 @@ _LOCAL_WHISPER_COMPUTE_TYPE = settings.local_whisper_compute_type.strip()
 # Project Defense MVP so short/quiet clips do not misfire to obscure
 # low-confidence languages (e.g. 'nn'), which destabilises transcription.
 _LOCAL_WHISPER_LANGUAGE     = settings.local_whisper_language.strip().lower()
+# Decoding / anti-hallucination tuning (see config.py for rationale).
+_LOCAL_WHISPER_BEAM_SIZE                    = settings.local_whisper_beam_size
+_LOCAL_WHISPER_VAD                          = settings.local_whisper_vad
+_LOCAL_WHISPER_CONDITION_ON_PREVIOUS_TEXT   = settings.local_whisper_condition_on_previous_text
+_LOCAL_WHISPER_TEMPERATURE                  = settings.local_whisper_temperature
+_LOCAL_WHISPER_NO_SPEECH_THRESHOLD          = settings.local_whisper_no_speech_threshold
+_LOCAL_WHISPER_COMPRESSION_RATIO_THRESHOLD  = settings.local_whisper_compression_ratio_threshold
+_LOCAL_WHISPER_LOG_PROB_THRESHOLD           = settings.local_whisper_log_prob_threshold
 
 _OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 
@@ -253,6 +270,90 @@ def count_meaningful_words(text: str) -> int:
 def is_meaningful_transcript(text: str, threshold: int = MEANINGFUL_WORD_THRESHOLD) -> bool:
     """True when ``text`` contains at least ``threshold`` meaningful words."""
     return count_meaningful_words(text) >= threshold
+
+
+# ── Repeated-token hallucination detection ────────────────────────────────────
+#
+# A weak/mis-configured Whisper run over degraded audio does not error — it
+# emits a real-looking transcript that is actually a single word repeated dozens
+# of times ("… new new new new new …"). That is a hallucination, not speech, and
+# must never be persisted as good evidence. These helpers quantify how repetitive
+# a transcript is so a caller can reject it and offer re-record / manual fallback.
+# (The decoding config in ``_transcribe_local_whisper`` — VAD, temperature=0,
+# condition_on_previous_text=False, thresholds — is the *primary* defence; this
+# guard is the safety net for whatever still slips through, including from other
+# providers.)
+
+# A transcript with fewer meaningful words than this is owned by the separate
+# no-speech gate, not this one. At (and above) the meaningful-speech floor —
+# including a short 3–5 word answer — a run of one repeated token ("new new
+# new") is a hallucination and must fail closed, so this guard measures every
+# transcript that clears no-speech rather than waiting for a longer sample.
+MIN_WORDS_FOR_REPEAT_CHECK = MEANINGFUL_WORD_THRESHOLD
+
+# If a single token accounts for at least this fraction of all tokens, OR at
+# least this fraction of tokens are immediate repeats of the previous token, the
+# transcript is treated as repeated-token hallucination.
+REPEATED_TOKEN_RATIO_THRESHOLD = 0.5
+
+_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _tokens(text: str) -> list[str]:
+    return [t.lower() for t in _TOKEN_RE.findall(text or "")]
+
+
+def dominant_token_ratio(text: str) -> float:
+    """Fraction of tokens made up by the single most frequent token (0.0–1.0).
+
+    ``"new new new the"`` → 0.75. Empty / no-token input → 0.0.
+    """
+    toks = _tokens(text)
+    if not toks:
+        return 0.0
+    counts: dict[str, int] = {}
+    for tok in toks:
+        counts[tok] = counts.get(tok, 0) + 1
+    return max(counts.values()) / len(toks)
+
+
+def consecutive_repeat_ratio(text: str) -> float:
+    """Fraction of tokens that immediately repeat the previous token (0.0–1.0).
+
+    ``"new new new the"`` → 2/3 (two of the three transitions repeat). Fewer than
+    two tokens → 0.0.
+    """
+    toks = _tokens(text)
+    if len(toks) < 2:
+        return 0.0
+    repeats = sum(1 for i in range(1, len(toks)) if toks[i] == toks[i - 1])
+    return repeats / (len(toks) - 1)
+
+
+def repeated_token_ratio(text: str) -> float:
+    """Single 0.0–1.0 repetitiveness score (the stronger of the two signals)."""
+    return max(dominant_token_ratio(text), consecutive_repeat_ratio(text))
+
+
+def is_low_quality_transcript(
+    text: str,
+    *,
+    min_words: int = MIN_WORDS_FOR_REPEAT_CHECK,
+    threshold: float = REPEATED_TOKEN_RATIO_THRESHOLD,
+) -> bool:
+    """True when ``text`` looks like repeated-token hallucination.
+
+    Sub-meaningful output (below ``min_words``) is left to the no-speech gate.
+    At or above that floor — including a short 3–5 word answer — a transcript
+    dominated by one repeated token (``"new new new"``) fails closed, while a
+    short phrase of distinct words (``"backend route scoring"``) scores well
+    below ``threshold`` and passes. A normal explanation — many distinct words,
+    few adjacent duplicates — passes as well.
+    """
+    toks = _tokens(text)
+    if len(toks) < min_words:
+        return False
+    return repeated_token_ratio(text) >= threshold
 
 
 # ── OpenAI provider ───────────────────────────────────────────────────────────
@@ -446,10 +547,22 @@ def _transcribe_local_whisper(
                 device=_LOCAL_WHISPER_DEVICE,
                 compute_type=_LOCAL_WHISPER_COMPUTE_TYPE,
             )
+            # Anti-hallucination decoding config (see config.py):
+            #   - vad_filter strips silence (no dead air to hallucinate over)
+            #   - condition_on_previous_text=False stops a repeated token from
+            #     feeding itself forward into a "new new new …" loop
+            #   - temperature=0 greedy decoding; thresholds drop low-confidence /
+            #     degenerate (highly compressible ⇒ repetitive) segments
             segments_iter, info = model.transcribe(
                 audio_path,
                 language=forced_language,
-                beam_size=5,
+                beam_size=_LOCAL_WHISPER_BEAM_SIZE,
+                temperature=_LOCAL_WHISPER_TEMPERATURE,
+                vad_filter=_LOCAL_WHISPER_VAD,
+                condition_on_previous_text=_LOCAL_WHISPER_CONDITION_ON_PREVIOUS_TEXT,
+                no_speech_threshold=_LOCAL_WHISPER_NO_SPEECH_THRESHOLD,
+                compression_ratio_threshold=_LOCAL_WHISPER_COMPRESSION_RATIO_THRESHOLD,
+                log_prob_threshold=_LOCAL_WHISPER_LOG_PROB_THRESHOLD,
                 word_timestamps=False,
             )
             # Materialise the generator so we can iterate twice

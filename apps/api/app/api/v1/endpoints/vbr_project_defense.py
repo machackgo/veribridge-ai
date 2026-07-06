@@ -46,6 +46,7 @@ from app.schemas.vbr_student_report import VBRStudentProjectReportResponse
 from app.services.vbr_project_defense import (
     attach_proofs_to_project,
     build_project_defense_context,
+    create_new_defense_session,
     create_project_defense,
     generate_defense_questions,
     list_deduped_eligible_summaries,
@@ -234,6 +235,39 @@ def generate_defense_questions_route(
             ) from exc
         raise
 
+    _advance_project_status(db, project, "questions_ready")
+
+    return GenerateDefenseQuestionsResponse(
+        project_id=project_id,
+        session_id=session_id,
+        status="questions_ready",
+        questions=[_to_question_response(row) for row in questions],
+    )
+
+
+@router.post(
+    "/projects/{project_id}/defense-sessions",
+    response_model=GenerateDefenseQuestionsResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a fresh Project Defense recording session (new attempt)",
+)
+def create_defense_session_route(
+    project_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> GenerateDefenseQuestionsResponse:
+    """Always create a new defense session attempt for "Record another defense".
+
+    A completed/processed session is non-retryable (the recorder only starts from
+    ``created``), so this allocates a brand-new session + questions rather than
+    reusing the finished one.
+    """
+    project = get_owned_vbr_project_or_404(db, project_id, user_id)
+    # Ground the questions in the merged evidence across any duplicate rows for
+    # this logical project, exactly like generate-defense-questions.
+    merged_project = merge_owned_project(db, user_id, project)
+
+    session_id, questions = create_new_defense_session(db, merged_project)
     _advance_project_status(db, project, "questions_ready")
 
     return GenerateDefenseQuestionsResponse(

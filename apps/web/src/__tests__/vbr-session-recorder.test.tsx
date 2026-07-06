@@ -5,6 +5,7 @@ import {
   cancelVBRSessionRecording,
   createVBRSessionConsent,
   finalizeVBRSession,
+  getProjectDefenseContext,
   getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
@@ -12,9 +13,11 @@ import {
   processVBRSession,
   requestVBRChunkUploadUrl,
   startVBRSession,
+  submitDefenseAnswers,
   transcribeVBRSession,
   uploadVBRChunkBytes,
   uploadVBRSessionChunk,
+  type ProjectDefenseContextResponse,
   type VBRSessionDetailResponse,
   type VBRSessionTranscriptResponse,
 } from "@/lib/vbr-api"
@@ -22,6 +25,7 @@ import {
 vi.mock("@/lib/vbr-api", () => ({
   getVBRSession: vi.fn(),
   getVBRProject: vi.fn(),
+  getProjectDefenseContext: vi.fn(),
   createVBRSessionConsent: vi.fn(),
   startVBRSession: vi.fn(),
   getVBRSessionRecordingReadiness: vi.fn(),
@@ -34,6 +38,12 @@ vi.mock("@/lib/vbr-api", () => ({
   finalizeVBRSession: vi.fn(),
   processVBRSession: vi.fn(),
   transcribeVBRSession: vi.fn(),
+  submitDefenseAnswers: vi.fn(),
+}))
+
+const mockRouterPush = vi.fn()
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockRouterPush }),
 }))
 
 // SHA-256 of 32 zero-filled "fake" chunk bytes used by the digest mock below.
@@ -226,7 +236,49 @@ beforeEach(() => {
   })
 
   vi.mocked(getVBRSessionTranscript).mockResolvedValue(makeTranscript())
+  vi.mocked(getProjectDefenseContext).mockResolvedValue(makeDefenseContext())
+  vi.mocked(submitDefenseAnswers).mockReset()
+  mockRouterPush.mockReset()
 })
+
+function makeDefenseContext(
+  overrides: Partial<ProjectDefenseContextResponse> = {}
+): ProjectDefenseContextResponse {
+  return {
+    project: {
+      id: "project-1",
+      title: "Boston Smart Accident Risk Rerouting",
+      repo_url: "https://github.com/machackgo/boston",
+      repo_full_name: "machackgo/boston",
+      deployed_url: null,
+      head_sha: null,
+      status: "questions_ready",
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:00:00Z",
+      // Safe projection already applied by the context endpoint.
+      metadata: {},
+    },
+    metadata: {
+      description: "Accident-risk-aware routing on Google Cloud.",
+      claimed_skills: ["Python", "Machine Learning"],
+      student_role: "I built the risk-scoring API.",
+      individual_project_only: true,
+      attached_proofs: {},
+      phase: "project_defense_mvp_v1",
+    },
+    evidence: {
+      github_proof: { attached: true, count: 1, label: "machackgo/boston", },
+      documents: { attached: true, count: 2, label: "Report" },
+      website_proof: { attached: false, count: 0, label: "" },
+      project_defense: { attached: false, count: 0, label: "" },
+    },
+    defense_status: "in_progress",
+    report_ready: false,
+    session_id: "session-1",
+    questions: [],
+    ...overrides,
+  }
+}
 
 function makeTranscript(
   overrides: Partial<VBRSessionTranscriptResponse> = {}
@@ -1250,7 +1302,7 @@ describe("Transcript preview and next actions", () => {
     expect(within(segments[0]).getByText(/Candidate introduced the project\./)).toBeInTheDocument()
   })
 
-  it("shows the three next-action buttons with projectId/session context after transcription", async () => {
+  it("shows the analyze action + workspace link, and NO report CTA, after transcription", async () => {
     vi.mocked(getVBRSession).mockResolvedValue(
       makeSession({ status: "processed", chunk_count: 1, transcript_status: "transcribed" })
     )
@@ -1260,17 +1312,188 @@ describe("Transcript preview and next actions", () => {
 
     const actions = await screen.findByTestId("vbr-transcript-next-actions")
 
-    const analyze = within(actions).getByRole("link", { name: "Analyze Project Defense" })
-    const workspace = within(actions).getByRole("link", { name: "Return to Project Defense workspace" })
-    const report = within(actions).getByRole("link", { name: "View Project Report" })
+    // "Analyze Project Defense" is now an action button (runs analysis), not a
+    // navigation link.
+    expect(within(actions).getByRole("button", { name: "Analyze Project Defense" })).toBeInTheDocument()
 
+    const workspace = within(actions).getByRole("link", { name: "Return to Project Defense workspace" })
     expect(workspace).toHaveAttribute(
       "href",
       "/student/proofs/project-defense?projectId=project-1&sessionId=session-1"
     )
-    expect(analyze.getAttribute("href")).toContain("projectId=project-1")
-    expect(analyze.getAttribute("href")).toContain("sessionId=session-1")
-    expect(report).toHaveAttribute("href", "/student/vbr/projects/project-1/report")
+
+    // No "View Project Report" (or any report-preview) CTA in the recorder next steps.
+    expect(within(actions).queryByRole("link", { name: /view project report/i })).not.toBeInTheDocument()
+    expect(within(actions).queryByText(/view project report/i)).not.toBeInTheDocument()
+    expect(within(actions).queryByText(/report preview/i)).not.toBeInTheDocument()
+    expect(actions.innerHTML).not.toContain("/report")
+  })
+
+  it("Analyze Project Defense runs analysis then routes back to the selected project workspace", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: "transcribed" })
+    )
+    vi.mocked(submitDefenseAnswers).mockResolvedValue({
+      project_id: "project-1",
+      session_id: "session-1",
+      transcript_id: "transcript-1",
+      segment_count: 2,
+      answered_question_count: 0,
+      analysis: {
+        transcript_summary: "",
+        skills_mentioned: [],
+        skills_explained_well: [],
+        skills_missing_from_explanation: [],
+        consistency_with_evidence_score: 0,
+        explanation_clarity_score: 0,
+        ownership_signal_score: 0,
+        technical_depth_score: 0,
+        overall_defense_score: 0,
+        risk_flags: [],
+        recruiter_summary: "",
+        recommended_improvements: [],
+        privacy_scan_status: "clean",
+      },
+      video_evidence_chips: [],
+    })
+
+    render(<VBRSessionRecorder sessionId="session-1" variant="project_defense" />)
+
+    const actions = await screen.findByTestId("vbr-transcript-next-actions")
+    fireEvent.click(within(actions).getByRole("button", { name: "Analyze Project Defense" }))
+
+    // Empty body → backend analyzes the auto-generated video transcript.
+    await waitFor(() => expect(submitDefenseAnswers).toHaveBeenCalledWith("session-1", {}))
+    // After success, route back to the workspace with projectId + sessionId so it
+    // re-fetches context and shows the "Project Defense analyzed" completion panel.
+    await waitFor(() =>
+      expect(mockRouterPush).toHaveBeenCalledWith(
+        "/student/proofs/project-defense?projectId=project-1&sessionId=session-1"
+      )
+    )
+  })
+
+  it("keeps the user on the recorder with a safe retry message when analysis fails", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: "transcribed" })
+    )
+    vi.mocked(submitDefenseAnswers).mockRejectedValue(new Error("Analysis service is unavailable."))
+
+    render(<VBRSessionRecorder sessionId="session-1" variant="project_defense" />)
+
+    const actions = await screen.findByTestId("vbr-transcript-next-actions")
+    fireEvent.click(within(actions).getByRole("button", { name: "Analyze Project Defense" }))
+
+    const error = await screen.findByTestId("vbr-analyze-error")
+    expect(within(error).getByText("Analysis service is unavailable.")).toBeInTheDocument()
+    // No navigation happened — the user stays on the recorder with a fallback.
+    expect(mockRouterPush).not.toHaveBeenCalled()
+    expect(screen.getByRole("button", { name: "Analyze Project Defense" })).toBeInTheDocument()
+  })
+
+  it("renders project context from the sanitized defense context, never raw project metadata", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(makeSession({ status: "created" }))
+    vi.mocked(getProjectDefenseContext).mockResolvedValue(
+      makeDefenseContext({
+        project: {
+          ...makeDefenseContext().project,
+          title: "Boston Smart Accident Risk Rerouting",
+        },
+        evidence: {
+          github_proof: { attached: true, count: 1, label: "machackgo/boston" },
+          documents: { attached: true, count: 3, label: "Report" },
+          website_proof: { attached: true, count: 2, label: "https://example.com" },
+          project_defense: { attached: false, count: 0, label: "" },
+        },
+      })
+    )
+    // Raw project metadata would carry hostile values — the recorder must NOT
+    // fetch or render it for the Project Defense variant.
+    vi.mocked(getVBRProject).mockResolvedValue({
+      id: "project-1",
+      title: "raw",
+      repo_url: "https://github.com/x/y",
+      repo_full_name: "x/y",
+      deployed_url: null,
+      head_sha: null,
+      status: "draft",
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:00:00Z",
+      metadata: {
+        attached_proofs: {
+          github_proof: {
+            repo_url: "https://storage.example.com/x?token=SIGNED",
+            signed_url: "https://storage.example.com/y?token=abc",
+            api_key: "sk-private",
+            source_id: "user_123",
+            provider_json: { raw: "leak" },
+            public_safe_summary: "72/100 confidence",
+          },
+          documents: [{ title: "/Users/alice/private/report.pdf" }],
+        },
+      },
+    })
+
+    render(<VBRSessionRecorder sessionId="session-1" variant="project_defense" />)
+
+    const context = await screen.findByTestId("project-defense-context")
+    // Safe context is what renders (repo label + counts).
+    expect(within(context).getByText(/Boston Smart Accident Risk Rerouting/)).toBeInTheDocument()
+    expect(within(context).getByText(/machackgo\/boston/)).toBeInTheDocument()
+    expect(within(context).getByText(/3 attached/)).toBeInTheDocument()
+
+    // Raw project metadata was never fetched for the Project Defense variant …
+    expect(getProjectDefenseContext).toHaveBeenCalledWith("project-1")
+    expect(getVBRProject).not.toHaveBeenCalled()
+
+    // … and no hostile raw value leaks anywhere in the rendered document.
+    const html = document.body.innerHTML
+    for (const leaked of [
+      "/Users/alice/private/report.pdf",
+      "token=SIGNED",
+      "token=abc",
+      "sk-private",
+      "user_123",
+      "provider_json",
+      "72/100",
+    ]) {
+      expect(html).not.toContain(leaked)
+    }
+  })
+
+  it("shows a safe low-quality failure message and no preview for a hallucinated transcript", async () => {
+    vi.mocked(getVBRSession).mockResolvedValue(
+      makeSession({ status: "processed", chunk_count: 1, transcript_status: null })
+    )
+    vi.mocked(transcribeVBRSession).mockResolvedValue({
+      session_id: "session-1",
+      status: "low_quality",
+      transcript_id: null,
+      segment_count: 0,
+      duration_s: null,
+      provider: "local_whisper",
+      configured: true,
+      message: "Transcript quality too low. Please re-record or use manual explanation.",
+    })
+
+    render(<VBRSessionRecorder sessionId="session-1" variant="project_defense" />)
+
+    await waitFor(() => expect(screen.getByTestId("vbr-transcript")).toBeInTheDocument())
+    fireEvent.click(screen.getByRole("button", { name: "Generate transcript" }))
+
+    const errorBlock = await screen.findByTestId("vbr-transcript-error")
+    expect(
+      within(errorBlock).getByText(
+        "Transcript quality too low. Please re-record or use manual explanation."
+      )
+    ).toBeInTheDocument()
+
+    // A low-quality result never saved a transcript → no preview, no next actions.
+    expect(getVBRSessionTranscript).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("vbr-transcript-preview")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("vbr-transcript-next-actions")).not.toBeInTheDocument()
+    // The retry affordance replaces the generate button.
+    expect(screen.getByRole("button", { name: "Retry transcript generation" })).toBeInTheDocument()
   })
 
   it("does not render the project-defense next actions for the walkthrough variant", async () => {

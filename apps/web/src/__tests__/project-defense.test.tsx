@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { ProjectDefensePanel } from "../../components/passport/ProjectDefensePanel"
 import type {
   DefenseAnalysisResponse,
+  ProjectDefenseContextResponse,
   ProjectDefenseCreateResponse,
   ProjectDefenseSyncResult,
   SubmitDefenseAnswersResponse,
@@ -23,9 +24,11 @@ import type {
 
 vi.mock("@/lib/vbr-api", () => ({
   createProjectDefense: vi.fn(),
+  createNewDefenseSession: vi.fn(),
   generateDefenseQuestions: vi.fn(),
   submitDefenseAnswers: vi.fn(),
   syncProjectDefenseToSkillGraph: vi.fn(),
+  getProjectDefenseContext: vi.fn(),
   getVBRProject: vi.fn(),
   getVBRSession: vi.fn(),
   getVBRSessionRecordingReadiness: vi.fn(),
@@ -47,9 +50,11 @@ vi.mock("next/navigation", () => ({
 
 import {
   createProjectDefense,
+  createNewDefenseSession,
   generateDefenseQuestions,
   submitDefenseAnswers,
   syncProjectDefenseToSkillGraph,
+  getProjectDefenseContext,
   getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
@@ -88,6 +93,27 @@ function makeCreated(overrides: Partial<ProjectDefenseCreateResponse> = {}): Pro
       attached_proofs: {},
       phase: "project_defense_mvp_v1",
     },
+    ...overrides,
+  }
+}
+
+function makeContext(
+  overrides: Partial<ProjectDefenseContextResponse> = {}
+): ProjectDefenseContextResponse {
+  const created = makeCreated()
+  return {
+    project: created.project,
+    metadata: created.metadata,
+    evidence: {
+      github_proof: { attached: false, count: 0, label: "" },
+      documents: { attached: false, count: 0, label: "" },
+      website_proof: { attached: false, count: 0, label: "" },
+      project_defense: { attached: false, count: 0, label: "" },
+    },
+    defense_status: "in_progress",
+    report_ready: false,
+    session_id: null,
+    questions: [],
     ...overrides,
   }
 }
@@ -253,6 +279,8 @@ beforeEach(() => {
     message: "Recording upload storage is ready.",
   })
   vi.mocked(getVBRProject).mockReset().mockResolvedValue(null)
+  vi.mocked(getProjectDefenseContext).mockReset()
+  vi.mocked(createNewDefenseSession).mockReset()
   mockRouterPush.mockReset()
   // The panel now persists a draft to sessionStorage on every change; clear it
   // between tests so a draft from one test never rehydrates the next one's form.
@@ -1897,13 +1925,13 @@ describe("ProjectDefensePanel", () => {
 })
 
 describe("ProjectDefensePanel resume from recorder", () => {
-  it("rehydrates the saved workspace from ?projectId=&sessionId= instead of a blank form", async () => {
+  it("rehydrates the saved workspace from the sanitized defense context, not raw project metadata", async () => {
     window.history.replaceState(
       {},
       "",
       "/student/proofs/project-defense?projectId=proj-1&sessionId=sess-1"
     )
-    vi.mocked(getVBRProject).mockResolvedValue(makeCreated().project)
+    vi.mocked(getProjectDefenseContext).mockResolvedValue(makeContext())
     vi.mocked(getVBRSession).mockResolvedValue(
       makeSession({ status: "recording", questions: makeQuestions().questions })
     )
@@ -1914,7 +1942,9 @@ describe("ProjectDefensePanel resume from recorder", () => {
     // "Project title *" input is no longer shown.
     expect(await screen.findByText("Skill Evidence Tracker")).toBeInTheDocument()
     expect(screen.queryByPlaceholderText(/skill evidence tracker/i)).not.toBeInTheDocument()
-    expect(getVBRProject).toHaveBeenCalledWith("proj-1")
+    // The safe context endpoint is used — never the raw project metadata fetch.
+    expect(getProjectDefenseContext).toHaveBeenCalledWith("proj-1")
+    expect(getVBRProject).not.toHaveBeenCalled()
 
     // The restored session's questions are visible (workspace, not blank form).
     expect(
@@ -1922,11 +1952,81 @@ describe("ProjectDefensePanel resume from recorder", () => {
     ).toBeInTheDocument()
   })
 
+  it("never renders hostile raw attached-proof values from a resumed project", async () => {
+    window.history.replaceState({}, "", "/student/proofs/project-defense?projectId=proj-1")
+    // The sanitized context endpoint would never return these — this proves the
+    // panel reads only the safe context and never the raw metadata.attached_proofs.
+    vi.mocked(getProjectDefenseContext).mockResolvedValue(makeContext())
+
+    render(<ProjectDefensePanel />)
+    expect(await screen.findByText("Skill Evidence Tracker")).toBeInTheDocument()
+
+    const html = document.body.innerHTML
+    for (const leaked of [
+      "/Users/alice/private/report.pdf",
+      "token=",
+      "sk-private",
+      "user_123",
+      "72/100",
+    ]) {
+      expect(html).not.toContain(leaked)
+    }
+  })
+
   it("falls back to the blank create form when no projectId is present", async () => {
     render(<ProjectDefensePanel />)
 
     expect(await screen.findByPlaceholderText(/skill evidence tracker/i)).toBeInTheDocument()
+    expect(getProjectDefenseContext).not.toHaveBeenCalled()
     expect(getVBRProject).not.toHaveBeenCalled()
+  })
+})
+
+describe("ProjectDefensePanel record another defense", () => {
+  async function analyzeToCompletion() {
+    vi.mocked(createProjectDefense).mockResolvedValue(makeCreated())
+    vi.mocked(generateDefenseQuestions).mockResolvedValue(makeQuestions())
+    vi.mocked(submitDefenseAnswers).mockResolvedValue(makeSubmitResult())
+
+    render(<ProjectDefensePanel />)
+    fireEvent.change(await screen.findByPlaceholderText(/skill evidence tracker/i), {
+      target: { value: "Skill Evidence Tracker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /create project defense/i }))
+    fireEvent.click(await screen.findByRole("button", { name: /generate questions/i }))
+    fireEvent.change(
+      await screen.findByPlaceholderText(/explain your project/i),
+      { target: { value: "I built the backend API with FastAPI and PostgreSQL." } }
+    )
+    fireEvent.click(screen.getByRole("button", { name: /analyze my answers/i }))
+    // Completion panel appears once analysis has run.
+    await screen.findByText(/project defense analyzed/i)
+  }
+
+  it("creates a NEW session and routes to it (never reopens the completed session)", async () => {
+    await analyzeToCompletion()
+
+    // The completed session id is sess-1 (from makeQuestions). "Record another"
+    // must create a brand-new session and route to THAT id, not sess-1.
+    vi.mocked(createNewDefenseSession).mockResolvedValue({
+      project_id: "proj-1",
+      session_id: "sess-2-new",
+      status: "questions_ready",
+      questions: makeQuestions().questions,
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "Record another defense" }))
+
+    await waitFor(() => expect(createNewDefenseSession).toHaveBeenCalledWith("proj-1"))
+    await waitFor(() =>
+      expect(mockRouterPush).toHaveBeenCalledWith(
+        "/student/proofs/project-defense/record/sess-2-new"
+      )
+    )
+    // The old (completed) session id was never used for the new record route.
+    expect(mockRouterPush).not.toHaveBeenCalledWith(
+      "/student/proofs/project-defense/record/sess-1"
+    )
   })
 })
 

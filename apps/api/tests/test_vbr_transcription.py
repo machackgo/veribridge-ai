@@ -554,6 +554,138 @@ def test_transcribe_three_meaningful_words_succeeds(
     assert mem_store["vbr_transcripts"]
 
 
+_LOW_QUALITY_MESSAGE = "Transcript quality too low. Please re-record or use manual explanation."
+
+
+def test_transcribe_repeated_token_hallucination_is_not_success(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repeated-token hallucination ("new new new …") must fail safely — it is
+    never persisted or reported as a saved transcript."""
+    # Mirrors the real observed failure: a burst of one repeated word between a
+    # little real speech at the ends.
+    hallucinated = "I'm going to start with the " + ("new " * 30) + "geographic and cloud API logic."
+    segment_texts = ["I'm going to start with the"] + ["new"] * 28 + ["geographic and cloud API logic."]
+    monkeypatch.setattr(
+        "app.services.transcription_service.transcribe_audio",
+        _fake_transcribe_returning(hallucinated, segment_texts),
+    )
+
+    _project_id, session_id = _setup_processed_session(client)
+
+    response = _transcribe(client, session_id)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "low_quality"
+    assert body["transcript_id"] is None
+    assert body["segment_count"] == 0
+    assert body["configured"] is True
+    assert body["message"] == _LOW_QUALITY_MESSAGE
+
+    # Nothing was persisted — no hallucinated transcript saved as evidence.
+    assert "vbr_transcripts" not in mem_store or not mem_store["vbr_transcripts"]
+    assert (
+        "vbr_transcript_segments" not in mem_store
+        or not mem_store["vbr_transcript_segments"]
+    )
+
+    session = mem_store["vbr_verification_sessions"][session_id]
+    assert session["telemetry"]["transcript"]["status"] == "low_quality"
+
+
+def test_transcribe_short_repeated_token_is_not_saved(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A short repeated-token hallucination ("new new new") clears the no-speech
+    gate (3 meaningful words) but must still fail closed — never persisted as a
+    saved transcript, so the UI never offers to analyze it."""
+    monkeypatch.setattr(
+        "app.services.transcription_service.transcribe_audio",
+        _fake_transcribe_returning("new new new", ["new new new"]),
+    )
+
+    _project_id, session_id = _setup_processed_session(client)
+
+    response = _transcribe(client, session_id)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "low_quality"
+    assert body["transcript_id"] is None
+    assert body["segment_count"] == 0
+    assert body["message"] == _LOW_QUALITY_MESSAGE
+
+    # Nothing was persisted — the short hallucination is not saved as evidence.
+    assert "vbr_transcripts" not in mem_store or not mem_store["vbr_transcripts"]
+    assert (
+        "vbr_transcript_segments" not in mem_store
+        or not mem_store["vbr_transcript_segments"]
+    )
+    session = mem_store["vbr_verification_sessions"][session_id]
+    assert session["telemetry"]["transcript"]["status"] == "low_quality"
+
+
+def test_transcribe_low_quality_response_is_sanitized(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The low-quality response exposes no storage paths, signed URLs, or text."""
+    monkeypatch.setattr(
+        "app.services.transcription_service.transcribe_audio",
+        _fake_transcribe_returning("new " * 30, ["new"] * 30),
+    )
+
+    _project_id, session_id = _setup_processed_session(client)
+    body = _transcribe(client, session_id).json()
+
+    serialized = str(body)
+    assert body["status"] == "low_quality"
+    assert "new new" not in serialized  # hallucinated text never echoed back
+    assert "storage" not in serialized.lower()
+    assert "http" not in serialized.lower()
+
+
+def test_transcribe_normal_multiword_transcript_passes_quality_guard(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A normal, varied explanation is NOT flagged as low quality — it is saved."""
+    normal = (
+        "I built the risk-scoring API with FastAPI and a PostgreSQL database, then "
+        "wired the React front end to display accident-risk routes on a map."
+    )
+    monkeypatch.setattr(
+        "app.services.transcription_service.transcribe_audio",
+        _fake_transcribe_returning(normal, [normal]),
+    )
+
+    _project_id, session_id = _setup_processed_session(client)
+    body = _transcribe(client, session_id).json()
+
+    assert body["status"] == "transcribed"
+    assert body["transcript_id"]
+    assert mem_store["vbr_transcripts"]
+
+
+def test_get_transcript_reflects_low_quality_status(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a low-quality result, the owner transcript endpoint reports it and
+    returns no saved segments."""
+    monkeypatch.setattr(
+        "app.services.transcription_service.transcribe_audio",
+        _fake_transcribe_returning("new " * 30, ["new"] * 30),
+    )
+    _project_id, session_id = _setup_processed_session(client)
+    assert _transcribe(client, session_id).json()["status"] == "low_quality"
+
+    response = client.get(f"/api/v1/student/vbr/sessions/{session_id}/transcript")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "low_quality"
+    assert body["segments"] == []
+    assert body["preview_text"] == ""
+
+
 def test_transcribe_no_speech_response_is_sanitized(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -723,7 +855,9 @@ def test_get_transcript_preview_is_capped(
 ) -> None:
     from app.services import vbr_transcription
 
-    long_text = "word " * 2000  # comfortably over the preview cap
+    # Varied long text (not a single repeated word) so it comfortably exceeds the
+    # preview cap without tripping the repeated-token quality guard.
+    long_text = " ".join(f"token{i % 60}" for i in range(2000))
 
     def _long(*_args: object, **_kwargs: object) -> TranscriptionResult:
         return TranscriptionResult(
@@ -780,3 +914,52 @@ def test_is_meaningful_transcript_threshold() -> None:
     assert is_meaningful_transcript("I built APIs.") is True
     assert is_meaningful_transcript(". . .") is False
     assert is_meaningful_transcript("just two") is False
+
+
+@pytest.mark.parametrize(
+    "text, expected_low",
+    [
+        # The reported failure: a burst of one repeated word dominates.
+        ("I'm going to start with the " + ("new " * 30) + "geographic and cloud", True),
+        ("new " * 12, True),
+        # A normal, varied explanation is never flagged.
+        (
+            "I built the risk-scoring API with FastAPI and a PostgreSQL database and "
+            "wired the React front end to display routes on a map",
+            False,
+        ),
+        # Short repeated-token hallucinations at the meaningful-speech threshold
+        # must fail closed rather than be persisted as evidence.
+        ("new new new", True),
+        ("new new new new", True),
+        ("hello hello hello", True),
+        ("test test test", True),
+        # Short but meaningful — distinct words that clear the meaningful-speech
+        # gate — must still pass, not be over-blocked.
+        ("backend route scoring", False),
+        ("I built APIs", False),
+        ("route risk model", False),
+        # Below the meaningful-speech floor: owned by the no-speech gate.
+        ("just two", False),
+        ("", False),
+    ],
+)
+def test_is_low_quality_transcript(text: str, expected_low: bool) -> None:
+    from app.services.transcription_service import is_low_quality_transcript
+
+    assert is_low_quality_transcript(text) is expected_low
+
+
+def test_repeated_token_ratio_scores() -> None:
+    from app.services.transcription_service import (
+        consecutive_repeat_ratio,
+        dominant_token_ratio,
+        repeated_token_ratio,
+    )
+
+    assert repeated_token_ratio("") == 0.0
+    # Five of nine tokens are "new" → dominant 5/9; four adjacent repeats / 8.
+    assert dominant_token_ratio("the new new new new new the a b") == pytest.approx(5 / 9)
+    assert consecutive_repeat_ratio("the new new new new new the a b") == pytest.approx(4 / 8)
+    # A varied sentence stays well below the 0.5 threshold.
+    assert repeated_token_ratio("I built an API and a database and a front end") < 0.5

@@ -1402,6 +1402,39 @@ def generate_defense_questions(db: Any, project: dict[str, Any]) -> tuple[str, l
     return str(session["id"]), inserted
 
 
+def create_new_defense_session(db: Any, project: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    """Always create a *fresh* verification session (new attempt) + defense questions.
+
+    Unlike :func:`generate_defense_questions`, which reuses an existing
+    ``created`` session, this always allocates a new attempt so "Record another
+    defense" never reopens a completed/processed session (a processed session is
+    non-retryable — the recorder only starts from ``created``). The returned
+    session id is a brand-new ``created`` session the recorder can start.
+    """
+    project_id = str(project["id"])
+    session = _create_session(db, project_id)
+
+    specs = build_defense_question_specs(project)
+    now = _now()
+    rows = [
+        {
+            "id": str(uuid4()),
+            "session_id": session["id"],
+            "sort_order": sort_order,
+            "question_text": spec["question_text"],
+            "target_ref": spec["target_ref"],
+            "claim_ids": [],
+            "asked_at_s": None,
+            "answered": False,
+            "created_at": now,
+        }
+        for sort_order, spec in enumerate(specs)
+    ]
+
+    inserted = _insert_questions(db, rows)
+    return str(session["id"]), inserted
+
+
 # ── Manual transcript + analysis ─────────────────────────────────────────────
 
 

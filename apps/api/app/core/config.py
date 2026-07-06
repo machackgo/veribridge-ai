@@ -256,10 +256,18 @@ class Settings(BaseSettings):
     )
 
     # local_whisper model config (used when transcription_provider=local_whisper)
+    # MVP default is large-v3-turbo: on a MacBook Pro M-series it is the best
+    # accuracy/speed trade-off for English project explanations and drastically
+    # reduces the weak-model hallucination the `base` model produced. GPU-less
+    # production (e.g. Render) can override with LOCAL_WHISPER_MODEL_SIZE=small.
+    # Accepts any faster-whisper size/alias: tiny|base|small|medium|large-v3|
+    # large-v3-turbo.
     local_whisper_model_size: str = Field(
-        default="base",
+        default="large-v3-turbo",
         alias="LOCAL_WHISPER_MODEL_SIZE",
     )
+    # Device: cpu | cuda | auto. faster-whisper (CTranslate2) has no Metal/MPS
+    # backend, so Apple Silicon must use cpu; "auto" picks cuda when available.
     local_whisper_device: str = Field(
         default="cpu",
         alias="LOCAL_WHISPER_DEVICE",
@@ -267,6 +275,43 @@ class Settings(BaseSettings):
     local_whisper_compute_type: str = Field(
         default="int8",
         alias="LOCAL_WHISPER_COMPUTE_TYPE",
+    )
+    # ── faster-whisper decoding / anti-hallucination tuning ──────────────────
+    # Defaults are chosen to suppress the classic Whisper repeated-token
+    # hallucination ("new new new …") seen on real screen+mic recordings:
+    #   - VAD strips silence so the model is never fed dead air to hallucinate on
+    #   - condition_on_previous_text=False stops a repeated token from feeding
+    #     itself forward into an unbounded "new new new" loop
+    #   - temperature=0 is greedy/deterministic decoding (no sampling drift)
+    #   - no_speech / log_prob / compression_ratio thresholds drop low-confidence
+    #     and degenerate (highly compressible ⇒ repetitive) segments
+    local_whisper_beam_size: int = Field(
+        default=5,
+        alias="LOCAL_WHISPER_BEAM_SIZE",
+    )
+    local_whisper_vad: bool = Field(
+        default=True,
+        alias="LOCAL_WHISPER_VAD",
+    )
+    local_whisper_condition_on_previous_text: bool = Field(
+        default=False,
+        alias="LOCAL_WHISPER_CONDITION_ON_PREVIOUS_TEXT",
+    )
+    local_whisper_temperature: float = Field(
+        default=0.0,
+        alias="LOCAL_WHISPER_TEMPERATURE",
+    )
+    local_whisper_no_speech_threshold: float = Field(
+        default=0.6,
+        alias="LOCAL_WHISPER_NO_SPEECH_THRESHOLD",
+    )
+    local_whisper_compression_ratio_threshold: float = Field(
+        default=2.4,
+        alias="LOCAL_WHISPER_COMPRESSION_RATIO_THRESHOLD",
+    )
+    local_whisper_log_prob_threshold: float = Field(
+        default=-1.0,
+        alias="LOCAL_WHISPER_LOG_PROB_THRESHOLD",
     )
     # Language forced for local_whisper transcription.
     # For the Project Defense MVP we default to English rather than relying on

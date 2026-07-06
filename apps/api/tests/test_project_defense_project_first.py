@@ -497,6 +497,55 @@ def test_generate_questions_uses_selected_project_context(client: TestClient, me
     assert ctx["report_ready"] is False
 
 
+# ── "Record another defense" — new session attempt ───────────────────────────
+
+def test_record_another_creates_a_new_defense_session(client: TestClient, mem_store: dict) -> None:
+    """POST /projects/{id}/defense-sessions always allocates a fresh session
+    attempt (never reuses the previous one) so a completed/processed defense is
+    never reopened for recording."""
+    project_id = _seed_project(mem_store, title="Boston Smart Accident Risk Rerouting")
+
+    first = client.post(f"{BASE}/projects/{project_id}/generate-defense-questions").json()
+    first_session = first["session_id"]
+
+    res = client.post(f"{BASE}/projects/{project_id}/defense-sessions")
+    assert res.status_code == 201, res.text
+    body = res.json()
+
+    assert body["project_id"] == project_id
+    assert body["session_id"] != first_session
+    assert len(body["questions"]) > 0
+
+    sessions = mem_store["vbr_verification_sessions"]
+    new_row = sessions[body["session_id"]]
+    old_row = sessions[first_session]
+    # The new session is a recordable 'created' attempt with a higher attempt_no.
+    assert new_row["status"] == "created"
+    assert new_row["attempt_no"] > old_row["attempt_no"]
+
+
+def test_record_another_works_even_when_prior_session_is_past_created(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A prior session that has already progressed (uploaded/processed) must not
+    block creating a new attempt — 'Record another defense' still succeeds."""
+    project_id = _seed_project(mem_store)
+    first = client.post(f"{BASE}/projects/{project_id}/generate-defense-questions").json()
+
+    # Simulate the prior session having been recorded + processed (non-retryable).
+    mem_store["vbr_verification_sessions"][first["session_id"]]["status"] = "processed"
+
+    res = client.post(f"{BASE}/projects/{project_id}/defense-sessions")
+    assert res.status_code == 201, res.text
+    assert res.json()["session_id"] != first["session_id"]
+
+
+def test_record_another_is_owner_scoped(client: TestClient, mem_store: dict) -> None:
+    other_project = _seed_project(mem_store, user_id=OTHER_USER_ID)
+    res = client.post(f"{BASE}/projects/{other_project}/defense-sessions")
+    assert res.status_code == 404
+
+
 def test_generated_questions_are_grounded_in_description_and_safe_proof_summaries(
     client: TestClient, mem_store: dict
 ) -> None:

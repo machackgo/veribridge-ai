@@ -557,6 +557,20 @@ export async function generateDefenseQuestions(projectId: string): Promise<Gener
   return res.json()
 }
 
+/**
+ * Create a *fresh* Project Defense recording session (new attempt) for a project.
+ * Used by "Record another defense" — a completed/processed session is
+ * non-retryable, so this always returns a brand-new session id to record into.
+ */
+export async function createNewDefenseSession(projectId: string): Promise<GenerateDefenseQuestionsResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/vbr/projects/${encodeURIComponent(projectId)}/defense-sessions`,
+    { method: "POST" }
+  )
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to start a new defense session (HTTP ${res.status}).`))
+  return res.json()
+}
+
 /** Submit pasted/manual defense answers and run deterministic analysis. */
 export async function submitDefenseAnswers(
   sessionId: string,

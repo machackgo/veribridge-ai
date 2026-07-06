@@ -40,6 +40,9 @@ _NO_SPEECH_MESSAGE = (
     "No useful speech was detected. Please retry with clearer audio or use the "
     "manual transcript fallback."
 )
+_LOW_QUALITY_MESSAGE = (
+    "Transcript quality too low. Please re-record or use manual explanation."
+)
 
 __all__ = [
     "TranscriptResult",
@@ -358,6 +361,8 @@ def transcribe_session(db: Any, session_id: str, user_id: str) -> dict[str, Any]
         MEANINGFUL_WORD_THRESHOLD,
         TranscriptionUnavailableError,
         count_meaningful_words,
+        is_low_quality_transcript,
+        repeated_token_ratio,
         transcribe_audio,
     )
 
@@ -445,6 +450,48 @@ def transcribe_session(db: Any, session_id: str, user_id: str) -> dict[str, Any]
             "provider": tx_result.provider_used,
             "configured": True,
             "message": _NO_SPEECH_MESSAGE,
+        }
+
+    # ── Repeated-token hallucination guard ────────────────────────────────────
+    # A weak/mis-configured model over degraded audio can emit a real-looking but
+    # meaningless transcript that is one word repeated dozens of times ("… new
+    # new new …"). That is NOT usable evidence: persisting it would show the
+    # student "Transcript saved" over a hallucination and feed garbage into the
+    # defense analysis. We measure repetitiveness over BOTH the provider's full
+    # text and its joined segment texts (take the max so a clean full_text can't
+    # mask degenerate segments) and fail safely with a low_quality status so the
+    # UI offers re-record / manual fallback. Nothing is persisted.
+    repeat_ratio = max(
+        repeated_token_ratio(tx_result.transcript_text),
+        repeated_token_ratio(segment_source_text),
+    )
+    low_quality = is_low_quality_transcript(tx_result.transcript_text) or is_low_quality_transcript(
+        segment_source_text
+    )
+
+    # Server-side diagnostics only (local/dev debugging): repetitiveness score,
+    # word/segment counts and the decision flag — never any transcript text.
+    logger.info(
+        "[VBR] Transcript quality check for session %s "
+        "(meaningful_word_count=%d, segment_count=%d, repeated_token_ratio=%.2f, low_quality=%s)",
+        session_id,
+        meaningful_word_count,
+        raw_segment_count,
+        repeat_ratio,
+        low_quality,
+    )
+
+    if low_quality:
+        _mark_session_transcript_status(db, session_id, "low_quality")
+        return {
+            "session_id": session_id,
+            "status": "low_quality",
+            "transcript_id": None,
+            "segment_count": 0,
+            "duration_s": None,
+            "provider": tx_result.provider_used,
+            "configured": True,
+            "message": _LOW_QUALITY_MESSAGE,
         }
 
     language = tx_result.language or "en"
