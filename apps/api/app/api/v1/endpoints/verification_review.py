@@ -32,7 +32,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, require_admin_user_id
 from app.schemas.verification_review import (
     AdminDecisionRequest,
     AdminReviewListItem,
@@ -159,12 +159,13 @@ admin_router = APIRouter()
 def admin_list_reviews(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    _admin_user_id: str = Depends(require_admin_user_id),
     db: Any = Depends(get_db),
 ) -> list[AdminReviewListItem]:
     """Return all review requests ordered by created_at desc.
 
-    NOTE: In production this endpoint must be protected by admin/service-role
-    authentication.  For MVP it shares the same JWT auth as student endpoints.
+    Admin-only: review requests span every student, so a non-admin caller
+    must never be able to list them.
     """
     return VerificationReviewService(db).admin_list_reviews(limit=limit, offset=offset)
 
@@ -177,6 +178,7 @@ def admin_list_reviews(
 def admin_set_decision(
     review_id: str,
     body: AdminDecisionRequest,
+    _admin_user_id: str = Depends(require_admin_user_id),
     db: Any = Depends(get_db),
 ) -> VerificationReviewResponse:
     """Admin manually sets the AI review status.
@@ -215,6 +217,7 @@ def admin_invite_reviewer(
         description="veribridge_admin | faculty_reviewer | company_reviewer | domain_expert | recruiter_reviewer",
     ),
     reviewer_field: str = Query(default="", description="Field/domain (e.g. Machine Learning)"),
+    _admin_user_id: str = Depends(require_admin_user_id),
     db: Any = Depends(get_db),
 ) -> dict:
     """Invite a human reviewer to evaluate this review request.

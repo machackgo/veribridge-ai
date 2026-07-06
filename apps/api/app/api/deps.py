@@ -219,3 +219,37 @@ def require_admin_user_id(
                 },
             )
     return user_id
+
+
+def require_admin_or_university_admin_user_id(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> str:
+    """
+    Require a full admin or university_admin for high-sensitivity surfaces.
+
+    Stricter than :func:`require_admin_user_id`: it deliberately does NOT admit
+    ``support`` or ``reviewer`` grants. Candidate discovery (search/detail) dumps
+    other students' private evidence, so it is limited to ``admin`` and
+    ``university_admin`` only.
+    """
+    role = None
+    if isinstance(db, dict):
+        role = (db.get("users", {}).get(user_id) or {}).get("role")
+    else:
+        result = db.table("users").select("role").eq("id", user_id).maybe_single().execute()
+        data = getattr(result, "data", None) if result is not None else None
+        role = (data or {}).get("role")
+    if role not in {"admin", "university_admin"}:
+        from app.services.permission_service import PermissionService
+
+        permission_service = PermissionService(db)
+        if not permission_service.has_role(user_id, ["admin", "university_admin"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "admin_required",
+                    "message": "Admin or university admin access is required.",
+                },
+            )
+    return user_id
