@@ -1412,7 +1412,32 @@ def collect_skill_summaries(
                 0 if i.get("safe_location") else 1,
             ),
         )
-        previews = [_preview_of(i) for i in ordered[:_MAX_PREVIEWS]]
+        # Collapse preview rows that would render identically so the compact
+        # card never repeats a duplicate-looking label. The dedupe identity is
+        # the ACTUAL rendered text: PreviewRow shows ``title || safe_summary``
+        # plus ``safe_location``. Keying on that visible text (not both title
+        # AND summary) means rows with the same visible title/location collapse
+        # even when a hidden safe_summary differs, while distinct GitHub
+        # file/line locations and distinct document pages/sections keep
+        # different safe_locations and stay separate rows.
+        previews: list[dict[str, Any]] = []
+        seen_preview_ids: set[tuple[str, str, str]] = set()
+        for item in ordered:
+            preview = _preview_of(item)
+            visible_text = str(preview.get("title") or "").strip() or str(
+                preview.get("safe_summary") or ""
+            )
+            preview_id = (
+                str(preview.get("proof_type") or ""),
+                _norm(visible_text),
+                str(preview.get("safe_location") or "").strip().lower(),
+            )
+            if preview_id in seen_preview_ids:
+                continue
+            seen_preview_ids.add(preview_id)
+            previews.append(preview)
+            if len(previews) >= _MAX_PREVIEWS:
+                break
         project_titles = [titles.get(pid, "Project") for pid in group["project_ids"]]
         unattached = group["unattached_count"]
         attached = group["attached_count"]

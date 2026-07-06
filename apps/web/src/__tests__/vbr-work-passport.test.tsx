@@ -8,7 +8,12 @@
 import { render, screen, waitFor, fireEvent } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
-import type { PrivateWorkPassport, VaultSkillSummary, WorkPassportStatus } from "@/lib/vbr-api"
+import type {
+  PrivateWorkPassport,
+  VaultSkillPreview,
+  VaultSkillSummary,
+  WorkPassportStatus,
+} from "@/lib/vbr-api"
 
 vi.mock("@/lib/vbr-api", async (importActual) => ({
   ...(await importActual<typeof import("@/lib/vbr-api")>()),
@@ -902,5 +907,192 @@ describe("PrivatePassportView — Attachment Intelligence Cleanup (Step 4)", () 
 
     expect(await screen.findByTestId("passport-header")).toBeInTheDocument()
     expect(screen.queryByTestId("attachment-overview")).not.toBeInTheDocument()
+  })
+})
+
+// ── Attachment Intelligence Cleanup — browser polish ──────────────────────────
+
+function makeVaultPreview(overrides: Partial<VaultSkillPreview> = {}): VaultSkillPreview {
+  return {
+    proof_type: "Document Proof",
+    title: "Design Doc",
+    safe_location: "page 2",
+    safe_summary: "Overview of the design.",
+    is_attached_to_project: false,
+    public_safe: true,
+    ...overrides,
+  }
+}
+
+describe("PrivatePassportView — browser polish (dedupe + clean counts)", () => {
+  it("shows the clean deduplicated attachment_overview count in prominent copy, not the raw vault count", async () => {
+    const p = makeGraphPassport({
+      // Raw vault rows (with duplicates) is large; the clean deduped count is small.
+      vault_unattached_count: 519,
+      attachment_overview: makeOverview({ unattached_count: 32 }),
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+
+    // Skill Intelligence headline copy uses the clean count …
+    const summaryCopy = await screen.findByTestId("vault-unattached-summary")
+    expect(summaryCopy).toHaveTextContent("32 unattached proof item")
+    expect(summaryCopy).not.toHaveTextContent("519")
+    // … and so does the Evidence Vault next-action copy.
+    const action = screen.getByTestId("vault-unattached-action")
+    expect(action).toHaveTextContent("32 unattached proof item")
+    expect(action).not.toHaveTextContent("519")
+  })
+
+  it("collapses duplicate-looking suggestions into one card with a grouped proof count", async () => {
+    const dupSuggestion = {
+      suggestion_id_safe: "attach-dup",
+      proof_type: "Document Proof",
+      proof_title: "Skill Evidence Tracker Report",
+      proof_count: 1,
+      likely_project_title: "Skill Evidence Tracker",
+      likely_project_ref_safe: "/student/vbr/projects/proj-1/report",
+      likely_skill_names: ["Python"],
+      suggestion_reason: "Document Proof may belong to “Skill Evidence Tracker”.",
+      evidence_basis_chips: ["Matching document title"],
+      confidence_label: "Likely match",
+      attachment_status: "Not attached to a VBR project",
+      limitation: "Suggested match only — nothing is attached automatically.",
+      action_label: "Review and attach proof",
+    }
+    const p = makeGraphPassport({
+      unattached_proof_summary: {
+        unattached_count: 2,
+        suggestion_count: 2,
+        unmatched_count: 0,
+        suggestions: [
+          { ...dupSuggestion, suggestion_id_safe: "attach-dup-a" },
+          { ...dupSuggestion, suggestion_id_safe: "attach-dup-b" },
+        ],
+      },
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+
+    await screen.findByTestId("proof-attachment-intelligence")
+    const cards = screen.getAllByTestId("attachment-suggestion")
+    expect(cards).toHaveLength(1)
+    // The single card sums the grouped proof count of the collapsed rows.
+    expect(cards[0]).toHaveTextContent("2 proof items grouped")
+  })
+
+  it("collapses identical skill preview rows but keeps distinct GitHub locations separate", async () => {
+    const dupPreview = makeVaultPreview()
+    const p = makeGraphPassport({
+      vault_skill_summaries: [
+        makeVaultSummary({
+          previews: [dupPreview, { ...dupPreview }, { ...dupPreview }],
+          more_count: 2,
+        }),
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+
+    // Three identical-looking preview rows collapse to one.
+    const previews = await screen.findAllByTestId("vault-skill-preview")
+    expect(previews).toHaveLength(1)
+  })
+
+  it("keeps distinct GitHub file/line preview rows separate", async () => {
+    const p = makeGraphPassport({
+      vault_skill_summaries: [
+        makeVaultSummary({
+          previews: [
+            makeVaultPreview({
+              proof_type: "GitHub Proof",
+              title: "octocat/Hello-World",
+              safe_location: "src/main.py:10",
+              safe_summary: "implementation body",
+            }),
+            makeVaultPreview({
+              proof_type: "GitHub Proof",
+              title: "octocat/Hello-World",
+              safe_location: "src/utils.py:22",
+              safe_summary: "implementation body",
+            }),
+          ],
+        }),
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+
+    const previews = await screen.findAllByTestId("vault-skill-preview")
+    expect(previews).toHaveLength(2)
+  })
+
+  it("collapses preview rows with the same visible title/location but a different hidden safe_summary", async () => {
+    // PreviewRow renders `title || safe_summary` + safe_location. Two rows with
+    // the same visible title and location but a differing hidden safe_summary
+    // render identically, so they must collapse to a single row.
+    const p = makeGraphPassport({
+      vault_skill_summaries: [
+        makeVaultSummary({
+          previews: [
+            makeVaultPreview({
+              proof_type: "Document Proof",
+              title: "Design Doc",
+              safe_location: "page 2",
+              safe_summary: "Overview of the design.",
+            }),
+            makeVaultPreview({
+              proof_type: "Document Proof",
+              title: "Design Doc",
+              safe_location: "page 2",
+              safe_summary: "A different hidden summary that never renders.",
+            }),
+          ],
+        }),
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+
+    const previews = await screen.findAllByTestId("vault-skill-preview")
+    expect(previews).toHaveLength(1)
+    expect(previews[0]).toHaveTextContent("Design Doc")
+  })
+
+  it("shows the clean attachment_overview count (not the raw vault row count) in the unmatched-proof note", async () => {
+    // Regression: the unmatched-proof note used to render unmatched_count, which
+    // is derived from the raw vault_unattached_count (519-style row count) and
+    // contradicts the clean, deduplicated Evidence Graph Overview. It must use
+    // the clean attachment_overview.unattached_count (32) instead.
+    const p = makeIntelligencePassport({
+      vault_unattached_count: 519,
+      unattached_proof_summary: {
+        unattached_count: 519,
+        suggestion_count: 0,
+        unmatched_count: 519,
+        suggestions: [],
+      },
+      attachment_overview: makeOverview({ unattached_count: 32 }),
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    const { container } = render(<PrivatePassportView />)
+
+    const note = await screen.findByTestId("suggestions-unmatched-note")
+    expect(note).toHaveTextContent("32 unattached proof item(s) had no safe project match")
+    expect(note).not.toHaveTextContent("519")
+    // The raw 519-style row count appears nowhere on the rendered page.
+    expect(container).not.toHaveTextContent("519")
   })
 })

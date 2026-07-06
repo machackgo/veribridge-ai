@@ -1842,9 +1842,10 @@ def test_github_rows_with_stable_repo_identity_still_group() -> None:
     assert "Matching repository" in suggestions[0]["evidence_basis_chips"]
 
 
-def test_same_title_distinct_proofs_get_distinct_suggestion_ids() -> None:
-    """Two distinct proofs that happen to share a title must never collide on
-    ``suggestion_id_safe``."""
+def test_same_title_document_suggestions_collapse_per_project() -> None:
+    """Two duplicate-looking document proofs (same safe title) suggested to the
+    SAME project collapse into ONE card with the grouped proof count summed —
+    the passport no longer renders a near-identical row per source."""
     from app.services.passport_attachment_intelligence import build_attachment_suggestions
 
     def doc_row(source_id: str) -> dict:
@@ -1866,12 +1867,108 @@ def test_same_title_distinct_proofs_get_distinct_suggestion_ids() -> None:
         "claimed_skills": ["Python"],
     }
     suggestions = build_attachment_suggestions([doc_row("doc-1"), doc_row("doc-2")], [project])
-    assert len(suggestions) == 2
-    ids = {s["suggestion_id_safe"] for s in suggestions}
-    assert len(ids) == 2, "same-title distinct proofs must get distinct suggestion ids"
-    assert all(i.startswith("attach-") for i in ids)
-    # The digest never embeds the raw source id.
-    assert all("doc-1" not in i and "doc-2" not in i for i in ids)
+    assert len(suggestions) == 1, "same-title documents to one project collapse into one card"
+    assert suggestions[0]["proof_count"] == 2, "the honest grouped proof count is preserved"
+    # The safe suggestion id is still a one-way digest — never a raw source id.
+    sid = suggestions[0]["suggestion_id_safe"]
+    assert sid.startswith("attach-")
+    assert "doc-1" not in sid and "doc-2" not in sid
+
+
+def test_same_domain_website_suggestions_collapse_per_project() -> None:
+    """Repeated unattached website proofs on the SAME domain (per-skill rows)
+    collapse into one suggestion card for the project, not one card per row."""
+    from app.services.passport_attachment_intelligence import build_attachment_suggestions
+
+    def site_row(source_id: str, skill: str) -> dict:
+        url = "https://stroke-prediction-app.vercel.app"
+        return {
+            "proof_type": "Website Proof",
+            "source_table": "workflow_analysis",
+            "source_id": source_id,
+            "title": url,
+            "public_url": url,
+            "skill_name": skill,
+            "is_attached_to_project": False,
+        }
+
+    project = {
+        "project_id": "proj-1",
+        "project_title": "Stroke Prediction App",
+        "repo_full_name": None,
+        "claimed_skills": ["Python", "React"],
+    }
+    suggestions = build_attachment_suggestions(
+        [site_row("w1", "Python"), site_row("w2", "React")], [project]
+    )
+    assert len(suggestions) == 1, "same-domain website suggestions collapse into one card"
+    assert suggestions[0]["proof_type"] == "Website Proof"
+    assert suggestions[0]["proof_count"] == 2
+    assert suggestions[0]["likely_project_title"] == "Stroke Prediction App"
+
+
+def test_distinct_suggestions_to_different_projects_stay_separate() -> None:
+    """Dedupe collapses only duplicate-looking rows — distinct proofs that belong
+    to DIFFERENT projects must never be merged into one card."""
+    from app.services.passport_attachment_intelligence import build_attachment_suggestions
+
+    alpha = {
+        "project_id": "a",
+        "project_title": "Alpha Inventory",
+        "repo_full_name": None,
+        "claimed_skills": ["React"],
+    }
+    beta = {
+        "project_id": "b",
+        "project_title": "Beta Payments",
+        "repo_full_name": None,
+        "claimed_skills": ["Python"],
+    }
+
+    def site_row(domain: str, source_id: str, skill: str) -> dict:
+        url = f"https://{domain}"
+        return {
+            "proof_type": "Website Proof",
+            "source_table": "workflow_analysis",
+            "source_id": source_id,
+            "title": url,
+            "public_url": url,
+            "skill_name": skill,
+            "is_attached_to_project": False,
+        }
+
+    suggestions = build_attachment_suggestions(
+        [
+            site_row("alpha-inventory.vercel.app", "w1", "React"),
+            site_row("beta-payments.vercel.app", "w2", "Python"),
+        ],
+        [alpha, beta],
+    )
+    assert len(suggestions) == 2, "proofs for different projects stay separate cards"
+    assert {s["likely_project_title"] for s in suggestions} == {"Alpha Inventory", "Beta Payments"}
+    assert all(s["proof_count"] == 1 for s in suggestions)
+
+
+def test_duplicate_same_domain_website_suggestions_collapse_in_passport(
+    client: TestClient, mem_store: dict
+) -> None:
+    """End-to-end: repeated same-domain website proofs surface as ONE suggestion
+    with the grouped count, and the clean deduplicated unattached count stays
+    available on the passport for headline copy (never regressed)."""
+    _make_full_project(client, mem_store)
+    for _ in range(2):
+        _seed_workflow_analysis(
+            mem_store,
+            target_website="https://skill-evidence-tracker.vercel.app",
+            supported_skills=["React"],
+        )
+
+    body = _get_private(client).json()
+    website = [s for s in _suggestions_of(body) if s["proof_type"] == "Website Proof"]
+    assert len(website) == 1, "same-domain website suggestions collapse into one card"
+    assert website[0]["proof_count"] >= 2
+    # The clean deduplicated unattached count remains available (Step 4 overview).
+    assert isinstance(body["attachment_overview"]["unattached_count"], int)
 
 
 def test_project_cards_show_proof_chain_gaps_and_next_action(

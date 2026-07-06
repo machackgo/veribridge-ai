@@ -405,6 +405,34 @@ def _safe_suggestion_id(group: dict[str, Any], project_id: str) -> str:
     return f"attach-{hashlib.sha256(parts.encode()).hexdigest()[:12]}"
 
 
+def _suggestion_display_identity(group: dict[str, Any]) -> str:
+    """Canonical DISPLAY identity of a proof group, for suggestion dedupe.
+
+    Collapses duplicate-looking suggestions — the same repository, the same
+    website domain, or the same document/proof title — into ONE card, while
+    keeping genuinely distinct evidence apart. A GitHub group WITHOUT a stable
+    repository identity falls back to its per-source-row group ident, so two
+    distinct file/line proofs that merely share a title never merge. The value
+    is only ever mixed into a dedupe key here (never shown); the group ident is
+    itself already hashed before exposure.
+    """
+    proof_type = str(group.get("proof_type") or "")
+    ident = str(group.get("ident") or "")
+    if proof_type == _PROOF_GITHUB:
+        repo = str(group.get("repo_id") or "")
+        return f"repo:{repo}" if repo else ident
+    if proof_type == _PROOF_WEBSITE:
+        domain = str(group.get("domain") or "")
+        if domain:
+            return f"domain:{domain}"
+        squashed = _squash(group.get("title"))
+        return f"site:{squashed}" if squashed else ident
+    # Document / Skill Graph / any other suggestible type: same safe title is the
+    # same displayed proof.
+    title = _norm(group.get("title"))
+    return f"title:{title}" if title else ident
+
+
 def build_attachment_suggestions(
     vault_items: list[dict[str, Any]],
     project_summaries: list[dict[str, Any]],
@@ -425,7 +453,35 @@ def build_attachment_suggestions(
     if not project_summaries:
         return []
 
-    suggestions: list[dict[str, Any]] = []
+    # Suggestions are merged by DISPLAY identity + target project, so two
+    # duplicate-looking cards (same repo / website domain / document title
+    # pointing at the same project) collapse into one row with the honest
+    # grouped proof count summed. The SAME proof suggested to two DIFFERENT
+    # projects stays two rows (the target ref is part of the key).
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str, str]] = []
+
+    def _record(suggestion: dict[str, Any], group: dict[str, Any], project_ref: str) -> None:
+        key = (
+            str(group.get("proof_type") or ""),
+            _suggestion_display_identity(group),
+            project_ref,
+        )
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = suggestion
+            order.append(key)
+            return
+        existing["proof_count"] = int(existing.get("proof_count") or 1) + int(
+            suggestion.get("proof_count") or 1
+        )
+        for skill in suggestion.get("likely_skill_names") or []:
+            if (
+                skill not in existing["likely_skill_names"]
+                and len(existing["likely_skill_names"]) < _MAX_SUGGESTION_SKILLS
+            ):
+                existing["likely_skill_names"].append(skill)
+
     for group in _group_unattached(vault_items):
         candidates: list[dict[str, Any]] = []
         for project in project_summaries:
@@ -467,7 +523,7 @@ def build_attachment_suggestions(
         if best["skill_only"] and len(tied) > 1:
             # Several projects tie on nothing but skill overlap — never guess
             # one of them. Surface the proof without a suggested project.
-            suggestions.append(
+            _record(
                 {
                     **base,
                     "suggestion_id_safe": _safe_suggestion_id(group, ""),
@@ -476,21 +532,24 @@ def build_attachment_suggestions(
                     "suggestion_reason": SKILL_TIE_REVIEW_REASON,
                     "evidence_basis_chips": [CHIP_MATCHING_SKILL],
                     "confidence_label": LABEL_NEEDS_REVIEW,
-                }
+                },
+                group,
+                "",
             )
             continue
 
         project = best["project"]
         project_id = str(project.get("project_id") or "")
-        suggestions.append(
+        # Owner-only report-preview route (private passport surface only).
+        project_ref = (
+            f"{_PRIVATE_PROJECT_REPORT_PREFIX}{project_id}/report" if project_id else None
+        )
+        _record(
             {
                 **base,
                 "suggestion_id_safe": _safe_suggestion_id(group, project_id),
                 "likely_project_title": str(project.get("project_title") or ""),
-                # Owner-only report-preview route (private passport surface only).
-                "likely_project_ref_safe": (
-                    f"{_PRIVATE_PROJECT_REPORT_PREFIX}{project_id}/report" if project_id else None
-                ),
+                "likely_project_ref_safe": project_ref,
                 "suggestion_reason": _suggestion_reason(
                     group["proof_type"],
                     proof_title,
@@ -500,9 +559,12 @@ def build_attachment_suggestions(
                 ),
                 "evidence_basis_chips": list(best["chips"]),
                 "confidence_label": best["label"],
-            }
+            },
+            group,
+            project_ref or "",
         )
 
+    suggestions = [merged[key] for key in order]
     suggestions.sort(
         key=lambda s: (
             _LABEL_RANK.get(s["confidence_label"], 9),

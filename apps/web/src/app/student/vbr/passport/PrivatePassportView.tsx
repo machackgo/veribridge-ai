@@ -421,6 +421,33 @@ function SuggestionCard({ suggestion }: { suggestion: ProofAttachmentSuggestion 
 }
 
 /**
+ * Collapse duplicate-looking suggestions — same proof type + title pointing at
+ * the same target project — into one card, summing the honest grouped
+ * proof_count and merging named skills. The backend already dedupes by display
+ * identity; this is a defensive render-layer net so a repeated card never
+ * appears even if a payload slips through. Distinct target projects and
+ * distinct titles stay separate rows.
+ */
+function dedupeSuggestions(suggestions: ProofAttachmentSuggestion[]): ProofAttachmentSuggestion[] {
+  const byIdentity = new Map<string, ProofAttachmentSuggestion>()
+  const order: string[] = []
+  for (const s of suggestions) {
+    const key = `${s.proof_type}|${s.proof_title.trim().toLowerCase()}|${s.likely_project_ref_safe ?? ""}`
+    const existing = byIdentity.get(key)
+    if (!existing) {
+      byIdentity.set(key, { ...s, likely_skill_names: [...s.likely_skill_names] })
+      order.push(key)
+      continue
+    }
+    existing.proof_count += s.proof_count
+    for (const skill of s.likely_skill_names) {
+      if (!existing.likely_skill_names.includes(skill)) existing.likely_skill_names.push(skill)
+    }
+  }
+  return order.map((k) => byIdentity.get(k)!)
+}
+
+/**
  * The owner-only "Proof Attachment Intelligence" section: suggested proof
  * attachments (deterministic safe-metadata matches, qualitative labels only),
  * the projects worth strengthening next, and the skills whose evidence is
@@ -428,8 +455,15 @@ function SuggestionCard({ suggestion }: { suggestion: ProofAttachmentSuggestion 
  */
 function ProofAttachmentIntelligenceCard({ passport }: { passport: PrivateWorkPassport }) {
   const summary = passport.unattached_proof_summary
-  const suggestions = summary?.suggestions ?? []
+  const suggestions = dedupeSuggestions(summary?.suggestions ?? [])
   const unattachedCount = summary?.unattached_count ?? passport.vault_unattached_count ?? 0
+  // Prominent "no safe project match" copy uses the clean, deduplicated
+  // attachment-overview count (duplicate rows collapsed) — never the raw
+  // vault-derived unmatched_count, which can balloon into the 519-style row
+  // count and contradict the Evidence Graph Overview. unmatched_count is kept
+  // only as a backward-compatible fallback for older payloads with no overview.
+  const unmatchedCount =
+    passport.attachment_overview?.unattached_count ?? summary?.unmatched_count ?? 0
   if (suggestions.length === 0 && unattachedCount === 0) return null
 
   const projectsToStrengthen = passport.projects.filter((p) => p.next_best_action).slice(0, 4)
@@ -507,9 +541,9 @@ function ProofAttachmentIntelligenceCard({ passport }: { passport: PrivateWorkPa
           </div>
         )}
 
-        {(summary?.unmatched_count ?? 0) > 0 && (
+        {unmatchedCount > 0 && (
           <p data-testid="suggestions-unmatched-note" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
-            {summary?.unmatched_count} unattached proof item(s) had no safe project match. They stay in your vault
+            {unmatchedCount} unattached proof item(s) had no safe project match. They stay in your vault
             under their skill — nothing is guessed onto a project.
           </p>
         )}
@@ -789,8 +823,14 @@ export function PrivatePassportView() {
     }
   }
 
-  const unattachedCount = passport.vault_unattached_count ?? 0
-  const hasVault = (passport.vault_proof_count ?? 0) > 0 || unattachedCount > 0
+  // Prominent user-facing copy uses the clean, deduplicated attachment-overview
+  // count (duplicate rows of the same proof collapsed) so it never contradicts
+  // the Evidence Graph Overview. The raw vault_unattached_count is kept only for
+  // backward-compatible payloads, not headline copy.
+  const unattachedCount =
+    passport.attachment_overview?.unattached_count ?? passport.vault_unattached_count ?? 0
+  const hasVault =
+    (passport.vault_proof_count ?? 0) > 0 || (passport.vault_unattached_count ?? 0) > 0
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>

@@ -1982,6 +1982,29 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
 
 // ── Layer 1: compact skill summary card (main Passport) ───────────────────────
 
+/**
+ * Collapse preview rows that would render identically so a compact skill card
+ * never repeats a duplicate-looking label. The dedupe identity is the ACTUAL
+ * rendered text — PreviewRow shows `title || safe_summary` and `safe_location`.
+ * Keying on that visible text (not title AND summary) collapses rows that render
+ * identically even when a hidden safe_summary differs, mirroring the backend.
+ * Distinct GitHub file/line locations and distinct document pages/sections carry
+ * different safe locations, so they stay separate rows. The backend already
+ * dedupes previews; this is a defensive render-layer net.
+ */
+function dedupePreviews(previews: VaultSkillPreview[]): VaultSkillPreview[] {
+  const seen = new Set<string>()
+  const out: VaultSkillPreview[] = []
+  for (const p of previews) {
+    const visible = ((p.title || "").trim() || (p.safe_summary || "")).trim().toLowerCase()
+    const key = [p.proof_type, visible, (p.safe_location || "").trim().toLowerCase()].join("|")
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(p)
+  }
+  return out
+}
+
 function PreviewRow({ preview }: { preview: VaultSkillPreview }) {
   return (
     <div data-testid="vault-skill-preview" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -2152,8 +2175,8 @@ export function VaultSkillSummaryCard({
       {/* Top representative previews (capped) */}
       {summary.previews?.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {summary.previews.map((p, i) => (
-            <PreviewRow key={`${p.proof_type}-${i}`} preview={p} />
+          {dedupePreviews(summary.previews).map((p, i) => (
+            <PreviewRow key={`${p.proof_type}-${p.safe_location ?? ""}-${i}`} preview={p} />
           ))}
           {summary.more_count > 0 && (
             <span data-testid="vault-summary-more" style={{ fontSize: 11, color: TOKEN.muted }}>

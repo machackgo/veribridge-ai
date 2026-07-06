@@ -207,6 +207,104 @@ def test_collect_skill_summaries_are_compact_not_a_raw_dump(mem_store: dict, pip
     assert py["more_count"] == py["proof_count"] - len(py["previews"])
 
 
+def _preview_vault_item(**over: object) -> dict:
+    """A minimal, unattached vault item for preview-dedupe tests."""
+    base = {
+        "proof_type": "Document Proof",
+        "source_table": "optional_evidence_submissions",
+        "source_id": str(uuid4()),
+        "title": "Design Doc",
+        "safe_location": "page 2",
+        "safe_summary": "Overview of the design.",
+        "skill_name": "Python",
+        "is_attached_to_project": False,
+        "attached_project_ids": [],
+        "public_safe": True,
+    }
+    base.update(over)
+    return base
+
+
+def test_skill_preview_rows_collapse_exact_duplicates(mem_store: dict, pipeline_db: dict) -> None:
+    """Three vault rows that would render an identical preview (same proof type,
+    title, safe location and summary) collapse into ONE preview row — the honest
+    total proof count is still preserved in ``more_count``."""
+    items = [_preview_vault_item(source_id=f"doc-{i}") for i in range(3)]
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert len(py["previews"]) == 1, "identical-looking preview rows collapse to one"
+    assert py["proof_count"] == 3
+    assert py["more_count"] == py["proof_count"] - len(py["previews"])
+
+
+def test_github_preview_rows_stay_distinct_by_location(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Distinct GitHub file/line locations under one repo title keep separate
+    preview rows — dedupe must not swallow genuinely distinct code evidence."""
+    items = [
+        _preview_vault_item(
+            proof_type="GitHub Proof",
+            source_table="skill_evidence",
+            source_id="gh-1",
+            title="octocat/Hello-World",
+            safe_location="src/main.py:10",
+            safe_summary="implementation body",
+        ),
+        _preview_vault_item(
+            proof_type="GitHub Proof",
+            source_table="skill_evidence",
+            source_id="gh-2",
+            title="octocat/Hello-World",
+            safe_location="src/utils.py:22",
+            safe_summary="implementation body",
+        ),
+    ]
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert len(py["previews"]) == 2
+    assert {p["safe_location"] for p in py["previews"]} == {"src/main.py:10", "src/utils.py:22"}
+
+
+def test_document_preview_rows_stay_distinct_by_page(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Distinct document pages/sections keep separate preview rows when their
+    safe display identity differs (different location and summary)."""
+    items = [
+        _preview_vault_item(source_id="d-1", safe_location="page 2", safe_summary="API design"),
+        _preview_vault_item(source_id="d-2", safe_location="page 5", safe_summary="Testing strategy"),
+    ]
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert len(py["previews"]) == 2
+    assert {p["safe_location"] for p in py["previews"]} == {"page 2", "page 5"}
+
+
+def test_preview_rows_collapse_when_only_hidden_summary_differs(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Two rows with the same visible title and safe_location but a different
+    hidden safe_summary render identically — PreviewRow shows
+    ``title || safe_summary`` plus ``safe_location``, so the summary never shows
+    when a title exists. They must collapse to a single preview row instead of
+    surviving as two identical-looking rows."""
+    items = [
+        _preview_vault_item(source_id="d-1", safe_summary="Overview of the design."),
+        _preview_vault_item(source_id="d-2", safe_summary="A different hidden summary."),
+    ]
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert len(py["previews"]) == 1, "same visible title/location collapses despite differing summary"
+    assert py["previews"][0]["title"] == "Design Doc"
+    assert py["proof_count"] == 2
+    assert py["more_count"] == py["proof_count"] - len(py["previews"])
+
+
 def test_collect_skill_summaries_normalize_and_categorize_high_level_skills(
     mem_store: dict, pipeline_db: dict
 ) -> None:
