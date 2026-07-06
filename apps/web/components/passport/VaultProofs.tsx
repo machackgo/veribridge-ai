@@ -8,6 +8,8 @@ import {
   isSafePublicUrl,
   PROOF_SOURCE_RELATIONSHIP,
   skillReportPath,
+  type ProofAttachmentEntry,
+  type ProofAttachmentOverview,
   type SkillProofSynthesisStatement,
   type SkillProofSynthesisUnlinkedItem,
   type SkillReport,
@@ -2225,6 +2227,165 @@ export function VaultSkillDashboard({
           </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+// ── Attachment Intelligence Cleanup (Step 4): attached / suggested / unattached ─
+
+const ATTACHMENT_STATE_TONE: Record<string, BadgeTone> = {
+  attached: "emerald",
+  suggested: "sky",
+  unattached: "amber",
+}
+
+/**
+ * One deduplicated attachment-overview entry: proof source, safe title, the
+ * closed state/strength labels, why (reason label), the project link(s) for
+ * attached/suggested entries, and an honest "×N duplicates collapsed" note.
+ * Entries carry ONLY safe display fields — never a source id, path, or score.
+ */
+function AttachmentEntryCard({ entry }: { entry: ProofAttachmentEntry }) {
+  return (
+    <div
+      data-testid="attachment-entry"
+      data-attachment-state={entry.attachment_state}
+      data-proof-type={entry.proof_type}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: "10px 12px",
+        border: `1px solid ${TOKEN.line}`,
+        borderRadius: 8,
+        background: "#fff",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <Badge tone={PROOF_TONE[entry.proof_type] ?? "slate"}>{entry.proof_type}</Badge>
+        <span data-testid="attachment-entry-status">
+          <Badge tone={ATTACHMENT_STATE_TONE[entry.attachment_state] ?? "slate"}>{entry.status_label}</Badge>
+        </span>
+        {entry.duplicate_count > 1 && (
+          <span data-testid="attachment-entry-duplicates" style={{ fontSize: 11, color: TOKEN.muted }}>
+            {entry.duplicate_count} duplicate rows collapsed
+          </span>
+        )}
+      </div>
+
+      <div style={{ fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>{entry.display_title}</div>
+
+      {entry.reason_label && (
+        <p data-testid="attachment-entry-reason" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+          {entry.reason_label}
+        </p>
+      )}
+
+      {entry.skill_names.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {entry.skill_names.map((skill) => (
+            <span key={skill} data-testid="attachment-entry-skill">
+              <Badge tone="indigo">{skill}</Badge>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {entry.project_titles.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
+          <span style={{ color: TOKEN.muted }}>
+            {entry.attachment_state === "attached" ? "Project:" : "Likely project:"}
+          </span>
+          {entry.project_titles.map((title, i) => {
+            const ref = entry.project_refs_safe[i]
+            return ref ? (
+              <Link
+                key={`${title}-${i}`}
+                href={ref}
+                data-testid="attachment-entry-project-link"
+                style={{ fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+              >
+                {title} →
+              </Link>
+            ) : (
+              <span key={`${title}-${i}`} style={{ fontWeight: 600, color: TOKEN.inkSoft }}>
+                {title}
+              </span>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AttachmentSection({
+  testId,
+  title,
+  hint,
+  entries,
+}: {
+  testId: string
+  title: string
+  hint: string
+  entries: ProofAttachmentEntry[]
+}) {
+  if (!entries || entries.length === 0) return null
+  return (
+    <div data-testid={testId} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>{title}</h4>
+        <span style={{ fontSize: 11, color: TOKEN.muted }}>{hint}</span>
+      </div>
+      {entries.map((entry) => (
+        <AttachmentEntryCard key={entry.entry_id_safe} entry={entry} />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The owner-only attachment overview: Attached / Suggested / Unattached
+ * evidence as three clearly separated, deduplicated sections. Suggested
+ * evidence is explicitly "not counted until attached" — it is an improvement
+ * opportunity, never verified proof. Renders nothing when every bucket is
+ * empty.
+ */
+export function AttachmentOverviewSection({ overview }: { overview?: ProofAttachmentOverview | null }) {
+  if (!overview) return null
+  const total = overview.attached_count + overview.suggested_count + overview.unattached_count
+  if (total === 0) return null
+  return (
+    <div data-testid="attachment-overview" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span data-testid="attachment-overview-attached-count">
+          <Badge tone="emerald">{overview.attached_count} attached</Badge>
+        </span>
+        <span data-testid="attachment-overview-suggested-count">
+          <Badge tone="sky">{overview.suggested_count} suggested (not counted)</Badge>
+        </span>
+        <span data-testid="attachment-overview-unattached-count">
+          <Badge tone="amber">{overview.unattached_count} unattached</Badge>
+        </span>
+      </div>
+      <AttachmentSection
+        testId="attachment-attached-section"
+        title="Attached evidence"
+        hint="Explicitly attached to a project — counts as project evidence."
+        entries={overview.attached}
+      />
+      <AttachmentSection
+        testId="attachment-suggested-section"
+        title="Suggested evidence"
+        hint="Suggested — not counted until attached. Review before attaching; nothing is attached automatically."
+        entries={overview.suggested}
+      />
+      <AttachmentSection
+        testId="attachment-unattached-section"
+        title="Unattached evidence"
+        hint="In your vault, not linked to any project yet."
+        entries={overview.unattached}
+      />
     </div>
   )
 }

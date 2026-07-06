@@ -1774,15 +1774,45 @@ def build_student_vbr_report(
     # never presented as if it belongs to this one. Lazy import breaks the import
     # cycle (the vault service imports scrubbers from this module).
     other_student_proofs: list[dict[str, Any]] = []
+    suggested_evidence: list[dict[str, Any]] = []
     if include_cross_proof:
         try:
-            from app.services.student_proof_vault_service import collect_related_skill_proofs
+            from app.services.student_proof_vault_service import (
+                collect_vault_items,
+                vault_items_for_skills,
+            )
 
-            other_student_proofs = collect_related_skill_proofs(
-                db, pipeline_db, user_id, str(project["id"]), claimed_skills
+            vault_items = collect_vault_items(db, pipeline_db, str(user_id))
+            other_student_proofs = vault_items_for_skills(
+                vault_items, claimed_skills, exclude_project_id=str(project["id"])
             )
         except Exception:  # pragma: no cover - the vault section is best-effort/additive
+            vault_items = []
             other_student_proofs = []
+        # "Suggested evidence to attach" (Step 4): unattached vault proofs whose
+        # safe metadata points at THIS project. Owner-only, clearly labelled
+        # "not counted until attached", never folded into the attached evidence
+        # package, and never on the public report projection. Best-effort.
+        try:
+            from app.services.proof_attachment_intelligence import (
+                classify_vault_attachments,
+                suggested_evidence_for_project,
+            )
+
+            overview = classify_vault_attachments(
+                vault_items,
+                [
+                    {
+                        "project_id": str(project["id"]),
+                        "project_title": project.get("title") or "",
+                        "repo_full_name": project.get("repo_full_name"),
+                        "claimed_skills": claimed_skills,
+                    }
+                ],
+            )
+            suggested_evidence = suggested_evidence_for_project(overview, str(project["id"]))
+        except Exception:  # pragma: no cover - suggestions are additive, never blocking
+            suggested_evidence = []
 
     # ── Limitations ──────────────────────────────────────────────────────────
     limitations: list[str] = []
@@ -1880,6 +1910,7 @@ def build_student_vbr_report(
         "skill_evidence": skill_evidence,
         "evidence_traces": evidence_traces,
         "other_student_proofs": other_student_proofs,
+        "suggested_evidence": suggested_evidence,
         "limitations": limitations,
         "next_actions": next_actions,
         "preview_only": True,

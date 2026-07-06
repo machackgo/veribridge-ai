@@ -1828,7 +1828,9 @@ def test_website_detail_service_is_used_for_attached_website_proof(
 def test_include_cross_proof_false_skips_whole_vault_scan(monkeypatch) -> None:
     """The Work Passport builds a report per project but never reads
     ``other_student_proofs``. ``include_cross_proof=False`` must skip the
-    expensive whole-vault scan (``collect_related_skill_proofs``) entirely."""
+    expensive whole-vault scan (``collect_vault_items``) entirely — and the
+    single-report view must pay it exactly ONCE (shared by the cross-proof
+    section and the suggested-evidence classification)."""
     import app.services.student_proof_vault_service as vault
     import app.services.vbr_student_report as report_mod
 
@@ -1838,14 +1840,88 @@ def test_include_cross_proof_false_skips_whole_vault_scan(monkeypatch) -> None:
         calls["n"] += 1
         return []
 
-    monkeypatch.setattr(vault, "collect_related_skill_proofs", _spy)
+    monkeypatch.setattr(vault, "collect_vault_items", _spy)
 
     project = {"id": str(uuid4()), "title": "P", "metadata": {"claimed_skills": ["Python"]}}
 
     gated = report_mod.build_student_vbr_report({}, {}, project, USER_ID, include_cross_proof=False)
     assert gated["other_student_proofs"] == []
+    assert gated["suggested_evidence"] == []
     assert calls["n"] == 0
 
-    # Default behaviour still runs the scan (backward compatible).
+    # Default behaviour still runs the scan (backward compatible) — once.
     report_mod.build_student_vbr_report({}, {}, project, USER_ID)
     assert calls["n"] == 1
+
+
+# ── Attachment Intelligence Cleanup (Step 4): suggested evidence separation ───
+
+
+def test_report_separates_suggested_evidence_from_attached(
+    client: TestClient, mem_store: dict
+) -> None:
+    """An unattached document whose safe title mentions the project appears ONLY
+    under ``suggested_evidence`` ("not counted until attached") — never in the
+    attached evidence package or the documents list."""
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+
+    # Unattached document that clearly names the project.
+    _seed_document_evidence(
+        mem_store, analysis_json={"title": "Skill Evidence Tracker — Design Report"}
+    )
+
+    body = _get_report(client, project_id).json()
+    assert body["evidence_package"]["documents_count"] == 0
+    assert body["documents"] == []
+
+    suggested = body["suggested_evidence"]
+    assert suggested, "expected a suggested-evidence entry for the matching document"
+    for entry in suggested:
+        assert entry["attachment_state"] == "suggested"
+        assert entry["status_label"] == "Suggested — not counted until attached"
+        assert entry["relation_strength"] in ("likely", "weak")
+        # Safe display fields only — never a raw source id or storage path.
+        assert "source_id" not in entry
+        assert "file_path" not in entry
+
+
+def test_report_suggested_evidence_never_includes_attached_documents(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A document explicitly attached to the project stays ATTACHED evidence —
+    it is never duplicated as a suggestion."""
+    document_id = _seed_document_evidence(mem_store)
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    assert body["evidence_package"]["documents_count"] == 1
+    titles = [e["display_title"] for e in body["suggested_evidence"]]
+    assert "Final Year Project Report" not in titles
+
+
+def test_public_project_report_never_carries_suggested_evidence(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The public report projection is a whitelist — suggested evidence and its
+    reason/strength labels must never appear there."""
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    _seed_document_evidence(
+        mem_store, analysis_json={"title": "Skill Evidence Tracker — Design Report"}
+    )
+    token = client.post(
+        f"/api/v1/student/vbr/projects/{project_id}/public-report"
+    ).json()["public_token"]
+
+    public = client.get(f"/api/v1/public/vbr/reports/{token}")
+    assert public.status_code == 200
+    body = public.json()
+    assert "suggested_evidence" not in body
+    text = public.text
+    assert "Suggested — not counted until attached" not in text
+    assert "relation_reason" not in text
+    assert "relation_strength" not in text

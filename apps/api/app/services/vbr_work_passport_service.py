@@ -48,6 +48,7 @@ from app.services.passport_attachment_intelligence import (
     proof_chain_gaps,
     suggested_attachments_for_project,
 )
+from app.services.proof_attachment_intelligence import classify_vault_attachments
 from app.services.public_report_safety_service import (
     PublicReportUnsafeError,
     enforce_public_safe,
@@ -1235,6 +1236,11 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     # Purely derived: nothing is attached automatically, no data is mutated, and
     # none of this reaches the public projection.
     attachment_suggestions = build_attachment_suggestions(vault_items, project_summaries)
+    # Centralized attachment intelligence (Step 4): every vault proof classified
+    # into attached / suggested / unattached — deduplicated display entries with
+    # closed reason codes and relation-strength labels. Suggested evidence is
+    # NEVER counted as attached, and duplicate rows never inflate any count.
+    attachment_overview = classify_vault_attachments(vault_items, project_summaries)
     for summary in project_summaries:
         summary["chain_label"] = chain_label(summary["proof_chain"])
         summary["proof_chain_gaps"] = proof_chain_gaps(summary["proof_chain"])
@@ -1286,9 +1292,17 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         "project_count": len(project_summaries),
         "published_report_count": published_report_count,
         "skills_with_evidence": len(vault_skill_summaries),
-        "proof_count": len(vault_items),
-        "attached_proof_count": len(vault_items) - vault_unattached_count,
-        "unattached_proof_count": vault_unattached_count,
+        # Deduplicated proof counts (Step 4): duplicate rows of the same proof
+        # collapse, and suggested evidence is counted separately — it is never
+        # part of the attached count.
+        "proof_count": (
+            attachment_overview["attached_count"]
+            + attachment_overview["suggested_count"]
+            + attachment_overview["unattached_count"]
+        ),
+        "attached_proof_count": attachment_overview["attached_count"],
+        "suggested_proof_count": attachment_overview["suggested_count"],
+        "unattached_proof_count": attachment_overview["unattached_count"],
         "next_actions": next_actions[:3],
     }
 
@@ -1338,6 +1352,8 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         "vault_proof_count": len(vault_items),
         "vault_unattached_count": vault_unattached_count,
         "unattached_proof_summary": unattached_proof_summary,
+        # Attached / Suggested / Unattached display sections (owner-only).
+        "attachment_overview": attachment_overview,
         "project_count": len(project_summaries),
         "published_report_count": published_report_count,
         "limitations": limitations,

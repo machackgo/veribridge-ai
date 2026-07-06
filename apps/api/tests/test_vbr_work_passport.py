@@ -2037,3 +2037,94 @@ def test_public_passport_keeps_safe_unattached_limitation_only(
     assert PUBLIC_UNATTACHED_LIMITATION in body["limitations"]
     # The limitation is count-free and id-free (an honest sentence only).
     assert not any(ch.isdigit() for ch in PUBLIC_UNATTACHED_LIMITATION)
+
+
+# ── Attachment Intelligence Cleanup (Step 4): attached / suggested / unattached ─
+
+
+def test_private_passport_carries_attachment_overview(client: TestClient, mem_store: dict) -> None:
+    """The private passport exposes disjoint, deduplicated attached / suggested /
+    unattached sections whose counts drive the evidence-graph overview."""
+    _make_full_project(client, mem_store)
+    # One unattached document naming the project → a suggestion, never attached.
+    _seed_document_evidence(
+        mem_store, analysis_json={"title": "Skill Evidence Tracker — Design Report"}
+    )
+
+    body = _get_private(client).json()
+    overview = body["attachment_overview"]
+    assert overview is not None
+
+    assert overview["attached_count"] == len(overview["attached"]) > 0
+    assert overview["suggested_count"] == len(overview["suggested"]) >= 1
+    assert overview["unattached_count"] == len(overview["unattached"])
+    assert overview["note"] == "Suggested — not counted until attached"
+
+    for entry in overview["attached"]:
+        assert entry["attachment_state"] == "attached"
+        assert entry["relation_strength"] == "deterministic"
+    for entry in overview["suggested"]:
+        assert entry["attachment_state"] == "suggested"
+        assert entry["relation_strength"] in ("likely", "weak")
+        assert entry["status_label"] == "Suggested — not counted until attached"
+
+    # Entry ids are unique across all three sections (stable React keys).
+    ids = [
+        e["entry_id_safe"]
+        for e in overview["attached"] + overview["suggested"] + overview["unattached"]
+    ]
+    assert len(ids) == len(set(ids))
+
+    graph = body["evidence_graph_overview"]
+    assert graph["attached_proof_count"] == overview["attached_count"]
+    assert graph["suggested_proof_count"] == overview["suggested_count"]
+    assert graph["unattached_proof_count"] == overview["unattached_count"]
+    assert graph["proof_count"] == (
+        overview["attached_count"] + overview["suggested_count"] + overview["unattached_count"]
+    )
+
+
+def test_passport_counts_do_not_inflate_from_duplicate_document_rows(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Two vault rows for the same document (same safe title) collapse into ONE
+    display entry — duplicate rows never inflate the passport counts."""
+    _make_full_project(client, mem_store)
+    for _ in range(2):
+        _seed_document_evidence(
+            mem_store, analysis_json={"title": "Completely Unrelated Elsewhere Notes"}
+        )
+
+    body = _get_private(client).json()
+    overview = body["attachment_overview"]
+    matching = [
+        e
+        for e in overview["suggested"] + overview["unattached"]
+        if e["display_title"] == "Completely Unrelated Elsewhere Notes"
+    ]
+    assert len(matching) == 1
+    assert matching[0]["duplicate_count"] == 2
+
+
+def test_public_passport_never_carries_attachment_overview_or_suggestions(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The public passport must not expose the attachment overview, suggestion
+    labels, reason codes, or relation-strength labels."""
+    project_id = _make_full_project(client, mem_store)
+    _seed_document_evidence(
+        mem_store, analysis_json={"title": "Skill Evidence Tracker — Design Report"}
+    )
+    assert _publish_project_report(client, project_id).status_code == 200
+    slug = _publish(client).json()["public_slug"]
+
+    public = _get_public(client, slug)
+    assert public.status_code == 200
+    body = public.json()
+    assert "attachment_overview" not in body
+    assert "unattached_proof_summary" not in body
+    text = public.text
+    assert "Suggested — not counted until attached" not in text
+    assert "relation_reason" not in text
+    assert "relation_strength" not in text
+    assert "suggestion_reason" not in text

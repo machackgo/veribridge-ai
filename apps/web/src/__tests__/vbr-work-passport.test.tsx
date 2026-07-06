@@ -750,3 +750,157 @@ describe("PrivatePassportView — Proof Attachment Intelligence (Phase 3)", () =
     )
   })
 })
+
+// ── Attachment Intelligence Cleanup (Step 4) ──────────────────────────────────
+
+import type { ProofAttachmentEntry, ProofAttachmentOverview } from "@/lib/vbr-api"
+
+function makeEntry(overrides: Partial<ProofAttachmentEntry> = {}): ProofAttachmentEntry {
+  return {
+    entry_id_safe: `att-${Math.random().toString(16).slice(2, 14)}`,
+    proof_type: "Document Proof",
+    display_title: "Final Year Project Report",
+    source_label: "Document Proof",
+    attachment_state: "attached",
+    relation_reason: "exact_document_attachment",
+    relation_strength: "deterministic",
+    reason_label: "Document attached to the project",
+    status_label: "Attached",
+    project_titles: ["Skill Evidence Tracker"],
+    project_refs_safe: ["/student/vbr/projects/proj-1/report"],
+    skill_names: ["Python"],
+    duplicate_count: 1,
+    ...overrides,
+  }
+}
+
+function makeOverview(overrides: Partial<ProofAttachmentOverview> = {}): ProofAttachmentOverview {
+  const attached = [makeEntry({ entry_id_safe: "att-a1" })]
+  const suggested = [
+    makeEntry({
+      entry_id_safe: "att-s1",
+      attachment_state: "suggested",
+      relation_reason: "title_similarity_suggestion",
+      relation_strength: "likely",
+      reason_label: "Titles look similar — review before attaching",
+      status_label: "Suggested — not counted until attached",
+      display_title: "Tracker Design Notes",
+    }),
+  ]
+  const unattached = [
+    makeEntry({
+      entry_id_safe: "att-u1",
+      attachment_state: "unattached",
+      relation_reason: "no_match",
+      relation_strength: "none",
+      reason_label: "No matching project found",
+      status_label: "Not attached to a project",
+      display_title: "Old Elsewhere Notes",
+      project_titles: [],
+      project_refs_safe: [],
+      duplicate_count: 2,
+    }),
+  ]
+  return {
+    attached,
+    suggested,
+    unattached,
+    attached_count: attached.length,
+    suggested_count: suggested.length,
+    unattached_count: unattached.length,
+    note: "Suggested — not counted until attached",
+    ...overrides,
+  }
+}
+
+describe("PrivatePassportView — Attachment Intelligence Cleanup (Step 4)", () => {
+  it("renders Attached / Suggested / Unattached as separated, labelled sections", async () => {
+    const p = makePassport({
+      vault_proof_count: 3,
+      vault_unattached_count: 2,
+      attachment_overview: makeOverview(),
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("attachment-overview")).toBeInTheDocument()
+    expect(screen.getByTestId("attachment-attached-section")).toBeInTheDocument()
+    expect(screen.getByTestId("attachment-suggested-section")).toBeInTheDocument()
+    expect(screen.getByTestId("attachment-unattached-section")).toBeInTheDocument()
+
+    // Suggested evidence is explicitly "not counted until attached".
+    const suggestedSection = screen.getByTestId("attachment-suggested-section")
+    expect(suggestedSection).toHaveTextContent("Suggested — not counted until attached")
+
+    // The suggested entry links to its likely project; the attached entry to its project.
+    expect(screen.getAllByTestId("attachment-entry-project-link").length).toBeGreaterThan(0)
+
+    // The deduped unattached entry shows an honest duplicate note, once.
+    expect(screen.getByTestId("attachment-entry-duplicates")).toHaveTextContent("2 duplicate rows collapsed")
+  })
+
+  it("renders each deduplicated proof exactly once (no duplicate cards, no duplicate keys)", async () => {
+    const p = makePassport({
+      vault_proof_count: 3,
+      vault_unattached_count: 2,
+      attachment_overview: makeOverview(),
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    render(<PrivatePassportView />)
+
+    await screen.findByTestId("attachment-overview")
+    const entries = screen.getAllByTestId("attachment-entry")
+    // One card per deduplicated entry: 1 attached + 1 suggested + 1 unattached.
+    expect(entries).toHaveLength(3)
+    // React duplicate-key warnings must not happen.
+    const keyWarnings = consoleError.mock.calls.filter((args) =>
+      String(args[0]).includes("same key"),
+    )
+    expect(keyWarnings).toHaveLength(0)
+    consoleError.mockRestore()
+  })
+
+  it("shows the suggested count as its own overview stat — never merged into attached", async () => {
+    const p = makePassport({
+      evidence_graph_overview: {
+        project_count: 1,
+        published_report_count: 0,
+        skills_with_evidence: 2,
+        proof_count: 3,
+        attached_proof_count: 1,
+        suggested_proof_count: 1,
+        unattached_proof_count: 1,
+        next_actions: [],
+      },
+      attachment_overview: makeOverview(),
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+
+    await screen.findByTestId("evidence-graph-overview")
+    const stat = (name: string) => document.querySelector(`[data-testid="overview-stat"][data-stat="${name}"]`)
+    expect(stat("attached-proofs")).toHaveTextContent("1")
+    const suggestedStat = stat("suggested-proofs")
+    expect(suggestedStat).toHaveTextContent("1")
+    expect(suggestedStat).toHaveTextContent("Suggested — not counted until attached")
+    expect(stat("unattached-proofs")).toHaveTextContent("1")
+  })
+
+  it("renders no attachment overview when the payload omits it (older backend)", async () => {
+    const p = makePassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+
+    expect(await screen.findByTestId("passport-header")).toBeInTheDocument()
+    expect(screen.queryByTestId("attachment-overview")).not.toBeInTheDocument()
+  })
+})

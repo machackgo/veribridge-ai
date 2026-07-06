@@ -2530,6 +2530,17 @@ describe("PublicPassportView — no private vault", () => {
     expect(screen.queryByTestId("vault-proof")).not.toBeInTheDocument()
     expect(screen.queryByTestId("vault-unattached-badge")).not.toBeInTheDocument()
   })
+
+  it("never renders the attachment overview or suggestion sections (Step 4)", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+    render(<PublicPassportView slug="abc" />)
+    expect(await screen.findByText("Jordan Rivera")).toBeInTheDocument()
+    // Suggested evidence is owner-only — it must never read as public proof.
+    expect(screen.queryByTestId("attachment-overview")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("attachment-entry")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("attachment-suggested-section")).not.toBeInTheDocument()
+    expect(screen.queryByText(/Suggested — not counted until attached/)).not.toBeInTheDocument()
+  })
 })
 
 // ── Skill relevance helpers (closed backend templates, never proof strength) ───

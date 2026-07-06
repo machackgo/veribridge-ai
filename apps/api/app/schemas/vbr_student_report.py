@@ -901,6 +901,38 @@ class VBRReportProjectDefenseAnalysis(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class ProofAttachmentEntry(BaseModel):
+    """One deduplicated proof entry from the attachment intelligence helper
+    (owner-only surfaces: private passport overview, report "suggested
+    evidence to attach").
+
+    Safe display fields only: no source ids/tables, storage paths, signed URLs,
+    raw text, or provider payloads. ``entry_id_safe`` is a one-way digest.
+    ``relation_strength`` is a closed label ("deterministic" / "likely" /
+    "weak" / "none") — never a numeric confidence. Only deterministic entries
+    are ever counted as attached; suggested evidence is explicitly labelled
+    "not counted until attached".
+    """
+
+    entry_id_safe: str = ""
+    proof_type: str = ""
+    display_title: str = ""
+    source_label: str = ""
+    attachment_state: str = ""
+    relation_reason: str = ""
+    relation_strength: str = ""
+    reason_label: str = ""
+    status_label: str = ""
+    project_titles: list[str] = Field(default_factory=list)
+    # Owner-only project-report routes (never on a public projection).
+    project_refs_safe: list[str] = Field(default_factory=list)
+    skill_names: list[str] = Field(default_factory=list)
+    # How many duplicate vault rows collapsed into this one entry.
+    duplicate_count: int = 1
+
+    model_config = {"extra": "forbid"}
+
+
 class VBRStudentProjectReportResponse(BaseModel):
     project_id: str
     project_title: str
@@ -936,6 +968,12 @@ class VBRStudentProjectReportResponse(BaseModel):
     # They are cross-proof / vault evidence, never folded into the primary
     # attached-proof skill matrix above, so the report stays project-honest.
     other_student_proofs: list[VaultSkillGroup] = Field(default_factory=list)
+
+    # "Suggested evidence to attach" (owner-only): unattached vault proofs whose
+    # safe metadata points at this project. Clearly labelled "not counted until
+    # attached" — never part of the attached evidence package above, and never
+    # on the public report projection.
+    suggested_evidence: list[ProofAttachmentEntry] = Field(default_factory=list)
 
     limitations: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
@@ -974,5 +1012,6 @@ __all__ = [
     "SkillReportResponse",
     "VBRReportSkillEvidenceRow",
     "VBRReportProjectDefenseAnalysis",
+    "ProofAttachmentEntry",
     "VBRStudentProjectReportResponse",
 ]

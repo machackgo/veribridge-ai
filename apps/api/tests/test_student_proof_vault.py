@@ -3694,3 +3694,48 @@ def test_skill_summary_non_code_skill_never_told_to_attach_code(
 
     card = next(s for s in summaries if s["skill"] == "Communication")
     assert not any("GitHub" in a for a in card["strengthening_actions"])
+
+
+# ── Attachment Intelligence Cleanup (Step 4) ──────────────────────────────────
+
+
+def test_project_scoped_skill_report_never_marks_unrelated_global_evidence_attached(
+    client: TestClient, mem_store: dict, pipeline_db: dict
+) -> None:
+    """A proof that is NOT attached to any project must never surface as an
+    attached project chain in the skill report — it stays clearly labelled
+    unattached/standalone, however strong the skill match is."""
+    from tests.test_vbr_project_defense import _create_project_defense
+
+    attached_proof_id = _seed_github_proof(mem_store)
+    created = _create_project_defense(
+        client, attached_proofs={"github_proof_id": attached_proof_id}
+    ).json()
+    project_id = created["project"]["id"]
+
+    # A second, UNATTACHED GitHub proof for a different repository that also
+    # claims Python — global vault evidence unrelated to the project above.
+    _seed_github_proof(
+        mem_store,
+        repo_url="https://github.com/otherowner/other-repo",
+        repo_owner="otherowner",
+        repo_name="other-repo",
+    )
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Python", synthesize=False)
+
+    for chain in report["projects"]:
+        if chain.get("attached"):
+            assert chain.get("project_id") == project_id, (
+                "only the real attached project may produce an attached chain"
+            )
+        else:
+            assert chain.get("attached_status") != "Attached to a VBR project"
+
+    # The unrelated repo's evidence is still present somewhere in the report —
+    # but never inside an attached chain.
+    blob = str(report)
+    assert "other-repo" in blob
+    for chain in report["projects"]:
+        if chain.get("attached"):
+            assert "other-repo" not in str(chain)

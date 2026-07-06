@@ -1420,6 +1420,14 @@ export type VBRStudentProjectReportResponse = {
    */
   other_student_proofs?: VaultSkillGroup[]
 
+  /**
+   * "Suggested evidence to attach" (owner-only): unattached vault proofs whose
+   * safe metadata points at this project. Clearly labelled "not counted until
+   * attached" — never part of the attached evidence package, never on the
+   * public report. May be absent on older payloads.
+   */
+  suggested_evidence?: ProofAttachmentEntry[]
+
   limitations: string[]
   next_actions: string[]
 
@@ -1795,8 +1803,73 @@ export type EvidenceGraphOverview = {
   skills_with_evidence: number
   proof_count: number
   attached_proof_count: number
+  /** Suggested evidence — an improvement opportunity, never part of the
+   *  attached count. May be absent on older payloads. */
+  suggested_proof_count?: number
   unattached_proof_count: number
   next_actions: string[]
+}
+
+// ── Attachment Intelligence Cleanup (Step 4) ─────────────────────────────────
+
+/** How a proof relates to the student's projects — a closed three-way state. */
+export type AttachmentState = "attached" | "suggested" | "unattached"
+
+/** Closed relation-strength labels — never a numeric confidence. Only
+ *  `deterministic` (or user-attached) evidence ever counts as attached. */
+export type RelationStrength = "deterministic" | "likely" | "weak" | "none"
+
+/** Closed reason codes explaining an entry's attachment state. */
+export type RelationReason =
+  | "user_attached"
+  | "exact_project_id_match"
+  | "exact_repo_match"
+  | "exact_document_attachment"
+  | "exact_website_attachment"
+  | "project_defense_session"
+  | "title_similarity_suggestion"
+  | "skill_overlap_suggestion"
+  | "repo_owner_repo_suggestion"
+  | "no_match"
+
+/**
+ * One deduplicated proof entry in the attachment overview (owner-only).
+ * Safe display fields only — no source ids/tables, storage paths, signed
+ * URLs, raw text, or provider payloads. `entry_id_safe` is a one-way digest
+ * (also the stable React key).
+ */
+export type ProofAttachmentEntry = {
+  entry_id_safe: string
+  proof_type: string
+  display_title: string
+  source_label: string
+  attachment_state: AttachmentState
+  relation_reason: RelationReason
+  relation_strength: RelationStrength
+  reason_label: string
+  status_label: string
+  project_titles: string[]
+  /** Owner-only project-report routes (never on the public projection). */
+  project_refs_safe: string[]
+  skill_names: string[]
+  /** How many duplicate vault rows collapsed into this one entry (≥1). */
+  duplicate_count: number
+}
+
+/**
+ * Owner-only attached / suggested / unattached proof sections. The buckets are
+ * disjoint and deduplicated: each real-world proof appears exactly once,
+ * suggested evidence never counts as attached, and duplicate rows never
+ * inflate a count.
+ */
+export type ProofAttachmentOverview = {
+  attached: ProofAttachmentEntry[]
+  suggested: ProofAttachmentEntry[]
+  unattached: ProofAttachmentEntry[]
+  attached_count: number
+  suggested_count: number
+  unattached_count: number
+  note: string
 }
 
 /** One missing proof-chain source on a project card — qualitative gap + safe
@@ -1945,6 +2018,12 @@ export type PrivateWorkPassport = {
    * public passport; may be absent on older payloads.
    */
   unattached_proof_summary?: UnattachedProofSummary | null
+  /**
+   * Attachment Intelligence Cleanup (Step 4): deduplicated attached /
+   * suggested / unattached sections. Owner-only — never on the public
+   * passport; may be absent on older payloads.
+   */
+  attachment_overview?: ProofAttachmentOverview | null
   project_count: number
   published_report_count: number
   limitations: string[]

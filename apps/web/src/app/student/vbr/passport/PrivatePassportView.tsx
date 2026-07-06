@@ -29,7 +29,11 @@ import {
   TOKEN,
   type BadgeTone,
 } from "../../../../../components/passport/shared"
-import { VaultSkillDashboard, type StrongestProjectRef } from "../../../../../components/passport/VaultProofs"
+import {
+  AttachmentOverviewSection,
+  VaultSkillDashboard,
+  type StrongestProjectRef,
+} from "../../../../../components/passport/VaultProofs"
 
 const SOURCE_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
@@ -269,6 +273,13 @@ function EvidenceGraphOverviewCard({ passport }: { passport: PrivateWorkPassport
           <OverviewStat stat="published-reports" label="Published reports" value={overview.published_report_count} />
           <OverviewStat stat="skills-with-evidence" label="Skills with evidence" value={overview.skills_with_evidence} />
           <OverviewStat stat="attached-proofs" label="Proofs attached to projects" value={overview.attached_proof_count} />
+          {typeof overview.suggested_proof_count === "number" && overview.suggested_proof_count > 0 && (
+            <OverviewStat
+              stat="suggested-proofs"
+              label="Suggested — not counted until attached"
+              value={overview.suggested_proof_count}
+            />
+          )}
           <OverviewStat stat="unattached-proofs" label="Unattached proofs" value={overview.unattached_proof_count} />
         </div>
 
@@ -867,6 +878,9 @@ export function PrivatePassportView() {
                 Every proof in your vault is attached to a project — nothing is sitting unused.
               </p>
             )}
+            {/* Attached / Suggested / Unattached — deduplicated, clearly separated
+                sections. Suggested evidence is never counted until attached. */}
+            <AttachmentOverviewSection overview={passport.attachment_overview} />
           </div>
         </Card>
       )}

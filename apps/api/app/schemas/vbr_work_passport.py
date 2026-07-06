@@ -17,7 +17,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from app.schemas.vbr_student_report import VaultSkillSummary, VBREvidenceTrace
+from app.schemas.vbr_student_report import (
+    ProofAttachmentEntry,
+    VaultSkillSummary,
+    VBREvidenceTrace,
+)
 
 
 # ── Owner-only publish controls ──────────────────────────────────────────────
@@ -260,6 +264,25 @@ class ProofAttachmentSuggestion(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class ProofAttachmentOverview(BaseModel):
+    """Owner-only attached / suggested / unattached proof sections.
+
+    The three buckets are disjoint and deduplicated: each real-world proof
+    appears exactly once, suggested evidence never counts as attached, and
+    duplicate rows never inflate a count.
+    """
+
+    attached: list[ProofAttachmentEntry] = Field(default_factory=list)
+    suggested: list[ProofAttachmentEntry] = Field(default_factory=list)
+    unattached: list[ProofAttachmentEntry] = Field(default_factory=list)
+    attached_count: int = 0
+    suggested_count: int = 0
+    unattached_count: int = 0
+    note: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
 class UnattachedProofSummary(BaseModel):
     """Owner-only summary of unattached vault evidence + attachment suggestions.
 
@@ -364,6 +387,9 @@ class EvidenceGraphOverview(BaseModel):
     skills_with_evidence: int = 0
     proof_count: int = 0
     attached_proof_count: int = 0
+    # Suggested evidence is an improvement opportunity — never part of the
+    # attached count, never presented as verified proof.
+    suggested_proof_count: int = 0
     unattached_proof_count: int = 0
     next_actions: list[str] = Field(default_factory=list)
 
@@ -439,6 +465,11 @@ class PrivateWorkPassportResponse(BaseModel):
     # projection.
     unattached_proof_summary: UnattachedProofSummary | None = None
 
+    # Attachment Intelligence Cleanup (Step 4): deduplicated attached /
+    # suggested / unattached sections. Owner-only — never on the public
+    # projection, which shows only published attached evidence.
+    attachment_overview: ProofAttachmentOverview | None = None
+
     project_count: int = 0
     published_report_count: int = 0
     limitations: list[str] = Field(default_factory=list)
@@ -481,6 +512,8 @@ __all__ = [
     "PassportProofChainGap",
     "PassportSuggestedAttachment",
     "ProofAttachmentSuggestion",
+    "ProofAttachmentEntry",
+    "ProofAttachmentOverview",
     "UnattachedProofSummary",
     "PassportProjectTopSkill",
     "PublicPassportProjectTopSkill",
