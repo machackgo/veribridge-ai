@@ -527,8 +527,9 @@ describe("PrivatePassportView — project ↔ skill cross-linking (Phase 2)", ()
     expect(chips[0]).toHaveAttribute("href", "/student/vbr/passport/skills/python")
     // Backend path missing → fallback slug still lands on the Skill Report route.
     expect(chips[1]).toHaveAttribute("href", "/student/vbr/passport/skills/react")
+    // Project-card skill CTA is contextual to THIS project (requirement #5).
     expect(screen.getAllByTestId("project-skill-evidence-label")[0]).toHaveTextContent(
-      "View skill evidence →",
+      "View Python evidence in this project →",
     )
   })
 
@@ -564,6 +565,213 @@ describe("PrivatePassportView — project ↔ skill cross-linking (Phase 2)", ()
     // evidence_sources / proof_source_counts: GitHub Proof only.
     expect(sources).toContain("GitHub Proof")
     expect(sources).not.toContain("Website Proof")
+  })
+})
+
+// ── Contextual proof → project → skill navigation ─────────────────────────────
+//
+// Every evidence CTA on a skill card must express which project a proof supports
+// and route into THAT project's report; Website Proof states its (generic, at
+// passport level) source context; and vault-only evidence is labelled unattached
+// and routes to the Proof Vault, never to a project report.
+
+function makeContextualPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  const base = makePassport().projects[0]
+  return makePassport({
+    skills: [
+      {
+        skill: "JavaScript",
+        status: "Demonstrated",
+        evidence_chip_count: 2,
+        project_count: 1,
+        evidence_sources: ["Website Proof", "GitHub Proof"],
+        projects: [
+          {
+            project_title: "Teachable Machine Image Classification Demo",
+            project_id: "proj-tm",
+            skill_status: "Demonstrated",
+            evidence_sources: ["Website Proof", "GitHub Proof"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+      {
+        skill: "FastAPI",
+        status: "Evidence observed",
+        evidence_chip_count: 2,
+        project_count: 2,
+        evidence_sources: ["Website Proof", "GitHub Proof"],
+        projects: [
+          {
+            project_title: "Boston Smart Accident Risk Rerouting",
+            project_id: "proj-boston",
+            skill_status: "Evidence observed",
+            evidence_sources: ["Website Proof"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+          {
+            project_title: "Second API Project",
+            project_id: "proj-api2",
+            skill_status: "Supporting evidence",
+            evidence_sources: ["GitHub Proof"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+      {
+        // Evidence exists but is not attached to any project → vault-only.
+        skill: "Rust",
+        status: "Evidence observed",
+        evidence_chip_count: 1,
+        project_count: 0,
+        evidence_sources: ["Website Proof"],
+        projects: [],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+    ],
+    projects: [
+      {
+        ...base,
+        project_id: "proj-tm",
+        project_title: "Teachable Machine Image Classification Demo",
+        claimed_skills: ["JavaScript"],
+        top_skills: [{ skill: "JavaScript", status: "Demonstrated", skill_slug: "javascript" }],
+      },
+      {
+        ...base,
+        project_id: "proj-boston",
+        project_title: "Boston Smart Accident Risk Rerouting",
+        claimed_skills: ["FastAPI"],
+        top_skills: [{ skill: "FastAPI", status: "Evidence observed", skill_slug: "fastapi" }],
+      },
+      {
+        ...base,
+        project_id: "proj-api2",
+        project_title: "Second API Project",
+        claimed_skills: ["FastAPI"],
+        top_skills: [{ skill: "FastAPI", status: "Supporting evidence", skill_slug: "fastapi" }],
+      },
+    ],
+    project_count: 3,
+    ...overrides,
+  })
+}
+
+const contextualSkillCard = (name: string) =>
+  screen.getAllByTestId("passport-skill-card").find((c) => c.getAttribute("data-skill") === name)!
+
+describe("PrivatePassportView — contextual proof → project → skill navigation", () => {
+  beforeEach(() => {
+    const p = makeContextualPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("skill evidence rows include project context and route into that project's report", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const js = contextualSkillCard("JavaScript")
+    const cta = js.querySelector('[data-testid="skill-project-evidence-link"]')!
+    // Exactly one attached project → one primary contextual CTA.
+    expect(within(js).getAllByTestId("skill-project-evidence-link")).toHaveLength(1)
+    expect(cta).toHaveAttribute("href", "/student/vbr/projects/proj-tm/report")
+    expect(cta).toHaveAttribute("data-project-id", "proj-tm")
+    // The old vague "View Skill Report / View project evidence" wording is gone.
+    expect(js).not.toHaveTextContent("View Skill Report")
+    expect(js).not.toHaveTextContent("View project evidence")
+  })
+
+  it("attached Website Proof CTA is contextual: 'View [skill] evidence in [project] report'", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const js = contextualSkillCard("JavaScript")
+    expect(js.querySelector('[data-testid="skill-project-evidence-link"]')).toHaveTextContent(
+      "View JavaScript evidence in Teachable Machine Image Classification Demo report →",
+    )
+  })
+
+  it("Website Proof under a skill states which project it supports (generic source at passport level)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const js = contextualSkillCard("JavaScript")
+    const note = js.querySelector('[data-testid="skill-website-evidence-note"]')!
+    expect(note).toHaveAttribute("data-project", "Teachable Machine Image Classification Demo")
+    expect(note).toHaveAttribute("data-skill", "JavaScript")
+    expect(note).toHaveTextContent("Website evidence")
+    // Passport payload carries no classified DOM/OCR/visual sub-source — honest generic label.
+    expect(note).toHaveAttribute("data-source-classified", "false")
+  })
+
+  it("a skill in multiple projects shows a per-project list, each routing to its own report", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const fastapi = contextualSkillCard("FastAPI")
+    expect(fastapi.querySelector('[data-testid="skill-multi-project-heading"]')).toHaveTextContent(
+      "This skill appears in 2 project reports",
+    )
+    const rows = within(fastapi).getAllByTestId("skill-project-evidence-row")
+    expect(rows).toHaveLength(2)
+    const links = within(fastapi).getAllByTestId("skill-project-evidence-link")
+    const hrefs = links.map((l) => l.getAttribute("href"))
+    expect(hrefs).toContain("/student/vbr/projects/proj-boston/report")
+    expect(hrefs).toContain("/student/vbr/projects/proj-api2/report")
+    // Each CTA names its own project.
+    expect(
+      links.find((l) => l.getAttribute("data-project-id") === "proj-boston"),
+    ).toHaveTextContent("View FastAPI evidence in Boston Smart Accident Risk Rerouting report →")
+  })
+
+  it("unattached/vault-only proof is labelled not-attached and never links to a project report", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const rust = contextualSkillCard("Rust")
+    const vault = rust.querySelector('[data-testid="skill-vault-only"]')!
+    expect(vault).toHaveTextContent("Vault evidence — not attached to a project report yet")
+    // Routes to the Proof Vault, NOT to any project report.
+    expect(rust.querySelector('[data-testid="skill-open-proof-vault"]')).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/vault",
+    )
+    expect(rust.querySelector('[data-testid="skill-project-evidence-link"]')).toBeNull()
+    expect(rust.querySelector('[data-testid="skill-evidence-nav"]')).toBeNull()
+  })
+
+  it("project-card skill CTA is contextual to this project ('View [skill] evidence in this project')", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const labels = screen.getAllByTestId("project-skill-evidence-label").map((el) => el.textContent)
+    expect(labels).toContain("View JavaScript evidence in this project →")
+    expect(labels).toContain("View FastAPI evidence in this project →")
+    // The bare, project-less wording is gone.
+    expect(labels).not.toContain("View skill evidence →")
+  })
+
+  it("still filters projects when a contextual skill is selected (unrelated projects removed)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    // Selecting JavaScript (proven only by proj-tm) filters the Projects panel.
+    fireEvent.click(contextualSkillCard("JavaScript"))
+    const visible = screen.getAllByTestId("passport-project-card").map((c) => c.getAttribute("data-project-id"))
+    expect(visible).toEqual(["proj-tm"])
+    expect(screen.queryByText("Boston Smart Accident Risk Rerouting")).not.toBeInTheDocument()
   })
 })
 

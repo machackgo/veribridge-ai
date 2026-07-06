@@ -504,6 +504,58 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             ) : (
               <p style={{ fontSize: 12, color: TOKEN.muted, margin: "4px 0 0" }}>Website proof not attached.</p>
             )}
+
+            {(report.website_skill_evidence ?? []).length > 0 && (
+              <div
+                data-testid="website-skill-evidence"
+                style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}
+              >
+                <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
+                  Website Behavior Evidence
+                </Mono>
+                {(report.website_skill_evidence ?? []).map((ev, i) => (
+                  <div
+                    key={i}
+                    data-testid="website-behavior-card"
+                    style={{ border: `1px solid ${TOKEN.line}`, borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 6 }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <Badge tone="slate">{ev.website_purpose_label}</Badge>
+                      {ev.target_website ? (
+                        <Mono style={{ fontSize: 11, color: TOKEN.muted }}>{ev.target_website}</Mono>
+                      ) : null}
+                    </div>
+                    <p data-testid="website-behavior-claim" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0 }}>
+                      {ev.behavior_claim}
+                    </p>
+                    {ev.skill_mapping_available ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {ev.skills.map((sk) => (
+                          <div
+                            key={sk.skill_name}
+                            data-testid="website-skill-relevance"
+                            data-skill={sk.skill_name}
+                            style={{ display: "flex", flexDirection: "column", gap: 2 }}
+                          >
+                            <span style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 12, color: TOKEN.inkSoft }}>
+                              <Badge tone={sk.is_direct_evidence ? "emerald" : "amber"}>
+                                {sk.is_direct_evidence ? "Direct" : "Supporting context"}
+                              </Badge>
+                              {sk.relevance_label}
+                            </span>
+                            <span style={{ fontSize: 11, color: TOKEN.muted }}>{sk.limitation}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p data-testid="website-skill-mapping-empty" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
+                        Website Proof captured; skill-specific mapping not available yet.
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div id="project-defense" style={ANCHOR_OFFSET}>

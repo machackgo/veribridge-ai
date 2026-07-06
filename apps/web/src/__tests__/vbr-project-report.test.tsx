@@ -539,6 +539,121 @@ describe("ProjectReportView", () => {
     expect(screen.getAllByText("Needs review").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Evidence observed").length).toBeGreaterThan(0)
   })
+
+  // ── Skill-specific Website Behavior Evidence (owner/private view) ────────────
+
+  it("Website Behavior Evidence: renders the behaviour claim + per-skill relevance under the correct skill only", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        website_skill_evidence: [
+          {
+            target_website: "https://demo.example.com",
+            behavior_claim: "User input produces a prediction/result display.",
+            website_purpose_key: "prediction_result_display",
+            website_purpose_label: "Prediction / result display",
+            website_purpose_summary: "An input → prediction/result flow was shown.",
+            skill_mapping_available: true,
+            skills: [
+              {
+                skill_name: "React",
+                relevance_key: "direct_frontend_evidence",
+                relevance_label: "Direct React evidence — interactive product UI demonstrated",
+                relevance_summary: "The recorded interactive UI behaviour is itself the subject of React.",
+                limitation:
+                  "Confirms observed behaviour at inspection time, not source-code authorship or ongoing uptime.",
+                is_direct_evidence: true,
+              },
+            ],
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(screen.getByTestId("website-skill-evidence")).toBeInTheDocument()
+    expect(screen.getByTestId("website-behavior-claim")).toHaveTextContent(
+      "User input produces a prediction/result display.",
+    )
+    expect(screen.getByText("Prediction / result display")).toBeInTheDocument()
+
+    const rows = screen.getAllByTestId("website-skill-relevance")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveAttribute("data-skill", "React")
+    expect(rows[0]).toHaveTextContent("Direct React evidence")
+    // A frontend UI reads as DIRECT evidence.
+    expect(rows[0]).toHaveTextContent("Direct")
+  })
+
+  it("Website Behavior Evidence: a Machine Learning skill reads as supporting context, never direct implementation proof", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        claimed_skills: ["Machine Learning"],
+        website_skill_evidence: [
+          {
+            target_website: "https://demo.example.com",
+            behavior_claim: "User input produces a prediction/result display.",
+            website_purpose_key: "prediction_result_display",
+            website_purpose_label: "Prediction / result display",
+            website_purpose_summary: "An input → prediction/result flow was shown.",
+            skill_mapping_available: true,
+            skills: [
+              {
+                skill_name: "Machine Learning",
+                relevance_key: "ml_product_context",
+                relevance_label:
+                  "Machine Learning product behaviour context — not Machine Learning implementation proof",
+                relevance_summary: "The website shows model-powered product behaviour.",
+                limitation:
+                  "Website prediction/output demonstrates product behaviour at inspection time; it does not, by itself, prove model training or ML implementation.",
+                is_direct_evidence: false,
+              },
+            ],
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    const row = screen.getByTestId("website-skill-relevance")
+    expect(row).toHaveTextContent("not Machine Learning implementation proof")
+    expect(row).toHaveTextContent("Supporting context")
+    expect(row).not.toHaveTextContent("Direct React")
+    expect(screen.getByText(/does not, by itself, prove model training/)).toBeInTheDocument()
+  })
+
+  it("Website Behavior Evidence: states the gap honestly when no claimed skill maps, and never leaks raw fields", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        website_skill_evidence: [
+          {
+            target_website: "https://demo.example.com",
+            behavior_claim: "The deployed application was live and reachable at inspection time.",
+            website_purpose_key: "deployed_availability",
+            website_purpose_label: "Deployed application availability",
+            website_purpose_summary: "A live deployment was reachable.",
+            skill_mapping_available: false,
+            skills: [],
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(screen.getByTestId("website-skill-mapping-empty")).toHaveTextContent(
+      "skill-specific mapping not available yet",
+    )
+    expect(screen.queryByTestId("website-skill-relevance")).not.toBeInTheDocument()
+
+    // No raw DOM/OCR/visual/provider/storage-shaped fields ever render.
+    const raw = document.body.textContent ?? ""
+    expect(raw).not.toMatch(/screenshot|storage|signed|s3:\/\/|\.jpg|raw_/i)
+  })
 })
 
 describe("ProjectReportView — recruiter-safe publish controls", () => {

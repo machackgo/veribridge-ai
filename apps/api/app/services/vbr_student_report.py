@@ -53,6 +53,17 @@ from app.services.skill_evidence_pipeline_service import (
 from app.services.vbr_question_generation import get_latest_session, list_session_questions
 from app.services.vbr_session_recording import count_chunks
 from app.services.website_proof_detail_service import get_website_proof_detail
+from app.services.website_skill_proof_focus import (
+    classify_website_purpose,
+    classify_website_skill_relevance,
+    describe_website_purpose,
+    describe_website_skill_relevance,
+    is_direct_website_relevance,
+    website_behavior_claim,
+    website_limitation_for,
+    website_purpose_summary,
+    website_skill_relevance_summary,
+)
 
 # Qualitative skill evidence labels. Numeric trust/confidence scores are
 # intentionally never surfaced in the skill evidence table.
@@ -1386,6 +1397,93 @@ def collect_website_proof_traces(
             )
 
 
+def collect_website_skill_evidence(
+    *,
+    website_entries: list[dict[str, Any]],
+    website_details: dict[str, dict[str, Any]],
+    claimed_skills: list[str],
+) -> list[dict[str, Any]]:
+    """Skill-specific Website Behavior Evidence for the PRIVATE project report.
+
+    For each attached Website Proof, classify WHAT the recorded page demonstrably
+    showed (closed vocabulary, derived only from the already-safe Website Proof
+    summaries the pipeline persisted — never raw DOM/OCR/visual/provider payloads),
+    then, for each of THIS project's claimed skills the saved proof's EXTRACTED
+    ``supported_skills`` actually names, recompute how that observed behaviour
+    relates to the skill (direct UI evidence vs. product/availability context)
+    plus the honest per-family limitation.
+
+    Honesty invariants (all inherited from ``website_skill_proof_focus``):
+      * evidence-source matching only — a skill is projected iff it is BOTH
+        claimed on this project AND named by the proof's extracted supported
+        skills; broad ``claimed_skills`` alone never map website evidence;
+      * implementation-heavy skills (ML / GenAI / DevOps) can only ever read as
+        product-behaviour / availability context (``is_direct_evidence`` False),
+        never implementation proof from a demo UI;
+      * fail-closed — a proof whose supported skills intersect no claimed skill
+        yields ``skills == []`` and ``skill_mapping_available == False`` (it stays
+        project-level Website Proof only; the gap is stated, never faked).
+
+    Only closed-vocabulary labels + already-safe summaries leave this function.
+    """
+    claimed_by_norm: dict[str, str] = {}
+    for s in claimed_skills:
+        n = _norm(str(s))
+        if n and n not in claimed_by_norm:
+            claimed_by_norm[n] = str(s)
+
+    out: list[dict[str, Any]] = []
+    for wp in website_entries:
+        target = str(wp.get("target_website") or "")
+        # Never echo a raw private/internal deployment URL into the report.
+        safe_target = target if is_safe_public_url(target) else ""
+        sid = str(wp.get("proof_session_id") or "")
+        detail = website_details.get(sid) or {}
+        live = detail.get("live_check") if isinstance(detail.get("live_check"), dict) else None
+
+        purpose_key = classify_website_purpose(
+            workflow_summary=detail.get("workflow_summary"),
+            workflow_steps=detail.get("workflow_steps") or [],
+            dom_summary=detail.get("dom_summary"),
+            ocr_summary=detail.get("ocr_summary"),
+            visual_summary=detail.get("visual_summary"),
+            live_check=live,
+        )
+
+        skill_rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw_skill in wp.get("supported_skills") or []:
+            n = _norm(str(raw_skill))
+            if n in seen or n not in claimed_by_norm:
+                continue
+            seen.add(n)
+            display = claimed_by_norm[n]
+            relevance_key = classify_website_skill_relevance(purpose_key, skill=display)
+            skill_rows.append(
+                {
+                    "skill_name": display,
+                    "relevance_key": relevance_key,
+                    "relevance_label": describe_website_skill_relevance(relevance_key, display),
+                    "relevance_summary": website_skill_relevance_summary(relevance_key, display),
+                    "limitation": website_limitation_for(relevance_key, display),
+                    "is_direct_evidence": is_direct_website_relevance(relevance_key),
+                }
+            )
+
+        out.append(
+            {
+                "target_website": safe_target,
+                "behavior_claim": website_behavior_claim(purpose_key),
+                "website_purpose_key": purpose_key,
+                "website_purpose_label": describe_website_purpose(purpose_key),
+                "website_purpose_summary": website_purpose_summary(purpose_key),
+                "skills": skill_rows,
+                "skill_mapping_available": bool(skill_rows),
+            }
+        )
+    return out
+
+
 def collect_project_defense_traces(
     attach: _AttachFn,
     *,
@@ -1729,6 +1827,16 @@ def build_student_vbr_report(
     for wp in website_proofs:
         website_supported_skills.update(_norm(s) for s in wp["supported_skills"])
 
+    # Skill-specific Website Behavior Evidence (owner/private view only): what each
+    # attached Website Proof demonstrably showed + an honest per-skill relevance,
+    # projected only for the claimed skills the proof's extracted supported-skills
+    # actually name. Kept off the public projection.
+    website_skill_evidence = collect_website_skill_evidence(
+        website_entries=website_entries,
+        website_details=website_details,
+        claimed_skills=claimed_skills,
+    )
+
     pipeline_lookup = _build_pipeline_lookup(pipeline_db, user_id, skill_pipeline_ids) if skill_pipeline_ids else {}
 
     skill_evidence = [
@@ -1903,6 +2011,7 @@ def build_student_vbr_report(
         ),
         "documents": documents,
         "website_proofs": website_proofs,
+        "website_skill_evidence": website_skill_evidence,
         "project_defense_analysis": _report_safe_analysis(analysis),
         "defense_questions": defense_questions,
         "defense_answer_evidence": defense_answer_evidence,

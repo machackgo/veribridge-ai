@@ -494,7 +494,7 @@ function ProjectCard({
                     key={row.skill}
                     href={href}
                     data-testid="project-top-skill"
-                    title={`Open the ${row.skill} Skill Report`}
+                    title={`Open the ${row.skill} evidence this project contributes`}
                     style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}
                   >
                     <Badge tone={SKILL_STATUS_TONE[row.status] ?? "slate"}>
@@ -504,7 +504,7 @@ function ProjectCard({
                       data-testid="project-skill-evidence-label"
                       style={{ fontSize: 11, fontWeight: 600, color: TOKEN.indigo }}
                     >
-                      View skill evidence →
+                      View {row.skill} evidence in this project →
                     </span>
                   </Link>
                 )
@@ -669,26 +669,104 @@ function SkillCard({
           </p>
         )}
 
+        {/* Contextual proof → project → skill navigation. Every attached CTA names
+            the exact project and routes into that project's report where the
+            skill's evidence lives; vault-only skills route to the Proof Vault
+            instead, never to a project report. */}
+        <SkillEvidenceNav node={node} />
+
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <Link
             href={skillReportPath(node.slug)}
             data-testid="view-skill-report"
+            title={`Open the full ${node.name} evidence across every project`}
             style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
           >
-            View Skill Report →
+            View {node.name} evidence →
           </Link>
-          {node.strongest?.reportPath && (
-            <Link
-              href={node.strongest.reportPath}
-              data-testid="skill-project-evidence-link"
-              style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
-            >
-              View project evidence →
-            </Link>
-          )}
         </div>
       </div>
     </Card>
+  )
+}
+
+/**
+ * The skill card's evidence navigation: turns each attached project → skill
+ * relationship into a contextual "View [skill] evidence in [project] report"
+ * CTA, states the Website evidence context when a project contributes it, and —
+ * for skills whose evidence is only in the vault — clearly labels it unattached
+ * and routes to the Proof Vault instead of any project report.
+ */
+function SkillEvidenceNav({ node }: { node: PassportSkillNode }) {
+  const rows = node.projectEvidence
+
+  // No attached project demonstrates this skill yet — its evidence lives only in
+  // the vault. Never front a project-report CTA for loose vault evidence.
+  if (rows.length === 0) {
+    return (
+      <div
+        data-testid="skill-vault-only"
+        style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12, lineHeight: 1.5 }}
+      >
+        <p style={{ margin: 0, color: TOKEN.muted }}>
+          Vault evidence — not attached to a project report yet.
+        </p>
+        <Link
+          href="/student/vbr/passport/vault"
+          data-testid="skill-open-proof-vault"
+          style={{ fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+        >
+          Open Proof Vault →
+        </Link>
+      </div>
+    )
+  }
+
+  return (
+    <div data-testid="skill-evidence-nav" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {rows.length > 1 && (
+        <p
+          data-testid="skill-multi-project-heading"
+          style={{ fontSize: 11, color: TOKEN.muted, margin: 0, fontWeight: 600 }}
+        >
+          This skill appears in {rows.length} project reports
+        </p>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {rows.map((row) => (
+          <div
+            key={row.projectId}
+            data-testid="skill-project-evidence-row"
+            data-project-id={row.projectId}
+            style={{ display: "flex", flexDirection: "column", gap: 3 }}
+          >
+            <Link
+              href={row.reportPath}
+              data-testid="skill-project-evidence-link"
+              data-project-id={row.projectId}
+              title={`Open ${node.name} evidence inside the ${row.projectTitle} report`}
+              style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+            >
+              View {node.name} evidence in {row.projectTitle} report →
+            </Link>
+            {row.hasWebsiteProof && (
+              <span
+                data-testid="skill-website-evidence-note"
+                data-skill={node.name}
+                data-project={row.projectTitle}
+                // Passport-level Website Proof carries no classified sub-source
+                // (DOM / OCR / visual). Keep the label honest and generic here —
+                // the project report is where any sub-source detail is shown.
+                data-source-classified="false"
+                style={{ fontSize: 11, color: TOKEN.inkSoft, lineHeight: 1.4 }}
+              >
+                Website evidence — shows observed runtime/product behavior
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 

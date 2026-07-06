@@ -622,6 +622,39 @@ export type VBRReportWebsiteProofSummary = {
   supported_skills: string[]
 }
 
+/**
+ * How one attached Website Proof's observed behaviour relates to ONE of the
+ * project's claimed skills. Every field is a closed backend vocabulary label —
+ * never a numeric score, never proof strength. `is_direct_evidence` is true only
+ * for the families allowed to read as DIRECT skill evidence (interactive
+ * frontend UI, rendered data-visualisation); ML / GenAI / DevOps skills always
+ * read as product-behaviour / availability context, never implementation proof.
+ */
+export type WebsiteProofSkillRelevance = {
+  skill_name: string
+  relevance_key: string
+  relevance_label: string
+  relevance_summary: string
+  limitation: string
+  is_direct_evidence: boolean
+}
+
+/**
+ * Skill-specific Website Behavior Evidence for ONE attached Website Proof —
+ * owner/private project report only (never on the public projection). Empty
+ * `skills` with `skill_mapping_available === false` means the proof is captured
+ * but not yet mapped to a specific skill; the gap is stated, never faked.
+ */
+export type WebsiteProofSkillEvidence = {
+  target_website: string
+  behavior_claim: string
+  website_purpose_key: string
+  website_purpose_label: string
+  website_purpose_summary: string
+  skills: WebsiteProofSkillRelevance[]
+  skill_mapping_available: boolean
+}
+
 export type VBRReportEvidencePackageSummary = {
   github_proof_attached: boolean
   documents_count: number
@@ -1404,6 +1437,13 @@ export type VBRStudentProjectReportResponse = {
   github_proof: VBRReportGitHubProofSummary | null
   documents: VBRReportDocumentSummary[]
   website_proofs: VBRReportWebsiteProofSummary[]
+  /**
+   * Skill-specific Website Behavior Evidence (owner/private view only): what each
+   * attached Website Proof demonstrably showed + an honest per-skill relevance,
+   * projected only for the claimed skills the proof's extracted supported-skills
+   * actually name. Never present on the public projection.
+   */
+  website_skill_evidence?: WebsiteProofSkillEvidence[]
 
   project_defense_analysis: VBRReportProjectDefenseAnalysis | null
   defense_questions: VBRReportQuestionSummary[]

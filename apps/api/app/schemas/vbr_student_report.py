@@ -48,6 +48,54 @@ class VBRReportWebsiteProofSummary(BaseModel):
     supported_skills: list[str] = Field(default_factory=list)
 
 
+class WebsiteProofSkillRelevance(BaseModel):
+    """How ONE attached Website Proof's observed behaviour relates to ONE of the
+    project's claimed skills — recomputed per report against the skill, never
+    trusted from storage.
+
+    Every field is a CLOSED-vocabulary label / already-safe helper sentence from
+    ``website_skill_proof_focus`` — never a numeric score, never proof strength,
+    never raw DOM/OCR/visual/provider text. Implementation-heavy skills (ML /
+    GenAI / DevOps) can only ever read as *product behaviour / availability
+    context* here (``is_direct_evidence`` stays False), so a demo UI can never
+    overclaim source-code authorship or model/CI-CD internals."""
+
+    skill_name: str
+    relevance_key: str
+    relevance_label: str
+    relevance_summary: str
+    limitation: str
+    is_direct_evidence: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+class WebsiteProofSkillEvidence(BaseModel):
+    """Skill-specific Website Behavior Evidence for ONE attached Website Proof —
+    OWNER/PRIVATE project report only (kept off ``VBRReportWebsiteProofSummary``
+    so it can never ride onto the public projection).
+
+    ``behavior_claim`` / ``website_purpose_*`` classify WHAT the recorded page
+    demonstrably showed, from a closed vocabulary derived only from the
+    already-safe Website Proof summaries. ``skills`` carries an honest per-skill
+    relevance ONLY for the project's claimed skills that the saved proof's
+    EXTRACTED ``supported_skills`` actually name (evidence-source matching, never
+    broad claim-only). Empty ``skills`` with ``skill_mapping_available == False``
+    means the proof is captured but not yet mapped to a specific skill — the gap
+    is stated honestly, never faked."""
+
+    target_website: str = ""
+    behavior_claim: str = ""
+    website_purpose_key: str = ""
+    website_purpose_label: str = ""
+    website_purpose_summary: str = ""
+    skills: list[WebsiteProofSkillRelevance] = Field(default_factory=list)
+    skill_mapping_available: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+
 class VBRReportEvidencePackageSummary(BaseModel):
     github_proof_attached: bool = False
     documents_count: int = 0
@@ -952,6 +1000,12 @@ class VBRStudentProjectReportResponse(BaseModel):
     github_proof: VBRReportGitHubProofSummary | None = None
     documents: list[VBRReportDocumentSummary] = Field(default_factory=list)
     website_proofs: list[VBRReportWebsiteProofSummary] = Field(default_factory=list)
+    # Skill-specific Website Behavior Evidence (owner/private view only). One entry
+    # per attached Website Proof: what the recorded page demonstrably showed plus,
+    # for each claimed skill the saved proof's extracted supported-skills actually
+    # name, an honest per-skill relevance + limitation. Never on the public
+    # projection (the public builder whitelists fields and omits this one).
+    website_skill_evidence: list[WebsiteProofSkillEvidence] = Field(default_factory=list)
 
     project_defense_analysis: VBRReportProjectDefenseAnalysis | None = None
     defense_questions: list[VBRReportQuestionSummary] = Field(default_factory=list)
@@ -993,6 +1047,8 @@ __all__ = [
     "VBRReportGitHubProofSummary",
     "VBRReportDocumentSummary",
     "VBRReportWebsiteProofSummary",
+    "WebsiteProofSkillRelevance",
+    "WebsiteProofSkillEvidence",
     "VBRReportEvidencePackageSummary",
     "VBRReportQuestionSummary",
     "VBREvidenceTrace",
