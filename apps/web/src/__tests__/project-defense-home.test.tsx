@@ -523,6 +523,125 @@ describe("ProjectDefenseHome — selected project workspace", () => {
     expect(mockRouterPush).toHaveBeenCalledWith("/student/proofs/project-defense")
     expect(await screen.findByText(/choose a project to defend/i)).toBeInTheDocument()
   })
+
+  // ── Post-analysis completion / next-steps panel ──
+  //
+  // Once the defense is analyzed (persisted completed context on reload, or a
+  // live result this session), the workspace surfaces a clear completion panel
+  // with next-step choices instead of leaving the student on another blank
+  // manual answer box. It must never reintroduce report navigation.
+
+  const COMPLETED_QUESTION = {
+    id: "q1",
+    session_id: "sess-1",
+    sort_order: 0,
+    question_text: "Explain the main architecture of this project.",
+    target_ref: { kind: "architecture" },
+    claim_ids: [],
+    asked_at_s: null,
+    answered: true,
+    created_at: "2026-01-01T00:00:00Z",
+  }
+
+  function completedContext() {
+    return makeContext({
+      defense_status: "completed",
+      report_ready: true,
+      session_id: "sess-1",
+      questions: [COMPLETED_QUESTION],
+    })
+  }
+
+  it("renders the 'Project Defense analyzed' completion panel when the defense is completed", async () => {
+    await openWorkspace(completedContext())
+    expect(await screen.findByText(/project defense analyzed/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/added as supporting evidence for this project/i),
+    ).toBeInTheDocument()
+  })
+
+  it("renders a 'Back to Project Defense home' next-step button when completed", async () => {
+    await openWorkspace(completedContext())
+    expect(
+      await screen.findByRole("button", { name: /back to project defense home/i }),
+    ).toBeInTheDocument()
+  })
+
+  it("renders a 'Record another defense' next-step button when completed", async () => {
+    await openWorkspace(completedContext())
+    expect(
+      await screen.findByRole("button", { name: /record another defense/i }),
+    ).toBeInTheDocument()
+  })
+
+  it("renders an 'Add or update evidence' next-step button when completed", async () => {
+    await openWorkspace(completedContext())
+    expect(
+      await screen.findByRole("button", { name: /^add or update evidence$/i }),
+    ).toBeInTheDocument()
+  })
+
+  it("does NOT render 'View Project Report' in the completed state", async () => {
+    await openWorkspace(completedContext())
+    await screen.findByText(/project defense analyzed/i)
+    expect(screen.queryByRole("button", { name: /view project report/i })).not.toBeInTheDocument()
+    expect(screen.queryByText(/view project report/i)).not.toBeInTheDocument()
+  })
+
+  it("does NOT render 'View VBR report preview' in the completed state", async () => {
+    await openWorkspace(completedContext())
+    await screen.findByText(/project defense analyzed/i)
+    expect(
+      screen.queryByRole("button", { name: /view vbr report preview/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText(/view vbr report preview/i)).not.toBeInTheDocument()
+  })
+
+  it("'Back to Project Defense home' clears the selected project/session query state", async () => {
+    await openWorkspace(completedContext())
+
+    fireEvent.click(await screen.findByRole("button", { name: /back to project defense home/i }))
+    // Navigates to the bare route (no projectId / sessionId query params) …
+    expect(mockRouterPush).toHaveBeenCalledWith("/student/proofs/project-defense")
+    // … and returns to the project selection view.
+    expect(await screen.findByText(/choose a project to defend/i)).toBeInTheDocument()
+  })
+
+  it("keeps the completed manual answer box optional, not the primary next step", async () => {
+    await openWorkspace(completedContext())
+    await screen.findByText(/project defense analyzed/i)
+
+    // The manual answer box is collapsed behind an optional "answer again" toggle
+    // rather than presented as the required next step.
+    expect(screen.getByText(/answer again manually/i)).toBeInTheDocument()
+  })
+
+  it("early/incomplete state still shows the Generate questions flow and no completion panel", async () => {
+    await openWorkspace(makeContext({ defense_status: "not_started", session_id: null, questions: [] }))
+
+    expect(await screen.findByRole("button", { name: /generate questions/i })).toBeInTheDocument()
+    expect(screen.queryByText(/project defense analyzed/i)).not.toBeInTheDocument()
+  })
+
+  it("early/incomplete state with a session still shows the Record + manual answer flow, no completion panel", async () => {
+    await openWorkspace(
+      makeContext({
+        defense_status: "in_progress",
+        session_id: "sess-1",
+        questions: [COMPLETED_QUESTION],
+      }),
+    )
+
+    // Manual answer flow is the primary step, presented directly (not collapsed).
+    expect(
+      await screen.findByPlaceholderText(/explain your project, your role/i),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /analyze my answers/i })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /record defense/i })).toBeInTheDocument()
+    // No completion panel yet.
+    expect(screen.queryByText(/project defense analyzed/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/answer again manually/i)).not.toBeInTheDocument()
+  })
 })
 
 describe("ProjectDefenseHome — duplicate project collapsing", () => {

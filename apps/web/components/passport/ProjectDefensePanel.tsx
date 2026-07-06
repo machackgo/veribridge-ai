@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -1174,9 +1174,13 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
     initialContext ? { project: initialContext.project, metadata: initialContext.metadata } : null,
   )
 
-  // Inline "add or update evidence" (workspace mode only)
+  // Inline "add or update evidence" (workspace mode only). The <details> section
+  // is controlled so the completion panel's "Add or update evidence" next-step
+  // button can expand it and scroll it into view.
   const [attaching, setAttaching] = useState(false)
   const [attachError, setAttachError] = useState<string | null>(null)
+  const [evidenceOpen, setEvidenceOpen] = useState(false)
+  const evidenceRef = useRef<HTMLDetailsElement | null>(null)
 
   // Step C — generated questions (resumed from the context session when present)
   const [questions, setQuestions] = useState<VBRSessionQuestionResponse[] | null>(
@@ -1498,6 +1502,27 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
     }
   }
 
+  // Completion / next-steps panel actions.
+  // "Back to Project Defense home" clears the selected project/session query
+  // state by delegating to the workspace's onBack (which resets selection and
+  // navigates to the bare /student/proofs/project-defense route); the legacy
+  // create-first flow (no onBack) falls back to a direct navigation.
+  const handleBackHome = () => {
+    if (onBack) onBack()
+    else router.push("/student/proofs/project-defense")
+  }
+
+  // "Record another defense" links to the recorder for the same session.
+  const handleRecordAnother = () => {
+    if (sessionId) router.push(`/student/proofs/project-defense/record/${sessionId}`)
+  }
+
+  // "Add or update evidence" expands the existing inline attach section.
+  const handleAddEvidence = () => {
+    setEvidenceOpen(true)
+    evidenceRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" })
+  }
+
   const attachedSummary = created?.metadata.attached_proofs ?? {}
   const githubAttached = attachedSummary["github_proof"] as
     | {
@@ -1545,6 +1570,73 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
   const hasEvidenceSelection =
     !!selectedGithubProofId || selectedDocumentIds.length > 0 || selectedWebsiteProofIds.length > 0
 
+  // The defense questions + manual answer form. Shared between the primary
+  // (pre-analysis) step and the optional "Answer again manually" collapse that
+  // is offered once analysis has completed, so a completed defense never
+  // presents another blank answer box as the next required step.
+  const answerCardBody = questions && (
+    <>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+        {questions.map((q) => (
+          <QuestionCard key={q.id} question={q} />
+        ))}
+      </div>
+
+      <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 16px" }}>
+        Optionally record yourself answering these questions using the Record defense action in the
+        Project Evidence Package above, or paste your explanation below.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <Btn size="sm" variant={answerMode === "combined" ? "primary" : "secondary"} onClick={() => setAnswerMode("combined")}>
+          Paste one explanation
+        </Btn>
+        <Btn size="sm" variant={answerMode === "per_question" ? "primary" : "secondary"} onClick={() => setAnswerMode("per_question")}>
+          Answer each question
+        </Btn>
+      </div>
+
+      {answerMode === "combined" ? (
+        <div>
+          <label style={labelStyle}>Your explanation</label>
+          <textarea
+            placeholder="Explain your project, your role, the architecture, and any challenges or improvements in your own words…"
+            value={combinedText}
+            onChange={(e) => setCombinedText(e.target.value)}
+            rows={8}
+            style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
+          />
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {questions.map((q) => (
+            <div key={q.id}>
+              <label style={labelStyle}>{q.question_text}</label>
+              <textarea
+                value={perQuestionAnswers[q.id] || ""}
+                onChange={(e) => setPerQuestionAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                rows={3}
+                style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {submitError && (
+        <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "8px 10px", borderRadius: 6, marginTop: 12 }}>
+          {submitError}
+        </p>
+      )}
+
+      <div style={{ marginTop: 12 }}>
+        <Btn variant="primary" onClick={handleSubmitAnswers} disabled={submitting}>
+          {submitting ? "Analyzing…" : "Analyze my answers"}
+        </Btn>
+      </div>
+    </>
+  )
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {onBack && (
@@ -1577,6 +1669,41 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
       </div>
 
       {loadError && <ErrorState message={loadError} />}
+
+      {/*
+        Completion / next-steps panel. Once the defense has been analyzed (a live
+        result this session, or a persisted completed defense context on reload),
+        the primary path is choosing a next step — not another blank manual
+        answer box. Deliberately no report navigation here: no "View Project
+        Report", no "View VBR report preview". */}
+      {created && analysisCompleted && (
+        <Card>
+          <CardHeader title="Project Defense analyzed" eyebrow="Next steps" icon="✅" />
+          <p style={{ fontSize: 13, color: TOKEN.inkSoft, margin: "0 0 14px", lineHeight: 1.5 }}>
+            Your explanation has been added as supporting evidence for this project. You can strengthen
+            this project further, record another defense, or return to your Project Defense home.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn variant="primary" onClick={handleBackHome}>
+              Back to Project Defense home
+            </Btn>
+            {sessionId && (
+              <Btn variant="secondary" onClick={handleRecordAnother}>
+                Record another defense
+              </Btn>
+            )}
+            {workspaceMode && (
+              <Btn variant="secondary" onClick={handleAddEvidence}>
+                Add or update evidence
+              </Btn>
+            )}
+          </div>
+          <p style={{ fontSize: 11, color: TOKEN.muted, margin: "12px 0 0", lineHeight: 1.5 }}>
+            Project Defense is supporting explanation evidence — it does not replace your GitHub,
+            document, or website proof.
+          </p>
+        </Card>
+      )}
 
       {/* Step A/B — Project identity + attached proofs */}
       {!created && (
@@ -1920,7 +2047,11 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
           wired to the attach endpoint. Existing inline upload/attach behavior is
           preserved (the "Add a new …" links inside each selector still work). */}
       {workspaceMode && created && (
-        <details>
+        <details
+          ref={evidenceRef}
+          open={evidenceOpen}
+          onToggle={(e) => setEvidenceOpen((e.currentTarget as HTMLDetailsElement).open)}
+        >
           <summary
             style={{ fontSize: 13, fontWeight: 600, color: TOKEN.indigo, cursor: "pointer" }}
           >
@@ -2019,69 +2150,30 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
         </Card>
       )}
 
-      {/* Step C results + Step D — answers */}
-      {questions && !result && (
+      {/* Step C results + Step D — answers (primary path, pre-analysis only) */}
+      {questions && !analysisCompleted && (
         <Card>
           <CardHeader title="Defense questions" eyebrow="Step C · Answer in your own words" icon="❓" />
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-            {questions.map((q) => (
-              <QuestionCard key={q.id} question={q} />
-            ))}
-          </div>
-
-          <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 16px" }}>
-            Optionally record yourself answering these questions using the Record defense action in the
-            Project Evidence Package above, or paste your explanation below.
-          </p>
-
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <Btn size="sm" variant={answerMode === "combined" ? "primary" : "secondary"} onClick={() => setAnswerMode("combined")}>
-              Paste one explanation
-            </Btn>
-            <Btn size="sm" variant={answerMode === "per_question" ? "primary" : "secondary"} onClick={() => setAnswerMode("per_question")}>
-              Answer each question
-            </Btn>
-          </div>
-
-          {answerMode === "combined" ? (
-            <div>
-              <label style={labelStyle}>Your explanation</label>
-              <textarea
-                placeholder="Explain your project, your role, the architecture, and any challenges or improvements in your own words…"
-                value={combinedText}
-                onChange={(e) => setCombinedText(e.target.value)}
-                rows={8}
-                style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
-              />
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {questions.map((q) => (
-                <div key={q.id}>
-                  <label style={labelStyle}>{q.question_text}</label>
-                  <textarea
-                    value={perQuestionAnswers[q.id] || ""}
-                    onChange={(e) => setPerQuestionAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
-                    rows={3}
-                    style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {submitError && (
-            <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "8px 10px", borderRadius: 6, marginTop: 12 }}>
-              {submitError}
-            </p>
-          )}
-
-          <div style={{ marginTop: 12 }}>
-            <Btn variant="primary" onClick={handleSubmitAnswers} disabled={submitting}>
-              {submitting ? "Analyzing…" : "Analyze my answers"}
-            </Btn>
-          </div>
+          {answerCardBody}
         </Card>
+      )}
+
+      {/* Once analysis has completed, the manual answer box is no longer the
+          next required step — it collapses into an optional "answer again"
+          affordance below the completion panel / analysis results. */}
+      {questions && analysisCompleted && (
+        <details>
+          <summary style={{ fontSize: 13, fontWeight: 600, color: TOKEN.indigo, cursor: "pointer" }}>
+            Answer again manually — revise your explanation
+          </summary>
+          <Card style={{ marginTop: 10 }}>
+            <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 12px" }}>
+              Optional — your defense is already analyzed. Re-answer only if you want to update your
+              explanation, then analyze again.
+            </p>
+            {answerCardBody}
+          </Card>
+        </details>
       )}
 
       {/* Step E/F — analysis + save to Skill Graph */}
