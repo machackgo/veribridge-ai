@@ -1014,10 +1014,11 @@ describe("ProofVaultView — browser polish (dedupe + clean counts)", () => {
   })
 })
 
-// ── Projects ↔ Skills interactive explorer (highlight/dim + a11y + fail-closed)
+// ── Projects ↔ Skills interactive explorer (true filtering + a11y + fail-closed)
 //
 // Two projects, each with one evidence-backed top_skill, so selecting one side
-// leaves exactly one connected and one dimmed on the other side.
+// filters the OTHER panel down to exactly the connected item — unrelated cards
+// are removed from the DOM entirely, never rendered faded in the background.
 function makeInteractivePassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
   const base = makePassport().projects[0]
   return makePassport({
@@ -1034,55 +1035,124 @@ function makeInteractivePassport(overrides: Partial<PrivateWorkPassport> = {}): 
   })
 }
 
-const skillCard = (name: string) =>
-  screen.getAllByTestId("passport-skill-card").find((c) => c.getAttribute("data-skill") === name)!
-const projectCard = (id: string) =>
-  screen.getAllByTestId("passport-project-card").find((c) => c.getAttribute("data-project-id") === id)!
+// Query (not get) helpers: they must return undefined — not throw — when a card
+// has been filtered out of the DOM, so absence can be asserted directly.
+const querySkillCard = (name: string) =>
+  screen.queryAllByTestId("passport-skill-card").find((c) => c.getAttribute("data-skill") === name)
+const queryProjectCard = (id: string) =>
+  screen.queryAllByTestId("passport-project-card").find((c) => c.getAttribute("data-project-id") === id)
+const skillCard = (name: string) => querySkillCard(name)!
+const projectCard = (id: string) => queryProjectCard(id)!
 
-describe("PrivatePassportView — Projects ↔ Skills highlighting", () => {
+describe("PrivatePassportView — Projects ↔ Skills filtering", () => {
   beforeEach(() => {
     const p = makeInteractivePassport()
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
   })
 
-  it("skill → project: selecting a skill highlights its project and dims the rest", async () => {
+  it("no selection renders all projects and all skills", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
-    fireEvent.click(skillCard("Python"))
-
-    expect(skillCard("Python")).toHaveAttribute("data-selected", "true")
-    // Python is proven by Alpha only → Alpha stays lit, Beta dims.
-    expect(projectCard("proj-alpha")).toHaveAttribute("data-dimmed", "false")
-    expect(projectCard("proj-beta")).toHaveAttribute("data-dimmed", "true")
+    expect(screen.getAllByTestId("passport-project-card")).toHaveLength(2)
+    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(2)
+    expect(querySkillCard("Python")).toBeDefined()
+    expect(querySkillCard("Rust")).toBeDefined()
+    expect(queryProjectCard("proj-alpha")).toBeDefined()
+    expect(queryProjectCard("proj-beta")).toBeDefined()
+    // No selection → default panel headers with the full counts.
+    expect(screen.getByText("Projects (2)")).toBeInTheDocument()
+    expect(screen.getByText("Skills (2)")).toBeInTheDocument()
   })
 
-  it("project → skill: selecting a project highlights its skills and dims the rest", async () => {
+  it("selecting a project shows only its skills and removes unrelated skills from the DOM", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
     fireEvent.click(projectCard("proj-alpha"))
 
     expect(projectCard("proj-alpha")).toHaveAttribute("data-selected", "true")
-    // Alpha proves Python only → Python stays lit, Rust dims.
-    expect(skillCard("Python")).toHaveAttribute("data-dimmed", "false")
-    expect(skillCard("Rust")).toHaveAttribute("data-dimmed", "true")
+    // Alpha proves Python only → Python is the ONLY skill card left; Rust is gone.
+    expect(querySkillCard("Python")).toBeDefined()
+    expect(querySkillCard("Rust")).toBeUndefined()
+    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(1)
+    // The unrelated skill's text is not anywhere in the document (not faded either).
+    expect(screen.queryByText("Rust")).not.toBeInTheDocument()
+    // The Skills header reflects the filtered set for the selected project.
+    expect(screen.getByText("Skills for selected project (1)")).toBeInTheDocument()
+    // Both projects stay visible so the user can pivot to another one.
+    expect(screen.getAllByTestId("passport-project-card")).toHaveLength(2)
   })
 
-  it("clear selection resets all highlighting and dimming", async () => {
+  it("selecting another project updates the visible skill list to that project's skills", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
-    fireEvent.click(skillCard("Python"))
-    expect(projectCard("proj-beta")).toHaveAttribute("data-dimmed", "true")
+    fireEvent.click(projectCard("proj-alpha"))
+    expect(querySkillCard("Python")).toBeDefined()
+    expect(querySkillCard("Rust")).toBeUndefined()
+
+    // Pivot to Beta (still visible in the Projects panel).
+    fireEvent.click(projectCard("proj-beta"))
+
+    expect(projectCard("proj-beta")).toHaveAttribute("data-selected", "true")
+    // Previous project's skill disappears; the new project's skill appears.
+    expect(querySkillCard("Python")).toBeUndefined()
+    expect(querySkillCard("Rust")).toBeDefined()
+    expect(screen.queryByText("Python")).not.toBeInTheDocument()
+    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(1)
+  })
+
+  it("clearing the project selection restores all skills", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    fireEvent.click(projectCard("proj-alpha"))
+    expect(querySkillCard("Rust")).toBeUndefined()
 
     fireEvent.click(screen.getByTestId("clear-selection-button"))
 
     expect(screen.queryByTestId("clear-selection-button")).not.toBeInTheDocument()
-    expect(skillCard("Python")).toHaveAttribute("data-selected", "false")
-    expect(projectCard("proj-alpha")).toHaveAttribute("data-dimmed", "false")
-    expect(projectCard("proj-beta")).toHaveAttribute("data-dimmed", "false")
+    expect(querySkillCard("Python")).toBeDefined()
+    expect(querySkillCard("Rust")).toBeDefined()
+    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(2)
+    expect(screen.getByText("Skills (2)")).toBeInTheDocument()
+  })
+
+  it("selecting a skill shows only its projects and removes unrelated projects from the DOM", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    fireEvent.click(skillCard("Python"))
+
+    expect(skillCard("Python")).toHaveAttribute("data-selected", "true")
+    // Python is proven by Alpha only → Alpha is the ONLY project card left; Beta is gone.
+    expect(queryProjectCard("proj-alpha")).toBeDefined()
+    expect(queryProjectCard("proj-beta")).toBeUndefined()
+    expect(screen.getAllByTestId("passport-project-card")).toHaveLength(1)
+    // The unrelated project's title is not anywhere in the document (not faded either).
+    expect(screen.queryByText("Beta Service")).not.toBeInTheDocument()
+    // The Projects header reflects the filtered set for the selected skill.
+    expect(screen.getByText("Projects for selected skill (1)")).toBeInTheDocument()
+    // All skills stay visible so the user can pivot to another one.
+    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(2)
+  })
+
+  it("clearing the skill selection restores all projects", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    fireEvent.click(skillCard("Python"))
+    expect(queryProjectCard("proj-beta")).toBeUndefined()
+
+    fireEvent.click(screen.getByTestId("clear-selection-button"))
+
+    expect(screen.queryByTestId("clear-selection-button")).not.toBeInTheDocument()
+    expect(queryProjectCard("proj-alpha")).toBeDefined()
+    expect(queryProjectCard("proj-beta")).toBeDefined()
+    expect(screen.getAllByTestId("passport-project-card")).toHaveLength(2)
+    expect(screen.getByText("Projects (2)")).toBeInTheDocument()
   })
 
   it("skill selection is keyboard accessible (real button semantics + Enter/Space)", async () => {
@@ -1098,11 +1168,15 @@ describe("PrivatePassportView — Projects ↔ Skills highlighting", () => {
     fireEvent.keyDown(card, { key: "Enter" })
     expect(skillCard("Python")).toHaveAttribute("data-selected", "true")
     expect(skillCard("Python")).toHaveAttribute("aria-pressed", "true")
-    expect(projectCard("proj-beta")).toHaveAttribute("data-dimmed", "true")
+    // Enter filters the Projects panel: only Python's project remains.
+    expect(queryProjectCard("proj-alpha")).toBeDefined()
+    expect(queryProjectCard("proj-beta")).toBeUndefined()
 
     // Space toggles it back off — same affordance as a native button.
     fireEvent.keyDown(skillCard("Python"), { key: " " })
     expect(skillCard("Python")).toHaveAttribute("data-selected", "false")
+    // Toggling off restores all projects.
+    expect(queryProjectCard("proj-beta")).toBeDefined()
 
     // A keypress on an inner link must not hijack the card's toggle.
     fireEvent.keyDown(within(skillCard("Python")).getByTestId("view-skill-report"), { key: "Enter" })

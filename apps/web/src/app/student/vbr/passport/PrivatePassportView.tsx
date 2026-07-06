@@ -388,14 +388,12 @@ function ProjectCard({
   project,
   passportPublished,
   selected,
-  dimmed,
   connectedSkillCount,
   onToggleSelect,
 }: {
   project: PassportProjectSummary
   passportPublished: boolean
   selected: boolean
-  dimmed: boolean
   connectedSkillCount: number
   onToggleSelect: () => void
 }) {
@@ -433,9 +431,7 @@ function ProjectCard({
   return (
     <Card
       style={{
-        opacity: dimmed ? 0.45 : 1,
         border: selected ? `1px solid ${TOKEN.indigo}` : undefined,
-        transition: "opacity 120ms ease",
         cursor: "pointer",
       }}
     >
@@ -443,7 +439,6 @@ function ProjectCard({
         data-testid="passport-project-card"
         data-project-id={project.project_id}
         data-selected={selected ? "true" : "false"}
-        data-dimmed={dimmed ? "true" : "false"}
         onClick={(e) => {
           if (!clickedInteractiveChild(e)) onToggleSelect()
         }}
@@ -607,12 +602,10 @@ function ProjectCard({
 function SkillCard({
   node,
   selected,
-  dimmed,
   onToggleSelect,
 }: {
   node: PassportSkillNode
   selected: boolean
-  dimmed: boolean
   onToggleSelect: () => void
 }) {
   const topProject = node.strongest?.title ?? null
@@ -620,9 +613,7 @@ function SkillCard({
   return (
     <Card
       style={{
-        opacity: dimmed ? 0.45 : 1,
         border: selected ? `1px solid ${TOKEN.indigo}` : undefined,
-        transition: "opacity 120ms ease",
         cursor: "pointer",
       }}
     >
@@ -630,7 +621,6 @@ function SkillCard({
         data-testid="passport-skill-card"
         data-skill={node.name}
         data-selected={selected ? "true" : "false"}
-        data-dimmed={dimmed ? "true" : "false"}
         // Real selection-control semantics: focusable, togglable with the card,
         // and operable by Enter/Space so keyboard users get the same highlight
         // as a mouse click. Inner links keep their own behaviour.
@@ -707,10 +697,12 @@ function SkillCard({
 type GraphSelection = { kind: "project" | "skill"; id: string } | null
 
 /**
- * The main Passport body: Projects on the left, Skills on the right. Clicking
- * a project highlights the skills it proves (and dims the rest); clicking a
- * skill highlights the projects that demonstrate it. Pure presentation over
- * the already-safe passport payload — selection never fetches anything.
+ * The main Passport body: Projects on the left, Skills on the right. Selecting a
+ * project filters the Skills panel down to ONLY the skills that project proves —
+ * unrelated skills are removed from the DOM, not merely dimmed. Selecting a skill
+ * filters the Projects panel down to ONLY the projects that demonstrate it.
+ * Clearing selection restores both full lists. Pure presentation over the
+ * already-safe passport payload — selection never fetches anything.
  */
 function PassportGraphExplorer({
   passport,
@@ -730,12 +722,32 @@ function PassportGraphExplorer({
   const connectedProjectIds =
     selection?.kind === "skill" ? new Set(graph.skillProjects.get(selection.id) ?? []) : null
 
+  // True filtering (not dimming): a selected project narrows the Skills panel to
+  // its connected skills only; a selected skill narrows the Projects panel to its
+  // connected projects only. The opposite panel always stays fully visible so the
+  // user can pivot to another project/skill. No selection → everything shows.
+  const visibleProjects = connectedProjectIds
+    ? passport.projects.filter((p) => connectedProjectIds.has(p.project_id))
+    : passport.projects
+  const visibleSkills = connectedSkillKeys
+    ? graph.skills.filter((s) => connectedSkillKeys.has(s.key))
+    : graph.skills
+
   const selectionName =
     selection?.kind === "project"
       ? passport.projects.find((p) => p.project_id === selection.id)?.project_title ?? null
       : selection?.kind === "skill"
         ? graph.skills.find((s) => s.key === selection.id)?.name ?? null
         : null
+
+  const projectsHeading =
+    selection?.kind === "skill"
+      ? `Projects for selected skill (${visibleProjects.length})`
+      : `Projects (${passport.projects.length})`
+  const skillsHeading =
+    selection?.kind === "project"
+      ? `Skills for selected project (${visibleSkills.length})`
+      : `Skills (${graph.skills.length})`
 
   const panelHeading: CSSProperties = { fontSize: 16, fontWeight: 700, color: TOKEN.ink, margin: 0 }
 
@@ -768,25 +780,28 @@ function PassportGraphExplorer({
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12, alignItems: "start" }}>
         {/* Left panel — Projects */}
         <div data-testid="passport-projects-panel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <h3 style={panelHeading}>Projects ({passport.projects.length})</h3>
+          <h3 style={panelHeading}>{projectsHeading}</h3>
           {passport.projects.length === 0 ? (
             <Card>
               <p data-testid="passport-no-projects" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
                 No projects yet. Create a Project Defense to start building your passport.
               </p>
             </Card>
+          ) : visibleProjects.length === 0 ? (
+            <Card>
+              <p data-testid="projects-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                No projects are connected to this skill yet. Clear the selection to see all projects.
+              </p>
+            </Card>
           ) : (
-            passport.projects.map((project) => {
-              const connected = connectedProjectIds?.has(project.project_id) ?? false
+            visibleProjects.map((project) => {
               const selected = selection?.kind === "project" && selection.id === project.project_id
-              const dimmed = selection ? !selected && (selection.kind === "project" || !connected) : false
               return (
                 <ProjectCard
                   key={project.project_id}
                   project={project}
                   passportPublished={passportPublished}
                   selected={selected}
-                  dimmed={dimmed}
                   connectedSkillCount={graph.projectSkills.get(project.project_id)?.length ?? 0}
                   onToggleSelect={() => toggle("project", project.project_id)}
                 />
@@ -797,24 +812,27 @@ function PassportGraphExplorer({
 
         {/* Right panel — Skills */}
         <div data-testid="passport-skills-panel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <h3 style={panelHeading}>Skills ({graph.skills.length})</h3>
+          <h3 style={panelHeading}>{skillsHeading}</h3>
           {graph.skills.length === 0 ? (
             <Card>
               <p data-testid="skills-panel-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
                 No skills with evidence yet. Attach proof sources or record a Project Defense to build skill evidence.
               </p>
             </Card>
+          ) : visibleSkills.length === 0 ? (
+            <Card>
+              <p data-testid="skills-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                No evidence-backed skills are connected to this project yet. Clear the selection to see all skills.
+              </p>
+            </Card>
           ) : (
-            graph.skills.map((node) => {
-              const connected = connectedSkillKeys?.has(node.key) ?? false
+            visibleSkills.map((node) => {
               const selected = selection?.kind === "skill" && selection.id === node.key
-              const dimmed = selection ? !selected && (selection.kind === "skill" || !connected) : false
               return (
                 <SkillCard
                   key={node.key}
                   node={node}
                   selected={selected}
-                  dimmed={dimmed}
                   onToggleSelect={() => toggle("skill", node.key)}
                 />
               )
