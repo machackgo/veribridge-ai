@@ -11,7 +11,7 @@
 import { render, screen, fireEvent } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
-import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
+import { ProofVaultView } from "../app/student/vbr/passport/vault/ProofVaultView"
 import { ProjectReportView } from "../app/student/vbr/projects/[projectId]/report/ProjectReportView"
 import { PublicPassportView } from "../app/p/[slug]/PublicPassportView"
 import { SkillReportPageView } from "../app/student/vbr/passport/skills/[skillSlug]/SkillReportView"
@@ -263,13 +263,15 @@ beforeEach(() => {
 
 // ── Private Work Passport vault section ────────────────────────────────────────
 
-describe("PrivatePassportView — Skill Intelligence (compact dashboard)", () => {
+// The Skill Intelligence dashboard moved OUT of the main Passport into the
+// private Proof Vault page, so it is exercised against ProofVaultView now.
+describe("ProofVaultView — Skill Intelligence (compact dashboard)", () => {
   it("renders compact skill summary cards under category headings, not raw proof cards", async () => {
     const p = makePassport()
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     expect(await screen.findByTestId("vault-skill-dashboard")).toBeInTheDocument()
     const card = screen.getByTestId("vault-skill-summary")
@@ -286,7 +288,7 @@ describe("PrivatePassportView — Skill Intelligence (compact dashboard)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     expect(await screen.findByTestId("vault-summary-unattached")).toHaveTextContent("not attached")
     expect(screen.getByTestId("vault-unattached-summary")).toHaveTextContent("1 unattached proof item")
@@ -297,7 +299,7 @@ describe("PrivatePassportView — Skill Intelligence (compact dashboard)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     await screen.findByTestId("vault-skill-dashboard")
     const link = screen.getByTestId("view-skill-report")
@@ -315,8 +317,8 @@ describe("PrivatePassportView — Skill Intelligence (compact dashboard)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
-    await screen.findByTestId("passport-header")
+    render(<ProofVaultView />)
+    await screen.findByTestId("vault-overview")
     expect(screen.queryByTestId("vault-skill-dashboard")).not.toBeInTheDocument()
   })
 })

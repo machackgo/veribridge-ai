@@ -5,9 +5,11 @@
  * actions, and the publish / copy / unpublish controls.
  */
 
-import { render, screen, waitFor, fireEvent } from "@testing-library/react"
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
+import { buildPassportGraph } from "../app/student/vbr/passport/passport-graph"
+import { ProofVaultView } from "../app/student/vbr/passport/vault/ProofVaultView"
 import type {
   PrivateWorkPassport,
   VaultSkillPreview,
@@ -343,7 +345,7 @@ describe("PrivatePassportView — evidence graph (Phase 1)", () => {
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
   })
 
-  it("renders the Evidence Graph Overview with stats and next actions", async () => {
+  it("renders the Evidence Graph Overview summary chips without maintenance stats", async () => {
     render(<PrivatePassportView />)
 
     expect(await screen.findByTestId("evidence-graph-overview")).toBeInTheDocument()
@@ -353,10 +355,13 @@ describe("PrivatePassportView — evidence graph (Phase 1)", () => {
     expect(byStat["published-reports"]).toContain("0")
     expect(byStat["skills-with-evidence"]).toContain("2")
     expect(byStat["attached-proofs"]).toContain("2")
-    expect(byStat["unattached-proofs"]).toContain("1")
-    expect(screen.getByTestId("overview-next-actions")).toHaveTextContent(
-      "Publish a recruiter-safe report",
-    )
+    // Proof-maintenance stats and next actions moved to the Proof Vault page.
+    expect(byStat["unattached-proofs"]).toBeUndefined()
+    expect(byStat["suggested-proofs"]).toBeUndefined()
+    expect(screen.queryByTestId("overview-next-actions")).not.toBeInTheDocument()
+    expect(
+      screen.getByText("Your Passport connects projects to skills through evidence-backed proof."),
+    ).toBeInTheDocument()
   })
 
   it("derives an overview from base fields when the payload has none (older payloads)", async () => {
@@ -369,17 +374,23 @@ describe("PrivatePassportView — evidence graph (Phase 1)", () => {
     const stats = screen.getAllByTestId("overview-stat")
     const byStat = Object.fromEntries(stats.map((el) => [el.getAttribute("data-stat"), el.textContent]))
     expect(byStat["projects"]).toContain("1")
-    expect(byStat["unattached-proofs"]).toContain("1")
+    expect(byStat["attached-proofs"]).toContain("2")
   })
 
-  it("renders the Project Portfolio before Skill Intelligence", async () => {
+  it("renders the Projects panel and the Skills panel side by side", async () => {
     render(<PrivatePassportView />)
 
-    const portfolio = await screen.findByRole("heading", { name: "Project Portfolio" })
-    const skillIntelligence = screen.getByText("Skill Intelligence")
+    expect(await screen.findByTestId("passport-graph-explorer")).toBeInTheDocument()
+    const projectsPanel = screen.getByTestId("passport-projects-panel")
+    const skillsPanel = screen.getByTestId("passport-skills-panel")
+    expect(projectsPanel).toBeInTheDocument()
+    expect(skillsPanel).toBeInTheDocument()
+    // Projects on the left, Skills on the right.
     expect(
-      portfolio.compareDocumentPosition(skillIntelligence) & Node.DOCUMENT_POSITION_FOLLOWING,
+      projectsPanel.compareDocumentPosition(skillsPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+    expect(screen.getAllByTestId("passport-project-card").length).toBeGreaterThan(0)
+    expect(screen.getAllByTestId("passport-skill-card").length).toBeGreaterThan(0)
   })
 
   it("shows proof-chain completeness with present and missing sources on the project card", async () => {
@@ -392,8 +403,8 @@ describe("PrivatePassportView — evidence graph (Phase 1)", () => {
     expect(bySource["GitHub Proof"]).toBe("true")
     expect(bySource["Website Proof"]).toBe("false")
     expect(bySource["Project Defense"]).toBe("true")
-    // Gaps are stated honestly.
-    expect(screen.getByTestId("project-gaps")).toHaveTextContent("Website Proof")
+    // Long "attach these next" maintenance copy moved to the Proof Vault page.
+    expect(screen.queryByTestId("project-gaps")).not.toBeInTheDocument()
   })
 
   it("derives the proof chain from evidence sources when the payload has none", async () => {
@@ -421,44 +432,43 @@ describe("PrivatePassportView — evidence graph (Phase 1)", () => {
     expect(topSkills).toHaveTextContent("React · Partially demonstrated")
   })
 
-  it("links the project card to its connected skills section", async () => {
+  it("selects the project from its 'View connected skills' action", async () => {
     render(<PrivatePassportView />)
 
-    const link = await screen.findByTestId("view-connected-skills-link")
-    expect(link).toHaveAttribute("href", "#skill-intelligence")
+    const button = await screen.findByTestId("view-connected-skills-button")
+    fireEvent.click(button)
+    expect(screen.getByTestId("passport-project-card")).toHaveAttribute("data-selected", "true")
+    expect(screen.getByTestId("clear-selection-button")).toBeInTheDocument()
   })
 
   it("shows the strongest related project on the skill card", async () => {
     render(<PrivatePassportView />)
 
-    const strongest = await screen.findByTestId("vault-summary-strongest-project")
+    const cards = await screen.findAllByTestId("passport-skill-card")
+    const python = cards.find((c) => c.getAttribute("data-skill") === "Python")!
+    const strongest = python.querySelector('[data-testid="skill-top-project"]')
     expect(strongest).toHaveTextContent("Skill Evidence Tracker")
     expect(strongest).toHaveTextContent("Demonstrated")
   })
 
-  it("renders the Evidence Vault section with an unattached-proof next action", async () => {
+  it("does not render the Evidence Vault maintenance section on the main Passport", async () => {
     render(<PrivatePassportView />)
 
-    expect(await screen.findByTestId("evidence-vault-section")).toBeInTheDocument()
-    expect(screen.getByTestId("vault-unattached-action")).toHaveTextContent("1 unattached proof item")
-  })
-
-  it("confirms all proofs attached when nothing is unattached", async () => {
-    const p = makeGraphPassport({ vault_unattached_count: 0 })
-    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
-
-    render(<PrivatePassportView />)
-
-    expect(await screen.findByTestId("evidence-vault-section")).toBeInTheDocument()
-    expect(screen.getByTestId("vault-all-attached")).toBeInTheDocument()
+    await screen.findByTestId("passport-graph-explorer")
+    expect(screen.queryByTestId("evidence-vault-section")).not.toBeInTheDocument()
     expect(screen.queryByTestId("vault-unattached-action")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("vault-skill-dashboard")).not.toBeInTheDocument()
   })
 
   it("keeps the Skill Report link working from the skill card", async () => {
     render(<PrivatePassportView />)
 
-    const link = await screen.findByTestId("view-skill-report")
-    expect(link).toHaveAttribute("href", "/student/vbr/passport/skills/python")
+    const cards = await screen.findAllByTestId("passport-skill-card")
+    const python = cards.find((c) => c.getAttribute("data-skill") === "Python")!
+    expect(python.querySelector('[data-testid="view-skill-report"]')).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/skills/python",
+    )
   })
 })
 
@@ -533,55 +543,27 @@ describe("PrivatePassportView — project ↔ skill cross-linking (Phase 2)", ()
   it("links the skill card's strongest project to its project report preview", async () => {
     render(<PrivatePassportView />)
 
-    const strongest = await screen.findByTestId("vault-summary-strongest-project")
-    expect(strongest).toHaveTextContent("This skill is strongest in Skill Evidence Tracker")
-    expect(screen.getByTestId("strongest-project-evidence-link")).toHaveAttribute(
+    const cards = await screen.findAllByTestId("passport-skill-card")
+    const python = cards.find((c) => c.getAttribute("data-skill") === "Python")!
+    expect(python.querySelector('[data-testid="skill-top-project"]')).toHaveTextContent(
+      "Strongest in Skill Evidence Tracker",
+    )
+    expect(python.querySelector('[data-testid="skill-project-evidence-link"]')).toHaveAttribute(
       "href",
       "/student/vbr/projects/proj-1/report",
     )
   })
 
-  it("renders a compact proof-chain preview on the skill card", async () => {
+  it("renders proof-type chips on the skill card (present sources only)", async () => {
     render(<PrivatePassportView />)
 
-    expect(await screen.findByTestId("skill-proof-chain-preview")).toBeInTheDocument()
-    const items = screen.getAllByTestId("skill-chain-item")
-    expect(items).toHaveLength(5)
-    const bySource = Object.fromEntries(
-      items.map((el) => [el.getAttribute("data-source"), el.getAttribute("data-present")]),
-    )
-    // proof_source_counts: GitHub Proof only.
-    expect(bySource["GitHub Proof"]).toBe("true")
-    expect(bySource["Website Proof"]).toBe("false")
-  })
-
-  it("keeps unattached vault evidence honest on the skill card", async () => {
-    const p = makeCrossLinkedPassport({
-      vault_skill_summaries: [
-        makeVaultSummary({ attached_count: 0, unattached_count: 2, has_unattached: true }),
-      ],
-    })
-    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
-
-    render(<PrivatePassportView />)
-
-    expect(await screen.findByTestId("vault-summary-unattached-note")).toHaveTextContent(
-      "Additional vault evidence exists but is not attached to a project report.",
-    )
-  })
-
-  it("does not show the unattached note when attached proof dominates", async () => {
-    const p = makeCrossLinkedPassport({
-      vault_skill_summaries: [
-        makeVaultSummary({ attached_count: 3, unattached_count: 1, has_unattached: true }),
-      ],
-    })
-    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
-
-    render(<PrivatePassportView />)
-    await screen.findByTestId("vault-skill-dashboard")
-
-    expect(screen.queryByTestId("vault-summary-unattached-note")).not.toBeInTheDocument()
+    const cards = await screen.findAllByTestId("passport-skill-card")
+    const python = cards.find((c) => c.getAttribute("data-skill") === "Python")!
+    const chips = [...python.querySelectorAll('[data-testid="skill-proof-chip"]')]
+    const sources = chips.map((el) => el.getAttribute("data-source"))
+    // evidence_sources / proof_source_counts: GitHub Proof only.
+    expect(sources).toContain("GitHub Proof")
+    expect(sources).not.toContain("Website Proof")
   })
 })
 
@@ -651,100 +633,71 @@ function makeIntelligencePassport(overrides: Partial<PrivateWorkPassport> = {}):
   })
 }
 
-describe("PrivatePassportView — Proof Attachment Intelligence (Phase 3)", () => {
+describe("PrivatePassportView — Proof Attachment Intelligence moved to Proof Vault", () => {
   beforeEach(() => {
     const p = makeIntelligencePassport()
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
   })
 
-  it("renders the Proof Attachment Intelligence section with a suggestion card", async () => {
+  it("does not render 'Proof Attachment Intelligence' in the main Passport body", async () => {
     render(<PrivatePassportView />)
 
-    expect(await screen.findByTestId("proof-attachment-intelligence")).toBeInTheDocument()
-    const suggestion = screen.getByTestId("attachment-suggestion")
-    expect(suggestion).toHaveAttribute("data-proof-type", "Website Proof")
-    expect(screen.getByTestId("suggestion-confidence")).toHaveTextContent("Likely match")
-    expect(screen.getByTestId("suggestion-project")).toHaveTextContent("Skill Evidence Tracker")
-    expect(screen.getByTestId("suggestion-action-label")).toHaveTextContent("Review and attach proof")
-    expect(screen.getByTestId("suggestion-open-project")).toHaveAttribute(
-      "href",
-      "/student/vbr/projects/proj-1/report",
-    )
-  })
-
-  it("renders the suggestion reason, evidence basis chips and honest limitation", async () => {
-    render(<PrivatePassportView />)
-
-    expect(await screen.findByTestId("suggestion-reason")).toHaveTextContent("may belong to")
-    const chips = screen.getAllByTestId("suggestion-basis-chip")
-    expect(chips.map((c) => c.textContent)).toEqual(["Matching website domain", "Matching skill"])
-    expect(screen.getByTestId("suggestion-limitation")).toHaveTextContent(
-      "nothing is attached automatically",
-    )
-  })
-
-  it("lists projects to strengthen and skills with unattached evidence", async () => {
-    render(<PrivatePassportView />)
-
-    const projectRow = await screen.findByTestId("project-to-strengthen")
-    expect(projectRow).toHaveTextContent("Skill Evidence Tracker")
-    expect(projectRow).toHaveTextContent("Missing runtime proof")
-    const skillChip = screen.getByTestId("skill-with-unattached")
-    expect(skillChip).toHaveTextContent("Python · 1 unattached")
-    expect(skillChip).toHaveAttribute("href", "/student/vbr/passport/skills/python")
-    // Unmatched proofs are stated honestly — never guessed onto a project.
-    expect(screen.getByTestId("suggestions-unmatched-note")).toHaveTextContent(
-      "2 unattached proof item(s) had no safe project match",
-    )
-  })
-
-  it("renders chain label, gap actions and next best action on the project card", async () => {
-    render(<PrivatePassportView />)
-
-    expect(await screen.findByTestId("project-chain-label")).toHaveTextContent("Missing runtime proof")
-    const gap = screen.getByTestId("project-chain-gap")
-    expect(gap).toHaveAttribute("data-source", "Website Proof")
-    expect(gap).toHaveTextContent("Attach Website Proof to complete runtime behavior evidence.")
-    expect(screen.getByTestId("project-next-action")).toHaveTextContent("Suggested next action:")
-    const row = screen.getByTestId("project-suggested-attachment")
-    expect(row).toHaveTextContent("Likely match")
-    expect(row).toHaveTextContent("https://skill-evidence-tracker.vercel.app")
-  })
-
-  it("renders strengthening actions on the skill card", async () => {
-    render(<PrivatePassportView />)
-
-    const action = await screen.findByTestId("skill-strengthening-action")
-    expect(action).toHaveTextContent("review and attach them to strengthen")
-  })
-
-  it("hides the section entirely when nothing is unattached and nothing is suggested", async () => {
-    const p = makeIntelligencePassport({
-      unattached_proof_summary: {
-        unattached_count: 0,
-        suggestion_count: 0,
-        unmatched_count: 0,
-        suggestions: [],
-      },
-      vault_unattached_count: 0,
-    })
-    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
-
-    render(<PrivatePassportView />)
-    await screen.findByTestId("evidence-graph-overview")
-
+    await screen.findByTestId("passport-graph-explorer")
     expect(screen.queryByTestId("proof-attachment-intelligence")).not.toBeInTheDocument()
+    expect(screen.queryByText(/Proof Attachment Intelligence/i)).not.toBeInTheDocument()
   })
 
-  it("keeps Phase 2 cross-links working alongside Phase 3 (skill report + project report links)", async () => {
+  it("does not render 'What to attach next' in the main Passport body", async () => {
+    render(<PrivatePassportView />)
+
+    await screen.findByTestId("passport-graph-explorer")
+    expect(screen.queryByText(/What to attach next/i)).not.toBeInTheDocument()
+  })
+
+  it("does not render suggested attachments as a main Passport section", async () => {
+    render(<PrivatePassportView />)
+
+    await screen.findByTestId("passport-graph-explorer")
+    expect(screen.queryByTestId("suggested-attachments")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("attachment-suggestion")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("project-suggested-attachment")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skills-with-unattached")).not.toBeInTheDocument()
+    expect(screen.queryByText(/Skills with unattached evidence/i)).not.toBeInTheDocument()
+  })
+
+  it("renders the Improve Passport card with the Proof Vault CTA instead", async () => {
+    render(<PrivatePassportView />)
+
+    const card = await screen.findByTestId("improve-passport-card")
+    expect(card).toHaveTextContent("Review suggested attachments and unattached evidence in Proof Vault.")
+    expect(screen.getByTestId("open-proof-vault-link")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/vault",
+    )
+  })
+
+  it("keeps the project card free of per-project maintenance rows", async () => {
+    render(<PrivatePassportView />)
+
+    const card = await screen.findByTestId("passport-project-card")
+    // Chain-quality label stays (qualitative identity), maintenance rows move.
+    expect(screen.getByTestId("project-chain-label")).toHaveTextContent("Missing runtime proof")
+    expect(card.querySelector('[data-testid="project-next-action"]')).toBeNull()
+    expect(card.querySelector('[data-testid="project-chain-gap"]')).toBeNull()
+    expect(card.querySelector('[data-testid="project-suggested-attachments"]')).toBeNull()
+  })
+
+  it("keeps cross-links working (skill report + project report links)", async () => {
     render(<PrivatePassportView />)
 
     // Project → Skill Report links still render.
     const chips = await screen.findAllByTestId("project-top-skill")
     expect(chips[0]).toHaveAttribute("href", "/student/vbr/passport/skills/python")
     // Skill card → Skill Report link still works.
-    expect(screen.getByTestId("view-skill-report")).toHaveAttribute(
+    const skillCards = screen.getAllByTestId("passport-skill-card")
+    const python = skillCards.find((c) => c.getAttribute("data-skill") === "Python")!
+    expect(python.querySelector('[data-testid="view-skill-report"]')).toHaveAttribute(
       "href",
       "/student/vbr/passport/skills/python",
     )
@@ -818,8 +771,8 @@ function makeOverview(overrides: Partial<ProofAttachmentOverview> = {}): ProofAt
   }
 }
 
-describe("PrivatePassportView — Attachment Intelligence Cleanup (Step 4)", () => {
-  it("renders Attached / Suggested / Unattached as separated, labelled sections", async () => {
+describe("PrivatePassportView — Attachment Intelligence Cleanup (Step 4, moved to Proof Vault)", () => {
+  it("never renders the attachment overview sections in the main Passport body", async () => {
     const p = makePassport({
       vault_proof_count: 3,
       vault_unattached_count: 2,
@@ -830,23 +783,14 @@ describe("PrivatePassportView — Attachment Intelligence Cleanup (Step 4)", () 
 
     render(<PrivatePassportView />)
 
-    expect(await screen.findByTestId("attachment-overview")).toBeInTheDocument()
-    expect(screen.getByTestId("attachment-attached-section")).toBeInTheDocument()
-    expect(screen.getByTestId("attachment-suggested-section")).toBeInTheDocument()
-    expect(screen.getByTestId("attachment-unattached-section")).toBeInTheDocument()
-
-    // Suggested evidence is explicitly "not counted until attached".
-    const suggestedSection = screen.getByTestId("attachment-suggested-section")
-    expect(suggestedSection).toHaveTextContent("Suggested — not counted until attached")
-
-    // The suggested entry links to its likely project; the attached entry to its project.
-    expect(screen.getAllByTestId("attachment-entry-project-link").length).toBeGreaterThan(0)
-
-    // The deduped unattached entry shows an honest duplicate note, once.
-    expect(screen.getByTestId("attachment-entry-duplicates")).toHaveTextContent("2 duplicate rows collapsed")
+    await screen.findByTestId("passport-graph-explorer")
+    expect(screen.queryByTestId("attachment-overview")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("attachment-attached-section")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("attachment-suggested-section")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("attachment-unattached-section")).not.toBeInTheDocument()
   })
 
-  it("renders each deduplicated proof exactly once (no duplicate cards, no duplicate keys)", async () => {
+  it("surfaces the clean suggested/unattached counts on the Improve Passport card", async () => {
     const p = makePassport({
       vault_proof_count: 3,
       vault_unattached_count: 2,
@@ -855,50 +799,19 @@ describe("PrivatePassportView — Attachment Intelligence Cleanup (Step 4)", () 
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
     render(<PrivatePassportView />)
 
-    await screen.findByTestId("attachment-overview")
-    const entries = screen.getAllByTestId("attachment-entry")
-    // One card per deduplicated entry: 1 attached + 1 suggested + 1 unattached.
-    expect(entries).toHaveLength(3)
-    // React duplicate-key warnings must not happen.
-    const keyWarnings = consoleError.mock.calls.filter((args) =>
-      String(args[0]).includes("same key"),
+    const card = await screen.findByTestId("improve-passport-card")
+    expect(card).toBeInTheDocument()
+    expect(screen.getByTestId("improve-passport-suggested-count")).toHaveTextContent("1 suggested")
+    expect(screen.getByTestId("improve-passport-unattached-count")).toHaveTextContent("1 unattached")
+    expect(screen.getByTestId("open-proof-vault-link")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/vault",
     )
-    expect(keyWarnings).toHaveLength(0)
-    consoleError.mockRestore()
   })
 
-  it("shows the suggested count as its own overview stat — never merged into attached", async () => {
-    const p = makePassport({
-      evidence_graph_overview: {
-        project_count: 1,
-        published_report_count: 0,
-        skills_with_evidence: 2,
-        proof_count: 3,
-        attached_proof_count: 1,
-        suggested_proof_count: 1,
-        unattached_proof_count: 1,
-        next_actions: [],
-      },
-      attachment_overview: makeOverview(),
-    })
-    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
-    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
-
-    render(<PrivatePassportView />)
-
-    await screen.findByTestId("evidence-graph-overview")
-    const stat = (name: string) => document.querySelector(`[data-testid="overview-stat"][data-stat="${name}"]`)
-    expect(stat("attached-proofs")).toHaveTextContent("1")
-    const suggestedStat = stat("suggested-proofs")
-    expect(suggestedStat).toHaveTextContent("1")
-    expect(suggestedStat).toHaveTextContent("Suggested — not counted until attached")
-    expect(stat("unattached-proofs")).toHaveTextContent("1")
-  })
-
-  it("renders no attachment overview when the payload omits it (older backend)", async () => {
+  it("still renders the Improve Passport CTA when the payload omits the overview (older backend)", async () => {
     const p = makePassport()
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
@@ -907,6 +820,7 @@ describe("PrivatePassportView — Attachment Intelligence Cleanup (Step 4)", () 
 
     expect(await screen.findByTestId("passport-header")).toBeInTheDocument()
     expect(screen.queryByTestId("attachment-overview")).not.toBeInTheDocument()
+    expect(screen.getByTestId("open-proof-vault-link")).toBeInTheDocument()
   })
 })
 
@@ -924,7 +838,10 @@ function makeVaultPreview(overrides: Partial<VaultSkillPreview> = {}): VaultSkil
   }
 }
 
-describe("PrivatePassportView — browser polish (dedupe + clean counts)", () => {
+// These dedupe/clean-count behaviours live on the Proof Vault page now — the
+// Proof Attachment Intelligence, Skill Intelligence previews, and vault count
+// copy all moved out of the main Passport into ProofVaultView.
+describe("ProofVaultView — browser polish (dedupe + clean counts)", () => {
   it("shows the clean deduplicated attachment_overview count in prominent copy, not the raw vault count", async () => {
     const p = makeGraphPassport({
       // Raw vault rows (with duplicates) is large; the clean deduped count is small.
@@ -934,7 +851,7 @@ describe("PrivatePassportView — browser polish (dedupe + clean counts)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     // Skill Intelligence headline copy uses the clean count …
     const summaryCopy = await screen.findByTestId("vault-unattached-summary")
@@ -976,7 +893,7 @@ describe("PrivatePassportView — browser polish (dedupe + clean counts)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     await screen.findByTestId("proof-attachment-intelligence")
     const cards = screen.getAllByTestId("attachment-suggestion")
@@ -998,7 +915,7 @@ describe("PrivatePassportView — browser polish (dedupe + clean counts)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     // Three identical-looking preview rows collapse to one.
     const previews = await screen.findAllByTestId("vault-skill-preview")
@@ -1029,7 +946,7 @@ describe("PrivatePassportView — browser polish (dedupe + clean counts)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     const previews = await screen.findAllByTestId("vault-skill-preview")
     expect(previews).toHaveLength(2)
@@ -1062,7 +979,7 @@ describe("PrivatePassportView — browser polish (dedupe + clean counts)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     const previews = await screen.findAllByTestId("vault-skill-preview")
     expect(previews).toHaveLength(1)
@@ -1087,13 +1004,157 @@ describe("PrivatePassportView — browser polish (dedupe + clean counts)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    const { container } = render(<PrivatePassportView />)
+    const { container } = render(<ProofVaultView />)
 
     const note = await screen.findByTestId("suggestions-unmatched-note")
     expect(note).toHaveTextContent("32 unattached proof item(s) had no safe project match")
     expect(note).not.toHaveTextContent("519")
     // The raw 519-style row count appears nowhere on the rendered page.
     expect(container).not.toHaveTextContent("519")
+  })
+})
+
+// ── Projects ↔ Skills interactive explorer (highlight/dim + a11y + fail-closed)
+//
+// Two projects, each with one evidence-backed top_skill, so selecting one side
+// leaves exactly one connected and one dimmed on the other side.
+function makeInteractivePassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  const base = makePassport().projects[0]
+  return makePassport({
+    skills: [
+      { skill: "Python", status: "Demonstrated", evidence_chip_count: 1, project_count: 1, evidence_sources: ["GitHub Proof"], projects: [], evidence_chips: [], notes: "", limitations: [] },
+      { skill: "Rust", status: "Demonstrated", evidence_chip_count: 1, project_count: 1, evidence_sources: ["GitHub Proof"], projects: [], evidence_chips: [], notes: "", limitations: [] },
+    ],
+    projects: [
+      { ...base, project_id: "proj-alpha", project_title: "Alpha Service", claimed_skills: ["Python"], top_skills: [{ skill: "Python", status: "Demonstrated", skill_slug: "python" }] },
+      { ...base, project_id: "proj-beta", project_title: "Beta Service", claimed_skills: ["Rust"], top_skills: [{ skill: "Rust", status: "Demonstrated", skill_slug: "rust" }] },
+    ],
+    project_count: 2,
+    ...overrides,
+  })
+}
+
+const skillCard = (name: string) =>
+  screen.getAllByTestId("passport-skill-card").find((c) => c.getAttribute("data-skill") === name)!
+const projectCard = (id: string) =>
+  screen.getAllByTestId("passport-project-card").find((c) => c.getAttribute("data-project-id") === id)!
+
+describe("PrivatePassportView — Projects ↔ Skills highlighting", () => {
+  beforeEach(() => {
+    const p = makeInteractivePassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("skill → project: selecting a skill highlights its project and dims the rest", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    fireEvent.click(skillCard("Python"))
+
+    expect(skillCard("Python")).toHaveAttribute("data-selected", "true")
+    // Python is proven by Alpha only → Alpha stays lit, Beta dims.
+    expect(projectCard("proj-alpha")).toHaveAttribute("data-dimmed", "false")
+    expect(projectCard("proj-beta")).toHaveAttribute("data-dimmed", "true")
+  })
+
+  it("project → skill: selecting a project highlights its skills and dims the rest", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    fireEvent.click(projectCard("proj-alpha"))
+
+    expect(projectCard("proj-alpha")).toHaveAttribute("data-selected", "true")
+    // Alpha proves Python only → Python stays lit, Rust dims.
+    expect(skillCard("Python")).toHaveAttribute("data-dimmed", "false")
+    expect(skillCard("Rust")).toHaveAttribute("data-dimmed", "true")
+  })
+
+  it("clear selection resets all highlighting and dimming", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    fireEvent.click(skillCard("Python"))
+    expect(projectCard("proj-beta")).toHaveAttribute("data-dimmed", "true")
+
+    fireEvent.click(screen.getByTestId("clear-selection-button"))
+
+    expect(screen.queryByTestId("clear-selection-button")).not.toBeInTheDocument()
+    expect(skillCard("Python")).toHaveAttribute("data-selected", "false")
+    expect(projectCard("proj-alpha")).toHaveAttribute("data-dimmed", "false")
+    expect(projectCard("proj-beta")).toHaveAttribute("data-dimmed", "false")
+  })
+
+  it("skill selection is keyboard accessible (real button semantics + Enter/Space)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const card = skillCard("Python")
+    // Exposed as an operable, focusable selection control.
+    expect(card).toHaveAttribute("role", "button")
+    expect(card).toHaveAttribute("tabindex", "0")
+    expect(card).toHaveAttribute("aria-pressed", "false")
+
+    fireEvent.keyDown(card, { key: "Enter" })
+    expect(skillCard("Python")).toHaveAttribute("data-selected", "true")
+    expect(skillCard("Python")).toHaveAttribute("aria-pressed", "true")
+    expect(projectCard("proj-beta")).toHaveAttribute("data-dimmed", "true")
+
+    // Space toggles it back off — same affordance as a native button.
+    fireEvent.keyDown(skillCard("Python"), { key: " " })
+    expect(skillCard("Python")).toHaveAttribute("data-selected", "false")
+
+    // A keypress on an inner link must not hijack the card's toggle.
+    fireEvent.keyDown(within(skillCard("Python")).getByTestId("view-skill-report"), { key: "Enter" })
+    expect(skillCard("Python")).toHaveAttribute("data-selected", "false")
+  })
+})
+
+describe("buildPassportGraph — evidence-only edges (fail closed)", () => {
+  it("does not create proven project↔skill links from evidence-less claimed_skills", () => {
+    const base = makePassport().projects[0]
+    const p = makePassport({
+      skills: [],
+      projects: [
+        // A claim with no top_skills and no skill/vault evidence must not link.
+        { ...base, project_id: "proj-x", project_title: "Claim Only", claimed_skills: ["Kubernetes"], top_skills: [] },
+      ],
+    })
+
+    const graph = buildPassportGraph(p)
+
+    // No skill node at all — a bare claim never becomes a graph node…
+    expect(graph.skills.find((s) => s.name === "Kubernetes")).toBeUndefined()
+    // …and the project surfaces no "proven" skills.
+    expect(graph.projectSkills.get("proj-x")).toEqual([])
+    expect(graph.skillProjects.get("kubernetes")).toBeUndefined()
+  })
+
+  it("fails closed on ambiguous same-title matches but keeps unique-title matches", () => {
+    const base = makePassport().projects[0]
+    const p = makePassport({
+      skills: [
+        // Title-only ref (no project_id) to an ambiguous, duplicated title.
+        { skill: "Go", status: "Demonstrated", evidence_chip_count: 1, project_count: 1, evidence_sources: [], projects: [{ project_title: "Dup Project", project_id: null, evidence_sources: [], report_is_public: false, public_report_path: null }], evidence_chips: [], notes: "", limitations: [] },
+        // Title-only ref to a unique title — this one may safely resolve.
+        { skill: "Rust", status: "Demonstrated", evidence_chip_count: 1, project_count: 1, evidence_sources: [], projects: [{ project_title: "Solo Project", project_id: null, evidence_sources: [], report_is_public: false, public_report_path: null }], evidence_chips: [], notes: "", limitations: [] },
+      ],
+      projects: [
+        { ...base, project_id: "dup-1", project_title: "Dup Project", claimed_skills: [], top_skills: [] },
+        { ...base, project_id: "dup-2", project_title: "Dup Project", claimed_skills: [], top_skills: [] },
+        { ...base, project_id: "solo-1", project_title: "Solo Project", claimed_skills: [], top_skills: [] },
+      ],
+    })
+
+    const graph = buildPassportGraph(p)
+
+    // Ambiguous title → no edge to either duplicate.
+    expect(graph.skills.find((s) => s.name === "Go")!.projectIds).toEqual([])
+    expect(graph.projectSkills.get("dup-1")).toEqual([])
+    expect(graph.projectSkills.get("dup-2")).toEqual([])
+    // Unique title → the title-only fallback still resolves safely.
+    expect(graph.skills.find((s) => s.name === "Rust")!.projectIds).toEqual(["solo-1"])
+    expect(graph.projectSkills.get("solo-1")).toEqual(["rust"])
   })
 })
 
