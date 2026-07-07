@@ -21,6 +21,42 @@ export const SKILL_PROOF_TYPE_ORDER = [
   "Video Evidence",
 ] as const
 
+type CanonicalProofType = (typeof SKILL_PROOF_TYPE_ORDER)[number]
+
+/**
+ * Common proof-type spellings → their canonical SKILL_PROOF_TYPE_ORDER label.
+ * The payload normally uses the canonical labels, but different producers (the
+ * overview `evidence_source_counts`, project `evidence_sources`, vault summaries)
+ * can carry variants — snake_case, a bare noun, or a different case. Keys here
+ * are pre-normalized (see `normalizeProofTypeLabel`) so "website_proof",
+ * "website" and "Website" all resolve to "Website Proof".
+ */
+const PROOF_TYPE_ALIASES: Record<string, CanonicalProofType> = {
+  "github proof": "GitHub Proof",
+  github: "GitHub Proof",
+  "website proof": "Website Proof",
+  website: "Website Proof",
+  "document proof": "Document Proof",
+  document: "Document Proof",
+  "project defense": "Project Defense",
+  defense: "Project Defense",
+  "video evidence": "Video Evidence",
+  video: "Video Evidence",
+}
+
+/**
+ * Canonicalize a proof-type label to one of SKILL_PROOF_TYPE_ORDER, or null when
+ * it maps to no known proof type. Collapses case and `_`/`-`/whitespace so any of
+ * "Website Proof" / "website_proof" / "website" / "Website" reads as "Website
+ * Proof" — keeps the proof-type filter's options consistent no matter which part
+ * of the payload the label came from.
+ */
+export function normalizeProofTypeLabel(label: string): CanonicalProofType | null {
+  const key = label.trim().toLowerCase().replace(/[_\-\s]+/g, " ").trim()
+  if (!key) return null
+  return PROOF_TYPE_ALIASES[key] ?? null
+}
+
 /**
  * One attached project→skill evidence relationship for a skill card: which
  * project demonstrates this skill, with which proof sources, and where to open
@@ -41,6 +77,11 @@ export type SkillProjectEvidence = {
   evidenceSources: string[]
   /** Website Proof is among this project's sources for this skill. */
   hasWebsiteProof: boolean
+  /** The project carries attached proof at the project level (any source),
+   *  even when none of it is mapped to THIS skill. Lets the UI distinguish
+   *  "project-level proof exists, but is not mapped to this skill yet" from a
+   *  project with no attached proof at all. */
+  projectHasProjectLevelProof: boolean
   /** Owner-only project-report route (always present — projectId is known). */
   reportPath: string
   publicReportPath: string | null
@@ -67,6 +108,11 @@ export type PassportSkillNode = {
    *  navigation. Empty when the skill has only vault-only evidence. Strongest
    *  project first. */
   projectEvidence: SkillProjectEvidence[]
+  /** Proof-type sources for this skill that live in the Proof Vault but are NOT
+   *  attached to any project (standalone / vault-only evidence). Rendered as a
+   *  separate, clearly-labelled section so it is never counted as project proof.
+   *  Canonical order; empty when there is no unattached vault evidence. */
+  vaultOnlySources: string[]
 }
 
 export type PassportGraph = {
@@ -75,6 +121,17 @@ export type PassportGraph = {
   projectSkills: Map<string, string[]>
   /** skill key → connected project ids. */
   skillProjects: Map<string, string[]>
+  /**
+   * Proof-type labels (canonical order) that exist ANYWHERE in this passport's
+   * evidence — the overview `evidence_source_counts`, any project's attached
+   * sources, any skill's sources/vault-only sources, and the skill→project
+   * evidence map. This is the recruiter-facing Proof Type dropdown's option set:
+   * a proof type stays selectable because the candidate has it, not because the
+   * currently-visible skill block happens to map it. Selecting one still filters
+   * skill→project rows to that exact skill-project relationship (fail-closed), so
+   * an option here can legitimately resolve to the "no matching rows" empty state.
+   */
+  proofTypeOptions: string[]
 }
 
 /**
@@ -109,6 +166,8 @@ type SkillDraft = {
   sources: Set<string>
   projectIds: Set<string>
   payloadProjectCount: number
+  /** Vault-only proof-type sources for this skill (unattached to any project). */
+  vaultOnlySources: Set<string>
 }
 
 /**
@@ -138,7 +197,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
     const key = name.trim().toLowerCase()
     let d = drafts.get(key)
     if (!d) {
-      d = { name: name.trim(), slug: "", status: "", sources: new Set(), projectIds: new Set(), payloadProjectCount: 0 }
+      d = { name: name.trim(), slug: "", status: "", sources: new Set(), projectIds: new Set(), payloadProjectCount: 0, vaultOnlySources: new Set() }
       drafts.set(key, d)
     }
     return d
@@ -200,12 +259,19 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
     if (!d.status) d.status = s.status
     d.payloadProjectCount = Math.max(d.payloadProjectCount, s.project_count)
     for (const source of s.evidence_sources) d.sources.add(source)
+    // Vault-only (standalone) sources come pre-computed by the backend as the
+    // proof types that exist for this skill but are attached to NO project.
+    for (const source of s.vault_only_sources ?? []) d.vaultOnlySources.add(source)
     for (const ref of s.projects) {
       addProject(d, ref.project_id, ref.project_title)
       recordProjectMeta(
         skillKey,
         resolveProjectId(ref.project_id, ref.project_title),
-        ref.evidence_sources,
+        // Prefer the skill-specific breakdown; fall back to the project-wide
+        // source union only for legacy payloads that predate the field. When the
+        // new field is present (even as an empty list) it wins, so a row shows a
+        // proof-type chip only where that proof actually supports THIS skill.
+        ref.supporting_proof_types ?? ref.evidence_sources,
         ref.skill_status,
         ref.report_is_public,
         ref.public_report_path,
@@ -216,7 +282,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
       recordProjectMeta(
         skillKey,
         resolveProjectId(s.strongest_project.project_id, s.strongest_project.project_title),
-        s.strongest_project.evidence_sources,
+        s.strongest_project.supporting_proof_types ?? s.strongest_project.evidence_sources,
         s.strongest_project.skill_status,
         s.strongest_project.report_is_public,
         s.strongest_project.public_report_path,
@@ -266,6 +332,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
           skillStatus: meta?.status ?? "",
           evidenceSources: sources,
           hasWebsiteProof: sources.includes("Website Proof"),
+          projectHasProjectLevelProof: (proj.evidence_sources?.length ?? 0) > 0,
           reportPath: `/student/vbr/projects/${pid}/report`,
           publicReportPath: meta?.publicPath ?? proj.report.public_path ?? null,
           reportIsPublic: meta?.isPublic ?? proj.report.is_public ?? false,
@@ -288,6 +355,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
       projectCount: Math.max(d.projectIds.size, d.payloadProjectCount),
       strongest: strongest[key] ?? null,
       projectEvidence,
+      vaultOnlySources: SKILL_PROOF_TYPE_ORDER.filter((label) => d.vaultOnlySources.has(label)),
     }
   })
   skills.sort((a, b) => b.projectIds.length - a.projectIds.length || a.name.localeCompare(b.name))
@@ -303,5 +371,27 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
     }
   }
 
-  return { skills, projectSkills, skillProjects }
+  // Proof-type dropdown options: every proof type present ANYWHERE in the
+  // passport, normalized to a canonical label. Sourced from the overview counts,
+  // project-level attached sources, each skill's sources + vault-only sources,
+  // and the skill→project evidence map — so Website Proof (and every other type
+  // the candidate actually has) is offered even when the visible skill block does
+  // not map it. Selecting one still fails closed to the skill→project rows.
+  const presentProofTypes = new Set<CanonicalProofType>()
+  const addPresent = (label: string) => {
+    const canonical = normalizeProofTypeLabel(label)
+    if (canonical) presentProofTypes.add(canonical)
+  }
+  for (const [label, count] of Object.entries(passport.evidence_source_counts ?? {})) {
+    if (count > 0) addPresent(label)
+  }
+  for (const p of passport.projects) for (const src of p.evidence_sources ?? []) addPresent(src)
+  for (const node of skills) {
+    for (const src of node.proofTypes) addPresent(src)
+    for (const src of node.vaultOnlySources) addPresent(src)
+    for (const row of node.projectEvidence) for (const src of row.evidenceSources) addPresent(src)
+  }
+  const proofTypeOptions = SKILL_PROOF_TYPE_ORDER.filter((label) => presentProofTypes.has(label))
+
+  return { skills, projectSkills, skillProjects, proofTypeOptions }
 }

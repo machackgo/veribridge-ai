@@ -1711,6 +1711,11 @@ export type PassportSkillProjectRef = {
   /** This project's qualitative status FOR THIS SKILL (not the cross-project best). */
   skill_status?: string
   evidence_sources: string[]
+  /** The proof types supporting THIS skill in THIS project only — a closed,
+   *  skill-specific subset. Distinct from `evidence_sources` (the whole
+   *  project's union); a type appears here only where the mapping recorded it
+   *  for this exact skill, so it fails closed. */
+  supporting_proof_types?: string[]
   report_is_public: boolean
   public_report_path: string | null
   /** Proof-native trace cards this project contributes for this skill. */
@@ -1727,6 +1732,8 @@ export type PassportStrongestProjectLink = {
   /** This project's qualitative label FOR THIS SKILL (never a score). */
   skill_status?: string
   evidence_sources: string[]
+  /** Skill-specific proof-type breakdown for this project (see PassportSkillProjectRef). */
+  supporting_proof_types?: string[]
   report_is_public?: boolean
   public_report_path?: string | null
   project_id?: string | null
@@ -1749,6 +1756,10 @@ export type PassportSkillSummary = {
   strongest_project_status?: string | null
   /** The same strongest project as a linkable reference (owner-only routes). */
   strongest_project?: PassportStrongestProjectLink | null
+  /** Proof-type sources that exist for this skill in the vault but are NOT
+   *  attached to any project (vault-only / standalone evidence). Kept separate
+   *  from `projects` so vault-only proof is never counted as project evidence. */
+  vault_only_sources?: string[]
   notes: string
   limitations: string[]
 }
@@ -1778,6 +1789,9 @@ export type PassportProjectTopSkill = {
   status: string
   skill_slug?: string | null
   skill_report_path?: string | null
+  /** Proof types supporting THIS skill in THIS project (closed, skill-specific
+   *  label set) — lets the project card show a per-skill proof breakdown. */
+  supporting_proof_types?: string[]
 }
 
 /**
@@ -2076,6 +2090,8 @@ export type PublicPassportSkillProjectRef = {
   /** Per-project qualitative status for this skill (label only). */
   skill_status?: string
   evidence_sources: string[]
+  /** Proof types supporting this skill in this published project only. */
+  supporting_proof_types?: string[]
   public_report_path: string
   /** Per-project trace cards (published, recruiter-safe) for this skill. */
   evidence_traces?: EvidenceTrace[]
@@ -2089,6 +2105,8 @@ export type PublicPassportStrongestProject = {
   project_title: string
   skill_status?: string
   evidence_sources: string[]
+  /** Skill-specific proof-type breakdown for this published project. */
+  supporting_proof_types?: string[]
   public_report_path: string
 }
 
@@ -2111,6 +2129,8 @@ export type PublicPassportProjectTopSkill = {
   skill: string
   status: string
   skill_slug?: string | null
+  /** Skill-specific proof-type breakdown for this published project (safe labels). */
+  supporting_proof_types?: string[]
 }
 
 /** A public featured project — links to its public VBR report. */

@@ -377,18 +377,22 @@ describe("PrivatePassportView — evidence graph (Phase 1)", () => {
     expect(byStat["attached-proofs"]).toContain("2")
   })
 
-  it("renders the Projects panel and the Skills panel side by side", async () => {
+  it("renders a skill-first Skills Evidence Map with projects as a secondary lens", async () => {
     render(<PrivatePassportView />)
 
     expect(await screen.findByTestId("passport-graph-explorer")).toBeInTheDocument()
+    // The map is skill-first: heading + subtitle name the skill→project→evidence model.
+    expect(screen.getByText("Skills Evidence Map")).toBeInTheDocument()
     const projectsPanel = screen.getByTestId("passport-projects-panel")
     const skillsPanel = screen.getByTestId("passport-skills-panel")
     expect(projectsPanel).toBeInTheDocument()
     expect(skillsPanel).toBeInTheDocument()
-    // Projects on the left, Skills on the right.
+    // Skills come FIRST (primary); the project lens is stacked below (secondary).
     expect(
-      projectsPanel.compareDocumentPosition(skillsPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      skillsPanel.compareDocumentPosition(projectsPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+    // The old side-by-side two-column framing ("Projects ↔ Skills") is gone.
+    expect(screen.queryByText("Projects ↔ Skills")).not.toBeInTheDocument()
     expect(screen.getAllByTestId("passport-project-card").length).toBeGreaterThan(0)
     expect(screen.getAllByTestId("passport-skill-card").length).toBeGreaterThan(0)
   })
@@ -438,7 +442,7 @@ describe("PrivatePassportView — evidence graph (Phase 1)", () => {
     const button = await screen.findByTestId("view-connected-skills-button")
     fireEvent.click(button)
     expect(screen.getByTestId("passport-project-card")).toHaveAttribute("data-selected", "true")
-    expect(screen.getByTestId("clear-selection-button")).toBeInTheDocument()
+    expect(screen.getByTestId("clear-filters-button")).toBeInTheDocument()
   })
 
   it("shows the strongest related project on the skill card", async () => {
@@ -555,14 +559,17 @@ describe("PrivatePassportView — project ↔ skill cross-linking (Phase 2)", ()
     )
   })
 
-  it("renders proof-type chips on the skill card (present sources only)", async () => {
+  it("renders per-project proof chips scoped to the skill→project row (no context-free skill chips)", async () => {
     render(<PrivatePassportView />)
 
     const cards = await screen.findAllByTestId("passport-skill-card")
     const python = cards.find((c) => c.getAttribute("data-skill") === "Python")!
-    const chips = [...python.querySelectorAll('[data-testid="skill-proof-chip"]')]
-    const sources = chips.map((el) => el.getAttribute("data-source"))
-    // evidence_sources / proof_source_counts: GitHub Proof only.
+    // Proof is shown per project row (with context), not as a context-free
+    // skill-level chip strip.
+    expect(python.querySelector('[data-testid="skill-proof-chips"]')).toBeNull()
+    const rowChips = [...python.querySelectorAll('[data-testid="skill-project-proof-chip"]')]
+    const sources = rowChips.map((el) => el.getAttribute("data-source"))
+    // Python's Skill Evidence Tracker row: GitHub Proof only (no Website).
     expect(sources).toContain("GitHub Proof")
     expect(sources).not.toContain("Website Proof")
   })
@@ -742,7 +749,7 @@ describe("PrivatePassportView — contextual proof → project → skill navigat
 
     const rust = contextualSkillCard("Rust")
     const vault = rust.querySelector('[data-testid="skill-vault-only"]')!
-    expect(vault).toHaveTextContent("Vault evidence — not attached to a project report yet")
+    expect(vault).toHaveTextContent("Vault-only evidence — not attached to any project here")
     // Routes to the Proof Vault, NOT to any project report.
     expect(rust.querySelector('[data-testid="skill-open-proof-vault"]')).toHaveAttribute(
       "href",
@@ -771,7 +778,509 @@ describe("PrivatePassportView — contextual proof → project → skill navigat
     fireEvent.click(contextualSkillCard("JavaScript"))
     const visible = screen.getAllByTestId("passport-project-card").map((c) => c.getAttribute("data-project-id"))
     expect(visible).toEqual(["proj-tm"])
-    expect(screen.queryByText("Boston Smart Accident Risk Rerouting")).not.toBeInTheDocument()
+    // The unrelated project CARD is removed (its title may still appear as a
+    // secondary filter chip, so assert on the card, not raw text).
+    expect(
+      screen.queryAllByTestId("passport-project-card").find((c) => c.getAttribute("data-project-id") === "proj-boston"),
+    ).toBeUndefined()
+  })
+})
+
+// ── Skill → project report → supporting proof-type breakdown ───────────────────
+// Each skill→project row must surface the proof types that support THIS skill in
+// THIS project (from the closed, skill-specific `supporting_proof_types`), never
+// the project-wide source union — and it must fail closed (a proof type shows
+// only where the mapping recorded it).
+
+function makeProofBreakdownPassport(): PrivateWorkPassport {
+  const base = makePassport().projects[0]
+  return makePassport({
+    skills: [
+      {
+        skill: "Machine Learning",
+        status: "Demonstrated",
+        evidence_chip_count: 4,
+        project_count: 2,
+        // Passport-level union is deliberately broad; the per-project rows must
+        // NOT inherit it — they use each project's skill-specific breakdown.
+        evidence_sources: ["GitHub Proof", "Website Proof", "Document Proof", "Project Defense", "Video Evidence"],
+        projects: [
+          {
+            project_title: "Boston Smart Accident Risk Rerouting",
+            project_id: "proj-boston",
+            skill_status: "Demonstrated",
+            // Whole-project union (superset) — must be ignored in favour of the
+            // skill-specific breakdown below.
+            evidence_sources: ["GitHub Proof", "Website Proof", "Document Proof", "Project Defense", "Video Evidence"],
+            supporting_proof_types: ["GitHub Proof", "Website Proof", "Document Proof", "Project Defense"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+          {
+            project_title: "Teachable Machine Image Classification Demo",
+            project_id: "proj-tm",
+            skill_status: "Demonstrated",
+            evidence_sources: ["GitHub Proof", "Website Proof", "Document Proof", "Project Defense", "Video Evidence"],
+            supporting_proof_types: ["Website Proof", "Document Proof", "Project Defense", "Video Evidence"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+      {
+        // FastAPI: supported by GitHub + Document only in Boston — NO Website,
+        // even though the project has website evidence for other skills.
+        skill: "FastAPI",
+        status: "Evidence observed",
+        evidence_chip_count: 1,
+        project_count: 1,
+        evidence_sources: ["GitHub Proof", "Website Proof", "Document Proof"],
+        projects: [
+          {
+            project_title: "Boston Smart Accident Risk Rerouting",
+            project_id: "proj-boston",
+            skill_status: "Evidence observed",
+            evidence_sources: ["GitHub Proof", "Website Proof", "Document Proof", "Project Defense"],
+            supporting_proof_types: ["GitHub Proof", "Document Proof"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+    ],
+    projects: [
+      {
+        ...base,
+        project_id: "proj-boston",
+        project_title: "Boston Smart Accident Risk Rerouting",
+        claimed_skills: ["Machine Learning", "FastAPI"],
+        top_skills: [
+          { skill: "Machine Learning", status: "Demonstrated", skill_slug: "machine-learning", supporting_proof_types: ["GitHub Proof", "Website Proof", "Document Proof"] },
+          { skill: "FastAPI", status: "Evidence observed", skill_slug: "fastapi", supporting_proof_types: ["GitHub Proof", "Document Proof"] },
+        ],
+      },
+      {
+        ...base,
+        project_id: "proj-tm",
+        project_title: "Teachable Machine Image Classification Demo",
+        claimed_skills: ["Machine Learning"],
+        top_skills: [
+          { skill: "Machine Learning", status: "Demonstrated", skill_slug: "machine-learning", supporting_proof_types: ["Website Proof", "Document Proof", "Video Evidence"] },
+        ],
+      },
+    ],
+    project_count: 2,
+  })
+}
+
+const breakdownSkillCard = (name: string) =>
+  screen.getAllByTestId("passport-skill-card").find((c) => c.getAttribute("data-skill") === name)!
+
+const rowChipSources = (row: HTMLElement) =>
+  within(row)
+    .queryAllByTestId("skill-project-proof-chip")
+    .map((c) => c.getAttribute("data-source"))
+
+describe("PrivatePassportView — skill → project → proof-type breakdown", () => {
+  beforeEach(() => {
+    const p = makeProofBreakdownPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("shows per-project proof-type chips on each skill→project row", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const ml = breakdownSkillCard("Machine Learning")
+    const rows = within(ml).getAllByTestId("skill-project-evidence-row")
+    expect(rows).toHaveLength(2)
+    for (const row of rows) {
+      expect(within(row).getByTestId("skill-project-proof-chips")).toBeInTheDocument()
+    }
+  })
+
+  it("Machine Learning shows different proof chips for Boston vs Teachable", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const ml = breakdownSkillCard("Machine Learning")
+    const boston = within(ml).getAllByTestId("skill-project-evidence-row").find((r) => r.getAttribute("data-project-id") === "proj-boston")!
+    const teachable = within(ml).getAllByTestId("skill-project-evidence-row").find((r) => r.getAttribute("data-project-id") === "proj-tm")!
+
+    // Boston: GitHub + Document + Website + Project Defense (no Video), canonical order.
+    expect(rowChipSources(boston)).toEqual(["GitHub Proof", "Website Proof", "Document Proof", "Project Defense"])
+    // Teachable: Website + Document + Project Defense + Video (no GitHub).
+    expect(rowChipSources(teachable)).toEqual(["Website Proof", "Document Proof", "Project Defense", "Video Evidence"])
+    // Boston has no Video chip; Teachable has no GitHub chip — proof of skill+project specificity.
+    expect(rowChipSources(boston)).not.toContain("Video Evidence")
+    expect(rowChipSources(teachable)).not.toContain("GitHub Proof")
+  })
+
+  it("Website Proof chip appears only where website evidence supports that skill/project", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    // ML in Boston: Website supports it → Website chip present.
+    const ml = breakdownSkillCard("Machine Learning")
+    const mlBoston = within(ml).getAllByTestId("skill-project-evidence-row").find((r) => r.getAttribute("data-project-id") === "proj-boston")!
+    expect(rowChipSources(mlBoston)).toContain("Website Proof")
+
+    // FastAPI in Boston: same project HAS website evidence, but it does NOT
+    // support FastAPI → no Website chip (the project-wide union is not dumped in).
+    const fastapi = breakdownSkillCard("FastAPI")
+    const faBoston = within(fastapi).getAllByTestId("skill-project-evidence-row")[0]
+    expect(rowChipSources(faBoston)).toEqual(["GitHub Proof", "Document Proof"])
+    expect(rowChipSources(faBoston)).not.toContain("Website Proof")
+  })
+
+  it("uses supporting_proof_types (skill-specific), not the project-wide evidence_sources union", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    // Teachable's ref carries a broad evidence_sources union that INCLUDES GitHub
+    // Proof, but its skill-specific supporting_proof_types excludes it — so no
+    // GitHub chip may appear for ML in Teachable.
+    const ml = breakdownSkillCard("Machine Learning")
+    const teachable = within(ml).getAllByTestId("skill-project-evidence-row").find((r) => r.getAttribute("data-project-id") === "proj-tm")!
+    expect(rowChipSources(teachable)).not.toContain("GitHub Proof")
+  })
+
+  it("project card shows per-skill proof chips supporting that skill in this project", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const bostonCard = screen.getAllByTestId("passport-project-card").find((c) => c.getAttribute("data-project-id") === "proj-boston")!
+    const mlChipRow = within(bostonCard).getAllByTestId("project-skill-proof-chips").find((r) => r.getAttribute("data-skill") === "Machine Learning")!
+    const sources = within(mlChipRow).getAllByTestId("project-skill-proof-chip").map((c) => c.getAttribute("data-source"))
+    // GitHub · Website · Document — the ML breakdown for THIS project (canonical order).
+    expect(sources).toEqual(["GitHub Proof", "Website Proof", "Document Proof"])
+  })
+
+  it("vault-only evidence stays separate and never renders a project-report proof chip", async () => {
+    // A skill whose evidence is unattached: no project rows, no proof chips.
+    const p = makeProofBreakdownPassport()
+    p.skills.push({
+      skill: "Rust",
+      status: "Evidence observed",
+      evidence_chip_count: 1,
+      project_count: 0,
+      evidence_sources: ["GitHub Proof"],
+      projects: [],
+      evidence_chips: [],
+      notes: "",
+      limitations: [],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const rust = breakdownSkillCard("Rust")
+    expect(rust.querySelector('[data-testid="skill-vault-only"]')).toBeInTheDocument()
+    expect(rust.querySelector('[data-testid="skill-project-proof-chip"]')).toBeNull()
+    expect(rust.querySelector('[data-testid="skill-project-evidence-link"]')).toBeNull()
+  })
+
+  it("skill→project CTAs stay project-specific and keyboard-operable with the chips added", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const ml = breakdownSkillCard("Machine Learning")
+    const links = within(ml).getAllByTestId("skill-project-evidence-link")
+    expect(links.map((l) => l.getAttribute("href"))).toEqual(
+      expect.arrayContaining(["/student/vbr/projects/proj-boston/report", "/student/vbr/projects/proj-tm/report"]),
+    )
+    // The card is still a keyboard-operable selection control.
+    expect(ml).toHaveAttribute("tabindex", "0")
+    expect(ml).toHaveAttribute("role", "button")
+    fireEvent.keyDown(ml, { key: "Enter" })
+    expect(ml).toHaveAttribute("data-selected", "true")
+  })
+
+  it("labels every skill→project row 'Evidence for this skill in this project:' (skill-specific, not project-wide)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const ml = breakdownSkillCard("Machine Learning")
+    const headings = within(ml).getAllByTestId("skill-project-evidence-heading")
+    expect(headings).toHaveLength(2)
+    for (const h of headings) {
+      expect(h).toHaveTextContent("Evidence for this skill in this project:")
+    }
+    // The vague, project-wide wording is gone.
+    expect(ml).not.toHaveTextContent("Supports this skill with")
+  })
+
+  it("a skill with project-level proof but no skill mapping reads 'Project-level proof exists, but is not mapped to this skill yet'", async () => {
+    // Browser APIs is proven-in-project (an attached row exists) but the mapping
+    // recorded NO proof type for it in that project → empty supporting_proof_types.
+    // The project itself DOES carry project-level proof, so the row must say the
+    // proof exists but is not yet mapped to this skill (never overclaim it as
+    // skill-specific evidence).
+    const p = makeProofBreakdownPassport()
+    p.skills.push({
+      skill: "Browser APIs",
+      status: "Not assessed",
+      evidence_chip_count: 0,
+      project_count: 1,
+      evidence_sources: [],
+      projects: [
+        {
+          project_title: "Boston Smart Accident Risk Rerouting",
+          project_id: "proj-boston",
+          skill_status: "Not assessed",
+          evidence_sources: ["GitHub Proof", "Document Proof"],
+          supporting_proof_types: [],
+          report_is_public: false,
+          public_report_path: null,
+        },
+      ],
+      evidence_chips: [],
+      notes: "",
+      limitations: [],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const browser = breakdownSkillCard("Browser APIs")
+    const row = within(browser).getByTestId("skill-project-evidence-row")
+    // Heading is still present (so the reader knows what the empty state means),
+    // followed by the project-level-proof distinction and NO skill proof chips.
+    expect(within(row).getByTestId("skill-project-evidence-heading")).toBeInTheDocument()
+    expect(within(row).getByTestId("skill-project-proof-unmapped")).toHaveTextContent(
+      "Project-level proof exists, but is not mapped to this skill yet.",
+    )
+    expect(within(row).queryByTestId("skill-project-proof-chip")).toBeNull()
+    // A "Not assessed" row never overclaims — the per-project status is shown as-is.
+    expect(within(row).getByTestId("skill-project-status")).toHaveTextContent("Not assessed")
+  })
+
+  it("a skill in a project with no attached proof at all reads 'No skill-specific evidence attached for this project yet.'", async () => {
+    // The project row exists but the project carries NO project-level proof, so
+    // the honest empty state is "none attached for this project yet".
+    const p = makeProofBreakdownPassport()
+    p.projects.push({
+      ...makePassport().projects[0],
+      project_id: "proj-empty",
+      project_title: "Bare Claim Project",
+      evidence_sources: [],
+      top_skills: [],
+    })
+    p.skills.push({
+      skill: "Browser APIs",
+      status: "Not assessed",
+      evidence_chip_count: 0,
+      project_count: 1,
+      evidence_sources: [],
+      projects: [
+        {
+          project_title: "Bare Claim Project",
+          project_id: "proj-empty",
+          skill_status: "Not assessed",
+          evidence_sources: [],
+          supporting_proof_types: [],
+          report_is_public: false,
+          public_report_path: null,
+        },
+      ],
+      evidence_chips: [],
+      notes: "",
+      limitations: [],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const browser = breakdownSkillCard("Browser APIs")
+    const row = within(browser).getByTestId("skill-project-evidence-row")
+    expect(within(row).getByTestId("skill-project-proof-unclassified")).toHaveTextContent(
+      "No skill-specific evidence attached for this project yet.",
+    )
+    expect(within(row).queryByTestId("skill-project-proof-unmapped")).toBeNull()
+    expect(within(row).queryByTestId("skill-project-proof-chip")).toBeNull()
+  })
+})
+
+// ── Skills Evidence Map: Skill → Project → Evidence + vault-only separation ────
+//
+// The primary Passport body is a skill-first evidence map. Each skill block lists
+// the projects that demonstrate it (with the proof scoped to that skill+project)
+// and keeps vault-only / standalone evidence in a clearly-labelled SEPARATE
+// section that is never counted as project-attached proof.
+
+function makeVaultSeparationPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  const base = makePassport().projects[0]
+  return makePassport({
+    skills: [
+      {
+        skill: "Machine Learning",
+        status: "Partially demonstrated",
+        evidence_chip_count: 3,
+        project_count: 1,
+        evidence_sources: ["GitHub Proof", "Website Proof"],
+        // Two proof types exist for ML in the vault, attached to NO project.
+        vault_only_sources: ["GitHub Proof", "Project Defense"],
+        projects: [
+          {
+            project_title: "Boston Smart Accident Risk Rerouting",
+            project_id: "proj-boston",
+            skill_status: "Partially demonstrated",
+            evidence_sources: ["GitHub Proof", "Website Proof"],
+            supporting_proof_types: ["GitHub Proof", "Website Proof"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+      {
+        // A skill whose ONLY evidence is vault-only (no attached project).
+        skill: "Rust",
+        status: "Supporting evidence",
+        evidence_chip_count: 1,
+        project_count: 0,
+        evidence_sources: ["Document Proof"],
+        vault_only_sources: ["Document Proof"],
+        projects: [],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+    ],
+    projects: [
+      {
+        ...base,
+        project_id: "proj-boston",
+        project_title: "Boston Smart Accident Risk Rerouting",
+        claimed_skills: ["Machine Learning"],
+        top_skills: [
+          { skill: "Machine Learning", status: "Partially demonstrated", skill_slug: "machine-learning", supporting_proof_types: ["GitHub Proof", "Website Proof"] },
+        ],
+      },
+    ],
+    project_count: 1,
+    ...overrides,
+  })
+}
+
+const mapSkillCard = (name: string) =>
+  screen.getAllByTestId("passport-skill-card").find((c) => c.getAttribute("data-skill") === name)!
+
+describe("PrivatePassportView — Skills Evidence Map (skill → project → evidence)", () => {
+  beforeEach(() => {
+    const p = makeVaultSeparationPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("renders the skill-first Skills Evidence Map section with its subtitle", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    expect(screen.getByText("Skills Evidence Map")).toBeInTheDocument()
+    expect(
+      screen.getByText(/Each skill shows the projects that support it/i),
+    ).toBeInTheDocument()
+    // Every skill block names its projects and its overall status.
+    const ml = mapSkillCard("Machine Learning")
+    expect(within(ml).getByTestId("skill-projects-heading")).toHaveTextContent(
+      "Projects demonstrating this skill",
+    )
+    expect(within(ml).getByTestId("skill-project-count")).toHaveTextContent("Connected projects: 1")
+  })
+
+  it("shows each project row's status and proof scoped to that skill+project", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const ml = mapSkillCard("Machine Learning")
+    const row = within(ml).getByTestId("skill-project-evidence-row")
+    expect(row).toHaveAttribute("data-project-id", "proj-boston")
+    expect(within(row).getByTestId("skill-project-status")).toHaveTextContent("Partially demonstrated")
+    const chips = within(row)
+      .getAllByTestId("skill-project-proof-chip")
+      .map((c) => c.getAttribute("data-source"))
+    expect(chips).toEqual(["GitHub Proof", "Website Proof"])
+    // Contextual CTAs into the project's report.
+    expect(within(row).getByTestId("skill-project-evidence-link")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-boston/report",
+    )
+    expect(within(row).getByTestId("skill-open-project-report")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-boston/report",
+    )
+  })
+
+  it("keeps vault-only evidence SEPARATE from the project rows and labels it not-attached", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const ml = mapSkillCard("Machine Learning")
+    // The skill has BOTH an attached project row and a standalone vault section.
+    expect(within(ml).getByTestId("skill-project-evidence-row")).toBeInTheDocument()
+    const standalone = within(ml).getByTestId("skill-standalone-evidence")
+    expect(standalone).toHaveTextContent("Vault-only evidence — not attached to a project report.")
+    // Vault-only chips are the unattached sources (GitHub · Project Defense),
+    // distinct from the project row's own sources.
+    const vaultChips = within(standalone)
+      .getAllByTestId("skill-standalone-proof-chip")
+      .map((c) => c.getAttribute("data-source"))
+    expect(vaultChips).toEqual(["GitHub Proof", "Project Defense"])
+    // The standalone section routes to the full skill report, never a project report.
+    expect(within(standalone).getByTestId("skill-standalone-skill-report")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/skills/machine-learning",
+    )
+    // The vault-only chips live only inside the standalone section — they are NOT
+    // rendered as project-attached proof chips.
+    expect(within(standalone).queryByTestId("skill-project-proof-chip")).toBeNull()
+  })
+
+  it("a purely vault-only skill shows only the vault-only block with its chips (no project CTA)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const rust = mapSkillCard("Rust")
+    const vault = within(rust).getByTestId("skill-vault-only")
+    expect(vault).toHaveTextContent("Vault-only evidence — not attached to any project here")
+    expect(
+      within(vault).getAllByTestId("skill-vault-only-chip").map((c) => c.getAttribute("data-source")),
+    ).toEqual(["Document Proof"])
+    // Never fronts a project-report CTA; routes to the Proof Vault instead.
+    expect(within(rust).queryByTestId("skill-project-evidence-link")).toBeNull()
+    expect(within(rust).getByTestId("skill-open-proof-vault")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/vault",
+    )
+  })
+
+  it("hides the vault-only section when a project filter is focused on that project", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    fireEvent.change(screen.getByTestId("passport-project-filter"), { target: { value: "proj-boston" } })
+
+    const ml = mapSkillCard("Machine Learning")
+    // In project-filter mode the row stays, but the vault-only section (not tied
+    // to this project) is hidden so it is never read as this project's evidence.
+    expect(within(ml).getByTestId("skill-project-evidence-row")).toBeInTheDocument()
+    expect(within(ml).queryByTestId("skill-standalone-evidence")).toBeNull()
   })
 })
 
@@ -1252,14 +1761,21 @@ const queryProjectCard = (id: string) =>
 const skillCard = (name: string) => querySkillCard(name)!
 const projectCard = (id: string) => queryProjectCard(id)!
 
-describe("PrivatePassportView — Projects ↔ Skills filtering", () => {
+// The project filter is now an evaluator dropdown (scales to 20–30 projects),
+// not a horizontal pill strip. Selecting "" is the "All projects" option.
+const selectProject = (id: string) =>
+  fireEvent.change(screen.getByTestId("passport-project-filter"), { target: { value: id } })
+const selectSkill = (key: string) =>
+  fireEvent.change(screen.getByTestId("passport-skill-filter"), { target: { value: key } })
+
+describe("PrivatePassportView — skill-first map filtering (skill focus + project filter)", () => {
   beforeEach(() => {
     const p = makeInteractivePassport()
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
   })
 
-  it("no selection renders all projects and all skills", async () => {
+  it("no selection renders all skill blocks and all projects", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
@@ -1272,98 +1788,113 @@ describe("PrivatePassportView — Projects ↔ Skills filtering", () => {
     // No selection → default panel headers with the full counts.
     expect(screen.getByText("Projects (2)")).toBeInTheDocument()
     expect(screen.getByText("Skills (2)")).toBeInTheDocument()
+    // The evaluator controls default to "All skills" (skill-first), and the
+    // project filter is a compact dropdown, NOT a horizontal pill strip.
+    expect(screen.getByText("Explore evidence")).toBeInTheDocument()
+    expect(screen.getByTestId("passport-skill-filter")).toHaveValue("")
+    expect(screen.getByTestId("passport-project-filter")).toHaveValue("")
+    const skillSelect = screen.getByTestId("passport-skill-filter")
+    expect(within(skillSelect).getByRole("option", { name: /^All skills$/ })).toBeInTheDocument()
+    expect(screen.queryAllByTestId("passport-project-filter-chip")).toHaveLength(0)
+    // No active filter yet → no Clear filters control.
+    expect(screen.queryByTestId("clear-filters-button")).not.toBeInTheDocument()
   })
 
-  it("selecting a project shows only its skills and removes unrelated skills from the DOM", async () => {
+  it("selecting a project narrows the map to that project's skill blocks AND that project row only", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
-    fireEvent.click(projectCard("proj-alpha"))
+    selectProject("proj-alpha")
 
-    expect(projectCard("proj-alpha")).toHaveAttribute("data-selected", "true")
-    // Alpha proves Python only → Python is the ONLY skill card left; Rust is gone.
+    expect(screen.getByTestId("passport-project-filter")).toHaveValue("proj-alpha")
+    // Alpha proves Python only → Python is the ONLY skill block left; Rust is gone.
     expect(querySkillCard("Python")).toBeDefined()
     expect(querySkillCard("Rust")).toBeUndefined()
     expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(1)
-    // The unrelated skill's text is not anywhere in the document (not faded either).
-    expect(screen.queryByText("Rust")).not.toBeInTheDocument()
-    // The Skills header reflects the filtered set for the selected project.
+    // Inside the Python block, only the selected project's row shows.
+    const python = skillCard("Python")
+    const rows = within(python).getAllByTestId("skill-project-evidence-row")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveAttribute("data-project-id", "proj-alpha")
+    // The secondary project lens is narrowed to just that project.
+    expect(screen.getAllByTestId("passport-project-card")).toHaveLength(1)
+    expect(queryProjectCard("proj-alpha")).toBeDefined()
+    expect(queryProjectCard("proj-beta")).toBeUndefined()
     expect(screen.getByText("Skills for selected project (1)")).toBeInTheDocument()
-    // Both projects stay visible so the user can pivot to another one.
-    expect(screen.getAllByTestId("passport-project-card")).toHaveLength(2)
   })
 
-  it("selecting another project updates the visible skill list to that project's skills", async () => {
+  it("selecting another project updates the visible skill blocks to that project's skills", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
-    fireEvent.click(projectCard("proj-alpha"))
+    selectProject("proj-alpha")
     expect(querySkillCard("Python")).toBeDefined()
     expect(querySkillCard("Rust")).toBeUndefined()
 
-    // Pivot to Beta (still visible in the Projects panel).
-    fireEvent.click(projectCard("proj-beta"))
+    // Pivot to Beta via the project dropdown.
+    selectProject("proj-beta")
 
-    expect(projectCard("proj-beta")).toHaveAttribute("data-selected", "true")
+    expect(screen.getByTestId("passport-project-filter")).toHaveValue("proj-beta")
     // Previous project's skill disappears; the new project's skill appears.
     expect(querySkillCard("Python")).toBeUndefined()
     expect(querySkillCard("Rust")).toBeDefined()
-    expect(screen.queryByText("Python")).not.toBeInTheDocument()
     expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(1)
+    expect(queryProjectCard("proj-alpha")).toBeUndefined()
   })
 
-  it("clearing the project selection restores all skills", async () => {
+  it("the 'All projects' option clears the project filter and restores all skills", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
-    fireEvent.click(projectCard("proj-alpha"))
+    selectProject("proj-alpha")
     expect(querySkillCard("Rust")).toBeUndefined()
 
-    fireEvent.click(screen.getByTestId("clear-selection-button"))
+    // Selecting the empty "All projects" option clears the project filter.
+    selectProject("")
 
-    expect(screen.queryByTestId("clear-selection-button")).not.toBeInTheDocument()
     expect(querySkillCard("Python")).toBeDefined()
     expect(querySkillCard("Rust")).toBeDefined()
     expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(2)
     expect(screen.getByText("Skills (2)")).toBeInTheDocument()
   })
 
-  it("selecting a skill shows only its projects and removes unrelated projects from the DOM", async () => {
+  it("focusing a skill block shows only that block and only its projects", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
     fireEvent.click(skillCard("Python"))
 
     expect(skillCard("Python")).toHaveAttribute("data-selected", "true")
+    // Skill focus narrows the map to that single skill block (req 9 — no confusing
+    // separate skill/project column).
+    expect(querySkillCard("Python")).toBeDefined()
+    expect(querySkillCard("Rust")).toBeUndefined()
+    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(1)
     // Python is proven by Alpha only → Alpha is the ONLY project card left; Beta is gone.
     expect(queryProjectCard("proj-alpha")).toBeDefined()
     expect(queryProjectCard("proj-beta")).toBeUndefined()
     expect(screen.getAllByTestId("passport-project-card")).toHaveLength(1)
-    // The unrelated project's title is not anywhere in the document (not faded either).
-    expect(screen.queryByText("Beta Service")).not.toBeInTheDocument()
-    // The Projects header reflects the filtered set for the selected skill.
     expect(screen.getByText("Projects for selected skill (1)")).toBeInTheDocument()
-    // All skills stay visible so the user can pivot to another one.
-    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(2)
   })
 
-  it("clearing the skill selection restores all projects", async () => {
+  it("clearing the skill focus restores all skills and projects", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
     fireEvent.click(skillCard("Python"))
     expect(queryProjectCard("proj-beta")).toBeUndefined()
 
-    fireEvent.click(screen.getByTestId("clear-selection-button"))
+    fireEvent.click(screen.getByTestId("clear-filters-button"))
 
-    expect(screen.queryByTestId("clear-selection-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("clear-filters-button")).not.toBeInTheDocument()
+    expect(querySkillCard("Python")).toBeDefined()
+    expect(querySkillCard("Rust")).toBeDefined()
     expect(queryProjectCard("proj-alpha")).toBeDefined()
     expect(queryProjectCard("proj-beta")).toBeDefined()
-    expect(screen.getAllByTestId("passport-project-card")).toHaveLength(2)
-    expect(screen.getByText("Projects (2)")).toBeInTheDocument()
+    expect(screen.getByText("Skills (2)")).toBeInTheDocument()
   })
 
-  it("skill selection is keyboard accessible (real button semantics + Enter/Space)", async () => {
+  it("skill focus is keyboard accessible (real button semantics + Enter/Space)", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
@@ -1376,19 +1907,438 @@ describe("PrivatePassportView — Projects ↔ Skills filtering", () => {
     fireEvent.keyDown(card, { key: "Enter" })
     expect(skillCard("Python")).toHaveAttribute("data-selected", "true")
     expect(skillCard("Python")).toHaveAttribute("aria-pressed", "true")
-    // Enter filters the Projects panel: only Python's project remains.
+    // Enter focuses the block and narrows the project lens to Python's project.
     expect(queryProjectCard("proj-alpha")).toBeDefined()
     expect(queryProjectCard("proj-beta")).toBeUndefined()
 
     // Space toggles it back off — same affordance as a native button.
     fireEvent.keyDown(skillCard("Python"), { key: " " })
     expect(skillCard("Python")).toHaveAttribute("data-selected", "false")
-    // Toggling off restores all projects.
+    // Toggling off restores all projects and all skills.
     expect(queryProjectCard("proj-beta")).toBeDefined()
+    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(2)
 
     // A keypress on an inner link must not hijack the card's toggle.
     fireEvent.keyDown(within(skillCard("Python")).getByTestId("view-skill-report"), { key: "Enter" })
     expect(skillCard("Python")).toHaveAttribute("data-selected", "false")
+  })
+})
+
+// ── Evaluator-grade "Explore evidence" controls ───────────────────────────────
+//
+// Designed for a recruiter/evaluator, not a student project list: skill-first
+// default ("All skills"), compact skill/project/proof-type dropdowns (no long
+// project-pill strip), informative option labels + selected summaries, a
+// proof-type filter scoped to skill→project rows, and many-project scalability.
+
+describe("PrivatePassportView — evaluator Explore-evidence controls", () => {
+  beforeEach(() => {
+    const p = makeProofBreakdownPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("renders the 'Explore evidence' controls with a skill-first 'All skills' default", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    expect(screen.getByText("Explore evidence")).toBeInTheDocument()
+    expect(screen.getByText("Filter by skill, project, or proof type.")).toBeInTheDocument()
+    // Skill-first default control text is "All skills", never "All projects".
+    const skillSelect = screen.getByTestId("passport-skill-filter")
+    expect(skillSelect).toHaveValue("")
+    expect(within(skillSelect).getByRole("option", { name: /^All skills$/ })).toBeInTheDocument()
+    expect(screen.getByTestId("passport-project-filter")).toHaveValue("")
+    expect(screen.getByTestId("passport-proof-filter")).toHaveValue("")
+    // The old horizontal project-pill strip is gone (does not scale to 20–30 projects).
+    expect(screen.queryAllByTestId("passport-project-filter-chip")).toHaveLength(0)
+    expect(screen.queryByTestId("passport-project-filter-all")).not.toBeInTheDocument()
+  })
+
+  it("skill dropdown options carry project + proof context, not bare skill names", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    const skillSelect = screen.getByTestId("passport-skill-filter")
+    const ml = within(skillSelect).getByRole("option", { name: /^Machine Learning/ })
+    // "Machine Learning — 2 projects · GitHub · …" — recruiter-informative.
+    expect(ml.textContent).toContain("2 projects")
+    expect(ml.textContent).toContain("GitHub")
+    expect(ml.textContent).not.toBe("Machine Learning")
+  })
+
+  it("project dropdown options carry skill context, not bare project names", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    const projectSelect = screen.getByTestId("passport-project-filter")
+    const boston = within(projectSelect).getByRole("option", { name: /^Boston Smart Accident Risk Rerouting/ })
+    // Boston proves Machine Learning + FastAPI → "— 2 skills".
+    expect(boston.textContent).toContain("2 skills")
+    expect(boston.textContent).not.toBe("Boston Smart Accident Risk Rerouting")
+  })
+
+  it("the skill dropdown narrows the map to a single skill block", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectSkill("machine learning")
+    expect(screen.getByTestId("passport-skill-filter")).toHaveValue("machine learning")
+    const cards = screen.getAllByTestId("passport-skill-card")
+    expect(cards).toHaveLength(1)
+    expect(cards[0]).toHaveAttribute("data-skill", "Machine Learning")
+    // Selected-skill summary carries context (project count), not just the name.
+    const summary = screen.getByTestId("summary-skill")
+    expect(summary).toHaveTextContent("Showing evidence for: Machine Learning")
+    expect(summary).toHaveTextContent("2 projects")
+  })
+
+  it("the project dropdown narrows to that project's skills and shows a proof summary", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectProject("proj-boston")
+    // Boston proves ML + FastAPI → both skill blocks, each showing only Boston's row.
+    const cards = screen.getAllByTestId("passport-skill-card").map((c) => c.getAttribute("data-skill"))
+    expect(cards).toEqual(expect.arrayContaining(["Machine Learning", "FastAPI"]))
+    const ml = screen.getAllByTestId("passport-skill-card").find((c) => c.getAttribute("data-skill") === "Machine Learning")!
+    const rows = within(ml).getAllByTestId("skill-project-evidence-row")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveAttribute("data-project-id", "proj-boston")
+    // Selected-project summary names the project and its attached proof.
+    expect(screen.getByTestId("summary-project")).toHaveTextContent(
+      "Showing skills from: Boston Smart Accident Risk Rerouting",
+    )
+    expect(screen.getByTestId("summary-project-proof")).toHaveTextContent("Project proof attached:")
+  })
+
+  it("the proof-type filter shows only skill→project rows that have that proof for that skill", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Video Evidence supports ML only in Teachable — and no FastAPI row at all.
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Video Evidence" } })
+    const skills = screen.getAllByTestId("passport-skill-card").map((c) => c.getAttribute("data-skill"))
+    expect(skills).toEqual(["Machine Learning"])
+    const ml = mapSkillCard("Machine Learning")
+    const rows = within(ml).getAllByTestId("skill-project-evidence-row")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveAttribute("data-project-id", "proj-tm")
+    expect(screen.getByTestId("summary-proof")).toHaveTextContent("Showing evidence with: Video Evidence")
+  })
+
+  it("proof-type filter does NOT surface a skill just because the project has that proof generally", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Boston HAS Website evidence, but it does not support FastAPI. Filtering by
+    // Website Proof must therefore hide FastAPI (only ML survives).
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+    const skills = screen.getAllByTestId("passport-skill-card").map((c) => c.getAttribute("data-skill"))
+    expect(skills).toContain("Machine Learning")
+    expect(skills).not.toContain("FastAPI")
+  })
+
+  it("shows a helpful empty state when no skill→project row matches the proof-type filter", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // FastAPI has no Website row → combining the two yields no matches.
+    selectSkill("fastapi")
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+    expect(screen.getByTestId("skills-panel-proof-empty")).toHaveTextContent(
+      "No skill-project evidence found for Website Proof. Try all proof types or attach website evidence.",
+    )
+    expect(screen.queryAllByTestId("passport-skill-card")).toHaveLength(0)
+  })
+
+  it("Clear filters resets skill, project and proof-type filters back to all skills", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectSkill("machine learning")
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+    expect(screen.getByTestId("clear-filters-button")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("clear-filters-button"))
+    expect(screen.getByTestId("passport-skill-filter")).toHaveValue("")
+    expect(screen.getByTestId("passport-proof-filter")).toHaveValue("")
+    expect(screen.queryByTestId("graph-filter-summary")).not.toBeInTheDocument()
+    expect(screen.getAllByTestId("passport-skill-card").length).toBeGreaterThan(1)
+  })
+})
+
+// ── Proof-type dropdown reflects the WHOLE passport, not just visible rows ─────
+//
+// Regression: the Proof Type dropdown was derived only from mapped skill→project
+// rows, so a proof type the candidate genuinely has (e.g. Website Proof, shown in
+// the Evidence Graph Overview) went missing whenever no visible skill block mapped
+// it. The dropdown must offer every proof type present anywhere in the passport
+// evidence — while selection still fails closed to the exact skill→project rows.
+
+// Website Proof exists globally (overview counts + project-level attached source),
+// but it is NOT mapped to the skill's supporting_proof_types → no skill→project
+// row carries it. The dropdown must still offer it; selecting it must show the
+// clear empty state, never overclaim the project-level Website Proof as skill-
+// specific evidence.
+function makeWebsiteGlobalOnlyPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  const base = makePassport().projects[0]
+  return makePassport({
+    skills: [
+      {
+        skill: "Machine Learning",
+        status: "Demonstrated",
+        evidence_chip_count: 2,
+        project_count: 1,
+        evidence_sources: ["GitHub Proof"],
+        projects: [
+          {
+            project_title: "Boston Smart Accident Risk Rerouting",
+            project_id: "proj-boston",
+            skill_status: "Demonstrated",
+            // Project-wide union HAS website evidence …
+            evidence_sources: ["GitHub Proof", "Website Proof"],
+            // … but it does NOT support Machine Learning (fail-closed mapping).
+            supporting_proof_types: ["GitHub Proof"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+    ],
+    projects: [
+      {
+        ...base,
+        project_id: "proj-boston",
+        project_title: "Boston Smart Accident Risk Rerouting",
+        evidence_sources: ["GitHub Proof", "Website Proof"],
+        claimed_skills: ["Machine Learning"],
+        top_skills: [
+          { skill: "Machine Learning", status: "Demonstrated", skill_slug: "machine-learning", supporting_proof_types: ["GitHub Proof"] },
+        ],
+      },
+    ],
+    // The Evidence Graph Overview counts Website Proof — so must the dropdown.
+    evidence_source_counts: { "GitHub Proof": 2, "Website Proof": 1 },
+    project_count: 1,
+    ...overrides,
+  })
+}
+
+const proofFilterOptionNames = () =>
+  within(screen.getByTestId("passport-proof-filter"))
+    .getAllByRole("option")
+    .map((o) => o.textContent)
+
+describe("PrivatePassportView — Proof Type dropdown reflects the whole passport", () => {
+  it("includes Website Proof when it exists in the passport, even if no visible skill row maps it", async () => {
+    const p = makeWebsiteGlobalOnlyPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Overview shows Website Proof …
+    expect(screen.getByTestId("evidence-source-counts")).toHaveTextContent("Website Proof")
+    // … so the Proof Type dropdown must offer it (recruiter-useful), in canonical
+    // order after GitHub Proof.
+    const options = proofFilterOptionNames()
+    expect(options).toContain("Website Proof")
+    expect(options).toEqual(["All proof types", "GitHub Proof", "Website Proof"])
+  })
+
+  it("does not overclaim project-level Website Proof as skill-specific: selecting it shows the clear empty state", async () => {
+    const p = makeWebsiteGlobalOnlyPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // The ML row must NOT show a Website chip — its skill-specific proof is GitHub only.
+    const mlBefore = mapSkillCard("Machine Learning")
+    expect(
+      within(mlBefore).getAllByTestId("skill-project-proof-chip").map((c) => c.getAttribute("data-source")),
+    ).toEqual(["GitHub Proof"])
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+
+    // No skill→project row maps Website → clear empty state, no fabricated rows.
+    expect(screen.queryAllByTestId("passport-skill-card")).toHaveLength(0)
+    expect(screen.getByTestId("skills-panel-proof-empty")).toHaveTextContent(
+      "No skill-project evidence found for Website Proof. Try all proof types or attach website evidence.",
+    )
+  })
+
+  it("normalizes non-canonical Website Proof spellings to a single 'Website Proof' option", async () => {
+    // Overview carries a snake_case variant; the dropdown must still read "Website
+    // Proof" (once, not duplicated).
+    const p = makeWebsiteGlobalOnlyPassport({
+      evidence_source_counts: { "GitHub Proof": 2, website_proof: 1 },
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    const options = proofFilterOptionNames()
+    expect(options.filter((o) => o === "Website Proof")).toHaveLength(1)
+    expect(options).toContain("Website Proof")
+  })
+})
+
+describe("PrivatePassportView — Proof Type dropdown filtering (mapped + existing types)", () => {
+  beforeEach(() => {
+    const p = makeProofBreakdownPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("offers every proof type the candidate has, in canonical order", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // makeProofBreakdownPassport maps all five proof types across its skill rows.
+    expect(proofFilterOptionNames()).toEqual([
+      "All proof types",
+      "GitHub Proof",
+      "Website Proof",
+      "Document Proof",
+      "Project Defense",
+      "Video Evidence",
+    ])
+  })
+
+  it("selecting Website Proof keeps only skill→project rows where website maps to that skill", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+
+    // ML maps Website (Boston + Teachable rows) → ML survives; FastAPI does not.
+    const skills = screen.getAllByTestId("passport-skill-card").map((c) => c.getAttribute("data-skill"))
+    expect(skills).toEqual(["Machine Learning"])
+    const ml = mapSkillCard("Machine Learning")
+    const rows = within(ml).getAllByTestId("skill-project-evidence-row").map((r) => r.getAttribute("data-project-id"))
+    expect(rows).toEqual(expect.arrayContaining(["proj-boston", "proj-tm"]))
+    // Every surviving row genuinely carries a Website chip.
+    for (const row of within(ml).getAllByTestId("skill-project-evidence-row")) {
+      expect(rowChipSources(row)).toContain("Website Proof")
+    }
+  })
+
+  it("existing GitHub / Document / Project Defense / Video filters still work", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    const proofFilter = screen.getByTestId("passport-proof-filter")
+    const skillsAfter = () => screen.queryAllByTestId("passport-skill-card").map((c) => c.getAttribute("data-skill"))
+
+    // GitHub Proof supports ML (Boston) and FastAPI (Boston).
+    fireEvent.change(proofFilter, { target: { value: "GitHub Proof" } })
+    expect(skillsAfter()).toEqual(expect.arrayContaining(["Machine Learning", "FastAPI"]))
+
+    // Document Proof supports both ML and FastAPI too.
+    fireEvent.change(proofFilter, { target: { value: "Document Proof" } })
+    expect(skillsAfter()).toEqual(expect.arrayContaining(["Machine Learning", "FastAPI"]))
+
+    // Project Defense supports ML only (in both projects); FastAPI has no defense chip.
+    fireEvent.change(proofFilter, { target: { value: "Project Defense" } })
+    expect(skillsAfter()).toEqual(["Machine Learning"])
+
+    // Video Evidence supports ML only, in Teachable.
+    fireEvent.change(proofFilter, { target: { value: "Video Evidence" } })
+    expect(skillsAfter()).toEqual(["Machine Learning"])
+    const ml = mapSkillCard("Machine Learning")
+    expect(
+      within(ml).getAllByTestId("skill-project-evidence-row").map((r) => r.getAttribute("data-project-id")),
+    ).toEqual(["proj-tm"])
+  })
+})
+
+// ── Many-project scalability (top rows + expander) ────────────────────────────
+
+function makeManyProjectPassport(): PrivateWorkPassport {
+  const base = makePassport().projects[0]
+  const titles = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"]
+  return makePassport({
+    skills: [
+      {
+        skill: "Scaling",
+        status: "Demonstrated",
+        evidence_chip_count: 5,
+        project_count: 5,
+        evidence_sources: ["GitHub Proof"],
+        strongest_project_title: "Alpha Project",
+        strongest_project_status: "Demonstrated",
+        projects: titles.map((t, i) => ({
+          project_title: `${t} Project`,
+          project_id: `proj-${i}`,
+          skill_status: "Demonstrated",
+          evidence_sources: ["GitHub Proof"],
+          supporting_proof_types: ["GitHub Proof"],
+          report_is_public: false,
+          public_report_path: null,
+        })),
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+    ],
+    projects: titles.map((t, i) => ({
+      ...base,
+      project_id: `proj-${i}`,
+      project_title: `${t} Project`,
+      claimed_skills: ["Scaling"],
+      top_skills: [
+        { skill: "Scaling", status: "Demonstrated", skill_slug: "scaling", supporting_proof_types: ["GitHub Proof"] },
+      ],
+    })),
+    project_count: 5,
+  })
+}
+
+describe("PrivatePassportView — many-project skill scalability", () => {
+  beforeEach(() => {
+    const p = makeManyProjectPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("caps a many-project skill to its top rows by default with a 'Show N more projects' expander", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const scaling = mapSkillCard("Scaling")
+    // 5 connected projects → only the top 3 rows render by default (no flood).
+    expect(within(scaling).getAllByTestId("skill-project-evidence-row")).toHaveLength(3)
+    const showMore = within(scaling).getByTestId("skill-show-more-projects")
+    expect(showMore).toHaveTextContent("Show 2 more projects")
+
+    // Expanding reveals all rows and offers a way to collapse again.
+    fireEvent.click(showMore)
+    expect(within(scaling).getAllByTestId("skill-project-evidence-row")).toHaveLength(5)
+    expect(within(scaling).queryByTestId("skill-show-more-projects")).toBeNull()
+    fireEvent.click(within(scaling).getByTestId("skill-show-fewer-projects"))
+    expect(within(scaling).getAllByTestId("skill-project-evidence-row")).toHaveLength(3)
+  })
+
+  it("a project filter collapses a many-project skill to just that project's row", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    selectProject("proj-2")
+    const scaling = mapSkillCard("Scaling")
+    const rows = within(scaling).getAllByTestId("skill-project-evidence-row")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveAttribute("data-project-id", "proj-2")
+    // No expander in single-project mode — there is nothing more to reveal.
+    expect(within(scaling).queryByTestId("skill-show-more-projects")).toBeNull()
   })
 })
 

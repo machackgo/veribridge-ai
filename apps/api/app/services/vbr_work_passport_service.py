@@ -108,6 +108,31 @@ _EVIDENCE_SOURCE_LABELS = [
     _SRC_REPORT,
 ]
 
+# The closed proof-type vocabulary a single skill row may cite as *supporting*
+# evidence, in canonical render order. This is deliberately a SUBSET of the
+# source-badge set above (``VBR Report`` is a passport-level aggregate, never a
+# per-skill proof) so a skill→project row can only ever surface a real, attached
+# proof type — never an invented or project-wide one.
+_SKILL_PROOF_TYPE_ORDER = [
+    _SRC_GITHUB,
+    _SRC_WEBSITE,
+    _SRC_DOCUMENT,
+    _SRC_DEFENSE,
+    _SRC_VIDEO,
+]
+_KNOWN_SKILL_PROOF_TYPES = frozenset(_SKILL_PROOF_TYPE_ORDER)
+
+
+def _order_skill_proof_types(values: Any) -> list[str]:
+    """Dedupe + canonically order proof-type labels for a skill→project row.
+
+    Fails closed: any label outside the known proof-type vocabulary is dropped,
+    so a skill row can never advertise a proof type the evidence mapping did not
+    actually record for that skill in that project.
+    """
+    present = {str(v).strip() for v in (values or [])}
+    return [p for p in _SKILL_PROOF_TYPE_ORDER if p in present]
+
 # Qualitative skill labels ranked best→worst for cross-project aggregation.
 # Numeric trust/confidence scores are never used here.
 _STATUS_ORDER = {
@@ -486,26 +511,38 @@ def _project_top_skills(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
     stable slug + owner-only Skill Report route so the project lens can link
     straight into the skill lens (private passport only)."""
     best: dict[str, dict[str, Any]] = {}
+    # skill key → the union of proof types that support THIS skill in THIS
+    # project, taken directly from each report row's already-skill-specific,
+    # fail-closed ``supporting_sources`` (never the project-wide source union).
+    proof_types_by_skill: dict[str, set[str]] = {}
     for report in reports:
         for row in report.get("skill_evidence") or []:
             skill = str(row.get("skill") or "").strip()
             if not skill:
                 continue
+            key = skill.lower()
             status_label = str(row.get("status") or "Not assessed")
-            entry = best.get(skill.lower())
+            entry = best.get(key)
             if entry is None or _STATUS_ORDER.get(status_label, 99) < _STATUS_ORDER.get(
                 entry["status"], 99
             ):
-                best[skill.lower()] = {
+                best[key] = {
                     "skill": skill,
                     "status": status_label,
                     "skill_slug": skill_slug(skill),
                     "skill_report_path": _private_skill_report_path(skill),
                 }
+            proof_types_by_skill.setdefault(key, set()).update(
+                str(s).strip() for s in (row.get("supporting_sources") or [])
+            )
     ranked = sorted(
         best.values(),
         key=lambda s: (_STATUS_ORDER.get(s["status"], 99), s["skill"].lower()),
     )
+    for entry in ranked:
+        entry["supporting_proof_types"] = _order_skill_proof_types(
+            proof_types_by_skill.get(entry["skill"].lower(), set())
+        )
     return ranked[:_MAX_PROJECT_TOP_SKILLS]
 
 
@@ -604,6 +641,11 @@ def _aggregate_skills_with_detail(
             status_label = str(row.get("status") or "Not assessed")
             chip_count = int(row.get("evidence_chip_count") or 0)
             notes = str(row.get("notes") or "").strip()
+            # The proof types that support THIS skill in THIS project — the
+            # report row's already-skill-specific, fail-closed ``supporting_sources``
+            # (e.g. Website Proof appears only when the website evidence actually
+            # supported this skill). Never the project-wide source union below.
+            row_proof_types = list(row.get("supporting_sources") or [])
 
             entry = by_skill.get(key)
             if entry is None:
@@ -649,6 +691,10 @@ def _aggregate_skills_with_detail(
                     # skill's best status across projects).
                     "skill_status": status_label,
                     "evidence_sources": list(proj_sources),
+                    # Proof types supporting THIS skill in THIS project only —
+                    # the closed, skill-specific breakdown (not ``evidence_sources``,
+                    # which is the whole project's source union).
+                    "supporting_proof_types": _order_skill_proof_types(row_proof_types),
                     "report_is_public": is_public,
                     "public_report_path": public_report_path,
                     # The proof-native trace cards this project contributes for
@@ -666,6 +712,9 @@ def _aggregate_skills_with_detail(
                 # qualitative label any attempt earned for this skill, so a
                 # later stronger attempt is never masked by the representative.
                 existing["evidence_traces"].extend(project_skill_traces)
+                existing["supporting_proof_types"] = _order_skill_proof_types(
+                    list(existing.get("supporting_proof_types") or []) + row_proof_types
+                )
                 if _STATUS_ORDER.get(status_label, 99) < _STATUS_ORDER.get(
                     str(existing.get("skill_status")), 99
                 ):
@@ -744,6 +793,7 @@ def _aggregate_skills_with_detail(
                 "project_title": strongest.get("project_title") or "",
                 "skill_status": strongest.get("skill_status") or "Not assessed",
                 "evidence_sources": list(strongest.get("evidence_sources") or []),
+                "supporting_proof_types": list(strongest.get("supporting_proof_types") or []),
                 "report_is_public": bool(strongest.get("report_is_public")),
                 "public_report_path": strongest.get("public_report_path"),
             }
@@ -808,6 +858,7 @@ def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
             "project_title": strongest.get("project_title") or "",
             "skill_status": strongest.get("skill_status") or "Not assessed",
             "evidence_sources": list(strongest.get("evidence_sources") or []),
+            "supporting_proof_types": list(strongest.get("supporting_proof_types") or []),
             "public_report_path": strongest.get("public_report_path"),
         }
     return {
@@ -821,6 +872,8 @@ def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
                 # Per-project qualitative status for this skill (label only).
                 "skill_status": ref.get("skill_status") or "Not assessed",
                 "evidence_sources": list(ref.get("evidence_sources") or []),
+                # Proof types supporting this skill in this published project only.
+                "supporting_proof_types": list(ref.get("supporting_proof_types") or []),
                 "public_report_path": ref.get("public_report_path") or "",
                 # Per-project trace cards, re-sanitized — published projects only.
                 "evidence_traces": [_public_safe_trace(t) for t in ref.get("evidence_traces") or []],
@@ -1230,6 +1283,27 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     vault_skill_summaries = collect_skill_summaries(db, pipeline_db, str(user_id), items=vault_items)
     vault_unattached_count = sum(1 for item in vault_items if not item.get("is_attached_to_project"))
 
+    # Vault-only (standalone) proof-type sources per skill: the proof types that
+    # exist for a skill in the vault but are NOT attached to any project. Kept
+    # strictly separate from each skill's project-attached breakdown so vault
+    # evidence is never counted as project proof. Only the closed skill-proof
+    # vocabulary is considered (a "Skill Graph" pipeline is never a proof type),
+    # so a vault-only chip can never advertise something that is not real,
+    # attachable proof.
+    vault_only_by_skill: dict[str, set[str]] = {}
+    for item in vault_items:
+        if item.get("is_attached_to_project"):
+            continue
+        skill_name = str(item.get("skill_name") or "").strip()
+        proof_type = str(item.get("proof_type") or "").strip()
+        if not skill_name or proof_type not in _KNOWN_SKILL_PROOF_TYPES:
+            continue
+        vault_only_by_skill.setdefault(skill_name.lower(), set()).add(proof_type)
+    for skill in skills:
+        skill["vault_only_sources"] = _order_skill_proof_types(
+            vault_only_by_skill.get(str(skill.get("skill") or "").strip().lower(), set())
+        )
+
     # ── Proof Attachment Intelligence (owner-only, deterministic) ────────────
     # Match unattached vault proofs to the project they likely belong to using
     # safe metadata only (repo identity, website domain, titles, shared skills).
@@ -1417,7 +1491,14 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         # skills section). The owner-only skill_report_path is stripped — the
         # public surface never links to private routes.
         public_top_skills = [
-            {"skill": s["skill"], "status": s["status"], "skill_slug": s["skill_slug"]}
+            {
+                "skill": s["skill"],
+                "status": s["status"],
+                "skill_slug": s["skill_slug"],
+                # Proof types supporting this skill in this published project only
+                # (closed, safe labels — never scores, ids, or the project-wide union).
+                "supporting_proof_types": list(s.get("supporting_proof_types") or []),
+            }
             for s in _project_top_skills([report for _, report in group])
         ]
         summary = {
