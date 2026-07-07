@@ -1673,6 +1673,11 @@ def _report_item(
             visual_summary=row.get("visual_summary"),
             live_check=row.get("live_check") if isinstance(row.get("live_check"), dict) else None,
             fallback_summary=row.get("safe_summary"),
+            # Richer safe signals (closed OCR page-context + OCR observed-summary /
+            # visual supported-signals) are classifier INPUTS only — never persisted
+            # on the response row (the vault item schema forbids extra fields).
+            page_context=(hydrated or {}).get("page_context"),
+            extra_signals=(hydrated or {}).get("extra_signals") or [],
         )
         row["website_purpose_key"] = purpose_key
         row["website_purpose_label"] = describe_website_purpose(purpose_key)

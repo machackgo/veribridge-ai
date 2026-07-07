@@ -382,6 +382,41 @@ class PassportProjectSummary(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PassportWebsiteProofContext(BaseModel):
+    """Owner-only, project-level-only Website Proof context (Diagnosis-C helper).
+
+    Surfaced when a project has an attached Website Proof that did NOT map to any
+    specific skill — it stays PROJECT-LEVEL evidence (the site exists and can be
+    inspected) but the observed behaviour was too generic to demonstrate a skill.
+    Lets the Skills Evidence Map explain, honestly, why Website Proof is present at
+    project level yet absent from the skill→project map — never a faked mapping.
+
+    Every field is a CLOSED-vocabulary label / already-safe helper sentence. Never
+    raw DOM/OCR/visual/provider text, screenshots, storage paths, signed URLs,
+    internal ids, ``proof_session_id``, user ids, scores, or weakly-supported
+    skills presented as verified evidence."""
+
+    project_id: str
+    project_title: str = ""
+    # Observed-behaviour classification (closed vocabulary): key + human label,
+    # e.g. "navigation_layout" / "Navigation / page layout".
+    focus_key: str = ""
+    focus_label: str = ""
+    # One safe sentence describing what the recorded page demonstrably showed.
+    explanation: str = ""
+    # Short closed-vocabulary reason it did not map a skill ("Navigation/layout
+    # evidence only", "Insufficient skill-specific runtime behavior", …).
+    reason: str = ""
+    # The concrete action to make it skill-specific (runtime behaviour to record).
+    action_guidance: str = ""
+    # Always False here — this is explicitly the NOT-skill-mapped case.
+    mapped_to_skills: bool = False
+    # Owner-only private route to this project's report (never a public link).
+    report_path: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
 class PublicPassportProject(BaseModel):
     """Public featured project — links to its public VBR report, no internal ids."""
 
@@ -474,6 +509,14 @@ class PrivateWorkPassportResponse(BaseModel):
     skills: list[PassportSkillSummary] = Field(default_factory=list)
     projects: list[PassportProjectSummary] = Field(default_factory=list)
     evidence_source_counts: dict[str, int] = Field(default_factory=dict)
+
+    # Project-level-only Website Proof context: attached Website Proofs that did
+    # NOT map to any skill (too-generic observed behaviour). Powers the Skills
+    # Evidence Map's honest "Website Proof exists but isn't skill-mapped" empty
+    # state — never counted as skill evidence. Owner-only; may be empty.
+    website_proof_project_context: list[PassportWebsiteProofContext] = Field(
+        default_factory=list
+    )
 
     # Student Proof Vault — Layer 1: COMPACT per-skill summaries (the main
     # dashboard). Each card carries category, qualitative status, counts, and a

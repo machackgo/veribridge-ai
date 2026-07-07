@@ -14,6 +14,7 @@ import {
   PROOF_CHAIN_STEPS,
   type EvidenceGraphOverview,
   type PassportProjectSummary,
+  type PassportWebsiteProofContext,
   type PrivateWorkPassport,
   type WorkPassportStatus,
 } from "@/lib/vbr-api"
@@ -24,11 +25,12 @@ import {
   ErrorState,
   LoadingState,
   Mono,
-  PassportIdentityHeader,
   TOKEN,
   type BadgeTone,
 } from "../../../../../components/passport/shared"
 import { buildPassportGraph, type PassportSkillNode } from "./passport-graph"
+import { PassportCard } from "../../../../../components/passport/PassportCard"
+import { buildPrivateCardModel, type PassportCardCapability } from "@/lib/passport-card"
 
 const SOURCE_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
@@ -87,6 +89,9 @@ const PROOF_SHORT_LABEL: Record<string, string> = {
   "Video Evidence": "Video",
 }
 
+/** Canonical Website Proof proof-type label (matches the backend + graph). */
+const WEBSITE_PROOF_LABEL = "Website Proof"
+
 /** "GitHub · Website · Defense" from canonical proof-type labels. */
 function shortProofList(sources: string[]): string {
   return sources.map((s) => PROOF_SHORT_LABEL[s] ?? s).join(" · ")
@@ -116,144 +121,6 @@ const controlLabelStyle: CSSProperties = {
 /** Rows shown per skill block before the "Show N more projects" expander, so a
  *  skill demonstrated by 20–30 projects never floods the page in all-skills mode. */
 const MAX_DEFAULT_SKILL_ROWS = 3
-
-function PassportPublishControls({
-  initialStatus,
-  candidateName,
-}: {
-  initialStatus: WorkPassportStatus
-  candidateName: string | null
-}) {
-  const [status, setStatus] = useState<WorkPassportStatus>(initialStatus)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
-  const actedRef = useRef(false)
-
-  useEffect(() => {
-    getWorkPassportStatus()
-      .then((s) => {
-        if (!actedRef.current) setStatus(s)
-      })
-      .catch(() => {
-        /* keep the server-rendered initial status */
-      })
-  }, [])
-
-  const isPublished = Boolean(status.is_published && status.public_slug)
-  const publicUrl =
-    isPublished && status.public_slug
-      ? `${typeof window !== "undefined" ? window.location.origin : ""}/p/${status.public_slug}`
-      : ""
-
-  const run = (action: () => Promise<WorkPassportStatus>) => {
-    actedRef.current = true
-    setBusy(true)
-    setError(null)
-    setCopied(false)
-    action()
-      .then(setStatus)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Action failed."))
-      .finally(() => setBusy(false))
-  }
-
-  const copyLink = () => {
-    if (!publicUrl) return
-    void navigator.clipboard?.writeText(publicUrl)
-    setCopied(true)
-  }
-
-  return (
-    <Card>
-      <div data-testid="passport-publish-controls" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-          <CardHeader title="Public Work Passport" eyebrow="Share with recruiters" icon="🪪" />
-          {isPublished ? (
-            <span data-testid="passport-public-badge">
-              <Badge tone="emerald">Public passport live</Badge>
-            </span>
-          ) : (
-            <span data-testid="passport-private-badge">
-              <Badge tone="slate">Private only</Badge>
-            </span>
-          )}
-        </div>
-
-        <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
-          Publishing creates a recruiter-safe public profile recruiters can open without logging in. It links only to
-          the VBR reports you have published — never your raw evidence, private files, or numeric scores. You can
-          unpublish at any time without deleting any evidence or report links.
-        </p>
-
-        {error && (
-          <p data-testid="passport-publish-error" style={{ fontSize: 12, color: TOKEN.rose, margin: 0 }}>
-            {error}
-          </p>
-        )}
-
-        {isPublished ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div
-              data-testid="passport-public-link"
-              style={{
-                fontFamily: '"JetBrains Mono", monospace',
-                fontSize: 12,
-                color: TOKEN.ink,
-                padding: "8px 10px",
-                background: TOKEN.bg,
-                border: `1px solid ${TOKEN.line}`,
-                borderRadius: 8,
-                wordBreak: "break-all",
-              }}
-            >
-              {publicUrl}
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button type="button" data-testid="copy-passport-link-button" onClick={copyLink} style={primaryBtnStyle}>
-                {copied ? "Copied!" : "Copy public Passport link"}
-              </button>
-              <a
-                data-testid="open-passport-link"
-                href={publicUrl || "#"}
-                target="_blank"
-                rel="noreferrer"
-                style={secondaryBtnStyle}
-              >
-                Open public Passport
-              </a>
-              <button
-                type="button"
-                data-testid="unpublish-passport-button"
-                disabled={busy}
-                onClick={() => run(() => unpublishWorkPassport())}
-                style={secondaryBtnStyle}
-              >
-                {busy ? "Working…" : "Unpublish public Passport"}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div>
-            <button
-              type="button"
-              data-testid="publish-passport-button"
-              disabled={busy}
-              onClick={() => run(() => publishWorkPassport())}
-              style={primaryBtnStyle}
-            >
-              {busy ? "Publishing…" : "Publish public Passport"}
-            </button>
-          </div>
-        )}
-
-        <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
-          Featured projects default to every project with a published recruiter-safe VBR report
-          {candidateName ? ` for ${candidateName}` : ""}. Publish a project report below to feature it.
-        </p>
-      </div>
-    </Card>
-  )
-}
 
 // ── Evidence Graph Overview (Projects ↔ Skills ↔ Proofs) ─────────────────────
 
@@ -1007,6 +874,101 @@ function SkillEvidenceNav({
   )
 }
 
+// ── Project-level-only Website Proof (Diagnosis-C explainer) ──────────────────
+
+/**
+ * Shown when the evaluator filters Proof type = Website Proof but NO skill→project
+ * row maps it, yet the passport DOES carry project-level Website Proof. Instead of
+ * the generic "nothing here" copy, it states the honest truth: Website Proof
+ * exists, it just hasn't been mapped to a specific skill because the observed
+ * behaviour was navigation/layout-only — then tells the student exactly how to
+ * strengthen it. It never renders these as skill evidence and never counts them.
+ */
+function WebsiteProofProjectLevelEmptyState({
+  contexts,
+}: {
+  contexts: PassportWebsiteProofContext[]
+}) {
+  return (
+    <div
+      data-testid="website-proof-project-level-empty"
+      style={{ display: "flex", flexDirection: "column", gap: 12 }}
+    >
+      <Card>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <Badge tone="purple">Website Proof</Badge>
+            <span style={{ fontSize: 11, fontWeight: 600, color: TOKEN.muted }}>Project-level only</span>
+          </div>
+          <p
+            data-testid="website-proof-empty-headline"
+            style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}
+          >
+            Website Proof exists, but it has not been mapped to specific skills yet.
+          </p>
+          <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+            Current website evidence was classified as navigation/layout, which proves the site can
+            be inspected but does not strongly demonstrate a specific skill. Record a stronger
+            Website Proof showing runtime behavior such as model prediction, API response, dashboard
+            interaction, route recommendation, or workflow completion.
+          </p>
+        </div>
+      </Card>
+
+      {/* Project-level Website Proof cards — informational, never skill evidence. */}
+      {contexts.map((ctx) => (
+        <Card key={`${ctx.project_id}:${ctx.focus_key}`}>
+          <div
+            data-testid="website-proof-project-context-card"
+            style={{ display: "flex", flexDirection: "column", gap: 6 }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>
+                {ctx.project_title || "Untitled project"}
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: TOKEN.muted }}>
+                Website Proof: Project-level only
+              </span>
+            </div>
+            {ctx.explanation && (
+              <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{ctx.explanation}</p>
+            )}
+            {ctx.reason && (
+              <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
+                Reason: {ctx.reason}
+                {ctx.focus_label ? ` · ${ctx.focus_label}` : ""}
+              </p>
+            )}
+            {ctx.action_guidance && (
+              <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+                Action: {ctx.action_guidance}
+              </p>
+            )}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
+              {ctx.report_path && (
+                <Link
+                  data-testid="website-proof-context-open-report"
+                  href={ctx.report_path}
+                  style={{ ...secondaryBtnStyle, padding: "5px 10px", fontSize: 12 }}
+                >
+                  Open project report →
+                </Link>
+              )}
+              <Link
+                data-testid="website-proof-context-open-vault"
+                href="/student/vbr/passport/vault"
+                style={{ ...secondaryBtnStyle, padding: "5px 10px", fontSize: 12 }}
+              >
+                Open Proof Vault →
+              </Link>
+            </div>
+          </div>
+        </Card>
+      ))}
+    </div>
+  )
+}
+
 // ── Skills Evidence Map explorer (evaluator-grade skill proof browser) ─────────
 
 /**
@@ -1030,14 +992,23 @@ function SkillEvidenceNav({
 function PassportGraphExplorer({
   passport,
   passportPublished,
+  selectedSkillKey,
+  onSelectSkillKey,
 }: {
   passport: PrivateWorkPassport
   passportPublished: boolean
+  /** Controlled skill selection (Card preview deep-link). Defaults to internal. */
+  selectedSkillKey?: string | null
+  onSelectSkillKey?: (key: string | null) => void
 }) {
   const graph = useMemo(() => buildPassportGraph(passport), [passport])
 
   // Three independent, combinable filters + a name search. Default is All skills.
-  const [skillFilter, setSkillFilter] = useState<string | null>(null)
+  // The skill filter is controlled-or-internal so the top Card preview can drive
+  // it (deep-link a skill into this map) while standalone usage keeps working.
+  const [internalSkillFilter, setInternalSkillFilter] = useState<string | null>(null)
+  const skillFilter = selectedSkillKey !== undefined ? selectedSkillKey : internalSkillFilter
+  const setSkillFilter = onSelectSkillKey ?? setInternalSkillFilter
   const [projectFilter, setProjectFilter] = useState<string | null>(null)
   const [proofFilter, setProofFilter] = useState<string | null>(null)
   const [search, setSearch] = useState("")
@@ -1051,7 +1022,7 @@ function PassportGraphExplorer({
     setSearch("")
   }
   // Card clicks stay in sync with the dropdowns (toggle the matching filter).
-  const toggleSkill = (key: string) => setSkillFilter((c) => (c === key ? null : key))
+  const toggleSkill = (key: string) => setSkillFilter(skillFilter === key ? null : key)
   const toggleProject = (id: string) => setProjectFilter((c) => (c === id ? null : id))
 
   // Recruiter-facing proof-type options: every proof type that exists anywhere in
@@ -1061,6 +1032,11 @@ function PassportGraphExplorer({
   // the skill→project rows that actually map it (and to the empty state when none
   // do), so project-level proof is never overclaimed as skill-specific evidence.
   const availableProofTypes = graph.proofTypeOptions
+
+  // Project-level-only Website Proof: attached Website Proofs that mapped no skill
+  // (too-generic observed behaviour). Drives the honest Website-Proof empty state
+  // below — informational context, NEVER counted or shown as skill evidence.
+  const websiteProjectContext = passport.website_proof_project_context ?? []
 
   // Project + proof filters act on the skill's ROWS (not just its identity), so a
   // proof type surfaces a skill only where that proof supports the skill in a
@@ -1126,7 +1102,7 @@ function PassportGraphExplorer({
   const panelHeading: CSSProperties = { fontSize: 15, fontWeight: 700, color: TOKEN.ink, margin: 0 }
 
   return (
-    <section data-testid="passport-graph-explorer" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+    <section id="skills-evidence-map" data-testid="passport-graph-explorer" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Skills Evidence Map</h2>
         <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, maxWidth: 620, lineHeight: 1.5 }}>
@@ -1282,18 +1258,24 @@ function PassportGraphExplorer({
             </p>
           </Card>
         ) : visibleSkills.length === 0 ? (
-          <Card>
-            {proofFilter ? (
-              <p data-testid="skills-panel-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-                No skill-project evidence found for {proofFilter}. Try all proof types or attach{" "}
-                {(PROOF_SHORT_LABEL[proofFilter] ?? proofFilter).toLowerCase()} evidence.
-              </p>
-            ) : (
-              <p data-testid="skills-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-                No matching skill-project evidence found. Clear filters to see all skills.
-              </p>
-            )}
-          </Card>
+          proofFilter === WEBSITE_PROOF_LABEL && websiteProjectContext.length > 0 ? (
+            // Website Proof exists at project level but mapped no skill — explain
+            // the honest gap + how to strengthen it, instead of the generic copy.
+            <WebsiteProofProjectLevelEmptyState contexts={websiteProjectContext} />
+          ) : (
+            <Card>
+              {proofFilter ? (
+                <p data-testid="skills-panel-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                  No skill-project evidence found for {proofFilter}. Try all proof types or attach{" "}
+                  {(PROOF_SHORT_LABEL[proofFilter] ?? proofFilter).toLowerCase()} evidence.
+                </p>
+              ) : (
+                <p data-testid="skills-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                  No matching skill-project evidence found. Clear filters to see all skills.
+                </p>
+              )}
+            </Card>
+          )
         ) : (
           visibleSkills.map((node) => (
             <SkillCard
@@ -1343,10 +1325,237 @@ function PassportGraphExplorer({
   )
 }
 
+/**
+ * Verified Passport Card Preview — the compact recruiter/career-fair credential
+ * pinned to the top of the owner's private Passport. It renders the SAME compact
+ * card a recruiter sees publicly (via {@link buildPrivateCardModel} →
+ * {@link PassportCard}), so the student previews exactly what gets shared:
+ * identity, high-level role areas, proof coverage, and a scannable profile that
+ * opens the full Work Passport. Role chips deep-link into the same-page Skills
+ * Evidence Map. The publishing / share controls live in ONE compact "Sharing
+ * controls" row directly below the card (no second Public Work Passport block, no
+ * standalone QR box). Only recruiter-safe fields are ever shown.
+ */
+function VerifiedPassportCardPreview({
+  passport,
+  initialStatus,
+  onSelectSkill,
+}: {
+  passport: PrivateWorkPassport
+  initialStatus: WorkPassportStatus
+  onSelectSkill: (key: string) => void
+}) {
+  const [status, setStatus] = useState<WorkPassportStatus>(initialStatus)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const actedRef = useRef(false)
+
+  // Reconcile with the authoritative publish status (the passport payload's
+  // is_published can lag). Skip once the student has acted here.
+  useEffect(() => {
+    getWorkPassportStatus()
+      .then((s) => {
+        if (!actedRef.current) setStatus(s)
+      })
+      .catch(() => {
+        /* keep the server-rendered initial status */
+      })
+  }, [])
+
+  // The card photo comes straight from the recruiter-safe identity payload
+  // (``buildPrivateCardModel`` sanitizes ``identity.avatar_url`` and falls back
+  // to safe initials). Profile-photo UPLOAD lives in the separate Passport Card
+  // branch — this Website Proof branch renders the safe field / initials only.
+  const model = useMemo(() => buildPrivateCardModel(passport, status), [passport, status])
+
+  const runPublish = (action: () => Promise<WorkPassportStatus>) => {
+    actedRef.current = true
+    setBusy(true)
+    setError(null)
+    setCopied(false)
+    action()
+      .then(setStatus)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Action failed."))
+      .finally(() => setBusy(false))
+  }
+
+  const copyLink = async () => {
+    if (!model.publicPassportUrl) return
+    try {
+      await navigator.clipboard.writeText(model.publicPassportUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch {
+      /* Clipboard blocked — the link is still openable via the CTA below. */
+    }
+  }
+
+  const scrollToMap = () => {
+    document.getElementById("skills-evidence-map")?.scrollIntoView?.({ behavior: "smooth", block: "start" })
+  }
+
+  // Same-page deep link: select the chip's strongest underlying skill in the
+  // evidence map, then scroll to it (a real in-page selection, never a broken link).
+  const onCapabilityClick = (cap: PassportCardCapability) => {
+    if (cap.key) onSelectSkill(cap.key)
+    scrollToMap()
+  }
+
+  const shareBtn: CSSProperties = {
+    fontSize: 12,
+    fontWeight: 600,
+    padding: "7px 12px",
+    borderRadius: 8,
+    textDecoration: "none",
+    cursor: "pointer",
+    border: `1px solid ${TOKEN.line}`,
+    background: "#fff",
+    color: TOKEN.inkSoft,
+    display: "inline-block",
+  }
+
+  return (
+    <Card
+      id="verified-passport-card-preview"
+      style={{ background: "linear-gradient(160deg,#f7f8ff 0%,#eef0ff 100%)", borderColor: "#c7d2fe" }}
+    >
+      <div data-testid="verified-passport-card-preview" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Verified Passport Card Preview</h2>
+          <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.6, maxWidth: 620 }}>
+            A recruiter-safe card students can show at career fairs. Scanning the profile area opens the full Work
+            Passport. Tap a role area to jump to its evidence below.
+          </p>
+        </div>
+
+        <PassportCard
+          model={model}
+          variant="private"
+          onCapabilityClick={onCapabilityClick}
+          footer={
+            <button
+              type="button"
+              data-testid="passport-card-open-full"
+              onClick={scrollToMap}
+              style={{
+                marginTop: 2,
+                fontSize: 13,
+                fontWeight: 600,
+                padding: "10px 14px",
+                borderRadius: 10,
+                cursor: "pointer",
+                border: "1px solid rgba(255,255,255,0.22)",
+                background: "rgba(255,255,255,0.12)",
+                color: "#fff",
+              }}
+            >
+              Open full Work Passport ↓
+            </button>
+          }
+        />
+
+        {/* Sharing controls — secondary, compact row directly below the card
+            (replaces the old separate "Public Work Passport" block). */}
+        <div
+          data-testid="passport-sharing-controls"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            padding: 14,
+            borderRadius: 12,
+            border: `1px solid ${TOKEN.line}`,
+            background: "#fff",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>Sharing controls</span>
+            {model.isPublished ? (
+              <span data-testid="passport-public-badge">
+                <Badge tone="emerald">Public passport live</Badge>
+              </span>
+            ) : (
+              <span data-testid="passport-private-badge">
+                <Badge tone="slate">Private only</Badge>
+              </span>
+            )}
+          </div>
+
+          {error && (
+            <p data-testid="passport-publish-error" style={{ fontSize: 12, color: TOKEN.rose, margin: 0 }}>
+              {error}
+            </p>
+          )}
+
+          {model.isPublished && model.publicPassportUrl ? (
+            <>
+              <div
+                data-testid="passport-public-link"
+                style={{
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: 12,
+                  color: TOKEN.ink,
+                  padding: "7px 10px",
+                  background: TOKEN.bg,
+                  border: `1px solid ${TOKEN.line}`,
+                  borderRadius: 8,
+                  wordBreak: "break-all",
+                }}
+              >
+                {model.publicPassportUrl}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                <button type="button" data-testid="copy-passport-link-button" onClick={copyLink} style={{ ...shareBtn, background: TOKEN.indigo, color: "#fff", borderColor: TOKEN.indigo }}>
+                  {copied ? "✓ Copied" : "Copy Passport link"}
+                </button>
+                <a data-testid="open-passport-link" href={model.publicPassportUrl} target="_blank" rel="noreferrer" style={shareBtn}>
+                  Open public Passport ↗
+                </a>
+                {model.cardUrl && (
+                  <a data-testid="passport-card-open-card" href={model.cardUrl} target="_blank" rel="noreferrer" style={shareBtn}>
+                    Open Passport Card ↗
+                  </a>
+                )}
+                <button
+                  type="button"
+                  data-testid="unpublish-passport-button"
+                  disabled={busy}
+                  onClick={() => runPublish(() => unpublishWorkPassport())}
+                  style={{ ...shareBtn, opacity: busy ? 0.6 : 1 }}
+                >
+                  {busy ? "Working…" : "Unpublish"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <p data-testid="passport-card-preview-publish-hint" style={{ fontSize: 11.5, color: TOKEN.muted, margin: 0, lineHeight: 1.6 }}>
+                Publish a recruiter-safe public card and scannable link. It links only to reports you have published —
+                never raw evidence, private files, or numeric scores. Unpublish any time.
+              </p>
+              <button
+                type="button"
+                data-testid="publish-passport-button"
+                disabled={busy}
+                onClick={() => runPublish(() => publishWorkPassport())}
+                style={{ ...shareBtn, alignSelf: "flex-start", background: TOKEN.indigo, color: "#fff", borderColor: TOKEN.indigo, opacity: busy ? 0.6 : 1 }}
+              >
+                {busy ? "Publishing…" : "Publish public Passport"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 export function PrivatePassportView() {
   const [passport, setPassport] = useState<PrivateWorkPassport | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [selectedSkillKey, setSelectedSkillKey] = useState<string | null>(null)
 
   const load = () => {
     setLoading(true)
@@ -1375,20 +1584,28 @@ export function PrivatePassportView() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* 1 — Candidate identity header */}
+      {/* 1 — Verified Passport Card preview: the compact recruiter/career-fair
+          credential is the hero of the page (pinned to the very top) and now owns
+          the sharing controls too, so there is no second "Public Work Passport" /
+          "Verified candidate profile" block competing with it. */}
+      <VerifiedPassportCardPreview passport={passport} initialStatus={status} onSelectSkill={setSelectedSkillKey} />
+
+      {/* 2 — Candidate detail: education, public-status summary, and the full
+          summary text that the compact card intentionally omits. */}
       <Card>
-        <div data-testid="passport-header" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <PassportIdentityHeader
-            identity={passport.identity}
-            fallbackName={passport.candidate_display_name}
-            fallbackHeadline={passport.headline}
-          />
-          <p style={{ fontSize: 13, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>{passport.summary}</p>
+        <div data-testid="passport-header" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <CardHeader title="Candidate summary" eyebrow="Passport detail" icon="🎓" />
+          <p style={{ fontSize: 15, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>
+            {passport.identity?.display_name ?? passport.candidate_display_name ?? "Verified candidate profile"}
+          </p>
+          {(passport.identity?.education_summary?.trim() || "") && (
+            <p data-testid="passport-education" style={{ fontSize: 13, color: TOKEN.muted, margin: 0 }}>
+              🎓 {passport.identity?.education_summary}
+            </p>
+          )}
+          <p style={{ fontSize: 13, color: TOKEN.muted, margin: 0, lineHeight: 1.55 }}>{passport.summary}</p>
         </div>
       </Card>
-
-      {/* 2 — Publish controls */}
-      <PassportPublishControls initialStatus={status} candidateName={passport.candidate_display_name} />
 
       {/* 3 — Evidence Graph Overview (summary chips only) */}
       <EvidenceGraphOverviewCard passport={passport} />
@@ -1397,6 +1614,8 @@ export function PrivatePassportView() {
       <PassportGraphExplorer
         passport={passport}
         passportPublished={Boolean(passport.is_published && passport.public_slug)}
+        selectedSkillKey={selectedSkillKey}
+        onSelectSkillKey={setSelectedSkillKey}
       />
 
       {/* 5 — Improve Passport: suggested attachments and unattached-evidence

@@ -66,6 +66,10 @@ class WebsiteProofSkillRelevance(BaseModel):
     relevance_summary: str
     limitation: str
     is_direct_evidence: bool = False
+    # How this skill was mapped: "extracted" (named by the proof's stored
+    # supported_skills) or "derived" (conservatively inferred from the safe
+    # observed-behaviour classification). Honest provenance, never a score.
+    mapping_basis: str = "extracted"
 
     model_config = {"extra": "forbid"}
 
@@ -79,18 +83,30 @@ class WebsiteProofSkillEvidence(BaseModel):
     demonstrably showed, from a closed vocabulary derived only from the
     already-safe Website Proof summaries. ``skills`` carries an honest per-skill
     relevance ONLY for the project's claimed skills that the saved proof's
-    EXTRACTED ``supported_skills`` actually name (evidence-source matching, never
-    broad claim-only). Empty ``skills`` with ``skill_mapping_available == False``
-    means the proof is captured but not yet mapped to a specific skill — the gap
-    is stated honestly, never faked."""
+    EXTRACTED ``supported_skills`` name OR the observed behaviour genuinely
+    demonstrates (conservative derivation — a generic/availability-only page maps
+    nothing). Each row's ``mapping_basis`` records which. Empty ``skills`` with
+    ``skill_mapping_available == False`` means the proof is captured but not
+    mapped to a specific skill — the gap is stated honestly, never faked."""
 
     target_website: str = ""
     behavior_claim: str = ""
     website_purpose_key: str = ""
     website_purpose_label: str = ""
     website_purpose_summary: str = ""
+    # Which safe pipeline summaries backed this proof (closed labels only —
+    # "Website DOM" / "Website OCR" / "Website visual analysis" / "Website NLP" /
+    # "Website runtime behavior"). Never the raw text of any of them.
+    evidence_source_types: list[str] = Field(default_factory=list)
     skills: list[WebsiteProofSkillRelevance] = Field(default_factory=list)
     skill_mapping_available: bool = False
+    # Project-level-only explanation, populated ONLY when ``skill_mapping_available``
+    # is False: a safe closed-vocabulary reason the observed behaviour did not map
+    # to a specific skill, plus the concrete action to strengthen it. These make
+    # the honest gap legible without ever faking a skill mapping. Empty when the
+    # proof DID map a skill.
+    unmapped_reason: str = ""
+    strengthen_action: str = ""
 
     model_config = {"extra": "forbid"}
 

@@ -321,6 +321,209 @@ def test_skill_project_ref_website_proof_only_when_website_supports_skill(
             assert has_website == (_norm_skill(skill["skill"]) in website_skills)
 
 
+def test_passport_supporting_proof_types_include_derived_website_proof(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A Website Proof with EMPTY ``supported_skills`` but a safe prediction-result
+    narrative maps (derived) to the claimed ML skill, so the passport skill→project
+    ref lists Website Proof in ``supporting_proof_types`` — the Website Proof filter
+    now has a row to show."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    )
+    body = _get_private(client).json()
+
+    ml = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "machine learning")
+    assert ml["projects"], "expected a project ref for the ML skill"
+    assert any(
+        "Website Proof" in (ref.get("supporting_proof_types") or [])
+        for ref in ml["projects"]
+    )
+
+
+def test_passport_generic_website_adds_no_website_proof_to_skill(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A generic Website Proof (landing page, empty ``supported_skills``) maps to no
+    skill, so no passport skill→project ref lists Website Proof — the filter stays
+    truthfully empty rather than showing a spurious row."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="A landing page describing the product and its features was shown.",
+    )
+    _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    )
+    body = _get_private(client).json()
+
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            assert "Website Proof" not in (ref.get("supporting_proof_types") or [])
+
+
+# ── Project-level-only Website Proof context (Diagnosis-C explainer) ──────────
+#
+# A Website Proof can be attached to a project yet map to NO skill because the
+# observed behaviour was too generic (navigation/layout). It must stay
+# project-level: never a skill→project Website Proof chip, but the passport DOES
+# expose a safe explanation so the Skills Evidence Map can say WHY it is absent
+# from the skill map — never a faked mapping, never a raw field.
+
+
+def _website_context(body: dict) -> list[dict]:
+    return body.get("website_proof_project_context") or []
+
+
+def test_passport_navigation_layout_website_stays_project_level_with_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A navigation/layout Website Proof (empty ``supported_skills``) maps no skill,
+    yet the passport surfaces a safe project-level explanation: focus, reason,
+    action, ``mapped_to_skills == False`` and an owner-only report route."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Navigated between the app's pages using the sidebar menu.",
+    )
+    _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    )
+    body = _get_private(client).json()
+
+    # Stays project-level: no skill→project ref advertises Website Proof.
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            assert "Website Proof" not in (ref.get("supporting_proof_types") or [])
+
+    # But the honest explanation is available.
+    ctx = _website_context(body)
+    assert len(ctx) == 1
+    entry = ctx[0]
+    assert entry["focus_key"] == "navigation_layout"
+    assert entry["mapped_to_skills"] is False
+    assert entry["reason"] == "Navigation/layout evidence only"
+    assert entry["action_guidance"]
+    assert entry["explanation"]
+    assert entry["report_path"].endswith("/report")
+
+
+def test_passport_website_context_ignores_weakly_supported_skills(
+    client: TestClient, mem_store: dict
+) -> None:
+    """``weakly_supported_skills`` never become a supporting proof type: with empty
+    ``supported_skills`` and a navigation page, the claimed skill stays unmapped and
+    the proof only surfaces as project-level context — the weak skills are never
+    promoted to skill evidence."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=["Machine Learning"],
+        workflow_summary="Navigated between the app's pages using the sidebar menu.",
+    )
+    _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    )
+    body = _get_private(client).json()
+
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            assert "Website Proof" not in (ref.get("supporting_proof_types") or [])
+    assert _website_context(body), "expected project-level Website Proof context"
+
+
+def test_passport_mapped_website_proof_absent_from_project_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A Website Proof that DID map a skill (derived from a prediction result) is
+    surfaced as skill evidence, NOT duplicated into the project-level context."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    )
+    body = _get_private(client).json()
+
+    assert _website_context(body) == []
+    ml = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "machine learning")
+    assert any("Website Proof" in (ref.get("supporting_proof_types") or []) for ref in ml["projects"])
+
+
+def test_passport_website_project_context_exposes_no_raw_fields(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The project-level Website Proof context never leaks raw DOM/OCR/visual text,
+    screenshots, storage paths, signed URLs, ``proof_session_id`` or scores."""
+    import json
+
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Navigated between the app's pages using the sidebar menu.",
+        dom_summary="Raw DOM should never appear here",
+        screenshot_url="https://bucket.example/secret.png",
+        storage_path="/private/bucket/raw.html",
+        evidence_strength_score=91,
+    )
+    _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    )
+    body = _get_private(client).json()
+
+    ctx = _website_context(body)
+    assert ctx, "expected project-level Website Proof context"
+    blob = json.dumps(ctx)
+    for unsafe in [
+        "secret.png",
+        "/private/bucket",
+        "storage_path",
+        "screenshot_url",
+        "signed_url",
+        str(session_id),
+    ]:
+        assert unsafe not in blob
+    # Only the closed, safe key set is exposed — no score/confidence/raw fields.
+    allowed_keys = {
+        "project_id",
+        "project_title",
+        "focus_key",
+        "focus_label",
+        "explanation",
+        "reason",
+        "action_guidance",
+        "mapped_to_skills",
+        "report_path",
+    }
+    for entry in ctx:
+        assert set(entry) <= allowed_keys
+        assert "91" not in str(entry.get("explanation", ""))
+
+
 def test_skill_vault_only_sources_are_separate_from_project_evidence(
     client: TestClient, mem_store: dict
 ) -> None:

@@ -103,17 +103,20 @@ describe("PrivatePassportView", () => {
 
     render(<PrivatePassportView />)
 
-    expect(await screen.findByTestId("passport-header")).toBeInTheDocument()
-    expect(screen.getByText("Jordan Rivera")).toBeInTheDocument()
+    const header = await screen.findByTestId("passport-header")
+    // Scoped: the name also appears in the Verified Passport Card preview above.
+    expect(within(header).getByText("Jordan Rivera")).toBeInTheDocument()
     expect(screen.getByTestId("evidence-source-counts")).toBeInTheDocument()
     expect(screen.getAllByTestId("evidence-source-count").length).toBeGreaterThan(0)
     // The old redundant "Evidence-Backed Skills" / "Grouped by skill" section is gone.
-    expect(screen.queryByText(/Evidence-Backed Skills/i)).not.toBeInTheDocument()
+    // Case-sensitive exact match: the new Verified Passport Card preview has an
+    // "Evidence-backed skills" (lowercase) label that must NOT trip this guard.
+    expect(screen.queryByText("Evidence-Backed Skills")).not.toBeInTheDocument()
     expect(screen.queryByTestId("passport-skill")).not.toBeInTheDocument()
     expect(screen.queryByTestId("skill-expand-toggle")).not.toBeInTheDocument()
   })
 
-  it("renders the passport identity header with education, status and evidence summary", async () => {
+  it("shows program + status on the compact card and education in the candidate summary", async () => {
     const p = makePassport({
       identity: {
         display_name: "Jordan Rivera",
@@ -135,11 +138,12 @@ describe("PrivatePassportView", () => {
 
     render(<PrivatePassportView />)
 
-    expect(await screen.findByTestId("passport-identity-header")).toBeInTheDocument()
-    expect(screen.getByTestId("passport-identity-name")).toHaveTextContent("Jordan Rivera")
-    expect(screen.getByTestId("passport-identity-education")).toHaveTextContent("Computer Science")
-    expect(screen.getByTestId("passport-identity-status")).toHaveTextContent("Private only")
-    expect(screen.getByTestId("passport-identity-evidence-summary")).toHaveTextContent("GitHub Proof · 1")
+    // Identity now lives on the compact card (no duplicate identity-header block).
+    const card = await screen.findByTestId("passport-card-private")
+    expect(within(card).getByTestId("passport-card-program")).toHaveTextContent("Computer Science")
+    expect(within(card).getByTestId("passport-card-status")).toHaveTextContent("Private only")
+    // The slimmed candidate-summary detail carries the full education line.
+    expect(screen.getByTestId("passport-education")).toHaveTextContent("Computer Science · Masters · Class of 2026")
   })
 
   it("falls back to a safe placeholder name when identity has no display name", async () => {
@@ -164,7 +168,8 @@ describe("PrivatePassportView", () => {
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
     render(<PrivatePassportView />)
-    expect(await screen.findByTestId("passport-identity-name")).toHaveTextContent("Verified candidate profile")
+    const card = await screen.findByTestId("passport-card-private")
+    expect(within(card).getByTestId("passport-card-name")).toHaveTextContent("Verified candidate profile")
   })
 
   it("shows a merged-attempts badge when duplicate evidence is grouped into one card", async () => {
@@ -2172,6 +2177,59 @@ describe("PrivatePassportView — Proof Type dropdown reflects the whole passpor
     expect(screen.getByTestId("skills-panel-proof-empty")).toHaveTextContent(
       "No skill-project evidence found for Website Proof. Try all proof types or attach website evidence.",
     )
+  })
+
+  it("explains the project-level-only Website Proof and lists context cards when the passport carries it", async () => {
+    const p = makeWebsiteGlobalOnlyPassport({
+      website_proof_project_context: [
+        {
+          project_id: "proj-boston",
+          project_title: "Boston Smart Accident Risk Rerouting",
+          focus_key: "navigation_layout",
+          focus_label: "Navigation / page layout",
+          explanation: "The recorded session shows the app's page layout and navigation between views.",
+          reason: "Navigation/layout evidence only",
+          action_guidance:
+            "Record a stronger Website Proof showing runtime behavior such as a model prediction, API response, dashboard interaction, route recommendation, or workflow completion.",
+          mapped_to_skills: false,
+          report_path: "/student/vbr/projects/proj-boston/report",
+        },
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+
+    // The honest explanatory empty state replaces the generic copy.
+    expect(screen.queryByTestId("skills-panel-proof-empty")).not.toBeInTheDocument()
+    const panel = screen.getByTestId("website-proof-project-level-empty")
+    expect(within(panel).getByTestId("website-proof-empty-headline")).toHaveTextContent(
+      "Website Proof exists, but it has not been mapped to specific skills yet.",
+    )
+    expect(panel).toHaveTextContent(
+      "Current website evidence was classified as navigation/layout",
+    )
+
+    // A project-level context card names the project, reason, action and safe routes.
+    const card = within(panel).getByTestId("website-proof-project-context-card")
+    expect(card).toHaveTextContent("Boston Smart Accident Risk Rerouting")
+    expect(card).toHaveTextContent("Website Proof: Project-level only")
+    expect(card).toHaveTextContent("Navigation/layout evidence only")
+    expect(within(card).getByTestId("website-proof-context-open-report")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-boston/report",
+    )
+    expect(within(card).getByTestId("website-proof-context-open-vault")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/vault",
+    )
+
+    // Project-level Website Proof is NEVER rendered as a skill card / skill evidence.
+    expect(screen.queryAllByTestId("passport-skill-card")).toHaveLength(0)
   })
 
   it("normalizes non-canonical Website Proof spellings to a single 'Website Proof' option", async () => {
