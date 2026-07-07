@@ -1145,24 +1145,6 @@ def _dedupe_preserve(values: list[str]) -> list[str]:
     return out
 
 
-def _merge_evidence_packages(packages: list[dict[str, Any]]) -> dict[str, Any]:
-    """Merge per-attempt evidence packages: booleans OR-ed, counts max-ed.
-
-    Counts use max (not sum) because duplicate attempts re-attach the same
-    evidence — summing would inflate the badge numbers.
-    """
-    merged: dict[str, Any] = {}
-    for pkg in packages:
-        for key, value in (pkg or {}).items():
-            if isinstance(value, bool):
-                merged[key] = bool(merged.get(key)) or value
-            elif isinstance(value, (int, float)):
-                merged[key] = max(int(merged.get(key) or 0), int(value))
-            else:
-                merged.setdefault(key, value)
-    return merged
-
-
 def _group_project_pairs(
     pairs: list[tuple[dict[str, Any], dict[str, Any]]],
 ) -> list[list[tuple[dict[str, Any], dict[str, Any]]]]:
@@ -1300,21 +1282,26 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         token = representative_project.get("public_report_token")
         has_public_report = bool(token)
 
+        # Claimed skills are project *claims* (not proof), so unioning them across
+        # collapsed attempts is safe context.
         claimed_skills = _dedupe_preserve(
             [s for _, report in group for s in (report.get("claimed_skills") or [])]
         )
+        # NAVIGATION-CONSISTENCY (fail-closed): a collapsed card links to exactly
+        # ONE report — the representative's (its private report route + published
+        # token). So the card's evidence badges, proof chain, evidence package and
+        # top skills are derived from the REPRESENTATIVE report ONLY, never unioned
+        # across the other collapsed attempts. Unioning let a Website Proof (or any
+        # proof) attached to a *different* attempt ride onto this card while the
+        # report it links to shows that proof "not attached" — the exact leak that
+        # made a Teachable-Machine card advertise Website Proof its own report
+        # denied. The per-attempt evidence still lives on each attempt's own report.
         evidence_sources = _dedupe_preserve(
-            [
-                src
-                for project, report in group
-                for src in _evidence_sources(report, bool(project.get("public_report_token")))
-            ]
+            _evidence_sources(representative_report, has_public_report)
         )
-        evidence_package = _merge_evidence_packages(
-            [report.get("evidence_package") or {} for _, report in group]
-        )
+        evidence_package = representative_report.get("evidence_package") or {}
 
-        top_skills = _project_top_skills([report for _, report in group])
+        top_skills = _project_top_skills([representative_report])
         project_summaries.append(
             {
                 "project_id": str(representative_project["id"]),
@@ -1351,7 +1338,9 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         project_id = str(representative_project["id"])
         project_title = representative_report.get("project_title") or ""
         seen_focus: set[str] = set()
-        for _, report in group:
+        # Representative report only — the card links to it, so its project-level
+        # Website Proof context is the only context consistent with that report.
+        for report in (representative_report,):
             for entry in report.get("website_skill_evidence") or []:
                 if entry.get("skill_mapping_available"):
                     continue  # mapped a skill — surfaced as skill evidence, not here
@@ -1375,14 +1364,16 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
 
     published_report_count = sum(1 for p in project_summaries if p["report"]["is_public"])
 
-    # Skills aggregate over all reports in each grouped project (so skills from
-    # all attempts are included), while ``project_count`` reflects distinct
-    # projects, not duplicate attempts. Each summary is paired with every report
-    # from its group; deduplication happens within the aggregation function.
+    # Skills aggregate from the REPRESENTATIVE report of each grouped project —
+    # the same report the project card links to — so a skill→project ref can never
+    # advertise a proof (e.g. Website Proof) that lives only on a *different*
+    # collapsed attempt and is absent from the report the ref routes to. This keeps
+    # the Website Proof filter honest: a skill row shows Website Proof only when the
+    # linked project report actually has it attached. ``project_count`` still
+    # reflects distinct projects, not duplicate attempts.
     skill_cards = [
-        (project_summaries[i], report)
-        for i, group in enumerate(groups)
-        for _, report in group
+        (project_summaries[i], groups[i][0][1])
+        for i in range(len(groups))
     ]
     skills = _aggregate_skills_with_detail(skill_cards, public=False)
 
@@ -1600,8 +1591,13 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         claimed_skills = _dedupe_preserve(
             [s for _, report in group for s in (report.get("claimed_skills") or [])]
         )
+        # NAVIGATION-CONSISTENCY (fail-closed): the featured card links to the
+        # representative's published report token, so its evidence badges/proof
+        # chain/top skills come from the REPRESENTATIVE report ONLY — never unioned
+        # across other collapsed published attempts (which would advertise a proof
+        # the linked report does not show).
         evidence_sources = _dedupe_preserve(
-            [src for _, report in group for src in _evidence_sources(report, has_public_report=True)]
+            _evidence_sources(representative_report, has_public_report=True)
         )
         # Public Project → Skill chips: skill name, qualitative status, and the
         # skill's stable slug ONLY (used for in-page anchors to the public
@@ -1616,7 +1612,7 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
                 # (closed, safe labels — never scores, ids, or the project-wide union).
                 "supporting_proof_types": list(s.get("supporting_proof_types") or []),
             }
-            for s in _project_top_skills([report for _, report in group])
+            for s in _project_top_skills([representative_report])
         ]
         summary = {
             "project_title": representative_report.get("project_title") or "",
@@ -1637,13 +1633,13 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         }
         featured_summaries.append(summary)
 
-    # Top skills are aggregated from all reports in each featured project group,
-    # so the public passport reflects all published evidence across attempts.
-    # Qualitative only, with a safe drilldown sourced exclusively from published reports.
+    # Top skills are aggregated from each featured group's REPRESENTATIVE report —
+    # the published report the featured card links to — so a public skill row never
+    # advertises a proof attached only to a different collapsed attempt. Qualitative
+    # only, with a safe drilldown sourced exclusively from that published report.
     skill_cards = [
-        (featured_summaries[i], report)
-        for i, group in enumerate(featured_groups)
-        for _, report in group
+        (featured_summaries[i], featured_groups[i][0][1])
+        for i in range(len(featured_groups))
     ]
     top_skills = [
         _to_public_skill(s)

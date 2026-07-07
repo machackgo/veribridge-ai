@@ -303,16 +303,26 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
     }
   }
 
-  // 2 — vault skill summaries (slug + proof-source coverage + project ids).
+  // 2 — vault skill summaries (slug + status + connected-project COUNT only).
+  //
+  // FAIL-CLOSED (wider-vault isolation): the vault summary spans a skill's WHOLE
+  // proof vault — attached AND unattached proofs, across every project. It must
+  // NEVER contribute to the skill's ATTACHED proof-type set (`d.sources`, which
+  // feeds `node.proofTypes` + the proof-type chips/filter) nor to its attached
+  // project edges (`d.projectIds`). Doing so let a Website Proof living in the
+  // wider vault (attached to a *different* project, or standalone) advertise
+  // "Website Proof" on a skill / add a spurious project row here — even though the
+  // project the row links to never had it attached. Attached proof types and
+  // project edges come exclusively from the project-honest surfaces (the skill
+  // aggregate refs in step 1 and project `top_skills` in step 3); vault-only proof
+  // types are surfaced separately via `vaultOnlySources` (step 1) and the vault
+  // section. We take only the skill's slug/status and its connected-project COUNT
+  // (a display number, not an attached edge) from the vault summary.
   for (const v of passport.vault_skill_summaries ?? []) {
     const d = draft(v.skill)
     if (!d.slug && v.skill_slug) d.slug = v.skill_slug
     if (!d.status) d.status = v.status
     d.payloadProjectCount = Math.max(d.payloadProjectCount, v.project_count)
-    for (const [source, count] of Object.entries(v.proof_source_counts ?? {})) {
-      if (count > 0) d.sources.add(source)
-    }
-    v.project_ids.forEach((id, i) => addProject(d, id, v.project_titles[i]))
   }
 
   // 3 — project top skills (evidence-backed Project → Skill edges). top_skills

@@ -28,7 +28,14 @@ import {
 } from "@/lib/vbr-api"
 import { buildPassportGraph } from "@/app/student/vbr/passport/passport-graph"
 import { publicPassportCardUrl, publicPassportUrl } from "@/lib/app-url"
-import { CAPABILITY_AREAS, matchAreaIndex } from "@/lib/passport-capabilities"
+import {
+  CAPABILITY_AREAS,
+  buildCapabilityAggregates,
+  capabilityStatusRank,
+  matchAreaIndex,
+  presentCapabilities,
+  type CapabilityAggregate,
+} from "@/lib/passport-capabilities"
 
 /** Canonical proof-coverage order for the card's proof chips. */
 export const PROOF_COVERAGE_ORDER = [
@@ -257,6 +264,64 @@ function topCapabilities(all: PassportCardCapability[]): PassportCardCapability[
   return all.slice(0, MAX_CARD_CAPABILITIES)
 }
 
+// ── Private card role areas = the Work Passport Role Area filter's catalog ─────
+//
+// The private preview must offer the SAME role areas the Work Passport "Role
+// area" filter offers, so the "Customize Passport Card" editor can never show a
+// smaller (or different) set than the filter. Both now consume the ONE canonical
+// evidence aggregation ({@link buildCapabilityAggregates} + {@link
+// presentCapabilities}) over the same Projects↔Skills graph — the exact source
+// the filter's `roleAreaOptions` uses — instead of the card's own first-match
+// skill grouping ({@link deriveCapabilities}), which collapsed multi-area skills
+// (e.g. Backend vs. Cloud), dropped contextual areas (e.g. Computer Vision), and
+// never surfaced the composite AI Product Engineering area.
+
+/** Ids of the weak role areas (documentation/communication) — ranked below every
+ *  technical area so they never fill a default card slot unless nothing else can. */
+const WEAK_AREA_IDS = new Set(CAPABILITY_AREAS.filter((a) => a.weak).map((a) => a.id))
+
+/**
+ * Map ONE evidence-aggregated role area (the SAME canonical {@link
+ * CapabilityAggregate} the Role Area filter renders) to a Passport Card chip.
+ * `roleAreaId` is the canonical area id the card chip drives the filter by;
+ * `evidenceCount` is how many connected lower-level skills back the area (the
+ * qualitative breadth shown next to each selector option — never a score); the
+ * chip carries the strongest underlying skill so any deep-link lands on real
+ * evidence.
+ */
+function capabilityFromAggregate(agg: CapabilityAggregate): PassportCardCapability {
+  const strongest = agg.skills[0]
+  const skillName = strongest?.skillName ?? agg.label
+  return {
+    label: agg.label,
+    roleAreaId: agg.id,
+    status: agg.statusLabel,
+    skill: skillName,
+    slug: strongest?.skillSlug || fallbackSkillSlug(skillName),
+    key: strongest?.skillKey,
+    evidenceCount: agg.skills.length,
+  }
+}
+
+/**
+ * Default card-face role areas from the present aggregates: technical areas
+ * before the weak documentation area, then strongest qualitative status, then
+ * breadth of connected skills — capped to {@link MAX_CARD_ROLE_AREAS}. The full
+ * (uncapped, canonical-order) list stays available for the selector.
+ */
+function defaultAggregateCapabilities(aggregates: CapabilityAggregate[]): PassportCardCapability[] {
+  const ranked = aggregates.slice().sort((a, b) => {
+    const weakA = WEAK_AREA_IDS.has(a.id) ? 1 : 0
+    const weakB = WEAK_AREA_IDS.has(b.id) ? 1 : 0
+    if (weakA !== weakB) return weakA - weakB
+    const byStatus = capabilityStatusRank(a.statusLabel) - capabilityStatusRank(b.statusLabel)
+    if (byStatus !== 0) return byStatus
+    if (b.skills.length !== a.skills.length) return b.skills.length - a.skills.length
+    return a.label.localeCompare(b.label)
+  })
+  return ranked.slice(0, MAX_CARD_CAPABILITIES).map(capabilityFromAggregate)
+}
+
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
 function proofCoverageFromCounts(counts: Record<string, number> | undefined): PassportCardProofCoverage[] {
@@ -326,18 +391,15 @@ export function buildPrivateCardModel(
 ): PassportCardModel {
   const graph = buildPassportGraph(passport)
 
-  const skillInputs: SkillInput[] = graph.skills
-    .filter((node) => node.proofTypes.length > 0 || node.projectEvidence.length > 0)
-    .map((node) => ({
-      name: node.name,
-      status: node.status,
-      slug: node.slug || fallbackSkillSlug(node.name),
-      key: node.key,
-      proofCount: node.proofTypes.length,
-      projectAttached: node.projectEvidence.length > 0,
-    }))
-  const availableCapabilities = deriveCapabilities(skillInputs)
-  const capabilities = topCapabilities(availableCapabilities)
+  // Role areas come from the SAME canonical evidence aggregation the Work Passport
+  // "Role area" filter uses (`presentCapabilities(buildCapabilityAggregates(...))`
+  // over the same graph), so the "Customize Passport Card" selector always lists
+  // the exact role-area catalog the filter offers — never the card's old
+  // first-match subset. `availableCapabilities` mirrors the filter's option order
+  // (canonical); the default card face ranks the strongest areas into its slots.
+  const aggregates = presentCapabilities(buildCapabilityAggregates(graph.skills))
+  const availableCapabilities = aggregates.map(capabilityFromAggregate)
+  const capabilities = defaultAggregateCapabilities(aggregates)
 
   const proofCoverage = proofCoverageFromCounts(passport.evidence_source_counts)
   const name = passport.identity?.display_name ?? passport.candidate_display_name ?? null

@@ -82,8 +82,42 @@ function makePrivatePassport(overrides: Partial<PrivateWorkPassport> = {}): Priv
     public_path: null,
     published_at: null,
     skills: [
-      skill({ skill: "Python", status: "Demonstrated", evidence_sources: ["GitHub Proof"] }),
-      skill({ skill: "React", status: "Partially demonstrated", evidence_sources: [] }),
+      // Attached to proj-1 with real project→skill evidence so the role areas are
+      // "present" for the canonical Role Area aggregation the card now shares with
+      // the Work Passport filter (Python → Data Science / Applied AI leads;
+      // React → Full-Stack / Frontend AI).
+      skill({
+        skill: "Python",
+        status: "Demonstrated",
+        evidence_sources: ["GitHub Proof"],
+        projects: [
+          {
+            project_title: "Skill Evidence Tracker",
+            project_id: "proj-1",
+            skill_status: "Demonstrated",
+            evidence_sources: ["GitHub Proof"],
+            supporting_proof_types: ["GitHub Proof"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+      }),
+      skill({
+        skill: "React",
+        status: "Partially demonstrated",
+        evidence_sources: ["GitHub Proof"],
+        projects: [
+          {
+            project_title: "Skill Evidence Tracker",
+            project_id: "proj-1",
+            skill_status: "Partially demonstrated",
+            evidence_sources: ["GitHub Proof"],
+            supporting_proof_types: ["GitHub Proof"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+      }),
     ],
     projects: [
       {
@@ -132,7 +166,28 @@ function makeManyRolePassport(overrides: Partial<PrivateWorkPassport> = {}): Pri
     "Technical Documentation", // Documentation & Communication
   ]
   return makePrivatePassport({
-    skills: names.map((name) => skill({ skill: name, status: "Demonstrated", evidence_sources: ["GitHub Proof"] })),
+    // Each skill carries real project→skill evidence attached to proj-many, so all
+    // of its role areas become "present" in the canonical Role Area aggregation the
+    // card now shares with the Work Passport filter (more than 6 present areas → the
+    // six-slot cap and the selector's "cannot exceed 6" rule are exercised for real).
+    skills: names.map((name) =>
+      skill({
+        skill: name,
+        status: "Demonstrated",
+        evidence_sources: ["GitHub Proof"],
+        projects: [
+          {
+            project_title: "Multi-area Project",
+            project_id: "proj-many",
+            skill_status: "Demonstrated",
+            evidence_sources: ["GitHub Proof"],
+            supporting_proof_types: ["GitHub Proof"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+      }),
+    ),
     projects: [
       {
         project_id: "proj-many",
@@ -586,6 +641,52 @@ describe("Verified Passport Card preview (private)", () => {
       expect(byId.has(cap.roleAreaId)).toBe(true)
       // …and its label is that canonical area's label (card ↔ filter agree).
       expect(cap.label).toBe(byId.get(cap.roleAreaId))
+    }
+  })
+
+  // E2 — the "Customize Passport Card" editor lists the SAME canonical role areas
+  // as the Work Passport "Role area" filter (the must-fix catalog parity: neither
+  // surface may show a smaller/different set of role areas than the other).
+  it("Passport Card editor lists the same canonical role areas as the Role Area filter", async () => {
+    const preview = await renderManyRolePrivate()
+    // Filter option labels (strip the "— N projects · M skills" suffix), minus the
+    // "All role areas" placeholder.
+    const filter = screen.getByTestId("passport-role-area-filter") as HTMLSelectElement
+    const filterLabels = Array.from(filter.options)
+      .filter((o) => o.value !== "")
+      .map((o) => (o.textContent ?? "").split("—")[0].trim())
+      .sort()
+    expect(filterLabels.length).toBeGreaterThan(0)
+
+    // Editor option labels.
+    fireEvent.click(within(preview).getByTestId("edit-card-role-areas"))
+    const editorLabels = within(preview)
+      .getAllByTestId("card-role-area-option")
+      .map((o) => o.getAttribute("data-label")!)
+      .sort()
+
+    // Same set, exactly — the editor mirrors the filter's canonical catalog.
+    expect(editorLabels).toEqual(filterLabels)
+  })
+
+  // E3 — the editor surfaces the previously-missing role areas (Software
+  // Engineering, Backend APIs, Cloud / MLOps, Computer Vision, AI Product
+  // Engineering) whenever they are present in the canonical role catalog — these
+  // are exactly the areas the old first-match card grouping dropped.
+  it("Passport Card editor includes SE, Backend APIs, Cloud/MLOps, Computer Vision, and AI Product Engineering when present", async () => {
+    const preview = await renderManyRolePrivate()
+    fireEvent.click(within(preview).getByTestId("edit-card-role-areas"))
+    const editorLabels = within(preview)
+      .getAllByTestId("card-role-area-option")
+      .map((o) => o.getAttribute("data-label"))
+    for (const label of [
+      "Software Engineering",
+      "Backend APIs",
+      "Cloud / MLOps",
+      "Computer Vision",
+      "AI Product Engineering",
+    ]) {
+      expect(editorLabels).toContain(label)
     }
   })
 
