@@ -2179,6 +2179,59 @@ describe("PrivatePassportView — Proof Type dropdown reflects the whole passpor
     )
   })
 
+  it("explains the project-level-only Website Proof and lists context cards when the passport carries it", async () => {
+    const p = makeWebsiteGlobalOnlyPassport({
+      website_proof_project_context: [
+        {
+          project_id: "proj-boston",
+          project_title: "Boston Smart Accident Risk Rerouting",
+          focus_key: "navigation_layout",
+          focus_label: "Navigation / page layout",
+          explanation: "The recorded session shows the app's page layout and navigation between views.",
+          reason: "Navigation/layout evidence only",
+          action_guidance:
+            "Record a stronger Website Proof showing runtime behavior such as a model prediction, API response, dashboard interaction, route recommendation, or workflow completion.",
+          mapped_to_skills: false,
+          report_path: "/student/vbr/projects/proj-boston/report",
+        },
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+
+    // The honest explanatory empty state replaces the generic copy.
+    expect(screen.queryByTestId("skills-panel-proof-empty")).not.toBeInTheDocument()
+    const panel = screen.getByTestId("website-proof-project-level-empty")
+    expect(within(panel).getByTestId("website-proof-empty-headline")).toHaveTextContent(
+      "Website Proof exists, but it has not been mapped to specific skills yet.",
+    )
+    expect(panel).toHaveTextContent(
+      "Current website evidence was classified as navigation/layout",
+    )
+
+    // A project-level context card names the project, reason, action and safe routes.
+    const card = within(panel).getByTestId("website-proof-project-context-card")
+    expect(card).toHaveTextContent("Boston Smart Accident Risk Rerouting")
+    expect(card).toHaveTextContent("Website Proof: Project-level only")
+    expect(card).toHaveTextContent("Navigation/layout evidence only")
+    expect(within(card).getByTestId("website-proof-context-open-report")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-boston/report",
+    )
+    expect(within(card).getByTestId("website-proof-context-open-vault")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/vault",
+    )
+
+    // Project-level Website Proof is NEVER rendered as a skill card / skill evidence.
+    expect(screen.queryAllByTestId("passport-skill-card")).toHaveLength(0)
+  })
+
   it("normalizes non-canonical Website Proof spellings to a single 'Website Proof' option", async () => {
     // Overview carries a snake_case variant; the dropdown must still read "Website
     // Proof" (once, not duplicated).

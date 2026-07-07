@@ -17,6 +17,7 @@ import {
   PROOF_CHAIN_STEPS,
   type EvidenceGraphOverview,
   type PassportProjectSummary,
+  type PassportWebsiteProofContext,
   type PrivateWorkPassport,
   type WorkPassportStatus,
 } from "@/lib/vbr-api"
@@ -92,6 +93,9 @@ const PROOF_SHORT_LABEL: Record<string, string> = {
   "Project Defense": "Defense",
   "Video Evidence": "Video",
 }
+
+/** Canonical Website Proof proof-type label (matches the backend + graph). */
+const WEBSITE_PROOF_LABEL = "Website Proof"
 
 /** "GitHub · Website · Defense" from canonical proof-type labels. */
 function shortProofList(sources: string[]): string {
@@ -875,6 +879,101 @@ function SkillEvidenceNav({
   )
 }
 
+// ── Project-level-only Website Proof (Diagnosis-C explainer) ──────────────────
+
+/**
+ * Shown when the evaluator filters Proof type = Website Proof but NO skill→project
+ * row maps it, yet the passport DOES carry project-level Website Proof. Instead of
+ * the generic "nothing here" copy, it states the honest truth: Website Proof
+ * exists, it just hasn't been mapped to a specific skill because the observed
+ * behaviour was navigation/layout-only — then tells the student exactly how to
+ * strengthen it. It never renders these as skill evidence and never counts them.
+ */
+function WebsiteProofProjectLevelEmptyState({
+  contexts,
+}: {
+  contexts: PassportWebsiteProofContext[]
+}) {
+  return (
+    <div
+      data-testid="website-proof-project-level-empty"
+      style={{ display: "flex", flexDirection: "column", gap: 12 }}
+    >
+      <Card>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <Badge tone="purple">Website Proof</Badge>
+            <span style={{ fontSize: 11, fontWeight: 600, color: TOKEN.muted }}>Project-level only</span>
+          </div>
+          <p
+            data-testid="website-proof-empty-headline"
+            style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}
+          >
+            Website Proof exists, but it has not been mapped to specific skills yet.
+          </p>
+          <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+            Current website evidence was classified as navigation/layout, which proves the site can
+            be inspected but does not strongly demonstrate a specific skill. Record a stronger
+            Website Proof showing runtime behavior such as model prediction, API response, dashboard
+            interaction, route recommendation, or workflow completion.
+          </p>
+        </div>
+      </Card>
+
+      {/* Project-level Website Proof cards — informational, never skill evidence. */}
+      {contexts.map((ctx) => (
+        <Card key={`${ctx.project_id}:${ctx.focus_key}`}>
+          <div
+            data-testid="website-proof-project-context-card"
+            style={{ display: "flex", flexDirection: "column", gap: 6 }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>
+                {ctx.project_title || "Untitled project"}
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: TOKEN.muted }}>
+                Website Proof: Project-level only
+              </span>
+            </div>
+            {ctx.explanation && (
+              <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{ctx.explanation}</p>
+            )}
+            {ctx.reason && (
+              <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
+                Reason: {ctx.reason}
+                {ctx.focus_label ? ` · ${ctx.focus_label}` : ""}
+              </p>
+            )}
+            {ctx.action_guidance && (
+              <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+                Action: {ctx.action_guidance}
+              </p>
+            )}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
+              {ctx.report_path && (
+                <Link
+                  data-testid="website-proof-context-open-report"
+                  href={ctx.report_path}
+                  style={{ ...secondaryBtnStyle, padding: "5px 10px", fontSize: 12 }}
+                >
+                  Open project report →
+                </Link>
+              )}
+              <Link
+                data-testid="website-proof-context-open-vault"
+                href="/student/vbr/passport/vault"
+                style={{ ...secondaryBtnStyle, padding: "5px 10px", fontSize: 12 }}
+              >
+                Open Proof Vault →
+              </Link>
+            </div>
+          </div>
+        </Card>
+      ))}
+    </div>
+  )
+}
+
 // ── Skills Evidence Map explorer (evaluator-grade skill proof browser) ─────────
 
 /**
@@ -938,6 +1037,11 @@ function PassportGraphExplorer({
   // the skill→project rows that actually map it (and to the empty state when none
   // do), so project-level proof is never overclaimed as skill-specific evidence.
   const availableProofTypes = graph.proofTypeOptions
+
+  // Project-level-only Website Proof: attached Website Proofs that mapped no skill
+  // (too-generic observed behaviour). Drives the honest Website-Proof empty state
+  // below — informational context, NEVER counted or shown as skill evidence.
+  const websiteProjectContext = passport.website_proof_project_context ?? []
 
   // Project + proof filters act on the skill's ROWS (not just its identity), so a
   // proof type surfaces a skill only where that proof supports the skill in a
@@ -1159,18 +1263,24 @@ function PassportGraphExplorer({
             </p>
           </Card>
         ) : visibleSkills.length === 0 ? (
-          <Card>
-            {proofFilter ? (
-              <p data-testid="skills-panel-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-                No skill-project evidence found for {proofFilter}. Try all proof types or attach{" "}
-                {(PROOF_SHORT_LABEL[proofFilter] ?? proofFilter).toLowerCase()} evidence.
-              </p>
-            ) : (
-              <p data-testid="skills-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-                No matching skill-project evidence found. Clear filters to see all skills.
-              </p>
-            )}
-          </Card>
+          proofFilter === WEBSITE_PROOF_LABEL && websiteProjectContext.length > 0 ? (
+            // Website Proof exists at project level but mapped no skill — explain
+            // the honest gap + how to strengthen it, instead of the generic copy.
+            <WebsiteProofProjectLevelEmptyState contexts={websiteProjectContext} />
+          ) : (
+            <Card>
+              {proofFilter ? (
+                <p data-testid="skills-panel-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                  No skill-project evidence found for {proofFilter}. Try all proof types or attach{" "}
+                  {(PROOF_SHORT_LABEL[proofFilter] ?? proofFilter).toLowerCase()} evidence.
+                </p>
+              ) : (
+                <p data-testid="skills-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                  No matching skill-project evidence found. Clear filters to see all skills.
+                </p>
+              )}
+            </Card>
+          )
         ) : (
           visibleSkills.map((node) => (
             <SkillCard

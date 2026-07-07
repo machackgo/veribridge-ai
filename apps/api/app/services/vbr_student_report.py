@@ -54,15 +54,19 @@ from app.services.vbr_question_generation import get_latest_session, list_sessio
 from app.services.vbr_session_recording import count_chunks
 from app.services.website_proof_detail_service import get_website_proof_detail
 from app.services.website_skill_proof_focus import (
+    WEBSITE_STRENGTHEN_ACTION,
     classify_website_purpose,
     classify_website_skill_relevance,
+    derive_website_supported_skills,
     describe_website_purpose,
     describe_website_skill_relevance,
     is_direct_website_relevance,
     website_behavior_claim,
+    website_evidence_source_types,
     website_limitation_for,
     website_purpose_summary,
     website_skill_relevance_summary,
+    website_unmapped_skill_reason,
 )
 
 # Qualitative skill evidence labels. Numeric trust/confidence scores are
@@ -1408,21 +1412,32 @@ def collect_website_skill_evidence(
     For each attached Website Proof, classify WHAT the recorded page demonstrably
     showed (closed vocabulary, derived only from the already-safe Website Proof
     summaries the pipeline persisted — never raw DOM/OCR/visual/provider payloads),
-    then, for each of THIS project's claimed skills the saved proof's EXTRACTED
-    ``supported_skills`` actually names, recompute how that observed behaviour
-    relates to the skill (direct UI evidence vs. product/availability context)
-    plus the honest per-family limitation.
+    then map that observed behaviour to THIS project's claimed skills two ways:
+
+      1. EXTRACTED match — a claimed skill the saved proof's ``supported_skills``
+         explicitly names (the pipeline's own evidence-source match, trusted);
+      2. DERIVED match — a claimed skill the observed behaviour genuinely
+         demonstrates on its own, via ``derive_website_supported_skills`` (an
+         interactive UI, chart/dashboard, request→result API exchange, or model
+         prediction/generation). This mirrors how GitHub Proof maps CODE to a
+         skill; Website Proof maps observed RUNTIME behaviour.
+
+    For every mapped skill we recompute how the observed behaviour relates to it
+    (direct UI evidence vs. product/availability context) plus the honest
+    per-family limitation.
 
     Honesty invariants (all inherited from ``website_skill_proof_focus``):
-      * evidence-source matching only — a skill is projected iff it is BOTH
-        claimed on this project AND named by the proof's extracted supported
-        skills; broad ``claimed_skills`` alone never map website evidence;
+      * a skill is projected iff it is claimed on this project AND either the
+        proof's extracted supported skills name it OR the observed behaviour's
+        relevance is strong enough to derive it — broad ``claimed_skills`` alone
+        never map website evidence;
+      * a GENERIC page (bare deployment availability / documentation / unknown /
+        structural-only UI) derives NOTHING, so it stays project-level only;
       * implementation-heavy skills (ML / GenAI / DevOps) can only ever read as
         product-behaviour / availability context (``is_direct_evidence`` False),
         never implementation proof from a demo UI;
-      * fail-closed — a proof whose supported skills intersect no claimed skill
-        yields ``skills == []`` and ``skill_mapping_available == False`` (it stays
-        project-level Website Proof only; the gap is stated, never faked).
+      * fail-closed — a proof that maps no claimed skill yields ``skills == []``
+        and ``skill_mapping_available == False`` (project-level; gap stated).
 
     Only closed-vocabulary labels + already-safe summaries leave this function.
     """
@@ -1448,15 +1463,44 @@ def collect_website_skill_evidence(
             ocr_summary=detail.get("ocr_summary"),
             visual_summary=detail.get("visual_summary"),
             live_check=live,
+            page_context=detail.get("page_context"),
+            extra_signals=detail.get("extra_signals") or [],
         )
 
-        skill_rows: list[dict[str, Any]] = []
-        seen: set[str] = set()
+        # Which safe pipeline summaries backed this proof (closed labels only —
+        # never their raw text). Surfaces the DOM / OCR / visual / NLP / runtime
+        # provenance behind the mapping honestly.
+        evidence_source_types = website_evidence_source_types(
+            has_dom=bool(detail.get("dom_summary")),
+            has_ocr=bool(detail.get("ocr_summary")),
+            has_visual=bool(detail.get("visual_summary")),
+            has_nlp=bool(detail.get("workflow_summary")),
+            live_reachable=bool(live and live.get("is_reachable")),
+        )
+
+        # 1 — extracted matches (trusted evidence-source match): claimed skills the
+        #     proof's stored ``supported_skills`` explicitly names.
+        mapping_basis: dict[str, str] = {}
+        ordered_norms: list[str] = []
         for raw_skill in wp.get("supported_skills") or []:
             n = _norm(str(raw_skill))
-            if n in seen or n not in claimed_by_norm:
+            if n in mapping_basis or n not in claimed_by_norm:
                 continue
-            seen.add(n)
+            mapping_basis[n] = "extracted"
+            ordered_norms.append(n)
+        # 2 — derived matches: claimed skills the observed behaviour demonstrates on
+        #     its own (never overrides a stronger extracted match already recorded).
+        for display in derive_website_supported_skills(
+            purpose_key, list(claimed_by_norm.values())
+        ):
+            n = _norm(display)
+            if n in mapping_basis or n not in claimed_by_norm:
+                continue
+            mapping_basis[n] = "derived"
+            ordered_norms.append(n)
+
+        skill_rows: list[dict[str, Any]] = []
+        for n in ordered_norms:
             display = claimed_by_norm[n]
             relevance_key = classify_website_skill_relevance(purpose_key, skill=display)
             skill_rows.append(
@@ -1467,9 +1511,14 @@ def collect_website_skill_evidence(
                     "relevance_summary": website_skill_relevance_summary(relevance_key, display),
                     "limitation": website_limitation_for(relevance_key, display),
                     "is_direct_evidence": is_direct_website_relevance(relevance_key),
+                    "mapping_basis": mapping_basis[n],
                 }
             )
 
+        # When nothing mapped, this Website Proof stays PROJECT-LEVEL only — carry a
+        # safe reason + strengthening action so the gap is legible (never faked into
+        # a skill). When a skill DID map, these stay empty.
+        mapped = bool(skill_rows)
         out.append(
             {
                 "target_website": safe_target,
@@ -1477,8 +1526,11 @@ def collect_website_skill_evidence(
                 "website_purpose_key": purpose_key,
                 "website_purpose_label": describe_website_purpose(purpose_key),
                 "website_purpose_summary": website_purpose_summary(purpose_key),
+                "evidence_source_types": evidence_source_types,
                 "skills": skill_rows,
-                "skill_mapping_available": bool(skill_rows),
+                "skill_mapping_available": mapped,
+                "unmapped_reason": "" if mapped else website_unmapped_skill_reason(purpose_key),
+                "strengthen_action": "" if mapped else WEBSITE_STRENGTHEN_ACTION,
             }
         )
     return out
@@ -1823,19 +1875,29 @@ def build_student_vbr_report(
 
     # ── Skill evidence table ────────────────────────────────────────────────
     github_detected_skills = {_norm(s) for s in (github_proof.get("detected_skills") or [])} if github_proof else set()
-    website_supported_skills: set[str] = set()
-    for wp in website_proofs:
-        website_supported_skills.update(_norm(s) for s in wp["supported_skills"])
 
     # Skill-specific Website Behavior Evidence (owner/private view only): what each
     # attached Website Proof demonstrably showed + an honest per-skill relevance,
-    # projected only for the claimed skills the proof's extracted supported-skills
-    # actually name. Kept off the public projection.
+    # mapped to the claimed skills the proof's extracted supported-skills name OR
+    # the observed behaviour genuinely demonstrates (conservative derivation).
+    # Kept off the public projection.
     website_skill_evidence = collect_website_skill_evidence(
         website_entries=website_entries,
         website_details=website_details,
         claimed_skills=claimed_skills,
     )
+    # The claimed skills that Website Proof supports — taken from the mapped
+    # behavior-evidence above so the skill matrix, the passport
+    # ``supporting_proof_types`` and the behavior-evidence cards can never
+    # disagree. A skill only earns the "Website Proof" source chip when a mapped
+    # skill row exists for it (extracted or safely derived); a generic website
+    # that mapped nothing adds no Website Proof chip to any skill.
+    website_supported_skills: set[str] = {
+        _norm(str(row.get("skill_name") or ""))
+        for entry in website_skill_evidence
+        for row in (entry.get("skills") or [])
+        if str(row.get("skill_name") or "").strip()
+    }
 
     pipeline_lookup = _build_pipeline_lookup(pipeline_db, user_id, skill_pipeline_ids) if skill_pipeline_ids else {}
 
