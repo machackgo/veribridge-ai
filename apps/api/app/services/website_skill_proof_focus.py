@@ -45,15 +45,20 @@ from app.services.safe_public_url import is_safe_public_url
 
 __all__ = [
     "ALLOWED_WEBSITE_EVIDENCE_CHIPS",
+    "ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES",
     "ALLOWED_WEBSITE_PURPOSE_KEYS",
     "ALLOWED_WEBSITE_RELEVANCE_KEYS",
+    "DERIVABLE_WEBSITE_RELEVANCE_KEYS",
     "SCREENSHOT_ACCESS_PERMISSION_REQUIRED",
     "SCREENSHOT_ACCESS_UNAVAILABLE",
+    "WEBSITE_STRENGTHEN_ACTION",
+    "WEBSITE_UNMAPPED_GENERIC_REASON",
     "attach_website_corroboration",
     "build_website_evidence_card",
     "classify_website_purpose",
     "classify_website_skill_relevance",
     "derive_website_evidence_chips",
+    "derive_website_supported_skills",
     "describe_website_purpose",
     "describe_website_skill_relevance",
     "is_direct_website_relevance",
@@ -61,9 +66,12 @@ __all__ = [
     "website_behavior_claim",
     "website_chain_connection_note",
     "website_corroboration_note",
+    "website_evidence_source_types",
     "website_limitation_for",
     "website_purpose_summary",
+    "website_relevance_can_map_skill",
     "website_skill_relevance_summary",
+    "website_unmapped_skill_reason",
 ]
 
 
@@ -287,7 +295,12 @@ _PURPOSE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             r"predict|prediction|inference|classif(?:y|ied|ication|ier)|forecast"
             r"|recommend(?:ation|ed|s)\b|model (?:output|result|score)|probability"
-            r"|risk score|estimated? (?:price|value|score)|result[s]? (?:panel|page|section|displayed|shown)",
+            r"|risk score|estimated? (?:price|value|score)|result[s]? (?:panel|page|section|displayed|shown)"
+            # Model-training / image-classification demonstrations (Teachable-Machine
+            # style): training a model, or an image/webcam class-label prediction, is a
+            # strong ML/CV product-behaviour signal — never implementation proof.
+            r"|train(?:ed|ing)? (?:a |the )?model|model train(?:ing|ed)|teachable machine"
+            r"|image classification|class label[s]?|confidence score",
             re.IGNORECASE,
         ),
     ),
@@ -309,8 +322,12 @@ _PURPOSE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         PURPOSE_DATA_VISUALIZATION,
         re.compile(
-            r"\bchart[s]?\b|\bgraph[s]?\b|\bplot[s]?\b|visuali[sz]ation|heatmap"
-            r"|bar chart|line chart|pie chart|scatter",
+            r"\bchart[s]?\b|\bgraph[s]?\b|\bplot[s]?\b|visuali[sz]ation|heatmap|heat map"
+            r"|bar chart|line chart|pie chart|scatter"
+            # Geospatial / route / traffic dashboards render data visually (a map with
+            # a route, risk, traffic, or accident overlay is data-visualization behaviour).
+            r"|\bmap\b|geospatial|route (?:map|overlay|comparison)|traffic (?:data|overlay|layer)"
+            r"|accident (?:data|overlay|hotspot)",
             re.IGNORECASE,
         ),
     ),
@@ -379,6 +396,28 @@ _PURPOSE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+# Closed map from the pipeline's ``frame_ocr_evidence_summary.detected_page_context``
+# enum (a SAFE, closed classification the OCR stage already produced) to a short
+# deterministic signal phrase folded into the classifier haystack. This lets a
+# capture the OCR stage recognised as a prediction/training page reach the strong
+# prediction purpose even when the raw snippet text was too noisy to survive
+# sanitization. Generic contexts (marketing / demo / unknown / filtered) contribute
+# nothing, so they still fail closed to navigation/landing/availability.
+_PAGE_CONTEXT_SIGNALS: dict[str, str] = {
+    "prediction_output": "prediction result output displayed",
+    "training_ui": "model training interface trained model",
+    "homepage_marketing": "landing page product overview",
+    "demo_content": "",
+    "unknown": "",
+    "filtered_non_target_frame": "",
+}
+
+
+def _page_context_signal(page_context: str | None) -> str:
+    """Safe deterministic signal phrase for a closed OCR page-context key."""
+    return _PAGE_CONTEXT_SIGNALS.get(str(page_context or "").strip().lower(), "")
+
+
 def classify_website_purpose(
     *,
     workflow_summary: str | None = None,
@@ -388,6 +427,8 @@ def classify_website_purpose(
     visual_summary: str | None = None,
     live_check: dict[str, Any] | None = None,
     fallback_summary: str | None = None,
+    page_context: str | None = None,
+    extra_signals: list[str] | None = None,
 ) -> str:
     """Classify what the recorded website demonstrably showed (closed vocabulary).
 
@@ -398,6 +439,15 @@ def classify_website_purpose(
     textual signal exists but the live reachability check confirmed the
     deployment, the honest floor is *deployed application availability*; with
     no signal at all the classification fails closed to *unknown / needs review*.
+
+    ``page_context`` is the pipeline's own closed OCR page-context classification
+    (``frame_ocr_evidence_summary.detected_page_context``); it contributes a safe
+    deterministic signal phrase so a prediction/training page the OCR stage
+    recognised still maps even when its raw snippets were too noisy to survive
+    sanitization. ``extra_signals`` are additional already-safe summary strings
+    (e.g. the live-check recruiter summary, or visual-reasoning supported
+    signals) folded into the same haystack. Both are optional and additive —
+    they can only ever ADD a stronger match, never suppress one.
     """
     haystack = " ".join(
         part
@@ -408,6 +458,9 @@ def classify_website_purpose(
             str(ocr_summary or ""),
             str(visual_summary or ""),
             str(fallback_summary or ""),
+            _page_context_signal(page_context),
+            " ".join(str(s) for s in (extra_signals or [])),
+            str((live_check or {}).get("summary") or "") if isinstance(live_check, dict) else "",
         )
         if part
     ).strip()
@@ -448,9 +501,22 @@ _GENAI_SKILL_RE = re.compile(
     r"|prompt\s+engineer|langchain|llama\s*index|chat\s*bot|chat\s*gpt|\bagentic\b|ai\s+agent",
     re.IGNORECASE,
 )
+# Computer-vision / image-classification skills belong to the ML family (a demo of
+# image upload → predicted class is ML/CV *product behaviour* context, never
+# implementation proof). ``is_ml_skill`` already catches "Computer Vision" but not
+# "Image Classification" / "Object Detection" / "Image Recognition", so name them.
+_CV_IMAGE_SKILL_RE = re.compile(
+    r"computer\s*vision|image\s*classif|object\s*detection|image\s*recognition"
+    r"|image\s*segmentation|teachable\s*machine|\bocr\b|face\s*detection",
+    re.IGNORECASE,
+)
 _DATAVIZ_SKILL_RE = re.compile(
     r"data\s*visuali[sz]|visuali[sz]ation|\bd3(?:\.js)?\b|chart|plotly|recharts"
-    r"|tableau|power\s*bi|\bdashboard",
+    r"|tableau|power\s*bi|\bdashboard"
+    # Data-analysis / data-science / geospatial skills read as data-visualization
+    # behaviour when the site shows a chart / map / dashboard / computed output.
+    r"|data\s*analysis|data\s*analytics|data\s*science|\banalytics\b"
+    r"|geospatial|\bgis\b|mapping|\bmaps?\b",
     re.IGNORECASE,
 )
 _FRONTEND_SKILL_RE = re.compile(
@@ -485,7 +551,7 @@ def _website_skill_family(skill: str | None) -> str:
         return _FAMILY_GENERIC
     if _GENAI_SKILL_RE.search(s):
         return _FAMILY_GENAI
-    if is_ml_skill(s) or skill_profile(s) in ("ml", "mle"):
+    if _CV_IMAGE_SKILL_RE.search(s) or is_ml_skill(s) or skill_profile(s) in ("ml", "mle"):
         return _FAMILY_ML
     if _DATAVIZ_SKILL_RE.search(s):
         return _FAMILY_DATAVIZ
@@ -689,6 +755,181 @@ def website_skill_relevance_summary(key: str | None, skill: str | None) -> str:
 def is_direct_website_relevance(key: str | None) -> bool:
     """True only for the relevance keys allowed to read as DIRECT skill evidence."""
     return str(key or "") in _DIRECT_RELEVANCE_KEYS
+
+
+# ── Conservative skill mapping DERIVED from safe summaries alone ───────────────
+#
+# Website Proof, like GitHub Proof, should surface skill-specific evidence — but
+# GitHub maps CODE (``detected_skills``) while Website maps observed RUNTIME
+# behaviour. When the pipeline persisted an explicit ``supported_skills`` list we
+# trust it (evidence-source match). When it did not — a common case for older or
+# lighter captures — we may still DERIVE a mapping, but ONLY from a relevance
+# strong enough to name a specific demonstrated behaviour: an interactive product
+# UI, a chart/dashboard, a request→result API exchange, or a model
+# prediction/generation. Every other relevance (the generic product-demo
+# fallback, bare deployment availability, structural-only UI, documentation, or
+# unknown) stays project-level — so a *generic* website that only proves the page
+# exists never rides onto a skill. This keeps the derivation honest: it can only
+# ever ADD a mapping the observed behaviour genuinely demonstrates, never blanket
+# every claimed skill.
+DERIVABLE_WEBSITE_RELEVANCE_KEYS = frozenset(
+    {
+        RELEVANCE_DIRECT_FRONTEND,
+        RELEVANCE_DATA_VISUALIZATION,
+        RELEVANCE_API_BEHAVIOR,
+        RELEVANCE_ML_PRODUCT,
+        RELEVANCE_GENAI_PRODUCT,
+    }
+)
+
+# Purposes too generic to ever DERIVE a skill mapping from on their own (they
+# describe availability / an unclassifiable capture, not a demonstrated flow).
+_NON_DERIVABLE_PURPOSES = frozenset({PURPOSE_UNKNOWN, PURPOSE_DEPLOYED_AVAILABILITY})
+
+
+def website_relevance_can_map_skill(relevance_key: str | None) -> bool:
+    """True only for relevance keys strong enough to DERIVE a skill mapping.
+
+    These are the relevances that name a SPECIFIC observed product behaviour;
+    the generic product-demonstration / availability / documentation / unknown
+    relevances deliberately return False so a generic website stays project-level.
+    """
+    return str(relevance_key or "") in DERIVABLE_WEBSITE_RELEVANCE_KEYS
+
+
+def derive_website_supported_skills(
+    purpose_key: str | None, claimed_skills: list[str] | None
+) -> list[str]:
+    """Conservatively derive which CLAIMED skills the observed website behaviour
+    supports, from the safe purpose classification ALONE (no explicit extracted
+    ``supported_skills``).
+
+    For each claimed skill we recompute the website→skill relevance for the
+    observed purpose and keep the skill only when that relevance is strong enough
+    to stand on its own (``website_relevance_can_map_skill``). A generic /
+    availability-only / unknown page maps nothing; an implementation-heavy skill
+    whose behaviour was not actually demonstrated (e.g. a DevOps skill, or an ML
+    skill on a bare navigation page) maps nothing. Returns the skills in their
+    original display form, de-duplicated, order preserved. Never invents a skill
+    that was not claimed.
+    """
+    purpose = str(purpose_key or "")
+    if purpose not in ALLOWED_WEBSITE_PURPOSE_KEYS or purpose in _NON_DERIVABLE_PURPOSES:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in claimed_skills or []:
+        display = str(raw or "").strip()
+        if not display:
+            continue
+        norm = display.lower()
+        if norm in seen:
+            continue
+        seen.add(norm)
+        relevance = classify_website_skill_relevance(purpose, skill=display)
+        if website_relevance_can_map_skill(relevance):
+            out.append(display)
+    return out
+
+
+# ── Safe internal evidence-source-type labels (DOM / OCR / visual / NLP / runtime)
+#
+# Closed vocabulary describing WHICH safe pipeline summaries backed a website
+# proof — never the raw text of any of them. Used as an honest, recruiter-safe
+# breakdown ("this behaviour was corroborated by a safe DOM summary + visual
+# frame analysis") alongside the skill mapping.
+SOURCE_TYPE_DOM = "Website DOM"
+SOURCE_TYPE_OCR = "Website OCR"
+SOURCE_TYPE_VISUAL = "Website visual analysis"
+SOURCE_TYPE_NLP = "Website NLP"
+SOURCE_TYPE_RUNTIME = "Website runtime behavior"
+
+ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES = frozenset(
+    {
+        SOURCE_TYPE_DOM,
+        SOURCE_TYPE_OCR,
+        SOURCE_TYPE_VISUAL,
+        SOURCE_TYPE_NLP,
+        SOURCE_TYPE_RUNTIME,
+    }
+)
+
+
+def website_evidence_source_types(
+    *,
+    has_dom: bool = False,
+    has_ocr: bool = False,
+    has_visual: bool = False,
+    has_nlp: bool = False,
+    live_reachable: bool = False,
+) -> list[str]:
+    """Closed-vocabulary labels for which safe summaries backed a website proof.
+
+    Deterministic order (structure → text → vision → language → runtime). Each
+    label states only that a SAFE summary of that kind EXISTED — never its
+    contents, never a score. Empty when the proof carried none of them.
+    """
+    types: list[str] = []
+    if has_dom:
+        types.append(SOURCE_TYPE_DOM)
+    if has_ocr:
+        types.append(SOURCE_TYPE_OCR)
+    if has_visual:
+        types.append(SOURCE_TYPE_VISUAL)
+    if has_nlp:
+        types.append(SOURCE_TYPE_NLP)
+    if live_reachable:
+        types.append(SOURCE_TYPE_RUNTIME)
+    return types
+
+
+# ── Project-level-only Website Proof: why it did not map to a skill ────────────
+#
+# A Website Proof can be captured and attached to a project yet map to NO specific
+# skill — the honest, common Diagnosis-C case where the observed behaviour was too
+# generic (navigation / layout / landing / bare availability / documentation /
+# unclassified). It stays PROJECT-LEVEL evidence: it proves the site exists and can
+# be inspected, but not a specific demonstrated skill. These helpers give the
+# student a safe, closed-vocabulary reason + a concrete strengthening action —
+# never a score, never raw evidence, never a faked skill mapping.
+
+# The single canonical guidance sentence for turning a project-level-only Website
+# Proof into skill-specific evidence. Names the runtime behaviours the safe
+# classifier CAN map (prediction / API response / dashboard / route / workflow).
+WEBSITE_STRENGTHEN_ACTION = (
+    "Record a stronger Website Proof showing runtime behavior such as a model "
+    "prediction, API response, dashboard interaction, route recommendation, or "
+    "workflow completion."
+)
+
+# The canonical short reason a project-level-only Website Proof carries when the
+# observed behaviour simply is not skill-specific enough to map.
+WEBSITE_UNMAPPED_GENERIC_REASON = "Insufficient skill-specific runtime behavior"
+
+# Per-purpose short reason (the card's "Reason:" line). Only the honestly generic
+# purposes appear here; anything else falls back to the generic reason above (e.g.
+# a strong purpose that mapped nothing because no CLAIMED skill matched).
+_WEBSITE_UNMAPPED_PURPOSE_REASONS: dict[str, str] = {
+    PURPOSE_NAVIGATION_LAYOUT: "Navigation/layout evidence only",
+    PURPOSE_LANDING_OVERVIEW: "Landing/overview evidence only",
+    PURPOSE_DEPLOYED_AVAILABILITY: "Deployment-availability evidence only",
+    PURPOSE_DOCUMENTATION: "Documentation-only evidence",
+    PURPOSE_ERROR_LOADING: "Error/loading-state evidence only",
+    PURPOSE_UNKNOWN: "Unclassified website capture — needs review",
+}
+
+
+def website_unmapped_skill_reason(purpose_key: str | None) -> str:
+    """Safe short reason a Website Proof stayed project-level (mapped no skill).
+
+    Closed vocabulary keyed on the observed-behaviour classification: the honestly
+    generic purposes (navigation / layout / landing / availability / documentation
+    / unknown) name what WAS observed; every other purpose falls back to the
+    canonical generic reason. Never a score, never raw evidence.
+    """
+    return _WEBSITE_UNMAPPED_PURPOSE_REASONS.get(
+        str(purpose_key or ""), WEBSITE_UNMAPPED_GENERIC_REASON
+    )
 
 
 # ── Honest limitations (per relevance family) ─────────────────────────────────

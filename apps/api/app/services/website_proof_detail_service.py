@@ -148,6 +148,62 @@ def _safe_visual_summary(wf: dict[str, Any], domain: str) -> str | None:
     return None
 
 
+# Closed OCR page-context enum values that are safe to surface as a page-context
+# signal for the read-time purpose classifier (the raw enum, no free text).
+_ALLOWED_PAGE_CONTEXTS = frozenset(
+    {
+        "homepage_marketing",
+        "training_ui",
+        "prediction_output",
+        "demo_content",
+        "unknown",
+        "filtered_non_target_frame",
+    }
+)
+
+
+def _safe_page_context(wf: dict[str, Any]) -> str | None:
+    """The pipeline's own closed OCR page-context classification (safe enum only)."""
+    ocr = _coerce_dict(wf.get("frame_ocr_evidence_summary"))
+    ctx = str(ocr.get("detected_page_context") or "").strip().lower()
+    return ctx if ctx in _ALLOWED_PAGE_CONTEXTS else None
+
+
+def _safe_extra_signals(wf: dict[str, Any], domain: str) -> list[str]:
+    """Additional already-safe signal phrases for the purpose classifier.
+
+    Surfaces two richer-but-safe workflow-analysis fields that the fixed
+    ``ocr_summary`` / ``visual_summary`` projections do not: the OCR stage's
+    ``observed_summary`` narrative and the visual-reasoning ``supported_signals``.
+    Both are noise-filtered/sanitized here so only clean, target-app text reaches
+    the classifier — never raw OCR/provider payloads. Bounded and deduped.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: Any) -> None:
+        text = str(raw or "").strip()
+        if not text:
+            return
+        clean, quality = _sanitize_text_segments(text, domain)
+        clean = _truncate(clean, 200).strip()
+        key = clean.lower()
+        if clean and quality != "noisy" and key not in seen:
+            seen.add(key)
+            out.append(clean)
+
+    ocr = _coerce_dict(wf.get("frame_ocr_evidence_summary"))
+    if ocr.get("has_ocr_evidence"):
+        _add(ocr.get("observed_summary"))
+
+    vrs = _coerce_dict(wf.get("visual_reasoning_summary"))
+    if vrs.get("status") == "analyzed":
+        for sig in (vrs.get("supported_signals") or [])[:8]:
+            _add(sig)
+
+    return out[:10]
+
+
 def _live_check(db: Any, user_id: str, proof_session_id: str) -> dict[str, Any] | None:
     row: dict[str, Any] | None = None
     try:
@@ -256,5 +312,12 @@ def get_website_proof_detail(db: Any, user_id: str, proof_session_id: str) -> di
         "dom_summary": _safe_dom_summary(wf, domain) if wf else None,
         "ocr_summary": _safe_ocr_summary(wf, domain) if wf else None,
         "visual_summary": _safe_visual_summary(wf, domain) if wf else None,
+        # The pipeline's own closed OCR page-context classification + additional
+        # already-safe signal phrases (OCR observed-summary, visual supported
+        # signals). Feed the read-time purpose classifier so a genuinely strong
+        # prediction/training/API/data capture maps precisely even when the fixed
+        # summary projections above were too noisy to surface it.
+        "page_context": _safe_page_context(wf) if wf else None,
+        "extra_signals": _safe_extra_signals(wf, domain) if wf else [],
         "live_check": live,
     }
