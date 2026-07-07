@@ -46,6 +46,7 @@ import { downloadPassportCardImage } from "@/lib/card-image"
 import {
   buildCapabilityAggregates,
   capabilityRowKeys,
+  filterAggregateByProof,
   presentCapabilities,
   type CapabilityAggregate,
 } from "@/lib/passport-capabilities"
@@ -109,6 +110,24 @@ const PROOF_SHORT_LABEL: Record<string, string> = {
 
 /** Canonical Website Proof proof-type label (matches the backend + graph). */
 const WEBSITE_PROOF_LABEL = "Website Proof"
+
+/** Canonical GitHub Proof proof-type label (matches the backend + graph). */
+const GITHUB_PROOF_LABEL = "GitHub Proof"
+
+/**
+ * Recruiter-safe empty copy for an active Proof Type filter that matches no
+ * skill→project row. Website / GitHub get a specific explanation that their
+ * project-level or vault-only evidence is intentionally kept separate until it is
+ * attached to a specific project skill (so the reader never reads the empty state
+ * as "no such proof exists"); every other proof type gets the generic line.
+ */
+function proofFilterEmptyCopy(proofFilter: string): string {
+  if (proofFilter === WEBSITE_PROOF_LABEL)
+    return "No exact skill-project evidence matches Website Proof. Project-level or vault-only Website Proof is kept separate until it is attached to a specific project skill."
+  if (proofFilter === GITHUB_PROOF_LABEL)
+    return "No exact skill-project evidence matches GitHub Proof. Repository references or vault-only GitHub evidence are kept separate until attached to a specific project skill."
+  return "No skill-project evidence matches the current filters."
+}
 
 /** "GitHub · Website · Defense" from canonical proof-type labels. */
 function shortProofList(sources: string[]): string {
@@ -1496,6 +1515,17 @@ function PassportGraphExplorer({
     return true
   })
 
+  // The capability summary must respect an active Proof Type filter: it shows only
+  // the portion of the role area backed by that proof (never another proof's chain
+  // — e.g. no Document Proof chain while Website Proof is selected). When none of
+  // the role area's evidence uses the selected proof, it resolves to null and an
+  // honest empty note is shown instead of an unfiltered/overall summary.
+  const proofScopedRoleAggregate = roleAggregate
+    ? proofFilter
+      ? filterAggregateByProof(roleAggregate, proofFilter)
+      : roleAggregate
+    : null
+
   const skillNode = skillFilter ? graph.skills.find((s) => s.key === skillFilter) ?? null : null
   const projectSummary = projectFilter
     ? passport.projects.find((p) => p.project_id === projectFilter) ?? null
@@ -1514,11 +1544,18 @@ function PassportGraphExplorer({
           hasFilter
           ? `Skills (${visibleSkills.length})`
         : `Skills (${graph.skills.length})`
+  // The Projects heading count must never contradict the list below it: when ANY
+  // evidence filter is active (role area, underlying skill, project, proof type,
+  // or search) it reflects the FILTERED visibleProjects, so a Website/GitHub proof
+  // filter with no matching skill-project row reads "Projects (0)", not the total.
+  // With no filter active it shows the full passport.projects.length.
+  const hasActiveEvidenceFilters = hasFilter
+  const projectsHeadingCount = hasActiveEvidenceFilters ? visibleProjects.length : passport.projects.length
   const projectsHeading = skillFilter
     ? `Projects for selected skill (${visibleProjects.length})`
     : projectFilter
       ? `Selected project (${visibleProjects.length})`
-      : `Projects (${passport.projects.length})`
+      : `Projects (${projectsHeadingCount})`
 
   const panelHeading: CSSProperties = { fontSize: 15, fontWeight: 700, color: TOKEN.ink, margin: 0 }
 
@@ -1704,8 +1741,23 @@ function PassportGraphExplorer({
 
       {/* Role-area capability summary — the role-level evidence view (why, which
           projects, which skills, which proof, what gaps). Shown above the map so a
-          recruiter reads the aggregated capability first, then the supporting rows. */}
-      {roleAggregate && <CapabilitySummaryCard capability={roleAggregate} />}
+          recruiter reads the aggregated capability first, then the supporting rows.
+          Under an active Proof Type filter it is scoped to that proof (or an honest
+          empty note when the role area has no evidence using it), so it never shows
+          a proof chain that violates the selected Proof Type. */}
+      {roleAggregate &&
+        (proofScopedRoleAggregate ? (
+          <CapabilitySummaryCard capability={proofScopedRoleAggregate} />
+        ) : (
+          <Card>
+            <p
+              data-testid="capability-proof-empty"
+              style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
+            >
+              No exact evidence for this role area matches the selected proof type.
+            </p>
+          </Card>
+        ))}
 
       {/* PRIMARY — the skill-first evidence map. */}
       <div data-testid="passport-skills-panel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1729,9 +1781,8 @@ function PassportGraphExplorer({
                   {(PROOF_SHORT_LABEL[proofFilter] ?? proofFilter).toLowerCase()} evidence to a project that supports this role area.
                 </p>
               ) : proofFilter ? (
-                <p data-testid="skills-panel-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-                  No skill-project evidence found for {proofFilter}. Try all proof types or attach{" "}
-                  {(PROOF_SHORT_LABEL[proofFilter] ?? proofFilter).toLowerCase()} evidence.
+                <p data-testid="skills-panel-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+                  {proofFilterEmptyCopy(proofFilter)}
                 </p>
               ) : (
                 <p data-testid="skills-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
@@ -1769,8 +1820,9 @@ function PassportGraphExplorer({
           </Card>
         ) : visibleProjects.length === 0 ? (
           <Card>
-            <p data-testid="projects-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-              No projects match these filters. Clear filters to see all projects.
+            <p data-testid="projects-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+              {proofFilter ? `${proofFilterEmptyCopy(proofFilter)} ` : "No projects match these filters. "}
+              Clear filters to see all projects.
             </p>
           </Card>
         ) : (

@@ -2067,11 +2067,13 @@ describe("PrivatePassportView — evaluator Explore-evidence controls", () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-evidence-controls")
 
-    // FastAPI has no Website row → combining the two yields no matches.
+    // FastAPI has no Website row → combining the two yields no matches. The copy
+    // makes the honest distinction that project-level/vault-only Website Proof is
+    // kept separate until attached to a specific project skill.
     selectSkill("fastapi")
     fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
     expect(screen.getByTestId("skills-panel-proof-empty")).toHaveTextContent(
-      "No skill-project evidence found for Website Proof. Try all proof types or attach website evidence.",
+      "No exact skill-project evidence matches Website Proof. Project-level or vault-only Website Proof is kept separate until it is attached to a specific project skill.",
     )
     expect(screen.queryAllByTestId("passport-skill-card")).toHaveLength(0)
   })
@@ -2720,9 +2722,10 @@ describe("PrivatePassportView — Proof Type dropdown reflects the whole passpor
     fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
 
     // No skill→project row maps Website → clear empty state, no fabricated rows.
+    // The honest copy makes the project-level/vault-only distinction explicit.
     expect(screen.queryAllByTestId("passport-skill-card")).toHaveLength(0)
     expect(screen.getByTestId("skills-panel-proof-empty")).toHaveTextContent(
-      "No skill-project evidence found for Website Proof. Try all proof types or attach website evidence.",
+      "No exact skill-project evidence matches Website Proof. Project-level or vault-only Website Proof is kept separate until it is attached to a specific project skill.",
     )
   })
 
@@ -3574,5 +3577,313 @@ describe("PrivatePassportView — canonical public link origin", () => {
 
     const link = await screen.findByTestId("passport-public-link")
     expect(link.textContent).toContain(`${window.location.origin}/p/slug123`)
+  })
+})
+
+// ── Proof-filter heading/count consistency (Codex PASS-WITH-FIXES regression) ──
+//
+// When a Proof Type filter (or any other evidence filter) is active, the Projects
+// heading count must never contradict the filtered list below it. Previously the
+// heading used the total passport.projects.length, so a Website/GitHub Proof
+// filter with zero matching skill-project rows showed the contradictory pair
+// "Skills (0)" + "Projects (2)". The heading must now track visibleProjects, the
+// empty copy must honestly explain that project-level/vault-only proof is kept
+// separate, and the capability summary must respect the active proof type.
+
+// A passport where Website + GitHub Proof are OFFERED as proof-type options (they
+// exist at project level / in the source counts) but NO skill→project row maps
+// them — the only mapped evidence is Document Proof. Filtering by Website or
+// GitHub therefore yields zero matching skill-project rows.
+function makeProofOptionOnlyPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  const base = makePassport().projects[0]
+  return makePassport({
+    skills: [
+      {
+        skill: "Machine Learning",
+        status: "Demonstrated",
+        evidence_chip_count: 1,
+        project_count: 1,
+        evidence_sources: ["Document Proof"],
+        projects: [
+          {
+            project_title: "Doc-Only ML Project",
+            project_id: "proj-doc",
+            skill_status: "Demonstrated",
+            evidence_sources: ["Document Proof"],
+            supporting_proof_types: ["Document Proof"],
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+    ],
+    projects: [
+      {
+        ...base,
+        project_id: "proj-doc",
+        project_title: "Doc-Only ML Project",
+        claimed_skills: ["Machine Learning"],
+        // Project-level Website + GitHub proof exists (so both are offered as
+        // proof-type options) but neither is mapped to the skill row above.
+        evidence_sources: ["Document Proof", "Website Proof", "GitHub Proof"],
+        top_skills: [
+          { skill: "Machine Learning", status: "Demonstrated", skill_slug: "machine-learning", supporting_proof_types: ["Document Proof"] },
+        ],
+      },
+      {
+        ...base,
+        project_id: "proj-extra",
+        project_title: "Second Project",
+        claimed_skills: [],
+        evidence_sources: ["Website Proof", "GitHub Proof"],
+        top_skills: [],
+      },
+    ],
+    evidence_source_counts: { "Document Proof": 1, "Website Proof": 1, "GitHub Proof": 1 },
+    project_count: 2,
+    ...overrides,
+  })
+}
+
+// A passport with exactly one Website-attached skill row and one GitHub-attached
+// skill row, in different projects — so a proof filter narrows the map to a real
+// subset (never the total, never zero).
+function makeProofMixPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  const base = makePassport().projects[0]
+  const skillRow = (title: string, id: string, proofs: string[]) => ({
+    project_title: title,
+    project_id: id,
+    skill_status: "Demonstrated",
+    evidence_sources: proofs,
+    supporting_proof_types: proofs,
+    report_is_public: false,
+    public_report_path: null,
+  })
+  return makePassport({
+    skills: [
+      {
+        skill: "React",
+        status: "Demonstrated",
+        evidence_chip_count: 1,
+        project_count: 1,
+        evidence_sources: ["Website Proof"],
+        projects: [skillRow("Web Product Demo", "proj-web", ["Website Proof"])],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+      {
+        skill: "Python",
+        status: "Demonstrated",
+        evidence_chip_count: 1,
+        project_count: 1,
+        evidence_sources: ["GitHub Proof"],
+        projects: [skillRow("Backend Service", "proj-git", ["GitHub Proof"])],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      },
+    ],
+    projects: [
+      {
+        ...base,
+        project_id: "proj-web",
+        project_title: "Web Product Demo",
+        claimed_skills: ["React"],
+        evidence_sources: ["Website Proof"],
+        top_skills: [{ skill: "React", status: "Demonstrated", skill_slug: "react", supporting_proof_types: ["Website Proof"] }],
+      },
+      {
+        ...base,
+        project_id: "proj-git",
+        project_title: "Backend Service",
+        claimed_skills: ["Python"],
+        evidence_sources: ["GitHub Proof"],
+        top_skills: [{ skill: "Python", status: "Demonstrated", skill_slug: "python", supporting_proof_types: ["GitHub Proof"] }],
+      },
+    ],
+    evidence_source_counts: { "Website Proof": 1, "GitHub Proof": 1 },
+    project_count: 2,
+    ...overrides,
+  })
+}
+
+const setProof = (label: string) =>
+  fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: label } })
+const proofFilterSkillCard = (name: string) =>
+  screen.queryAllByTestId("passport-skill-card").find((c) => c.getAttribute("data-skill") === name)
+const proofFilterProjectCard = (id: string) =>
+  screen.queryAllByTestId("passport-project-card").find((c) => c.getAttribute("data-project-id") === id)
+
+describe("PrivatePassportView — proof-filter heading/count consistency", () => {
+  // A — Website Proof with zero matching rows: Skills (0) + Projects (0), never
+  // the contradictory Projects (2).
+  it("Website Proof filter with no matching skill-project row shows Skills (0) and Projects (0)", async () => {
+    const p = makeProofOptionOnlyPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Baseline (no filter) shows the full project total.
+    expect(screen.getByText("Projects (2)")).toBeInTheDocument()
+
+    setProof("Website Proof")
+
+    expect(screen.getByText("Skills (0)")).toBeInTheDocument()
+    expect(screen.getByText("Projects (0)")).toBeInTheDocument()
+    // The old contradictory "Projects (2)" heading is gone.
+    expect(screen.queryByText("Projects (2)")).not.toBeInTheDocument()
+    expect(proofFilterSkillCard("Machine Learning")).toBeUndefined()
+    // Honest copy: project-level/vault-only Website Proof is kept separate.
+    expect(screen.getByTestId("skills-panel-proof-empty")).toHaveTextContent(
+      "No exact skill-project evidence matches Website Proof. Project-level or vault-only Website Proof is kept separate until it is attached to a specific project skill.",
+    )
+  })
+
+  // B — GitHub Proof with zero matching rows: Skills (0) + Projects (0).
+  it("GitHub Proof filter with no matching skill-project row shows Skills (0) and Projects (0)", async () => {
+    const p = makeProofOptionOnlyPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    setProof("GitHub Proof")
+
+    expect(screen.getByText("Skills (0)")).toBeInTheDocument()
+    expect(screen.getByText("Projects (0)")).toBeInTheDocument()
+    expect(screen.queryByText("Projects (2)")).not.toBeInTheDocument()
+    expect(screen.getByTestId("skills-panel-proof-empty")).toHaveTextContent(
+      "No exact skill-project evidence matches GitHub Proof. Repository references or vault-only GitHub evidence are kept separate until attached to a specific project skill.",
+    )
+  })
+
+  // C — an active proof filter uses visibleProjects.length (a subset), not total.
+  it("Projects heading uses the filtered count (not the total) when a proof filter is active", async () => {
+    const p = makeProofMixPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Two projects total; only the Website-attached one matches the filter.
+    expect(screen.getByText("Projects (2)")).toBeInTheDocument()
+    setProof("Website Proof")
+    expect(screen.getByText("Projects (1)")).toBeInTheDocument()
+    expect(screen.queryByText("Projects (2)")).not.toBeInTheDocument()
+    expect(proofFilterProjectCard("proj-web")).toBeDefined()
+    expect(proofFilterProjectCard("proj-git")).toBeUndefined()
+  })
+
+  // D — with no filters active the Projects heading shows the full total.
+  it("Projects heading uses the total passport.projects.length when no filters are active", async () => {
+    const p = makeProofMixPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    expect(screen.getByText("Projects (2)")).toBeInTheDocument()
+    expect(screen.getByText("Skills (2)")).toBeInTheDocument()
+    expect(screen.queryByTestId("clear-filters-button")).not.toBeInTheDocument()
+  })
+
+  // E — Role Area + Proof Type compose with AND semantics: a proof that exists in
+  // the passport but NOT within the selected role area's evidence yields nothing.
+  it("Role Area + Proof Type filters use AND semantics (proof must match within the role area)", async () => {
+    const p = makeRoleAreaPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // GitHub Proof exists in the passport (Boston/backend), so it is a valid option.
+    selectRole("computer-vision")
+    setProof("GitHub Proof")
+    // But the Computer Vision role area's own evidence (Teachable) has NO GitHub
+    // Proof → AND semantics remove every skill; it is not treated as OR.
+    expect(screen.queryAllByTestId("passport-skill-card")).toHaveLength(0)
+    expect(screen.getByTestId("skills-panel-role-proof-empty")).toBeInTheDocument()
+    // The capability summary is scoped away too (no unfiltered/overall summary).
+    expect(screen.queryByTestId("capability-summary")).not.toBeInTheDocument()
+    expect(screen.getByTestId("capability-proof-empty")).toHaveTextContent(
+      "No exact evidence for this role area matches the selected proof type",
+    )
+  })
+
+  // F — the capability summary must not show a Document Proof chain while the
+  // active Proof Type filter is Website Proof.
+  it("capability summary does not show a Document Proof chain while Proof Type = Website Proof", async () => {
+    const p = makeRoleAreaPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Computer Vision's evidence includes Document Proof (Teachable ML), but under a
+    // Website Proof filter the summary must be scoped to Website Proof only.
+    selectRole("computer-vision")
+    setProof("Website Proof")
+    const summary = screen.getByTestId("capability-summary")
+    expect(summary).toHaveAttribute("data-capability", "Computer Vision")
+
+    const coverage = within(summary).queryAllByTestId("capability-proof-chip").map((c) => c.getAttribute("data-source"))
+    expect(coverage).toContain("Website Proof")
+    expect(coverage).not.toContain("Document Proof")
+    // No proof chip anywhere in the summary (coverage, skills, projects) is Document.
+    const allProofSources = within(summary)
+      .queryAllByTestId(/proof-chip$/)
+      .map((c) => c.getAttribute("data-source"))
+    expect(allProofSources).not.toContain("Document Proof")
+    // The evidence-chain connector must not carry a Document Proof node either.
+    const chainNodes = within(summary).getAllByTestId("capability-chain-node").map((n) => n.textContent)
+    expect(chainNodes).not.toContain("Document Proof")
+  })
+
+  // G — a valid attached Website Proof skill-project row still appears and counts.
+  it("keeps a genuinely attached Website Proof skill-project row visible with a correct count", async () => {
+    const p = makeProofMixPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    setProof("Website Proof")
+    expect(screen.getByText("Skills (1)")).toBeInTheDocument()
+    expect(screen.getByText("Projects (1)")).toBeInTheDocument()
+    expect(proofFilterSkillCard("React")).toBeDefined()
+    expect(proofFilterSkillCard("Python")).toBeUndefined()
+    expect(proofFilterProjectCard("proj-web")).toBeDefined()
+    // No contradictory empty state when a real match exists.
+    expect(screen.queryByTestId("skills-panel-proof-empty")).not.toBeInTheDocument()
+  })
+
+  // H — a valid attached GitHub Proof skill-project row still appears and counts.
+  it("keeps a genuinely attached GitHub Proof skill-project row visible with a correct count", async () => {
+    const p = makeProofMixPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    setProof("GitHub Proof")
+    expect(screen.getByText("Skills (1)")).toBeInTheDocument()
+    expect(screen.getByText("Projects (1)")).toBeInTheDocument()
+    expect(proofFilterSkillCard("Python")).toBeDefined()
+    expect(proofFilterSkillCard("React")).toBeUndefined()
+    expect(proofFilterProjectCard("proj-git")).toBeDefined()
+    expect(screen.queryByTestId("skills-panel-proof-empty")).not.toBeInTheDocument()
   })
 })
