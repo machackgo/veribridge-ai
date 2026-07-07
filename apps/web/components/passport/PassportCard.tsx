@@ -14,39 +14,41 @@ const STATUS_DOT: Record<string, string> = {
   "Not assessed": "#94a3b8",
 }
 
-const PROOF_SHORT: Record<string, string> = {
-  "GitHub Proof": "GitHub",
-  "Document Proof": "Document",
-  "Website Proof": "Website",
-  "Project Defense": "Defense",
-  "Video Evidence": "Video",
-}
-
 /**
- * The Verified Passport Card — a professional, premium digital-credential
- * (Apple-Wallet / LinkedIn-badge / ID-card style) shared by the private preview
- * and the public `/card/[slug]` route. It answers a recruiter's five-second
- * question — who is this, what role areas can they apply for, what proof exists,
- * how do I open the full Passport — WITHOUT being a report: no featured-project
- * list, no raw evidence, no scores, and NO QR/barcode on the card face.
+ * The Verified Passport Card — a clean, premium digital-credential (professional
+ * ID-card style) shared by the private preview and the public `/card/[slug]`
+ * route. It answers a recruiter's five-second question — who is this, what role
+ * areas can they apply for, is the profile verified, how do I open the full
+ * Passport — WITHOUT being a report: no featured-project list, no raw evidence,
+ * no scores.
  *
- * The identity area is a clean rounded-square PORTRAIT (the candidate's photo,
- * `object-fit: cover`, or a gradient initials fallback) with a subtle verified
- * check badge once the passport is published. Scanning/sharing is handled off the
- * card face (Web Share, download-as-image, copy link, optional "Show QR" modal)
- * so the card itself stays a thing a student is proud to save and show. Role chips
- * deep-link to real, evidence-backed skills (same-page for the private preview via
- * {@link onCapabilityClick}; cross-page for the public card via {@link capabilityHref}).
+ * Deliberately recruiter-facing and uncluttered:
+ *  - NO QR / barcode / scan box on the card face (a QR belongs only in a separate
+ *    share/proximity modal, never on the credential itself);
+ *  - NO colourful proof-source chip row on the face — proof breadth is summarised
+ *    in one neutral evidence line instead.
+ *
+ * Role chips deep-link to real, evidence-backed skills (same-page for the private
+ * preview via {@link onCapabilityClick}; cross-page for the public card via
+ * {@link capabilityHref}). The student can choose which role areas appear via the
+ * private "Customize Passport Card" selector, passed here as {@link capabilities};
+ * when omitted the card shows the model's default top role areas.
  */
 export function PassportCard({
   model,
   variant,
+  capabilities,
   onCapabilityClick,
   capabilityHref,
   footer,
 }: {
   model: PassportCardModel
   variant: "private" | "public"
+  /**
+   * Role areas to render on the face (already capped/ordered by the caller). When
+   * omitted the card falls back to `model.capabilities` (the default top areas).
+   */
+  capabilities?: PassportCardCapability[]
   /** Same-page role-chip selection (private preview → filter the evidence map). */
   onCapabilityClick?: (cap: PassportCardCapability) => void
   /** Cross-page role-chip deep link (public card → full Passport skill evidence). */
@@ -59,6 +61,7 @@ export function PassportCard({
   const photo = model.profileImageUrl
   const portrait = 84
   const radius = 20
+  const shownCapabilities = capabilities ?? model.capabilities
 
   const portraitInner = photo ? (
     <img
@@ -106,13 +109,13 @@ export function PassportCard({
         maxWidth: 480,
         display: "flex",
         flexDirection: "column",
-        gap: 16,
-        borderRadius: 18,
-        padding: 20,
+        gap: 18,
+        borderRadius: 20,
+        padding: 22,
         color: "#fff",
         background: "linear-gradient(135deg,#0a0e1a 0%,#1e1b4b 52%,#312e81 100%)",
         border: "1px solid rgba(255,255,255,0.10)",
-        boxShadow: "0 10px 30px -12px rgba(30,27,75,0.55)",
+        boxShadow: "0 18px 44px -18px rgba(30,27,75,0.7)",
       }}
     >
       {/* Top bar — brand + public status */}
@@ -195,16 +198,16 @@ export function PassportCard({
         </div>
       </div>
 
-      {/* Role / capability areas */}
+      {/* Role / capability areas — only the selected areas, capped by the caller */}
       <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
         <span style={sectionLabel}>Role areas</span>
-        {model.capabilities.length === 0 ? (
+        {shownCapabilities.length === 0 ? (
           <p data-testid="passport-card-no-capabilities" style={{ fontSize: 12, color: "rgba(255,255,255,0.55)", margin: 0 }}>
             Role areas appear once your skills have attached evidence.
           </p>
         ) : (
           <div data-testid="passport-card-capabilities" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {model.capabilities.map((cap) => (
+            {shownCapabilities.map((cap) => (
               <CapabilityChip
                 key={cap.label}
                 cap={cap}
@@ -216,34 +219,23 @@ export function PassportCard({
         )}
       </div>
 
-      {/* Proof coverage + evidence line */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-        <span style={sectionLabel}>Evidence</span>
-        <div data-testid="passport-card-proof-coverage" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {model.proofCoverage.map((c) => (
-            <span
-              key={c.label}
-              data-testid="passport-card-proof-item"
-              data-source={c.label}
-              data-present={c.present ? "true" : "false"}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 4,
-                padding: "3px 8px",
-                borderRadius: 999,
-                fontSize: 10.5,
-                fontWeight: 600,
-                background: c.present ? "rgba(52,211,153,0.14)" : "rgba(255,255,255,0.05)",
-                color: c.present ? "#6ee7b7" : "rgba(255,255,255,0.4)",
-                border: `1px solid ${c.present ? "rgba(52,211,153,0.34)" : "rgba(255,255,255,0.10)"}`,
-              }}
-            >
-              {c.present ? "✓" : "–"} {PROOF_SHORT[c.label] ?? c.label}
-            </span>
-          ))}
-        </div>
-        <p data-testid="passport-card-evidence-line" style={{ fontSize: 11.5, color: "rgba(255,255,255,0.7)", margin: 0 }}>
+      {/* Verification summary — a neutral recruiter-safe line, no proof-chip row */}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+          paddingTop: 14,
+          borderTop: "1px solid rgba(255,255,255,0.10)",
+        }}
+      >
+        <p
+          data-testid="passport-card-verification-summary"
+          style={{ fontSize: 12.5, color: "rgba(255,255,255,0.9)", margin: 0, fontWeight: 600 }}
+        >
+          Evidence-backed project profile
+        </p>
+        <p data-testid="passport-card-evidence-line" style={{ fontSize: 11.5, color: "rgba(255,255,255,0.66)", margin: 0 }}>
           {model.evidence.projectCount} {model.evidence.projectCount === 1 ? "project" : "projects"} ·{" "}
           {model.evidence.proofTypeCount} proof {model.evidence.proofTypeCount === 1 ? "type" : "types"} · recruiter-safe
         </p>

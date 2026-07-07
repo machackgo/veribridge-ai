@@ -11,6 +11,8 @@
  *  - Public /card/[slug]: recruiter-safe compact card, slug-anchored role-chip
  *    links, share/download/QR controls, and the safe not-found state.
  *
+ * The redesigned card face is deliberately clean: NO QR / barcode / scan box, and
+ * NO colourful proof-source chip row — only a neutral verification/evidence line.
  * Safety guardrails asserted throughout: the compact card lists NO featured
  * projects and never leaks raw evidence, internal ids, file paths, private
  * routes, or numeric scores on either surface. The card face carries NO QR /
@@ -21,7 +23,7 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
 import { PublicPassportCardView } from "../app/card/[slug]/PublicPassportCardView"
-import type { PassportIdentity, PrivateWorkPassport, PublicWorkPassport, WorkPassportStatus } from "@/lib/vbr-api"
+import type { PassportIdentity, PassportSkillSummary, PrivateWorkPassport, PublicWorkPassport, WorkPassportStatus } from "@/lib/vbr-api"
 
 vi.mock("@/lib/vbr-api", async (importActual) => ({
   // Keep the real pure helpers (validatePassportPhoto, publicSafeAvatarUrl, …);
@@ -54,6 +56,20 @@ beforeEach(() => {
 
 // ── Factories ────────────────────────────────────────────────────────────────
 
+function skill(overrides: Partial<PassportSkillSummary> & { skill: string }): PassportSkillSummary {
+  return {
+    status: "Demonstrated",
+    evidence_chip_count: 1,
+    project_count: 1,
+    evidence_sources: ["GitHub Proof"],
+    projects: [],
+    evidence_chips: [],
+    notes: "",
+    limitations: [],
+    ...overrides,
+  }
+}
+
 function makePrivatePassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
   return {
     candidate_display_name: "Jordan Rivera",
@@ -64,8 +80,8 @@ function makePrivatePassport(overrides: Partial<PrivateWorkPassport> = {}): Priv
     public_path: null,
     published_at: null,
     skills: [
-      { skill: "Python", status: "Demonstrated", evidence_chip_count: 2, project_count: 1, evidence_sources: ["GitHub Proof"], projects: [], evidence_chips: [], notes: "", limitations: [] },
-      { skill: "React", status: "Partially demonstrated", evidence_chip_count: 1, project_count: 1, evidence_sources: [], projects: [], evidence_chips: [], notes: "", limitations: [] },
+      skill({ skill: "Python", status: "Demonstrated", evidence_sources: ["GitHub Proof"] }),
+      skill({ skill: "React", status: "Partially demonstrated", evidence_sources: [] }),
     ],
     projects: [
       {
@@ -94,6 +110,49 @@ function makePrivatePassport(overrides: Partial<PrivateWorkPassport> = {}): Priv
     generated_at: "2026-01-02T00:00:00Z",
     ...overrides,
   }
+}
+
+/**
+ * A passport whose skills span MORE than six high-level role areas, so the card's
+ * six-slot cap and the selector's "cannot exceed 6" rule are exercised for real.
+ * Each skill name contains a keyword that maps it to a distinct role area.
+ */
+function makeManyRolePassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  const names = [
+    "TensorFlow Model Training", // Machine Learning
+    "OpenCV Object Detection", // Computer Vision
+    "Pandas Data Analysis", // Data Science / Applied AI
+    "LangChain LLM Agent", // AI Product Engineering
+    "FastAPI Backend", // Backend APIs
+    "Docker Deployment Pipeline", // Cloud / MLOps
+    "React Frontend", // Full-Stack / Frontend AI
+    "C++ Algorithms", // Software Engineering
+    "Technical Documentation", // Documentation & Communication
+  ]
+  return makePrivatePassport({
+    skills: names.map((name) => skill({ skill: name, status: "Demonstrated", evidence_sources: ["GitHub Proof"] })),
+    projects: [
+      {
+        project_id: "proj-many",
+        project_title: "Multi-area Project",
+        project_summary: "Covers many role areas.",
+        repo_full_name: "octocat/Hello-World",
+        claimed_skills: names,
+        evidence_sources: ["GitHub Proof"],
+        evidence_package: {
+          github_proof_attached: true,
+          documents_count: 0,
+          website_proofs_count: 0,
+          project_defense_completed: false,
+          video_defense_recorded: false,
+          video_evidence_chip_count: 0,
+        },
+        attempt_count: 1,
+        report: { is_public: false, public_token: null, public_path: null, published_at: null },
+      },
+    ],
+    ...overrides,
+  })
 }
 
 /** A recruiter-safe identity payload (public by construction) for photo tests. */
@@ -155,12 +214,30 @@ function makePublicPassport(overrides: Partial<PublicWorkPassport> = {}): Public
   }
 }
 
+/** The known high-level role-area labels (grouped, never raw skills). */
+const ROLE_AREA_LABELS = [
+  "Machine Learning",
+  "Computer Vision",
+  "Data Science / Applied AI",
+  "AI Product Engineering",
+  "Backend APIs",
+  "Cloud / MLOps",
+  "Full-Stack / Frontend AI",
+  "Software Engineering",
+  "Documentation & Communication",
+]
+
 beforeEach(() => {
   vi.mocked(getPrivateWorkPassport).mockReset()
   vi.mocked(getWorkPassportStatus).mockReset()
   vi.mocked(getPublicWorkPassportBySlug).mockReset()
   vi.mocked(uploadPassportPhoto).mockReset()
   vi.mocked(removePassportPhoto).mockReset()
+  try {
+    window.localStorage.clear()
+  } catch {
+    /* jsdom localStorage always available; guard just in case */
+  }
 })
 
 /** A valid in-memory image File of the given type/size for upload tests. */
@@ -176,17 +253,25 @@ function expectNoQrOnCardFace(card: HTMLElement) {
   expect(card.querySelector("[data-qr-value]")).toBeNull()
 }
 
+async function renderPrivate(overrides: Partial<PrivateWorkPassport> = {}) {
+  const p = makePrivatePassport(overrides)
+  vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+  vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  render(<PrivatePassportView />)
+  return screen.findByTestId("verified-passport-card-preview")
+}
+
+async function renderManyRolePrivate(overrides: Partial<PrivateWorkPassport> = {}) {
+  const p = makeManyRolePassport(overrides)
+  vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+  vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  render(<PrivatePassportView />)
+  return screen.findByTestId("verified-passport-card-preview")
+}
+
 // ── Private preview ──────────────────────────────────────────────────────────
 
 describe("Verified Passport Card preview (private)", () => {
-  async function renderPrivate(overrides: Partial<PrivateWorkPassport> = {}) {
-    const p = makePrivatePassport(overrides)
-    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
-    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
-    render(<PrivatePassportView />)
-    return screen.findByTestId("verified-passport-card-preview")
-  }
-
   it("renders the compact card with identity and high-level role areas (no projects)", async () => {
     const preview = await renderPrivate()
     const card = within(preview).getByTestId("passport-card-private")
@@ -201,7 +286,8 @@ describe("Verified Passport Card preview (private)", () => {
 
     // The compact card never lists featured projects (they live below in the map).
     expect(within(card).queryByTestId("passport-card-project")).not.toBeInTheDocument()
-    // Compact evidence line rather than a project list.
+    // Neutral recruiter-safe verification/evidence lines rather than a project list.
+    expect(within(card).getByTestId("passport-card-verification-summary")).toHaveTextContent(/Evidence-backed project profile/i)
     expect(within(card).getByTestId("passport-card-evidence-line")).toHaveTextContent(/recruiter-safe/i)
   })
 
@@ -225,6 +311,149 @@ describe("Verified Passport Card preview (private)", () => {
     )
   })
 
+  // A — no QR / barcode / scan box on the card face.
+  it("renders NO QR, barcode, or scan box on the card face", async () => {
+    const published = { is_published: true, public_slug: "slug123", public_path: "/p/slug123" }
+    const preview = await renderPrivate(published)
+    const card = within(preview).getByTestId("passport-card-private")
+    expect(within(card).queryByTestId("passport-card-qr")).not.toBeInTheDocument()
+    expect(within(card).queryByTestId("passport-card-qr-overlay")).not.toBeInTheDocument()
+    expect(within(card).queryByTestId("passport-qr")).not.toBeInTheDocument()
+    const html = card.innerHTML
+    expect(html).not.toMatch(/barcode/i)
+    expect(html).not.toMatch(/scan profile/i)
+    expect(html).not.toMatch(/Publish to add scan/i)
+    expect(card.querySelector("svg")).toBeNull() // the QR was the only inline SVG
+  })
+
+  // B — no proof-source chip row on the card face.
+  it("renders NO proof-source chip row on the card face", async () => {
+    const preview = await renderPrivate()
+    const card = within(preview).getByTestId("passport-card-private")
+    expect(within(card).queryByTestId("passport-card-proof-coverage")).not.toBeInTheDocument()
+    expect(within(card).queryByTestId("passport-card-proof-item")).not.toBeInTheDocument()
+    // No colourful per-source chips (GitHub / Document / Website / Defense / Video)
+    // on the face — proof breadth is summarised in the single evidence line only.
+    const chipLabels = within(card).getAllByTestId("passport-card-capability").map((c) => c.textContent ?? "")
+    expect(chipLabels.some((t) => /^GitHub$|^Document$|^Website$|^Defense$|^Video$/.test(t.trim()))).toBe(false)
+  })
+
+  // C — card shows at most 6 selected role areas.
+  it("shows at most 6 role-area chips on the card face even when more areas exist", async () => {
+    const preview = await renderManyRolePrivate()
+    const card = within(preview).getByTestId("passport-card-private")
+    const chips = within(card).getAllByTestId("passport-card-capability")
+    expect(chips.length).toBe(6)
+    // Every chip is a grouped role area, never a raw skill name.
+    for (const chip of chips) {
+      expect(ROLE_AREA_LABELS).toContain((chip.textContent ?? "").trim())
+    }
+  })
+
+  // D — Customize Passport Card section renders.
+  it("renders the Customize Passport Card section with a selected count", async () => {
+    const preview = await renderManyRolePrivate()
+    expect(within(preview).getByTestId("customize-passport-card")).toBeInTheDocument()
+    expect(within(preview).getByText(/Customize Passport Card/i)).toBeInTheDocument()
+    expect(within(preview).getByTestId("card-role-area-count")).toHaveTextContent(/6 of 6 selected/i)
+    expect(within(preview).getByText(/Choose the role areas you want recruiters to notice first/i)).toBeInTheDocument()
+  })
+
+  // E — selecting/deselecting a role area updates the card preview.
+  it("deselecting a role area removes it from the card face immediately", async () => {
+    const preview = await renderManyRolePrivate()
+    const card = within(preview).getByTestId("passport-card-private")
+
+    // Open the editor, then deselect the first currently-selected option.
+    fireEvent.click(within(preview).getByTestId("edit-card-role-areas"))
+    const options = within(preview).getAllByTestId("card-role-area-option")
+    const firstSelected = options.find((o) => o.getAttribute("data-selected") === "true")!
+    const label = firstSelected.getAttribute("data-label")!
+    expect(within(card).getByText(label)).toBeInTheDocument()
+
+    fireEvent.click(firstSelected)
+    // Count drops and the chip leaves the card face.
+    expect(within(preview).getByTestId("card-role-area-count")).toHaveTextContent(/5 of 6 selected/i)
+    const cardChips = within(card).getAllByTestId("passport-card-capability").map((c) => (c.textContent ?? "").trim())
+    expect(cardChips).not.toContain(label)
+
+    // Re-selecting a previously unselected area brings it onto the face.
+    const anUnselected = within(preview)
+      .getAllByTestId("card-role-area-option")
+      .find((o) => o.getAttribute("data-selected") === "false")!
+    const newLabel = anUnselected.getAttribute("data-label")!
+    fireEvent.click(anUnselected)
+    expect(within(preview).getByTestId("card-role-area-count")).toHaveTextContent(/6 of 6 selected/i)
+    const afterChips = within(card).getAllByTestId("passport-card-capability").map((c) => (c.textContent ?? "").trim())
+    expect(afterChips).toContain(newLabel)
+  })
+
+  // F — cannot select more than 6 role areas.
+  it("prevents selecting more than 6 role areas", async () => {
+    const preview = await renderManyRolePrivate()
+    fireEvent.click(within(preview).getByTestId("edit-card-role-areas"))
+
+    // Starts at the 6-area cap; unselected options are disabled and clicking them
+    // is a no-op (never a 7th selection).
+    expect(within(preview).getByTestId("card-role-area-count")).toHaveTextContent(/6 of 6 selected/i)
+    const unselected = within(preview)
+      .getAllByTestId("card-role-area-option")
+      .filter((o) => o.getAttribute("data-selected") === "false")
+    expect(unselected.length).toBeGreaterThan(0)
+    for (const opt of unselected) {
+      expect(opt).toBeDisabled()
+      fireEvent.click(opt)
+    }
+    expect(within(preview).getByTestId("card-role-area-count")).toHaveTextContent(/6 of 6 selected/i)
+    expect(within(within(preview).getByTestId("passport-card-private")).getAllByTestId("passport-card-capability").length).toBe(6)
+  })
+
+  // G — default role areas are derived from available high-level capability data.
+  it("defaults the card to the top role areas derived from the capability data", async () => {
+    const preview = await renderManyRolePrivate()
+    // Default selection = 6 real role areas (not raw skills), all present in the
+    // selector's available options — never a hardcoded list.
+    expect(within(preview).getByTestId("card-role-area-count")).toHaveTextContent(/6 of 6 selected/i)
+    fireEvent.click(within(preview).getByTestId("edit-card-role-areas"))
+    const selected = within(preview)
+      .getAllByTestId("card-role-area-option")
+      .filter((o) => o.getAttribute("data-selected") === "true")
+      .map((o) => o.getAttribute("data-label"))
+    expect(selected).toHaveLength(6)
+    for (const label of selected) {
+      expect(ROLE_AREA_LABELS).toContain(label)
+    }
+    // The weak Documentation area is ranked below technical areas, so it is not a
+    // default (a real ranking, not an arbitrary slice).
+    expect(selected).not.toContain("Documentation & Communication")
+  })
+
+  // Persistence — the saved selection is restored from localStorage.
+  it("persists the role-area selection in localStorage and restores it", async () => {
+    const first = await renderManyRolePrivate()
+    fireEvent.click(within(first).getByTestId("edit-card-role-areas"))
+    const firstSelected = within(first)
+      .getAllByTestId("card-role-area-option")
+      .find((o) => o.getAttribute("data-selected") === "true")!
+    const removed = firstSelected.getAttribute("data-label")!
+    fireEvent.click(firstSelected)
+    expect(within(first).getByTestId("card-role-area-count")).toHaveTextContent(/5 of 6 selected/i)
+
+    // A saved key exists under the documented prefix.
+    const keys = Object.keys(window.localStorage)
+    expect(keys.some((k) => k.startsWith("veribridge-passport-card-role-areas:"))).toBe(true)
+
+    // Re-render fresh → the trimmed selection is restored (removed area stays off).
+    render(<PrivatePassportView />)
+    const previews = await screen.findAllByTestId("verified-passport-card-preview")
+    const second = previews[previews.length - 1]
+    expect(within(second).getByTestId("card-role-area-count")).toHaveTextContent(/5 of 6 selected/i)
+    const secondCard = within(second).getByTestId("passport-card-private")
+    const chips = within(secondCard).getAllByTestId("passport-card-capability").map((c) => (c.textContent ?? "").trim())
+    expect(chips).not.toContain(removed)
+  })
+
+  // H — clicking a card role chip activates the Role Area filter / scroll.
   it("clicking a role-area chip deep-links into the same-page Skills Evidence Map", async () => {
     const preview = await renderPrivate()
     const chip = within(preview).getAllByTestId("passport-card-capability")[0]
@@ -312,6 +541,7 @@ describe("Verified Passport Card preview (private)", () => {
     delete (navigator as { share?: unknown }).share
   })
 
+  // I — public safety: no raw evidence / ids / paths / scores on the card face.
   it("never leaks raw evidence, file paths, or numeric scores in the card", async () => {
     const preview = await renderPrivate()
     const card = within(preview).getByTestId("passport-card-private")
@@ -474,6 +704,41 @@ describe("Public Verified Passport Card (/card/[slug])", () => {
     fireEvent.click(screen.getByTestId("public-card-show-qr"))
     const modal = await screen.findByTestId("passport-qr-modal")
     expect(within(modal).getByTestId("passport-modal-qr").getAttribute("data-qr-value")).toContain("/p/slug123")
+  })
+
+  // A/B (public) — clean face: no QR/barcode/scan, no proof-source chip row.
+  it("renders NO QR, barcode, scan box, or proof-source chip row on the public card face", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+    render(<PublicPassportCardView slug="slug123" />)
+    await screen.findByTestId("public-passport-card")
+    const card = screen.getByTestId("passport-card-public")
+    expect(within(card).queryByTestId("passport-card-qr")).not.toBeInTheDocument()
+    expect(within(card).queryByTestId("passport-card-proof-coverage")).not.toBeInTheDocument()
+    expect(within(card).queryByTestId("passport-card-proof-item")).not.toBeInTheDocument()
+    expect(card.querySelector("svg")).toBeNull()
+    expect(card.innerHTML).not.toMatch(/barcode/i)
+  })
+
+  // Public route falls back to the default top 6 role areas (localStorage is
+  // private-device only, so the public card never reads a saved selection).
+  it("shows at most 6 default role areas on the public card face", async () => {
+    const many = makePublicPassport({
+      top_skills: [
+        "TensorFlow Model Training",
+        "OpenCV Object Detection",
+        "Pandas Data Analysis",
+        "LangChain LLM Agent",
+        "FastAPI Backend",
+        "Docker Deployment Pipeline",
+        "React Frontend",
+        "C++ Algorithms",
+      ].map((s) => ({ skill: s, status: "Demonstrated", evidence_sources: ["GitHub Proof"], projects: [], evidence_chips: [], limitations: [] })),
+    })
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(many)
+    render(<PublicPassportCardView slug="slug123" />)
+    await screen.findByTestId("public-passport-card")
+    const card = screen.getByTestId("passport-card-public")
+    expect(within(card).getAllByTestId("passport-card-capability").length).toBe(6)
   })
 
   it("role-area chips deep-link into the full public Passport by slug anchor", async () => {

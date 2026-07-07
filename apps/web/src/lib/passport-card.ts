@@ -54,8 +54,30 @@ function statusRank(status: string): number {
   return STATUS_RANK[status] ?? 4
 }
 
-/** How many high-level role/capability chips the compact card shows. */
-const MAX_CARD_CAPABILITIES = 6
+/**
+ * How many high-level role areas the compact card face shows at most. The student
+ * can pick which of the available role areas fill these slots (see the private
+ * "Customize Passport Card" selector); when nothing is saved the card defaults to
+ * the top-ranked areas.
+ */
+export const MAX_CARD_ROLE_AREAS = 6
+const MAX_CARD_CAPABILITIES = MAX_CARD_ROLE_AREAS
+
+/**
+ * localStorage key for the student's chosen Passport Card role areas. Keyed by a
+ * stable per-passport identifier (public slug when available, else a safe
+ * fallback) so different passports on the same device don't clobber each other.
+ * Frontend-only persistence for the MVP — there is no backend field for this yet,
+ * so the private preview is the source of truth and the public card falls back to
+ * the default top role areas.
+ */
+export const CARD_ROLE_AREAS_STORAGE_PREFIX = "veribridge-passport-card-role-areas:"
+
+/** Build the per-passport localStorage key, falling back to a safe constant. */
+export function cardRoleAreasStorageKey(idOrSlug: string | null | undefined): string {
+  const id = idOrSlug?.trim()
+  return `${CARD_ROLE_AREAS_STORAGE_PREFIX}${id && id.length > 0 ? id : "local"}`
+}
 
 // ── Capability grouping ───────────────────────────────────────────────────────
 
@@ -171,6 +193,13 @@ export type PassportCardCapability = {
   slug: string
   /** Present only for the private preview (same-page evidence-map selection). */
   key?: string
+  /**
+   * How many evidence-backed skills back this role area — a qualitative breadth
+   * count (never a numeric trust/confidence score) shown next to each option in
+   * the "Customize Passport Card" selector so the student can see which areas are
+   * most supported.
+   */
+  evidenceCount: number
 }
 
 export type PassportCardProofCoverage = { label: string; present: boolean }
@@ -195,8 +224,19 @@ export type PassportCardModel = {
   publicPassportUrl: string | null
   /** Absolute public Passport Card URL (`{app}/card/{slug}`) when published. */
   cardUrl: string | null
-  /** High-level role/capability chips (grouped, not raw skills). */
+  /**
+   * Default high-level role-area chips shown on the card face (grouped, not raw
+   * skills), already capped to {@link MAX_CARD_ROLE_AREAS}. This is what the card
+   * shows when the student has not customized their selection, and what the public
+   * card always shows.
+   */
   capabilities: PassportCardCapability[]
+  /**
+   * Every available role area (ranked, uncapped) the student can choose from in
+   * the private "Customize Passport Card" selector. A superset of
+   * {@link capabilities}; the private preview filters this by the saved selection.
+   */
+  availableCapabilities: PassportCardCapability[]
   /** Proof-coverage strip (canonical order; present flags only). */
   proofCoverage: PassportCardProofCoverage[]
   /** Compact evidence line ("N projects · M proof types · recruiter-safe"). */
@@ -233,8 +273,12 @@ function matchAreaIndex(name: string): number {
  * evidence, then breadth of proof types, then how many skills back the area. Each
  * chip carries its strongest underlying skill so the deep-link lands on real
  * evidence.
+ *
+ * Returns EVERY matched role area in ranked order (uncapped). Callers show the
+ * default card face via {@link topCapabilities} and the full choosable list (the
+ * private selector) via the whole array.
  */
-function deriveCapabilities(skills: SkillInput[], max = MAX_CARD_CAPABILITIES): PassportCardCapability[] {
+function deriveCapabilities(skills: SkillInput[]): PassportCardCapability[] {
   const assessed = skills.filter((s) => s.status && s.status !== "Not assessed")
   if (assessed.length === 0) return []
 
@@ -271,13 +315,19 @@ function deriveCapabilities(skills: SkillInput[], max = MAX_CARD_CAPABILITIES): 
     return a.idx - b.idx
   })
 
-  return areas.slice(0, max).map(({ area, rep }) => ({
+  return areas.map(({ area, rep, count }) => ({
     label: area.label,
     status: rep.status,
     skill: rep.name,
     slug: rep.slug,
     key: rep.key,
+    evidenceCount: count,
   }))
+}
+
+/** The default card-face role areas: the top-ranked {@link MAX_CARD_ROLE_AREAS}. */
+function topCapabilities(all: PassportCardCapability[]): PassportCardCapability[] {
+  return all.slice(0, MAX_CARD_CAPABILITIES)
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -359,7 +409,8 @@ export function buildPrivateCardModel(
       proofCount: node.proofTypes.length,
       projectAttached: node.projectEvidence.length > 0,
     }))
-  const capabilities = deriveCapabilities(skillInputs)
+  const availableCapabilities = deriveCapabilities(skillInputs)
+  const capabilities = topCapabilities(availableCapabilities)
 
   const proofCoverage = proofCoverageFromCounts(passport.evidence_source_counts)
   const name = passport.identity?.display_name ?? passport.candidate_display_name ?? null
@@ -378,6 +429,7 @@ export function buildPrivateCardModel(
     publicPassportUrl: isPublished && slug ? publicPassportUrl(slug) : null,
     cardUrl: isPublished && slug ? publicPassportCardUrl(slug) : null,
     capabilities,
+    availableCapabilities,
     proofCoverage,
     evidence: {
       projectCount: passport.projects.length,
@@ -402,7 +454,8 @@ export function buildPublicCardModel(passport: PublicWorkPassport, slug: string)
     proofCount: orderedProofTypes(s.evidence_sources).length,
     projectAttached: (s.projects?.length ?? 0) > 0,
   }))
-  const capabilities = deriveCapabilities(skillInputs)
+  const availableCapabilities = deriveCapabilities(skillInputs)
+  const capabilities = topCapabilities(availableCapabilities)
 
   const proofCoverage = proofCoverageFromCounts(passport.evidence_source_counts)
   const name = passport.identity?.display_name ?? passport.candidate_display_name ?? null
@@ -419,6 +472,7 @@ export function buildPublicCardModel(passport: PublicWorkPassport, slug: string)
     publicPassportUrl: publicPassportUrl(slug),
     cardUrl: publicPassportCardUrl(slug),
     capabilities,
+    availableCapabilities,
     proofCoverage,
     evidence: {
       projectCount: passport.featured_projects.length,
