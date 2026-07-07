@@ -78,6 +78,10 @@ _ONBOARDING_TABLE = "student_onboarding_profiles"
 # Deliberately excludes every private/sensitive field (visa_status, sponsorship,
 # work-authorization, timeline, raw institution name) — only education context.
 _SAFE_PROFILE_FIELDS = ("degree_level", "major", "graduation_year", "university_country")
+# Additional non-education profile fields read for the identity header. Kept out
+# of ``_SAFE_PROFILE_FIELDS`` (which is strictly education context); ``avatar_url``
+# is a recruiter-safe public photo URL that is re-sanitized before it is emitted.
+_PROFILE_SELECT_FIELDS = (*_SAFE_PROFILE_FIELDS, "avatar_url")
 
 _VERIFICATION_LABEL = "Verified Work Passport"
 
@@ -907,7 +911,7 @@ def _lookup_candidate_profile(db: Any, user_id: str) -> dict[str, Any]:
         else:
             result = (
                 db.table(_ONBOARDING_TABLE)
-                .select(",".join(_SAFE_PROFILE_FIELDS))
+                .select(",".join(_PROFILE_SELECT_FIELDS))
                 .eq("user_id", user_id)
                 .limit(1)
                 .execute()
@@ -918,7 +922,7 @@ def _lookup_candidate_profile(db: Any, user_id: str) -> dict[str, Any]:
         return {}
     if not isinstance(row, dict):
         return {}
-    return {k: row.get(k) for k in _SAFE_PROFILE_FIELDS}
+    return {k: row.get(k) for k in _PROFILE_SELECT_FIELDS}
 
 
 def _education_summary(profile: dict[str, Any]) -> str:
@@ -958,6 +962,34 @@ def _safe_identity_text(value: Any) -> str | None:
     identity header — public OR private.
     """
     return public_safe_skill_name(value)
+
+
+# Signed-URL / private-storage markers that must NEVER surface as a public photo.
+_UNSAFE_AVATAR_MARKER_RE = re.compile(
+    r"(x-amz-|[?&](signature|token|expires|sig|sv|se)=|/object/sign/|/private/)",
+    re.IGNORECASE,
+)
+
+
+def _public_safe_avatar_url(url: Any) -> str | None:
+    """Return a profile-photo URL only when it is public-safe, else ``None``.
+
+    Mirrors the client-side ``publicSafeAvatarUrl`` guard so the identity header
+    can never emit a signed/tokenized storage URL, a private storage path, or a
+    raw storage key: only an absolute ``http(s)`` URL (or a root-relative path)
+    with no signed/private markers is allowed. Anything else → ``None`` so the
+    card falls back to safe initials.
+    """
+    raw = str(url).strip() if url is not None else ""
+    if not raw:
+        return None
+    if _UNSAFE_AVATAR_MARKER_RE.search(raw):
+        return None
+    if re.match(r"^https?://", raw, re.IGNORECASE):
+        return raw
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw
+    return None
 
 
 def _build_identity(
@@ -1000,6 +1032,7 @@ def _build_identity(
         "last_updated": last_updated,
         "evidence_source_summary": _evidence_source_summary(evidence_source_counts),
         "verification_label": _VERIFICATION_LABEL,
+        "avatar_url": _public_safe_avatar_url(profile.get("avatar_url")),
     }
 
 

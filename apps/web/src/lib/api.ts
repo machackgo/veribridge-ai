@@ -19,8 +19,13 @@ export async function fetchAPI(
     data: { session },
   } = await supabase.auth.getSession()
 
+  // For multipart/FormData uploads the browser must set Content-Type itself
+  // (it appends the multipart boundary), so we only default to JSON otherwise.
+  const isFormData =
+    typeof FormData !== "undefined" && options.body instanceof FormData
+
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...((options.headers as Record<string, string> | undefined) ?? {}),
   }
 

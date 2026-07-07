@@ -103,17 +103,20 @@ describe("PrivatePassportView", () => {
 
     render(<PrivatePassportView />)
 
-    expect(await screen.findByTestId("passport-header")).toBeInTheDocument()
-    expect(screen.getByText("Jordan Rivera")).toBeInTheDocument()
+    const header = await screen.findByTestId("passport-header")
+    // Scoped: the name also appears in the Verified Passport Card preview above.
+    expect(within(header).getByText("Jordan Rivera")).toBeInTheDocument()
     expect(screen.getByTestId("evidence-source-counts")).toBeInTheDocument()
     expect(screen.getAllByTestId("evidence-source-count").length).toBeGreaterThan(0)
     // The old redundant "Evidence-Backed Skills" / "Grouped by skill" section is gone.
-    expect(screen.queryByText(/Evidence-Backed Skills/i)).not.toBeInTheDocument()
+    // Case-sensitive exact match: the new Verified Passport Card preview has an
+    // "Evidence-backed skills" (lowercase) label that must NOT trip this guard.
+    expect(screen.queryByText("Evidence-Backed Skills")).not.toBeInTheDocument()
     expect(screen.queryByTestId("passport-skill")).not.toBeInTheDocument()
     expect(screen.queryByTestId("skill-expand-toggle")).not.toBeInTheDocument()
   })
 
-  it("renders the passport identity header with education, status and evidence summary", async () => {
+  it("shows program + status on the compact card and education in the candidate summary", async () => {
     const p = makePassport({
       identity: {
         display_name: "Jordan Rivera",
@@ -135,11 +138,12 @@ describe("PrivatePassportView", () => {
 
     render(<PrivatePassportView />)
 
-    expect(await screen.findByTestId("passport-identity-header")).toBeInTheDocument()
-    expect(screen.getByTestId("passport-identity-name")).toHaveTextContent("Jordan Rivera")
-    expect(screen.getByTestId("passport-identity-education")).toHaveTextContent("Computer Science")
-    expect(screen.getByTestId("passport-identity-status")).toHaveTextContent("Private only")
-    expect(screen.getByTestId("passport-identity-evidence-summary")).toHaveTextContent("GitHub Proof · 1")
+    // Identity now lives on the compact card (no duplicate identity-header block).
+    const card = await screen.findByTestId("passport-card-private")
+    expect(within(card).getByTestId("passport-card-program")).toHaveTextContent("Computer Science")
+    expect(within(card).getByTestId("passport-card-status")).toHaveTextContent("Private only")
+    // The slimmed candidate-summary detail carries the full education line.
+    expect(screen.getByTestId("passport-education")).toHaveTextContent("Computer Science · Masters · Class of 2026")
   })
 
   it("falls back to a safe placeholder name when identity has no display name", async () => {
@@ -164,7 +168,8 @@ describe("PrivatePassportView", () => {
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
     render(<PrivatePassportView />)
-    expect(await screen.findByTestId("passport-identity-name")).toHaveTextContent("Verified candidate profile")
+    const card = await screen.findByTestId("passport-card-private")
+    expect(within(card).getByTestId("passport-card-name")).toHaveTextContent("Verified candidate profile")
   })
 
   it("shows a merged-attempts badge when duplicate evidence is grouped into one card", async () => {

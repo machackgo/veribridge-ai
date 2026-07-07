@@ -95,6 +95,18 @@ class Settings(BaseSettings):
         alias="SUPABASE_VBR_MEDIA_BUCKET",
     )
 
+    # ── Passport Card profile photo storage ───────────────────────
+    # Name of the PUBLIC Supabase Storage bucket that holds recruiter-safe
+    # Passport Card profile photos (see migration 054). Objects live under a
+    # per-user `<user_id>/…` prefix and are served via a plain public URL — no
+    # signed URLs. When empty, profile-photo upload is disabled and the card
+    # falls back to safe initials.
+    # Example: passport-avatars
+    supabase_passport_avatar_bucket: str = Field(
+        default="",
+        alias="SUPABASE_PASSPORT_AVATAR_BUCKET",
+    )
+
     # ── AI Domain Reviewer ────────────────────────────────────────
     # Anthropic API key for AI Domain Reviewer agents (Astra, Atlas, Nova, etc.)
     #

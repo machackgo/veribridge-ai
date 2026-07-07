@@ -15,19 +15,29 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 
 from app.api.deps import get_current_user_id, get_db, get_pipeline_db
+from app.core.config import settings
 from app.schemas.proof_reanalysis import (
     ProofReanalysisRequestBody,
     ProofReanalysisResultResponse,
 )
 from app.schemas.vbr_student_report import SkillReportResponse
 from app.schemas.vbr_work_passport import (
+    PassportPhotoResponse,
     PrivateWorkPassportResponse,
     PublicWorkPassportResponse,
     PublishPassportRequest,
     WorkPassportStatusResponse,
+)
+from app.services.passport_avatar_service import (
+    MAX_AVATAR_BYTES,
+    AvatarStorageError,
+    AvatarStorageUnavailable,
+    AvatarValidationError,
+    clear_avatar,
+    set_avatar,
 )
 from app.services.proof_reanalysis_service import (
     ProofReanalysisRequest,
@@ -141,6 +151,73 @@ def unpublish_passport_route(
     db: Any = Depends(get_db),
 ) -> WorkPassportStatusResponse:
     return WorkPassportStatusResponse(**unpublish_passport(db, user_id))
+
+
+@student_router.put(
+    "/passport/identity/photo",
+    response_model=PassportPhotoResponse,
+    summary="Upload / replace the current user's Passport Card profile photo",
+)
+async def set_passport_photo_route(
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> PassportPhotoResponse:
+    """Validate and store the caller's OWN profile photo (auth token → owner).
+
+    Accepts JPEG / PNG / WebP up to the size cap; the photo is written to the
+    public ``passport-avatars`` bucket under the caller's own prefix and its
+    public URL is persisted on the identity header. When storage is not
+    configured the call succeeds with ``persisted=false`` so the client can keep
+    a local-only preview rather than erroring.
+    """
+    content = await file.read()
+    # Guard the size before any storage work (authoritative server-side check).
+    if len(content) > MAX_AVATAR_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "avatar_too_large",
+                "message": "Please upload a JPG, PNG, or WebP image under 5MB.",
+            },
+        )
+    try:
+        url = set_avatar(
+            db,
+            str(user_id),
+            content=content,
+            content_type=file.content_type,
+            bucket=settings.supabase_passport_avatar_bucket,
+        )
+    except AvatarValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "avatar_invalid", "message": str(exc)},
+        )
+    except AvatarStorageUnavailable:
+        # Storage not provisioned yet — not an error for the caller; the client
+        # keeps the live local preview and labels it device-local.
+        return PassportPhotoResponse(avatar_url=None, persisted=False)
+    except AvatarStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "avatar_storage_failed", "message": str(exc)},
+        )
+    return PassportPhotoResponse(avatar_url=url, persisted=True)
+
+
+@student_router.delete(
+    "/passport/identity/photo",
+    response_model=PassportPhotoResponse,
+    summary="Remove the current user's Passport Card profile photo",
+)
+def remove_passport_photo_route(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> PassportPhotoResponse:
+    """Clear the caller's OWN profile photo (object + persisted URL). Idempotent."""
+    clear_avatar(db, str(user_id), bucket=settings.supabase_passport_avatar_bucket)
+    return PassportPhotoResponse(avatar_url=None, persisted=True)
 
 
 @public_router.get(

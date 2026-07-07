@@ -2037,6 +2037,15 @@ export type PassportIdentity = {
   last_updated: string | null
   evidence_source_summary: string[]
   verification_label: string
+  /**
+   * Optional recruiter-safe profile photo URL for the Passport Card. It is part
+   * of the already-public identity payload, so it must only ever be a
+   * public-safe image URL — never a signed/tokenized storage URL, a private
+   * storage path, or a raw storage key. The card additionally sanitizes it
+   * (see `publicSafeAvatarUrl`) and falls back to safe initials when absent or
+   * unsafe. May be absent on older payloads.
+   */
+  avatar_url?: string | null
 }
 
 export type PrivateWorkPassport = {
@@ -2227,6 +2236,57 @@ export async function publishWorkPassport(
 export async function unpublishWorkPassport(): Promise<WorkPassportStatus> {
   const res = await fetchAPI("/api/v1/student/vbr/passport/unpublish", { method: "POST" })
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to unpublish passport (HTTP ${res.status}).`))
+  return res.json()
+}
+
+// ── Passport Card profile photo ───────────────────────────────────────────────
+
+/** Image types accepted for the Passport Card profile photo. */
+export const PASSPORT_PHOTO_ACCEPT = ["image/jpeg", "image/png", "image/webp"] as const
+/** Max profile-photo size (5 MB). Enforced client-side and again server-side. */
+export const PASSPORT_PHOTO_MAX_BYTES = 5 * 1024 * 1024
+/** Friendly, reused message for any invalid profile-photo selection. */
+export const PASSPORT_PHOTO_INVALID_MESSAGE =
+  "Please upload a JPG, PNG, or WebP image under 5MB."
+
+export type PassportPhotoResult = {
+  /** New public, non-signed photo URL, or null (removed / storage not set up). */
+  avatar_url: string | null
+  /** False when the photo could not be saved server-side (device-local preview). */
+  persisted: boolean
+}
+
+/**
+ * Client-side guard for a chosen profile photo — returns a friendly error
+ * message when the file's type or size is unacceptable, else null. The server
+ * re-validates authoritatively; this just gives instant feedback before upload.
+ */
+export function validatePassportPhoto(file: File): string | null {
+  if (!(PASSPORT_PHOTO_ACCEPT as readonly string[]).includes(file.type)) {
+    return PASSPORT_PHOTO_INVALID_MESSAGE
+  }
+  if (file.size > PASSPORT_PHOTO_MAX_BYTES) {
+    return PASSPORT_PHOTO_INVALID_MESSAGE
+  }
+  return null
+}
+
+/** Upload / replace the current user's Passport Card profile photo. */
+export async function uploadPassportPhoto(file: File): Promise<PassportPhotoResult> {
+  const body = new FormData()
+  body.append("file", file)
+  const res = await fetchAPI("/api/v1/student/vbr/passport/identity/photo", {
+    method: "PUT",
+    body,
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to upload photo (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Remove the current user's Passport Card profile photo. */
+export async function removePassportPhoto(): Promise<PassportPhotoResult> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/identity/photo", { method: "DELETE" })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to remove photo (HTTP ${res.status}).`))
   return res.json()
 }
 

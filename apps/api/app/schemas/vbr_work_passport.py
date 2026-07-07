@@ -450,8 +450,26 @@ class PassportIdentity(BaseModel):
     # Compact evidence-source summary badges, e.g. "GitHub Proof · 3".
     evidence_source_summary: list[str] = Field(default_factory=list)
     verification_label: str = "Verified Work Passport"
+    # Optional recruiter-safe profile photo for the Passport Card. ONLY ever a
+    # public, non-signed storage URL — never a signed/tokenized URL, a private
+    # storage path, or a raw storage key. Absent/unsafe → the card renders safe
+    # initials. Sanitized in ``_build_identity`` before it is ever emitted.
+    avatar_url: str | None = None
 
     model_config = {"extra": "forbid"}
+
+
+class PassportPhotoResponse(BaseModel):
+    """Result of setting or clearing the Passport Card profile photo.
+
+    ``avatar_url`` is the new public, non-signed photo URL (``None`` after a
+    remove, or when storage is not configured and the client keeps a local-only
+    preview). ``persisted`` is ``False`` when the photo could not be saved
+    server-side so the client can label it as device-local.
+    """
+
+    avatar_url: str | None = None
+    persisted: bool = True
 
 
 # ── Private / public passport responses ──────────────────────────────────────
