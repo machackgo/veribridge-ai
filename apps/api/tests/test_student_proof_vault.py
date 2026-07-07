@@ -45,6 +45,7 @@ from app.services.vbr_work_passport_service import build_private_passport
 from tests.test_vbr_project_defense import (
     OTHER_USER_ID,
     USER_ID,
+    _create_project_defense,
     _seed_document_evidence,
     _seed_github_proof,
     _seed_skill_pipeline,
@@ -3837,3 +3838,186 @@ def test_project_scoped_skill_report_never_marks_unrelated_global_evidence_attac
     for chain in report["projects"]:
         if chain.get("attached"):
             assert "other-repo" not in str(chain)
+
+
+# ── Cross-view Website-Proof skill mapping consistency (single source of truth) ─
+#
+# The Work Passport / Project Report (build_student_vbr_report) and the Skill
+# Report (collect_skill_report) MUST agree about which skill a Website Proof
+# supports in a given project. Before the canonical mapping was shared, the
+# report DERIVED a skill from the observed behaviour (a Teachable prediction demo
+# → Machine Learning / Image Classification / Frontend) while the Skill Report
+# used only the proof's EXTRACTED supported_skills — so a recruiter saw Website
+# Proof in the Passport but "No Website Proof in this project for this skill" in
+# the Skill Report for the SAME skill-project pair. These tests lock that shut.
+
+
+def _seed_teachable_prediction_website(mem_store: dict, *, supported_skills: list[str]) -> str:
+    """A Teachable-Machine image-classification prediction Website Proof.
+
+    ``supported_skills`` is the proof's EXTRACTED list; the observed behaviour
+    (image upload → predicted class label) is what the canonical mapping DERIVES
+    Machine Learning / Image Classification / Frontend from.
+    """
+    return _seed_workflow_analysis(
+        mem_store,
+        target_website="https://teachablemachine.withgoogle.com",
+        supported_skills=supported_skills,
+        weakly_supported_skills=[],
+        workflow_summary=(
+            "The Teachable Machine model classified the image and displayed a "
+            "predicted class label with a confidence score."
+        ),
+        demonstrated_actions=["Selected an image class", "Read the predicted class label"],
+        observed_demonstration={"dom_summary": "A predicted class label and confidence bar were rendered."},
+        page_context_summary="Image classification prediction page.",
+        dom_evidence_status="available",
+        frame_ocr_evidence_summary={
+            "has_ocr_evidence": True,
+            "top_ocr_snippets": ["Prediction: cat", "Confidence: high"],
+            "detected_page_context": "prediction_output",
+            "frames_analyzed": 4,
+        },
+        visual_reasoning_summary={
+            "status": "analyzed",
+            "frames_analyzed": 4,
+            "summary": "An image classification result is displayed.",
+            "supported_signals": ["prediction result displayed"],
+        },
+    )
+
+
+def _ml_chain(report: dict, pid: str) -> dict:
+    return next(
+        p
+        for p in report["projects"]
+        if p.get("project_id") == pid or pid in (p.get("grouped_project_ids") or [])
+    )
+
+
+def test_website_derived_skill_flows_to_report_and_skill_report(
+    client, mem_store: dict, pipeline_db: dict
+) -> None:
+    """A derived Website→skill mapping appears identically in the Project Report
+    skill cards AND the Skill Report connected chain (never one but not the other)."""
+    session = _seed_teachable_prediction_website(mem_store, supported_skills=["Web Development"])
+    created = _create_project_defense(
+        client,
+        title="Teachable Machine Image Classification Demo",
+        claimed_skills=["Machine Learning", "Image Classification", "Frontend Development", "Browser APIs"],
+        attached_proofs={"website_proof_session_ids": [session]},
+    ).json()
+    pid = created["project"]["id"]
+
+    # ── Project Report: skill cards cite Website Proof for the DERIVED skills ──
+    body = client.get(f"/api/v1/student/vbr/projects/{pid}/report").json()
+    rows = {r["skill"]: r for r in body["skill_evidence"]}
+    assert "Website Proof" in rows["Machine Learning"]["supporting_sources"]
+    assert "Website Proof" in rows["Image Classification"]["supporting_sources"]
+    assert rows["Image Classification"]["status"] != "Not assessed"
+    assert "Website Proof" in rows["Frontend Development"]["supporting_sources"]
+    # Browser APIs is a generic family the behaviour does not derive — stays off.
+    assert "Website Proof" not in rows["Browser APIs"]["supporting_sources"]
+
+    # Evidence by Source: the proof IS attached (never "not attached" here).
+    assert body["evidence_package"]["website_proofs_count"] == 1
+    ev = next(e for e in body["website_skill_evidence"] if e["skill_mapping_available"])
+    mapped_skills = {s["skill_name"] for s in ev["skills"]}
+    assert {"Machine Learning", "Image Classification", "Frontend Development"} <= mapped_skills
+
+    # ── Skill Report (ML): the Teachable chain carries the SAME Website Proof ──
+    for slug in ("machine-learning", "image-classification", "frontend-development"):
+        report = collect_skill_report(mem_store, pipeline_db, USER_ID, slug, synthesize=False)
+        chain = _ml_chain(report, pid)
+        assert chain["website_evidence"], f"{slug}: derived Website Proof must appear in the chain"
+        assert "Website Proof" in chain["sources"]
+        assert not any("No Website Proof" in lim for lim in chain["limitations"]), (
+            f"{slug}: chain must not claim 'No Website Proof' when the canonical mapping maps it"
+        )
+
+
+def test_website_derived_skill_does_not_leak_to_unrelated_project(
+    client, mem_store: dict, pipeline_db: dict
+) -> None:
+    """A Website Proof derived onto ML for Teachable must NOT ride onto Boston,
+    which claims ML but has its own (non-website) evidence only."""
+    session = _seed_teachable_prediction_website(mem_store, supported_skills=["Web Development"])
+    _create_project_defense(
+        client,
+        title="Teachable Machine Image Classification Demo",
+        claimed_skills=["Machine Learning", "Image Classification"],
+        attached_proofs={"website_proof_session_ids": [session]},
+    )
+
+    gh = _seed_github_proof(
+        mem_store,
+        detected_skills=["Machine Learning"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {"skill": "Machine Learning", "file_path": "model.py", "line_start": 10, "line_end": 20}
+            ]
+        },
+    )
+    boston = _create_project_defense(
+        client,
+        title="Boston Smart Accident Risk Rerouting",
+        claimed_skills=["Machine Learning"],
+        repo_url="https://github.com/octocat/Boston",
+        attached_proofs={"github_proof_id": gh},
+    ).json()["project"]["id"]
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning", synthesize=False)
+    boston_chain = next(p for p in report["projects"] if p["project_id"] == boston)
+    assert not boston_chain["website_evidence"], "Boston must not inherit Teachable's Website Proof"
+    assert "Website Proof" not in boston_chain["sources"]
+    assert any("No Website Proof" in lim for lim in boston_chain["limitations"])
+
+
+def test_website_navigation_only_stays_project_level_everywhere(
+    client, mem_store: dict, pipeline_db: dict
+) -> None:
+    """A generic navigation/layout Website Proof derives NO skill in either view —
+    it stays project-level and never becomes skill proof for ML."""
+    session = _seed_workflow_analysis(
+        mem_store,
+        target_website="https://demo.example.com",
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="The user navigated between the app's pages using the sidebar menu.",
+        demonstrated_actions=["Opened the sidebar", "Switched between pages"],
+        page_context_summary="Navigation / page layout.",
+    )
+    created = _create_project_defense(
+        client,
+        title="Portfolio Site",
+        claimed_skills=["Machine Learning", "Frontend Development"],
+        attached_proofs={"website_proof_session_ids": [session]},
+    ).json()
+    pid = created["project"]["id"]
+
+    body = client.get(f"/api/v1/student/vbr/projects/{pid}/report").json()
+    rows = {r["skill"]: r for r in body["skill_evidence"]}
+    assert "Website Proof" not in rows["Machine Learning"]["supporting_sources"]
+    # The behaviour-evidence card exists but maps no skill (honest gap stated).
+    assert any(not e["skill_mapping_available"] for e in body["website_skill_evidence"])
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning", synthesize=False)
+    for chain in report["projects"]:
+        if chain.get("project_id") == pid:
+            assert not chain["website_evidence"], "navigation-only proof is not ML skill evidence"
+
+
+def test_website_mapping_helper_never_promotes_weakly_supported(
+    client, mem_store: dict, pipeline_db: dict
+) -> None:
+    """weakly_supported_skills are never treated as supporting_proof_types: a skill
+    only listed as weakly supported (and not derivable) earns no Website Proof."""
+    from app.services.website_skill_proof_focus import map_website_supported_skills
+
+    # navigation purpose derives nothing; a weakly-supported skill must not map.
+    mapped = map_website_supported_skills(
+        "navigation_layout",
+        extracted_supported_skills=[],
+        claimed_skills=["Kubernetes", "DevOps"],
+    )
+    assert mapped == []

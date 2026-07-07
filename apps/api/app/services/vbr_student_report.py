@@ -57,10 +57,10 @@ from app.services.website_skill_proof_focus import (
     WEBSITE_STRENGTHEN_ACTION,
     classify_website_purpose,
     classify_website_skill_relevance,
-    derive_website_supported_skills,
     describe_website_purpose,
     describe_website_skill_relevance,
     is_direct_website_relevance,
+    map_website_supported_skills,
     website_behavior_claim,
     website_evidence_source_types,
     website_limitation_for,
@@ -1478,30 +1478,18 @@ def collect_website_skill_evidence(
             live_reachable=bool(live and live.get("is_reachable")),
         )
 
-        # 1 — extracted matches (trusted evidence-source match): claimed skills the
-        #     proof's stored ``supported_skills`` explicitly names.
-        mapping_basis: dict[str, str] = {}
-        ordered_norms: list[str] = []
-        for raw_skill in wp.get("supported_skills") or []:
-            n = _norm(str(raw_skill))
-            if n in mapping_basis or n not in claimed_by_norm:
-                continue
-            mapping_basis[n] = "extracted"
-            ordered_norms.append(n)
-        # 2 — derived matches: claimed skills the observed behaviour demonstrates on
-        #     its own (never overrides a stronger extracted match already recorded).
-        for display in derive_website_supported_skills(
-            purpose_key, list(claimed_by_norm.values())
-        ):
-            n = _norm(display)
-            if n in mapping_basis or n not in claimed_by_norm:
-                continue
-            mapping_basis[n] = "derived"
-            ordered_norms.append(n)
-
+        # THE canonical Website→skill mapping (single source of truth): extracted
+        # matches (the proof's stored ``supported_skills``) first, then derived
+        # matches (the observed behaviour genuinely demonstrates a claimed skill).
+        # The Work Passport, Project Report, and Skill Report all consume this same
+        # mapping, so they can never disagree about which skill this Website Proof
+        # supports in this project.
         skill_rows: list[dict[str, Any]] = []
-        for n in ordered_norms:
-            display = claimed_by_norm[n]
+        for display, basis in map_website_supported_skills(
+            purpose_key,
+            extracted_supported_skills=[str(s) for s in (wp.get("supported_skills") or [])],
+            claimed_skills=list(claimed_by_norm.values()),
+        ):
             relevance_key = classify_website_skill_relevance(purpose_key, skill=display)
             skill_rows.append(
                 {
@@ -1511,7 +1499,7 @@ def collect_website_skill_evidence(
                     "relevance_summary": website_skill_relevance_summary(relevance_key, display),
                     "limitation": website_limitation_for(relevance_key, display),
                     "is_direct_evidence": is_direct_website_relevance(relevance_key),
-                    "mapping_basis": mapping_basis[n],
+                    "mapping_basis": basis,
                 }
             )
 

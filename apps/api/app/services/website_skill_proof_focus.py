@@ -62,6 +62,7 @@ __all__ = [
     "describe_website_purpose",
     "describe_website_skill_relevance",
     "is_direct_website_relevance",
+    "map_website_supported_skills",
     "public_screenshot_access_label",
     "website_behavior_claim",
     "website_chain_connection_note",
@@ -795,6 +796,68 @@ def website_relevance_can_map_skill(relevance_key: str | None) -> bool:
     relevances deliberately return False so a generic website stays project-level.
     """
     return str(relevance_key or "") in DERIVABLE_WEBSITE_RELEVANCE_KEYS
+
+
+def map_website_supported_skills(
+    purpose_key: str | None,
+    *,
+    extracted_supported_skills: list[str] | None,
+    claimed_skills: list[str] | None,
+) -> list[tuple[str, str]]:
+    """THE canonical Website→skill mapping for ONE project (single source of truth).
+
+    Given the observed-behaviour ``purpose_key``, a Website Proof's stored
+    ``extracted_supported_skills`` and the project's ``claimed_skills``, return the
+    claimed skills the website behaviour supports as ``(display_skill, basis)``
+    pairs, where ``basis`` is:
+
+      * ``"extracted"`` — the proof's stored ``supported_skills`` explicitly names
+        this claimed skill (the pipeline's own evidence-source match, trusted);
+      * ``"derived"``   — the observed behaviour genuinely demonstrates this
+        claimed skill on its own (``derive_website_supported_skills``), an
+        interactive UI / chart-dashboard / request→result API / model
+        prediction/generation.
+
+    Order: extracted matches first (in claimed order), then derived matches; each
+    skill appears at most once, and an extracted match is never downgraded by a
+    later derived one. A claimed skill is projected ONLY when it is genuinely
+    matched — a broad ``claimed_skills`` list alone never maps website evidence,
+    and a GENERIC page (bare availability / documentation / unknown / structural
+    UI) derives nothing. This is the ONE mapping every surface must consume so the
+    Work Passport, Project Report, and Skill Report can never disagree about which
+    skill a Website Proof supports in a given project.
+    """
+    claimed_by_norm: dict[str, str] = {}
+    for s in claimed_skills or []:
+        display = str(s or "").strip()
+        n = _norm(display)
+        if n and n not in claimed_by_norm:
+            claimed_by_norm[n] = display
+
+    basis_by_norm: dict[str, str] = {}
+    out: list[tuple[str, str]] = []
+    # 1 — extracted matches (trusted): a claimed skill the proof's stored
+    #     ``supported_skills`` explicitly names.
+    for raw in extracted_supported_skills or []:
+        n = _norm(str(raw))
+        if n in basis_by_norm or n not in claimed_by_norm:
+            continue
+        basis_by_norm[n] = "extracted"
+        out.append((claimed_by_norm[n], "extracted"))
+    # 2 — derived matches: a claimed skill the observed behaviour demonstrates on
+    #     its own (never overrides a stronger extracted match already recorded).
+    for display in derive_website_supported_skills(purpose_key, list(claimed_by_norm.values())):
+        n = _norm(display)
+        if n in basis_by_norm or n not in claimed_by_norm:
+            continue
+        basis_by_norm[n] = "derived"
+        out.append((claimed_by_norm[n], "derived"))
+    return out
+
+
+def _norm(value: str) -> str:
+    """Local skill normalizer for the canonical mapping (case/space-insensitive)."""
+    return " ".join(str(value or "").strip().lower().split())
 
 
 def derive_website_supported_skills(

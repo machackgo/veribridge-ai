@@ -98,6 +98,7 @@ from app.services.website_skill_proof_focus import (
     classify_website_skill_relevance,
     describe_website_purpose,
     describe_website_skill_relevance,
+    map_website_supported_skills,
     website_chain_connection_note,
     website_limitation_for,
     website_purpose_summary,
@@ -2436,6 +2437,135 @@ def _group_chains_by_title(chains: list[dict[str, Any]]) -> list[dict[str, Any]]
     return grouped
 
 
+def _project_claimed_skills(db: Any, user_id: str) -> dict[str, list[str]]:
+    """Map owned ``vbr_projects`` id → its claimed-skills list (safe display text).
+
+    The canonical Website→skill derivation only ever maps a skill a project
+    actually CLAIMED, so the Skill Report needs each project's claimed skills to
+    reproduce the exact mapping the Project Report / Work Passport used.
+    """
+    out: dict[str, list[str]] = {}
+    for project in _rows_for_user(db, _PROJECTS_TABLE, user_id):
+        pid = str(project.get("id") or "")
+        if not pid:
+            continue
+        metadata = project.get("metadata") if isinstance(project.get("metadata"), dict) else {}
+        out[pid] = [str(s) for s in (metadata.get("claimed_skills") or []) if str(s).strip()]
+    return out
+
+
+def _derived_website_items_for_skill(
+    db: Any, user_id: str, items: list[dict[str, Any]], canon: str
+) -> list[dict[str, Any]]:
+    """Website vault items that the CANONICAL mapping maps to ``canon`` by DERIVATION.
+
+    The base vault (:func:`_collect_website`) explodes a Website Proof into one
+    item per *extracted* ``supported_skills`` entry only. That misses the DERIVED
+    matches the Project Report / Work Passport surface (a Teachable prediction
+    demo derives Machine Learning / Image Classification / Frontend even when the
+    proof's stored ``supported_skills`` never named them), so the Skill Report
+    would say "No Website Proof in this project for this skill" for a skill the
+    Passport shows Website Proof for — the exact cross-view mismatch this fixes.
+
+    For each Website Proof attached to a project that CLAIMS ``canon``, we hydrate
+    the safe detail, classify the observed purpose, and run the SAME
+    :func:`map_website_supported_skills` the report uses (scoped to ``canon``). When
+    it maps ``canon`` we emit a clone of the proof's vault item with
+    ``skill_name = canon`` — attached ONLY to the canon-claiming projects it is
+    actually attached to (so e.g. a Teachable website proof never rides onto
+    Boston, which has its own proofs). Sessions that already map ``canon`` by an
+    extracted match are skipped (the base item covers them), so no proof is ever
+    double-counted. Fail-closed: a generic / availability-only / unmatched page
+    yields nothing.
+    """
+    canon_slug = skill_slug(canon)
+    canon_norm = _norm(canonical_skill(canon))
+
+    def _is_canon(raw: str) -> bool:
+        return skill_slug(raw) == canon_slug or _norm(canonical_skill(raw)) == canon_norm
+
+    # Projects that CLAIMED canon — the only projects a website proof may map canon to.
+    claimed_by_project = _project_claimed_skills(db, user_id)
+    canon_projects = {
+        pid for pid, claimed in claimed_by_project.items() if any(_is_canon(s) for s in claimed)
+    }
+    if not canon_projects:
+        return []
+
+    # Website proofs already contributing canon by an EXTRACTED match — skip them,
+    # the base vault item already covers the session.
+    already_canon_sessions = {
+        str(i.get("source_id"))
+        for i in items
+        if i.get("proof_type") == PROOF_WEBSITE and i.get("skill_name") and _is_canon(str(i["skill_name"]))
+    }
+
+    # All website vault items grouped by session, with the extracted supported
+    # skills seen for that session (any non-empty skill_name is an extracted match).
+    by_session: dict[str, dict[str, Any]] = {}
+    extracted_by_session: dict[str, list[str]] = {}
+    for i in items:
+        if i.get("proof_type") != PROOF_WEBSITE:
+            continue
+        sid = str(i.get("source_id") or "")
+        if not sid:
+            continue
+        by_session.setdefault(sid, i)
+        name = str(i.get("skill_name") or "").strip()
+        if name:
+            extracted_by_session.setdefault(sid, []).append(name)
+
+    derived: list[dict[str, Any]] = []
+    detail_cache: dict[str, dict[str, Any] | None] = {}
+    for sid, rep in by_session.items():
+        if sid in already_canon_sessions:
+            continue
+        attached = [pid for pid in (rep.get("attached_project_ids") or []) if pid in canon_projects]
+        if not attached:
+            continue  # not attached to any project that claimed canon
+        if sid not in detail_cache:
+            detail_cache[sid] = get_website_proof_detail(db, str(user_id), sid)
+        detail = detail_cache[sid] or {}
+        live = detail.get("live_check") if isinstance(detail.get("live_check"), dict) else None
+        purpose_key = classify_website_purpose(
+            workflow_summary=detail.get("workflow_summary"),
+            workflow_steps=detail.get("workflow_steps") or [],
+            dom_summary=detail.get("dom_summary"),
+            ocr_summary=detail.get("ocr_summary"),
+            visual_summary=detail.get("visual_summary"),
+            live_check=live,
+            fallback_summary=rep.get("safe_summary"),
+            page_context=detail.get("page_context"),
+            extra_signals=detail.get("extra_signals") or [],
+        )
+        # Map against each project's OWN claimed skills (the real display names,
+        # e.g. "Image Classification"), exactly as the report does — never the
+        # requested slug's canonical form, whose spelling may not match the closed
+        # relevance vocabularies. Keep only the canon-claiming projects whose
+        # claimed skills actually map ``canon`` for the observed behaviour.
+        mapped_pids = [
+            pid
+            for pid in attached
+            if any(
+                _is_canon(display)
+                for display, _ in map_website_supported_skills(
+                    purpose_key,
+                    extracted_supported_skills=extracted_by_session.get(sid, []),
+                    claimed_skills=claimed_by_project.get(pid, []),
+                )
+            )
+        ]
+        if not mapped_pids:
+            continue
+        # Clone the representative vault item as a canon-scoped website evidence
+        # item, restricted to the projects whose claimed skills mapped canon.
+        clone = dict(rep)
+        clone["skill_name"] = canon
+        clone["attached_project_ids"] = mapped_pids
+        derived.append(clone)
+    return derived
+
+
 def collect_skill_report(
     db: Any, pipeline_db: Any, user_id: str, skill_name: str, *, synthesize: bool = True
 ) -> dict[str, Any]:
@@ -2484,6 +2614,14 @@ def collect_skill_report(
     # routing is never weakened), and only when the row is ML-specific (never a
     # generic Python helper/import/setup line — see ``is_github_evidence_related_to_skill``).
     matched += _related_github_items(items, matched, canon)
+
+    # Website Proofs the CANONICAL mapping maps to this skill by DERIVATION (not
+    # just the pipeline's extracted ``supported_skills``) — so the Skill Report's
+    # connected chains agree with the Project Report / Work Passport about which
+    # projects have Website Proof for this skill. Scoped to canon-claiming
+    # projects and deduped against extracted matches, so nothing is double-counted
+    # and no proof rides onto a project that did not claim the skill.
+    matched += _derived_website_items_for_skill(db, user_id, items, canon)
 
     github = [_report_item(i, titles, skill=canon) for i in matched if i["proof_type"] == PROOF_GITHUB]
     documents = [_report_item(i, titles) for i in matched if i["proof_type"] == PROOF_DOCUMENT]
