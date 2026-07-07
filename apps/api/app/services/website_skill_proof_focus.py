@@ -71,10 +71,18 @@ __all__ = [
     "website_corroboration_note",
     "website_evidence_source_types",
     "website_limitation_for",
+    "website_app_context",
+    "website_missing_evidence_note",
+    "website_output_observed",
+    "website_page_context_label",
     "website_purpose_summary",
+    "website_recruiter_checklist",
     "website_relevance_can_map_skill",
+    "website_runtime_claim",
     "website_skill_relevance_summary",
+    "website_target_domain",
     "website_unmapped_skill_reason",
+    "website_user_action_observed",
     "website_verification_mode_label",
     "website_verification_mode_note",
 ]
@@ -1369,6 +1377,292 @@ def _safe_route_or_page(open_url: str | None, live_final_url: str | None, safe_l
     return location or "Recorded session"
 
 
+# ── Website Runtime Inspection: target site / app context (safe URLs only) ─────
+#
+# The recruiter-first "what site was this" line. A domain/app-context is derived
+# ONLY from a URL that already passed ``is_safe_public_url`` — a local/private
+# host never yields a domain here (it stays ``None`` and the card reads as a
+# recorded replay), so a private hostname can never leak through this field.
+
+# Recognisable hosted-app / product hosts → a friendly recruiter-facing app name.
+# Generic hosting platforms (vercel/netlify/…) are deliberately absent: their raw
+# domain is more informative than a "<platform> deployment" label, so they fall
+# through to the page title / domain.
+_KNOWN_APP_CONTEXTS: tuple[tuple[str, str], ...] = (
+    ("teachablemachine.withgoogle.com", "Teachable Machine"),
+    ("huggingface.co", "Hugging Face"),
+    ("hf.space", "Hugging Face Space"),
+    ("streamlit.app", "Streamlit app"),
+    ("streamlitapp.com", "Streamlit app"),
+    ("gradio.app", "Gradio app"),
+    ("gradio.live", "Gradio app"),
+    ("colab.research.google.com", "Google Colab"),
+    ("kaggle.com", "Kaggle"),
+    ("replicate.com", "Replicate"),
+    ("roboflow.com", "Roboflow"),
+    ("wandb.ai", "Weights & Biases"),
+)
+
+
+def _safe_host(url: str | None) -> str | None:
+    """Hostname of a URL that passes the safe-public-url gate, else ``None``."""
+    u = str(url or "").strip()
+    if not u or not is_safe_public_url(u):
+        return None
+    try:
+        host = urlsplit(u).hostname or ""
+    except ValueError:
+        return None
+    host = host.lower().lstrip(".")
+    return host or None
+
+
+def website_target_domain(
+    open_url: str | None, live_final_url: str | None, route_or_page: str | None
+) -> str | None:
+    """The safe target domain for the runtime-inspection header, or ``None``.
+
+    Derived ONLY from a safe public URL (attach-time or live-check final URL) or,
+    failing that, from the host component of the already-safe ``route_or_page``
+    locator ("host/path"). A local/private/recorded-only proof yields ``None`` —
+    never a private hostname.
+    """
+    for candidate in (live_final_url, open_url):
+        host = _safe_host(candidate)
+        if host:
+            return host
+    route = str(route_or_page or "").strip()
+    if route and route != "Recorded session":
+        head = route.split("/", 1)[0].strip().lower()
+        # Only accept a genuine domain token (a dot, no spaces) — never a free
+        # "Recorded session"-style label.
+        if "." in head and " " not in head:
+            return head
+    return None
+
+
+def website_app_context(domain: str | None, page_title: str | None) -> str | None:
+    """A friendly recruiter-facing app/product name for the target site.
+
+    Prefers a recognised hosted-app name (Teachable Machine, Hugging Face, …),
+    then the already-safe page title, then the bare safe domain. ``None`` when no
+    safe domain and no page title exist (a recorded-only capture with no title).
+    """
+    d = str(domain or "").strip().lower()
+    if d:
+        for suffix, name in _KNOWN_APP_CONTEXTS:
+            if d == suffix or d.endswith("." + suffix):
+                return name
+    title = str(page_title or "").strip()
+    if title:
+        return title[:160]
+    return d or None
+
+
+# ── Website Runtime Inspection: skill-specific runtime claim ───────────────────
+#
+# The card's FIRST line (Section 1). A concise, SKILL-SPECIFIC claim about the
+# recorded runtime behaviour, keyed on the (already conservative) website→skill
+# relevance so an ML/GenAI/DevOps skill can never overclaim. Closed templates —
+# only the already-safe skill display name is interpolated.
+_RUNTIME_CLAIM_TEMPLATES: dict[str, str] = {
+    RELEVANCE_ML_PRODUCT: (
+        "Recorded website behavior shows a browser-based {skill} workflow where user "
+        "input leads to a visible prediction/result output."
+    ),
+    RELEVANCE_GENAI_PRODUCT: (
+        "Recorded website behavior shows a generative-AI product flow where a prompt "
+        "leads to a visible generated response, supporting {skill} product behavior."
+    ),
+    RELEVANCE_DIRECT_FRONTEND: (
+        "Recorded website behavior shows an interactive {skill} UI flow with visible "
+        "state/output changes."
+    ),
+    RELEVANCE_SUPPORTING_FRONTEND: (
+        "Recorded website behavior shows {skill} page structure and navigation with "
+        "limited interactive output."
+    ),
+    RELEVANCE_DATA_VISUALIZATION: (
+        "Recorded website behavior shows data rendered visually (charts/dashboard), "
+        "supporting the {skill} claim."
+    ),
+    RELEVANCE_API_BEHAVIOR: (
+        "Recorded website behavior shows a request→result exchange with a backing API, "
+        "supporting {skill} product behavior — not server-code proof."
+    ),
+    RELEVANCE_PRODUCT_DEMONSTRATION: (
+        "Recorded website behavior demonstrates the working product this {skill} claim "
+        "belongs to."
+    ),
+    RELEVANCE_DEPLOYMENT_AVAILABILITY: (
+        "Recorded website behavior supports deployed runtime availability only when the "
+        "URL is public/deployed; local replay alone does not prove {skill} deployment."
+    ),
+    RELEVANCE_DOCUMENTATION: (
+        "Recorded website evidence is documentation/static context for {skill}, not a "
+        "demonstrated runtime flow."
+    ),
+    RELEVANCE_UNKNOWN: (
+        "Recorded website evidence could not be tied to a specific {skill} runtime "
+        "behavior and needs review."
+    ),
+}
+
+
+def website_runtime_claim(relevance_key: str | None, skill: str | None) -> str:
+    """The Section-1 skill-specific runtime claim (closed templates, fail-closed)."""
+    template = _RUNTIME_CLAIM_TEMPLATES.get(
+        str(relevance_key or ""), _RUNTIME_CLAIM_TEMPLATES[RELEVANCE_UNKNOWN]
+    )
+    return template.format(skill=_skill_text(skill))
+
+
+# ── Website Runtime Inspection: observed user action / visible output ──────────
+#
+# Section 2 specifics. Per-purpose closed sentences naming the exact user action
+# that drove the page and the exact output/result that became visible. A purpose
+# with no demonstrable action/output returns ``None`` (an honest missing state),
+# never a generic filler sentence.
+_USER_ACTION_BY_PURPOSE: dict[str, str] = {
+    PURPOSE_CHAT_PROMPT: "A message/prompt was entered into the chat interface.",
+    PURPOSE_GENERATED_RESPONSE: "User input was submitted to request a generated response.",
+    PURPOSE_PREDICTION_RESULT: "Input was provided to run a prediction/inference.",
+    PURPOSE_FILE_UPLOAD: "A file was selected/uploaded into the app.",
+    PURPOSE_AUTHENTICATION: "Sign-in / sign-up credentials were entered.",
+    PURPOSE_SEARCH_RETRIEVAL: "A search query was entered and submitted.",
+    PURPOSE_INTERACTIVE_FORM: "Form inputs were filled in and submitted.",
+    PURPOSE_API_INTERACTION: "A user action triggered a request to a backing API.",
+    PURPOSE_DATA_VISUALIZATION: "The visualization/chart view was loaded and inspected.",
+    PURPOSE_DASHBOARD: "The dashboard view was opened and inspected.",
+    PURPOSE_DATA_TABLE: "The data table/list view was opened.",
+    PURPOSE_NAVIGATION_LAYOUT: "The app's pages/views were navigated.",
+}
+
+_OUTPUT_OBSERVED_BY_PURPOSE: dict[str, str] = {
+    PURPOSE_CHAT_PROMPT: "A response was displayed in the chat interface.",
+    PURPOSE_GENERATED_RESPONSE: "A generated response/answer was displayed.",
+    PURPOSE_PREDICTION_RESULT: "A prediction/result was displayed after the input.",
+    PURPOSE_FILE_UPLOAD: "The app produced a visible response to the uploaded file.",
+    PURPOSE_SEARCH_RETRIEVAL: "Search/retrieval results were displayed.",
+    PURPOSE_DATA_VISUALIZATION: "Charts/visualizations rendered the data on screen.",
+    PURPOSE_DASHBOARD: "Dashboard metrics/data were displayed.",
+    PURPOSE_DATA_TABLE: "Structured rows/records were displayed.",
+    PURPOSE_API_INTERACTION: "Data returned from the API was rendered on screen.",
+    PURPOSE_INTERACTIVE_FORM: "The page produced a visible response to the submission.",
+    PURPOSE_AUTHENTICATION: "The authentication flow advanced after submission.",
+}
+
+
+def website_user_action_observed(purpose_key: str | None) -> str | None:
+    """Closed per-purpose sentence for the observed user action, or ``None``."""
+    return _USER_ACTION_BY_PURPOSE.get(str(purpose_key or ""))
+
+
+def website_output_observed(purpose_key: str | None) -> str | None:
+    """Closed per-purpose sentence for the visible output/result, or ``None``."""
+    return _OUTPUT_OBSERVED_BY_PURPOSE.get(str(purpose_key or ""))
+
+
+# ── Website Runtime Inspection: safe OCR page-context label (Section 2) ─────────
+#
+# A recruiter-facing label for the pipeline's own closed OCR page-context enum.
+# Only the specific contexts map; generic/demo/unknown/filtered contexts return
+# ``None`` (they add no honest specificity).
+_PAGE_CONTEXT_LABELS: dict[str, str] = {
+    "prediction_output": "Prediction / output page",
+    "training_ui": "Model training interface",
+    "homepage_marketing": "Landing / marketing page",
+}
+
+
+def website_page_context_label(page_context: str | None) -> str | None:
+    """Safe recruiter label for a closed OCR page-context key, or ``None``."""
+    return _PAGE_CONTEXT_LABELS.get(str(page_context or "").strip().lower())
+
+
+# ── Website Runtime Inspection: recruiter verification checklist (Section 4) ────
+#
+# GitHub Proof lets a recruiter click through and read the code. The Website
+# counterpart is a concrete checklist. LIVE proofs get an "open it and reproduce
+# the workflow" checklist (the action/output specifics come from the same closed
+# per-purpose vocabulary above); RECORDED-only proofs get a "you cannot open
+# localhost — verify via the recorded package / corroborating proofs / deploy"
+# checklist. Closed vocabulary only — nothing user-controlled is interpolated.
+_RECORDED_REPLAY_CHECKLIST: tuple[str, ...] = (
+    "This proof was recorded from a local/private runtime — a recruiter cannot open it directly.",
+    "Review the recorded evidence package below (observed workflow, visual/OCR/DOM summaries).",
+    "Corroborate with the GitHub / Document / Project Defense evidence for this project.",
+    "Ask the candidate to deploy the site to a public URL for direct verification.",
+)
+
+
+def website_recruiter_checklist(
+    verification_mode: str | None, purpose_key: str | None
+) -> list[str]:
+    """The recruiter verification checklist for one card (closed vocabulary).
+
+    LIVE mode → open the site and reproduce the observed workflow, folding in the
+    closed per-purpose action/output sentences when they exist. RECORDED mode →
+    the fixed recorded-replay checklist. Always non-empty.
+    """
+    mode = str(verification_mode or "")
+    if mode != VERIFICATION_MODE_LIVE:
+        return list(_RECORDED_REPLAY_CHECKLIST)
+    steps: list[str] = [
+        "Open the live website.",
+        "Navigate to the same workflow/page shown in this proof.",
+    ]
+    action = website_user_action_observed(purpose_key)
+    steps.append(
+        f"Provide similar input — {action[0].lower() + action[1:]}"
+        if action
+        else "Provide similar input to the app."
+    )
+    output = website_output_observed(purpose_key)
+    steps.append(
+        f"Confirm the same output/result appears — {output[0].lower() + output[1:]}"
+        if output
+        else "Confirm the same output/result behavior appears."
+    )
+    steps.append("Compare what you see with the recorded evidence below.")
+    return steps
+
+
+# ── Website Runtime Inspection: honest missing-evidence note (Section 5/6) ──────
+
+
+def website_missing_evidence_note(
+    *,
+    has_visual: bool,
+    has_ocr: bool,
+    has_dom: bool,
+    has_workflow: bool,
+    has_public_live_url: bool,
+) -> str | None:
+    """A precise, honest note about what runtime evidence is MISSING, or ``None``.
+
+    Names the SIGNIFICANT absent evidence types (no frame/text capture at all, no
+    workflow narrative, or no public deployment URL) and recommends the concrete
+    next capture — never invents evidence, never a score. A missing DOM summary
+    alone is not flagged (it is a nice-to-have, not core). ``None`` when the proof
+    already carries a rich, publicly verifiable evidence package.
+    """
+    del has_dom  # DOM absence alone is not a significant gap; kept for callers
+    missing: list[str] = []
+    if not (has_visual or has_ocr):
+        missing.append("a keyframe / visual capture")
+    if not has_workflow:
+        missing.append("a step-by-step workflow narrative")
+    if not has_public_live_url:
+        missing.append("a public deployment URL")
+    if not missing:
+        return None
+    joined = missing[0] if len(missing) == 1 else (
+        ", ".join(missing[:-1]) + " and " + missing[-1]
+    )
+    return f"This proof is missing {joined}. " + WEBSITE_STRENGTHEN_ACTION
+
+
 def build_website_evidence_card(
     *,
     purpose_key: str | None,
@@ -1383,6 +1677,7 @@ def build_website_evidence_card(
     open_website_url: str | None = None,
     safe_location: str | None = None,
     observed_at: str | None = None,
+    page_context: str | None = None,
 ) -> dict[str, Any]:
     """Build ONE recruiter-inspectable Website Evidence Card (all fields safe).
 
@@ -1460,11 +1755,48 @@ def build_website_evidence_card(
     )
     deployment_recommended = verification_mode == VERIFICATION_MODE_RECORDED
 
+    # ── Website Runtime Inspection fields (Sections 1–5) ──────────────────────
+    # The target site header, the skill-specific runtime claim, the observed
+    # user action / visible output, the safe page-context label, the recruiter
+    # checklist and an honest missing-evidence note — all derived from closed
+    # vocabularies + already-safe inputs (never raw payloads, never private URLs).
+    target_domain = website_target_domain(open_url, safe_live_final_url, route_or_page)
     return {
         "card_key": card_key,
         "route_or_page": route_or_page,
         "page_title": page_title,
         "observed_at": observed,
+        # Section 1 — skill-specific runtime claim (closed template, keyed by the
+        # conservative website→skill relevance so ML/GenAI/DevOps never overclaim).
+        "runtime_claim_observed": website_runtime_claim(relevance, skill),
+        # Section 2 — target site / app context (safe public URLs only; a
+        # local/private capture yields None so no private host ever leaks).
+        "target_url_safe": open_url or safe_live_final_url,
+        "target_domain": target_domain,
+        "app_context": website_app_context(target_domain, page_title),
+        "page_context_label": website_page_context_label(page_context),
+        "user_action_observed": website_user_action_observed(purpose),
+        "output_observed": website_output_observed(purpose),
+        # Section 2 — the safe OCR-derived on-screen text line (same derived,
+        # closed-template sentence as ``ocr_evidence_summary_safe``; never raw OCR).
+        "visible_text_observed": (
+            _OCR_EVIDENCE_TEMPLATE.format(label=purpose_label) if has_ocr_summary else None
+        ),
+        # No reliable distinct-page count is captured today — honest None keeps
+        # the card from inventing a number (the missing-evidence note covers it).
+        "visited_pages_count": None,
+        "is_public_live_url": has_public_live_url,
+        "is_local_or_private_url": not has_public_live_url,
+        # Section 4 — the recruiter verification checklist (live vs recorded).
+        "recruiter_checklist": website_recruiter_checklist(verification_mode, purpose),
+        # Section 5/6 — honest note naming missing runtime evidence + next step.
+        "missing_evidence_note": website_missing_evidence_note(
+            has_visual=has_visual_summary,
+            has_ocr=has_ocr_summary,
+            has_dom=has_dom_summary,
+            has_workflow=bool(steps or workflow_summary),
+            has_public_live_url=has_public_live_url,
+        ),
         # Recruiter-first behaviour claim (closed vocabulary keyed by purpose) —
         # the first line the card renders.
         "behavior_claim": website_behavior_claim(purpose),

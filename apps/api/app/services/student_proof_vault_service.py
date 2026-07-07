@@ -1711,6 +1711,7 @@ def _report_item(
             open_website_url=item.get("public_url") if item.get("public_safe") else None,
             safe_location=item.get("safe_location"),
             observed_at=(hydrated or {}).get("observed_at"),
+            page_context=(hydrated or {}).get("page_context"),
         )
     return row
 

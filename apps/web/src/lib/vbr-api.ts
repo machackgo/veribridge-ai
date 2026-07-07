@@ -656,6 +656,22 @@ export type WebsiteProofSkillEvidence = {
   website_purpose_key: string
   website_purpose_label: string
   website_purpose_summary: string
+  /**
+   * Website Runtime Inspection fields (deep inspection). Section 1
+   * `runtime_claim_observed` is keyed by the primary mapped skill's relevance
+   * (empty when nothing mapped). Section 2 target/app/page context + observed
+   * user action / visible output. Section 4 verification mode + recruiter
+   * checklist. All closed-vocabulary / already-safe — never raw payloads.
+   */
+  runtime_claim_observed?: string
+  target_domain?: string
+  app_context?: string
+  page_context_label?: string
+  user_action_observed?: string
+  output_observed?: string
+  verification_mode?: string
+  verification_mode_label?: string
+  recruiter_checklist?: string[]
   skills: WebsiteProofSkillRelevance[]
   skill_mapping_available: boolean
 }
@@ -989,12 +1005,44 @@ export type WebsiteEvidenceCard = {
    * demonstrably shown, phrased as a checkable statement.
    */
   behavior_claim?: string | null
+  /**
+   * Website Runtime Inspection — Section 1: a concise SKILL-SPECIFIC claim about
+   * the recorded runtime behaviour (closed backend template keyed by the
+   * conservative website→skill relevance, so ML/GenAI/DevOps never overclaim).
+   */
+  runtime_claim_observed?: string | null
+  /**
+   * Section 2 — target site / app context. `target_url_safe` is present only for
+   * a safe public URL; `target_domain` is derived from a safe URL (a
+   * local/private capture leaves both null). `app_context` is a recognised
+   * hosted-app name / page title / domain; `page_context_label` a safe label for
+   * the pipeline's closed OCR page-context enum.
+   */
+  target_url_safe?: string | null
+  target_domain?: string | null
+  app_context?: string | null
+  page_context_label?: string | null
+  is_public_live_url?: boolean
+  is_local_or_private_url?: boolean
+  /**
+   * Section 2 — the exact observed user action and visible output/result (closed
+   * per-purpose sentences; null when neither is demonstrable).
+   * `visible_text_observed` is the SAFE OCR-derived sentence, never raw OCR.
+   */
+  user_action_observed?: string | null
+  output_observed?: string | null
+  visible_text_observed?: string | null
+  visited_pages_count?: number | null
   website_purpose_key: string
   website_purpose_label: string
   website_purpose_summary: string
   skill_relevance_key: string
   skill_relevance_label: string
   skill_relevance_summary: string
+  /** Section 4 — the recruiter verification checklist (live vs recorded-only). */
+  recruiter_checklist?: string[]
+  /** Section 5/6 — honest note naming the missing runtime evidence + next step. */
+  missing_evidence_note?: string | null
   observed_behavior_summary?: string | null
   visual_evidence_summary?: string | null
   ocr_evidence_summary_safe?: string | null

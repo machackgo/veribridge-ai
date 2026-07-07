@@ -439,6 +439,212 @@ def test_passport_generic_website_adds_no_website_proof_to_skill(
             assert "Website Proof" not in (ref.get("supporting_proof_types") or [])
 
 
+# ── Collapsed-attempt navigation consistency (Website Proof leak fix) ─────────
+#
+# Repeated attempts of the SAME project (same repo) collapse into ONE passport
+# card that links to exactly ONE report — the representative's. Evidence shown on
+# the card / skill refs must therefore come from the representative report ONLY,
+# never unioned across the other collapsed attempts. Otherwise a Website Proof
+# attached to a *different* attempt rides onto the card while the report it links
+# to shows "Website proof not attached" — the observed Teachable-Machine leak.
+
+
+def _bump_created_at(mem_store: dict, project_id: str, iso: str) -> None:
+    row = mem_store.setdefault("vbr_projects", {}).get(project_id)
+    assert row is not None, f"project {project_id} not in store"
+    row["created_at"] = iso
+    row["updated_at"] = iso
+
+
+def test_collapsed_attempt_website_proof_does_not_leak_onto_representative(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Scenarios C/E/F/G: two collapsed attempts of the same repo — the OLDER one
+    carries a Website Proof mapping ML; the NEWER (representative) one has NO
+    Website Proof. The single card links to the representative report (no website),
+    so neither the card's evidence badges nor any ML skill→project ref may claim
+    Website Proof — it would contradict the report the card opens."""
+    # Attempt A (older): same repo, WITH a Website Proof that maps ML.
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    created_a = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    proj_a = created_a["project"]["id"]
+    # Attempt B (newer → representative): same repo, only Document/Defense proof.
+    doc_id = _seed_document_evidence(mem_store)
+    created_b = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"document_evidence_ids": [doc_id]},
+    ).json()
+    proj_b = created_b["project"]["id"]
+
+    # Force B to be the representative (newest wins, no published token on either).
+    _bump_created_at(mem_store, proj_a, "2020-01-01T00:00:00+00:00")
+    _bump_created_at(mem_store, proj_b, "2020-06-01T00:00:00+00:00")
+
+    body = _get_private(client).json()
+    # Same repo → collapsed into ONE card.
+    assert body["project_count"] == 1
+    card = body["projects"][0]
+    rep_id = card["project_id"]
+    assert rep_id == proj_b  # newest attempt is the representative the card links to
+
+    # The report the card links to is the source of truth for what is attached.
+    report = client.get(f"/api/v1/student/vbr/projects/{rep_id}/report").json()
+    website_attached = (
+        int((report.get("evidence_package") or {}).get("website_proofs_count") or 0) > 0
+    )
+    assert website_attached is False  # representative attempt has no Website Proof
+
+    # (F) The card must not advertise Website Proof its linked report denies.
+    assert "Website Proof" not in card["evidence_sources"]
+    # (C/G) No ML skill→project ref may claim Website Proof for this collapsed card.
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            if str(ref.get("project_id")) == rep_id:
+                assert "Website Proof" not in (ref.get("supporting_proof_types") or [])
+            # (F) Global invariant: a ref claiming Website Proof must resolve to a
+            # project whose own report has Website Proof attached.
+            if "Website Proof" in (ref.get("supporting_proof_types") or []):
+                ref_report = client.get(
+                    f"/api/v1/student/vbr/projects/{ref['project_id']}/report"
+                ).json()
+                assert int(
+                    (ref_report.get("evidence_package") or {}).get("website_proofs_count") or 0
+                ) > 0
+
+
+def test_collapsed_attempt_website_proof_kept_when_representative_has_it(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Scenario E (positive): when the REPRESENTATIVE attempt is the one carrying
+    the mapping Website Proof, the ML ref legitimately keeps its Website Proof chip
+    and its exact project_id — collapsing never drops a truly-attached proof."""
+    # Attempt A (older): no website. Attempt B (newer → representative): website→ML.
+    doc_id = _seed_document_evidence(mem_store)
+    created_a = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"document_evidence_ids": [doc_id]},
+    ).json()
+    proj_a = created_a["project"]["id"]
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    created_b = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    proj_b = created_b["project"]["id"]
+
+    _bump_created_at(mem_store, proj_a, "2020-01-01T00:00:00+00:00")
+    _bump_created_at(mem_store, proj_b, "2020-06-01T00:00:00+00:00")
+
+    body = _get_private(client).json()
+    assert body["project_count"] == 1
+    card = body["projects"][0]
+    assert card["project_id"] == proj_b
+    assert "Website Proof" in card["evidence_sources"]
+
+    ml = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "machine learning")
+    website_refs = [
+        ref for ref in ml["projects"] if "Website Proof" in (ref.get("supporting_proof_types") or [])
+    ]
+    assert website_refs, "representative-attached Website Proof must survive collapse"
+    # (E) The ref preserves the exact representative project_id it routes to.
+    for ref in website_refs:
+        assert str(ref.get("project_id")) == proj_b
+
+
+def test_website_proof_does_not_cross_between_distinct_projects_same_skill(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Scenario A: two DISTINCT projects (different repos) both claim ML, but only
+    Project A has a Website Proof mapping ML. The ML skill→project ref for Project
+    B must NOT list Website Proof — website evidence never crosses project
+    boundaries just because both share the skill."""
+    # Project A (repo alpha): website→ML.
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    created_a = _create_project_defense(
+        client,
+        title="Alpha ML Demo",
+        repo_url="https://github.com/octocat/alpha-repo",
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    proj_a = created_a["project"]["id"]
+    # Project B (repo beta): only Document Proof, no website.
+    doc_id = _seed_document_evidence(mem_store)
+    created_b = _create_project_defense(
+        client,
+        title="Beta ML Demo",
+        repo_url="https://github.com/octocat/beta-repo",
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"document_evidence_ids": [doc_id]},
+    ).json()
+    proj_b = created_b["project"]["id"]
+
+    body = _get_private(client).json()
+    assert body["project_count"] == 2  # distinct repos → not collapsed
+
+    ml = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "machine learning")
+    refs = {str(r.get("project_id")): r for r in ml["projects"]}
+    assert "Website Proof" in (refs[proj_a].get("supporting_proof_types") or [])
+    assert "Website Proof" not in (refs[proj_b].get("supporting_proof_types") or [])
+    # And Project B's card must not advertise Website Proof at the project level.
+    card_b = next(p for p in body["projects"] if p["project_id"] == proj_b)
+    assert "Website Proof" not in card_b["evidence_sources"]
+
+
+def test_standalone_vault_website_proof_never_attaches_to_a_project_card(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Scenario B: a standalone Website Proof living in the wider vault (attached to
+    NO project) must never make a project card — or a skill→project ref — show
+    Website Proof. The card's evidence is the attached report only."""
+    # One project with Document Proof only (no website attached).
+    doc_id = _seed_document_evidence(mem_store)
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"document_evidence_ids": [doc_id]},
+    ).json()
+    project_id = created["project"]["id"]
+    # A standalone Website Proof exists in the vault, attached to nothing.
+    _seed_workflow_analysis(
+        mem_store,
+        supported_skills=["Machine Learning"],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+
+    body = _get_private(client).json()
+    card = next(p for p in body["projects"] if p["project_id"] == project_id)
+    # The standalone website proof is counted as unattached vault evidence …
+    assert body["vault_unattached_count"] >= 1
+    # … but never rides onto the project card or a skill→project ref.
+    assert "Website Proof" not in card["evidence_sources"]
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            assert "Website Proof" not in (ref.get("supporting_proof_types") or [])
+
+
 # ── Project-level-only Website Proof context (Diagnosis-C explainer) ──────────
 #
 # A Website Proof can be attached to a project yet map to NO skill because the

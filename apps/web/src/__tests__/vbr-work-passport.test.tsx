@@ -2726,6 +2726,71 @@ describe("PrivatePassportView — Proof Type dropdown reflects the whole passpor
     )
   })
 
+  it("Website Proof filter DOES show the project when a Website Proof is exactly attached to that skill+project", async () => {
+    // Fail-closed must not become over-filtering: an exactly-attached Website
+    // Proof that maps a skill in a project MUST still appear under the filter,
+    // while a *different* project whose website union does not support that skill
+    // stays hidden. proj-tm supports ML via Website Proof; proj-boston's website
+    // is project-level union only (supports ML via GitHub, not website).
+    const base = makePassport().projects[0]
+    const p = makePassport({
+      skills: [
+        {
+          skill: "Machine Learning",
+          status: "Demonstrated",
+          evidence_chip_count: 2,
+          project_count: 2,
+          evidence_sources: ["Website Proof", "GitHub Proof", "Project Defense"],
+          projects: [
+            {
+              project_title: "Teachable Machine Image Classification Demo",
+              project_id: "proj-tm",
+              skill_status: "Demonstrated",
+              evidence_sources: ["Website Proof", "Project Defense"],
+              supporting_proof_types: ["Website Proof", "Project Defense"],
+              report_is_public: false,
+              public_report_path: null,
+            },
+            {
+              project_title: "Boston Smart Accident Risk Rerouting",
+              project_id: "proj-boston",
+              skill_status: "Demonstrated",
+              evidence_sources: ["GitHub Proof", "Website Proof"],
+              supporting_proof_types: ["GitHub Proof"],
+              report_is_public: false,
+              public_report_path: null,
+            },
+          ],
+          evidence_chips: [],
+          notes: "",
+          limitations: [],
+        },
+      ],
+      projects: [
+        { ...base, project_id: "proj-tm", project_title: "Teachable Machine Image Classification Demo", evidence_sources: ["Website Proof", "Project Defense"], claimed_skills: ["Machine Learning"], top_skills: [{ skill: "Machine Learning", status: "Demonstrated", skill_slug: "machine-learning", supporting_proof_types: ["Website Proof", "Project Defense"] }] },
+        { ...base, project_id: "proj-boston", project_title: "Boston Smart Accident Risk Rerouting", evidence_sources: ["GitHub Proof", "Website Proof"], claimed_skills: ["Machine Learning"], top_skills: [{ skill: "Machine Learning", status: "Demonstrated", skill_slug: "machine-learning", supporting_proof_types: ["GitHub Proof"] }] },
+      ],
+      evidence_source_counts: { "Website Proof": 1, "GitHub Proof": 1, "Project Defense": 1 },
+      project_count: 2,
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+
+    // (6) The exactly-attached Website Proof still shows — NOT the empty state.
+    expect(screen.queryByTestId("skills-panel-proof-empty")).not.toBeInTheDocument()
+    const skills = screen.getAllByTestId("passport-skill-card").map((c) => c.getAttribute("data-skill"))
+    expect(skills).toEqual(["Machine Learning"])
+    // …and only proj-tm (the project the website actually supports for ML) survives.
+    const ml = mapSkillCard("Machine Learning")
+    const rows = within(ml).getAllByTestId("skill-project-evidence-row")
+    expect(rows.map((r) => r.getAttribute("data-project-id"))).toEqual(["proj-tm"])
+  })
+
   it("explains the project-level-only Website Proof and lists context cards when the passport carries it", async () => {
     const p = makeWebsiteGlobalOnlyPassport({
       website_proof_project_context: [
@@ -3118,6 +3183,116 @@ describe("buildPassportGraph — evidence-only edges (fail closed)", () => {
     // Unique title → the title-only fallback still resolves safely.
     expect(graph.skills.find((s) => s.name === "Rust")!.projectIds).toEqual(["solo-1"])
     expect(graph.projectSkills.get("solo-1")).toEqual(["rust"])
+  })
+
+  // (I/J) Wider-vault isolation: a Website Proof that exists only in the skill's
+  // WIDER PROOF VAULT (attached to a DIFFERENT project, or standalone) must never
+  // ride onto the skill's ATTACHED proof-type set or add an attached project edge.
+  it("wider-vault Website Proof never becomes attached proof-type or project edge", () => {
+    const base = makePassport().projects[0]
+    const p = makePassport({
+      skills: [
+        {
+          // Machine Learning is attached only in proj-doc, via Document Proof.
+          skill: "Machine Learning",
+          status: "Demonstrated",
+          evidence_chip_count: 1,
+          project_count: 1,
+          evidence_sources: ["Document Proof"],
+          projects: [
+            {
+              project_title: "Teachable Machine Image Classification Demo",
+              project_id: "proj-doc",
+              skill_status: "Demonstrated",
+              evidence_sources: ["Document Proof"],
+              supporting_proof_types: ["Document Proof"],
+              report_is_public: false,
+              public_report_path: null,
+            },
+          ],
+          evidence_chips: [],
+          notes: "",
+          limitations: [],
+          // Wider vault carries an UNATTACHED Website Proof for ML.
+          vault_only_sources: ["Website Proof"],
+        },
+      ],
+      projects: [
+        { ...base, project_id: "proj-doc", project_title: "Teachable Machine Image Classification Demo", claimed_skills: ["Machine Learning"], top_skills: [{ skill: "Machine Learning", status: "Demonstrated", skill_slug: "machine-learning", supporting_proof_types: ["Document Proof"] }] },
+      ],
+      // The wider vault summary spans the whole vault: it reports a Website Proof
+      // for ML and even lists a different attached project. None of this may leak
+      // into the ATTACHED graph.
+      vault_skill_summaries: [
+        makeVaultSummary({
+          skill: "Machine Learning",
+          skill_slug: "machine-learning",
+          proof_source_counts: { "Document Proof": 1, "Website Proof": 1 },
+          project_ids: ["proj-other"],
+          project_titles: ["Some Other Project"],
+          project_count: 1,
+        }),
+      ],
+    })
+
+    const graph = buildPassportGraph(p)
+    const ml = graph.skills.find((s) => s.name === "Machine Learning")!
+
+    // Attached proof types are Document only — the vault's Website Proof is excluded.
+    expect(ml.proofTypes).toEqual(["Document Proof"])
+    // Website Proof surfaces ONLY as a wider-vault (unattached) source, kept separate.
+    expect(ml.vaultOnlySources).toEqual(["Website Proof"])
+    // Only the truly-attached project edge exists; the vault's "proj-other" is not added.
+    expect(ml.projectIds).toEqual(["proj-doc"])
+    // No skill→project row advertises Website Proof, and none routes to proj-other.
+    for (const row of ml.projectEvidence) {
+      expect(row.hasWebsiteProof).toBe(false)
+      expect(row.evidenceSources).not.toContain("Website Proof")
+      expect(row.projectId).not.toBe("proj-other")
+    }
+  })
+
+  // (K) Selecting the Website Proof filter over such a skill fails closed: the
+  // only evidence rows are Document-backed, so no row survives the filter.
+  it("Website Proof filter yields no attached row for a vault-only-Website skill", () => {
+    const p = makePassport({
+      skills: [
+        {
+          skill: "Machine Learning",
+          status: "Demonstrated",
+          evidence_chip_count: 1,
+          project_count: 1,
+          evidence_sources: ["Document Proof"],
+          projects: [
+            {
+              project_title: "Teachable Machine Image Classification Demo",
+              project_id: "proj-doc",
+              skill_status: "Demonstrated",
+              evidence_sources: ["Document Proof"],
+              supporting_proof_types: ["Document Proof"],
+              report_is_public: false,
+              public_report_path: null,
+            },
+          ],
+          evidence_chips: [],
+          notes: "",
+          limitations: [],
+          vault_only_sources: ["Website Proof"],
+        },
+      ],
+      projects: [
+        { ...makePassport().projects[0], project_id: "proj-doc", project_title: "Teachable Machine Image Classification Demo", claimed_skills: ["Machine Learning"], top_skills: [{ skill: "Machine Learning", status: "Demonstrated", skill_slug: "machine-learning", supporting_proof_types: ["Document Proof"] }] },
+      ],
+      vault_skill_summaries: [
+        makeVaultSummary({ skill: "Machine Learning", skill_slug: "machine-learning", proof_source_counts: { "Website Proof": 1 }, project_ids: [], project_titles: [], project_count: 0 }),
+      ],
+    })
+
+    const graph = buildPassportGraph(p)
+    const ml = graph.skills.find((s) => s.name === "Machine Learning")!
+    // No skill→project row includes Website Proof → the filter has nothing to show.
+    const websiteRows = ml.projectEvidence.filter((r) => r.evidenceSources.includes("Website Proof"))
+    expect(websiteRows).toEqual([])
   })
 })
 

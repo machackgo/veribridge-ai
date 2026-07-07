@@ -37,12 +37,20 @@ from app.services.website_skill_proof_focus import (
     describe_website_skill_relevance,
     is_direct_website_relevance,
     public_screenshot_access_label,
+    website_app_context,
     website_behavior_claim,
     website_chain_connection_note,
     website_corroboration_note,
     website_limitation_for,
+    website_missing_evidence_note,
+    website_output_observed,
+    website_page_context_label,
     website_purpose_summary,
+    website_recruiter_checklist,
+    website_runtime_claim,
     website_skill_relevance_summary,
+    website_target_domain,
+    website_user_action_observed,
 )
 
 from tests.test_student_proof_vault import _seed_project, mem_store, pipeline_db  # noqa: F401
@@ -608,6 +616,16 @@ def test_skill_report_website_item_carries_evidence_card(
     assert card["screenshot_preview_url"] is None
     assert card["observed_at"], "the capture date (date-only) rides on the card"
     assert len(str(card["observed_at"])) == 10
+    # Website Runtime Inspection fields flow through the full vault→card path.
+    assert "Machine Learning" in card["runtime_claim_observed"]
+    assert "prediction/result" in card["runtime_claim_observed"]
+    assert card["target_domain"] == "demo.example.com"
+    assert card["app_context"]  # domain / page title
+    assert card["is_public_live_url"] is True
+    assert card["is_local_or_private_url"] is False
+    assert "prediction" in (card["user_action_observed"] or "").lower()
+    assert "prediction/result" in (card["output_observed"] or "").lower()
+    assert any("Open the live website" in s for s in card["recruiter_checklist"])
 
 
 def test_public_view_carries_validated_chips_and_coerced_screenshot_status() -> None:
@@ -1104,3 +1122,173 @@ def test_enrichment_signals_are_purely_additive() -> None:
     assert classify_website_purpose(workflow_summary=strong) == classify_website_purpose(
         workflow_summary=strong, page_context=None, extra_signals=[]
     )
+
+
+# ── Website Runtime Inspection: deep-inspection fields ────────────────────────
+
+
+def test_runtime_claim_is_skill_specific_per_relevance() -> None:
+    ml = website_runtime_claim("ml_product_context", "Machine Learning")
+    assert "Machine Learning" in ml and "prediction/result" in ml
+    fe = website_runtime_claim("direct_frontend_evidence", "React")
+    assert "interactive React UI" in fe
+    cloud = website_runtime_claim("deployment_availability_evidence", "Cloud Engineering")
+    # Cloud/MLOps: deployed runtime only when public — local replay never proves it.
+    assert "public/deployed" in cloud and "local replay alone does not prove" in cloud
+
+
+def test_runtime_claim_fails_closed_on_bogus_relevance() -> None:
+    claim = website_runtime_claim("totally-made-up", "React")
+    assert "needs review" in claim.lower()
+
+
+def test_user_action_and_output_are_purpose_specific_or_none() -> None:
+    assert "prediction" in (website_user_action_observed("prediction_result_display") or "").lower()
+    assert "prediction/result" in (website_output_observed("prediction_result_display") or "").lower()
+    # A purpose with no demonstrable action/output returns None (honest missing state).
+    assert website_user_action_observed("deployed_availability") is None
+    assert website_output_observed("deployed_availability") is None
+    assert website_user_action_observed("unknown_needs_review") is None
+
+
+def test_target_domain_only_from_safe_urls_never_private() -> None:
+    # Safe public URL → domain surfaces.
+    assert website_target_domain("https://demo.example.com/app", None, None) == "demo.example.com"
+    # Live-check final URL (already gated safe) is honoured too.
+    assert website_target_domain(None, "https://app.example.com/dash", None) == "app.example.com"
+    # A localhost/private host never yields a domain.
+    assert website_target_domain("http://localhost:3000", None, None) is None
+    assert website_target_domain(None, None, "Recorded session") is None
+    # The already-safe route-or-page locator ("host/path") is accepted as a floor.
+    assert website_target_domain(None, None, "demo.example.com/dashboard") == "demo.example.com"
+
+
+def test_app_context_prefers_known_app_then_title_then_domain() -> None:
+    assert website_app_context("teachablemachine.withgoogle.com", None) == "Teachable Machine"
+    assert website_app_context("myproj-abc.hf.space", None) == "Hugging Face Space"
+    # Generic host → page title wins over the bare domain.
+    assert website_app_context("myapp.vercel.app", "Crash Risk Predictor") == "Crash Risk Predictor"
+    # No title → bare domain.
+    assert website_app_context("myapp.vercel.app", None) == "myapp.vercel.app"
+    assert website_app_context(None, None) is None
+
+
+def test_page_context_label_maps_only_specific_contexts() -> None:
+    assert website_page_context_label("prediction_output") == "Prediction / output page"
+    assert website_page_context_label("training_ui") == "Model training interface"
+    # Generic/demo/unknown contexts add no specificity.
+    assert website_page_context_label("demo_content") is None
+    assert website_page_context_label("unknown") is None
+    assert website_page_context_label(None) is None
+
+
+def test_recruiter_checklist_live_reproduces_workflow() -> None:
+    steps = website_recruiter_checklist("directly_verifiable_live", "prediction_result_display")
+    joined = " ".join(steps).lower()
+    assert "open the live website" in joined
+    assert "provide similar input" in joined
+    assert "confirm the same output" in joined
+    assert "compare" in joined
+
+
+def test_recruiter_checklist_recorded_cannot_open_localhost() -> None:
+    steps = website_recruiter_checklist("recorded_replay_only", "prediction_result_display")
+    joined = " ".join(steps).lower()
+    assert "cannot open it directly" in joined
+    assert "recorded evidence package" in joined
+    assert "deploy the site to a public url" in joined
+    # No "open the live website" instruction for a recorded-only proof.
+    assert "open the live website" not in joined
+
+
+def test_missing_evidence_note_names_gaps_or_is_none() -> None:
+    # Thin capture: no visual/ocr/dom/workflow and no public URL → a precise note.
+    note = website_missing_evidence_note(
+        has_visual=False, has_ocr=False, has_dom=False, has_workflow=False, has_public_live_url=False
+    )
+    assert note is not None
+    assert "visual capture" in note and "public deployment URL" in note
+    assert "Record a stronger Website Proof" in note
+    # Rich, publicly verifiable capture → no note.
+    assert (
+        website_missing_evidence_note(
+            has_visual=True, has_ocr=True, has_dom=True, has_workflow=True, has_public_live_url=True
+        )
+        is None
+    )
+
+
+def test_card_carries_runtime_inspection_fields_for_ml() -> None:
+    card = build_website_evidence_card(
+        purpose_key="prediction_result_display",
+        relevance_key="ml_product_context",
+        skill="Machine Learning",
+        workflow_summary="Entered accident details and a crash-risk prediction appeared.",
+        workflow_steps=["Enter details", "View prediction"],
+        has_visual_summary=True,
+        has_ocr_summary=True,
+        live_check={"is_reachable": True, "final_url": "https://demo.example.com/predict", "page_title": "Crash Risk"},
+        open_website_url="https://demo.example.com",
+        observed_at="2026-06-30T00:00:00Z",
+        page_context="prediction_output",
+    )
+    # Section 1 — skill-specific runtime claim (never generic).
+    assert "Machine Learning" in card["runtime_claim_observed"]
+    assert "prediction/result" in card["runtime_claim_observed"]
+    # Section 2 — concrete observed facts.
+    assert card["target_domain"] == "demo.example.com"
+    assert card["app_context"]  # page title or domain
+    assert card["page_context_label"] == "Prediction / output page"
+    assert "prediction" in card["user_action_observed"].lower()
+    assert "prediction/result" in card["output_observed"].lower()
+    assert card["visible_text_observed"]  # safe OCR-derived sentence (has_ocr_summary)
+    assert card["is_public_live_url"] is True
+    assert card["is_local_or_private_url"] is False
+    # Section 4 — recruiter checklist for a live proof.
+    assert any("Open the live website" in s for s in card["recruiter_checklist"])
+    # A rich live capture leaves no missing-evidence note.
+    assert card["missing_evidence_note"] is None
+    # ML honesty limitation preserved.
+    assert "does not, by itself, prove model training" in card["limitation"]
+    # Schema round-trip validates the enriched card.
+    item = SkillReportEvidenceItem(
+        proof_type="Website Proof", source_id="s1", website_evidence_card=card
+    )
+    assert item.website_evidence_card is not None
+    assert item.website_evidence_card.runtime_claim_observed == card["runtime_claim_observed"]
+    assert item.website_evidence_card.is_local_or_private_url is False
+
+
+def test_card_local_proof_has_no_domain_and_recorded_checklist() -> None:
+    card = build_website_evidence_card(
+        purpose_key="prediction_result_display",
+        relevance_key="ml_product_context",
+        skill="Machine Learning",
+        open_website_url="http://localhost:3000",
+    )
+    # No public URL → no leaked domain, recorded-replay checklist, missing note.
+    assert card["target_url_safe"] is None
+    assert card["target_domain"] is None
+    assert card["is_public_live_url"] is False
+    assert card["is_local_or_private_url"] is True
+    assert any("cannot open it directly" in s for s in card["recruiter_checklist"])
+    assert card["missing_evidence_note"] is not None
+    assert "public deployment URL" in card["missing_evidence_note"]
+
+
+def test_card_runtime_fields_never_leak_raw_or_private() -> None:
+    card = build_website_evidence_card(
+        purpose_key="chat_prompt_interface",
+        relevance_key="genai_product_context",
+        skill="Generative AI",
+        has_ocr_summary=True,
+        has_dom_summary=True,
+        open_website_url="https://storage.internal/bucket/frame.jpg?X-Amz-Signature=SECRET",
+        live_check={"is_reachable": True, "final_url": "http://127.0.0.1:9000/private"},
+    )
+    blob = repr(card)
+    assert "X-Amz-Signature" not in blob and "SECRET" not in blob
+    assert "127.0.0.1" not in blob and "localhost" not in blob
+    # visible_text is the closed derived sentence, not any raw OCR dump.
+    assert card["visible_text_observed"] == card["ocr_evidence_summary_safe"]
+    assert card["target_domain"] is None
