@@ -2,8 +2,49 @@
 
 import { createSupabaseBrowserClient } from "@/lib/supabase/client"
 
+// Prefer NEXT_PUBLIC_API_URL (production domain, e.g. https://api.veribridgeai.com);
+// fall back to the legacy NEXT_PUBLIC_API_BASE_URL, then to local dev.
 const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+  process.env.NEXT_PUBLIC_API_URL ??
+  process.env.NEXT_PUBLIC_API_BASE_URL ??
+  "http://localhost:8000"
+
+/**
+ * Resolve the public web app origin used for absolute, shareable links
+ * (e.g. published Passport `/p/<slug>` and public project report
+ * `/vbr/report/<token>` URLs).
+ *
+ * Order of preference:
+ *   1. NEXT_PUBLIC_APP_URL — the canonical production origin
+ *      (e.g. https://veribridgeai.com). Using this keeps copied links on the
+ *      canonical domain even from Vercel preview / custom-host deploys, where
+ *      window.location.origin would leak a preview-origin URL.
+ *   2. window.location.origin — the current browser origin (local dev, or when
+ *      NEXT_PUBLIC_APP_URL is intentionally unset).
+ *   3. http://localhost:3000 — non-browser / SSR fallback for local dev.
+ *
+ * This is for public *app* links only — it is unrelated to API base URLs.
+ * The result never has a trailing slash so callers can safely append a path.
+ */
+export function getPublicAppOrigin(): string {
+  const configured = process.env.NEXT_PUBLIC_APP_URL
+  if (configured && configured.trim()) {
+    return configured.trim().replace(/\/+$/, "")
+  }
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin.replace(/\/+$/, "")
+  }
+  return "http://localhost:3000"
+}
+
+/**
+ * Build an absolute public/shareable app link from a path (e.g. "/p/slug").
+ * Normalizes the join so links are never double-slashed.
+ */
+export function buildPublicAppUrl(path: string): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`
+  return `${getPublicAppOrigin()}${normalizedPath}`
+}
 
 /**
  * Authenticated fetch wrapper for the VeriBridge backend API.
@@ -1257,7 +1298,7 @@ export async function uploadOptionalEvidenceFile(
   const form = new FormData()
   form.append("file", file)
   const res = await fetch(
-    `${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"}/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/optional-evidence/upload`,
+    `${API_BASE}/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/optional-evidence/upload`,
     { method: "POST", body: form, headers },
   )
   if (!res.ok) {

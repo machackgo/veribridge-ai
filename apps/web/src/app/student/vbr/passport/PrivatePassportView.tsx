@@ -17,6 +17,7 @@ import {
   type PrivateWorkPassport,
   type WorkPassportStatus,
 } from "@/lib/vbr-api"
+import { buildPublicAppUrl } from "@/lib/api"
 import {
   Badge,
   Card,
@@ -103,7 +104,7 @@ function PassportPublishControls({
   const isPublished = Boolean(status.is_published && status.public_slug)
   const publicUrl =
     isPublished && status.public_slug
-      ? `${typeof window !== "undefined" ? window.location.origin : ""}/p/${status.public_slug}`
+      ? buildPublicAppUrl(`/p/${status.public_slug}`)
       : ""
 
   const run = (action: () => Promise<WorkPassportStatus>) => {
@@ -405,7 +406,7 @@ function ProjectCard({
   const isPublic = Boolean(report.is_public && report.public_token)
   const publicUrl =
     isPublic && report.public_token
-      ? `${typeof window !== "undefined" ? window.location.origin : ""}/vbr/report/${report.public_token}`
+      ? buildPublicAppUrl(`/vbr/report/${report.public_token}`)
       : ""
   const topSkills = (project.top_skills ?? []).slice(0, MAX_PROJECT_TOP_SKILLS)
   const chain = project.proof_chain ?? proofChainFromSources(project.evidence_sources)
