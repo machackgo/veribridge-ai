@@ -200,7 +200,16 @@ def test_report_skill_matrix_maps_skills_to_evidence_sources(client: TestClient,
     """Each skill row carries the canonical evidence-source labels that support
     it (GitHub / Website / Project Defense / Video) — never numeric scores."""
     github_proof_id = _seed_github_proof(mem_store)  # detects Python + React
-    website_proof_session_id = _seed_workflow_analysis(mem_store)  # supports React
+    # A Website Proof only earns a skill its OBSERVED behaviour supports (hint-only
+    # stored ``supported_skills`` never maps by itself). This capture demonstrates an
+    # interactive product UI, which is direct Frontend (React) evidence.
+    website_proof_session_id = _seed_workflow_analysis(
+        mem_store,
+        workflow_summary=(
+            "The user interacted with the app's interface, filled in the form and a "
+            "result was displayed on screen."
+        ),
+    )
 
     created = _create_project_defense(
         client,
@@ -214,10 +223,12 @@ def test_report_skill_matrix_maps_skills_to_evidence_sources(client: TestClient,
     body = _get_report(client, project_id).json()
     rows = {row["skill"]: row for row in body["skill_evidence"]}
 
-    # Python is detected by the GitHub Proof only.
+    # Python is detected by the GitHub Proof only (the website behaviour does not
+    # demonstrate a Python-specific skill, so it earns no Website Proof chip).
     assert rows["Python"]["supporting_sources"] == ["GitHub Proof"]
-    # React is detected by GitHub Proof and supported by the Website Proof,
-    # in canonical (GitHub → Website) order.
+    # React is detected by GitHub Proof and supported by the Website Proof (the
+    # observed interactive UI is direct Frontend evidence), in canonical
+    # (GitHub → Website) order.
     assert rows["React"]["supporting_sources"] == ["GitHub Proof", "Website Proof"]
 
     # Supporting-source labels carry no numeric score fragments.
@@ -1546,7 +1557,11 @@ def test_website_rich_artifact_trace_cards(client: TestClient, mem_store: dict) 
     Website trace card when available."""
     session_id = _seed_rich_website(mem_store)
     created = _create_project_defense(
-        client, attached_proofs={"website_proof_session_ids": [session_id]}
+        client,
+        # The project must CLAIM the skill for the image-classification behaviour to
+        # map to it — a Website Proof only ever supports a project's claimed skills.
+        claimed_skills=["Machine Learning", "React"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
     ).json()
     project_id = created["project"]["id"]
 
@@ -1567,7 +1582,10 @@ def test_website_rich_artifact_trace_cards(client: TestClient, mem_store: dict) 
     assert ocr["location_label"] == "OCR summary"
     assert "Prediction: cat" in ocr["safe_summary"]
     assert "behaviour" in ocr["limitation"].lower()
-    # Supports the website's skills, not authorship.
+    # The image-classification behaviour maps ONLY to the project's claimed skills it
+    # actually supports (the canonical Website→skill mapping) — never the raw stored
+    # ``supported_skills``. Machine Learning is claimed here and the demonstrated
+    # prediction/classification behaviour maps to it.
     assert "Machine Learning" in ocr["skill_names"]
 
     live = next(t for t in web if t["location_type"] == "website_live_check")
@@ -1645,6 +1663,281 @@ def test_website_with_empty_supported_skills_is_project_level_evidence(
     # And it does NOT pollute any skill-matrix row's evidence traces.
     for row in body["skill_evidence"]:
         assert card["trace_id"] not in (row.get("evidence_traces") or [])
+
+
+# ── Website Proof: skill mapping DERIVED from safe pipeline summaries ─────────
+#
+# Website Proof, like GitHub Proof, must surface skill-SPECIFIC evidence — GitHub
+# maps code, Website maps observed runtime behaviour. When the pipeline persisted
+# rich safe summaries but NO explicit ``supported_skills``, a mapping may still be
+# conservatively DERIVED from the observed behaviour — but only when that behaviour
+# genuinely demonstrates the skill (never a generic/landing/availability page, and
+# never an unrelated claimed skill).
+
+
+def _skill_row(body: dict, skill: str) -> dict:
+    return next(r for r in body["skill_evidence"] if r["skill"] == skill)
+
+
+def _website_skill_names(body: dict) -> set[str]:
+    return {
+        r["skill_name"]
+        for e in body.get("website_skill_evidence", [])
+        for r in e.get("skills", [])
+    }
+
+
+def test_website_derives_ml_skill_from_prediction_behavior(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A Website Proof with EMPTY ``supported_skills`` but a safe prediction-result
+    narrative maps to the claimed ML skill (derived), and the skill matrix + the
+    behavior-evidence card agree, so the passport can surface it."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    # Behavior-evidence card mapped the claimed skill, honestly flagged "derived".
+    entry = next(e for e in body["website_skill_evidence"])
+    assert entry["skill_mapping_available"] is True
+    ml = next(r for r in entry["skills"] if r["skill_name"] == "Machine Learning")
+    assert ml["mapping_basis"] == "derived"
+    # A demo UI is product-behaviour context for ML — never implementation proof.
+    assert ml["is_direct_evidence"] is False
+    assert "not" in ml["limitation"].lower()
+    # The safe NLP summary backed the mapping (closed label, not raw text).
+    assert "Website NLP" in entry["evidence_source_types"]
+
+    # Skill matrix row now lists Website Proof — this is what feeds the passport
+    # ``supporting_proof_types`` and the Website Proof filter.
+    assert "Website Proof" in _skill_row(body, "Machine Learning")["supporting_sources"]
+
+
+def test_generic_website_stays_project_level_only(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A generic Website Proof (a landing page that only proves the site exists,
+    empty ``supported_skills``) maps to NO skill — it stays project-level, and the
+    skill matrix never gains a Website Proof source chip."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="A landing page describing the product and its features was shown.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    entry = next(e for e in body["website_skill_evidence"])
+    assert entry["skills"] == []
+    assert entry["skill_mapping_available"] is False
+    assert "Website Proof" not in _skill_row(body, "Machine Learning")["supporting_sources"]
+
+
+def test_website_does_not_map_to_unrelated_claimed_skills(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A prediction-result demo derives the ML skill but NOT an unrelated claimed
+    skill (Docker): a demo UI never proves Docker/CI-CD internals."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning", "Docker"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    mapped = _website_skill_names(body)
+    assert "Machine Learning" in mapped
+    assert "Docker" not in mapped
+    assert "Website Proof" in _skill_row(body, "Machine Learning")["supporting_sources"]
+    assert "Website Proof" not in _skill_row(body, "Docker")["supporting_sources"]
+
+
+def test_broad_stored_supported_skills_do_not_leak_into_matrix_or_passport_refs(
+    client: TestClient, mem_store: dict
+) -> None:
+    """THE leak regression: a Website Proof whose STORED ``supported_skills`` is broad
+    (React, Docker, AWS, SQL, NLP, Security …) must NOT paint every claimed skill with
+    a Website Proof source. The stored list is a hint only — only the skills the
+    observed image-classification behaviour genuinely supports earn the Website Proof
+    chip, and the ``website_skill_evidence`` map is a strict subset of the validated
+    skills (no project-level Website Proof becomes skill evidence)."""
+    broad = ["Machine Learning", "React", "Docker", "AWS", "SQL", "Security"]
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        target_website="https://teachablemachine.withgoogle.com",
+        supported_skills=broad,  # deliberately broad / dirty stored list
+        weakly_supported_skills=[],
+        workflow_summary="The user uploaded an image and the model displayed a classification result.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=broad,
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    # The behaviour-evidence map is a STRICT SUBSET of validated skills: the
+    # image-classification behaviour maps ML (model product-behaviour context) and
+    # React (interactive UI), never the infra/data/security skills the stored list
+    # also named — a demo UI carries no relevance to Docker/AWS/SQL/Security.
+    mapped = set(_website_skill_names(body))
+    assert "Machine Learning" in mapped
+    assert not (mapped & {"Docker", "AWS", "SQL", "Security"})
+
+    # Skill matrix supporting-sources agree — the passport ``supporting_proof_types``
+    # is built from exactly this, so no unrelated skill gains a Website Proof chip.
+    assert "Website Proof" in _skill_row(body, "Machine Learning")["supporting_sources"]
+    for unrelated in ("Docker", "AWS", "SQL", "Security"):
+        assert "Website Proof" not in _skill_row(body, unrelated)["supporting_sources"], unrelated
+
+    # The website evidence TRACE cards are scoped to the same validated skills — a
+    # broad stored list never rides through as a per-skill trace attribution either.
+    web_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Website Proof"]
+    for t in web_traces:
+        assert not (set(t["skill_names"]) & {"Docker", "AWS", "SQL", "Security"})
+
+
+def test_website_derives_api_skill_from_api_behavior(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A request→result API narrative derives a FastAPI skill mapping (API-backed
+    behaviour context), even with empty ``supported_skills``."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="A request was sent to the API endpoint and the JSON response was rendered on the page.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["FastAPI"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    assert "FastAPI" in _website_skill_names(body)
+    api_row = next(r for e in body["website_skill_evidence"] for r in e["skills"] if r["skill_name"] == "FastAPI")
+    assert api_row["relevance_key"] == "api_behavior_context"
+    assert "Website Proof" in _skill_row(body, "FastAPI")["supporting_sources"]
+
+
+def test_website_skill_evidence_exposes_only_safe_source_labels(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The derived skill evidence + source-type labels are closed-vocabulary only —
+    never raw DOM/OCR/visual/provider text, storage paths, or scores."""
+    from app.services.website_skill_proof_focus import (
+        ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES,
+    )
+
+    session_id = _seed_rich_website(
+        mem_store,
+        supported_skills=[],
+        observed_demonstration={
+            "dom_summary": "A prediction label was rendered.",
+            "screenshot_url": "https://bucket.example/secret.png",
+            "storage_path": "/private/bucket/raw.html",
+        },
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    entry = next(e for e in body["website_skill_evidence"])
+    # Source-type labels are all from the closed vocabulary.
+    for label in entry["evidence_source_types"]:
+        assert label in ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES
+    # No smuggled raw fields anywhere in the website_skill_evidence payload.
+    import json
+
+    blob = json.dumps(body["website_skill_evidence"])
+    for unsafe in ["screenshot_url", "storage_path", "secret.png", "/private/bucket", "signed_url"]:
+        assert unsafe not in blob
+
+
+def test_navigation_layout_entry_carries_unmapped_reason_and_action(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A navigation/layout Website Proof stays project-level (no skill row) and the
+    entry carries a safe reason + strengthening action so the gap is legible."""
+    from app.services.website_skill_proof_focus import WEBSITE_STRENGTHEN_ACTION
+
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Navigated between the app's pages using the sidebar menu.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    entry = next(e for e in _get_report(client, project_id).json()["website_skill_evidence"])
+    assert entry["skills"] == []
+    assert entry["skill_mapping_available"] is False
+    assert entry["website_purpose_key"] == "navigation_layout"
+    assert entry["unmapped_reason"] == "Navigation/layout evidence only"
+    assert entry["strengthen_action"] == WEBSITE_STRENGTHEN_ACTION
+
+
+def test_mapped_website_entry_has_no_unmapped_reason(
+    client: TestClient, mem_store: dict
+) -> None:
+    """When a Website Proof DID map a skill, the project-level-only fields stay empty
+    (they describe the unmapped gap, never a mapped proof)."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    entry = next(e for e in _get_report(client, project_id).json()["website_skill_evidence"])
+    assert entry["skill_mapping_available"] is True
+    assert entry["unmapped_reason"] == ""
+    assert entry["strengthen_action"] == ""
 
 
 # ── Phase 3: Document citation (matched section heading) ─────────────────────

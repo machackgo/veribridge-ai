@@ -603,6 +603,9 @@ function makeContextualPassport(overrides: Partial<PrivateWorkPassport> = {}): P
             project_id: "proj-tm",
             skill_status: "Demonstrated",
             evidence_sources: ["Website Proof", "GitHub Proof"],
+            supporting_proof_types: ["Website Proof", "GitHub Proof"],
+            website_evidence_summary:
+              "The recorded interactive UI behaviour is itself the subject of JavaScript, so this is direct evidence of working JavaScript product behaviour (authorship is corroborated by GitHub/Defense evidence, not by the UI alone).",
             report_is_public: false,
             public_report_path: null,
           },
@@ -715,7 +718,7 @@ describe("PrivatePassportView — contextual proof → project → skill navigat
     )
   })
 
-  it("Website Proof under a skill states which project it supports (generic source at passport level)", async () => {
+  it("Website Proof under a skill shows the precise, safe behaviour summary for that skill+project", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
@@ -723,8 +726,23 @@ describe("PrivatePassportView — contextual proof → project → skill navigat
     const note = js.querySelector('[data-testid="skill-website-evidence-note"]')!
     expect(note).toHaveAttribute("data-project", "Teachable Machine Image Classification Demo")
     expect(note).toHaveAttribute("data-skill", "JavaScript")
-    expect(note).toHaveTextContent("Website evidence")
-    // Passport payload carries no classified DOM/OCR/visual sub-source — honest generic label.
+    // The generic placeholder is replaced by the safe, skill-specific behaviour
+    // sentence derived from the website pipeline summaries (never raw DOM/OCR).
+    expect(note).not.toHaveTextContent("Website evidence — shows observed runtime/product behavior")
+    expect(note).toHaveTextContent("direct evidence of working JavaScript product behaviour")
+    expect(note).toHaveAttribute("data-source-classified", "true")
+  })
+
+  it("Website Proof row without a derived summary falls back to the honest limited-detail note", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    // FastAPI's Boston project carries Website Proof but no `website_evidence_summary`.
+    const fastapi = contextualSkillCard("FastAPI")
+    const note = fastapi.querySelector('[data-testid="skill-website-evidence-note"]')!
+    expect(note).toHaveTextContent(
+      "Website Proof supports runtime/product behavior for this skill, but detailed website evidence is limited.",
+    )
     expect(note).toHaveAttribute("data-source-classified", "false")
   })
 
@@ -2179,6 +2197,59 @@ describe("PrivatePassportView — Proof Type dropdown reflects the whole passpor
     )
   })
 
+  it("explains the project-level-only Website Proof and lists context cards when the passport carries it", async () => {
+    const p = makeWebsiteGlobalOnlyPassport({
+      website_proof_project_context: [
+        {
+          project_id: "proj-boston",
+          project_title: "Boston Smart Accident Risk Rerouting",
+          focus_key: "navigation_layout",
+          focus_label: "Navigation / page layout",
+          explanation: "The recorded session shows the app's page layout and navigation between views.",
+          reason: "Navigation/layout evidence only",
+          action_guidance:
+            "Record a stronger Website Proof showing runtime behavior such as a model prediction, API response, dashboard interaction, route recommendation, or workflow completion.",
+          mapped_to_skills: false,
+          report_path: "/student/vbr/projects/proj-boston/report",
+        },
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+
+    // The honest explanatory empty state replaces the generic copy.
+    expect(screen.queryByTestId("skills-panel-proof-empty")).not.toBeInTheDocument()
+    const panel = screen.getByTestId("website-proof-project-level-empty")
+    expect(within(panel).getByTestId("website-proof-empty-headline")).toHaveTextContent(
+      "Website Proof exists, but it has not been mapped to specific skills yet.",
+    )
+    expect(panel).toHaveTextContent(
+      "Current website evidence was classified as navigation/layout",
+    )
+
+    // A project-level context card names the project, reason, action and safe routes.
+    const card = within(panel).getByTestId("website-proof-project-context-card")
+    expect(card).toHaveTextContent("Boston Smart Accident Risk Rerouting")
+    expect(card).toHaveTextContent("Website Proof: Project-level only")
+    expect(card).toHaveTextContent("Navigation/layout evidence only")
+    expect(within(card).getByTestId("website-proof-context-open-report")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-boston/report",
+    )
+    expect(within(card).getByTestId("website-proof-context-open-vault")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/vault",
+    )
+
+    // Project-level Website Proof is NEVER rendered as a skill card / skill evidence.
+    expect(screen.queryAllByTestId("passport-skill-card")).toHaveLength(0)
+  })
+
   it("normalizes non-canonical Website Proof spellings to a single 'Website Proof' option", async () => {
     // Overview carries a snake_case variant; the dropdown must still read "Website
     // Proof" (once, not duplicated).
@@ -2237,6 +2308,26 @@ describe("PrivatePassportView — Proof Type dropdown filtering (mapped + existi
     }
   })
 
+  it("the 'Skills (N)' heading uses the FILTERED visible count under a proof filter, not the graph total", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // No filter active → heading reflects the full skill total (ML + FastAPI = 2).
+    expect(screen.getByText("Skills (2)")).toBeInTheDocument()
+
+    // Website Proof maps ONLY Machine Learning → the heading must read "Skills (1)",
+    // never the full graph total (regression: Proof Type = Website Proof once showed
+    // the whole "Skills (N)" count, e.g. "Skills (55)", even when few rows survived).
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+    expect(screen.getByText("Skills (1)")).toBeInTheDocument()
+    expect(screen.queryByText("Skills (2)")).not.toBeInTheDocument()
+    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(1)
+
+    // Clearing the filter restores the full count.
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "" } })
+    expect(screen.getByText("Skills (2)")).toBeInTheDocument()
+  })
+
   it("existing GitHub / Document / Project Defense / Video filters still work", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-evidence-controls")
@@ -2263,6 +2354,112 @@ describe("PrivatePassportView — Proof Type dropdown filtering (mapped + existi
     expect(
       within(ml).getAllByTestId("skill-project-evidence-row").map((r) => r.getAttribute("data-project-id")),
     ).toEqual(["proj-tm"])
+  })
+})
+
+// ── Broad Website Proof does not leak across many skills ──────────────────────
+//
+// Regression for the "Skills (55)" leak: a project whose stored Website Proof
+// carried a broad/dirty ``supported_skills`` list must NOT paint every claimed
+// skill with a Website Proof chip. The backend canonical mapping now validates
+// each skill/project pair, so only the genuinely-supported skills carry a
+// per-project ``Website Proof`` in ``supporting_proof_types`` — and the Proof
+// Type = Website Proof filter (plus its heading count) must reflect only those.
+
+function makeBroadWebsiteSupportedPassport(): PrivateWorkPassport {
+  const base = makePassport().projects[0]
+  // Eight claimed skills on one project; the stored Website Proof named many of
+  // them, but only two are actually validated as website-supported.
+  const skillNames = [
+    "Machine Learning",
+    "Image Classification",
+    "React",
+    "Docker",
+    "AWS",
+    "SQL",
+    "NLP",
+    "Security",
+  ]
+  const websiteSupported = new Set(["Machine Learning", "Image Classification"])
+  return makePassport({
+    evidence_source_counts: { "GitHub Proof": 8, "Website Proof": 1 },
+    skills: skillNames.map((skill) => {
+      const proofTypes = websiteSupported.has(skill)
+        ? ["GitHub Proof", "Website Proof"]
+        : ["GitHub Proof"]
+      return {
+        skill,
+        status: "Demonstrated",
+        evidence_chip_count: 1,
+        project_count: 1,
+        // Passport-level union is deliberately broad; the per-project row is the
+        // source of truth for whether Website Proof supports THIS skill.
+        evidence_sources: proofTypes,
+        projects: [
+          {
+            project_title: "Teachable Machine Image Classification Demo",
+            project_id: "proj-tm",
+            skill_status: "Demonstrated",
+            evidence_sources: proofTypes,
+            supporting_proof_types: proofTypes,
+            report_is_public: false,
+            public_report_path: null,
+          },
+        ],
+        evidence_chips: [],
+        notes: "",
+        limitations: [],
+      }
+    }),
+    projects: [
+      {
+        ...base,
+        project_id: "proj-tm",
+        project_title: "Teachable Machine Image Classification Demo",
+        claimed_skills: skillNames,
+        top_skills: skillNames.map((skill) => ({
+          skill,
+          status: "Demonstrated",
+          skill_slug: skill.toLowerCase().replace(/\s+/g, "-"),
+          supporting_proof_types: websiteSupported.has(skill)
+            ? ["GitHub Proof", "Website Proof"]
+            : ["GitHub Proof"],
+        })),
+      },
+    ],
+    project_count: 1,
+  })
+}
+
+describe("PrivatePassportView — broad Website Proof supported_skills does not inflate the count", () => {
+  beforeEach(() => {
+    const p = makeBroadWebsiteSupportedPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("Proof Type = Website Proof shows only the validated skills, and the heading count matches (never 'Skills (8)')", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // All eight claimed skills are visible with no filter.
+    expect(screen.getByText("Skills (8)")).toBeInTheDocument()
+    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(8)
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+
+    // Only the two genuinely website-supported skills survive — the broad stored
+    // list never leaks Website Proof onto Docker / AWS / SQL / NLP / Security.
+    const skills = screen.getAllByTestId("passport-skill-card").map((c) => c.getAttribute("data-skill"))
+    expect(skills.sort()).toEqual(["Image Classification", "Machine Learning"])
+    // Heading reflects the FILTERED count, not the full graph total of 8.
+    expect(screen.getByText("Skills (2)")).toBeInTheDocument()
+    expect(screen.queryByText("Skills (8)")).not.toBeInTheDocument()
+
+    // No generic fallback note leaks onto an unrelated, filtered-out skill.
+    for (const card of screen.getAllByTestId("passport-skill-card")) {
+      expect(["Machine Learning", "Image Classification"]).toContain(card.getAttribute("data-skill"))
+    }
   })
 })
 

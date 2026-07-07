@@ -1718,6 +1718,10 @@ export type PassportSkillProjectRef = {
   supporting_proof_types?: string[]
   report_is_public: boolean
   public_report_path: string | null
+  /** Safe, closed-vocabulary sentence for what Website Proof demonstrably showed
+   *  for THIS skill in THIS project. Present only when Website Proof supports this
+   *  exact skill; never raw DOM/OCR/visual/provider text. */
+  website_evidence_summary?: string | null
   /** Proof-native trace cards this project contributes for this skill. */
   evidence_traces?: EvidenceTrace[]
 }
@@ -1738,6 +1742,9 @@ export type PassportStrongestProjectLink = {
   public_report_path?: string | null
   project_id?: string | null
   project_report_path?: string | null
+  /** Safe Website Proof behaviour sentence for this skill in this project (see
+   *  PassportSkillProjectRef.website_evidence_summary). */
+  website_evidence_summary?: string | null
 }
 
 /** A grouped, evidence-backed skill. `status` is always a qualitative label. */
@@ -2018,6 +2025,32 @@ export type PassportProjectSummary = {
   report: PassportProjectReportStatus
 }
 
+/**
+ * Owner-only, project-level-only Website Proof context. Surfaced when a project
+ * has an attached Website Proof that did NOT map to any specific skill — it stays
+ * project-level evidence (the site exists / can be inspected) but the observed
+ * behaviour was too generic to demonstrate a skill. Every field is a closed label
+ * / safe sentence — never raw evidence, ids, scores, or a faked skill mapping.
+ */
+export type PassportWebsiteProofContext = {
+  project_id: string
+  project_title: string
+  /** Observed-behaviour classification key (e.g. "navigation_layout"). */
+  focus_key: string
+  /** Human label for the classification (e.g. "Navigation / page layout"). */
+  focus_label: string
+  /** One safe sentence describing what the recorded page demonstrably showed. */
+  explanation: string
+  /** Short reason it did not map a skill ("Navigation/layout evidence only", …). */
+  reason: string
+  /** The concrete runtime behaviour to record to make it skill-specific. */
+  action_guidance: string
+  /** Always false — this is explicitly the NOT-skill-mapped case. */
+  mapped_to_skills: boolean
+  /** Owner-only private route to this project's report. */
+  report_path: string
+}
+
 /** The owner-only private Work Passport (full evidence wallet). */
 /**
  * Recruiter-safe candidate identity header for the Verified Work Passport.
@@ -2065,6 +2098,13 @@ export type PrivateWorkPassport = {
   skills: PassportSkillSummary[]
   projects: PassportProjectSummary[]
   evidence_source_counts: Record<string, number>
+  /**
+   * Project-level-only Website Proof context: attached Website Proofs that did
+   * NOT map to any skill (too-generic observed behaviour). Powers the Skills
+   * Evidence Map's honest "Website Proof exists but isn't skill-mapped" empty
+   * state. Never counted as skill evidence; may be absent on older payloads.
+   */
+  website_proof_project_context?: PassportWebsiteProofContext[]
   /**
    * Student Proof Vault — Layer 1: COMPACT per-skill summaries (the main
    * dashboard). Each card carries category, qualitative status, counts, and a

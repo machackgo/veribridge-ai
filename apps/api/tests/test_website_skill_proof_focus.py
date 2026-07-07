@@ -32,6 +32,7 @@ from app.services.website_skill_proof_focus import (
     classify_website_purpose,
     classify_website_skill_relevance,
     derive_website_evidence_chips,
+    derive_website_supported_skills,
     describe_website_purpose,
     describe_website_skill_relevance,
     is_direct_website_relevance,
@@ -776,3 +777,260 @@ def test_public_projection_derives_claim_and_rederives_corroboration_note() -> N
     tampered["website_corroboration_note"] = "SMUGGLED tokens sk-ABC"
     reprojected = public_safe_evidence_artifact(tampered)
     assert "SMUGGLED" not in str(reprojected)
+
+
+# ── Conservative skill DERIVATION from safe summaries alone ───────────────────
+
+
+def test_derive_maps_specific_demonstrated_behaviour_only() -> None:
+    """A specific observed behaviour derives the matching-family skill; a generic
+    or unrelated skill is never derived from the same page."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        derive_website_supported_skills,
+    )
+
+    # ML prediction demo → ML skill derived, unrelated DevOps skill is not.
+    purpose = classify_website_purpose(
+        workflow_summary="Entered values and the model displayed a prediction result."
+    )
+    assert derive_website_supported_skills(purpose, ["Machine Learning", "Docker"]) == [
+        "Machine Learning"
+    ]
+
+    # Interactive frontend UI → frontend skill derived.
+    fe_purpose = classify_website_purpose(
+        workflow_summary="Typed a message into the chat interface and the assistant reply appeared."
+    )
+    assert "React" in derive_website_supported_skills(fe_purpose, ["React"])
+
+    # API request→result → backend skill derived.
+    api_purpose = classify_website_purpose(
+        workflow_summary="A request was sent to the API endpoint and the JSON response was rendered."
+    )
+    assert "FastAPI" in derive_website_supported_skills(api_purpose, ["FastAPI"])
+
+
+def test_derive_maps_nothing_for_generic_or_availability_pages() -> None:
+    """A landing/availability/unknown page derives NO skill — it stays project-level."""
+    from app.services.website_skill_proof_focus import (
+        PURPOSE_DEPLOYED_AVAILABILITY,
+        PURPOSE_UNKNOWN,
+        classify_website_purpose,
+        derive_website_supported_skills,
+    )
+
+    landing = classify_website_purpose(
+        workflow_summary="A landing page describing the product and its features was shown."
+    )
+    assert derive_website_supported_skills(landing, ["React", "Machine Learning"]) == []
+    # Bare availability / unknown purposes never derive a mapping.
+    assert derive_website_supported_skills(PURPOSE_DEPLOYED_AVAILABILITY, ["React"]) == []
+    assert derive_website_supported_skills(PURPOSE_UNKNOWN, ["React"]) == []
+
+
+def test_derive_never_invents_unclaimed_skills() -> None:
+    """Derivation only ever returns skills that were actually claimed."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        derive_website_supported_skills,
+    )
+
+    purpose = classify_website_purpose(
+        workflow_summary="Entered values and the model displayed a prediction result."
+    )
+    assert derive_website_supported_skills(purpose, []) == []
+
+
+def test_broad_stored_supported_skills_never_leak_website_proof() -> None:
+    """A broad/dirty stored ``supported_skills`` list is a HINT ONLY: it never maps
+    Website Proof onto a skill whose safe observed behaviour has no skill-specific
+    relevance. An image-classification demo maps ML/Image-Classification (model
+    product-behaviour context) and the interactive UI supports Frontend, but the
+    infrastructure/data/security skills (Docker / AWS / SQL / Security) NEVER map
+    just because the stored list named them — a demo UI proves none of their
+    internals, so the observed behaviour has no relevance to them."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        map_website_supported_skills,
+    )
+
+    purpose = classify_website_purpose(
+        workflow_summary=(
+            "The user uploaded an image and the model displayed a classification result."
+        )
+    )
+    claimed = [
+        "Machine Learning",
+        "Image Classification",
+        "React",
+        "Docker",
+        "AWS",
+        "SQL",
+        "Security",
+    ]
+    # The stored list is deliberately broad — it names skills the behaviour does not
+    # demonstrate. Only the genuinely-supported skills may map.
+    mapped = map_website_supported_skills(
+        purpose,
+        extracted_supported_skills=list(claimed),
+        claimed_skills=claimed,
+    )
+    mapped_names = {name for name, _basis in mapped}
+    assert {"Machine Learning", "Image Classification"} <= mapped_names
+    # The infra/data/security skills never leak in, despite being in supported_skills:
+    # a model-prediction demo carries no Docker/AWS/SQL/Security-specific relevance.
+    assert not (mapped_names & {"Docker", "AWS", "SQL", "Security"})
+
+
+def test_stored_supported_skill_without_relevance_is_dropped() -> None:
+    """A stored ``supported_skills`` value whose safe website behaviour has no
+    skill-specific relevance maps NOTHING — the stored list can never map by itself."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        map_website_supported_skills,
+    )
+
+    # A bare-availability page: the stored list names Docker, but a reachable-only
+    # deployment has no Docker-specific relevance → no mapping.
+    purpose = classify_website_purpose(live_check={"is_reachable": True})
+    assert map_website_supported_skills(
+        purpose,
+        extracted_supported_skills=["Docker", "Kubernetes"],
+        claimed_skills=["Docker", "Kubernetes"],
+    ) == []
+
+    # An unclassifiable capture likewise maps nothing even when supported_skills
+    # names a claimed skill.
+    from app.services.website_skill_proof_focus import PURPOSE_UNKNOWN
+
+    assert map_website_supported_skills(
+        PURPOSE_UNKNOWN,
+        extracted_supported_skills=["React"],
+        claimed_skills=["React"],
+    ) == []
+
+
+def test_extracted_basis_still_labels_a_genuinely_supported_skill() -> None:
+    """When a stored ``supported_skills`` value IS genuinely supported by the observed
+    behaviour, it maps with the ``extracted`` provenance basis (the stored list is a
+    valid HINT, just never proof on its own)."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        map_website_supported_skills,
+    )
+
+    purpose = classify_website_purpose(
+        workflow_summary="Entered values and the model displayed a prediction result."
+    )
+    mapped = dict(
+        map_website_supported_skills(
+            purpose,
+            extracted_supported_skills=["Machine Learning"],
+            claimed_skills=["Machine Learning", "Docker"],
+        )
+    )
+    assert mapped == {"Machine Learning": "extracted"}
+
+
+def test_website_evidence_source_types_are_closed_and_ordered() -> None:
+    from app.services.website_skill_proof_focus import (
+        ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES,
+        website_evidence_source_types,
+    )
+
+    types = website_evidence_source_types(
+        has_dom=True, has_ocr=True, has_visual=True, has_nlp=True, live_reachable=True
+    )
+    assert types == [
+        "Website DOM",
+        "Website OCR",
+        "Website visual analysis",
+        "Website NLP",
+        "Website runtime behavior",
+    ]
+    assert set(types) <= ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES
+    # None present → empty list (never fabricated).
+    assert website_evidence_source_types() == []
+
+
+# ── Feature engineering: richer safe signals reach the classifier ─────────────
+
+
+def test_page_context_prediction_output_maps_ml_and_image_classification() -> None:
+    """A capture the OCR stage classified as a prediction page maps to ML /
+    Image Classification even when the raw workflow text was thin — the closed
+    ``detected_page_context`` enum contributes a safe deterministic signal."""
+    purpose = classify_website_purpose(page_context="prediction_output")
+    assert purpose == "prediction_result_display"
+    assert derive_website_supported_skills(
+        purpose, ["Machine Learning", "Image Classification", "Docker"]
+    ) == ["Machine Learning", "Image Classification"]
+
+
+def test_training_ui_page_context_maps_ml_teachable_machine() -> None:
+    """A Teachable-Machine style training UI maps to ML product behaviour."""
+    purpose = classify_website_purpose(
+        workflow_summary="The user trained a model in the Teachable Machine interface.",
+        page_context="training_ui",
+    )
+    assert purpose == "prediction_result_display"
+    assert "Machine Learning" in derive_website_supported_skills(purpose, ["Machine Learning"])
+
+
+def test_live_check_summary_folds_into_classifier_haystack() -> None:
+    """The live-check recruiter summary (e.g. a route/risk recommendation) is a
+    safe signal the classifier reads — an API/prediction page maps precisely."""
+    purpose = classify_website_purpose(
+        live_check={
+            "is_reachable": True,
+            "summary": "The page returned a route recommendation with a computed risk score.",
+        }
+    )
+    # "recommendation" + "risk score" → a prediction/result behaviour, not bare availability.
+    assert purpose == "prediction_result_display"
+
+
+def test_extra_signals_fold_into_classifier_haystack() -> None:
+    """Additional already-safe visual/OCR signal phrases are read by the classifier."""
+    purpose = classify_website_purpose(
+        extra_signals=["A request was sent to the API endpoint and JSON was rendered."]
+    )
+    assert purpose == "api_backed_interaction"
+    assert "FastAPI" in derive_website_supported_skills(purpose, ["FastAPI"])
+
+
+def test_geospatial_map_narrative_maps_data_visualization() -> None:
+    """A route/traffic/accident map is data-visualization behaviour → maps a
+    Geospatial / Data Analysis skill, not an unrelated one."""
+    purpose = classify_website_purpose(
+        workflow_summary="An interactive map rendered the route with a traffic and accident overlay."
+    )
+    assert purpose == "data_visualization"
+    mapped = derive_website_supported_skills(
+        purpose, ["Geospatial Analysis", "Data Visualization", "Docker"]
+    )
+    assert "Geospatial Analysis" in mapped and "Data Visualization" in mapped
+    # A deployment/infra skill is never derived from a chart/map page.
+    assert "Docker" not in mapped
+
+
+def test_generic_page_context_stays_project_level_only() -> None:
+    """Marketing / demo / unknown / filtered page contexts contribute NO signal,
+    so a bare navigation/landing capture never maps a skill (project-level only)."""
+    for ctx in ("homepage_marketing", "demo_content", "unknown", "filtered_non_target_frame"):
+        purpose = classify_website_purpose(
+            workflow_summary="The user browsed between the app's pages using the navigation menu.",
+            page_context=ctx,
+        )
+        assert purpose == "navigation_layout"
+        assert derive_website_supported_skills(purpose, ["Machine Learning", "React"]) == []
+
+
+def test_enrichment_signals_are_purely_additive() -> None:
+    """The new optional signals can only ADD a stronger match — a strong workflow
+    narrative is unaffected by an empty/None page context or extra signals."""
+    strong = "Entered values and the model displayed a prediction result."
+    assert classify_website_purpose(workflow_summary=strong) == classify_website_purpose(
+        workflow_summary=strong, page_context=None, extra_signals=[]
+    )
