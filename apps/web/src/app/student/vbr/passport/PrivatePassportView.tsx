@@ -795,13 +795,17 @@ function SkillEvidenceNav({
                 data-testid="skill-website-evidence-note"
                 data-skill={node.name}
                 data-project={row.projectTitle}
-                // Passport-level Website Proof carries no classified sub-source
-                // (DOM / OCR / visual). Keep the label honest and generic here —
-                // the project report is where any sub-source detail is shown.
-                data-source-classified="false"
+                // Precise Website Proof behaviour for THIS skill in THIS project,
+                // derived from the safe website pipeline summaries (workflow /
+                // recruiter / demonstrated-action / page-context / OCR-visual
+                // fields) via the canonical Website→skill mapping — never raw
+                // DOM/OCR/provider text. Falls back to an honest limited-detail
+                // note when the capture was too thin to derive specifics.
+                data-source-classified={row.websiteEvidenceSummary ? "true" : "false"}
                 style={{ fontSize: 11, color: TOKEN.inkSoft, lineHeight: 1.4 }}
               >
-                Website evidence — shows observed runtime/product behavior
+                {row.websiteEvidenceSummary ??
+                  "Website Proof supports runtime/product behavior for this skill, but detailed website evidence is limited."}
               </span>
             )}
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
@@ -1097,7 +1101,13 @@ function PassportGraphExplorer({
     ? `Skills for selected project (${visibleSkills.length})`
     : skillFilter
       ? `Selected skill (${visibleSkills.length})`
-      : `Skills (${graph.skills.length})`
+      : // A proof-type or search filter also narrows the visible skills, so the
+        // heading must reflect the FILTERED count — never the full graph total.
+        // e.g. Proof Type = Website Proof must read "Skills (3)", not "Skills (55)".
+        // With no filter active the count is the full skill total, as before.
+        hasFilter
+        ? `Skills (${visibleSkills.length})`
+        : `Skills (${graph.skills.length})`
   const projectsHeading = skillFilter
     ? `Projects for selected skill (${visibleProjects.length})`
     : projectFilter

@@ -82,6 +82,11 @@ class PassportSkillProjectRef(BaseModel):
     supporting_proof_types: list[str] = Field(default_factory=list)
     report_is_public: bool = False
     public_report_path: str | None = None
+    # A safe, closed-vocabulary sentence describing what the Website Proof
+    # demonstrably showed for THIS skill in THIS project — present only when
+    # Website Proof supports this exact skill (else omitted). Never raw
+    # DOM/OCR/visual/provider text; owner-only drilldown context.
+    website_evidence_summary: str | None = None
     # The proof-native trace cards this project contributes for this skill.
     evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
 
@@ -107,6 +112,9 @@ class PassportStrongestProjectLink(BaseModel):
     public_report_path: str | None = None
     project_id: str | None = None
     project_report_path: str | None = None
+    # Safe Website Proof behaviour sentence for this skill in this project (see
+    # PassportSkillProjectRef.website_evidence_summary). Owner-only drilldown.
+    website_evidence_summary: str | None = None
 
     model_config = {"extra": "forbid"}
 

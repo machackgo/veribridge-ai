@@ -809,6 +809,7 @@ def _build_evidence_traces(
     documents: list[dict[str, Any]],
     website_proofs: list[dict[str, Any]],
     website_details: dict[str, dict[str, Any]],
+    website_mapped_skills_by_session: dict[str, list[str]] | None = None,
     analysis: dict[str, Any] | None,
     defense_questions: list[dict[str, Any]],
     video_chips: list[dict[str, Any]],
@@ -846,7 +847,10 @@ def _build_evidence_traces(
 
     # ── Website Proof ────────────────────────────────────────────────────────
     collect_website_proof_traces(
-        _attach, website_proofs=website_proofs, website_details=website_details
+        _attach,
+        website_proofs=website_proofs,
+        website_details=website_details,
+        mapped_skills_by_session=website_mapped_skills_by_session,
     )
 
     collect_project_defense_traces(
@@ -1229,22 +1233,34 @@ def collect_website_proof_traces(
     *,
     website_proofs: list[dict[str, Any]],
     website_details: dict[str, dict[str, Any]],
+    mapped_skills_by_session: dict[str, list[str]] | None = None,
 ) -> None:
     """Normalize stored Website Proof summaries/artifacts into evidence traces.
 
     Reuses the attach-time summary (target / evidence strength / workflow
-    confidence / supported skills) plus the deeper, already-sanitized artifact
-    summaries hydrated by ``website_proof_detail_service`` (live check, workflow
-    steps, DOM/OCR/visual/NLP summaries). Raw DOM/OCR/provider payloads,
-    screenshots, frame/storage paths and signed URLs are never read here — only
-    the safe summaries the Website Proof pipeline already produced.
+    confidence) plus the deeper, already-sanitized artifact summaries hydrated by
+    ``website_proof_detail_service`` (live check, workflow steps, DOM/OCR/visual/
+    NLP summaries). Raw DOM/OCR/provider payloads, screenshots, frame/storage
+    paths and signed URLs are never read here — only the safe summaries the
+    Website Proof pipeline already produced.
+
+    A trace card's ``skill_names`` come from ``mapped_skills_by_session`` — the
+    CANONICAL Website→skill mapping (``map_website_supported_skills``) the report
+    already computed for this proof, NOT the raw stored ``supported_skills``. The
+    stored list is a hint only, so a trace card can never attribute Website Proof
+    to a skill the observed behaviour did not actually support (keeping the
+    trace cards in lockstep with the skill matrix's supporting-source chips).
     """
+    mapped_by_session = mapped_skills_by_session or {}
     for idx, wp in enumerate(website_proofs, start=1):
         target = str(wp.get("target_website") or "")
         safe = is_safe_public_url(target)
-        supported = [str(s) for s in (wp.get("supported_skills") or [])]
+        session_id = str(wp.get("proof_session_id") or "")
+        # Canonical mapped skills for THIS proof (hint-only stored ``supported_skills``
+        # never rides through as a per-skill trace attribution).
+        supported = [str(s) for s in (mapped_by_session.get(session_id) or [])]
         confidence = str(wp.get("workflow_confidence") or "insufficient")
-        detail = website_details.get(str(wp.get("proof_session_id") or "")) or {}
+        detail = website_details.get(session_id) or {}
 
         # Whether the saved proof carried any deeper safe summary to surface as a
         # dedicated artifact card below (live check / workflow / DOM / OCR / vision
@@ -1886,6 +1902,21 @@ def build_student_vbr_report(
         for row in (entry.get("skills") or [])
         if str(row.get("skill_name") or "").strip()
     }
+    # Per-session canonical mapped skills (same source of truth) so the Website
+    # evidence TRACE cards attribute a proof only to the skills its behaviour
+    # actually supports — never the raw stored ``supported_skills``. Parallel to
+    # ``website_entries`` (``collect_website_skill_evidence`` yields one entry per
+    # entry, in order), so zip re-associates each mapping with its session id.
+    website_mapped_skills_by_session: dict[str, list[str]] = {}
+    for _entry, _wse in zip(website_entries, website_skill_evidence):
+        _sid = str(_entry.get("proof_session_id") or "")
+        if not _sid:
+            continue
+        website_mapped_skills_by_session[_sid] = [
+            str(r.get("skill_name"))
+            for r in (_wse.get("skills") or [])
+            if str(r.get("skill_name") or "").strip()
+        ]
 
     pipeline_lookup = _build_pipeline_lookup(pipeline_db, user_id, skill_pipeline_ids) if skill_pipeline_ids else {}
 
@@ -1914,6 +1945,7 @@ def build_student_vbr_report(
         documents=document_entries,
         website_proofs=website_entries,
         website_details=website_details,
+        website_mapped_skills_by_session=website_mapped_skills_by_session,
         analysis=analysis,
         defense_questions=defense_questions,
         video_chips=video_chips,

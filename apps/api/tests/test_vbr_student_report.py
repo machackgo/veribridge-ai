@@ -200,7 +200,16 @@ def test_report_skill_matrix_maps_skills_to_evidence_sources(client: TestClient,
     """Each skill row carries the canonical evidence-source labels that support
     it (GitHub / Website / Project Defense / Video) — never numeric scores."""
     github_proof_id = _seed_github_proof(mem_store)  # detects Python + React
-    website_proof_session_id = _seed_workflow_analysis(mem_store)  # supports React
+    # A Website Proof only earns a skill its OBSERVED behaviour supports (hint-only
+    # stored ``supported_skills`` never maps by itself). This capture demonstrates an
+    # interactive product UI, which is direct Frontend (React) evidence.
+    website_proof_session_id = _seed_workflow_analysis(
+        mem_store,
+        workflow_summary=(
+            "The user interacted with the app's interface, filled in the form and a "
+            "result was displayed on screen."
+        ),
+    )
 
     created = _create_project_defense(
         client,
@@ -214,10 +223,12 @@ def test_report_skill_matrix_maps_skills_to_evidence_sources(client: TestClient,
     body = _get_report(client, project_id).json()
     rows = {row["skill"]: row for row in body["skill_evidence"]}
 
-    # Python is detected by the GitHub Proof only.
+    # Python is detected by the GitHub Proof only (the website behaviour does not
+    # demonstrate a Python-specific skill, so it earns no Website Proof chip).
     assert rows["Python"]["supporting_sources"] == ["GitHub Proof"]
-    # React is detected by GitHub Proof and supported by the Website Proof,
-    # in canonical (GitHub → Website) order.
+    # React is detected by GitHub Proof and supported by the Website Proof (the
+    # observed interactive UI is direct Frontend evidence), in canonical
+    # (GitHub → Website) order.
     assert rows["React"]["supporting_sources"] == ["GitHub Proof", "Website Proof"]
 
     # Supporting-source labels carry no numeric score fragments.
@@ -1546,7 +1557,11 @@ def test_website_rich_artifact_trace_cards(client: TestClient, mem_store: dict) 
     Website trace card when available."""
     session_id = _seed_rich_website(mem_store)
     created = _create_project_defense(
-        client, attached_proofs={"website_proof_session_ids": [session_id]}
+        client,
+        # The project must CLAIM the skill for the image-classification behaviour to
+        # map to it — a Website Proof only ever supports a project's claimed skills.
+        claimed_skills=["Machine Learning", "React"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
     ).json()
     project_id = created["project"]["id"]
 
@@ -1567,7 +1582,10 @@ def test_website_rich_artifact_trace_cards(client: TestClient, mem_store: dict) 
     assert ocr["location_label"] == "OCR summary"
     assert "Prediction: cat" in ocr["safe_summary"]
     assert "behaviour" in ocr["limitation"].lower()
-    # Supports the website's skills, not authorship.
+    # The image-classification behaviour maps ONLY to the project's claimed skills it
+    # actually supports (the canonical Website→skill mapping) — never the raw stored
+    # ``supported_skills``. Machine Learning is claimed here and the demonstrated
+    # prediction/classification behaviour maps to it.
     assert "Machine Learning" in ocr["skill_names"]
 
     live = next(t for t in web if t["location_type"] == "website_live_check")
@@ -1758,6 +1776,53 @@ def test_website_does_not_map_to_unrelated_claimed_skills(
     assert "Docker" not in mapped
     assert "Website Proof" in _skill_row(body, "Machine Learning")["supporting_sources"]
     assert "Website Proof" not in _skill_row(body, "Docker")["supporting_sources"]
+
+
+def test_broad_stored_supported_skills_do_not_leak_into_matrix_or_passport_refs(
+    client: TestClient, mem_store: dict
+) -> None:
+    """THE leak regression: a Website Proof whose STORED ``supported_skills`` is broad
+    (React, Docker, AWS, SQL, NLP, Security …) must NOT paint every claimed skill with
+    a Website Proof source. The stored list is a hint only — only the skills the
+    observed image-classification behaviour genuinely supports earn the Website Proof
+    chip, and the ``website_skill_evidence`` map is a strict subset of the validated
+    skills (no project-level Website Proof becomes skill evidence)."""
+    broad = ["Machine Learning", "React", "Docker", "AWS", "SQL", "Security"]
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        target_website="https://teachablemachine.withgoogle.com",
+        supported_skills=broad,  # deliberately broad / dirty stored list
+        weakly_supported_skills=[],
+        workflow_summary="The user uploaded an image and the model displayed a classification result.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=broad,
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    # The behaviour-evidence map is a STRICT SUBSET of validated skills: the
+    # image-classification behaviour maps ML (model product-behaviour context) and
+    # React (interactive UI), never the infra/data/security skills the stored list
+    # also named — a demo UI carries no relevance to Docker/AWS/SQL/Security.
+    mapped = set(_website_skill_names(body))
+    assert "Machine Learning" in mapped
+    assert not (mapped & {"Docker", "AWS", "SQL", "Security"})
+
+    # Skill matrix supporting-sources agree — the passport ``supporting_proof_types``
+    # is built from exactly this, so no unrelated skill gains a Website Proof chip.
+    assert "Website Proof" in _skill_row(body, "Machine Learning")["supporting_sources"]
+    for unrelated in ("Docker", "AWS", "SQL", "Security"):
+        assert "Website Proof" not in _skill_row(body, unrelated)["supporting_sources"], unrelated
+
+    # The website evidence TRACE cards are scoped to the same validated skills — a
+    # broad stored list never rides through as a per-skill trace attribution either.
+    web_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Website Proof"]
+    for t in web_traces:
+        assert not (set(t["skill_names"]) & {"Docker", "AWS", "SQL", "Security"})
 
 
 def test_website_derives_api_skill_from_api_behavior(

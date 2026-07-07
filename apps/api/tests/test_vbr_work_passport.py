@@ -349,6 +349,72 @@ def test_passport_supporting_proof_types_include_derived_website_proof(
     )
 
 
+def test_passport_mapped_website_proof_carries_safe_skill_behaviour_summary(
+    client: TestClient, mem_store: dict
+) -> None:
+    """When a Website Proof maps to a skill, its skill→project ref carries a safe,
+    closed-vocabulary ``website_evidence_summary`` describing the observed runtime
+    behaviour for THAT skill — not the generic placeholder, and never raw
+    DOM/OCR/workflow text."""
+    raw_workflow = "Entered input values and the model displayed a prediction result."
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary=raw_workflow,
+    )
+    _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    )
+    body = _get_private(client).json()
+
+    ml = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "machine learning")
+    website_refs = [
+        ref
+        for ref in ml["projects"]
+        if "Website Proof" in (ref.get("supporting_proof_types") or [])
+    ]
+    assert website_refs, "expected a Website-Proof-backed ML project ref"
+    for ref in website_refs:
+        summary = ref.get("website_evidence_summary")
+        assert isinstance(summary, str) and summary.strip()
+        # A real behaviour sentence, not the honest limited-detail fallback.
+        assert "detailed website evidence is limited" not in summary
+        # Recruiter-safe: never echoes the raw pipeline workflow text.
+        assert raw_workflow not in summary
+        # The strongest-project link mirrors the same safe summary.
+    strongest = ml.get("strongest_project") or {}
+    if "Website Proof" in (strongest.get("supporting_proof_types") or []):
+        assert (strongest.get("website_evidence_summary") or "").strip()
+
+
+def test_passport_website_evidence_summary_absent_when_website_maps_no_skill(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A generic Website Proof maps no skill, so no skill→project ref carries a
+    ``website_evidence_summary`` (the field only accompanies real Website Proof
+    support)."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="A landing page describing the product and its features was shown.",
+    )
+    _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    )
+    body = _get_private(client).json()
+
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            if "Website Proof" not in (ref.get("supporting_proof_types") or []):
+                assert not ref.get("website_evidence_summary")
+
+
 def test_passport_generic_website_adds_no_website_proof_to_skill(
     client: TestClient, mem_store: dict
 ) -> None:

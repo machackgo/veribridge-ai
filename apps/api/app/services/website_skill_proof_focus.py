@@ -262,8 +262,10 @@ _DIRECT_RELEVANCE_KEYS = frozenset({RELEVANCE_DIRECT_FRONTEND, RELEVANCE_DATA_VI
 #
 # Matched against the concatenated ALREADY-SAFE summaries. Order matters: a
 # prediction-form demo must land on the prediction/result purpose (not the
-# generic form purpose), and an upload-driven prediction demo on upload → the
-# earlier, more product-specific patterns win.
+# generic form purpose), and an upload-DRIVEN prediction/classification demo must
+# land on the prediction/result purpose too (image-upload → predicted class is a
+# model-behaviour signal, not a bare upload) — so the prediction pattern is
+# checked BEFORE the generic file-upload pattern.
 
 _PURPOSE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -285,13 +287,6 @@ _PURPOSE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
-        PURPOSE_FILE_UPLOAD,
-        re.compile(
-            r"upload|drag[- ]and[- ]drop|choose file|file (?:was )?(?:chosen|selected|attached|dropped)",
-            re.IGNORECASE,
-        ),
-    ),
-    (
         PURPOSE_PREDICTION_RESULT,
         re.compile(
             r"predict|prediction|inference|classif(?:y|ied|ication|ier)|forecast"
@@ -302,6 +297,13 @@ _PURPOSE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             # strong ML/CV product-behaviour signal — never implementation proof.
             r"|train(?:ed|ing)? (?:a |the )?model|model train(?:ing|ed)|teachable machine"
             r"|image classification|class label[s]?|confidence score",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        PURPOSE_FILE_UPLOAD,
+        re.compile(
+            r"upload|drag[- ]and[- ]drop|choose file|file (?:was )?(?:chosen|selected|attached|dropped)",
             re.IGNORECASE,
         ),
     ),
@@ -811,19 +813,29 @@ def map_website_supported_skills(
     claimed skills the website behaviour supports as ``(display_skill, basis)``
     pairs, where ``basis`` is:
 
-      * ``"extracted"`` — the proof's stored ``supported_skills`` explicitly names
-        this claimed skill (the pipeline's own evidence-source match, trusted);
+      * ``"extracted"`` — the proof's stored ``supported_skills`` names this claimed
+        skill AND the observed website behaviour has a strong, skill-specific
+        relevance to it (the stored list supplies the provenance label; the
+        behaviour supplies the proof);
       * ``"derived"``   — the observed behaviour genuinely demonstrates this
         claimed skill on its own (``derive_website_supported_skills``), an
         interactive UI / chart-dashboard / request→result API / model
         prediction/generation.
 
-    Order: extracted matches first (in claimed order), then derived matches; each
+    ``extracted_supported_skills`` is treated as a HINT ONLY — it can never map a
+    skill by itself. A stored value is honoured only when the observed behaviour's
+    website→skill relevance for that skill is strong enough to stand on its own
+    (``website_relevance_can_map_skill``), the very same gate a derived match must
+    pass. This fails closed: a broad/dirty stored ``supported_skills`` list (or a
+    ``supported_skills`` value whose safe website behaviour has no skill-specific
+    relevance) never leaks Website Proof onto every claimed skill.
+
+    Order: extracted matches first (in stored order), then derived matches; each
     skill appears at most once, and an extracted match is never downgraded by a
     later derived one. A claimed skill is projected ONLY when it is genuinely
     matched — a broad ``claimed_skills`` list alone never maps website evidence,
     and a GENERIC page (bare availability / documentation / unknown / structural
-    UI) derives nothing. This is the ONE mapping every surface must consume so the
+    UI) maps nothing. This is the ONE mapping every surface must consume so the
     Work Passport, Project Report, and Skill Report can never disagree about which
     skill a Website Proof supports in a given project.
     """
@@ -836,14 +848,21 @@ def map_website_supported_skills(
 
     basis_by_norm: dict[str, str] = {}
     out: list[tuple[str, str]] = []
-    # 1 — extracted matches (trusted): a claimed skill the proof's stored
-    #     ``supported_skills`` explicitly names.
+    # 1 — extracted matches (hint-only, still gated): a claimed skill the proof's
+    #     stored ``supported_skills`` names AND whose observed website relevance is
+    #     strong enough to stand on its own. The stored list is NEVER proof by
+    #     itself — without a skill-specific relevance the value is dropped, so a
+    #     broad/dirty ``supported_skills`` cannot leak Website Proof onto a skill.
     for raw in extracted_supported_skills or []:
         n = _norm(str(raw))
         if n in basis_by_norm or n not in claimed_by_norm:
             continue
+        display = claimed_by_norm[n]
+        relevance = classify_website_skill_relevance(purpose_key, skill=display)
+        if not website_relevance_can_map_skill(relevance):
+            continue
         basis_by_norm[n] = "extracted"
-        out.append((claimed_by_norm[n], "extracted"))
+        out.append((display, "extracted"))
     # 2 — derived matches: a claimed skill the observed behaviour demonstrates on
     #     its own (never overrides a stronger extracted match already recorded).
     for display in derive_website_supported_skills(purpose_key, list(claimed_by_norm.values())):

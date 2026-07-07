@@ -1718,6 +1718,10 @@ export type PassportSkillProjectRef = {
   supporting_proof_types?: string[]
   report_is_public: boolean
   public_report_path: string | null
+  /** Safe, closed-vocabulary sentence for what Website Proof demonstrably showed
+   *  for THIS skill in THIS project. Present only when Website Proof supports this
+   *  exact skill; never raw DOM/OCR/visual/provider text. */
+  website_evidence_summary?: string | null
   /** Proof-native trace cards this project contributes for this skill. */
   evidence_traces?: EvidenceTrace[]
 }
@@ -1738,6 +1742,9 @@ export type PassportStrongestProjectLink = {
   public_report_path?: string | null
   project_id?: string | null
   project_report_path?: string | null
+  /** Safe Website Proof behaviour sentence for this skill in this project (see
+   *  PassportSkillProjectRef.website_evidence_summary). */
+  website_evidence_summary?: string | null
 }
 
 /** A grouped, evidence-backed skill. `status` is always a qualitative label. */

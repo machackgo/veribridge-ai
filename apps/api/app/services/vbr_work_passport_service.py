@@ -103,6 +103,14 @@ _SRC_DEFENSE = "Project Defense"
 _SRC_VIDEO = "Video Evidence"
 _SRC_REPORT = "VBR Report"
 
+# Honest fallback for a skill→project row that DOES carry Website Proof but whose
+# safe pipeline summaries were too thin to derive a specific behaviour sentence.
+# Never fabricated detail — states the runtime-behaviour scope and the gap.
+_WEBSITE_LIMITED_NOTE = (
+    "Website Proof supports runtime/product behavior for this skill, but detailed "
+    "website evidence is limited."
+)
+
 _EVIDENCE_SOURCE_LABELS = [
     _SRC_GITHUB,
     _SRC_DOCUMENT,
@@ -637,6 +645,32 @@ def _aggregate_skills_with_detail(
 
         project_title = summary.get("project_title") or report.get("project_title") or ""
 
+        # Safe per-skill Website Proof behaviour sentence for THIS project, taken
+        # from the canonical Website→skill mapping the report already computed
+        # (``website_skill_evidence`` → each mapped skill's ``relevance_summary``).
+        # Only closed-vocabulary, recruiter-safe summaries — never raw
+        # DOM/OCR/visual/provider text. Prefer a DIRECT-evidence relevance when a
+        # skill mapped more than once. Keyed by lowercased skill for the row below.
+        website_note_by_skill: dict[str, str] = {}
+        website_note_direct: set[str] = set()
+        for wentry in report.get("website_skill_evidence") or []:
+            if not wentry.get("skill_mapping_available"):
+                continue  # project-level only — surfaced elsewhere, never as a row note
+            for srow in wentry.get("skills") or []:
+                sk = str(srow.get("skill_name") or "").strip().lower()
+                if not sk:
+                    continue
+                note = str(srow.get("relevance_summary") or "").strip()
+                if not note:
+                    continue
+                is_direct = bool(srow.get("is_direct_evidence"))
+                # First writer wins, but a later DIRECT-evidence relevance upgrades
+                # a previously-recorded supporting one.
+                if sk not in website_note_by_skill or (is_direct and sk not in website_note_direct):
+                    website_note_by_skill[sk] = note[:400]
+                    if is_direct:
+                        website_note_direct.add(sk)
+
         for row in report.get("skill_evidence") or []:
             skill = str(row.get("skill") or "").strip()
             if not skill:
@@ -705,6 +739,15 @@ def _aggregate_skills_with_detail(
                     # this skill (grouped under the project in the drilldown).
                     "evidence_traces": list(project_skill_traces),
                 }
+                # Attach a safe Website Proof behaviour sentence ONLY where Website
+                # Proof actually supports THIS skill in THIS project (fail-closed on
+                # the skill-specific ``row_proof_types``, never the project union).
+                # Falls back to the honest "detail limited" note so a mapped-but-thin
+                # capture is never described with fabricated specifics.
+                if _SRC_WEBSITE in row_proof_types:
+                    ref["website_evidence_summary"] = (
+                        website_note_by_skill.get(key) or _WEBSITE_LIMITED_NOTE
+                    )
                 if not public:
                     ref["project_id"] = summary.get("project_id")
                 entry["_ref_by_ident"][ref_ident] = ref
@@ -719,6 +762,13 @@ def _aggregate_skills_with_detail(
                 existing["supporting_proof_types"] = _order_skill_proof_types(
                     list(existing.get("supporting_proof_types") or []) + row_proof_types
                 )
+                # A later attempt may be the one that maps Website Proof to this
+                # skill — attach/keep the safe behaviour note (never downgrade a
+                # specific note back to the limited fallback).
+                if _SRC_WEBSITE in row_proof_types and not existing.get("website_evidence_summary"):
+                    existing["website_evidence_summary"] = (
+                        website_note_by_skill.get(key) or _WEBSITE_LIMITED_NOTE
+                    )
                 if _STATUS_ORDER.get(status_label, 99) < _STATUS_ORDER.get(
                     str(existing.get("skill_status")), 99
                 ):
@@ -801,6 +851,8 @@ def _aggregate_skills_with_detail(
                 "report_is_public": bool(strongest.get("report_is_public")),
                 "public_report_path": strongest.get("public_report_path"),
             }
+            if strongest.get("website_evidence_summary"):
+                link["website_evidence_summary"] = strongest["website_evidence_summary"]
             if not public:
                 link["project_id"] = strongest.get("project_id")
                 link["project_report_path"] = _private_project_report_path(

@@ -842,6 +842,97 @@ def test_derive_never_invents_unclaimed_skills() -> None:
     assert derive_website_supported_skills(purpose, []) == []
 
 
+def test_broad_stored_supported_skills_never_leak_website_proof() -> None:
+    """A broad/dirty stored ``supported_skills`` list is a HINT ONLY: it never maps
+    Website Proof onto a skill whose safe observed behaviour has no skill-specific
+    relevance. An image-classification demo maps ML/Image-Classification (model
+    product-behaviour context) and the interactive UI supports Frontend, but the
+    infrastructure/data/security skills (Docker / AWS / SQL / Security) NEVER map
+    just because the stored list named them — a demo UI proves none of their
+    internals, so the observed behaviour has no relevance to them."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        map_website_supported_skills,
+    )
+
+    purpose = classify_website_purpose(
+        workflow_summary=(
+            "The user uploaded an image and the model displayed a classification result."
+        )
+    )
+    claimed = [
+        "Machine Learning",
+        "Image Classification",
+        "React",
+        "Docker",
+        "AWS",
+        "SQL",
+        "Security",
+    ]
+    # The stored list is deliberately broad — it names skills the behaviour does not
+    # demonstrate. Only the genuinely-supported skills may map.
+    mapped = map_website_supported_skills(
+        purpose,
+        extracted_supported_skills=list(claimed),
+        claimed_skills=claimed,
+    )
+    mapped_names = {name for name, _basis in mapped}
+    assert {"Machine Learning", "Image Classification"} <= mapped_names
+    # The infra/data/security skills never leak in, despite being in supported_skills:
+    # a model-prediction demo carries no Docker/AWS/SQL/Security-specific relevance.
+    assert not (mapped_names & {"Docker", "AWS", "SQL", "Security"})
+
+
+def test_stored_supported_skill_without_relevance_is_dropped() -> None:
+    """A stored ``supported_skills`` value whose safe website behaviour has no
+    skill-specific relevance maps NOTHING — the stored list can never map by itself."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        map_website_supported_skills,
+    )
+
+    # A bare-availability page: the stored list names Docker, but a reachable-only
+    # deployment has no Docker-specific relevance → no mapping.
+    purpose = classify_website_purpose(live_check={"is_reachable": True})
+    assert map_website_supported_skills(
+        purpose,
+        extracted_supported_skills=["Docker", "Kubernetes"],
+        claimed_skills=["Docker", "Kubernetes"],
+    ) == []
+
+    # An unclassifiable capture likewise maps nothing even when supported_skills
+    # names a claimed skill.
+    from app.services.website_skill_proof_focus import PURPOSE_UNKNOWN
+
+    assert map_website_supported_skills(
+        PURPOSE_UNKNOWN,
+        extracted_supported_skills=["React"],
+        claimed_skills=["React"],
+    ) == []
+
+
+def test_extracted_basis_still_labels_a_genuinely_supported_skill() -> None:
+    """When a stored ``supported_skills`` value IS genuinely supported by the observed
+    behaviour, it maps with the ``extracted`` provenance basis (the stored list is a
+    valid HINT, just never proof on its own)."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        map_website_supported_skills,
+    )
+
+    purpose = classify_website_purpose(
+        workflow_summary="Entered values and the model displayed a prediction result."
+    )
+    mapped = dict(
+        map_website_supported_skills(
+            purpose,
+            extracted_supported_skills=["Machine Learning"],
+            claimed_skills=["Machine Learning", "Docker"],
+        )
+    )
+    assert mapped == {"Machine Learning": "extracted"}
+
+
 def test_website_evidence_source_types_are_closed_and_ordered() -> None:
     from app.services.website_skill_proof_focus import (
         ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES,

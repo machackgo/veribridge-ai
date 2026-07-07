@@ -77,6 +77,11 @@ export type SkillProjectEvidence = {
   evidenceSources: string[]
   /** Website Proof is among this project's sources for this skill. */
   hasWebsiteProof: boolean
+  /** Safe, closed-vocabulary sentence for what Website Proof demonstrably showed
+   *  for THIS skill in THIS project. Present only when `hasWebsiteProof`; the UI
+   *  falls back to a generic runtime-behaviour note when absent. Never raw
+   *  DOM/OCR/visual/provider text. */
+  websiteEvidenceSummary?: string
   /** The project carries attached proof at the project level (any source),
    *  even when none of it is mapped to THIS skill. Lets the UI distinguish
    *  "project-level proof exists, but is not mapped to this skill yet" from a
@@ -228,6 +233,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
     status: string
     isPublic: boolean
     publicPath: string | null
+    websiteSummary?: string
   }
   const perSkillProjectMeta = new Map<string, Map<string, ProjEvidenceMeta>>()
   const recordProjectMeta = (
@@ -237,6 +243,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
     status: string | undefined,
     isPublic: boolean | undefined,
     publicPath: string | null | undefined,
+    websiteSummary?: string | null,
   ) => {
     if (!projectId) return
     let bySkill = perSkillProjectMeta.get(skillKey)
@@ -249,6 +256,10 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
     if (!meta.status && status) meta.status = status
     if (isPublic) meta.isPublic = true
     if (!meta.publicPath && publicPath) meta.publicPath = publicPath
+    // Keep the first safe Website Proof behaviour sentence recorded for this
+    // (skill, project) — the strongest_project link and the per-project refs both
+    // feed this, and either may carry it.
+    if (!meta.websiteSummary && websiteSummary) meta.websiteSummary = websiteSummary
     bySkill.set(projectId, meta)
   }
 
@@ -275,6 +286,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
         ref.skill_status,
         ref.report_is_public,
         ref.public_report_path,
+        ref.website_evidence_summary,
       )
     }
     if (s.strongest_project) {
@@ -286,6 +298,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
         s.strongest_project.skill_status,
         s.strongest_project.report_is_public,
         s.strongest_project.public_report_path,
+        s.strongest_project.website_evidence_summary,
       )
     }
   }
@@ -332,6 +345,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
           skillStatus: meta?.status ?? "",
           evidenceSources: sources,
           hasWebsiteProof: sources.includes("Website Proof"),
+          websiteEvidenceSummary: sources.includes("Website Proof") ? meta?.websiteSummary : undefined,
           projectHasProjectLevelProof: (proj.evidence_sources?.length ?? 0) > 0,
           reportPath: `/student/vbr/projects/${pid}/report`,
           publicReportPath: meta?.publicPath ?? proj.report.public_path ?? null,
