@@ -1351,3 +1351,98 @@ def test_public_report_non_dict_analysis_still_withholds_orphaned_artifacts(
         "hidden from this public report" in (t.get("safe_summary") or "").lower()
         for t in defense_traces
     )
+
+
+# ── Project Defense inspection cards on the public project report ─────────────
+
+
+def _clean_inspection_report(status: str = "clean") -> dict:
+    """A student-report payload carrying one public-safe Project Defense
+    inspection card plus a matching clean analysis."""
+    return _minimal_report(
+        claimed_skills=["Machine Learning"],
+        project_defense_analysis={
+            "transcript_summary": "The candidate explained their model.",
+            "skills_mentioned": ["Machine Learning"],
+            "skills_explained_well": ["Machine Learning"],
+            "skills_missing_from_explanation": [],
+            "overall_assessment": "Partially demonstrated",
+            "explanation_clarity": "Demonstrated",
+            "ownership_signal": "Partially demonstrated",
+            "technical_depth": "Supporting evidence",
+            "consistency_with_evidence": "Supporting evidence",
+            "risk_flags": [],
+            "recruiter_summary": "Project defense analyzed.",
+            "recommended_improvements": [],
+            "privacy_scan_status": status,
+        },
+        project_defense_inspection=[
+            {
+                "evidence_id_safe": "defense-inspection-1",
+                "question_text": "How does your model make predictions?",
+                "question_kind": "skill_explanation",
+                "project_title": "Boston Housing",
+                "mapped_skill": "Machine Learning",
+                "claim_type": "skill_understanding",
+                "answer_purpose": "skill_explanation",
+                "evidence_role": "candidate_explanation",
+                "qualitative_status": "Explained with evidence",
+                "safe_answer_summary": f"I trained a model; my SSN is {_DEFENSE_SSN}.",
+                "evidence_basis_chips": ["Targeted question", "Candidate answer", "Privacy-safe summary"],
+                "timestamp_label": "Video 03:12",
+                "clip_start_seconds": 192.0,
+                "clip_end_seconds": 205.0,
+                "clip_available": True,
+                "corroborates_github": True,
+                "corroborates_website": False,
+                "corroborates_document": False,
+                "corroboration_summary": "Corroborating defense evidence: GitHub Proof.",
+                "what_this_demonstrates": "The student explained this Machine Learning claim.",
+                "limitation": "Project Defense is explanation evidence.",
+                "public_safe": status == "clean",
+                "withheld_reason": None,
+            }
+        ],
+    )
+
+
+def test_public_report_clean_inspection_shows_safe_card(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A clean session publishes a safe inspection card: derived summary (no raw
+    answer text / SSN), safe question, clip locator, corroboration flags."""
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, _clean_inspection_report())
+    assert response.status_code == 200, response.text
+    assert _DEFENSE_SSN not in response.text
+
+    cards = response.json()["project_defense_inspection"]
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["public_safe"] is True
+    assert card["question_text"]
+    assert _DEFENSE_SSN not in json.dumps(card)
+    assert card["clip_available"] is True
+    assert card["timestamp_label"] == "Video 03:12"
+    assert card["corroborates_github"] is True
+    assert "question_id" not in card
+
+
+def test_public_report_flagged_inspection_is_withheld(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A privacy-flagged session withholds the inspection card entirely: no answer
+    text, no question text, no clip, and the SSN never appears anywhere."""
+    response = _publish_and_get_with_report(
+        client, mem_store, monkeypatch, _clean_inspection_report(status="flagged")
+    )
+    assert response.status_code == 200, response.text
+    assert _DEFENSE_SSN not in response.text
+
+    cards = response.json()["project_defense_inspection"]
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["public_safe"] is False
+    assert card["withheld_reason"]
+    assert card["question_text"] is None
+    assert card["clip_available"] is False
+    assert card["corroborates_github"] is False

@@ -28,6 +28,7 @@ import {
 import { Badge, Mono, TOKEN, type BadgeTone } from "./shared"
 import { WebsiteRuntimeInspectionCard } from "./WebsiteRuntimeInspectionCard"
 import { DocumentProofInspectionCard } from "./DocumentProofInspectionCard"
+import { ProjectDefenseInspectionSection } from "./ProjectDefenseInspectionCard"
 
 const PROOF_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
@@ -1112,6 +1113,9 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
           <SkillReportSection testId="chain-video" title="Video evidence" items={chain.video_evidence} />
         </>
       )}
+      {/* First-class Project Defense inspection: per-question explanation /
+          corroboration evidence for this chain's skill (never implementation proof). */}
+      <ProjectDefenseInspectionSection cards={chain.project_defense_inspection} testId="chain-defense-inspection" />
       <DocumentCorrelations
         testId="chain-documents"
         items={chain.document_correlations}

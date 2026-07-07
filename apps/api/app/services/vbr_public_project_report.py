@@ -656,6 +656,7 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         enforce_public_safe,
         public_safe_defense_analysis,
         public_safe_defense_answer_evidence,
+        public_safe_project_defense_inspection,
     )
 
     # ── Project Defense privacy fail-closed (must-fix) ────────────────────────
@@ -675,6 +676,14 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     # internal question_id.
     defense_answer_evidence = public_safe_defense_answer_evidence(
         report.get("defense_answer_evidence") or [], raw_defense_analysis
+    )
+
+    # Project Defense inspection cards ride the SAME fail-closed gate: a card is
+    # published with content only when the session analysis is clean AND the
+    # card is public-safe; otherwise it becomes a fixed withheld placeholder
+    # with no answer text, no clip locator, and no internal ids.
+    project_defense_inspection = public_safe_project_defense_inspection(
+        report.get("project_defense_inspection") or [], raw_defense_analysis
     )
 
     evidence_traces = _public_evidence_traces(report.get("evidence_traces") or [])
@@ -717,6 +726,7 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         "website_proofs": website_proofs,
         "project_defense_analysis": defense_analysis,
         "defense_answer_evidence": defense_answer_evidence,
+        "project_defense_inspection": project_defense_inspection,
         "skill_evidence": list(report.get("skill_evidence") or []),
         "evidence_traces": evidence_traces,
         "video_evidence_chips": _sanitize_video_chips(raw_video_chips),

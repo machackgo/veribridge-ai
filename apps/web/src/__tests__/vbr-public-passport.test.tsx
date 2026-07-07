@@ -547,3 +547,111 @@ describe("PublicPassportView — Document Proof trace safety", () => {
     expect(detail.textContent).toContain("does not independently prove implementation")
   })
 })
+
+describe("PublicPassportView — Project Defense inspection (fail-closed)", () => {
+  function withInspection(cardOverrides = {}) {
+    const base = makePublicPassport()
+    return makePublicPassport({
+      featured_projects: [
+        {
+          ...base.featured_projects[0],
+          project_defense_inspection: [
+            {
+              evidence_id_safe: "defense-inspection-1",
+              question_text: null,
+              question_kind: "skill_explanation",
+              project_title: "Skill Evidence Tracker",
+              mapped_skill: null,
+              claim_type: "project_architecture",
+              answer_purpose: "unknown_or_generic",
+              evidence_role: "insufficient_or_generic",
+              qualitative_status: "Withheld for privacy",
+              safe_answer_summary: "Defense answer details are withheld because this session is not public-safe.",
+              evidence_basis_chips: [],
+              timestamp_label: null,
+              clip_start_seconds: null,
+              clip_end_seconds: null,
+              clip_available: false,
+              corroborates_github: false,
+              corroborates_website: false,
+              corroborates_document: false,
+              corroboration_summary: "",
+              what_this_demonstrates: "",
+              limitation: "Project Defense is explanation evidence.",
+              public_safe: false,
+              withheld_reason: "Defense answer details are withheld because this session is not public-safe.",
+              ...cardOverrides,
+            },
+          ],
+        },
+      ],
+    })
+  }
+
+  it("renders a withheld placeholder for a not-public-safe defense card", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(withInspection())
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.getByTestId("public-passport-project-defense-inspection")).toBeInTheDocument()
+    expect(screen.getByTestId("pdi-withheld")).toHaveTextContent("withheld because this session is not public-safe")
+    // No answer text / question / timestamp exposed in the withheld state.
+    expect(screen.queryByTestId("pdi-question")).toBeNull()
+    expect(screen.queryByTestId("pdi-answer-summary")).toBeNull()
+    expect(screen.queryByTestId("pdi-timestamp")).toBeNull()
+  })
+
+  it("never exposes raw transcript, segments, or internal ids on the public passport", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(withInspection())
+    const { container } = render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+    const html = container.innerHTML
+    for (const unsafe of ["transcript", "transcript_segments", "question_id", "storage_path", "signed_url", "vbr/sessions", "evidence_id_safe"]) {
+      expect(html).not.toContain(unsafe)
+    }
+  })
+
+  it("a public-safe card fails closed: no recording link and no verbatim excerpt", async () => {
+    // The backend public projection sends the playback URL and the verbatim
+    // excerpt as null even on a public-safe card — the recruiter sees only the
+    // derived summary + the "private" notes.
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      withInspection({
+        question_text: "How does your model make predictions?",
+        mapped_skill: "Python",
+        qualitative_status: "Explained with evidence",
+        safe_answer_summary: "The candidate explained this Python claim.",
+        public_safe: true,
+        withheld_reason: null,
+        video_available: false,
+        video_playback_url: null,
+        clip_playback_url: null,
+        transcript_excerpt_available: false,
+        safe_transcript_excerpt: null,
+        transcript_access_note: "Defense recording and transcript are private. Recruiters see only verified summary and timestamp labels.",
+        recording_access_note: "Defense recording and transcript are private. Recruiters see only verified summary and timestamp labels.",
+      }),
+    )
+    const { container } = render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    // No <video> element and no verbatim transcript excerpt on the recruiter view.
+    expect(screen.queryByTestId("pdi-video")).toBeNull()
+    expect(screen.queryByTestId("pdi-transcript-excerpt")).toBeNull()
+    // Both fall back to the fixed "private" note.
+    expect(screen.getByTestId("pdi-recording-note")).toHaveTextContent(/private/i)
+    expect(screen.getByTestId("pdi-transcript-note")).toHaveTextContent(/private/i)
+    // No storage path / signed URL / segments leak.
+    const html = container.innerHTML
+    for (const unsafe of ["transcript_segments", "storage_path", "signed_url", "vbr/sessions"]) {
+      expect(html).not.toContain(unsafe)
+    }
+  })
+
+  it("shows nothing extra when a featured project has no inspection cards", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+    expect(screen.queryByTestId("public-passport-project-defense-inspection")).toBeNull()
+  })
+})

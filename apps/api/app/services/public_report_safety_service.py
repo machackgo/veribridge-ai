@@ -113,8 +113,10 @@ __all__ = [
     "defense_privacy_is_clean",
     "public_safe_defense_analysis",
     "public_safe_defense_answer_evidence",
+    "public_safe_project_defense_inspection",
     "DEFENSE_PRIVACY_HIDDEN_MESSAGE",
     "DEFENSE_ANSWER_WITHHELD_MESSAGE",
+    "DEFENSE_INSPECTION_WITHHELD_MESSAGE",
 ]
 
 _TEXT_LIMIT = 400
@@ -1629,6 +1631,236 @@ def public_safe_defense_answer_evidence(
                 "corroborates_document": corroborates_document,
                 "limitation": scrub_public_text(item.get("limitation")),
                 "privacy_status": "clean",
+            }
+        )
+    return out
+
+
+# ── Project Defense inspection cards (recruiter inspection layer) ─────────────
+#
+# The inspection cards (``project_defense_inspection_service``) are an
+# enrichment of the answer evidence above: same fail-closed gate, plus a safe
+# clip locator and derived "what this demonstrates" / corroboration wording. The
+# public projection re-derives all free text from the fixed taxonomy + flags
+# (never the candidate's answer), drops the clip locator on a withheld card, and
+# carries no internal ids or raw status strings.
+
+DEFENSE_INSPECTION_WITHHELD_MESSAGE = (
+    "Defense answer details are withheld because this session is not "
+    "public-safe."
+)
+
+# Fixed public note for the recording/transcript access fields (mirrors the
+# inspection service's ``DEFENSE_PRIVATE_WITHHELD_NOTE``). Recruiters never
+# receive a private recording link or the raw transcript.
+_DEFENSE_PRIVATE_WITHHELD_NOTE = (
+    "Defense recording and transcript are private. Recruiters see only verified "
+    "summary and timestamp labels."
+)
+
+
+# Fixed closing limitation (mirrors the inspection builder). Safe to echo.
+_INSPECTION_LIMITATION = (
+    "Project Defense is explanation evidence. It should be read with GitHub "
+    "Proof for implementation, Website Proof for runtime behavior, and Document "
+    "Proof for written project evidence."
+)
+
+_ALLOWED_ANSWER_PURPOSES = _ALLOWED_QUESTION_KINDS
+
+
+def _withheld_inspection_card(item: dict[str, Any], index: int) -> dict[str, Any]:
+    """Fixed, neutral public inspection card for a not-public-safe answer.
+
+    Keeps only the deterministic question kind (from the generated question's
+    ``target_ref`` — never answer-derived). Everything answer-derived, the clip
+    locator, and corroboration flags are dropped; free text is the fixed
+    withheld message.
+    """
+    kind = str(item.get("question_kind") or "")
+    return {
+        "evidence_id_safe": f"defense-inspection-{index}",
+        "question_text": None,
+        "question_kind": kind if kind in _ALLOWED_QUESTION_KINDS else "unknown_or_generic",
+        "project_title": scrub_public_text(item.get("project_title")),
+        "mapped_skill": None,
+        "claim_type": "project_architecture",
+        "answer_purpose": "unknown_or_generic",
+        "evidence_role": "insufficient_or_generic",
+        "qualitative_status": _ANSWER_WITHHELD_STATUS,
+        "safe_answer_summary": DEFENSE_INSPECTION_WITHHELD_MESSAGE,
+        "evidence_basis_chips": [],
+        "timestamp_label": None,
+        "clip_start_seconds": None,
+        "clip_end_seconds": None,
+        "clip_available": False,
+        "corroborates_github": False,
+        "corroborates_website": False,
+        "corroborates_document": False,
+        "corroboration_summary": "",
+        "what_this_demonstrates": "",
+        "limitation": _INSPECTION_LIMITATION,
+        "public_safe": False,
+        "withheld_reason": DEFENSE_INSPECTION_WITHHELD_MESSAGE,
+        # Fail-closed playable-evidence fields: no recording link, no transcript.
+        "video_available": False,
+        "video_playback_url": None,
+        "clip_playback_url": None,
+        "transcript_excerpt_available": False,
+        "safe_transcript_excerpt": None,
+        "transcript_excerpt_start_label": None,
+        "transcript_excerpt_end_label": None,
+        "transcript_access_note": _DEFENSE_PRIVATE_WITHHELD_NOTE,
+        "recording_access_note": _DEFENSE_PRIVATE_WITHHELD_NOTE,
+        "is_private_owner_view": False,
+        "is_public_share_safe": False,
+    }
+
+
+def public_safe_project_defense_inspection(
+    items: Any, analysis: Any
+) -> list[dict[str, Any]]:
+    """Project Defense inspection cards → recruiter-safe cards, fail-closed.
+
+    ``items`` is the owner ``project_defense_inspection`` list built by
+    :func:`project_defense_inspection_service.build_project_defense_inspection_cards`;
+    ``analysis`` is the raw defense analysis whose privacy scan gates the whole
+    session. A card is published with content ONLY when the session analysis is
+    explicitly clean (:func:`defense_privacy_is_clean`) AND the card itself is
+    ``public_safe``. Everything else becomes a fixed withheld card that carries
+    no answer-derived text, no clip locator, no corroboration flags, and no
+    internal ids.
+
+    The published ``safe_answer_summary`` is re-derived from the fixed taxonomy
+    + corroboration flags (never the candidate's answer text). Enum-ish fields
+    are allowlisted; the clip locator keeps only a label + numeric seconds.
+    """
+    if not isinstance(items, list) or not items:
+        return []
+
+    session_clean = defense_privacy_is_clean(analysis)
+
+    out: list[dict[str, Any]] = []
+    for index, item in enumerate(items[:_MAX_PUBLIC_ANSWER_EVIDENCE], start=1):
+        if not isinstance(item, dict):
+            continue
+        shareable = session_clean and bool(item.get("public_safe"))
+        if not shareable:
+            out.append(_withheld_inspection_card(item, index))
+            continue
+
+        mapped_skill = _scrub_text_or_none(item.get("mapped_skill"))
+        question_kind = _safe_vocab(
+            item.get("question_kind"), _ALLOWED_QUESTION_KINDS, "unknown_or_generic"
+        )
+        qualitative_status = _safe_vocab(
+            item.get("qualitative_status"), _ALLOWED_ANSWER_STATUSES, "Not explained"
+        )
+        corroborates_github = bool(item.get("corroborates_github"))
+        corroborates_website = bool(item.get("corroborates_website"))
+        corroborates_document = bool(item.get("corroborates_document"))
+
+        # Re-derive the taxonomy free text from the fixed vocabulary + flags
+        # rather than trusting the owner card's strings (defence in depth: an
+        # attacker-shaped owner value can never carry unsafe text through here).
+        from app.services.project_defense_inspection_service import (
+            _corroboration_summary as _derive_corroboration_summary,
+        )
+        from app.services.project_defense_inspection_service import (
+            _what_this_demonstrates as _derive_what_this_demonstrates,
+        )
+
+        claim_type = _safe_vocab(
+            item.get("claim_type"), _ALLOWED_CLAIM_TYPES, "project_architecture"
+        )
+
+        # Clip locator: label + numeric seconds only (never the chip summary).
+        clip_available = bool(item.get("clip_available"))
+        timestamp_label = _scrub_text_or_none(item.get("timestamp_label")) if clip_available else None
+        clip_start = item.get("clip_start_seconds")
+        clip_end = item.get("clip_end_seconds")
+        clip_start = float(clip_start) if isinstance(clip_start, (int, float)) and clip_available else None
+        clip_end = float(clip_end) if isinstance(clip_end, (int, float)) and clip_available else None
+
+        # Playable evidence + transcript excerpt fail closed on the public
+        # recruiter surface. The recording playback URL is NEVER exposed, and the
+        # verbatim transcript excerpt (the candidate's own spoken words) is
+        # withheld even on a public-safe card — recruiters see only the DERIVED
+        # ``safe_answer_summary`` + timestamp labels, matching the same invariant
+        # the answer-evidence projection enforces (raw answer text never goes
+        # public). Transcript excerpts are an owner-only enrichment.
+        public_excerpt = None
+        transcript_excerpt_available = False
+        transcript_access_note = _DEFENSE_PRIVATE_WITHHELD_NOTE
+
+        out.append(
+            {
+                "evidence_id_safe": f"defense-inspection-{index}",
+                "question_text": _scrub_text_or_none(item.get("question_text")),
+                "question_kind": question_kind,
+                "project_title": scrub_public_text(item.get("project_title")),
+                "mapped_skill": mapped_skill,
+                "claim_type": claim_type,
+                "answer_purpose": _safe_vocab(
+                    item.get("answer_purpose"), _ALLOWED_ANSWER_PURPOSES, "unknown_or_generic"
+                ),
+                "evidence_role": _safe_vocab(
+                    item.get("evidence_role"), _ALLOWED_EVIDENCE_ROLES, "insufficient_or_generic"
+                ),
+                "qualitative_status": qualitative_status,
+                # Derived description only — never the candidate's answer text.
+                "safe_answer_summary": _public_answer_summary(
+                    question_kind,
+                    mapped_skill,
+                    qualitative_status,
+                    corroborates_github,
+                    corroborates_website,
+                    corroborates_document,
+                ),
+                "evidence_basis_chips": [
+                    chip
+                    for chip in (item.get("evidence_basis_chips") or [])
+                    if isinstance(chip, str) and chip in _ALLOWED_BASIS_CHIPS
+                ],
+                "timestamp_label": timestamp_label,
+                "clip_start_seconds": clip_start,
+                "clip_end_seconds": clip_end,
+                "clip_available": clip_available,
+                "corroborates_github": corroborates_github,
+                "corroborates_website": corroborates_website,
+                "corroborates_document": corroborates_document,
+                # Re-derived from the fixed taxonomy + flags — never the owner's
+                # (or an attacker-shaped) free text.
+                "corroboration_summary": _derive_corroboration_summary(
+                    corroborates_github, corroborates_website, corroborates_document
+                ),
+                "what_this_demonstrates": _derive_what_this_demonstrates(
+                    claim_type, mapped_skill, qualitative_status
+                ),
+                "limitation": scrub_public_text(item.get("limitation")) or _INSPECTION_LIMITATION,
+                "public_safe": True,
+                "withheld_reason": None,
+                # Fail-closed playback: no private recording link, ever. A safe
+                # transcript excerpt may appear on this public-safe card.
+                "video_available": False,
+                "video_playback_url": None,
+                "clip_playback_url": None,
+                "transcript_excerpt_available": transcript_excerpt_available,
+                "safe_transcript_excerpt": public_excerpt,
+                "transcript_excerpt_start_label": _scrub_text_or_none(
+                    item.get("transcript_excerpt_start_label")
+                )
+                if transcript_excerpt_available
+                else None,
+                "transcript_excerpt_end_label": _scrub_text_or_none(
+                    item.get("transcript_excerpt_end_label")
+                )
+                if transcript_excerpt_available
+                else None,
+                "transcript_access_note": transcript_access_note,
+                "recording_access_note": _DEFENSE_PRIVATE_WITHHELD_NOTE,
+                "is_private_owner_view": False,
+                "is_public_share_safe": True,
             }
         )
     return out

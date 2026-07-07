@@ -82,4 +82,127 @@ class PublicDefenseAnswerEvidence(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-__all__ = ["DefenseAnswerEvidenceCard", "PublicDefenseAnswerEvidence"]
+class ProjectDefenseInspectionCard(BaseModel):
+    """Owner/private recruiter-inspection card for one defended question.
+
+    A first-class inspection projection over one ``DefenseAnswerEvidenceCard``
+    that answers the recruiter's questions the same way GitHub / Website /
+    Document inspection do: *what was asked*, *what the student explained*,
+    *which skill/project claim it supports*, *what safe clip locator exists*,
+    *what corroborates it*, *what it demonstrates*, and — conservatively — *what
+    it does not prove by itself*.
+
+    Framing rule (product): Project Defense is explanation / corroboration
+    evidence. The wording never claims verified implementation, runtime
+    behavior, or authorship. Carries no ``question_id`` or any internal id — the
+    stable ``evidence_id_safe`` is the only handle. ``clip_*`` fields are a safe
+    time-range locator only; they never carry raw transcript, media paths, or
+    signed URLs.
+    """
+
+    evidence_id_safe: str
+    question_text: str = ""
+    question_kind: str = "unknown_or_generic"
+    project_title: str = ""
+    mapped_skill: str | None = None
+    claim_type: str = "project_architecture"
+    answer_purpose: str = "unknown_or_generic"
+    evidence_role: str = "insufficient_or_generic"
+    qualitative_status: str = "Not explained"
+    safe_answer_summary: str = ""
+    evidence_basis_chips: list[str] = Field(default_factory=list)
+    timestamp_label: str | None = None
+    clip_start_seconds: float | None = None
+    clip_end_seconds: float | None = None
+    clip_available: bool = False
+    corroborates_github: bool = False
+    corroborates_website: bool = False
+    corroborates_document: bool = False
+    corroboration_summary: str = ""
+    what_this_demonstrates: str = ""
+    limitation: str = ""
+    public_safe: bool = False
+    withheld_reason: str | None = None
+    # ── Playable evidence + safe transcript excerpt (private/owner enrichment) ──
+    #
+    # These let the private owner view play their own defense recording and read a
+    # bounded, sanitized transcript excerpt around the cited moment. They are safe
+    # by construction: ``*_playback_url`` is an authorized owner URL only (never a
+    # raw storage path), and ``safe_transcript_excerpt`` is a length-capped,
+    # sanitized snippet — never the full transcript or raw ``transcript_segments``.
+    # The fail-closed public projection drops the playback URLs and the excerpt
+    # unless the card is explicitly public-safe.
+    video_available: bool = False
+    video_playback_url: str | None = None
+    clip_playback_url: str | None = None
+    transcript_excerpt_available: bool = False
+    safe_transcript_excerpt: str | None = None
+    transcript_excerpt_start_label: str | None = None
+    transcript_excerpt_end_label: str | None = None
+    transcript_access_note: str = ""
+    recording_access_note: str = ""
+    is_private_owner_view: bool | None = None
+    is_public_share_safe: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+class PublicProjectDefenseInspectionCard(BaseModel):
+    """Recruiter-safe public projection of one Project Defense inspection card.
+
+    Omits every internal handle. When the session's transcript privacy review
+    did not pass — or the individual card is not shareable — the public builder
+    replaces answer-derived content with a fixed withheld placeholder, drops the
+    clip locator, and sets ``withheld_reason`` (see
+    ``public_report_safety_service.public_safe_project_defense_inspection``).
+    """
+
+    evidence_id_safe: str
+    question_text: str | None = None
+    question_kind: str = "unknown_or_generic"
+    project_title: str = ""
+    mapped_skill: str | None = None
+    claim_type: str = "project_architecture"
+    answer_purpose: str = "unknown_or_generic"
+    evidence_role: str = "insufficient_or_generic"
+    qualitative_status: str = "Not explained"
+    safe_answer_summary: str = ""
+    evidence_basis_chips: list[str] = Field(default_factory=list)
+    timestamp_label: str | None = None
+    clip_start_seconds: float | None = None
+    clip_end_seconds: float | None = None
+    clip_available: bool = False
+    corroborates_github: bool = False
+    corroborates_website: bool = False
+    corroborates_document: bool = False
+    corroboration_summary: str = ""
+    what_this_demonstrates: str = ""
+    limitation: str = ""
+    public_safe: bool = True
+    withheld_reason: str | None = None
+    # Public projection of the playable-evidence fields. Fail-closed: the playback
+    # URLs are always ``None`` here (recruiters never receive a private recording
+    # link), and the transcript excerpt is present ONLY when the card is
+    # explicitly public-safe. ``video_available`` is reported honestly so the UI
+    # can show the "recording is private" note.
+    video_available: bool = False
+    video_playback_url: str | None = None
+    clip_playback_url: str | None = None
+    transcript_excerpt_available: bool = False
+    safe_transcript_excerpt: str | None = None
+    transcript_excerpt_start_label: str | None = None
+    transcript_excerpt_end_label: str | None = None
+    transcript_access_note: str = ""
+    recording_access_note: str = ""
+    is_private_owner_view: bool | None = None
+    is_public_share_safe: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+__all__ = [
+    "DefenseAnswerEvidenceCard",
+    "PublicDefenseAnswerEvidence",
+    "ProjectDefenseInspectionCard",
+    "PublicProjectDefenseInspectionCard",
+]

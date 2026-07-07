@@ -11,7 +11,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from app.schemas.defense_answer_evidence import PublicDefenseAnswerEvidence
+from app.schemas.defense_answer_evidence import (
+    PublicDefenseAnswerEvidence,
+    PublicProjectDefenseInspectionCard,
+)
 from app.schemas.vbr_student_report import (
     VBREvidenceTrace,
     VBRReportDocumentSummary,
@@ -83,6 +86,11 @@ class PublicVBRProjectReportResponse(BaseModel):
     # Claim-level answer evidence summaries (fail-closed: withheld placeholders
     # replace answer-derived text when the transcript privacy review failed).
     defense_answer_evidence: list[PublicDefenseAnswerEvidence] = Field(default_factory=list)
+    # Recruiter-safe Project Defense inspection cards (fail-closed: not-public-safe
+    # cards become withheld placeholders with no answer text or clip locator).
+    project_defense_inspection: list[PublicProjectDefenseInspectionCard] = Field(
+        default_factory=list
+    )
     skill_evidence: list[VBRReportSkillEvidenceRow] = Field(default_factory=list)
     # Recruiter-safe claim→evidence audit trail referenced by the skill matrix.
     evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)

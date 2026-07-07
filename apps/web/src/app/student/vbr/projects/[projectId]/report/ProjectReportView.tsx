@@ -41,6 +41,7 @@ import {
 } from "../../../../../../../components/passport/shared"
 import { EvidenceTraceList } from "../../../../../../../components/passport/EvidenceTrace"
 import { VaultSkillLinkList } from "../../../../../../../components/passport/VaultProofs"
+import { ProjectDefenseInspectionSection } from "../../../../../../../components/passport/ProjectDefenseInspectionCard"
 
 // Keeps an in-page anchor target clear of the sticky top chrome when the jump
 // nav or a skill-matrix link scrolls to it.
@@ -785,6 +786,22 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
               <p style={{ fontSize: 12, color: TOKEN.muted, margin: "4px 0 0" }}>Video defense not recorded yet.</p>
             )}
           </div>
+
+          {/* First-class Project Defense inspection — per-question explanation /
+              corroboration evidence. Never framed as implementation proof. */}
+          {(report.project_defense_inspection?.length ?? 0) > 0 && (
+            <div>
+              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
+                Project Defense Inspection
+              </Mono>
+              <div style={{ marginTop: 6 }}>
+                <ProjectDefenseInspectionSection
+                  cards={report.project_defense_inspection}
+                  testId="report-project-defense-inspection"
+                />
+              </div>
+            </div>
+          )}
         </div>
       </Card>
 
