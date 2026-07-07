@@ -74,6 +74,12 @@ class PassportSkillProjectRef(BaseModel):
     # This project's qualitative status FOR THIS SKILL (not the cross-project best).
     skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
+    # The proof types that support THIS skill in THIS project only — a closed,
+    # skill-specific subset (GitHub / Website / Document / Project Defense /
+    # Video). Distinct from ``evidence_sources``, which is the whole project's
+    # source union; a proof type appears here only when the evidence mapping
+    # recorded it as supporting this exact skill (fails closed).
+    supporting_proof_types: list[str] = Field(default_factory=list)
     report_is_public: bool = False
     public_report_path: str | None = None
     # The proof-native trace cards this project contributes for this skill.
@@ -95,6 +101,8 @@ class PassportStrongestProjectLink(BaseModel):
     # This project's qualitative label FOR THIS SKILL (never a numeric score).
     skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
+    # Skill-specific proof-type breakdown for this project (see PassportSkillProjectRef).
+    supporting_proof_types: list[str] = Field(default_factory=list)
     report_is_public: bool = False
     public_report_path: str | None = None
     project_id: str | None = None
@@ -123,6 +131,11 @@ class PassportSkillSummary(BaseModel):
     strongest_project_status: str | None = None
     # The same strongest project as a linkable reference (owner-only routes).
     strongest_project: PassportStrongestProjectLink | None = None
+    # Proof-type sources that exist for this skill in the student's Proof Vault
+    # but are NOT attached to any project (vault-only / standalone evidence).
+    # Kept SEPARATE from ``projects`` so vault-only proof is never counted as
+    # project evidence — closed, canonical proof-type labels only. Owner-only.
+    vault_only_sources: list[str] = Field(default_factory=list)
     notes: str = ""
     limitations: list[str] = Field(default_factory=list)
 
@@ -136,6 +149,8 @@ class PublicPassportStrongestProject(BaseModel):
     project_title: str = ""
     skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
+    # Skill-specific proof-type breakdown for this published project.
+    supporting_proof_types: list[str] = Field(default_factory=list)
     public_report_path: str
 
     model_config = {"extra": "forbid"}
@@ -148,6 +163,9 @@ class PublicPassportSkillProjectRef(BaseModel):
     # Per-project qualitative status for this skill (label only).
     skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
+    # Proof types supporting this skill in this published project only (closed
+    # label set; a proof type appears only where the mapping recorded it).
+    supporting_proof_types: list[str] = Field(default_factory=list)
     public_report_path: str
     # Per-project trace cards (published, recruiter-safe) for this skill.
     evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
@@ -310,6 +328,10 @@ class PassportProjectTopSkill(BaseModel):
     status: str = "Not assessed"
     skill_slug: str | None = None
     skill_report_path: str | None = None
+    # The proof types supporting THIS skill in THIS project (closed, skill-specific
+    # label set) — lets the project card show a per-skill proof breakdown without
+    # implying any proof type the evidence mapping did not record for this skill.
+    supporting_proof_types: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -321,6 +343,8 @@ class PublicPassportProjectTopSkill(BaseModel):
     skill: str
     status: str = "Not assessed"
     skill_slug: str | None = None
+    # Skill-specific proof-type breakdown for this published project (safe labels).
+    supporting_proof_types: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 

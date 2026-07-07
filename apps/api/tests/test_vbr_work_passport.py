@@ -245,6 +245,113 @@ def test_private_skill_drilldown_has_safe_detail(client: TestClient, mem_store: 
         assert set(chip.keys()) == {"label", "short_summary", "source"}
 
 
+_KNOWN_PROOF_TYPES = {
+    "GitHub Proof",
+    "Website Proof",
+    "Document Proof",
+    "Project Defense",
+    "Video Evidence",
+}
+
+
+def _norm_skill(name: str) -> str:
+    return str(name or "").strip().lower()
+
+
+def test_skill_project_ref_proof_types_are_skill_and_project_specific(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Each skill→project ref must carry the proof types that support THAT skill
+    in THAT project — the closed, fail-closed breakdown from the report row's
+    ``supporting_sources`` — never the project-wide source union blindly."""
+    project_id = _make_full_project(client, mem_store)
+    body = _get_private(client).json()
+
+    # The project report's per-skill supporting_sources are the source of truth.
+    report = client.get(f"/api/v1/student/vbr/projects/{project_id}/report").json()
+    report_sources_by_skill = {
+        _norm_skill(row["skill"]): set(row.get("supporting_sources") or [])
+        for row in report["skill_evidence"]
+    }
+
+    saw_ref = False
+    saw_strict_subset = False
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            saw_ref = True
+            assert "supporting_proof_types" in ref
+            spt = set(ref["supporting_proof_types"])
+            # 1. Closed vocabulary only — never an invented proof type.
+            assert spt <= _KNOWN_PROOF_TYPES
+            # 2. A proof type is never claimed unless the project actually has it.
+            assert spt <= set(ref["evidence_sources"])
+            # 3. It equals the report's SKILL-SPECIFIC breakdown for this skill,
+            #    proving it is not the project-wide union.
+            expected = report_sources_by_skill.get(_norm_skill(skill["skill"]), set())
+            assert spt == expected
+            # 4. Vault-only / unattached proof never appears as project support:
+            #    every listed type is one the attached report row recorded.
+            if spt < set(ref["evidence_sources"]):
+                saw_strict_subset = True
+
+    assert saw_ref, "expected at least one skill→project ref to check"
+    # At least one skill is NOT supported by every proof type the project carries,
+    # proving the breakdown is skill-specific rather than a blind project dump.
+    assert saw_strict_subset
+
+
+def test_skill_project_ref_website_proof_only_when_website_supports_skill(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Website Proof appears on a skill→project ref only when the website
+    evidence actually supported THAT skill — never dumped onto every skill just
+    because the project has a Website Proof attached."""
+    project_id = _make_full_project(client, mem_store)
+    body = _get_private(client).json()
+    report = client.get(f"/api/v1/student/vbr/projects/{project_id}/report").json()
+
+    website_skills = {
+        _norm_skill(row["skill"])
+        for row in report["skill_evidence"]
+        if "Website Proof" in (row.get("supporting_sources") or [])
+    }
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            has_website = "Website Proof" in ref["supporting_proof_types"]
+            assert has_website == (_norm_skill(skill["skill"]) in website_skills)
+
+
+def test_skill_vault_only_sources_are_separate_from_project_evidence(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A skill's ``vault_only_sources`` lists proof types that exist for it in
+    the vault but are NOT attached to any project — kept strictly separate from
+    the project-attached ``supporting_proof_types`` so vault-only proof is never
+    counted as project evidence."""
+    _make_full_project(client, mem_store)
+    # An EXTRA Document Proof for Python that is NEVER attached to the project —
+    # it stays vault-only (standalone) evidence.
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Python", "confidence": "high", "snippet": "standalone notes", "page_number": 5},
+        ],
+    )
+    body = _get_private(client).json()
+    by_skill = {_norm_skill(s["skill"]): s for s in body["skills"]}
+
+    python = by_skill.get("python")
+    assert python is not None, "expected a Python skill on the passport"
+    assert "vault_only_sources" in python
+    # The unattached Document Proof for Python shows up as vault-only evidence …
+    assert "Document Proof" in python["vault_only_sources"]
+    # … using the closed proof-type vocabulary only (never a Skill Graph pipeline).
+    assert set(python["vault_only_sources"]) <= _KNOWN_PROOF_TYPES
+    # Every skill carries the field, and no vault-only chip is ever an invented type.
+    for skill in body["skills"]:
+        assert set(skill.get("vault_only_sources") or []) <= _KNOWN_PROOF_TYPES
+
+
 def test_public_skill_drilldown_excludes_private_and_unpublished(client: TestClient, mem_store: dict) -> None:
     published = _make_full_project(client, mem_store)
     # A second project with NO published report — its evidence must not surface.
@@ -677,8 +784,15 @@ def test_private_project_cards_include_top_skills(client: TestClient, mem_store:
     assert proj["top_skills"], "expected evidence-backed top skills on the project card"
     assert len(proj["top_skills"]) <= 5
     for row in proj["top_skills"]:
-        assert set(row.keys()) == {"skill", "status", "skill_slug", "skill_report_path"}
+        assert set(row.keys()) == {
+            "skill",
+            "status",
+            "skill_slug",
+            "skill_report_path",
+            "supporting_proof_types",
+        }
         assert row["status"] in _QUALITATIVE_LABELS
+        assert set(row["supporting_proof_types"]) <= _KNOWN_PROOF_TYPES
 
 
 def test_private_skill_cards_carry_strongest_project(client: TestClient, mem_store: dict) -> None:
@@ -943,8 +1057,10 @@ def test_public_skill_strongest_project_is_safe_and_published_only(
             "project_title",
             "skill_status",
             "evidence_sources",
+            "supporting_proof_types",
             "public_report_path",
         }
+        assert set(link["supporting_proof_types"]) <= _KNOWN_PROOF_TYPES
         assert link["public_report_path"].startswith("/vbr/report/")
         assert project_id not in str(link)
 
@@ -979,9 +1095,11 @@ def test_public_featured_projects_carry_safe_skill_chips_and_note(
 
     assert proj["top_skills"]
     for row in proj["top_skills"]:
-        # Skill + qualitative label + stable slug only — no private route.
-        assert set(row.keys()) == {"skill", "status", "skill_slug"}
+        # Skill + qualitative label + stable slug + safe proof-type breakdown
+        # only — no private route, no score, no proof type outside the closed set.
+        assert set(row.keys()) == {"skill", "status", "skill_slug", "supporting_proof_types"}
         assert row["skill_slug"]
+        assert set(row["supporting_proof_types"]) <= _KNOWN_PROOF_TYPES
     note = proj["evidence_relationship_note"]
     # Defense-explained skills are conservative ("partially demonstrates") —
     # the public note must never promote explanation evidence to a full claim.
