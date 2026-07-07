@@ -463,6 +463,76 @@ def test_card_carries_purpose_relevance_chips_and_limitation() -> None:
     assert item.website_evidence_card is not None
 
 
+def test_card_public_live_url_is_directly_verifiable_live() -> None:
+    # A safe public open URL → the recruiter can open the current site, so the
+    # card is marked directly-verifiable-live and no deployment is recommended.
+    card = build_website_evidence_card(
+        purpose_key="prediction_result_display",
+        relevance_key="ml_product_context",
+        skill="Machine Learning",
+        open_website_url="https://demo.example.com",
+    )
+    assert card["verification_mode"] == "directly_verifiable_live"
+    assert card["verification_mode_label"] == "Directly verifiable live"
+    assert card["deployment_recommended"] is False
+    assert "recruiter can open" in card["verification_note"].lower()
+
+
+def test_card_reachable_live_check_is_directly_verifiable_live() -> None:
+    # No attached open URL, but a reachable live-check final URL that is public
+    # → still directly verifiable live.
+    card = build_website_evidence_card(
+        purpose_key="dashboard_view",
+        relevance_key="direct_frontend_evidence",
+        skill="React",
+        live_check={"is_reachable": True, "final_url": "https://app.example.com/dash"},
+    )
+    assert card["verification_mode"] == "directly_verifiable_live"
+    assert card["deployment_recommended"] is False
+
+
+def test_card_localhost_is_recorded_replay_only_never_live() -> None:
+    # A localhost target never survives the safe-URL gate → recorded replay only,
+    # deployment recommended, and the local/non-public copy is used.
+    card = build_website_evidence_card(
+        purpose_key="prediction_result_display",
+        relevance_key="ml_product_context",
+        skill="Machine Learning",
+        open_website_url="http://localhost:3000",
+        live_check={"is_reachable": True, "final_url": "http://127.0.0.1:8000/predict"},
+    )
+    assert card["open_website_url"] is None
+    assert card["verification_mode"] == "recorded_replay_only"
+    assert card["verification_mode_label"] == "Recorded replay only"
+    assert card["deployment_recommended"] is True
+    assert "local or non-public" in card["verification_note"].lower()
+
+
+def test_card_no_url_is_recorded_replay_only() -> None:
+    card = build_website_evidence_card(
+        purpose_key="interactive_form_flow",
+        relevance_key="direct_frontend_evidence",
+        skill="React",
+    )
+    assert card["verification_mode"] == "recorded_replay_only"
+    assert card["deployment_recommended"] is True
+
+
+def test_card_verification_fields_round_trip_through_schema() -> None:
+    card = build_website_evidence_card(
+        purpose_key="dashboard_view",
+        relevance_key="direct_frontend_evidence",
+        skill="React",
+        open_website_url="https://demo.example.com",
+    )
+    item = SkillReportEvidenceItem(
+        proof_type="Website Proof", source_id="s1", website_evidence_card=card
+    )
+    assert item.website_evidence_card is not None
+    assert item.website_evidence_card.verification_mode == "directly_verifiable_live"
+    assert item.website_evidence_card.deployment_recommended is False
+
+
 def test_card_screenshot_is_permission_gated_never_a_url() -> None:
     with_frames = build_website_evidence_card(
         purpose_key="dashboard_view",

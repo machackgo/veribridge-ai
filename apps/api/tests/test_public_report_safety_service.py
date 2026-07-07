@@ -240,6 +240,51 @@ def test_public_safe_evidence_artifact_strips_source_id_metadata_and_scrubs() ->
     assert contains_unsafe_fields(out) is False
 
 
+def test_public_safe_website_artifact_marks_verification_mode() -> None:
+    # Public website evidence with a safe public URL → directly-verifiable-live,
+    # closed recruiter copy, no deployment recommendation. Verification is
+    # DERIVED from the revalidated public_url, never echoed from the payload.
+    live = public_safe_evidence_artifact(
+        {
+            "evidence_id": "ev_website_abcdef123456",
+            "source_type": "website",
+            "source_label": "Website Proof",
+            "canonical_skill_name": "React",
+            "website_purpose_key": "dashboard_view",
+            "website_screenshot_available": True,
+            "website_screenshot_access_label": "private_candidate_permission_required",
+            "public_safe": True,
+            "public_url": "https://my-risk-demo.vercel.app/dash",
+            # Hostile echoes must be ignored — recomputed from the safe URL.
+            "website_verification_mode": "recorded_replay_only",
+            "website_verification_note": "leak me",
+        }
+    )
+    assert live["website_verification_mode"] == "directly_verifiable_live"
+    assert live["website_verification_mode_label"] == "Directly verifiable live"
+    assert live["website_deployment_recommended"] is False
+    assert "leak me" not in str(live)
+    _assert_no_leaks(live)
+    _assert_no_scores(live)
+    assert contains_unsafe_fields(live) is False
+
+    # A localhost/private URL is stripped by _safe_url → recorded replay only.
+    local = public_safe_evidence_artifact(
+        {
+            "evidence_id": "ev_website_abcdef123456",
+            "source_type": "website",
+            "canonical_skill_name": "React",
+            "website_purpose_key": "prediction_result_display",
+            "website_screenshot_available": True,
+            "public_safe": True,
+            "public_url": "http://localhost:3000",
+        }
+    )
+    assert local["public_url"] is None
+    assert local["website_verification_mode"] == "recorded_replay_only"
+    assert local["website_deployment_recommended"] is True
+
+
 # ── Step 3 — linked proof chain ───────────────────────────────────────────────
 
 

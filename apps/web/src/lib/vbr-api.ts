@@ -1001,6 +1001,18 @@ export type WebsiteEvidenceCard = {
   dom_evidence_summary_safe?: string | null
   evidence_basis_chips: string[]
   limitation: string
+  /**
+   * Recruiter verification mode (GitHub-Proof-style inspection split).
+   * `"directly_verifiable_live"` when a public safe live URL is available — the
+   * recruiter can open the current site and inspect runtime behaviour; else
+   * `"recorded_replay_only"` when the proof was captured from a local/private
+   * host, so only VeriBridge's recorded replay is available. Label/note are
+   * closed recruiter copy; `deployment_recommended` flags the replay-only case.
+   */
+  verification_mode?: string | null
+  verification_mode_label?: string | null
+  verification_note?: string | null
+  deployment_recommended?: boolean
   open_website_url?: string | null
   screenshot_available: boolean
   /** "private_candidate_permission_required" | "unavailable" (closed enum). */

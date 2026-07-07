@@ -481,6 +481,11 @@ describe("Skill Report page (separate route)", () => {
       evidence_basis_chips: ["Route observed", "Visual frame", "Workflow navigation", "Output / result visible"],
       limitation:
         "Website prediction/output demonstrates product behaviour at inspection time; it does not, by itself, prove model training or ML implementation.",
+      verification_mode: "directly_verifiable_live",
+      verification_mode_label: "Directly verifiable live",
+      verification_note:
+        "A public live URL is available, so a recruiter can open the site and inspect the current runtime/product behaviour directly. The recorded evidence below shows what VeriBridge observed during the proof session.",
+      deployment_recommended: false,
       open_website_url: "https://demo.example.com",
       screenshot_available: true,
       screenshot_access_label: "private_candidate_permission_required",
@@ -542,7 +547,14 @@ describe("Skill Report page (separate route)", () => {
     )
     // The open-website link renders only the safe public URL.
     expect(screen.getByTestId("evidence-public-link")).toHaveAttribute("href", "https://demo.example.com")
-    expect(screen.getByTestId("evidence-public-link")).toHaveTextContent("Open website →")
+    expect(screen.getByTestId("evidence-public-link")).toHaveTextContent("Open live website →")
+    // GitHub-style inspection header: a public URL → directly verifiable live.
+    expect(screen.getByTestId("website-inspection-title")).toHaveTextContent("Website Proof inspection")
+    expect(screen.getByTestId("website-verification-mode")).toHaveTextContent("Directly verifiable live")
+    expect(screen.getByTestId("website-verification-mode")).toHaveAttribute("data-mode", "live")
+    expect(screen.getByTestId("website-open-live")).toBeInTheDocument()
+    // Live-verifiable proof does not nag for a deployment.
+    expect(screen.queryByTestId("website-deployment-recommended")).not.toBeInTheDocument()
     // Limitation renders via the item row.
     expect(screen.getByText(/does not, by itself, prove model training/)).toBeInTheDocument()
     // Raw hydrated payloads never render when the card is present.
@@ -550,6 +562,80 @@ describe("Skill Report page (separate route)", () => {
     expect(screen.queryByTestId("website-dom")).not.toBeInTheDocument()
     expect(screen.queryByTestId("website-visual")).not.toBeInTheDocument()
     expect(screen.queryByText(/RAW-OCR-TEXT|RAW-DOM-TEXT|RAW-VISUAL-TEXT/)).not.toBeInTheDocument()
+  })
+
+  it("marks a local-only Website Proof as recorded replay only with no open-live CTA", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              // Local/private capture — the backend already stripped the URL,
+              // so no safe open URL survives and the card is replay-only.
+              public_url: null,
+              website_evidence_card: websiteEvidenceCard({
+                verification_mode: "recorded_replay_only",
+                verification_mode_label: "Recorded replay only",
+                verification_note:
+                  "This proof was captured from a local or non-public website, so a recruiter cannot open the original runtime URL directly. VeriBridge shows a recruiter-safe replay of the recorded website behaviour instead. Deploying the site to a public URL would allow direct recruiter verification.",
+                deployment_recommended: true,
+                open_website_url: null,
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
+    expect(screen.getByTestId("website-verification-mode")).toHaveTextContent("Recorded replay only")
+    expect(screen.getByTestId("website-verification-mode")).toHaveAttribute("data-mode", "recorded")
+    expect(screen.getByTestId("website-verification-note")).toHaveTextContent(/local or non-public website/)
+    // No live URL → the recruiter cannot open localhost; no open-live CTA.
+    expect(screen.queryByTestId("website-open-live")).not.toBeInTheDocument()
+    // Deployment is recommended so a recruiter could verify directly.
+    expect(screen.getByTestId("website-deployment-recommended")).toHaveTextContent(
+      "Deployment recommended for direct recruiter verification",
+    )
+    // Frames still exist → permission-gated replay status is honest.
+    expect(screen.getByTestId("website-screenshot-status")).toHaveTextContent(
+      "available with candidate permission",
+    )
+  })
+
+  it("groups safe visual/OCR/DOM findings under a Visual and page analysis heading", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              website_evidence_card: websiteEvidenceCard({
+                visual_evidence_summary:
+                  "Visual frame analysis of the recorded session is consistent with: Prediction / result display.",
+                ocr_evidence_summary_safe:
+                  "Safe OCR summary indicates on-screen text consistent with: Prediction / result display.",
+                dom_evidence_summary_safe:
+                  "Safe DOM summary indicates page structure consistent with: Prediction / result display.",
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    const analysis = await screen.findByTestId("website-visual-page-analysis")
+    expect(analysis).toHaveTextContent("Visual and page analysis")
+    expect(screen.getByTestId("website-card-visual")).toHaveTextContent("Visual frame analysis")
+    expect(screen.getByTestId("website-card-ocr")).toHaveTextContent("on-screen text consistent with")
+    expect(screen.getByTestId("website-card-dom")).toHaveTextContent("page structure consistent with")
   })
 
   it("renders the evidence-frame link ONLY for a safe preview URL", async () => {

@@ -82,6 +82,10 @@ from app.services.website_skill_proof_focus import (
     public_screenshot_access_label,
     website_behavior_claim,
     website_corroboration_note,
+    website_verification_mode_label,
+    website_verification_mode_note,
+    VERIFICATION_MODE_LIVE,
+    VERIFICATION_MODE_RECORDED,
 )
 from app.services.proof_synthesis_agent_service import (
     PROOF_GITHUB,
@@ -740,6 +744,19 @@ def public_safe_evidence_artifact(item: dict[str, Any]) -> dict[str, Any]:
         projected["website_screenshot_access_label"] = public_screenshot_access_label(
             item.get("website_screenshot_access_label"), screenshot_available=available
         )
+        # Recruiter verification mode — DERIVED here from whether a revalidated
+        # safe public URL survived (``projected["public_url"]``); never echoed
+        # from the payload. A local/private host is stripped by ``_safe_url`` and
+        # so always projects as recorded-replay-only. Copy is closed vocabulary.
+        mode = (
+            VERIFICATION_MODE_LIVE
+            if projected.get("public_url")
+            else VERIFICATION_MODE_RECORDED
+        )
+        projected["website_verification_mode"] = mode
+        projected["website_verification_mode_label"] = website_verification_mode_label(mode)
+        projected["website_verification_note"] = website_verification_mode_note(mode)
+        projected["website_deployment_recommended"] = mode == VERIFICATION_MODE_RECORDED
         # Cross-proof corroboration: BOOLEANS only, with the public note
         # RE-DERIVED from those booleans through the closed fragments — any
         # note text in the payload is ignored, never echoed.

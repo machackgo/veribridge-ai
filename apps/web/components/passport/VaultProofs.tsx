@@ -429,13 +429,44 @@ function WebsiteEvidenceCardView({
     card.screenshot_preview_url && isSafePublicUrl(card.screenshot_preview_url)
       ? card.screenshot_preview_url
       : null
-  const hasRecruiterCheck =
-    Boolean(openUrl && isSafePublicUrl(openUrl)) || Boolean(frameUrl) || card.screenshot_available
+  // A recruiter can DIRECTLY verify only when a public, safe live URL is
+  // available (the GitHub-Proof "click through and inspect it yourself" path).
+  // A localhost/private host never survives isSafePublicUrl, so it always falls
+  // to the recorded-replay-only presentation below.
+  const canOpenLive = Boolean(openUrl && isSafePublicUrl(openUrl))
+  const isLiveVerifiable =
+    card.verification_mode === "directly_verifiable_live" || canOpenLive
+  const verificationLabel =
+    card.verification_mode_label ?? (isLiveVerifiable ? "Directly verifiable live" : "Recorded replay only")
+  const deploymentRecommended = card.deployment_recommended ?? !isLiveVerifiable
+  const hasRecruiterCheck = canOpenLive || Boolean(frameUrl) || card.screenshot_available
   return (
     <div
       data-testid="website-evidence-card"
       style={{ display: "flex", flexDirection: "column", gap: 6 }}
     >
+      {/* Inspection header — the Website counterpart of GitHub Proof's
+          "inspect the source yourself" framing: a title plus an honest
+          live-verifiable vs recorded-replay-only status. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <Mono
+          data-testid="website-inspection-title"
+          style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}
+        >
+          Website Proof inspection
+        </Mono>
+        <span data-testid="website-verification-mode" data-mode={isLiveVerifiable ? "live" : "recorded"}>
+          <Badge tone={isLiveVerifiable ? "emerald" : "amber"}>{verificationLabel}</Badge>
+        </span>
+      </div>
+      {card.verification_note && (
+        <p
+          data-testid="website-verification-note"
+          style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
+        >
+          {card.verification_note}
+        </p>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <Mono data-testid="website-card-route" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
           Website Behavior Evidence · {card.route_or_page}
@@ -486,7 +517,8 @@ function WebsiteEvidenceCardView({
         </div>
       )}
       {(card.visual_evidence_summary || card.ocr_evidence_summary_safe || card.dom_evidence_summary_safe) && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <div data-testid="website-visual-page-analysis" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span style={{ fontSize: 11, color: TOKEN.inkSoft, fontWeight: 600 }}>Visual and page analysis</span>
           {card.visual_evidence_summary && (
             <p data-testid="website-card-visual" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
               {card.visual_evidence_summary}
@@ -530,7 +562,11 @@ function WebsiteEvidenceCardView({
       {hasRecruiterCheck && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11, color: TOKEN.inkSoft, fontWeight: 600 }}>Recruiter check:</span>
-          <SafeLink url={openUrl} label="Open website →" />
+          {canOpenLive && (
+            <span data-testid="website-open-live">
+              <SafeLink url={openUrl} label="Open live website →" />
+            </span>
+          )}
           {frameUrl ? (
             <SafeLink url={frameUrl} label="View evidence frame →" />
           ) : (
@@ -541,6 +577,16 @@ function WebsiteEvidenceCardView({
             )
           )}
         </div>
+      )}
+      {/* Local/private proofs cannot be opened live — recommend a public
+          deployment so a recruiter can verify runtime behaviour directly. */}
+      {deploymentRecommended && (
+        <p
+          data-testid="website-deployment-recommended"
+          style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5, fontStyle: "italic" }}
+        >
+          Deployment recommended for direct recruiter verification.
+        </p>
       )}
     </div>
   )

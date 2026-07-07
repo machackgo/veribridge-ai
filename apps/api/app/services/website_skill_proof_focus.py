@@ -1451,7 +1451,10 @@ def build_website_evidence_card(
     # proof is recorded-replay-only and a public deployment is recommended.
     # localhost/127.0.0.1/private/preview hosts never survive the safe-URL gate,
     # so they always fall to recorded-replay-only — never linked as "live".
-    has_public_live_url = bool(open_url or live_final_url)
+    safe_live_final_url = (
+        live_final_url if (live_final_url and is_safe_public_url(live_final_url)) else None
+    )
+    has_public_live_url = bool(open_url or safe_live_final_url)
     verification_mode = (
         VERIFICATION_MODE_LIVE if has_public_live_url else VERIFICATION_MODE_RECORDED
     )

@@ -396,6 +396,16 @@ class WebsiteEvidenceCard(BaseModel):
     dom_evidence_summary_safe: str | None = None
     evidence_basis_chips: list[str] = Field(default_factory=list)
     limitation: str
+    # Recruiter verification mode (GitHub-Proof-style inspection split).
+    # "directly_verifiable_live" when a public safe live URL is available (the
+    # recruiter can open the current site); "recorded_replay_only" when the proof
+    # was captured from a local/private/preview host so only VeriBridge's recorded
+    # replay is available. ``verification_mode_label`` / ``verification_note`` are
+    # closed recruiter copy; ``deployment_recommended`` flags the replay-only case.
+    verification_mode: str = "recorded_replay_only"
+    verification_mode_label: str = "Recorded replay only"
+    verification_note: str = ""
+    deployment_recommended: bool = False
     open_website_url: str | None = None
     screenshot_available: bool = False
     # "private_candidate_permission_required" | "unavailable" (closed enum).
