@@ -30,6 +30,7 @@ from app.services.public_report_safety_service import (
     defense_privacy_is_clean,
     enforce_public_safe,
     public_safe_defense_analysis,
+    public_safe_document_inspection_card,
     public_safe_evidence_artifact,
     public_safe_linked_chain,
     public_safe_skill_name,
@@ -1759,3 +1760,109 @@ def test_public_safe_defense_analysis_is_enforce_public_safe_clean() -> None:
     # enforce_public_safe would raise if the placeholder still smelled unsafe.
     assert enforce_public_safe(projected) == projected
     assert contains_unsafe_fields(projected) is False
+
+
+# ── Document Proof inspection card (public projection) ────────────────────────
+
+
+def _private_inspection_card(**overrides) -> dict:
+    card = {
+        "title": "Final Year Project Report",
+        "source_type": "Document Proof",
+        "status": "Supporting evidence",
+        "matched_skill": "Machine Learning",
+        "project_title": "Housing Price Predictor",
+        "evidence_role": "Corroborating document",
+        "page_number": 4,
+        "section_label": "Model Architecture",
+        "citation_label": "Model Architecture",
+        "safe_snippet": "We trained a gradient-boosted model on the housing dataset.",
+        "figure_reference": "Figure 2",
+        "table_reference": None,
+        "diagram_reference": None,
+        "visual_or_table_summary": None,
+        "why_supported": "Describes the ML model workflow and dataset.",
+        "corroborates": "GitHub implementation",
+        "limitation": "Document Proof supports or corroborates the claim but does not independently prove implementation.",
+        "access_note": "Original document download is not available from this view yet.",
+        "can_download_document": False,
+        "document_download_url": None,
+        "document_open_url": None,
+        "is_public_safe": False,
+        "is_attached_to_project": True,
+    }
+    card.update(overrides)
+    return card
+
+
+def test_public_doc_inspection_strips_snippet_unless_public_safe() -> None:
+    """I. The snippet is stripped when the card is not explicitly public-safe, and
+    kept only when it is."""
+    private = public_safe_document_inspection_card(_private_inspection_card())
+    assert private["safe_snippet"] is None
+    # Safe locator + reason still survive so recruiters can still inspect.
+    assert private["page_number"] == 4
+    assert private["citation_label"] == "Model Architecture"
+    assert private["figure_reference"] == "Figure 2"
+    assert private["why_supported"]
+
+    public = public_safe_document_inspection_card(
+        _private_inspection_card(is_public_safe=True, safe_snippet="safe excerpt kept")
+    )
+    assert public["safe_snippet"] == "safe excerpt kept"
+
+
+def test_public_doc_inspection_never_exposes_raw_path_id_or_signed_url() -> None:
+    """J. Hostile raw text / path / id / signed URL smuggled into fields never
+    survive, and the projection passes the whole-payload unsafe scan."""
+    hostile = _private_inspection_card(
+        is_public_safe=True,
+        title=f"Report {_LOCAL_PATH}",
+        why_supported=f"Contains {_SIGNED_URL} and {_ACCESS_TOKEN}",
+        safe_snippet=f"leak {_STORAGE_PATH} {_UUID}",
+        matched_skill=f"Machine Learning {_PRIVATE_ID}",
+        access_note=f"see {_FILE_URI}",
+        section_label=_EMAIL,
+    )
+    projected = public_safe_document_inspection_card(hostile)
+    blob = json.dumps(projected)
+    for leak in (_LOCAL_PATH, _SIGNED_URL, _ACCESS_TOKEN, _STORAGE_PATH, _FILE_URI, _EMAIL, "token=", "eyJ"):
+        assert leak not in blob, f"unsafe fragment leaked: {leak}"
+    # No internal-id / path / raw keys are introduced by the projection.
+    for forbidden in ("source_id", "file_path", "storage_path", "signed_url", "document_id", "raw_text"):
+        assert forbidden not in projected
+    assert enforce_public_safe(projected) == projected
+
+
+def test_public_doc_inspection_disables_download_unless_safe() -> None:
+    """K. Download stays disabled unless BOTH explicit consent AND a safe URL; a
+    private/unsafe URL never produces a download button."""
+    # Consent but no URL → still disabled, private access note.
+    consent_no_url = public_safe_document_inspection_card(
+        _private_inspection_card(can_download_document=True)
+    )
+    assert consent_no_url["can_download_document"] is False
+    assert consent_no_url["document_download_url"] is None
+    assert consent_no_url["document_open_url"] is None
+    assert "private" in consent_no_url["access_note"].lower()
+
+    # Consent + an unsafe (signed/storage) URL → dropped, still disabled.
+    unsafe_url = public_safe_document_inspection_card(
+        _private_inspection_card(can_download_document=True, document_download_url=_SIGNED_URL)
+    )
+    assert unsafe_url["can_download_document"] is False
+    assert unsafe_url["document_download_url"] is None
+
+    # Consent + a genuinely safe public URL → enabled.
+    safe = public_safe_document_inspection_card(
+        _private_inspection_card(
+            can_download_document=True, document_open_url="https://example.com/shared/report.pdf"
+        )
+    )
+    assert safe["can_download_document"] is True
+    assert safe["document_open_url"] == "https://example.com/shared/report.pdf"
+
+
+def test_public_doc_inspection_none_for_non_dict() -> None:
+    assert public_safe_document_inspection_card(None) is None
+    assert public_safe_document_inspection_card("nope") is None

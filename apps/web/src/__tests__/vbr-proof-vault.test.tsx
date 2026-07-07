@@ -2883,3 +2883,173 @@ describe("PROOF_SOURCE_RELATIONSHIP — neutral, evidence-strength-safe labels",
     }
   })
 })
+
+// ── Document Proof inspection card ────────────────────────────────────────────
+
+function inspectionCard(
+  overrides: Partial<import("@/lib/vbr-api").DocumentProofInspectionCard> = {},
+): import("@/lib/vbr-api").DocumentProofInspectionCard {
+  return {
+    title: "Final Year Project Report",
+    source_type: "Document Proof",
+    status: "Supporting evidence",
+    matched_skill: "Machine Learning",
+    project_title: "Housing Price Predictor",
+    evidence_role: "Corroborating document",
+    page_number: 4,
+    section_label: "Model Architecture",
+    citation_label: "Model Architecture",
+    safe_snippet: "We trained a gradient-boosted model on the housing dataset.",
+    figure_reference: "Figure 2",
+    table_reference: null,
+    diagram_reference: null,
+    visual_or_table_summary: null,
+    why_supported: "Describes the ML model workflow and dataset used.",
+    corroborates: "GitHub implementation",
+    limitation:
+      "Document Proof supports or corroborates the skill/project claim, but it does not independently prove code implementation, runtime behavior, or authorship. GitHub Proof, Website Proof, and Project Defense provide stronger implementation/runtime evidence.",
+    access_note: "Original document download is not available from this view yet.",
+    can_download_document: false,
+    document_download_url: null,
+    document_open_url: null,
+    is_public_safe: false,
+    is_attached_to_project: true,
+    ...overrides,
+  }
+}
+
+function docCorrelation(
+  card: import("@/lib/vbr-api").DocumentProofInspectionCard | null,
+): import("@/lib/vbr-api").SkillReportDocumentCorrelation {
+  return {
+    source_id: "doc-1",
+    document_title: "Final Year Project Report",
+    page_number: 4,
+    section_label: "Model Architecture",
+    citation: "Model Architecture",
+    figure_reference: "Figure 2",
+    safe_snippet: "We trained a gradient-boosted model on the housing dataset.",
+    corroborates: "GitHub implementation",
+    correlation_confidence: "weak/standalone",
+    support_label: "Supporting evidence",
+    reason: "Describes the ML model workflow.",
+    why_supported: "Describes the ML model workflow and dataset used.",
+    full_document_available: false,
+    document_access_note: "Full document available only with candidate permission.",
+    limitation: "Document supports the claim but does not independently prove implementation.",
+    inspection_card: card,
+  }
+}
+
+function reportWithDocInspection(
+  card: import("@/lib/vbr-api").DocumentProofInspectionCard | null,
+): SkillReport {
+  return skillReport({
+    standalone_evidence: {
+      ...emptyStandalone(),
+      documents: [docCorrelation(card)],
+    },
+  })
+}
+
+describe("Document Proof inspection card", () => {
+  it("M. renders the Document Proof inspection card when present", () => {
+    render(<SkillReportView report={reportWithDocInspection(inspectionCard())} />)
+    expect(screen.getByTestId("document-inspection-card")).toBeInTheDocument()
+  })
+
+  it("N. shows title, page/section/citation locator, why_supported, and limitation", () => {
+    render(<SkillReportView report={reportWithDocInspection(inspectionCard())} />)
+    expect(screen.getByTestId("document-inspection-title")).toHaveTextContent(
+      "Final Year Project Report",
+    )
+    expect(screen.getByTestId("document-inspection-locator")).toHaveTextContent("Page 4")
+    expect(screen.getByTestId("document-inspection-locator")).toHaveTextContent("Model Architecture")
+    expect(screen.getByTestId("document-inspection-why")).toHaveTextContent(
+      "Describes the ML model workflow",
+    )
+    expect(screen.getByTestId("document-inspection-limitation")).toHaveTextContent(
+      "does not independently prove",
+    )
+  })
+
+  it("O. shows related figure/table/graph reference when provided", () => {
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          inspectionCard({ figure_reference: null, table_reference: "Table 1" }),
+        )}
+      />,
+    )
+    expect(screen.getByTestId("document-inspection-visuals")).toHaveTextContent("Table 1")
+  })
+
+  it("O. shows the no-figure/table note when none was extracted", () => {
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          inspectionCard({
+            figure_reference: null,
+            visual_or_table_summary:
+              "No skill-specific figure/table evidence was extracted from this document.",
+          }),
+        )}
+      />,
+    )
+    expect(screen.getByTestId("document-inspection-no-visual")).toHaveTextContent(
+      "No skill-specific figure/table evidence",
+    )
+  })
+
+  it("P. shows the download/open button only when can_download_document is true AND a safe URL exists", () => {
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          inspectionCard({
+            can_download_document: true,
+            document_open_url: "https://example.com/shared/report.pdf",
+          }),
+        )}
+      />,
+    )
+    expect(screen.getByTestId("document-inspection-open")).toBeInTheDocument()
+    expect(screen.queryByTestId("document-inspection-access-note")).not.toBeInTheDocument()
+  })
+
+  it("Q. shows the disabled/private access note when download is not available", () => {
+    render(<SkillReportView report={reportWithDocInspection(inspectionCard())} />)
+    expect(screen.queryByTestId("document-inspection-download")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("document-inspection-open")).not.toBeInTheDocument()
+    expect(screen.getByTestId("document-inspection-access-note")).toHaveTextContent(
+      "not available",
+    )
+  })
+
+  it("P. never renders an unsafe (signed/storage) download URL even with consent", () => {
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          inspectionCard({
+            can_download_document: true,
+            document_download_url:
+              "https://proj.supabase.co/storage/v1/object/sign/vbr/x.pdf?token=SECRET",
+          }),
+        )}
+      />,
+    )
+    expect(screen.queryByTestId("document-inspection-download")).not.toBeInTheDocument()
+    expect(screen.getByTestId("document-inspection-access-note")).toBeInTheDocument()
+  })
+
+  it("R. never renders raw text, storage path, signed URL, internal id, or provider JSON", () => {
+    const { container } = render(
+      <SkillReportView report={reportWithDocInspection(inspectionCard())} />,
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain("uploads/")
+    expect(html).not.toContain("supabase.co/storage")
+    expect(html).not.toContain("?token=")
+    expect(html).not.toContain("doc-1") // internal source_id never rendered
+    expect(html).not.toContain("raw_text")
+  })
+})

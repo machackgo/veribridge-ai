@@ -396,6 +396,15 @@ class WebsiteEvidenceCard(BaseModel):
     dom_evidence_summary_safe: str | None = None
     evidence_basis_chips: list[str] = Field(default_factory=list)
     limitation: str
+    # Recruiter verification mode (GitHub-Proof-style inspection split):
+    # "directly_verifiable_live" when a public safe live URL exists, else
+    # "recorded_replay_only" with a deployment recommendation. Label/note are
+    # closed recruiter copy — never a score. Optional for back-compat with
+    # payloads built before the verification-mode fields existed.
+    verification_mode: str | None = None
+    verification_mode_label: str | None = None
+    verification_note: str | None = None
+    deployment_recommended: bool | None = None
     open_website_url: str | None = None
     screenshot_available: bool = False
     # "private_candidate_permission_required" | "unavailable" (closed enum).
@@ -529,6 +538,64 @@ class SkillReportEvidenceItem(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class DocumentProofInspectionCard(BaseModel):
+    """Skill-specific, recruiter-facing *inspection* view of one Document Proof.
+
+    The Document-Proof analogue of the GitHub / Website "inspection" card: it shows
+    a recruiter exactly WHAT the document says (a bounded safe snippet), WHERE it
+    says it (page / section / citation / figure-table locator), and WHY that
+    supports the SELECTED skill — never a whole-document dump. It is deliberately
+    a closed set of safe fields: it NEVER carries raw document text, OCR/provider
+    JSON, storage/bucket paths, signed URLs, or internal document ids. The only
+    URLs it may carry are ``document_download_url`` / ``document_open_url``, and
+    only when :attr:`can_download_document` is true and the URL is an intentionally
+    authorized/safe link (a public projection forces both to ``None``).
+
+    ``safe_snippet`` is shown to the owner but is stripped on a public projection
+    unless :attr:`is_public_safe` is explicitly true — recruiters otherwise see
+    only the locator + why-supported, never the excerpt."""
+
+    title: str = ""
+    source_type: str | None = None
+    status: str | None = None
+    # The selected skill this card was built for, and the project it is attached to.
+    matched_skill: str | None = None
+    project_title: str | None = None
+    # "Supporting evidence" (default) / "Corroborating document" (attached chain).
+    evidence_role: str = "Supporting evidence"
+    # Safe locators (never a storage path / raw text): page, section, citation.
+    page_number: int | None = None
+    section_label: str | None = None
+    citation_label: str | None = None
+    # Bounded, skill-related excerpt only — never the raw/full document. Stripped
+    # on a public projection unless ``is_public_safe`` is explicitly true.
+    safe_snippet: str | None = None
+    # Safe figure/table/diagram REFERENCE labels (e.g. "Figure 3", "Table 1") —
+    # never the raw image/text — plus a short safe caption/summary when available.
+    figure_reference: str | None = None
+    table_reference: str | None = None
+    diagram_reference: str | None = None
+    visual_or_table_summary: str | None = None
+    # Why this document supports the selected skill (safe reason, deterministic
+    # fallback), the stronger evidence it corroborates, and the limitation copy.
+    why_supported: str = ""
+    corroborates: str | None = None
+    limitation: str = ""
+    # Safe, human download/open gating note — never a path or signed URL.
+    access_note: str = ""
+    # Download/open is gated on explicit student consent AND a safe endpoint. When
+    # no safe URL exists both URLs stay ``None`` and the UI shows a disabled state.
+    can_download_document: bool = False
+    document_download_url: str | None = None
+    document_open_url: str | None = None
+    # Whether the safe_snippet is explicitly public-safe, and whether the document
+    # is attached to a VBR project.
+    is_public_safe: bool = False
+    is_attached_to_project: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
 class SkillReportDocumentCorrelation(BaseModel):
     """A document shown as *corroboration*, connected to stronger artifact evidence.
 
@@ -563,6 +630,10 @@ class SkillReportDocumentCorrelation(BaseModel):
     full_document_available: bool = False
     document_access_note: str = ""
     limitation: str = ""
+    # Skill-specific inspection view of this document (what it says, where, and why
+    # it supports the SELECTED skill) — the recruiter-facing Document Proof
+    # inspection card. ``None`` on legacy payloads built before this field existed.
+    inspection_card: DocumentProofInspectionCard | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -1074,6 +1145,7 @@ __all__ = [
     "VaultSkillSummary",
     "SkillReportEvidenceItem",
     "SkillReportProjectUsage",
+    "DocumentProofInspectionCard",
     "SkillReportDocumentCorrelation",
     "SkillProofSynthesisStatement",
     "SkillProofSynthesisUnlinkedItem",

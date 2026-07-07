@@ -70,6 +70,89 @@ def _get_report(client: TestClient, project_id: str):
     return client.get(f"/api/v1/student/vbr/projects/{project_id}/report")
 
 
+# ── Document Proof inspection: skill-specific mapping ─────────────────────────
+
+
+def _inspection_cards(report: dict) -> list[dict]:
+    cards: list[dict] = []
+    for chain in report.get("projects") or []:
+        for corr in chain.get("document_correlations") or []:
+            if corr.get("inspection_card"):
+                cards.append(corr["inspection_card"])
+    for corr in (report.get("standalone_evidence") or {}).get("documents") or []:
+        if corr.get("inspection_card"):
+            cards.append(corr["inspection_card"])
+    return cards
+
+
+def test_document_inspection_maps_only_matched_skill(mem_store: dict, pipeline_db: dict) -> None:
+    """E. The inspection card is built for the selected skill only — a document that
+    matched two skills yields a card whose matched_skill is the report's skill."""
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "snippet": "trained a model", "page_number": 3},
+            {"skill_name": "Python", "snippet": "wrote the training loop", "page_number": 5},
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    cards = _inspection_cards(report)
+    assert cards, "an ML inspection card must exist"
+    assert all(c["matched_skill"] == "Machine Learning" for c in cards)
+    # The Python-only locator (page 5) must not appear in the ML report.
+    assert all(c["page_number"] != 5 for c in cards)
+
+
+def test_document_inspection_gives_selected_skill_specific_locator(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """F. The selected skill receives ITS skill-specific locator (its page/snippet)."""
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "snippet": "trained a model", "page_number": 3},
+            {"skill_name": "Python", "snippet": "wrote the training loop", "page_number": 5},
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _inspection_cards(report)[0]
+    assert card["page_number"] == 3
+    assert card["safe_snippet"] == "trained a model"
+
+
+def test_unrelated_skill_has_no_document_inspection_card(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """G. A skill the document never cited receives no document inspection card."""
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Machine Learning", "snippet": "trained a model", "page_number": 3}],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Rust")
+    assert _inspection_cards(report) == []
+
+
+def test_document_inspection_limitation_copy_appears(mem_store: dict, pipeline_db: dict) -> None:
+    """H. Every inspection card carries the corroboration/limitation copy."""
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Machine Learning", "snippet": "trained a model", "page_number": 3}],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _inspection_cards(report)[0]
+    assert "does not" in card["limitation"]
+    assert "independently prove" in card["limitation"]
+    assert "GitHub Proof" in card["limitation"]
+
+
 # ── Ownership ────────────────────────────────────────────────────────────────
 
 def test_report_returns_404_for_unknown_project(client: TestClient) -> None:

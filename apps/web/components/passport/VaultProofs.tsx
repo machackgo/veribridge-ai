@@ -27,6 +27,7 @@ import {
   type WebsiteEvidenceCard,
 } from "@/lib/vbr-api"
 import { Badge, Mono, TOKEN, type BadgeTone } from "./shared"
+import { DocumentProofInspectionCard } from "./DocumentProofInspectionCard"
 
 const PROOF_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
@@ -832,6 +833,16 @@ function DefenseGroupSection({ group }: { group: SkillReportDefenseGroup }) {
  * always private; only a safe citation/snippet is shown.
  */
 function DocumentCorrelationCard({ corr }: { corr: SkillReportDocumentCorrelation }) {
+  // Prefer the skill-specific Document Proof inspection card when the backend
+  // supplied one (what the document says, where, and why it supports THIS skill).
+  // Fall back to the compact inline corroboration layout for legacy payloads.
+  if (corr.inspection_card) {
+    return (
+      <div data-testid="document-correlation">
+        <DocumentProofInspectionCard card={corr.inspection_card} />
+      </div>
+    )
+  }
   return (
     <div
       data-testid="document-correlation"

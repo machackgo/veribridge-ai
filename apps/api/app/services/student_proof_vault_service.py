@@ -1732,6 +1732,178 @@ _DOC_CORROBORATION_BASE_LIMITATION = (
 _DOC_PRIVATE_NOTE = "Private document; only a safe citation is shown."
 _DOC_DOWNLOAD_GATED_NOTE = "Full document available only with candidate permission."
 
+# ── Document Proof inspection card (skill-specific recruiter view) ─────────────
+#
+# The base limitation shown on EVERY Document Proof inspection card — a document
+# corroborates a claim but never independently proves code/runtime/authorship.
+_DOC_INSPECTION_BASE_LIMITATION = (
+    "Document Proof supports or corroborates the skill/project claim, but it does not "
+    "independently prove code implementation, runtime behavior, or authorship. GitHub Proof, "
+    "Website Proof, and Project Defense provide stronger implementation/runtime evidence."
+)
+# Skill-family-specific limitation clause appended to the base for a recognized family.
+_DOC_INSPECTION_ML_LIMITATION = (
+    "This document can describe model workflow, dataset, or results, but implementation/runtime "
+    "evidence should come from GitHub, Website Proof, or Project Defense."
+)
+_DOC_INSPECTION_FRONTEND_LIMITATION = (
+    "This document can describe UI/product behavior, but runtime interaction evidence should come "
+    "from Website Proof."
+)
+_DOC_INSPECTION_CLOUD_LIMITATION = (
+    "This document can describe deployment or architecture, but direct deployment verification "
+    "requires live URL/deployment proof."
+)
+# Shown in place of an excerpt when the analyzer found no skill-specific locator.
+_DOC_INSPECTION_NO_LOCATOR = (
+    "This document is attached as supporting evidence, but no skill-specific citation was found "
+    "for {skill}."
+)
+# Shown when no figure/table/diagram evidence was extracted for the selected skill.
+_DOC_INSPECTION_NO_VISUAL = (
+    "No skill-specific figure/table evidence was extracted from this document."
+)
+# Safe download/open access notes (never a path or signed URL).
+_DOC_INSPECTION_ACCESS_AVAILABLE = "The candidate shared this document for recruiter review."
+_DOC_INSPECTION_ACCESS_UNAVAILABLE = (
+    "Original document download is not available from this view yet."
+)
+
+# Frontend / product families for a document skill (Machine Learning is detected
+# via the shared ``is_ml_skill`` helper). Substring match against the normalized
+# skill name — deliberately conservative; unknown skills fall to "general".
+_DOC_FRONTEND_TOKENS = (
+    "frontend", "front end", "front-end", "react", "vue", "angular", "svelte",
+    "ui", "ux", "css", "html", "tailwind", "web design", "user interface",
+)
+_DOC_CLOUD_TOKENS = (
+    "cloud", "mlops", "devops", "deploy", "docker", "kubernetes", "k8s", "aws",
+    "gcp", "azure", "infrastructure", "infra", "container", "terraform", "ci/cd",
+    "cicd", "serverless", "platform engineering",
+)
+
+
+def _document_skill_family(skill: str | None) -> str:
+    """Coarse family for a document's selected skill → skill-specific limitation.
+
+    ``"ml"`` / ``"frontend"`` / ``"cloud"`` / ``"general"``. Machine Learning uses
+    the shared :func:`is_ml_skill` helper; frontend/cloud are conservative token
+    matches; everything else is ``"general"`` (base limitation only).
+    """
+    if not skill:
+        return "general"
+    if is_ml_skill(skill):
+        return "ml"
+    low = _norm(skill)
+    if any(tok in low for tok in _DOC_FRONTEND_TOKENS):
+        return "frontend"
+    if any(tok in low for tok in _DOC_CLOUD_TOKENS):
+        return "cloud"
+    return "general"
+
+
+def _document_inspection_limitation(skill: str | None) -> str:
+    """Base Document-Proof limitation plus the selected skill's family clause."""
+    family = _document_skill_family(skill)
+    clause = {
+        "ml": _DOC_INSPECTION_ML_LIMITATION,
+        "frontend": _DOC_INSPECTION_FRONTEND_LIMITATION,
+        "cloud": _DOC_INSPECTION_CLOUD_LIMITATION,
+    }.get(family)
+    return f"{_DOC_INSPECTION_BASE_LIMITATION} {clause}" if clause else _DOC_INSPECTION_BASE_LIMITATION
+
+
+def _split_visual_reference(label: str | None) -> tuple[str | None, str | None, str | None]:
+    """Route one safe visual reference label to (figure, table, diagram).
+
+    ``_collect_documents`` collapses figure/table/diagram into a single safe
+    ``figure_reference`` label; here we route it to the right slot by keyword so
+    the card can show "Table 1" as a table and "Figure 2" as a figure. Only the
+    analyzer's reference label is ever used — never a raw image/text/path.
+    """
+    if not label:
+        return None, None, None
+    low = label.lower()
+    if "table" in low:
+        return None, label, None
+    if "diagram" in low or "chart" in low or "graph" in low:
+        return None, None, label
+    return label, None, None
+
+
+def _build_document_inspection_card(
+    item: dict[str, Any],
+    *,
+    skill: str | None,
+    project_title: str | None,
+    corroborates: str,
+    attached_to_project: bool,
+) -> dict[str, Any]:
+    """Build the safe, skill-specific Document Proof inspection card for one doc.
+
+    Consumes ONLY already-safe fields from the report item (title, page, section,
+    citation, bounded snippet, figure reference label, ``full_document_available``
+    consent bool, ``public_safe``). It NEVER reads or emits raw text, OCR/provider
+    JSON, storage/bucket paths, signed URLs, or internal document ids. Download
+    URLs are always ``None`` here (no safe public endpoint is minted from this
+    view); ``can_download_document`` reflects the student's explicit consent flag
+    and the UI shows a disabled state until an authorized endpoint exists.
+    """
+    page = item.get("page_number")
+    section = item.get("section_label")
+    citation = item.get("citation")
+    snippet = item.get("safe_snippet") or None
+    figure_reference, table_reference, diagram_reference = _split_visual_reference(
+        item.get("figure_reference")
+    )
+    has_visual = bool(figure_reference or table_reference or diagram_reference)
+    has_locator = bool(page is not None or section or citation or snippet or has_visual)
+
+    reason = item.get("safe_summary") or item.get("reason") or ""
+    if has_locator:
+        why_supported = (
+            reason
+            or f"This document section supports {skill or corroborates.lower()} for this claim."
+        )
+    else:
+        # No skill-specific locator — never invent one; state that plainly.
+        why_supported = _DOC_INSPECTION_NO_LOCATOR.format(skill=skill or "this skill")
+
+    can_download = bool(item.get("full_document_available"))
+    return {
+        "title": item.get("title") or "Document",
+        "source_type": PROOF_DOCUMENT,
+        "status": "Supporting evidence",
+        "matched_skill": skill,
+        "project_title": project_title,
+        "evidence_role": "Corroborating document" if attached_to_project else "Supporting evidence",
+        "page_number": page,
+        "section_label": section,
+        "citation_label": citation,
+        # Bounded excerpt only (owner view). Public projection strips this unless
+        # ``is_public_safe`` — documents are never public_safe here.
+        "safe_snippet": snippet,
+        "figure_reference": figure_reference,
+        "table_reference": table_reference,
+        "diagram_reference": diagram_reference,
+        "visual_or_table_summary": None if has_visual else _DOC_INSPECTION_NO_VISUAL,
+        "why_supported": why_supported,
+        "corroborates": corroborates or None,
+        "limitation": _document_inspection_limitation(skill),
+        "access_note": (
+            _DOC_INSPECTION_ACCESS_AVAILABLE if can_download else _DOC_INSPECTION_ACCESS_UNAVAILABLE
+        ),
+        "can_download_document": can_download,
+        # No safe public download endpoint is generated from this view — the UI
+        # shows a disabled state; any real download stays gated by its own route.
+        "document_download_url": None,
+        "document_open_url": None,
+        # Documents are never publicly linkable here, so the snippet is never
+        # marked public-safe; the public projection relies on this to strip it.
+        "is_public_safe": bool(item.get("public_safe")),
+        "is_attached_to_project": bool(attached_to_project),
+    }
+
 
 def _doc_corroborates_label(*, has_github: bool, has_website: bool, has_defense: bool) -> str:
     """What stronger evidence this document corroborates inside the chain."""
@@ -1750,6 +1922,8 @@ def _doc_correlation(
     corroborates: str,
     attached_to_project: bool,
     confidence: str | None = None,
+    skill: str | None = None,
+    project_title: str | None = None,
 ) -> dict[str, Any]:
     """One safe "Document corroboration" card (never the raw document).
 
@@ -1757,6 +1931,10 @@ def _doc_correlation(
     attachment", "title/project match", "skill-only match", or "weak/standalone"
     — so the UI can show how strongly the document is tied to the claim. A
     document is always *supporting* evidence, never primary proof of authorship.
+
+    ``skill`` (the report's selected skill) and ``project_title`` drive the
+    embedded, skill-specific :attr:`inspection_card` (what the document says,
+    where, and why it supports THIS skill).
     """
     limitations = [_DOC_CORROBORATION_BASE_LIMITATION, _DOC_PRIVATE_NOTE]
     if not attached_to_project:
@@ -1795,6 +1973,16 @@ def _doc_correlation(
         "full_document_available": full_document_available,
         "document_access_note": document_access_note,
         "limitation": " ".join(limitations),
+        # Skill-specific inspection view (what it says / where / why it supports
+        # THIS skill). Built from the same already-safe fields; strips everything
+        # else. A public projection later hides the snippet + download.
+        "inspection_card": _build_document_inspection_card(
+            item,
+            skill=skill,
+            project_title=project_title,
+            corroborates=corroborates,
+            attached_to_project=attached_to_project,
+        ),
     }
 
 
@@ -2712,6 +2900,8 @@ def collect_skill_report(
                 corroborates=corro_label,
                 attached_to_project=bool(d.get("attached_project_ids")),
                 confidence=doc_confidence.get(id(d)),
+                skill=canon,
+                project_title=titles.get(pid, "Project"),
             )
             for d in docs_here
         ]
@@ -2791,6 +2981,8 @@ def collect_skill_report(
             corroborates=standalone_corr_label,
             attached_to_project=False,
             confidence=doc_confidence.get(id(d)) or "weak/standalone",
+            skill=canon,
+            project_title=None,
         )
         for d in standalone_docs
     ]
