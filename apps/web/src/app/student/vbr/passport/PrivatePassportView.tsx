@@ -1819,6 +1819,10 @@ function VerifiedPassportCardPreview({
   const [downloadNote, setDownloadNote] = useState<string | null>(null)
   const [downloadFallback, setDownloadFallback] = useState(false)
   const [shareNote, setShareNote] = useState<string | null>(null)
+  // True when the shareable public link points at localhost/127.0.0.1 — used to
+  // warn that such links only work on this computer (client-only to avoid an
+  // SSR/hydration mismatch, since the URL derives from window.location).
+  const [isLocalhostLink, setIsLocalhostLink] = useState(false)
   const actedRef = useRef(false)
 
   // Profile photo state. `avatarUrl` is the persisted public URL (seeded from the
@@ -1868,6 +1872,14 @@ function VerifiedPassportCardPreview({
     return { ...baseModel, profileImageUrl: localPreview ?? persisted }
   }, [baseModel, avatarUrl, localPreview])
   const hasPhoto = Boolean(model.profileImageUrl)
+
+  // Flag a localhost share link (client-only) so we can warn it won't open on a
+  // recruiter's phone. Checks the actual public URL, so a configured production
+  // NEXT_PUBLIC_APP_URL correctly suppresses the note.
+  useEffect(() => {
+    const url = model.publicPassportUrl || model.cardUrl || ""
+    setIsLocalhostLink(/\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(url))
+  }, [model.publicPassportUrl, model.cardUrl])
 
   const onPickPhoto = () => {
     setPhotoError(null)
@@ -2023,9 +2035,7 @@ function VerifiedPassportCardPreview({
   //   • Download Passport Card  → an on-device PNG of the card only (never the
   //     page, never private data), so it can be saved to Photos / a portfolio.
   //   • Copy public link + open the public `/card/[slug]` display route.
-  //   • Optional "Show QR" as a dismissible modal, never on the card face.
-  // LATER (deliberately NOT faked here):
-  //   • PWA install / add-to-home-screen for an offline, wallet-style save.
+  //   • Optional "Show QR" is a dismissible modal, never on the card face.
 
   // Download the card as a PNG rebuilt from the safe model (card only, not the
   // page). On any browser limitation we surface the manual save-as fallback
@@ -2371,6 +2381,12 @@ function VerifiedPassportCardPreview({
           {shareNote && (
             <p data-testid="share-passport-note" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
               {shareNote}
+            </p>
+          )}
+          {isLocalhostLink && (
+            <p data-testid="localhost-share-note" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+              Localhost links only work on this computer. For phone testing, use the Network URL or deploy to the
+              production domain.
             </p>
           )}
 
