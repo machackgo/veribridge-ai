@@ -1281,3 +1281,69 @@ describe("ProjectReportView — skill-first evidence cards", () => {
     expect(raw).not.toMatch(/trust score/i)
   })
 })
+
+describe("ProjectReportView — Project Defense inspection", () => {
+  function inspectionReport(): VBRStudentProjectReportResponse {
+    return makeReport({
+      evidence_package: {
+        github_proof_attached: true,
+        documents_count: 0,
+        website_proofs_count: 0,
+        project_defense_completed: true,
+        video_defense_recorded: true,
+        video_evidence_chip_count: 1,
+      },
+      project_defense_inspection: [
+        {
+          evidence_id_safe: "defense-inspection-1",
+          question_text: "How does your React dashboard update state?",
+          question_kind: "skill_explanation",
+          project_title: "Skill Evidence Tracker",
+          mapped_skill: "React",
+          claim_type: "skill_understanding",
+          answer_purpose: "skill_explanation",
+          evidence_role: "candidate_explanation",
+          qualitative_status: "Explained with evidence",
+          safe_answer_summary: "I used hooks and lifted shared state up to a context provider.",
+          evidence_basis_chips: ["Targeted question", "Candidate answer", "Privacy-safe summary"],
+          timestamp_label: "Video 01:40",
+          clip_start_seconds: 100.0,
+          clip_end_seconds: 120.0,
+          clip_available: true,
+          corroborates_github: true,
+          corroborates_website: false,
+          corroborates_document: false,
+          corroboration_summary: "Corroborating defense evidence: GitHub Proof (implementation) for the same project.",
+          what_this_demonstrates: "The student explained this React claim in their own words.",
+          limitation: "Project Defense is explanation evidence.",
+          public_safe: true,
+          withheld_reason: null,
+        },
+      ],
+    })
+  }
+
+  it("renders the Project Defense inspection section with a safe card", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(inspectionReport())
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(await screen.findByTestId("report-project-defense-inspection")).toBeInTheDocument()
+    expect(screen.getByTestId("pdi-question")).toHaveTextContent("How does your React dashboard update state?")
+    expect(screen.getByTestId("pdi-answer-summary")).toHaveTextContent("hooks")
+    expect(screen.getByTestId("pdi-skill")).toHaveTextContent("React")
+    expect(screen.getByTestId("pdi-timestamp")).toHaveTextContent("Video 01:40")
+    expect(screen.getByTestId("pdi-limitation")).toHaveTextContent("explanation evidence")
+  })
+
+  it("does not leak raw transcript / ids / storage in the inspection section", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(inspectionReport())
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByTestId("report-project-defense-inspection")
+
+    const raw = document.body.textContent ?? ""
+    for (const unsafe of ["question_id", "transcript_segments", "storage_path", "signed_url", "vbr/sessions"]) {
+      expect(raw).not.toContain(unsafe)
+    }
+  })
+})

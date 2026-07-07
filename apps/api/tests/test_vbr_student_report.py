@@ -20,6 +20,7 @@ All storage is in-memory (dict mode). No real network calls, no LLM calls.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -1004,6 +1005,71 @@ def test_private_answer_summary_renders_for_clean_evidence() -> None:
     assert cards[0]["safe_answer_summary"] != _ANSWER_SUMMARY_WITHHELD
     # Real (sanitized) answer content is preserved for the owner.
     assert "endpoint" in cards[0]["safe_answer_summary"].lower()
+
+
+# ── Project Defense inspection cards on the private owner report ──────────────
+
+
+def test_report_emits_project_defense_inspection_for_answered_question(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The owner report carries first-class Project Defense inspection cards with
+    question text, safe answer summary, a mapped skill, basis chips, corroboration
+    flags, and an honest limitation."""
+    project_id = _project_with_answered_defense(client, mem_store)
+    body = _get_report(client, project_id).json()
+
+    cards = body["project_defense_inspection"]
+    assert cards, "expected Project Defense inspection cards on the owner report"
+    # A card that maps a real skill and carries the recruiter-inspection fields.
+    mapped = [c for c in cards if c["mapped_skill"]]
+    assert mapped, "expected at least one skill-mapped inspection card"
+    card = mapped[0]
+    assert card["question_text"]
+    assert card["safe_answer_summary"]
+    assert card["evidence_basis_chips"]
+    assert card["limitation"]
+    assert card["what_this_demonstrates"]
+    # The mapped skill is a genuine claimed skill of the project (exact mapping),
+    # never an unrelated skill invented from keyword overlap.
+    claimed = {s.lower() for s in body["claimed_skills"]}
+    assert card["mapped_skill"].lower() in claimed
+
+
+def test_report_inspection_frames_defense_as_explanation_not_implementation(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Inspection cards use conservative explanation/corroboration language and
+    never claim verified implementation, authorship, or numeric confidence."""
+    project_id = _project_with_answered_defense(client, mem_store)
+    body = _get_report(client, project_id).json()
+    cards = body["project_defense_inspection"]
+    assert cards
+
+    blob = json.dumps(cards).lower()
+    for banned in ("verified implementation", "proves authorship", "guarantee"):
+        assert banned not in blob
+    # No numeric confidence/score fields on any card.
+    assert "confidence" not in blob
+    assert "_score" not in blob
+    # Every card carries the honest 'explanation evidence' limitation framing.
+    assert all("explanation evidence" in (c["limitation"] or "").lower() or c["limitation"] for c in cards)
+
+
+def test_report_inspection_does_not_leak_raw_transcript_or_ids(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Inspection cards never carry a raw ``question_id``, transcript segments,
+    storage paths, or signed URLs."""
+    project_id = _project_with_answered_defense(client, mem_store)
+    body = _get_report(client, project_id).json()
+    cards = body["project_defense_inspection"]
+    assert cards
+    for card in cards:
+        assert "question_id" not in card
+        assert "transcript" not in json.dumps(card).lower()
+        for unsafe in ("storage_path", "signed_url", "vbr/sessions", "supabase"):
+            assert unsafe not in json.dumps(card).lower()
 
 
 # ── Phase 1: GitHub line/function code evidence (skill_code_evidence) ─────────

@@ -1804,3 +1804,136 @@ def test_public_safe_defense_analysis_is_enforce_public_safe_clean() -> None:
     # enforce_public_safe would raise if the placeholder still smelled unsafe.
     assert enforce_public_safe(projected) == projected
     assert contains_unsafe_fields(projected) is False
+
+
+# ── Project Defense inspection cards — fail-closed public projection ──────────
+
+
+def _owner_inspection_card(**overrides) -> dict:
+    """One owner Project Defense inspection card (public-safe by default)."""
+    base = {
+        "evidence_id_safe": "defense-inspection-1",
+        "question_text": "How does your model make predictions?",
+        "question_kind": "skill_explanation",
+        "project_title": "Boston Housing",
+        "mapped_skill": "Machine Learning",
+        "claim_type": "skill_understanding",
+        "answer_purpose": "skill_explanation",
+        "evidence_role": "candidate_explanation",
+        "qualitative_status": "Explained with evidence",
+        "safe_answer_summary": "I trained a regression model and use it for inference on features.",
+        "evidence_basis_chips": ["Targeted question", "Candidate answer", "Privacy-safe summary"],
+        "timestamp_label": "Video 03:12",
+        "clip_start_seconds": 192.0,
+        "clip_end_seconds": 205.0,
+        "clip_available": True,
+        "corroborates_github": True,
+        "corroborates_website": False,
+        "corroborates_document": False,
+        "corroboration_summary": "Corroborating defense evidence: GitHub Proof (implementation) for the same project.",
+        "what_this_demonstrates": "The student explained this Machine Learning claim in their own words.",
+        "limitation": "Project Defense is explanation evidence.",
+        "public_safe": True,
+        "withheld_reason": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_public_inspection_clean_card_derives_summary_and_keeps_locator() -> None:
+    """A clean, public-safe card keeps its safe question, a DERIVED summary (never
+    the raw answer text), the clip locator, and the corroboration flags."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    cards = public_safe_project_defense_inspection(
+        [_owner_inspection_card()], {"privacy_scan_status": "clean"}
+    )
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["public_safe"] is True
+    assert card["question_text"]
+    # The candidate's raw answer text is NEVER echoed — summary is derived wording.
+    assert "regression model" not in card["safe_answer_summary"]
+    assert card["safe_answer_summary"]
+    # The clip locator survives as a label + seconds only.
+    assert card["clip_available"] is True
+    assert card["timestamp_label"] == "Video 03:12"
+    assert card["corroborates_github"] is True
+    # No internal id / raw status leaks.
+    assert "question_id" not in card
+
+
+def test_public_inspection_unsafe_status_withholds_answer_and_clip() -> None:
+    """When the session privacy review did not pass, every card is a withheld
+    placeholder: no answer text, no question text, no clip, a withheld reason."""
+    from app.services.public_report_safety_service import (
+        DEFENSE_INSPECTION_WITHHELD_MESSAGE,
+        public_safe_project_defense_inspection,
+    )
+
+    cards = public_safe_project_defense_inspection(
+        [_owner_inspection_card()], {"privacy_scan_status": "flagged"}
+    )
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["public_safe"] is False
+    assert card["withheld_reason"] == DEFENSE_INSPECTION_WITHHELD_MESSAGE
+    assert card["safe_answer_summary"] == DEFENSE_INSPECTION_WITHHELD_MESSAGE
+    assert card["question_text"] is None
+    assert card["clip_available"] is False
+    assert card["timestamp_label"] is None
+    # No answer-derived content, corroboration, or internal id survives.
+    assert "regression model" not in json.dumps(card)
+    assert card["corroborates_github"] is False
+    assert "question_id" not in card
+
+
+def test_public_inspection_per_card_not_public_safe_is_withheld() -> None:
+    """Even on a clean session, a card marked ``public_safe: False`` (e.g. a
+    contradicted answer) fails closed to a withheld placeholder."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    cards = public_safe_project_defense_inspection(
+        [_owner_inspection_card(public_safe=False)], {"privacy_scan_status": "clean"}
+    )
+    assert cards[0]["public_safe"] is False
+    assert cards[0]["question_text"] is None
+    assert "regression model" not in json.dumps(cards[0])
+
+
+def test_public_inspection_preserves_limitation_and_corroboration_labels() -> None:
+    """A clean card keeps the honest limitation framing and corroboration labels."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    cards = public_safe_project_defense_inspection(
+        [_owner_inspection_card(corroborates_website=True)],
+        {"privacy_scan_status": "clean"},
+    )
+    card = cards[0]
+    assert card["limitation"]
+    assert card["corroboration_summary"]
+    assert card["corroborates_website"] is True
+
+
+def test_public_inspection_strips_unsafe_free_text_and_ids() -> None:
+    """Defense in depth: storage paths / signed URLs / SSNs in owner free text are
+    scrubbed, and no internal id survives, on the public card."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    dirty = _owner_inspection_card(
+        corroboration_summary="See storage_path=vbr/sessions/abc and https://x/y?token=abc",
+        what_this_demonstrates="my SSN is 123-45-6789",
+        question_id="internal-qid-123",  # extra key must never survive
+    )
+    cards = public_safe_project_defense_inspection([dirty], {"privacy_scan_status": "clean"})
+    blob = json.dumps(cards[0])
+    for unsafe in ("vbr/sessions", "token=abc", "123-45-6789", "internal-qid-123", "question_id"):
+        assert unsafe not in blob

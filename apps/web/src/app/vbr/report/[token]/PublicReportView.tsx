@@ -21,6 +21,7 @@ import {
   type BadgeTone,
 } from "../../../../../components/passport/shared"
 import { EvidenceTraceList } from "../../../../../components/passport/EvidenceTrace"
+import { ProjectDefenseInspectionSection } from "../../../../../components/passport/ProjectDefenseInspectionCard"
 
 // Keeps an in-page anchor target clear of the sticky top chrome when a
 // skill-matrix trace link scrolls to it.
@@ -452,6 +453,20 @@ export function PublicReportView({ token }: { token: string }) {
               <p style={{ fontSize: 12, color: TOKEN.muted, margin: "4px 0 0" }}>Video defense not recorded.</p>
             )}
           </div>
+
+          {/* Recruiter-safe Project Defense inspection. Fail-closed cards render
+              a withheld placeholder when the session is not public-safe. */}
+          {(report.project_defense_inspection?.length ?? 0) > 0 && (
+            <div>
+              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Project Defense Inspection</Mono>
+              <div style={{ marginTop: 6 }}>
+                <ProjectDefenseInspectionSection
+                  cards={report.project_defense_inspection}
+                  testId="public-project-defense-inspection"
+                />
+              </div>
+            </div>
+          )}
         </div>
       </Card>
 

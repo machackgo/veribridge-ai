@@ -23,6 +23,7 @@ import {
   type BadgeTone,
 } from "../../../../components/passport/shared"
 import { EvidenceTraceList } from "../../../../components/passport/EvidenceTrace"
+import { ProjectDefenseInspectionSection } from "../../../../components/passport/ProjectDefenseInspectionCard"
 
 const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   Demonstrated: "emerald",
@@ -333,6 +334,15 @@ function FeaturedProject({
             </p>
           )}
         </div>
+        {/* Recruiter-safe Project Defense inspection, only when the public
+            passport DTO carries it. Fail-closed cards show a withheld
+            placeholder; never raw transcript, segments, or internal ids. */}
+        {(project.project_defense_inspection?.length ?? 0) > 0 && (
+          <ProjectDefenseInspectionSection
+            cards={project.project_defense_inspection}
+            testId="public-passport-project-defense-inspection"
+          />
+        )}
         <a
           data-testid="public-passport-report-link"
           href={project.public_report_path}

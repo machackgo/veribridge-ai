@@ -945,6 +945,43 @@ def _collect_defense_video(db: Any, user_id: str) -> list[dict[str, Any]]:
     return items
 
 
+def _defense_inspection_by_project(
+    db: Any, user_id: str, project_ids: list[str], titles: dict[str, str], only_skill: str
+) -> dict[str, list[dict[str, Any]]]:
+    """Owner Project Defense inspection cards per project, scoped to one skill.
+
+    Reads each project's latest verification session telemetry
+    (``defense_answer_evidence`` + safe ``video_evidence_chips``) and projects it
+    through the inspection builder, keeping only cards whose answer mapped to
+    ``only_skill`` (the Skill Report's canonical skill). Untargeted / generic
+    answers are dropped here — they never appear under a specific skill.
+    """
+    from app.services.project_defense_inspection_service import (
+        build_project_defense_inspection_cards,
+    )
+    from app.services.vbr_question_generation import get_latest_session
+
+    out: dict[str, list[dict[str, Any]]] = {}
+    for pid in project_ids:
+        if not pid:
+            continue
+        session = get_latest_session(db, pid)
+        if not session:
+            continue
+        telemetry = session.get("telemetry") if isinstance(session.get("telemetry"), dict) else {}
+        if not isinstance(telemetry, dict):
+            continue
+        cards = build_project_defense_inspection_cards(
+            answer_evidence=telemetry.get("defense_answer_evidence") or [],
+            video_chips=telemetry.get("video_evidence_chips") or [],
+            project_title=titles.get(pid, "Project"),
+            only_skill=only_skill,
+        )
+        if cards:
+            out[pid] = cards
+    return out
+
+
 def _collect_skill_pipelines(
     pipeline_db: Any, user_id: str, attach: dict[tuple[str, str], list[str]]
 ) -> list[dict[str, Any]]:
@@ -2859,10 +2896,40 @@ def collect_skill_report(
     # reads as one grouped block per repo instead of a weaker single card. The
     # flat ``github_evidence`` stays for back-compat; ``github_groups`` is the
     # primary projection the UI renders.
+    # Owner Project Defense inspection cards per project, scoped to THIS report's
+    # canonical skill — so a Machine Learning report shows only ML-mapped Q/A
+    # defense inspection, a Frontend report only frontend/UI Q/A, etc. Untargeted
+    # transcript moments are dropped by the builder and never ride onto a skill.
+    inspection_by_project = _defense_inspection_by_project(
+        db, user_id, project_ids, titles, canon
+    )
+
     for chain in projects:
         chain["defense_group"] = _group_defense_evidence(
             chain.get("defense_evidence") or [], chain.get("video_evidence") or []
         )
+        # Attach the skill-scoped Project Defense inspection cards for this chain,
+        # gathered across every grouped/collapsed project id it represents and
+        # deduped by (question, timestamp, skill).
+        chain_pids: list[str] = []
+        for key in ("grouped_project_ids", "collapsed_project_ids"):
+            chain_pids += [str(p) for p in (chain.get(key) or [])]
+        if chain.get("project_id"):
+            chain_pids.append(str(chain["project_id"]))
+        inspection_cards: list[dict[str, Any]] = []
+        seen_inspection: set[tuple[str, str, str]] = set()
+        for pid in chain_pids:
+            for card in inspection_by_project.get(pid, []):
+                key = (
+                    str(card.get("question_text") or ""),
+                    str(card.get("timestamp_label") or ""),
+                    str(card.get("mapped_skill") or ""),
+                )
+                if key in seen_inspection:
+                    continue
+                seen_inspection.add(key)
+                inspection_cards.append(card)
+        chain["project_defense_inspection"] = inspection_cards
         chain["github_groups"] = _group_github_evidence(chain.get("github_evidence") or [])
         # One safe sentence explaining how this chain's Website Proof connects to
         # its other sources ("website demonstrates the behaviour, GitHub shows the

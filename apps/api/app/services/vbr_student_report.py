@@ -33,6 +33,9 @@ from typing import Any
 from app.services.defense_answer_evidence_service import (
     MISSING_IMPLEMENTATION_EVIDENCE_LIMITATION,
 )
+from app.services.project_defense_inspection_service import (
+    build_project_defense_inspection_cards,
+)
 from app.services.github_skill_evidence_service import (
     is_strong_code_snippet as _is_strong_code_snippet,
 )
@@ -1851,6 +1854,17 @@ def build_student_vbr_report(
         telemetry.get("defense_answer_evidence")
     )
 
+    # Project Defense inspection cards (owner view) — a first-class recruiter
+    # inspection projection over the answer evidence above, parallel to GitHub /
+    # Website / Document inspection. Built from the already-safe answer objects
+    # plus the safe video evidence chips (for the timestamp/clip locator). Empty
+    # when there is no answer evidence yet.
+    project_defense_inspection = build_project_defense_inspection_cards(
+        answer_evidence=defense_answer_evidence,
+        video_chips=video_chips,
+        project_title=str(project.get("title") or ""),
+    )
+
     questions: list[dict[str, Any]] = []
     chunk_count = 0
     answer_excerpts: dict[str, str] = {}
@@ -2097,6 +2111,7 @@ def build_student_vbr_report(
         "project_defense_analysis": _report_safe_analysis(analysis),
         "defense_questions": defense_questions,
         "defense_answer_evidence": defense_answer_evidence,
+        "project_defense_inspection": project_defense_inspection,
         "video_evidence_chips": video_chips,
         "skill_evidence": skill_evidence,
         "evidence_traces": evidence_traces,

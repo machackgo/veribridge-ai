@@ -46,6 +46,43 @@ export type VideoEvidenceChip = {
   source_type: string
 }
 
+/**
+ * A Project Defense recruiter *inspection* card for one defended question — the
+ * defense parallel to GitHub / Website / Document inspection. Explanation /
+ * corroboration evidence only: it shows student understanding and communication,
+ * never standalone proof of implementation, runtime behavior, or authorship.
+ *
+ * All fields are optional / null-safe so older payloads and the fail-closed
+ * public projection (which drops answer-derived content) render cleanly. Carries
+ * no internal ids, raw transcript, media paths, or signed URLs. `clip_*` is a
+ * safe time-range locator only.
+ */
+export type ProjectDefenseInspectionCard = {
+  evidence_id_safe: string
+  question_text?: string | null
+  question_kind?: string
+  project_title?: string
+  mapped_skill?: string | null
+  claim_type?: string
+  answer_purpose?: string
+  evidence_role?: string
+  qualitative_status?: string
+  safe_answer_summary?: string
+  evidence_basis_chips?: string[]
+  timestamp_label?: string | null
+  clip_start_seconds?: number | null
+  clip_end_seconds?: number | null
+  clip_available?: boolean
+  corroborates_github?: boolean
+  corroborates_website?: boolean
+  corroborates_document?: boolean
+  corroboration_summary?: string
+  what_this_demonstrates?: string
+  limitation?: string
+  public_safe?: boolean
+  withheld_reason?: string | null
+}
+
 export type VBRSessionResponse = {
   id: string
   project_id: string
@@ -1096,6 +1133,12 @@ export type SkillReportProjectChain = {
   defense_evidence: SkillReportEvidenceItem[]
   video_evidence: SkillReportEvidenceItem[]
   /**
+   * Project Defense inspection cards for THIS chain, scoped to the report's
+   * skill (owner view). Explanation / corroboration evidence only; untargeted
+   * transcript moments never appear here. Absent on older payloads.
+   */
+  project_defense_inspection?: ProjectDefenseInspectionCard[]
+  /**
    * One safe sentence explaining how this chain's Website Proof corroborates its
    * other sources ("the website demonstrates the behaviour, GitHub code shows the
    * implementation, …"). Null when the chain has no website evidence or nothing
@@ -1465,6 +1508,12 @@ export type VBRStudentProjectReportResponse = {
   project_defense_analysis: VBRReportProjectDefenseAnalysis | null
   defense_questions: VBRReportQuestionSummary[]
   video_evidence_chips: VideoEvidenceChip[]
+  /**
+   * First-class Project Defense inspection cards (owner view) — one per
+   * defended question, parallel to GitHub / Website / Document inspection.
+   * Explanation / corroboration evidence only. Absent on older payloads.
+   */
+  project_defense_inspection?: ProjectDefenseInspectionCard[]
 
   skill_evidence: VBRReportSkillEvidenceRow[]
   evidence_traces?: EvidenceTrace[]
@@ -1635,6 +1684,13 @@ export type PublicVBRProjectReport = {
   skill_evidence: VBRReportSkillEvidenceRow[]
   evidence_traces?: EvidenceTrace[]
   video_evidence_chips: PublicVideoEvidenceChip[]
+  /**
+   * Recruiter-safe Project Defense inspection cards. Fail-closed: when the
+   * session is not public-safe each card is a withheld placeholder (no answer
+   * text, no clip locator, `public_safe: false`, `withheld_reason` set). Absent
+   * on older payloads.
+   */
+  project_defense_inspection?: ProjectDefenseInspectionCard[]
 
   limitations: string[]
 
@@ -2211,6 +2267,13 @@ export type PublicPassportProject = {
   top_skills?: PublicPassportProjectTopSkill[]
   /** Safe relationship sentence (qualitative labels only). */
   evidence_relationship_note?: string | null
+  /**
+   * Recruiter-safe Project Defense inspection cards for this featured project.
+   * Only present when the public passport DTO safely supports it; otherwise
+   * absent and nothing is shown. Fail-closed cards render a withheld
+   * placeholder — never raw transcript, segments, or internal ids.
+   */
+  project_defense_inspection?: ProjectDefenseInspectionCard[]
   public_report_path: string
   published_at: string | null
 }

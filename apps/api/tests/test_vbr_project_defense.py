@@ -992,3 +992,133 @@ def test_build_evidence_chips_sanitizes_unsafe_transcript_segment_text() -> None
     assert summary == "Python demo [redacted] [redacted]"
     for unsafe in ("storage_path", "vbr/sessions", "signed_url", "token=", "https://"):
         assert unsafe not in summary
+
+
+# ── Project Defense inspection cards (recruiter inspection layer) ─────────────
+#
+# The inspection builder is a pure projection over the answer-evidence objects,
+# adding the safe clip locator, "what this demonstrates" / corroboration wording,
+# and the ``public_safe`` gate. These tests exercise the exact-mapping and
+# safe-locator rules directly on the builder.
+
+
+def _ml_answer_objects():
+    """One ML-mapped answered question + one untargeted generic answer."""
+    from app.services.defense_answer_evidence_service import (
+        build_defense_answer_evidence,
+    )
+
+    return build_defense_answer_evidence(
+        questions=[
+            {
+                "id": "q-ml",
+                "question_text": "How does your model make predictions?",
+                "target_ref": {"kind": "skill_link", "skill": "Machine Learning"},
+                "sort_order": 0,
+            }
+        ],
+        segments=[
+            {
+                "question_id": "q-ml",
+                "text": (
+                    "I trained a regression model on the housing dataset and use it "
+                    "for inference; the prediction endpoint returns the model output "
+                    "after feature validation."
+                ),
+            },
+            # Untargeted transcript moment (no question_id) — becomes at most one
+            # generic project-level object that maps NO skill.
+            {"text": "Overall it was a really fun project and I learned a lot about deployment."},
+        ],
+        claimed_skills=["Machine Learning"],
+        attached_proofs={},
+        privacy_scan_status="clean",
+    )
+
+
+def test_inspection_untargeted_transcript_never_maps_to_a_skill() -> None:
+    from app.services.project_defense_inspection_service import (
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    cards = build_project_defense_inspection_cards(
+        answer_evidence=answers, video_chips=[], project_title="Boston"
+    )
+    # The ML-targeted answer maps ML; the untargeted moment maps no skill.
+    mapped = [c["mapped_skill"] for c in cards]
+    assert "Machine Learning" in mapped
+    generic = [c for c in cards if c["mapped_skill"] is None]
+    assert generic, "expected one generic, un-skilled project-context card"
+    # A generic answer is framed as 'not assessed', never as skill proof.
+    assert "not assessed" in generic[0]["what_this_demonstrates"].lower()
+
+
+def test_inspection_skill_scoped_view_drops_untargeted_and_other_skills() -> None:
+    from app.services.project_defense_inspection_service import (
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    # Scope to Machine Learning: only the ML-mapped Q/A survives.
+    ml_only = build_project_defense_inspection_cards(
+        answer_evidence=answers, video_chips=[], only_skill="Machine Learning"
+    )
+    assert [c["mapped_skill"] for c in ml_only] == ["Machine Learning"]
+
+    # Scope to an UNRELATED skill: nothing maps (no generic transcript leaks in).
+    frontend_only = build_project_defense_inspection_cards(
+        answer_evidence=answers, video_chips=[], only_skill="Frontend Development"
+    )
+    assert frontend_only == []
+
+
+def test_inspection_clip_locator_is_safe_and_carries_no_content() -> None:
+    from app.services.project_defense_inspection_service import (
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    chips = [
+        {
+            "label": "Video 03:12",
+            "timestamp_start_s": 192.0,
+            "timestamp_end_s": 205.0,
+            # The chip summary is answer-derived and must NEVER reach the card.
+            "short_summary": "secret spoken sentence about my model",
+            "related_skill": "Machine Learning",
+            "question_id": "q-ml",
+        }
+    ]
+    cards = build_project_defense_inspection_cards(
+        answer_evidence=answers, video_chips=chips, only_skill="Machine Learning"
+    )
+    card = cards[0]
+    assert card["clip_available"] is True
+    assert card["timestamp_label"] == "Video 03:12"
+    assert card["clip_start_seconds"] == 192.0
+    assert card["clip_end_seconds"] == 205.0
+    # The clip is a locator only — the chip's spoken summary is never copied in.
+    assert "secret spoken sentence" not in str(card)
+
+
+def test_inspection_labels_defense_as_explanation_not_implementation() -> None:
+    from app.services.project_defense_inspection_service import (
+        PROJECT_DEFENSE_INSPECTION_LIMITATION,
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    cards = build_project_defense_inspection_cards(
+        answer_evidence=answers, video_chips=[], only_skill="Machine Learning"
+    )
+    card = cards[0]
+    # Conservative framing: explanation / understanding, never verified impl.
+    demo = card["what_this_demonstrates"].lower()
+    assert "explained" in demo
+    for banned in ("verified implementation", "proves authorship", "guarantee"):
+        assert banned not in demo
+    # A GitHub-less skill answer stays honest about the missing artifact evidence.
+    assert card["limitation"]
+    # No numeric confidence anywhere on the card.
+    assert "confidence" not in str(card).lower()

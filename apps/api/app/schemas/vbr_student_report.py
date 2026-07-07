@@ -19,7 +19,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.defense_answer_evidence import DefenseAnswerEvidenceCard
+from app.schemas.defense_answer_evidence import (
+    DefenseAnswerEvidenceCard,
+    ProjectDefenseInspectionCard,
+)
 from app.schemas.vbr_sessions import VideoEvidenceChipResponse
 
 
@@ -698,6 +701,10 @@ class SkillReportProjectChain(BaseModel):
     # chain never renders many repeated "the candidate explained their work"
     # cards. ``None`` when the chain has no defense/video evidence.
     defense_group: SkillReportDefenseGroup | None = None
+    # First-class Project Defense inspection cards for THIS chain, scoped to the
+    # report's skill (owner view). Explanation / corroboration evidence only;
+    # untargeted transcript moments never appear here.
+    project_defense_inspection: list[ProjectDefenseInspectionCard] = Field(default_factory=list)
     # One safe sentence explaining how this chain's Website Proof corroborates
     # its other sources ("the website demonstrates the product behaviour, GitHub
     # code shows the implementation, the Project Defense shows the candidate's
@@ -1037,6 +1044,9 @@ class VBRStudentProjectReportResponse(BaseModel):
     defense_questions: list[VBRReportQuestionSummary] = Field(default_factory=list)
     # Claim-level, question-grounded Defense Answer Evidence cards (owner view).
     defense_answer_evidence: list[DefenseAnswerEvidenceCard] = Field(default_factory=list)
+    # First-class Project Defense inspection cards (owner view) — the defense
+    # parallel to GitHub / Website / Document inspection.
+    project_defense_inspection: list[ProjectDefenseInspectionCard] = Field(default_factory=list)
     video_evidence_chips: list[VideoEvidenceChipResponse] = Field(default_factory=list)
 
     skill_evidence: list[VBRReportSkillEvidenceRow] = Field(default_factory=list)

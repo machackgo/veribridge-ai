@@ -883,6 +883,119 @@ describe("SkillReportView — connected proof chains & document corroboration", 
   })
 })
 
+// ── Project Defense inspection cards inside a proof chain ──────────────────────
+
+describe("SkillReportView — Project Defense inspection", () => {
+  function inspectionChainReport(inspectionOverrides = {}): SkillReport {
+    return skillReport({
+      github: [],
+      standalone_evidence: emptyStandalone(),
+      projects: [
+        {
+          project_id: "proj-1",
+          project_title: "Boston Housing",
+          attached: true,
+          attached_status: "Attached to a VBR project",
+          sources: ["Project Defense"],
+          evidence_chain_summary: "Python is supported by the candidate's own defense explanation.",
+          github_evidence: [],
+          website_evidence: [],
+          document_correlations: [],
+          document_more_count: 0,
+          defense_evidence: [],
+          video_evidence: [],
+          project_defense_inspection: [
+            {
+              evidence_id_safe: "defense-inspection-1",
+              question_text: "How does your model make predictions?",
+              question_kind: "skill_explanation",
+              project_title: "Boston Housing",
+              mapped_skill: "Python",
+              claim_type: "skill_understanding",
+              answer_purpose: "skill_explanation",
+              evidence_role: "candidate_explanation",
+              qualitative_status: "Explained with evidence",
+              safe_answer_summary: "I trained a regression model and use it for inference on features.",
+              evidence_basis_chips: ["Targeted question", "Candidate answer", "Privacy-safe summary"],
+              timestamp_label: "Video 03:12",
+              clip_start_seconds: 192.0,
+              clip_end_seconds: 205.0,
+              clip_available: true,
+              corroborates_github: true,
+              corroborates_website: false,
+              corroborates_document: false,
+              corroboration_summary: "Corroborating defense evidence: GitHub Proof (implementation) for the same project.",
+              what_this_demonstrates: "The student explained this Python claim in their own words.",
+              limitation: "Project Defense is explanation evidence. It should be read with GitHub Proof for implementation.",
+              public_safe: true,
+              withheld_reason: null,
+              ...inspectionOverrides,
+            },
+          ],
+          limitations: [],
+        },
+      ],
+    })
+  }
+
+  it("renders the private inspection card with question, answer, skill, chips, timestamp, limitation", () => {
+    render(<SkillReportView report={inspectionChainReport()} />)
+
+    const card = screen.getByTestId("project-defense-inspection-card")
+    expect(card).toBeInTheDocument()
+    expect(screen.getByTestId("pdi-question")).toHaveTextContent("How does your model make predictions?")
+    expect(screen.getByTestId("pdi-answer-summary")).toHaveTextContent("regression model")
+    expect(screen.getByTestId("pdi-skill")).toHaveTextContent("Python")
+    expect(screen.getByTestId("pdi-basis-chips")).toHaveTextContent("Targeted question")
+    // The timestamp/clip locator renders only its safe label.
+    expect(screen.getByTestId("pdi-timestamp")).toHaveTextContent("Video 03:12")
+    // Corroboration chips + honest limitation framing.
+    expect(screen.getByTestId("pdi-corroborates")).toHaveTextContent("GitHub")
+    expect(screen.getByTestId("pdi-limitation")).toHaveTextContent("explanation evidence")
+  })
+
+  it("never renders raw transcript, segments, storage paths, signed URLs, or internal ids", () => {
+    const { container } = render(<SkillReportView report={inspectionChainReport()} />)
+    const html = container.innerHTML
+    for (const unsafe of [
+      "transcript",
+      "transcript_segments",
+      "storage_path",
+      "signed_url",
+      "vbr/sessions",
+      "question_id",
+      "evidence_id_safe",
+    ]) {
+      expect(html).not.toContain(unsafe)
+    }
+    // Clip seconds are a locator, not raw media — no media path/URL is emitted.
+    expect(html).not.toContain("https://storage")
+  })
+
+  it("shows a withheld placeholder and no answer content for a not-public-safe card", () => {
+    const report = inspectionChainReport({
+      question_text: null,
+      safe_answer_summary: "Defense answer details are withheld because this session is not public-safe.",
+      what_this_demonstrates: "",
+      corroboration_summary: "",
+      corroborates_github: false,
+      clip_available: false,
+      timestamp_label: null,
+      public_safe: false,
+      withheld_reason: "Defense answer details are withheld because this session is not public-safe.",
+    })
+    render(<SkillReportView report={report} />)
+
+    expect(screen.getByTestId("pdi-withheld")).toHaveTextContent("withheld because this session is not public-safe")
+    // No answer summary / question / timestamp when withheld.
+    expect(screen.queryByTestId("pdi-question")).toBeNull()
+    expect(screen.queryByTestId("pdi-answer-summary")).toBeNull()
+    expect(screen.queryByTestId("pdi-timestamp")).toBeNull()
+    // The honest limitation framing is still shown.
+    expect(screen.getByTestId("pdi-limitation")).toBeInTheDocument()
+  })
+})
+
 // ── GitHub weak/repo-level evidence is shown as a limitation, never a code card ─
 
 describe("SkillReportView — weak / repo-level GitHub evidence", () => {
