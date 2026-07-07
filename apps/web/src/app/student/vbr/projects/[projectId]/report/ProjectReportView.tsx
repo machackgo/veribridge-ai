@@ -17,6 +17,7 @@ import {
   type VBRStudentProjectReportResponse,
   type VideoEvidenceChip,
 } from "@/lib/vbr-api"
+import { buildPublicAppUrl } from "@/lib/api"
 
 // Canonical proof-source render order. Used both for the per-skill supporting
 // chips and to group a skill's evidence rows by proof source, so a Project
@@ -274,7 +275,7 @@ function PublishControls({ projectId }: { projectId: string }) {
   const isPublic = Boolean(status?.is_public && status?.public_token)
   const publicUrl =
     isPublic && status?.public_token
-      ? `${typeof window !== "undefined" ? window.location.origin : ""}/vbr/report/${status.public_token}`
+      ? buildPublicAppUrl(`/vbr/report/${status.public_token}`)
       : ""
 
   const run = (action: () => Promise<ProjectReportPublishStatus>) => {

@@ -14,7 +14,12 @@ import {
 const API = "/api/v1"
 
 /** Base URL for direct fetch calls (recruiter public endpoints don't use Supabase auth). */
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+// Prefer NEXT_PUBLIC_API_URL (production domain, e.g. https://api.veribridgeai.com);
+// fall back to the legacy NEXT_PUBLIC_API_BASE_URL, then to local dev.
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL ??
+  process.env.NEXT_PUBLIC_API_BASE_URL ??
+  "http://localhost:8000"
 
 // ─── Shared helpers ────────────────────────────────────────────────────────
 

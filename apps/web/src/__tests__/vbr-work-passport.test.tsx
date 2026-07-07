@@ -6,7 +6,7 @@
  */
 
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react"
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
 import { buildPassportGraph } from "../app/student/vbr/passport/passport-graph"
 import { ProofVaultView } from "../app/student/vbr/passport/vault/ProofVaultView"
@@ -3297,5 +3297,50 @@ describe("PrivatePassportView — Step 5 recruiter-ready publishing", () => {
     )
     // The student can always open the (empty) preview to see what is missing.
     expect(screen.getByTestId("view-report-preview-link")).toBeInTheDocument()
+  })
+})
+
+// Domain integration: copied/shared public Passport links must stay on the
+// canonical app origin (NEXT_PUBLIC_APP_URL) rather than a preview origin.
+describe("PrivatePassportView — canonical public link origin", () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  function renderPublishedPassport() {
+    const p = makePassport({
+      is_published: true,
+      public_slug: "slug123",
+      public_path: "/p/slug123",
+      published_at: "2026-01-02T00:00:00Z",
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+    render(<PrivatePassportView />)
+  }
+
+  it("uses NEXT_PUBLIC_APP_URL for the public Passport link when it is set", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridgeai.com")
+    renderPublishedPassport()
+
+    const link = await screen.findByTestId("passport-public-link")
+    expect(link.textContent).toContain("https://veribridgeai.com/p/slug123")
+    // In production the canonical origin must win — never a localhost link.
+    expect(link.textContent).not.toContain("localhost")
+  })
+
+  it("normalizes a trailing slash on NEXT_PUBLIC_APP_URL (no double slash)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridgeai.com/")
+    renderPublishedPassport()
+
+    const link = await screen.findByTestId("passport-public-link")
+    expect(link.textContent).toContain("https://veribridgeai.com/p/slug123")
+    expect(link.textContent).not.toContain("veribridgeai.com//p/")
+  })
+
+  it("falls back to window.location.origin when NEXT_PUBLIC_APP_URL is unset", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "")
+    renderPublishedPassport()
+
+    const link = await screen.findByTestId("passport-public-link")
+    expect(link.textContent).toContain(`${window.location.origin}/p/slug123`)
   })
 })

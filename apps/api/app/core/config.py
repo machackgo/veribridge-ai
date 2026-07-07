@@ -1,7 +1,7 @@
 from functools import lru_cache
 from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,9 +13,32 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", alias="ENVIRONMENT")
 
     # ── CORS ─────────────────────────────────────────────────────
+    # Comma-separated list of allowed frontend origins.
+    # Canonical env var is CORS_ALLOWED_ORIGINS; the older CORS_ORIGINS is
+    # still accepted for backward compatibility (CORS_ALLOWED_ORIGINS wins).
+    # Production example:
+    #   https://veribridgeai.com,https://www.veribridgeai.com,http://localhost:3000,http://127.0.0.1:3000
+    # A literal "*" wildcard origin is rejected when ENVIRONMENT=production
+    # (see _reject_wildcard_cors_in_production below).
     cors_origins_raw: str = Field(
-        default="http://localhost:3000",
-        alias="CORS_ORIGINS",
+        default="http://localhost:3000,http://127.0.0.1:3000",
+        validation_alias=AliasChoices("CORS_ALLOWED_ORIGINS", "CORS_ORIGINS"),
+    )
+
+    # ── Public URLs (production domain integration) ──────────────
+    # Canonical public origins for veribridgeai.com. These document the
+    # deployment and are available for building absolute links; they do NOT
+    # widen CORS by themselves — CORS is driven solely by the list above.
+    #   FRONTEND_URL / PUBLIC_APP_URL → the web app,  e.g. https://veribridgeai.com
+    #   BACKEND_PUBLIC_URL            → the public API, e.g. https://api.veribridgeai.com
+    frontend_url: str = Field(
+        default="http://localhost:3000", alias="FRONTEND_URL"
+    )
+    public_app_url: str = Field(
+        default="http://localhost:3000", alias="PUBLIC_APP_URL"
+    )
+    backend_public_url: str = Field(
+        default="http://localhost:8000", alias="BACKEND_PUBLIC_URL"
     )
 
     # ── Supabase ─────────────────────────────────────────────────
@@ -450,6 +473,24 @@ class Settings(BaseSettings):
             )
 
         return v.rstrip("/")  # normalise: strip trailing slash
+
+    @model_validator(mode="after")
+    def _reject_wildcard_cors_in_production(self) -> "Settings":
+        """Fail fast if a wildcard CORS origin is configured in production.
+
+        Allowing '*' with allow_credentials=True is both a security hazard and
+        invalid per the CORS spec.  In non-production environments the wildcard
+        is left untouched so local tooling keeps working.
+        """
+        if self.environment.strip().lower() == "production":
+            if any(origin == "*" for origin in self.cors_origins):
+                raise ValueError(
+                    "Wildcard CORS origin '*' is not allowed when "
+                    "ENVIRONMENT=production. Set CORS_ALLOWED_ORIGINS to the "
+                    "explicit production origins, e.g. "
+                    "https://veribridgeai.com,https://www.veribridgeai.com"
+                )
+        return self
 
     # ── Derived properties ────────────────────────────────────────
 

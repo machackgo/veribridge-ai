@@ -8,7 +8,7 @@
  */
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react"
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { ProjectReportView } from "../app/student/vbr/projects/[projectId]/report/ProjectReportView"
 import type { VBRStudentProjectReportResponse } from "@/lib/vbr-api"
 
@@ -989,6 +989,45 @@ describe("ProjectReportView — proof-native matrix links + precise anchors", ()
 
     // The document citation renders (no raw download URL).
     expect(screen.getByTestId("evidence-trace-citation").textContent).toContain("System Design")
+  })
+})
+
+// Domain integration: copied/shared public project-report links must stay on the
+// canonical app origin (NEXT_PUBLIC_APP_URL) rather than a preview origin.
+describe("ProjectReportView — canonical public link origin", () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  function renderPublishedReport() {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(makeReport())
+    vi.mocked(getVBRProjectReportPublishStatus).mockResolvedValue(publishedStatus("tok-xyz"))
+    render(<ProjectReportView projectId="proj-1" />)
+  }
+
+  it("uses NEXT_PUBLIC_APP_URL for the public report link when it is set", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridgeai.com")
+    renderPublishedReport()
+
+    const url = await screen.findByTestId("public-link-url")
+    expect(url.textContent).toContain("https://veribridgeai.com/vbr/report/tok-xyz")
+    // In production the canonical origin must win — never a localhost link.
+    expect(url.textContent).not.toContain("localhost")
+  })
+
+  it("normalizes a trailing slash on NEXT_PUBLIC_APP_URL (no double slash)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridgeai.com/")
+    renderPublishedReport()
+
+    const url = await screen.findByTestId("public-link-url")
+    expect(url.textContent).toContain("https://veribridgeai.com/vbr/report/tok-xyz")
+    expect(url.textContent).not.toContain("veribridgeai.com//vbr/")
+  })
+
+  it("falls back to window.location.origin when NEXT_PUBLIC_APP_URL is unset", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "")
+    renderPublishedReport()
+
+    const url = await screen.findByTestId("public-link-url")
+    expect(url.textContent).toContain(`${window.location.origin}/vbr/report/tok-xyz`)
   })
 })
 
