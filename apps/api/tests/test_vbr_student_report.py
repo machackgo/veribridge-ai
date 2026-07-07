@@ -526,6 +526,58 @@ def test_student_report_includes_evidence_traces_per_skill(client: TestClient, m
     assert any(row["evidence_traces"] for row in body["skill_evidence"])
 
 
+def test_skill_evidence_groups_by_proof_source_are_skill_specific(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The skill-first Project Report renders, per skill, evidence rows grouped by
+    proof source. This guards the data contract those cards depend on: for each
+    skill, the proof *source types* of its attached traces are a subset of that
+    skill's own ``supporting_sources`` chips — never the whole project's proof
+    union applied blindly to every skill."""
+    project_id = _full_evidence_project(client, mem_store)
+    body = _get_report(client, project_id).json()
+
+    traces_by_id = {t["trace_id"]: t for t in body["evidence_traces"]}
+    skill_rows = body["skill_evidence"]
+    assert skill_rows, "expected claimed skills on the project"
+
+    for row in skill_rows:
+        chips = set(row["supporting_sources"])
+        # The source types this skill's grouped evidence rows would render under.
+        grouped_source_types = {
+            traces_by_id[tid]["source_type"]
+            for tid in row["evidence_traces"]
+            if tid in traces_by_id
+        }
+        # No skill ever surfaces an evidence group for a proof source it does not
+        # claim as a supporting chip — the breakdown is honest and skill-specific.
+        assert grouped_source_types <= chips, (
+            f"skill {row['skill']!r} groups evidence from {grouped_source_types - chips} "
+            f"with no matching supporting-source chip"
+        )
+        # Every trace attributed to this skill actually names it (or is honest
+        # project-level context with no skill claim) — never another skill's proof.
+        for tid in row["evidence_traces"]:
+            names = traces_by_id[tid]["skill_names"]
+            assert (not names) or (row["skill"] in names), (
+                f"skill {row['skill']!r} references trace {tid} scoped to {names}"
+            )
+
+    # The full-evidence project genuinely produces a multi-source breakdown for at
+    # least one skill (so the grouped-by-source cards are exercised, not vacuous).
+    assert any(
+        len(
+            {
+                traces_by_id[tid]["source_type"]
+                for tid in row["evidence_traces"]
+                if tid in traces_by_id
+            }
+        )
+        >= 2
+        for row in skill_rows
+    )
+
+
 def test_github_trace_is_publicly_openable_with_safe_url(client: TestClient, mem_store: dict) -> None:
     project_id = _full_evidence_project(client, mem_store)
     body = _get_report(client, project_id).json()
@@ -553,7 +605,9 @@ def test_evidence_anchors_unique_and_never_collide_with_section_ids(
         "documents",
         "website-proof",
         "project-defense",
-        "skill-evidence",
+        # The skill-first main section id (was "skill-evidence" before the
+        # Project Report skill-card redesign).
+        "skills-demonstrated",
         "evidence-traceability",
         "limitations",
     }

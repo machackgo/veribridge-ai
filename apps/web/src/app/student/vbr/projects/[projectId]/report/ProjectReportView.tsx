@@ -17,6 +17,17 @@ import {
   type VBRStudentProjectReportResponse,
   type VideoEvidenceChip,
 } from "@/lib/vbr-api"
+
+// Canonical proof-source render order. Used both for the per-skill supporting
+// chips and to group a skill's evidence rows by proof source, so a Project
+// Report always reads GitHub → Document → Website → Project Defense → Video.
+const PROOF_SOURCE_ORDER = [
+  "GitHub Proof",
+  "Document Proof",
+  "Website Proof",
+  "Project Defense",
+  "Video Evidence",
+] as const
 import {
   Badge,
   Card,
@@ -74,33 +85,72 @@ function VideoChip({ chip }: { chip: VideoEvidenceChip }) {
   )
 }
 
-function SkillEvidenceRow({ row, tracesById }: { row: VBRReportSkillEvidenceRow; tracesById: Map<string, EvidenceTrace> }) {
+/**
+ * One skill-first evidence card for the "Skills Demonstrated in This Project"
+ * section — the report's main body. It answers, for ONE skill in THIS project:
+ * what status the skill has, which proof sources support it *here* (skill- and
+ * project-specific chips, never the whole project's source union), a short
+ * plain-language explanation, the evidence summaries grouped by proof source,
+ * what the evidence does NOT prove, and a link into the full Skill Report.
+ *
+ * Every field it renders is an already-safe summary/label from the backend
+ * (``supporting_sources`` / ``evidence_traces`` / ``limitations`` /
+ * ``why_this_status``) — never raw evidence, storage paths, ids, or scores.
+ */
+function SkillEvidenceCard({
+  row,
+  tracesById,
+}: {
+  row: VBRReportSkillEvidenceRow
+  tracesById: Map<string, EvidenceTrace>
+}) {
   const sources = row.supporting_sources ?? []
   const limitations = row.limitations ?? []
   const traceRefs = (row.evidence_traces ?? [])
     .map((id) => tracesById.get(id))
     .filter((t): t is EvidenceTrace => Boolean(t))
+
+  // Group this skill's evidence rows by proof source (canonical order). Each
+  // group only appears when the backend actually attached a trace of that
+  // source to THIS skill — so e.g. a Website Proof group renders only when
+  // website behaviour was recorded as supporting this exact skill.
+  const groups = PROOF_SOURCE_ORDER.map((source) => ({
+    source,
+    traces: traceRefs.filter((t) => t.source_type === source),
+  })).filter((g) => g.traces.length > 0)
+
+  // "Not assessed" is any skill the backend could not tie to a single attached
+  // proof source in this project. We state what is missing rather than implying
+  // silent support.
+  const notAssessed = sources.length === 0 && groups.length === 0
+
   return (
-    <tr data-testid="skill-evidence-row">
-      <td style={{ padding: "8px 10px", fontSize: 13, fontWeight: 600, color: TOKEN.ink, verticalAlign: "top" }}>
-        {row.skill}
-        {/* Project → Skill cross-link: every project skill row opens the full
-            Skill Report showing all projects/proofs behind this skill. */}
-        <div>
-          <Link
-            href={skillReportPath(fallbackSkillSlug(row.skill))}
-            data-testid="matrix-skill-report-link"
-            style={{ fontSize: 11, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none", whiteSpace: "nowrap" }}
-          >
-            View skill evidence →
-          </Link>
-        </div>
-      </td>
-      <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+    <div
+      data-testid="skill-evidence-card"
+      data-skill={row.skill}
+      data-status={row.status}
+      style={{
+        border: `1px solid ${TOKEN.line}`,
+        borderRadius: 10,
+        padding: 14,
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+        background: notAssessed ? TOKEN.bg : "#fff",
+      }}
+    >
+      {/* Skill name + status */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: TOKEN.ink }}>{row.skill}</h4>
         <Badge tone={SKILL_STATUS_TONE[row.status] ?? "slate"}>{row.status}</Badge>
-      </td>
-      <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
-        {sources.length > 0 ? (
+      </div>
+
+      {/* Proof source chips supporting this skill IN THIS PROJECT */}
+      {sources.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+            Supported in this project by
+          </Mono>
           <div data-testid="skill-supporting-sources" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
             {sources.map((src) => (
               <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
@@ -108,40 +158,89 @@ function SkillEvidenceRow({ row, tracesById }: { row: VBRReportSkillEvidenceRow;
               </Badge>
             ))}
           </div>
-        ) : (
-          <span style={{ fontSize: 12, color: TOKEN.muted }}>—</span>
-        )}
-        {traceRefs.length > 0 && (
-          <div data-testid="skill-trace-links" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-            {traceRefs.map((t) => (
-              <a key={t.trace_id} href={`#${t.evidence_anchor}`} style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}>
-                {matrixTraceLabel(t)} →
-              </a>
-            ))}
-          </div>
-        )}
-      </td>
-      <td style={{ padding: "8px 10px", fontSize: 12, color: TOKEN.muted, textAlign: "center", verticalAlign: "top" }}>
-        {row.evidence_chip_count}
-      </td>
-      <td style={{ padding: "8px 10px", fontSize: 12, color: TOKEN.muted, verticalAlign: "top" }}>
-        {row.why_this_status ? <span data-testid="skill-why">{row.why_this_status}</span> : row.notes}
-        {row.recruiter_can_verify && (
-          <div data-testid="skill-verify" style={{ marginTop: 4, fontStyle: "italic" }}>
-            {row.recruiter_can_verify}
-          </div>
-        )}
-        {limitations.length > 0 && (
-          <ul data-testid="skill-limitations" style={{ margin: "4px 0 0", paddingLeft: 16 }}>
+        </div>
+      )}
+
+      {/* Short plain-language explanation */}
+      {(row.why_this_status || row.notes) && (
+        <p data-testid="skill-why" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+          {row.why_this_status || row.notes}
+        </p>
+      )}
+
+      {/* Evidence rows grouped by proof source */}
+      {groups.length > 0 && (
+        <div data-testid="skill-evidence-groups" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {groups.map((group) => (
+            <div
+              key={group.source}
+              data-testid="skill-evidence-group"
+              data-source-type={group.source}
+              style={{ display: "flex", flexDirection: "column", gap: 4 }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <Badge tone={SOURCE_TONE[group.source] ?? "slate"}>{group.source}</Badge>
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 }}>
+                {group.traces.map((t) => (
+                  <li key={t.trace_id} style={{ fontSize: 12, color: TOKEN.inkSoft, lineHeight: 1.45 }}>
+                    {t.safe_summary}{" "}
+                    <a
+                      href={`#${t.evidence_anchor}`}
+                      data-testid="skill-evidence-jump"
+                      style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none", whiteSpace: "nowrap" }}
+                    >
+                      {matrixTraceLabel(t)} →
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Not assessed: state what is missing rather than implying silent support */}
+      {notAssessed && (
+        <p data-testid="skill-not-assessed" style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          No proof source in this project has been attached to this skill yet — it is a claim pending more evidence.
+          Attach GitHub, Document, Website, or Project Defense proof for this skill to strengthen it.
+        </p>
+      )}
+
+      {/* Limitations — what this evidence does NOT prove */}
+      {limitations.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+            Limitations
+          </Mono>
+          <ul data-testid="skill-limitations" style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 2 }}>
             {limitations.map((line, i) => (
               <li key={i} style={{ fontSize: 11, color: TOKEN.muted }}>
                 {line}
               </li>
             ))}
           </ul>
-        )}
-      </td>
-    </tr>
+        </div>
+      )}
+
+      {row.recruiter_can_verify && (
+        <p data-testid="skill-verify" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, fontStyle: "italic" }}>
+          {row.recruiter_can_verify}
+        </p>
+      )}
+
+      {/* CTA into the full Skill Report (owner-only route; always safe). */}
+      <div>
+        <Link
+          href={skillReportPath(fallbackSkillSlug(row.skill))}
+          data-testid="skill-report-cta"
+          style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+        >
+          View full skill evidence →
+        </Link>
+      </div>
+    </div>
   )
 }
 
@@ -382,11 +481,11 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
       {/* In-page navigation to evidence sections */}
       <nav data-testid="report-jump-nav" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {[
+          { href: "#skills-demonstrated", label: "Skills Demonstrated" },
           { href: "#github-proof", label: "GitHub Proof" },
           { href: "#documents", label: "Documents" },
           { href: "#website-proof", label: "Website Proof" },
           { href: "#project-defense", label: "Project Defense" },
-          { href: "#skill-evidence", label: "Skill Evidence" },
           { href: "#limitations", label: "Limitations" },
         ].map((item) => (
           <a
@@ -411,9 +510,10 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
       {/* Direct safe links */}
       <SafeLinksCard report={report} />
 
-      {/* Evidence package summary */}
+      {/* Project Evidence Summary — a compact proof-source overview. Kept
+          deliberately secondary: the skill-first cards below are the main body. */}
       <Card>
-        <CardHeader title="Evidence Package Summary" eyebrow="Overview" icon="🗂️" />
+        <CardHeader title="Project Evidence Summary" eyebrow="Proof sources attached" icon="🗂️" />
         <div
           style={{
             display: "grid",
@@ -430,9 +530,37 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
         </div>
       </Card>
 
-      {/* Evidence by source */}
+      {/* ── MAIN BODY: Skills Demonstrated in This Project ─────────────────────
+          The report's primary lens. For each claimed skill, a skill-first
+          evidence card answers "which skills are demonstrated in THIS project,
+          and what exact proof types support each skill?" — replacing the old,
+          spreadsheet-like Skill Evidence Matrix. */}
+      <Card id="skills-demonstrated" style={ANCHOR_OFFSET}>
+        <CardHeader
+          title="Skills Demonstrated in This Project"
+          eyebrow="Skill → proof types → evidence"
+          icon="🧩"
+        />
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 12px", lineHeight: 1.5 }}>
+          Each card shows one skill, the proof sources that support it in this project, the evidence grouped by
+          source, and what that evidence does not prove. Skills with no attached proof are marked{" "}
+          <strong>Not assessed</strong>.
+        </p>
+        {report.skill_evidence.length === 0 ? (
+          <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>No claimed skills recorded for this project.</p>
+        ) : (
+          <div data-testid="skill-evidence-cards" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {report.skill_evidence.map((row) => (
+              <SkillEvidenceCard key={row.skill} row={row} tracesById={tracesById} />
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Evidence by source — secondary supporting detail beneath the skill
+          cards (the per-source proof breakdown + Website Behavior Evidence). */}
       <Card id="evidence-by-source" style={ANCHOR_OFFSET}>
-        <CardHeader title="Evidence by Source" eyebrow="Attached proof" icon="📎" />
+        <CardHeader title="Evidence by Source" eyebrow="Supporting detail" icon="📎" />
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <div id="github-proof" style={ANCHOR_OFFSET}>
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
@@ -611,31 +739,6 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             )}
           </div>
         </div>
-      </Card>
-
-      {/* Skill-level evidence table */}
-      <Card id="skill-evidence" style={ANCHOR_OFFSET}>
-        <CardHeader title="Skill Evidence Matrix" eyebrow="Claimed skills → evidence" icon="🧩" />
-        {report.skill_evidence.length === 0 ? (
-          <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>No claimed skills recorded for this project.</p>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ borderBottom: `1px solid ${TOKEN.line}`, textAlign: "left" }}>
-                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Skill</th>
-                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Status</th>
-                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Supporting evidence</th>
-                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em", textAlign: "center" }}>Chips</th>
-                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.skill_evidence.map((row) => (
-                <SkillEvidenceRow key={row.skill} row={row} tracesById={tracesById} />
-              ))}
-            </tbody>
-          </table>
-        )}
       </Card>
 
       {/* Evidence Traceability — concrete claim → evidence audit trail */}
