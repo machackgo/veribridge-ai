@@ -18,6 +18,7 @@ import {
   type EvidenceGraphOverview,
   type PassportProjectSummary,
   type PassportWebsiteProofContext,
+  type ProjectLevelProofContext,
   type PrivateWorkPassport,
   type WorkPassportStatus,
 } from "@/lib/vbr-api"
@@ -1021,6 +1022,112 @@ function WebsiteProofProjectLevelEmptyState({
   )
 }
 
+// ── Project-level proof attached, not skill-mapped yet (GitHub + Website) ─────
+
+/** Proof-type-specific intro copy for the project-level-proof section. */
+function projectLevelIntroCopy(proofType: string): string {
+  if (proofType === GITHUB_PROOF_LABEL)
+    return "These projects have GitHub Proof attached at the project level, but VeriBridge has not yet mapped that repository evidence to a specific skill in the Passport. Open the project report to inspect the repo evidence or improve skill mapping."
+  if (proofType === WEBSITE_PROOF_LABEL)
+    return "These projects have Website Proof attached at the project level, but VeriBridge has not yet mapped the runtime evidence to a specific skill in the Passport. Open the project report to inspect the website evidence or improve skill mapping."
+  return "These projects have proof attached at the project level, but it is not mapped to a specific Passport skill yet."
+}
+
+/**
+ * The "Project-level proof attached, not skill-mapped yet" section, shown under
+ * the GitHub / Website Proof filter. Each card is INFORMATIONAL context about a
+ * project whose GitHub/Website proof stays project-level: it is NEVER a skill
+ * card, NEVER counted under Skills, and NEVER implies the skill is demonstrated.
+ * It links to the project report so the reader can inspect the evidence or improve
+ * the skill mapping. Hidden when a specific skill/role filter is active (see the
+ * caller) so project-level proof is never presented as supporting that skill/role.
+ */
+function ProjectLevelProofSection({
+  proofType,
+  contexts,
+}: {
+  proofType: string
+  contexts: ProjectLevelProofContext[]
+}) {
+  if (contexts.length === 0) return null
+  return (
+    <div
+      data-testid="project-level-proof-section"
+      data-proof-type={proofType}
+      style={{ display: "flex", flexDirection: "column", gap: 10 }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <h4
+          data-testid="project-level-proof-title"
+          style={{ fontSize: 14, fontWeight: 700, color: TOKEN.ink, margin: 0 }}
+        >
+          Project-level proof attached, not skill-mapped yet
+        </h4>
+        <span data-testid="project-level-proof-count">
+          <Badge tone="amber">Project-level matches ({contexts.length})</Badge>
+        </span>
+      </div>
+      <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5, maxWidth: 620 }}>
+        {projectLevelIntroCopy(proofType)}
+      </p>
+      {contexts.map((ctx) => (
+        <Card key={`${ctx.proof_type}:${ctx.project_id}:${ctx.safe_source_label}`}>
+          <div
+            data-testid="project-level-proof-card"
+            data-project-id={ctx.project_id}
+            data-proof-type={ctx.proof_type}
+            style={{ display: "flex", flexDirection: "column", gap: 6 }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>
+                {ctx.project_title || "Untitled project"}
+              </span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <Badge tone={SOURCE_TONE[ctx.proof_type] ?? "slate"}>{ctx.proof_type}</Badge>
+                <span data-testid="project-level-proof-status">
+                  <Badge tone="amber">{ctx.status || "Needs skill mapping"}</Badge>
+                </span>
+              </span>
+            </div>
+            {ctx.summary && (
+              <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{ctx.summary}</p>
+            )}
+            {ctx.safe_source_label && (
+              <Mono data-testid="project-level-proof-source" style={{ fontSize: 11, color: TOKEN.muted }}>
+                {ctx.safe_source_label}
+              </Mono>
+            )}
+            {ctx.reason_not_skill_mapped && (
+              <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.4 }}>
+                {ctx.reason_not_skill_mapped}
+              </p>
+            )}
+            {/* Explicit, honest label — never presented as skill evidence. */}
+            <span
+              data-testid="project-level-proof-not-skill-evidence"
+              style={{ fontSize: 11, color: TOKEN.muted, fontWeight: 600 }}
+            >
+              Not counted as skill evidence — needs skill mapping.
+            </span>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
+              {ctx.report_url && (
+                <Link
+                  data-testid="project-level-proof-open-report"
+                  data-project-id={ctx.project_id}
+                  href={ctx.report_url}
+                  style={{ ...secondaryBtnStyle, padding: "5px 10px", fontSize: 12 }}
+                >
+                  Open project report →
+                </Link>
+              )}
+            </div>
+          </div>
+        </Card>
+      ))}
+    </div>
+  )
+}
+
 // ── Role-area capability evidence summary ─────────────────────────────────────
 
 /** Qualitative role-level status → chip tone (never a numeric score). */
@@ -1466,6 +1573,24 @@ function PassportGraphExplorer({
   // below — informational context, NEVER counted or shown as skill evidence.
   const websiteProjectContext = passport.website_proof_project_context ?? []
 
+  // Project-level-only proof (GitHub + Website): proof attached at the project
+  // level that mapped NO skill. Shown under the GitHub / Website Proof filter as a
+  // separate, clearly-labelled "not skill-mapped yet" section — NEVER counted as
+  // skill evidence and NEVER shown while a specific skill/role filter is active
+  // (so it can never read as supporting that skill/role). Filtered to the selected
+  // proof type so a GitHub filter never shows Website project-level cards.
+  const projectLevelContexts = passport.project_level_proof_context ?? []
+  const projectLevelForProof =
+    proofFilter && !skillFilter && !roleAreaFilter
+      ? projectLevelContexts.filter((c) => c.proof_type === proofFilter)
+      : []
+  const showProjectLevelSection = projectLevelForProof.length > 0
+  // The existing rich Website empty state owns the Website + no-rows case when the
+  // passport carries the legacy per-focus website context; keep it authoritative
+  // there so the two sections never both render.
+  const websiteRichEmptyApplies =
+    proofFilter === WEBSITE_PROOF_LABEL && websiteProjectContext.length > 0
+
   // Role-area / project / proof filters act on the skill's ROWS (not just its
   // identity). The role-area filter fails closed to the exact skill→project rows
   // the capability mapping recorded, so an unrelated project never leaks in and a
@@ -1769,10 +1894,14 @@ function PassportGraphExplorer({
             </p>
           </Card>
         ) : visibleSkills.length === 0 ? (
-          proofFilter === WEBSITE_PROOF_LABEL && websiteProjectContext.length > 0 ? (
+          websiteRichEmptyApplies ? (
             // Website Proof exists at project level but mapped no skill — explain
             // the honest gap + how to strengthen it, instead of the generic copy.
             <WebsiteProofProjectLevelEmptyState contexts={websiteProjectContext} />
+          ) : showProjectLevelSection ? (
+            // No exact skill rows, but the project has GitHub/Website proof at the
+            // project level — show the honest project-level section, not blank.
+            <ProjectLevelProofSection proofType={proofFilter as string} contexts={projectLevelForProof} />
           ) : (
             <Card>
               {proofFilter && roleAggregate ? (
@@ -1803,6 +1932,14 @@ function PassportGraphExplorer({
               onToggleSelect={() => toggleSkill(node.key)}
             />
           ))
+        )}
+
+        {/* Project-level proof attached, not skill-mapped yet — shown ADDITIVELY
+            below the exact skill rows when they exist (the empty case above renders
+            it in place instead). Informational only; never counted as skill
+            evidence and never shown under a specific skill/role filter. */}
+        {visibleSkills.length > 0 && showProjectLevelSection && (
+          <ProjectLevelProofSection proofType={proofFilter as string} contexts={projectLevelForProof} />
         )}
       </div>
 

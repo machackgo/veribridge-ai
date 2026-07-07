@@ -2249,6 +2249,34 @@ export type PassportWebsiteProofContext = {
   report_path: string
 }
 
+/**
+ * Owner-only, project-level-only proof context (GitHub or Website): proof
+ * attached at the PROJECT level that did NOT map to any specific Passport skill.
+ * Powers the Skills Evidence Map's "Project-level proof attached, not skill-mapped
+ * yet" section — informational only, NEVER counted as skill-demonstrating
+ * evidence. `has_exact_skill_mapping` is always false here.
+ */
+export type ProjectLevelProofContext = {
+  project_id: string
+  project_title: string
+  /** Canonical proof-type label: "GitHub Proof" or "Website Proof". */
+  proof_type: string
+  /** Closed-vocabulary status — always the not-yet-mapped label. */
+  status: string
+  /** One safe sentence describing the project-level proof. */
+  summary: string
+  /** Recruiter-safe source label (e.g. "owner/repo" or a website domain). */
+  safe_source_label: string
+  /** Owner-only private route to this project's report. */
+  report_url: string | null
+  /** Always false — project-level-only proof never maps a skill. */
+  has_exact_skill_mapping: boolean
+  /** Short reason the proof did not map to a skill. */
+  reason_not_skill_mapped: string
+  /** Whether the project report carries analyzed evidence to inspect. */
+  safe_inspection_available: boolean
+}
+
 /** The owner-only private Work Passport (full evidence wallet). */
 /**
  * Recruiter-safe candidate identity header for the Verified Work Passport.
@@ -2303,6 +2331,14 @@ export type PrivateWorkPassport = {
    * state. Never counted as skill evidence; may be absent on older payloads.
    */
   website_proof_project_context?: PassportWebsiteProofContext[]
+  /**
+   * Project-level-only proof context (GitHub + Website): proof attached at the
+   * PROJECT level that mapped no specific Passport skill. Powers the "Project-level
+   * proof attached, not skill-mapped yet" section under the GitHub / Website proof
+   * filters — informational only, never counted as skill evidence. May be absent
+   * on older payloads — treat as `[]`.
+   */
+  project_level_proof_context?: ProjectLevelProofContext[]
   /**
    * Student Proof Vault — Layer 1: COMPACT per-skill summaries (the main
    * dashboard). Each card carries category, qualitative status, counts, and a
