@@ -123,6 +123,26 @@ class ProjectDefenseInspectionCard(BaseModel):
     limitation: str = ""
     public_safe: bool = False
     withheld_reason: str | None = None
+    # ── Playable evidence + safe transcript excerpt (private/owner enrichment) ──
+    #
+    # These let the private owner view play their own defense recording and read a
+    # bounded, sanitized transcript excerpt around the cited moment. They are safe
+    # by construction: ``*_playback_url`` is an authorized owner URL only (never a
+    # raw storage path), and ``safe_transcript_excerpt`` is a length-capped,
+    # sanitized snippet — never the full transcript or raw ``transcript_segments``.
+    # The fail-closed public projection drops the playback URLs and the excerpt
+    # unless the card is explicitly public-safe.
+    video_available: bool = False
+    video_playback_url: str | None = None
+    clip_playback_url: str | None = None
+    transcript_excerpt_available: bool = False
+    safe_transcript_excerpt: str | None = None
+    transcript_excerpt_start_label: str | None = None
+    transcript_excerpt_end_label: str | None = None
+    transcript_access_note: str = ""
+    recording_access_note: str = ""
+    is_private_owner_view: bool | None = None
+    is_public_share_safe: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -160,6 +180,22 @@ class PublicProjectDefenseInspectionCard(BaseModel):
     limitation: str = ""
     public_safe: bool = True
     withheld_reason: str | None = None
+    # Public projection of the playable-evidence fields. Fail-closed: the playback
+    # URLs are always ``None`` here (recruiters never receive a private recording
+    # link), and the transcript excerpt is present ONLY when the card is
+    # explicitly public-safe. ``video_available`` is reported honestly so the UI
+    # can show the "recording is private" note.
+    video_available: bool = False
+    video_playback_url: str | None = None
+    clip_playback_url: str | None = None
+    transcript_excerpt_available: bool = False
+    safe_transcript_excerpt: str | None = None
+    transcript_excerpt_start_label: str | None = None
+    transcript_excerpt_end_label: str | None = None
+    transcript_access_note: str = ""
+    recording_access_note: str = ""
+    is_private_owner_view: bool | None = None
+    is_public_share_safe: bool = False
 
     model_config = {"extra": "forbid"}
 

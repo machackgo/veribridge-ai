@@ -36,6 +36,10 @@ from app.services.defense_answer_evidence_service import (
 from app.services.project_defense_inspection_service import (
     build_project_defense_inspection_cards,
 )
+from app.services.defense_evidence_access_service import (
+    build_recording_playback,
+    build_safe_answer_excerpts,
+)
 from app.services.github_skill_evidence_service import (
     is_strong_code_snippet as _is_strong_code_snippet,
 )
@@ -1859,10 +1863,22 @@ def build_student_vbr_report(
     # Website / Document inspection. Built from the already-safe answer objects
     # plus the safe video evidence chips (for the timestamp/clip locator). Empty
     # when there is no answer evidence yet.
+    # Authorized owner-only playable evidence: bounded transcript excerpts (from
+    # the session's transcript segments) and a signed playback handle for the
+    # owner's own recording. Both fail closed to "unavailable" without storage;
+    # the public projection re-derives its cards and never sees these.
+    defense_answer_excerpts = (
+        build_safe_answer_excerpts(db, str(session["id"])) if session is not None else {}
+    )
+    defense_recording = build_recording_playback(db, session) if session is not None else None
+
     project_defense_inspection = build_project_defense_inspection_cards(
         answer_evidence=defense_answer_evidence,
         video_chips=video_chips,
         project_title=str(project.get("title") or ""),
+        answer_excerpts=defense_answer_excerpts,
+        recording=defense_recording,
+        is_owner_view=True,
     )
 
     questions: list[dict[str, Any]] = []

@@ -1122,3 +1122,160 @@ def test_inspection_labels_defense_as_explanation_not_implementation() -> None:
     assert card["limitation"]
     # No numeric confidence anywhere on the card.
     assert "confidence" not in str(card).lower()
+
+
+# ── Owner playable evidence: safe transcript excerpt + recording playback ─────
+
+
+def test_inspection_owner_view_includes_bounded_transcript_excerpt() -> None:
+    from app.services.project_defense_inspection_service import (
+        TRANSCRIPT_EXCERPT_NOTE,
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    excerpts = {
+        "q-ml": {
+            "safe_transcript_excerpt": "I trained a regression model and validated features before inference.",
+            "transcript_excerpt_start_label": "03:10",
+            "transcript_excerpt_end_label": "03:25",
+        }
+    }
+    cards = build_project_defense_inspection_cards(
+        answer_evidence=answers,
+        video_chips=[],
+        only_skill="Machine Learning",
+        answer_excerpts=excerpts,
+        is_owner_view=True,
+    )
+    card = cards[0]
+    assert card["transcript_excerpt_available"] is True
+    assert "regression model" in card["safe_transcript_excerpt"]
+    # Bounded — never a full transcript dump.
+    assert len(card["safe_transcript_excerpt"]) <= 800
+    assert card["transcript_excerpt_start_label"] == "03:10"
+    assert card["transcript_excerpt_end_label"] == "03:25"
+    assert card["transcript_access_note"] == TRANSCRIPT_EXCERPT_NOTE
+    assert card["is_private_owner_view"] is True
+    # The raw segments array is never carried on the card.
+    assert "transcript_segments" not in card
+
+
+def test_inspection_transcript_excerpt_only_in_owner_view() -> None:
+    from app.services.project_defense_inspection_service import (
+        TRANSCRIPT_NONE_NOTE,
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    excerpts = {"q-ml": {"safe_transcript_excerpt": "secret answer text"}}
+    # Not owner view (e.g. the plain builder default) → excerpt is NOT attached.
+    cards = build_project_defense_inspection_cards(
+        answer_evidence=answers,
+        video_chips=[],
+        only_skill="Machine Learning",
+        answer_excerpts=excerpts,
+        is_owner_view=False,
+    )
+    card = cards[0]
+    assert card["transcript_excerpt_available"] is False
+    assert card["safe_transcript_excerpt"] is None
+    assert card["transcript_access_note"] == TRANSCRIPT_NONE_NOTE
+    assert "secret answer text" not in str(card)
+
+
+def test_inspection_recording_playback_is_owner_only() -> None:
+    from app.services.project_defense_inspection_service import (
+        RECORDING_PLAYABLE_NOTE,
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    chips = [
+        {
+            "label": "Video 03:12",
+            "timestamp_start_s": 192.0,
+            "timestamp_end_s": 205.0,
+            "related_skill": "Machine Learning",
+            "question_id": "q-ml",
+        }
+    ]
+    recording = {"available": True, "playback_url": "https://signed.example/full.webm?token=xyz"}
+
+    owner = build_project_defense_inspection_cards(
+        answer_evidence=answers,
+        video_chips=chips,
+        only_skill="Machine Learning",
+        recording=recording,
+        is_owner_view=True,
+    )[0]
+    assert owner["video_available"] is True
+    assert owner["video_playback_url"] == "https://signed.example/full.webm?token=xyz"
+    # The clip playback URL is the same signed URL plus a #t media fragment.
+    assert owner["clip_playback_url"] == "https://signed.example/full.webm?token=xyz#t=192.0,205.0"
+    assert owner["recording_access_note"] == RECORDING_PLAYABLE_NOTE
+
+    # Same recording, NOT owner view → no playback URL is attached.
+    non_owner = build_project_defense_inspection_cards(
+        answer_evidence=answers,
+        video_chips=chips,
+        only_skill="Machine Learning",
+        recording=recording,
+        is_owner_view=False,
+    )[0]
+    assert non_owner["video_playback_url"] is None
+    assert non_owner["clip_playback_url"] is None
+    assert non_owner["video_available"] is False
+
+
+def test_inspection_recording_exists_but_no_playback_url() -> None:
+    from app.services.project_defense_inspection_service import (
+        RECORDING_EXISTS_NO_PLAYBACK_NOTE,
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    # Recording exists (available) but no signed URL could be minted.
+    recording = {"available": True, "playback_url": None}
+    card = build_project_defense_inspection_cards(
+        answer_evidence=answers,
+        video_chips=[],
+        only_skill="Machine Learning",
+        recording=recording,
+        is_owner_view=True,
+    )[0]
+    assert card["video_available"] is True
+    assert card["video_playback_url"] is None
+    assert card["recording_access_note"] == RECORDING_EXISTS_NO_PLAYBACK_NOTE
+
+
+def test_build_safe_answer_excerpts_is_bounded_and_sanitized() -> None:
+    """The excerpt helper concatenates a question's segments into ONE bounded,
+    sanitized snippet with safe mm:ss labels — never the raw segment array."""
+    from app.services.defense_evidence_access_service import (
+        TRANSCRIPT_EXCERPT_MAX_CHARS,
+        build_safe_answer_excerpts,
+    )
+
+    long_text = "I explained the model in detail. " * 60  # > cap
+    db = {
+        "vbr_transcripts": {"t1": {"id": "t1", "session_id": "sess-1"}},
+        "vbr_transcript_segments": {
+            "seg1": {
+                "transcript_id": "t1",
+                "question_id": "q-ml",
+                "text": long_text + " see storage_path=vbr/sessions/abc token=secret123",
+                "start_s": 190.0,
+                "end_s": 210.0,
+            },
+        },
+    }
+    out = build_safe_answer_excerpts(db, "sess-1")
+    assert "q-ml" in out
+    excerpt = out["q-ml"]["safe_transcript_excerpt"]
+    assert len(excerpt) <= TRANSCRIPT_EXCERPT_MAX_CHARS + 1  # +1 for the ellipsis
+    # Storage path / token fragments are redacted out of the excerpt.
+    assert "storage_path=vbr/sessions/abc" not in excerpt
+    assert "secret123" not in excerpt
+    assert out["q-ml"]["transcript_excerpt_start_label"] == "03:10"
+    assert out["q-ml"]["transcript_excerpt_end_label"] == "03:30"

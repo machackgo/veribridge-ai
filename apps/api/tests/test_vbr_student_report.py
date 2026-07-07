@@ -1059,17 +1059,28 @@ def test_report_inspection_frames_defense_as_explanation_not_implementation(
 def test_report_inspection_does_not_leak_raw_transcript_or_ids(
     client: TestClient, mem_store: dict
 ) -> None:
-    """Inspection cards never carry a raw ``question_id``, transcript segments,
-    storage paths, or signed URLs."""
+    """Inspection cards never carry a raw ``question_id``, the raw
+    ``transcript_segments`` array, storage paths, or signed URLs.
+
+    The owner card *may* carry a bounded ``safe_transcript_excerpt`` (a short,
+    sanitized snippet), so we assert the specific unsafe shapes are absent rather
+    than banning the word "transcript" outright.
+    """
     project_id = _project_with_answered_defense(client, mem_store)
     body = _get_report(client, project_id).json()
     cards = body["project_defense_inspection"]
     assert cards
     for card in cards:
         assert "question_id" not in card
-        assert "transcript" not in json.dumps(card).lower()
-        for unsafe in ("storage_path", "signed_url", "vbr/sessions", "supabase"):
-            assert unsafe not in json.dumps(card).lower()
+        # The raw segments array is never exposed — only the derived excerpt.
+        assert "transcript_segments" not in card
+        blob = json.dumps(card).lower()
+        for unsafe in ("transcript_segments", "storage_path", "signed_url", "vbr/sessions", "supabase"):
+            assert unsafe not in blob
+        # If a transcript excerpt is present it is bounded, not a full dump.
+        excerpt = card.get("safe_transcript_excerpt")
+        if excerpt:
+            assert len(excerpt) <= 800
 
 
 # ── Phase 1: GitHub line/function code evidence (skill_code_evidence) ─────────

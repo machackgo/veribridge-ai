@@ -959,6 +959,10 @@ def _defense_inspection_by_project(
     from app.services.project_defense_inspection_service import (
         build_project_defense_inspection_cards,
     )
+    from app.services.defense_evidence_access_service import (
+        build_recording_playback,
+        build_safe_answer_excerpts,
+    )
     from app.services.vbr_question_generation import get_latest_session
 
     out: dict[str, list[dict[str, Any]]] = {}
@@ -971,11 +975,17 @@ def _defense_inspection_by_project(
         telemetry = session.get("telemetry") if isinstance(session.get("telemetry"), dict) else {}
         if not isinstance(telemetry, dict):
             continue
+        # Owner Skill Report is a private surface — attach the same authorized
+        # playable evidence (excerpts + signed recording handle) as the private
+        # project report, still scoped to the report's canonical skill.
         cards = build_project_defense_inspection_cards(
             answer_evidence=telemetry.get("defense_answer_evidence") or [],
             video_chips=telemetry.get("video_evidence_chips") or [],
             project_title=titles.get(pid, "Project"),
             only_skill=only_skill,
+            answer_excerpts=build_safe_answer_excerpts(db, str(session["id"])),
+            recording=build_recording_playback(db, session),
+            is_owner_view=True,
         )
         if cards:
             out[pid] = cards

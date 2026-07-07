@@ -538,6 +538,43 @@ describe("PublicPassportView — Project Defense inspection (fail-closed)", () =
     }
   })
 
+  it("a public-safe card fails closed: no recording link and no verbatim excerpt", async () => {
+    // The backend public projection sends the playback URL and the verbatim
+    // excerpt as null even on a public-safe card — the recruiter sees only the
+    // derived summary + the "private" notes.
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      withInspection({
+        question_text: "How does your model make predictions?",
+        mapped_skill: "Python",
+        qualitative_status: "Explained with evidence",
+        safe_answer_summary: "The candidate explained this Python claim.",
+        public_safe: true,
+        withheld_reason: null,
+        video_available: false,
+        video_playback_url: null,
+        clip_playback_url: null,
+        transcript_excerpt_available: false,
+        safe_transcript_excerpt: null,
+        transcript_access_note: "Defense recording and transcript are private. Recruiters see only verified summary and timestamp labels.",
+        recording_access_note: "Defense recording and transcript are private. Recruiters see only verified summary and timestamp labels.",
+      }),
+    )
+    const { container } = render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    // No <video> element and no verbatim transcript excerpt on the recruiter view.
+    expect(screen.queryByTestId("pdi-video")).toBeNull()
+    expect(screen.queryByTestId("pdi-transcript-excerpt")).toBeNull()
+    // Both fall back to the fixed "private" note.
+    expect(screen.getByTestId("pdi-recording-note")).toHaveTextContent(/private/i)
+    expect(screen.getByTestId("pdi-transcript-note")).toHaveTextContent(/private/i)
+    // No storage path / signed URL / segments leak.
+    const html = container.innerHTML
+    for (const unsafe of ["transcript_segments", "storage_path", "signed_url", "vbr/sessions"]) {
+      expect(html).not.toContain(unsafe)
+    }
+  })
+
   it("shows nothing extra when a featured project has no inspection cards", async () => {
     vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
     render(<PublicPassportView slug="slug123" />)

@@ -81,6 +81,21 @@ export type ProjectDefenseInspectionCard = {
   limitation?: string
   public_safe?: boolean
   withheld_reason?: string | null
+  // Playable evidence + safe transcript excerpt. The playback URLs are an
+  // authorized owner URL only (present on the private view); the public
+  // projection sends them as null. `safe_transcript_excerpt` is a bounded,
+  // sanitized snippet — never the full transcript or raw transcript_segments.
+  video_available?: boolean
+  video_playback_url?: string | null
+  clip_playback_url?: string | null
+  transcript_excerpt_available?: boolean
+  safe_transcript_excerpt?: string | null
+  transcript_excerpt_start_label?: string | null
+  transcript_excerpt_end_label?: string | null
+  transcript_access_note?: string
+  recording_access_note?: string
+  is_private_owner_view?: boolean | null
+  is_public_share_safe?: boolean
 }
 
 export type VBRSessionResponse = {

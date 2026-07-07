@@ -1551,6 +1551,15 @@ DEFENSE_INSPECTION_WITHHELD_MESSAGE = (
     "public-safe."
 )
 
+# Fixed public note for the recording/transcript access fields (mirrors the
+# inspection service's ``DEFENSE_PRIVATE_WITHHELD_NOTE``). Recruiters never
+# receive a private recording link or the raw transcript.
+_DEFENSE_PRIVATE_WITHHELD_NOTE = (
+    "Defense recording and transcript are private. Recruiters see only verified "
+    "summary and timestamp labels."
+)
+
+
 # Fixed closing limitation (mirrors the inspection builder). Safe to echo.
 _INSPECTION_LIMITATION = (
     "Project Defense is explanation evidence. It should be read with GitHub "
@@ -1594,6 +1603,18 @@ def _withheld_inspection_card(item: dict[str, Any], index: int) -> dict[str, Any
         "limitation": _INSPECTION_LIMITATION,
         "public_safe": False,
         "withheld_reason": DEFENSE_INSPECTION_WITHHELD_MESSAGE,
+        # Fail-closed playable-evidence fields: no recording link, no transcript.
+        "video_available": False,
+        "video_playback_url": None,
+        "clip_playback_url": None,
+        "transcript_excerpt_available": False,
+        "safe_transcript_excerpt": None,
+        "transcript_excerpt_start_label": None,
+        "transcript_excerpt_end_label": None,
+        "transcript_access_note": _DEFENSE_PRIVATE_WITHHELD_NOTE,
+        "recording_access_note": _DEFENSE_PRIVATE_WITHHELD_NOTE,
+        "is_private_owner_view": False,
+        "is_public_share_safe": False,
     }
 
 
@@ -1662,6 +1683,17 @@ def public_safe_project_defense_inspection(
         clip_start = float(clip_start) if isinstance(clip_start, (int, float)) and clip_available else None
         clip_end = float(clip_end) if isinstance(clip_end, (int, float)) and clip_available else None
 
+        # Playable evidence + transcript excerpt fail closed on the public
+        # recruiter surface. The recording playback URL is NEVER exposed, and the
+        # verbatim transcript excerpt (the candidate's own spoken words) is
+        # withheld even on a public-safe card — recruiters see only the DERIVED
+        # ``safe_answer_summary`` + timestamp labels, matching the same invariant
+        # the answer-evidence projection enforces (raw answer text never goes
+        # public). Transcript excerpts are an owner-only enrichment.
+        public_excerpt = None
+        transcript_excerpt_available = False
+        transcript_access_note = _DEFENSE_PRIVATE_WITHHELD_NOTE
+
         out.append(
             {
                 "evidence_id_safe": f"defense-inspection-{index}",
@@ -1709,6 +1741,27 @@ def public_safe_project_defense_inspection(
                 "limitation": scrub_public_text(item.get("limitation")) or _INSPECTION_LIMITATION,
                 "public_safe": True,
                 "withheld_reason": None,
+                # Fail-closed playback: no private recording link, ever. A safe
+                # transcript excerpt may appear on this public-safe card.
+                "video_available": False,
+                "video_playback_url": None,
+                "clip_playback_url": None,
+                "transcript_excerpt_available": transcript_excerpt_available,
+                "safe_transcript_excerpt": public_excerpt,
+                "transcript_excerpt_start_label": _scrub_text_or_none(
+                    item.get("transcript_excerpt_start_label")
+                )
+                if transcript_excerpt_available
+                else None,
+                "transcript_excerpt_end_label": _scrub_text_or_none(
+                    item.get("transcript_excerpt_end_label")
+                )
+                if transcript_excerpt_available
+                else None,
+                "transcript_access_note": transcript_access_note,
+                "recording_access_note": _DEFENSE_PRIVATE_WITHHELD_NOTE,
+                "is_private_owner_view": False,
+                "is_public_share_safe": True,
             }
         )
     return out

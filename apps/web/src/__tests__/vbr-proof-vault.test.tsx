@@ -954,11 +954,19 @@ describe("SkillReportView — Project Defense inspection", () => {
     expect(screen.getByTestId("pdi-limitation")).toHaveTextContent("explanation evidence")
   })
 
-  it("never renders raw transcript, segments, storage paths, signed URLs, or internal ids", () => {
-    const { container } = render(<SkillReportView report={inspectionChainReport()} />)
+  it("never renders raw transcript segments, storage paths, signed URLs, or internal ids", () => {
+    // A safe, bounded transcript excerpt is allowed; the raw segments array,
+    // storage paths, signed URLs, and internal ids are not.
+    const { container } = render(
+      <SkillReportView
+        report={inspectionChainReport({
+          transcript_excerpt_available: true,
+          safe_transcript_excerpt: "I trained a regression model and validated features first.",
+        })}
+      />,
+    )
     const html = container.innerHTML
     for (const unsafe of [
-      "transcript",
       "transcript_segments",
       "storage_path",
       "signed_url",
@@ -970,6 +978,80 @@ describe("SkillReportView — Project Defense inspection", () => {
     }
     // Clip seconds are a locator, not raw media — no media path/URL is emitted.
     expect(html).not.toContain("https://storage")
+  })
+
+  it("renders the Recording / clip section with a video element only for a safe playback URL", () => {
+    const { rerender } = render(
+      <SkillReportView
+        report={inspectionChainReport({
+          video_available: true,
+          video_playback_url: "https://signed.example/full.webm?token=xyz",
+          recording_access_note: "Your defense recording is available to play here.",
+        })}
+      />,
+    )
+    // The Recording / clip section is present with a real <video> player.
+    expect(screen.getByTestId("pdi-recording")).toBeInTheDocument()
+    const video = screen.getByTestId("pdi-video") as HTMLVideoElement
+    expect(video.tagName).toBe("VIDEO")
+    expect(video).toHaveAttribute("src", "https://signed.example/full.webm?token=xyz")
+    expect(screen.queryByTestId("pdi-recording-note")).toBeNull()
+
+    // No safe playback URL → no <video>, just the access note.
+    rerender(
+      <SkillReportView
+        report={inspectionChainReport({
+          video_available: true,
+          video_playback_url: null,
+          recording_access_note: "A defense recording exists, but a safe playback link is not available from this view yet.",
+        })}
+      />,
+    )
+    expect(screen.queryByTestId("pdi-video")).toBeNull()
+    expect(screen.getByTestId("pdi-recording-note")).toHaveTextContent("not available from this view yet")
+  })
+
+  it("renders a bounded transcript excerpt when provided, else the access note", () => {
+    const { rerender } = render(
+      <SkillReportView
+        report={inspectionChainReport({
+          transcript_excerpt_available: true,
+          safe_transcript_excerpt: "I trained a regression model and validated the features before inference.",
+          transcript_excerpt_start_label: "03:10",
+          transcript_excerpt_end_label: "03:25",
+        })}
+      />,
+    )
+    expect(screen.getByTestId("pdi-transcript-excerpt")).toHaveTextContent("regression model")
+    expect(screen.getByTestId("pdi-transcript")).toHaveTextContent("03:10 – 03:25")
+
+    // No excerpt → the safe access note is shown instead.
+    rerender(
+      <SkillReportView
+        report={inspectionChainReport({
+          transcript_excerpt_available: false,
+          safe_transcript_excerpt: null,
+          transcript_access_note: "No transcript excerpt is available for this answer.",
+        })}
+      />,
+    )
+    expect(screen.queryByTestId("pdi-transcript-excerpt")).toBeNull()
+    expect(screen.getByTestId("pdi-transcript-note")).toHaveTextContent("No transcript excerpt is available")
+  })
+
+  it("never injects a non-http playback URL into the video element", () => {
+    render(
+      <SkillReportView
+        report={inspectionChainReport({
+          video_available: true,
+          // A bare storage key / unsafe scheme must never become a media src.
+          video_playback_url: "vbr/sessions/s1/processed/full.webm",
+          recording_access_note: "A defense recording exists, but a safe playback link is not available from this view yet.",
+        })}
+      />,
+    )
+    expect(screen.queryByTestId("pdi-video")).toBeNull()
+    expect(screen.getByTestId("pdi-recording-note")).toBeInTheDocument()
   })
 
   it("shows a withheld placeholder and no answer content for a not-public-safe card", () => {

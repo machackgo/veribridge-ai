@@ -25,6 +25,18 @@ const DEFAULT_LIMITATION =
 /** Qualitative statuses that read as a genuine, targeted explanation. */
 const EXPLAINED_STATUSES = new Set(["Explained with evidence", "Partially explained"])
 
+/**
+ * A URL is playable in a `<video>` element only when it is an ordinary http(s)
+ * URL. This blocks `javascript:` / `blob:` / `data:` and bare storage keys — we
+ * never inject a non-http string as a media source. The backend already returns
+ * an authorized owner URL (or null); this is a defensive front-end gate.
+ */
+function isPlayableUrl(url: string | null | undefined): url is string {
+  if (typeof url !== "string") return false
+  const trimmed = url.trim()
+  return /^https?:\/\//i.test(trimmed)
+}
+
 function badgeLabel(card: ProjectDefenseInspectionCardData): { label: string; tone: "indigo" | "amber" | "slate" } {
   const corroborates = card.corroborates_github || card.corroborates_website || card.corroborates_document
   if (corroborates) return { label: "Corroborating defense", tone: "indigo" }
@@ -46,6 +58,22 @@ export function ProjectDefenseInspectionCard({
   if (card.corroborates_website) corroborations.push("Website")
   if (card.corroborates_document) corroborations.push("Document")
   const explained = EXPLAINED_STATUSES.has(String(card.qualitative_status || ""))
+
+  // Prefer a bounded clip URL (same signed source + #t media fragment); fall
+  // back to the full recording. Only ever an http(s) URL reaches the element.
+  const playbackUrl = isPlayableUrl(card.clip_playback_url)
+    ? card.clip_playback_url
+    : isPlayableUrl(card.video_playback_url)
+      ? card.video_playback_url
+      : null
+  const recordingNote = card.recording_access_note
+  const transcriptExcerpt =
+    card.transcript_excerpt_available && card.safe_transcript_excerpt
+      ? card.safe_transcript_excerpt
+      : null
+  const transcriptRange = [card.transcript_excerpt_start_label, card.transcript_excerpt_end_label]
+    .filter((l) => typeof l === "string" && l.trim())
+    .join(" – ")
 
   return (
     <div
@@ -125,6 +153,58 @@ export function ProjectDefenseInspectionCard({
               <span style={{ fontSize: 11, color: TOKEN.muted }}>defense clip locator</span>
             </div>
           )}
+
+          {/* Recording / clip — a real player only with a safe owner URL */}
+          <div data-testid="pdi-recording">
+            <span style={{ fontSize: 11, fontWeight: 700, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: 0.4 }}>
+              Recording / clip
+            </span>
+            {playbackUrl ? (
+              <video
+                data-testid="pdi-video"
+                controls
+                preload="metadata"
+                src={playbackUrl}
+                style={{ width: "100%", marginTop: 4, borderRadius: 8, background: "#000", maxHeight: 320 }}
+              />
+            ) : (
+              recordingNote && (
+                <p data-testid="pdi-recording-note" style={{ fontSize: 12, color: TOKEN.muted, margin: "2px 0 0", lineHeight: 1.5 }}>
+                  {recordingNote}
+                </p>
+              )
+            )}
+          </div>
+
+          {/* Transcript excerpt — bounded, sanitized snippet (never full dump) */}
+          <div data-testid="pdi-transcript">
+            <span style={{ fontSize: 11, fontWeight: 700, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: 0.4 }}>
+              Transcript excerpt
+              {transcriptRange && <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}> · {transcriptRange}</span>}
+            </span>
+            {transcriptExcerpt ? (
+              <p
+                data-testid="pdi-transcript-excerpt"
+                style={{
+                  fontSize: 12,
+                  color: TOKEN.inkSoft,
+                  margin: "2px 0 0",
+                  lineHeight: 1.5,
+                  borderLeft: `2px solid ${TOKEN.line}`,
+                  paddingLeft: 8,
+                  fontStyle: "italic",
+                }}
+              >
+                “{transcriptExcerpt}”
+              </p>
+            ) : (
+              card.transcript_access_note && (
+                <p data-testid="pdi-transcript-note" style={{ fontSize: 12, color: TOKEN.muted, margin: "2px 0 0", lineHeight: 1.5 }}>
+                  {card.transcript_access_note}
+                </p>
+              )
+            )}
+          </div>
 
           {/* Corroborates */}
           {corroborations.length > 0 && (

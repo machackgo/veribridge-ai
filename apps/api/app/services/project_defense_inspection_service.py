@@ -41,6 +41,12 @@ from app.services.project_defense_evidence_chips import _format_timestamp
 __all__ = [
     "build_project_defense_inspection_cards",
     "PROJECT_DEFENSE_INSPECTION_LIMITATION",
+    "RECORDING_PLAYABLE_NOTE",
+    "RECORDING_EXISTS_NO_PLAYBACK_NOTE",
+    "RECORDING_NONE_NOTE",
+    "DEFENSE_PRIVATE_WITHHELD_NOTE",
+    "TRANSCRIPT_EXCERPT_NOTE",
+    "TRANSCRIPT_NONE_NOTE",
 ]
 
 # Fixed, honest closing limitation shown on every inspection card. Project
@@ -50,6 +56,30 @@ PROJECT_DEFENSE_INSPECTION_LIMITATION = (
     "Proof for implementation, Website Proof for runtime behavior, and Document "
     "Proof for written project evidence."
 )
+
+# ── Access notes (recording + transcript) — fixed, safe, human-readable ───────
+#
+# Never a storage path, signed URL, or internal id — just a short status line the
+# card renders when there is no playable URL / no excerpt to show.
+RECORDING_PLAYABLE_NOTE = (
+    "Your defense recording is available to play here. This recording is private "
+    "to you."
+)
+RECORDING_EXISTS_NO_PLAYBACK_NOTE = (
+    "A defense recording exists, but a safe playback link is not available from "
+    "this view yet."
+)
+RECORDING_NONE_NOTE = "No defense recording is available for this answer yet."
+# Fixed public withheld message (recording + transcript both private).
+DEFENSE_PRIVATE_WITHHELD_NOTE = (
+    "Defense recording and transcript are private. Recruiters see only verified "
+    "summary and timestamp labels."
+)
+TRANSCRIPT_EXCERPT_NOTE = (
+    "Safe excerpt shown around the cited moment. The full transcript stays "
+    "private."
+)
+TRANSCRIPT_NONE_NOTE = "No transcript excerpt is available for this answer."
 
 _CLEAN_PRIVACY_STATUSES = frozenset({"clean"})
 
@@ -205,6 +235,9 @@ def build_project_defense_inspection_cards(
     video_chips: list[dict[str, Any]] | None = None,
     project_title: str = "",
     only_skill: str | None = None,
+    answer_excerpts: dict[str, dict[str, Any]] | None = None,
+    recording: dict[str, Any] | None = None,
+    is_owner_view: bool = False,
 ) -> list[dict[str, Any]]:
     """Build owner/private Project Defense inspection cards.
 
@@ -219,6 +252,14 @@ def build_project_defense_inspection_cards(
     matches are kept. Untargeted / generic answers (no mapped skill) never appear
     under a specific skill — they surface only in the unscoped owner view as
     generic project explanation.
+
+    ``answer_excerpts`` (``question_id`` → ``{safe_transcript_excerpt, …}``) and
+    ``recording`` (``{available, playback_url}``) are the *authorized, owner-only*
+    playable-evidence inputs built by
+    :mod:`defense_evidence_access_service`. They are attached to the card only
+    when ``is_owner_view`` is set; the public projection re-derives its own cards
+    and drops both. ``answer_excerpts`` carries only bounded, sanitized snippets —
+    never the raw ``transcript_segments`` array.
 
     Returns plain dicts matching ``ProjectDefenseInspectionCard``; the public
     fail-closed projection is applied separately.
@@ -262,6 +303,48 @@ def build_project_defense_inspection_cards(
 
         locator = _clip_locator(item, chips_by_question, mapped_skill)
 
+        # ── Authorized owner playback + safe transcript excerpt ───────────────
+        # Attached only in the owner view; the public projection re-derives its
+        # own cards and never sees these.
+        qid = str(item.get("question_id") or "")
+        excerpt_info = (answer_excerpts or {}).get(qid) if (is_owner_view and answer_excerpts) else None
+
+        recording_available = bool(is_owner_view and recording and recording.get("available"))
+        playback_url = (
+            str(recording.get("playback_url"))
+            if is_owner_view and recording and recording.get("playback_url")
+            else None
+        )
+        # A safe media-fragment clip URL only when there is a real playback URL
+        # AND a bounded time range — same signed URL, just a #t=start,end anchor.
+        clip_playback_url = None
+        if playback_url and locator["clip_start_seconds"] is not None:
+            start = locator["clip_start_seconds"]
+            end = locator["clip_end_seconds"]
+            clip_playback_url = (
+                f"{playback_url}#t={start},{end}" if end is not None else f"{playback_url}#t={start}"
+            )
+
+        if playback_url:
+            recording_access_note = RECORDING_PLAYABLE_NOTE
+        elif recording_available:
+            recording_access_note = RECORDING_EXISTS_NO_PLAYBACK_NOTE
+        else:
+            recording_access_note = RECORDING_NONE_NOTE
+
+        if excerpt_info:
+            transcript_excerpt_available = True
+            safe_transcript_excerpt = str(excerpt_info.get("safe_transcript_excerpt") or "") or None
+            transcript_excerpt_start_label = excerpt_info.get("transcript_excerpt_start_label")
+            transcript_excerpt_end_label = excerpt_info.get("transcript_excerpt_end_label")
+            transcript_access_note = TRANSCRIPT_EXCERPT_NOTE
+        else:
+            transcript_excerpt_available = False
+            safe_transcript_excerpt = None
+            transcript_excerpt_start_label = None
+            transcript_excerpt_end_label = None
+            transcript_access_note = TRANSCRIPT_NONE_NOTE
+
         cards.append(
             {
                 "evidence_id_safe": str(
@@ -294,6 +377,18 @@ def build_project_defense_inspection_cards(
                 or PROJECT_DEFENSE_INSPECTION_LIMITATION,
                 "public_safe": public_safe,
                 "withheld_reason": None,
+                # Playable evidence + safe transcript excerpt (owner-only).
+                "video_available": recording_available,
+                "video_playback_url": playback_url,
+                "clip_playback_url": clip_playback_url,
+                "transcript_excerpt_available": transcript_excerpt_available,
+                "safe_transcript_excerpt": safe_transcript_excerpt,
+                "transcript_excerpt_start_label": transcript_excerpt_start_label,
+                "transcript_excerpt_end_label": transcript_excerpt_end_label,
+                "transcript_access_note": transcript_access_note,
+                "recording_access_note": recording_access_note,
+                "is_private_owner_view": is_owner_view,
+                "is_public_share_safe": public_safe,
             }
         )
     return cards

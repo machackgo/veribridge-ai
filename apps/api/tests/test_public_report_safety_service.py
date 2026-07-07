@@ -1937,3 +1937,102 @@ def test_public_inspection_strips_unsafe_free_text_and_ids() -> None:
     blob = json.dumps(cards[0])
     for unsafe in ("vbr/sessions", "token=abc", "123-45-6789", "internal-qid-123", "question_id"):
         assert unsafe not in blob
+
+
+# ── Playable evidence + transcript excerpt — fail-closed public projection ─────
+
+
+def test_public_inspection_never_exposes_recording_playback_url() -> None:
+    """A recruiter NEVER receives a private recording link, even on a clean,
+    public-safe card. The playback URLs are dropped and ``video_available`` is
+    reported as False with the fixed private-recording note."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    owner = _owner_inspection_card(
+        video_available=True,
+        video_playback_url="https://proj.supabase.co/storage/v1/object/sign/vbr/sessions/s1/processed/full.webm?token=abc",
+        clip_playback_url="https://proj.supabase.co/storage/v1/object/sign/vbr/sessions/s1/processed/full.webm?token=abc#t=192,205",
+        recording_access_note="Your defense recording is available to play here.",
+    )
+    cards = public_safe_project_defense_inspection([owner], {"privacy_scan_status": "clean"})
+    card = cards[0]
+    assert card["public_safe"] is True
+    assert card["video_playback_url"] is None
+    assert card["clip_playback_url"] is None
+    assert card["video_available"] is False
+    # No storage path / signed URL / token leaks anywhere on the card.
+    blob = json.dumps(card).lower()
+    for unsafe in ("supabase", "storage/v1/object/sign", "token=abc", "vbr/sessions"):
+        assert unsafe not in blob
+    # The recruiter-facing recording note is the fixed private message.
+    assert "private" in card["recording_access_note"].lower()
+
+
+def test_public_inspection_withholds_verbatim_transcript_excerpt_even_when_clean() -> None:
+    """Fail closed: the candidate's verbatim transcript excerpt is an owner-only
+    enrichment. Even on a clean, public-safe card the recruiter never receives
+    the spoken words — only the derived summary + timestamp labels."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    owner = _owner_inspection_card(
+        transcript_excerpt_available=True,
+        safe_transcript_excerpt="I trained a regression model and validated the features before inference.",
+        transcript_excerpt_start_label="03:10",
+        transcript_excerpt_end_label="03:25",
+    )
+    cards = public_safe_project_defense_inspection([owner], {"privacy_scan_status": "clean"})
+    card = cards[0]
+    assert card["public_safe"] is True
+    assert card["transcript_excerpt_available"] is False
+    assert card["safe_transcript_excerpt"] is None
+    assert card["transcript_excerpt_start_label"] is None
+    assert card["transcript_excerpt_end_label"] is None
+    # The candidate's verbatim words never appear on the public card.
+    assert "regression model" not in json.dumps(card)
+    assert "private" in card["transcript_access_note"].lower()
+
+
+def test_public_inspection_unsafe_withholds_transcript_excerpt_and_video() -> None:
+    """When the session privacy review did not pass, the transcript excerpt and
+    every playback URL are withheld along with the answer text."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    owner = _owner_inspection_card(
+        video_available=True,
+        video_playback_url="https://x/y?token=abc",
+        transcript_excerpt_available=True,
+        safe_transcript_excerpt="something the candidate said",
+    )
+    cards = public_safe_project_defense_inspection([owner], {"privacy_scan_status": "flagged"})
+    card = cards[0]
+    assert card["public_safe"] is False
+    assert card["video_playback_url"] is None
+    assert card["clip_playback_url"] is None
+    assert card["video_available"] is False
+    assert card["safe_transcript_excerpt"] is None
+    assert card["transcript_excerpt_available"] is False
+    assert "something the candidate said" not in json.dumps(card)
+    assert "private" in card["transcript_access_note"].lower()
+
+
+def test_public_inspection_scrubs_unsafe_transcript_excerpt() -> None:
+    """Defense in depth: a storage path / token that slipped into the owner
+    excerpt is scrubbed before it reaches the public card."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    owner = _owner_inspection_card(
+        transcript_excerpt_available=True,
+        safe_transcript_excerpt="see storage_path=vbr/sessions/abc and https://x/y?token=abc123",
+    )
+    cards = public_safe_project_defense_inspection([owner], {"privacy_scan_status": "clean"})
+    blob = json.dumps(cards[0])
+    for unsafe in ("vbr/sessions", "token=abc123", "storage_path=vbr"):
+        assert unsafe not in blob
