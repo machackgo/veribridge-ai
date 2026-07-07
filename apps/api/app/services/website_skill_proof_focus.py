@@ -51,6 +51,8 @@ __all__ = [
     "DERIVABLE_WEBSITE_RELEVANCE_KEYS",
     "SCREENSHOT_ACCESS_PERMISSION_REQUIRED",
     "SCREENSHOT_ACCESS_UNAVAILABLE",
+    "VERIFICATION_MODE_LIVE",
+    "VERIFICATION_MODE_RECORDED",
     "WEBSITE_STRENGTHEN_ACTION",
     "WEBSITE_UNMAPPED_GENERIC_REASON",
     "attach_website_corroboration",
@@ -73,6 +75,8 @@ __all__ = [
     "website_relevance_can_map_skill",
     "website_skill_relevance_summary",
     "website_unmapped_skill_reason",
+    "website_verification_mode_label",
+    "website_verification_mode_note",
 ]
 
 
@@ -1204,6 +1208,60 @@ _ALLOWED_SCREENSHOT_ACCESS_LABELS = frozenset(
     {SCREENSHOT_ACCESS_PERMISSION_REQUIRED, SCREENSHOT_ACCESS_UNAVAILABLE}
 )
 
+# ── Recruiter verification mode (GitHub-Proof-style inspection) ────────────────
+#
+# GitHub Proof lets a recruiter click through to the exact public source. The
+# Website Proof counterpart splits into two honest modes:
+#   * DIRECTLY VERIFIABLE LIVE — a public, safe live URL exists (a deployed app
+#     URL attached to the project, or a reachable live-check final URL), so the
+#     recruiter can open the current site and inspect runtime behaviour
+#     themselves; the recorded evidence shows what VeriBridge observed.
+#   * RECORDED REPLAY ONLY — no public live URL is available (the proof was
+#     captured from a local/private/preview host, or none was attached), so the
+#     recruiter cannot open the original runtime; VeriBridge shows a safe replay
+#     of the recorded behaviour instead. Deploying the site would unlock direct
+#     verification.
+# NEVER a numeric score — a closed enum + closed recruiter copy only.
+VERIFICATION_MODE_LIVE = "directly_verifiable_live"
+VERIFICATION_MODE_RECORDED = "recorded_replay_only"
+_ALLOWED_VERIFICATION_MODES = frozenset(
+    {VERIFICATION_MODE_LIVE, VERIFICATION_MODE_RECORDED}
+)
+_VERIFICATION_MODE_LABELS: dict[str, str] = {
+    VERIFICATION_MODE_LIVE: "Directly verifiable live",
+    VERIFICATION_MODE_RECORDED: "Recorded replay only",
+}
+_VERIFICATION_MODE_NOTES: dict[str, str] = {
+    VERIFICATION_MODE_LIVE: (
+        "A public live URL is available, so a recruiter can open the site and "
+        "inspect the current runtime/product behaviour directly. The recorded "
+        "evidence below shows what VeriBridge observed during the proof session."
+    ),
+    VERIFICATION_MODE_RECORDED: (
+        "This proof was captured from a local or non-public website, so a "
+        "recruiter cannot open the original runtime URL directly. VeriBridge "
+        "shows a recruiter-safe replay of the recorded website behaviour instead. "
+        "Deploying the site to a public URL would allow direct recruiter "
+        "verification."
+    ),
+}
+
+
+def website_verification_mode_label(mode: str | None) -> str:
+    """Closed recruiter label for a verification mode (fail-closed to recorded)."""
+    key = str(mode or "")
+    if key not in _ALLOWED_VERIFICATION_MODES:
+        key = VERIFICATION_MODE_RECORDED
+    return _VERIFICATION_MODE_LABELS[key]
+
+
+def website_verification_mode_note(mode: str | None) -> str:
+    """Closed recruiter paragraph for a verification mode (fail-closed)."""
+    key = str(mode or "")
+    if key not in _ALLOWED_VERIFICATION_MODES:
+        key = VERIFICATION_MODE_RECORDED
+    return _VERIFICATION_MODE_NOTES[key]
+
 # Purposes where the user demonstrably DROVE the page (input flow) vs. where a
 # computed output/result was demonstrably visible.
 _INPUT_FLOW_PURPOSES = frozenset(
@@ -1386,6 +1444,19 @@ def build_website_evidence_card(
     # does not need.
     observed = observed[:10] if len(observed) >= 10 else (observed or None)
 
+    # Recruiter verification mode — the GitHub-Proof-style "you can inspect it
+    # yourself" split. A recruiter can DIRECTLY verify only when a public, safe
+    # live URL exists (a revalidated attached deployed URL, or a reachable
+    # live-check final URL that passed ``is_safe_public_url``). Otherwise the
+    # proof is recorded-replay-only and a public deployment is recommended.
+    # localhost/127.0.0.1/private/preview hosts never survive the safe-URL gate,
+    # so they always fall to recorded-replay-only — never linked as "live".
+    has_public_live_url = bool(open_url or live_final_url)
+    verification_mode = (
+        VERIFICATION_MODE_LIVE if has_public_live_url else VERIFICATION_MODE_RECORDED
+    )
+    deployment_recommended = verification_mode == VERIFICATION_MODE_RECORDED
+
     return {
         "card_key": card_key,
         "route_or_page": route_or_page,
@@ -1412,6 +1483,14 @@ def build_website_evidence_card(
         ),
         "evidence_basis_chips": chips,
         "limitation": website_limitation_for(relevance, skill),
+        # Recruiter verification mode (GitHub-Proof-style inspection split):
+        # "directly_verifiable_live" when a public safe live URL is available,
+        # else "recorded_replay_only" with a deployment recommendation. The
+        # label/note are closed recruiter copy — never a score.
+        "verification_mode": verification_mode,
+        "verification_mode_label": website_verification_mode_label(verification_mode),
+        "verification_note": website_verification_mode_note(verification_mode),
+        "deployment_recommended": deployment_recommended,
         "open_website_url": open_url,
         "screenshot_available": screenshot_available,
         "screenshot_access_label": screenshot_access,

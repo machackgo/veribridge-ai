@@ -9,6 +9,7 @@ import { render, screen, waitFor, fireEvent, within } from "@testing-library/rea
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
 import { buildPassportGraph } from "../app/student/vbr/passport/passport-graph"
+import { CAPABILITY_AREAS } from "@/lib/passport-capabilities"
 import { ProofVaultView } from "../app/student/vbr/passport/vault/ProofVaultView"
 import type {
   PrivateWorkPassport,
@@ -2178,6 +2179,14 @@ const capabilityProjectIds = () =>
 
 describe("PrivatePassportView — high-level Role Area capability filter", () => {
   beforeEach(() => {
+    // Clear any Passport Card role-area selection persisted by an earlier test
+    // file (localStorage leaks across files) so the card face shows the default
+    // top role areas (incl. Computer Vision) these tests click.
+    try {
+      window.localStorage.clear()
+    } catch {
+      /* jsdom localStorage always available; guard just in case */
+    }
     const p = makeRoleAreaPassport()
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
@@ -2450,6 +2459,54 @@ describe("PrivatePassportView — high-level Role Area capability filter", () =>
     const text = screen.getByTestId("capability-summary").textContent ?? ""
     expect(text).not.toMatch(/octocat\/Hello-World/)
     expect(text).not.toMatch(/\/100|%|confidence:\s*\d/i)
+  })
+
+  // ── Passport Card role chip → high-level Role Area filter (integration) ───────
+  //
+  // The Passport Card preview at the top of the page drives the SAME Role Area
+  // filter as the dropdown. A card role chip is a high-level role area — clicking
+  // it must set the Role Area filter by the chip's canonical id and reset the
+  // low-level Skill filter, never select an arbitrary underlying skill.
+
+  /** The Computer Vision role chip on the top card preview. */
+  const cardCvChip = () =>
+    within(screen.getByTestId("passport-card-private"))
+      .getAllByTestId("passport-card-capability")
+      .find((c) => (c.textContent ?? "").trim() === "Computer Vision")!
+
+  it("clicking a Passport Card role chip sets the Role Area filter and resets the Skill filter", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Pre-select a low-level skill in the dropdown to prove the chip resets it.
+    fireEvent.change(screen.getByTestId("passport-skill-filter"), { target: { value: "docker" } })
+    expect(screen.getByTestId("passport-skill-filter")).toHaveValue("docker")
+
+    fireEvent.click(cardCvChip())
+    // Role Area dropdown reflects the clicked chip; Skill drops back to "all".
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("computer-vision")
+    expect(screen.getByTestId("passport-skill-filter")).toHaveValue("")
+    // High-level capability card appears for that role area.
+    expect(screen.getByTestId("capability-summary")).toHaveAttribute("data-capability", "Computer Vision")
+  })
+
+  it("card role chip ids line up with the Role Area filter option ids", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Every option value in the Role Area dropdown is a canonical role-area id.
+    const roleSelect = screen.getByTestId("passport-role-area-filter")
+    const optionIds = within(roleSelect)
+      .getAllByRole("option")
+      .map((o) => (o as HTMLOptionElement).value)
+      .filter(Boolean)
+    const canonicalIds = new Set(CAPABILITY_AREAS.map((a) => a.id))
+    for (const id of optionIds) expect(canonicalIds.has(id)).toBe(true)
+
+    // Clicking the Computer Vision card chip selects an id that IS a real option.
+    fireEvent.click(cardCvChip())
+    expect(optionIds).toContain("computer-vision")
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("computer-vision")
   })
 
   // ── Richer role-area narrative (A–H) ───────────────────────────────────────

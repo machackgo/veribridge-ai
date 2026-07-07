@@ -28,6 +28,7 @@ import {
 } from "@/lib/vbr-api"
 import { buildPassportGraph } from "@/app/student/vbr/passport/passport-graph"
 import { publicPassportCardUrl, publicPassportUrl } from "@/lib/app-url"
+import { CAPABILITY_AREAS, matchAreaIndex } from "@/lib/passport-capabilities"
 
 /** Canonical proof-coverage order for the card's proof chips. */
 export const PROOF_COVERAGE_ORDER = [
@@ -82,89 +83,16 @@ export function cardRoleAreasStorageKey(idOrSlug: string | null | undefined): st
 // ── Capability grouping ───────────────────────────────────────────────────────
 
 /**
- * High-level, recruiter-friendly role areas. Detailed evidence skills (e.g.
- * "Teachable Machine", "FastAPI", "Vercel Deployment") are grouped into ONE of
- * these so the card reads like a set of role areas a recruiter can hire for —
- * not a dump of low-level tools. Order is priority: a skill is assigned to the
- * first area whose keyword it contains, so more specific/high-value areas win
- * (e.g. "FastAPI" → Backend APIs before the generic Software Engineering area).
- * `weak` areas (documentation/communication) are ranked BELOW technical areas so
- * they never dominate the card's role chips unless nothing technical exists.
+ * The high-level role-area grouping is the ONE canonical mapping in
+ * `@/lib/passport-capabilities` ({@link CAPABILITY_AREAS} + {@link matchAreaIndex}) —
+ * the SAME source of truth the Work Passport "Role area" filter uses. The card
+ * must never carry a second, incompatible capability mapping, so both surfaces
+ * agree on which role area a skill belongs to (and every card chip exposes that
+ * area's stable {@link CapabilityArea.id} as `roleAreaId`). Detailed evidence
+ * skills (e.g. "Teachable Machine", "FastAPI", "Vercel Deployment") are grouped
+ * into ONE role area by first-keyword match; `weak` areas (documentation /
+ * communication) rank BELOW technical areas so they never dominate the chips.
  */
-const CAPABILITY_AREAS: { label: string; keywords: string[]; weak?: boolean }[] = [
-  {
-    label: "Machine Learning",
-    keywords: [
-      "machine learning", "deep learning", "model training", "model train",
-      "teachable machine", "neural network", "neural", "tensorflow", "pytorch",
-      "keras", "scikit", "supervised learning", "unsupervised", "reinforcement",
-      "predictive model", "ml model",
-    ],
-  },
-  {
-    label: "Computer Vision",
-    keywords: [
-      "computer vision", "object detection", "image segmentation", "image recognition",
-      "image classification", "opencv", "face detection", "convolutional", "cnn",
-      "image processing", "computer graphics",
-    ],
-  },
-  {
-    label: "Data Science / Applied AI",
-    keywords: [
-      "data science", "data analysis", "data analytics", "applied ai", "pandas",
-      "numpy", "geospatial", "statistics", "statistical", "analytics",
-      "data visualization", "jupyter", "python",
-    ],
-  },
-  {
-    label: "AI Product Engineering",
-    keywords: [
-      "llm", "large language model", "prompt", "langchain", "openai",
-      "generative ai", "genai", "chatbot", "retrieval augmented", "rag", "ai agent",
-    ],
-  },
-  {
-    label: "Backend APIs",
-    keywords: [
-      "fastapi", "backend api", "backend", "rest api", "restful", "graphql",
-      "flask", "django", "express", "node backend", "server-side", "sql",
-      "postgres", "postgresql", "database", "endpoint", "microservice", "api",
-    ],
-  },
-  {
-    label: "Cloud / MLOps",
-    keywords: [
-      "docker", "kubernetes", "google cloud", "gcp", "aws", "azure", "vercel",
-      "ci/cd", "cicd", "devops", "deployment", "deploy", "mlops", "terraform",
-      "pipeline", "serverless", "cloud run", "cloud",
-    ],
-  },
-  {
-    label: "Full-Stack / Frontend AI",
-    keywords: [
-      "javascript", "typescript", "react", "next.js", "nextjs", "frontend",
-      "front-end", "browser api", "browser", "html", "css", "tailwind", "vue",
-      "svelte", "web app", "interactive demo", "ui/ux", "user interface",
-    ],
-  },
-  {
-    label: "Software Engineering",
-    keywords: [
-      "java", "c++", "c#", "golang", "rust", "kotlin", "algorithm",
-      "data structure", "object-oriented", "software engineering",
-      "software development", "version control", "git", "unit test", "testing",
-    ],
-  },
-  {
-    label: "Documentation & Communication",
-    keywords: [
-      "documentation", "technical writing", "technical documentation",
-      "communication", "presentation", "report writing", "writing",
-    ],
-    weak: true,
-  },
-]
 
 /** One skill's fields the grouping needs, normalized across private/public. */
 type SkillInput = {
@@ -182,6 +110,13 @@ type SkillInput = {
 export type PassportCardCapability = {
   /** High-level role area label, e.g. "Machine Learning". */
   label: string
+  /**
+   * Stable role-area id from the canonical {@link CapabilityArea.id} in
+   * `@/lib/passport-capabilities` — the EXACT id the Work Passport "Role area"
+   * filter uses. Clicking a card role chip drives that filter by this id (never a
+   * low-level skill), so the card and the Role Area filter always agree.
+   */
+  roleAreaId: string
   /** Strongest qualitative status among the skills grouped into this area. */
   status: string
   /**
@@ -254,15 +189,6 @@ function compareSkillStrength(a: SkillInput, b: SkillInput): number {
   return a.name.localeCompare(b.name)
 }
 
-/** First capability area whose keyword the skill name contains, else -1. */
-function matchAreaIndex(name: string): number {
-  const n = name.toLowerCase()
-  for (let i = 0; i < CAPABILITY_AREAS.length; i += 1) {
-    if (CAPABILITY_AREAS[i].keywords.some((k) => n.includes(k))) return i
-  }
-  return -1
-}
-
 /**
  * Group detailed evidence skills into ranked high-level role areas for the card.
  *
@@ -317,6 +243,7 @@ function deriveCapabilities(skills: SkillInput[]): PassportCardCapability[] {
 
   return areas.map(({ area, rep, count }) => ({
     label: area.label,
+    roleAreaId: area.id,
     status: rep.status,
     skill: rep.name,
     slug: rep.slug,

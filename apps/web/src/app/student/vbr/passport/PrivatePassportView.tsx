@@ -1796,9 +1796,10 @@ function PassportGraphExplorer({
  * professional card a recruiter sees publicly (via {@link buildPrivateCardModel} →
  * {@link PassportCard}), so the student previews exactly what gets shared:
  * identity portrait, high-level role areas, and proof coverage — with no QR or
- * barcode on the card face. Role chips deep-link into the same-page Skills Evidence
- * Map (selecting the chip's strongest underlying skill); the map's own "Role area"
- * dropdown drives the high-level role-area filter. Publishing + share/download
+ * barcode on the card face. Role chips are HIGH-LEVEL role areas: clicking one
+ * drives the same-page Skills Evidence Map's "Role area" filter by the chip's
+ * canonical roleAreaId (and resets the underlying-skill filter to all), never
+ * selecting an arbitrary low-level skill. Publishing + share/download
  * controls (Copy link, Open Passport, Open Card, Download card, Web Share, optional
  * "Show QR" modal) live in ONE compact "Sharing controls" row directly below the
  * card — no second Public Work Passport block. Only recruiter-safe fields shown.
@@ -1806,11 +1807,17 @@ function PassportGraphExplorer({
 function VerifiedPassportCardPreview({
   passport,
   initialStatus,
-  onSelectSkill,
+  onSelectRoleAreaId,
 }: {
   passport: PrivateWorkPassport
   initialStatus: WorkPassportStatus
-  onSelectSkill: (key: string) => void
+  /**
+   * Select a HIGH-LEVEL role area in the same-page Skills Evidence Map. Card role
+   * chips drive this (never a low-level skill), so clicking "Computer Vision"
+   * filters by the role area — not by an arbitrary underlying skill like React or
+   * Docker. The parent also resets the low-level skill filter to "all".
+   */
+  onSelectRoleAreaId: (roleAreaId: string) => void
 }) {
   const [status, setStatus] = useState<WorkPassportStatus>(initialStatus)
   const [busy, setBusy] = useState(false)
@@ -2071,12 +2078,14 @@ function VerifiedPassportCardPreview({
     setShareNote("Sharing isn’t available here — link copied instead.")
   }
 
-  // Same-page deep link: select the chip's strongest underlying skill in the
-  // evidence map, then scroll to it (a real in-page selection, never a broken link).
-  // The high-level role-area filter itself lives in the map's own "Role area"
-  // dropdown, so both lenses stay reachable.
+  // Same-page deep link: a card role chip is a HIGH-LEVEL role area, so it drives
+  // the evidence map's "Role area" filter by the chip's canonical roleAreaId — it
+  // must NEVER select an arbitrary low-level skill (React/Docker/Computer
+  // Graphics). The parent resets the underlying-skill filter to "all" and this
+  // scrolls to the map, so the high-level capability card + its connected
+  // skills/projects/proof chain render for that role area.
   const onCapabilityClick = (cap: PassportCardCapability) => {
-    if (cap.key) onSelectSkill(cap.key)
+    onSelectRoleAreaId(cap.roleAreaId)
     scrollToMap()
   }
 
@@ -2460,7 +2469,20 @@ export function PrivatePassportView() {
   const [passport, setPassport] = useState<PrivateWorkPassport | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // The Skills Evidence Map's two deep-linkable filters, lifted here so the top
+  // Passport Card preview can drive them: a low-level skill (unused by the card
+  // now, kept for standalone selection) and the HIGH-LEVEL role area.
   const [selectedSkillKey, setSelectedSkillKey] = useState<string | null>(null)
+  const [selectedRoleAreaId, setSelectedRoleAreaId] = useState<string | null>(null)
+
+  // A Passport Card role chip sets the high-level Role Area filter AND resets the
+  // low-level Skill filter to "all underlying skills" — so clicking "Computer
+  // Vision" shows that role area's capability card + connected evidence and never
+  // leaves an arbitrary underlying skill (React/Docker/Computer Graphics) selected.
+  const selectRoleAreaFromCard = (roleAreaId: string) => {
+    setSelectedRoleAreaId(roleAreaId)
+    setSelectedSkillKey(null)
+  }
 
   const load = () => {
     setLoading(true)
@@ -2493,7 +2515,7 @@ export function PrivatePassportView() {
           credential is the hero of the page (pinned to the very top) and now owns
           the sharing controls too, so there is no second "Public Work Passport" /
           "Verified candidate profile" block competing with it. */}
-      <VerifiedPassportCardPreview passport={passport} initialStatus={status} onSelectSkill={setSelectedSkillKey} />
+      <VerifiedPassportCardPreview passport={passport} initialStatus={status} onSelectRoleAreaId={selectRoleAreaFromCard} />
 
       {/* 2 — Candidate detail: education, public-status summary, and the full
           summary text that the compact card intentionally omits. */}
@@ -2521,6 +2543,8 @@ export function PrivatePassportView() {
         passportPublished={Boolean(passport.is_published && passport.public_slug)}
         selectedSkillKey={selectedSkillKey}
         onSelectSkillKey={setSelectedSkillKey}
+        selectedRoleAreaId={selectedRoleAreaId}
+        onSelectRoleAreaId={setSelectedRoleAreaId}
       />
 
       {/* 5 — Improve Passport: suggested attachments and unattached-evidence

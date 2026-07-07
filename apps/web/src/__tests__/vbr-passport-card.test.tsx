@@ -23,6 +23,8 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
 import { PublicPassportCardView } from "../app/card/[slug]/PublicPassportCardView"
+import { buildPrivateCardModel } from "@/lib/passport-card"
+import { CAPABILITY_AREAS } from "@/lib/passport-capabilities"
 import type { PassportIdentity, PassportSkillSummary, PrivateWorkPassport, PublicWorkPassport, WorkPassportStatus } from "@/lib/vbr-api"
 
 vi.mock("@/lib/vbr-api", async (importActual) => ({
@@ -122,7 +124,7 @@ function makeManyRolePassport(overrides: Partial<PrivateWorkPassport> = {}): Pri
     "TensorFlow Model Training", // Machine Learning
     "OpenCV Object Detection", // Computer Vision
     "Pandas Data Analysis", // Data Science / Applied AI
-    "LangChain LLM Agent", // AI Product Engineering
+    "LangChain LLM Agent", // NLP / LLM
     "FastAPI Backend", // Backend APIs
     "Docker Deployment Pipeline", // Cloud / MLOps
     "React Frontend", // Full-Stack / Frontend AI
@@ -151,6 +153,63 @@ function makeManyRolePassport(overrides: Partial<PrivateWorkPassport> = {}): Pri
         report: { is_public: false, public_token: null, public_path: null, published_at: null },
       },
     ],
+    ...overrides,
+  })
+}
+
+/**
+ * A capability-rich passport whose skills carry real project→skill evidence, so
+ * the high-level Role Area filter (buildCapabilityAggregates) has PRESENT areas —
+ * required to exercise card-chip → Role Area wiring (the minimal default fixture
+ * has proof but no project-linked rows, so no role area is "present"). Mirrors the
+ * fixture used by the Work Passport role-area tests. Card chips derived here
+ * include Computer Vision (Image Classification), Cloud / MLOps (Docker), Data
+ * Science / Applied AI (Data Visualization), and Full-Stack / Frontend AI (React).
+ */
+function makeCapabilityPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  const base = makePrivatePassport().projects[0]
+  const ref = (project_title: string, project_id: string, skill_status: string, supporting_proof_types: string[]) => ({
+    project_title,
+    project_id,
+    skill_status,
+    evidence_sources: supporting_proof_types,
+    supporting_proof_types,
+    report_is_public: false,
+    public_report_path: null,
+  })
+  const withProjects = (name: string, status: string, projects: ReturnType<typeof ref>[]): PassportSkillSummary =>
+    skill({
+      skill: name,
+      status,
+      evidence_chip_count: projects.length,
+      project_count: projects.length,
+      evidence_sources: [...new Set(projects.flatMap((p) => p.supporting_proof_types))],
+      projects,
+    })
+  return makePrivatePassport({
+    skills: [
+      withProjects("Machine Learning", "Demonstrated", [
+        ref("Teachable Machine Image Classification Demo", "proj-tm", "Demonstrated", ["Website Proof", "Document Proof", "Project Defense"]),
+      ]),
+      withProjects("Image Classification", "Demonstrated", [
+        ref("Teachable Machine Image Classification Demo", "proj-tm", "Demonstrated", ["Website Proof", "Project Defense"]),
+      ]),
+      withProjects("Docker", "Demonstrated", [
+        ref("ML Model Cloud Run Deployment", "proj-cloud", "Demonstrated", ["GitHub Proof", "Project Defense"]),
+      ]),
+      withProjects("Data Visualization", "Evidence observed", [
+        ref("Interactive Analytics Dashboard", "proj-dash", "Evidence observed", ["Website Proof", "Document Proof"]),
+      ]),
+      withProjects("React", "Partially demonstrated", [
+        ref("Interactive Analytics Dashboard", "proj-dash", "Partially demonstrated", ["GitHub Proof", "Website Proof"]),
+      ]),
+    ],
+    projects: [
+      { ...base, project_id: "proj-tm", project_title: "Teachable Machine Image Classification Demo", claimed_skills: ["Machine Learning", "Image Classification"] },
+      { ...base, project_id: "proj-cloud", project_title: "ML Model Cloud Run Deployment", claimed_skills: ["Docker"] },
+      { ...base, project_id: "proj-dash", project_title: "Interactive Analytics Dashboard", claimed_skills: ["Data Visualization", "React"] },
+    ],
+    project_count: 3,
     ...overrides,
   })
 }
@@ -214,18 +273,14 @@ function makePublicPassport(overrides: Partial<PublicWorkPassport> = {}): Public
   }
 }
 
-/** The known high-level role-area labels (grouped, never raw skills). */
-const ROLE_AREA_LABELS = [
-  "Machine Learning",
-  "Computer Vision",
-  "Data Science / Applied AI",
-  "AI Product Engineering",
-  "Backend APIs",
-  "Cloud / MLOps",
-  "Full-Stack / Frontend AI",
-  "Software Engineering",
-  "Documentation & Communication",
-]
+/**
+ * The known high-level role-area labels (grouped, never raw skills). Derived from
+ * the ONE canonical role-area mapping (`@/lib/passport-capabilities`) the Work
+ * Passport Role Area filter uses — so the card and the filter can never drift onto
+ * two different label sets (e.g. an LLM skill lands in the canonical "NLP / LLM",
+ * not a card-only "AI Product Engineering").
+ */
+const ROLE_AREA_LABELS = CAPABILITY_AREAS.map((a) => a.label)
 
 beforeEach(() => {
   vi.mocked(getPrivateWorkPassport).mockReset()
@@ -267,6 +322,22 @@ async function renderManyRolePrivate(overrides: Partial<PrivateWorkPassport> = {
   vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
   render(<PrivatePassportView />)
   return screen.findByTestId("verified-passport-card-preview")
+}
+
+async function renderCapabilityPrivate(overrides: Partial<PrivateWorkPassport> = {}) {
+  const p = makeCapabilityPassport(overrides)
+  vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+  vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  render(<PrivatePassportView />)
+  return screen.findByTestId("verified-passport-card-preview")
+}
+
+/** The Computer Vision role chip on the card face (present in makeCapabilityPassport). */
+function cvChip(preview: HTMLElement): HTMLElement {
+  const card = within(preview).getByTestId("passport-card-private")
+  return within(card)
+    .getAllByTestId("passport-card-capability")
+    .find((c) => (c.textContent ?? "").trim() === "Computer Vision")!
 }
 
 // ── Private preview ──────────────────────────────────────────────────────────
@@ -453,12 +524,92 @@ describe("Verified Passport Card preview (private)", () => {
     expect(chips).not.toContain(removed)
   })
 
-  // H — clicking a card role chip activates the Role Area filter / scroll.
-  it("clicking a role-area chip deep-links into the same-page Skills Evidence Map", async () => {
-    const preview = await renderPrivate()
-    const chip = within(preview).getAllByTestId("passport-card-capability")[0]
-    fireEvent.click(chip)
+  // ── Card role chip → HIGH-LEVEL Role Area filter (must-fix wiring) ───────────
+  //
+  // A card role chip is a high-level ROLE AREA (Computer Vision, Cloud / MLOps, …),
+  // not a low-level skill. Clicking it must set the Skills Evidence Map's Role Area
+  // filter by the chip's canonical roleAreaId, reset the underlying Skill filter to
+  // "all", and surface the high-level capability card — never select an arbitrary
+  // low-level skill (React / Docker / Computer Graphics).
+
+  // A — clicking a card role chip sets the Role Area dropdown/filter.
+  it("clicking a card role chip sets the high-level Role Area filter (not a skill)", async () => {
+    const preview = await renderCapabilityPrivate()
+    fireEvent.click(cvChip(preview))
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("computer-vision")
+  })
+
+  // B — clicking a card role chip does NOT select a low-level Skill dropdown value.
+  it("clicking a card role chip never selects a low-level skill like React/Docker", async () => {
+    const preview = await renderCapabilityPrivate()
+    fireEvent.click(cvChip(preview))
+    // Role area is set; the underlying-skill dropdown stays "all underlying skills".
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("computer-vision")
+    const skillFilter = screen.getByTestId("passport-skill-filter") as HTMLSelectElement
+    expect(skillFilter).toHaveValue("")
+    // Never an arbitrary low-level skill key (React / Docker / Computer Graphics …).
+    expect(skillFilter.value).not.toMatch(/react|docker|graphics|opencv|image/i)
+  })
+
+  // C — clicking a card role chip clears any existing low-level Skill filter.
+  it("clicking a card role chip resets the low-level Skill filter to all", async () => {
+    const preview = await renderCapabilityPrivate()
+    // Pre-select a low-level skill in the dropdown.
+    const skillFilter = screen.getByTestId("passport-skill-filter")
+    fireEvent.change(skillFilter, { target: { value: "docker" } })
+    expect(skillFilter).toHaveValue("docker")
+    // Clicking a card role chip clears it back to "all underlying skills".
+    fireEvent.click(cvChip(preview))
+    expect(screen.getByTestId("passport-skill-filter")).toHaveValue("")
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("computer-vision")
+  })
+
+  // D — the high-level capability summary appears after a card role chip click.
+  it("shows the high-level capability summary after a card role chip click", async () => {
+    const preview = await renderCapabilityPrivate()
+    expect(screen.queryByTestId("capability-summary")).not.toBeInTheDocument()
+    fireEvent.click(cvChip(preview))
+    const summary = screen.getByTestId("capability-summary")
+    expect(summary).toBeInTheDocument()
+    expect(summary).toHaveAttribute("data-capability", "Computer Vision")
+  })
+
+  // E — every card role area id matches a canonical Role Area filter id (one map).
+  it("card role area ids match the canonical Role Area filter ids", () => {
+    const p = makeManyRolePassport()
+    const model = buildPrivateCardModel(p, statusFrom(p))
+    const byId = new Map(CAPABILITY_AREAS.map((a) => [a.id, a.label]))
+    expect(model.availableCapabilities.length).toBeGreaterThan(0)
+    for (const cap of model.availableCapabilities) {
+      expect(cap.roleAreaId).toBeTruthy()
+      // The id is a real canonical role-area id (never a second, invented system).
+      expect(byId.has(cap.roleAreaId)).toBe(true)
+      // …and its label is that canonical area's label (card ↔ filter agree).
+      expect(cap.label).toBe(byId.get(cap.roleAreaId))
+    }
+  })
+
+  // F — Clear filters resets both the Role Area and the Skill filter.
+  it("Clear filters resets the Role Area and Skill filters after a card chip click", async () => {
+    const preview = await renderCapabilityPrivate()
+    fireEvent.click(cvChip(preview))
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("computer-vision")
+    fireEvent.click(screen.getByTestId("clear-filters-button"))
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("")
+    expect(screen.getByTestId("passport-skill-filter")).toHaveValue("")
+    expect(screen.queryByTestId("capability-summary")).not.toBeInTheDocument()
+  })
+
+  // G — the low-level Skill dropdown still works independently of the card chips.
+  it("selecting a low-level Skill in the dropdown still filters the map", async () => {
+    await renderCapabilityPrivate()
+    const skillFilter = screen.getByTestId("passport-skill-filter")
+    fireEvent.change(skillFilter, { target: { value: "docker" } })
+    expect(skillFilter).toHaveValue("docker")
+    // Skill-first selection shows the "projects for selected skill" panel.
     expect(screen.getByText(/Projects for selected skill/i)).toBeInTheDocument()
+    // No role area was implied by a raw-skill selection.
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("")
   })
 
   it("shows a publish action while private and no public share links yet", async () => {
