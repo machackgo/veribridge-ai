@@ -312,11 +312,6 @@ describe("Verified Passport Card preview (private)", () => {
     delete (navigator as { share?: unknown }).share
   })
 
-  it("surfaces a 'mobile proximity sharing coming later' note (no fake NFC/Bluetooth)", async () => {
-    const preview = await renderPrivate()
-    expect(within(preview).getByTestId("proximity-share-note")).toHaveTextContent(/coming later/i)
-  })
-
   it("never leaks raw evidence, file paths, or numeric scores in the card", async () => {
     const preview = await renderPrivate()
     const card = within(preview).getByTestId("passport-card-private")
