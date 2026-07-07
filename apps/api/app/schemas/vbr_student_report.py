@@ -94,6 +94,21 @@ class WebsiteProofSkillEvidence(BaseModel):
     website_purpose_key: str = ""
     website_purpose_label: str = ""
     website_purpose_summary: str = ""
+    # ── Website Runtime Inspection (recruiter-facing deep inspection) ─────────
+    # Section 1 skill-specific runtime claim (keyed by the PRIMARY mapped skill's
+    # relevance; empty when nothing mapped). Section 2 target site / app / page
+    # context + observed user action / visible output (closed per-purpose
+    # sentences). Section 4 recruiter verification mode + checklist. All derived
+    # from closed vocabularies + already-safe summaries — never raw payloads.
+    runtime_claim_observed: str = ""
+    target_domain: str = ""
+    app_context: str = ""
+    page_context_label: str = ""
+    user_action_observed: str = ""
+    output_observed: str = ""
+    verification_mode: str = "recorded_replay_only"
+    verification_mode_label: str = "Recorded replay only"
+    recruiter_checklist: list[str] = Field(default_factory=list)
     # Which safe pipeline summaries backed this proof (closed labels only —
     # "Website DOM" / "Website OCR" / "Website visual analysis" / "Website NLP" /
     # "Website runtime behavior"). Never the raw text of any of them.
@@ -384,12 +399,42 @@ class WebsiteEvidenceCard(BaseModel):
     # first line the card renders: what live behaviour was demonstrably shown,
     # phrased as a checkable statement.
     behavior_claim: str = ""
+    # ── Website Runtime Inspection (recruiter-facing deep inspection) ─────────
+    # Section 1 — a concise SKILL-SPECIFIC claim about the recorded runtime
+    # behaviour (closed template keyed by the conservative website→skill
+    # relevance; ML/GenAI/DevOps can never overclaim).
+    runtime_claim_observed: str = ""
+    # Section 2 — target site / app context. ``target_url_safe`` survives only
+    # when it passed the safe-public-url gate; ``target_domain`` is derived from a
+    # safe URL only (a local/private capture leaves both None). ``app_context`` is
+    # a recognised hosted-app name / page title / domain. ``page_context_label``
+    # is a safe label for the pipeline's own closed OCR page-context enum.
+    target_url_safe: str | None = None
+    target_domain: str | None = None
+    app_context: str | None = None
+    page_context_label: str | None = None
+    is_public_live_url: bool = False
+    is_local_or_private_url: bool = False
+    # Section 2 — the exact observed user action and visible output/result
+    # (closed per-purpose sentences; None when the purpose demonstrates neither).
+    # ``visible_text_observed`` is the SAFE OCR-derived closed sentence — never
+    # raw OCR text; ``visited_pages_count`` stays None until a page count is
+    # actually captured (the card never invents one).
+    user_action_observed: str | None = None
+    output_observed: str | None = None
+    visible_text_observed: str | None = None
+    visited_pages_count: int | None = None
     website_purpose_key: str
     website_purpose_label: str
     website_purpose_summary: str
     skill_relevance_key: str
     skill_relevance_label: str
     skill_relevance_summary: str
+    # Section 4 — the recruiter verification checklist (open-and-reproduce for a
+    # live proof; recorded-package/deploy guidance for a recorded-only proof).
+    recruiter_checklist: list[str] = Field(default_factory=list)
+    # Section 5/6 — honest note naming the missing runtime evidence + next step.
+    missing_evidence_note: str | None = None
     observed_behavior_summary: str | None = None
     visual_evidence_summary: str | None = None
     ocr_evidence_summary_safe: str | None = None

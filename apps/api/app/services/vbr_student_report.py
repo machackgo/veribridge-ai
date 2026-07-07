@@ -61,12 +61,24 @@ from app.services.website_skill_proof_focus import (
     describe_website_skill_relevance,
     is_direct_website_relevance,
     map_website_supported_skills,
+    website_app_context,
     website_behavior_claim,
     website_evidence_source_types,
     website_limitation_for,
+    website_output_observed,
+    website_page_context_label,
     website_purpose_summary,
+    website_recruiter_checklist,
+    website_runtime_claim,
     website_skill_relevance_summary,
+    website_target_domain,
     website_unmapped_skill_reason,
+    website_user_action_observed,
+    website_verification_mode_label,
+)
+from app.services.website_skill_proof_focus import (
+    VERIFICATION_MODE_LIVE,
+    VERIFICATION_MODE_RECORDED,
 )
 
 # Qualitative skill evidence labels. Numeric trust/confidence scores are
@@ -1523,6 +1535,27 @@ def collect_website_skill_evidence(
         # safe reason + strengthening action so the gap is legible (never faked into
         # a skill). When a skill DID map, these stay empty.
         mapped = bool(skill_rows)
+
+        # ── Website Runtime Inspection fields (Sections 1/2/4) ────────────────
+        # A recruiter can DIRECTLY verify only when a public safe URL survived —
+        # the attach-time public URL or the live-check's already-safe final URL.
+        # A local/private capture yields neither, so it stays recorded-replay-only
+        # and never links a private host.
+        live_final = str((live or {}).get("final_url") or "").strip()
+        safe_live_final = live_final if (live_final and is_safe_public_url(live_final)) else ""
+        has_public_live = bool(safe_target or safe_live_final)
+        verification_mode = VERIFICATION_MODE_LIVE if has_public_live else VERIFICATION_MODE_RECORDED
+        target_domain = website_target_domain(
+            safe_target or None, safe_live_final or None, safe_target or None
+        )
+        page_title = str((live or {}).get("page_title") or "").strip()[:160] or None
+        # Section 1 runtime claim keyed by the PRIMARY mapped skill's relevance
+        # (empty when nothing mapped — the unmapped reason speaks instead).
+        runtime_claim = (
+            website_runtime_claim(skill_rows[0]["relevance_key"], skill_rows[0]["skill_name"])
+            if mapped
+            else ""
+        )
         out.append(
             {
                 "target_website": safe_target,
@@ -1530,6 +1563,15 @@ def collect_website_skill_evidence(
                 "website_purpose_key": purpose_key,
                 "website_purpose_label": describe_website_purpose(purpose_key),
                 "website_purpose_summary": website_purpose_summary(purpose_key),
+                "runtime_claim_observed": runtime_claim,
+                "target_domain": target_domain or "",
+                "app_context": website_app_context(target_domain, page_title) or "",
+                "page_context_label": website_page_context_label(detail.get("page_context")) or "",
+                "user_action_observed": website_user_action_observed(purpose_key) or "",
+                "output_observed": website_output_observed(purpose_key) or "",
+                "verification_mode": verification_mode,
+                "verification_mode_label": website_verification_mode_label(verification_mode),
+                "recruiter_checklist": website_recruiter_checklist(verification_mode, purpose_key),
                 "evidence_source_types": evidence_source_types,
                 "skills": skill_rows,
                 "skill_mapping_available": mapped,

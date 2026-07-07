@@ -593,6 +593,71 @@ describe("ProjectReportView", () => {
     expect(rows[0]).toHaveTextContent("Direct")
   })
 
+  it("Website Runtime Inspection: renders the runtime claim, target site, observed action/output and recruiter checklist", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        claimed_skills: ["Machine Learning"],
+        website_skill_evidence: [
+          {
+            target_website: "https://demo.example.com",
+            behavior_claim: "User input produces a prediction/result display.",
+            website_purpose_key: "prediction_result_display",
+            website_purpose_label: "Prediction / result display",
+            website_purpose_summary: "An input → prediction/result flow was shown.",
+            runtime_claim_observed:
+              "Recorded website behavior shows a browser-based Machine Learning workflow where user input leads to a visible prediction/result output.",
+            target_domain: "demo.example.com",
+            app_context: "Crash Risk Predictor",
+            page_context_label: "Prediction / output page",
+            user_action_observed: "Input was provided to run a prediction/inference.",
+            output_observed: "A prediction/result was displayed after the input.",
+            verification_mode: "directly_verifiable_live",
+            verification_mode_label: "Directly verifiable live",
+            recruiter_checklist: [
+              "Open the live website.",
+              "Navigate to the same workflow/page shown in this proof.",
+              "Provide similar input — input was provided to run a prediction/inference.",
+              "Confirm the same output/result appears — a prediction/result was displayed after the input.",
+              "Compare what you see with the recorded evidence below.",
+            ],
+            skill_mapping_available: true,
+            skills: [
+              {
+                skill_name: "Machine Learning",
+                relevance_key: "ml_product_context",
+                relevance_label:
+                  "Machine Learning product behaviour context — not Machine Learning implementation proof",
+                relevance_summary: "The website shows model-powered product behaviour.",
+                limitation:
+                  "Website prediction/output demonstrates product behaviour at inspection time; it does not, by itself, prove model training or ML implementation.",
+                is_direct_evidence: false,
+              },
+            ],
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(screen.getByTestId("website-runtime-claim")).toHaveTextContent(
+      "browser-based Machine Learning workflow",
+    )
+    expect(screen.getByTestId("website-target-site")).toHaveTextContent("demo.example.com")
+    expect(screen.getByTestId("website-target-site")).toHaveTextContent("Crash Risk Predictor")
+    expect(screen.getByTestId("website-user-action")).toHaveTextContent(
+      "Input was provided to run a prediction/inference.",
+    )
+    expect(screen.getByTestId("website-output-observed")).toHaveTextContent(
+      "A prediction/result was displayed after the input.",
+    )
+    expect(screen.getByTestId("website-verification-mode")).toHaveAttribute("data-mode", "live")
+    const steps = screen.getAllByTestId("website-checklist-item").map((s) => s.textContent)
+    expect(steps[0]).toContain("Open the live website.")
+    expect(steps.some((s) => s?.includes("Provide similar input"))).toBe(true)
+  })
+
   it("Website Behavior Evidence: a Machine Learning skill reads as supporting context, never direct implementation proof", async () => {
     vi.mocked(getVBRProjectReport).mockResolvedValue(
       makeReport({

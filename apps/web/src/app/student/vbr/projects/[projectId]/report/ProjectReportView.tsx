@@ -649,14 +649,60 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
                     style={{ border: `1px solid ${TOKEN.line}`, borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 6 }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <Mono style={{ fontSize: 9, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.14em" }}>
+                        Website Runtime Inspection
+                      </Mono>
                       <Badge tone="slate">{ev.website_purpose_label}</Badge>
-                      {ev.target_website ? (
-                        <Mono style={{ fontSize: 11, color: TOKEN.muted }}>{ev.target_website}</Mono>
+                      {ev.verification_mode_label ? (
+                        <span
+                          data-testid="website-verification-mode"
+                          data-mode={ev.verification_mode === "directly_verifiable_live" ? "live" : "recorded"}
+                        >
+                          <Badge tone={ev.verification_mode === "directly_verifiable_live" ? "emerald" : "amber"}>
+                            {ev.verification_mode_label}
+                          </Badge>
+                        </span>
                       ) : null}
                     </div>
+                    {(ev.target_domain || ev.app_context || ev.target_website) && (
+                      <p data-testid="website-target-site" style={{ fontSize: 11, color: TOKEN.inkSoft, margin: 0 }}>
+                        <strong>Target site: </strong>
+                        {ev.target_domain || ev.target_website}
+                        {ev.app_context && ev.app_context !== ev.target_domain ? ` · ${ev.app_context}` : ""}
+                      </p>
+                    )}
+                    {ev.runtime_claim_observed ? (
+                      <p data-testid="website-runtime-claim" style={{ fontSize: 12, color: TOKEN.ink, margin: 0, fontWeight: 600 }}>
+                        {ev.runtime_claim_observed}
+                      </p>
+                    ) : null}
                     <p data-testid="website-behavior-claim" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0 }}>
                       {ev.behavior_claim}
                     </p>
+                    {ev.user_action_observed ? (
+                      <p data-testid="website-user-action" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
+                        <strong>User action: </strong>
+                        {ev.user_action_observed}
+                      </p>
+                    ) : null}
+                    {ev.output_observed ? (
+                      <p data-testid="website-output-observed" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
+                        <strong>Output: </strong>
+                        {ev.output_observed}
+                      </p>
+                    ) : null}
+                    {(ev.recruiter_checklist ?? []).length > 0 && (
+                      <ul
+                        data-testid="website-recruiter-checklist"
+                        style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 2 }}
+                      >
+                        {(ev.recruiter_checklist ?? []).map((step, si) => (
+                          <li key={si} data-testid="website-checklist-item" style={{ fontSize: 11, color: TOKEN.inkSoft }}>
+                            {step}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                     {ev.skill_mapping_available ? (
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {ev.skills.map((sk) => (

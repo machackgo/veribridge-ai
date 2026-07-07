@@ -24,9 +24,9 @@ import {
   type VaultSkillGroup,
   type VaultSkillPreview,
   type VaultSkillSummary,
-  type WebsiteEvidenceCard,
 } from "@/lib/vbr-api"
 import { Badge, Mono, TOKEN, type BadgeTone } from "./shared"
+import { WebsiteRuntimeInspectionCard } from "./WebsiteRuntimeInspectionCard"
 
 const PROOF_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
@@ -405,192 +405,6 @@ function GitHubEvidence({ item, ghLocation }: { item: SkillReportEvidenceItem; g
   )
 }
 
-/**
- * One recruiter-inspectable Website Behavior Evidence card — the Website
- * counterpart of GitHub's "View code lines" row, ordered recruiter-first:
- * CLAIM (what live behaviour was demonstrated) → SUPPORTS (relevance to this
- * report's skill) → evidence basis chips → safe derived summaries →
- * CORROBORATES (companion proofs in the same VBR project) → recruiter check
- * (open website / permission-gated frame). Renders only closed-vocabulary
- * labels, derived evidence sentences and revalidated safe URLs. The evidence
- * frame link renders ONLY when the backend supplied a safe preview URL (never
- * in the MVP); otherwise a permission-gated status line is shown when frames
- * exist. The item-level limitation is rendered by the parent row.
- */
-function WebsiteEvidenceCardView({
-  card,
-  fallbackUrl,
-}: {
-  card: WebsiteEvidenceCard
-  fallbackUrl?: string | null
-}) {
-  const openUrl = card.open_website_url ?? fallbackUrl
-  const frameUrl =
-    card.screenshot_preview_url && isSafePublicUrl(card.screenshot_preview_url)
-      ? card.screenshot_preview_url
-      : null
-  // A recruiter can DIRECTLY verify only when a public, safe live URL is
-  // available (the GitHub-Proof "click through and inspect it yourself" path).
-  // A localhost/private host never survives isSafePublicUrl, so it always falls
-  // to the recorded-replay-only presentation below.
-  const canOpenLive = Boolean(openUrl && isSafePublicUrl(openUrl))
-  const isLiveVerifiable =
-    card.verification_mode === "directly_verifiable_live" || canOpenLive
-  const verificationLabel =
-    card.verification_mode_label ?? (isLiveVerifiable ? "Directly verifiable live" : "Recorded replay only")
-  const deploymentRecommended = card.deployment_recommended ?? !isLiveVerifiable
-  const hasRecruiterCheck = canOpenLive || Boolean(frameUrl) || card.screenshot_available
-  return (
-    <div
-      data-testid="website-evidence-card"
-      style={{ display: "flex", flexDirection: "column", gap: 6 }}
-    >
-      {/* Inspection header — the Website counterpart of GitHub Proof's
-          "inspect the source yourself" framing: a title plus an honest
-          live-verifiable vs recorded-replay-only status. */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <Mono
-          data-testid="website-inspection-title"
-          style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}
-        >
-          Website Proof inspection
-        </Mono>
-        <span data-testid="website-verification-mode" data-mode={isLiveVerifiable ? "live" : "recorded"}>
-          <Badge tone={isLiveVerifiable ? "emerald" : "amber"}>{verificationLabel}</Badge>
-        </span>
-      </div>
-      {card.verification_note && (
-        <p
-          data-testid="website-verification-note"
-          style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
-        >
-          {card.verification_note}
-        </p>
-      )}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <Mono data-testid="website-card-route" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
-          Website Behavior Evidence · {card.route_or_page}
-        </Mono>
-        {card.observed_at && (
-          <span data-testid="website-card-observed-at" style={{ fontSize: 11, color: TOKEN.muted }}>
-            observed {card.observed_at}
-          </span>
-        )}
-      </div>
-      {card.behavior_claim && (
-        <p
-          data-testid="website-behavior-claim"
-          style={{ fontSize: 13, color: TOKEN.ink, margin: 0, lineHeight: 1.5, fontWeight: 600 }}
-        >
-          Claim: {card.behavior_claim}
-        </p>
-      )}
-      <p
-        data-testid="website-skill-relevance"
-        title={card.skill_relevance_summary || undefined}
-        style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}
-      >
-        <strong>Supports: </strong>
-        {card.skill_relevance_label}
-      </p>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-        <span data-testid="website-purpose-label">
-          <Badge tone="purple">{card.website_purpose_label}</Badge>
-        </span>
-        {card.page_title && (
-          <span data-testid="website-card-page-title" style={{ fontSize: 11, color: TOKEN.muted }}>
-            {card.page_title}
-          </span>
-        )}
-      </div>
-      {card.evidence_basis_chips.length > 0 && (
-        <div
-          data-testid="website-evidence-chips"
-          style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}
-        >
-          <span style={{ fontSize: 11, color: TOKEN.inkSoft, fontWeight: 600 }}>Evidence observed:</span>
-          {card.evidence_basis_chips.map((chip) => (
-            <span key={chip} data-testid="website-evidence-chip">
-              <Badge tone="slate">{chip}</Badge>
-            </span>
-          ))}
-        </div>
-      )}
-      {(card.visual_evidence_summary || card.ocr_evidence_summary_safe || card.dom_evidence_summary_safe) && (
-        <div data-testid="website-visual-page-analysis" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <span style={{ fontSize: 11, color: TOKEN.inkSoft, fontWeight: 600 }}>Visual and page analysis</span>
-          {card.visual_evidence_summary && (
-            <p data-testid="website-card-visual" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
-              {card.visual_evidence_summary}
-            </p>
-          )}
-          {card.ocr_evidence_summary_safe && (
-            <p data-testid="website-card-ocr" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
-              {card.ocr_evidence_summary_safe}
-            </p>
-          )}
-          {card.dom_evidence_summary_safe && (
-            <p data-testid="website-card-dom" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
-              {card.dom_evidence_summary_safe}
-            </p>
-          )}
-        </div>
-      )}
-      {card.observed_behavior_summary && (
-        <p
-          data-testid="website-observed-behavior"
-          style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
-        >
-          {card.observed_behavior_summary}
-        </p>
-      )}
-      {card.corroboration_note && (
-        <p
-          data-testid="website-corroboration"
-          style={{ fontSize: 11, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}
-        >
-          <strong>Corroborates: </strong>
-          {card.corroboration_note}
-          {card.connected_project_title && (
-            <span data-testid="website-connected-project" style={{ color: TOKEN.muted }}>
-              {" "}
-              (project: {card.connected_project_title})
-            </span>
-          )}
-        </p>
-      )}
-      {hasRecruiterCheck && (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 11, color: TOKEN.inkSoft, fontWeight: 600 }}>Recruiter check:</span>
-          {canOpenLive && (
-            <span data-testid="website-open-live">
-              <SafeLink url={openUrl} label="Open live website →" />
-            </span>
-          )}
-          {frameUrl ? (
-            <SafeLink url={frameUrl} label="View evidence frame →" />
-          ) : (
-            card.screenshot_available && (
-              <span data-testid="website-screenshot-status" style={{ fontSize: 11, color: TOKEN.muted }}>
-                🖼 Evidence frame available with candidate permission
-              </span>
-            )
-          )}
-        </div>
-      )}
-      {/* Local/private proofs cannot be opened live — recommend a public
-          deployment so a recruiter can verify runtime behaviour directly. */}
-      {deploymentRecommended && (
-        <p
-          data-testid="website-deployment-recommended"
-          style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5, fontStyle: "italic" }}
-        >
-          Deployment recommended for direct recruiter verification.
-        </p>
-      )}
-    </div>
-  )
-}
 
 /** One rich evidence item rendering the concrete stored fields for its source. */
 function SkillEvidenceItem({ item }: { item: SkillReportEvidenceItem }) {
@@ -649,7 +463,7 @@ function SkillEvidenceItem({ item }: { item: SkillReportEvidenceItem }) {
           Evidence Card (closed vocabularies + basis chips + honest screenshot
           status); legacy payloads without a card keep the prior summary rows. */}
       {isWebsite && item.website_evidence_card && (
-        <WebsiteEvidenceCardView card={item.website_evidence_card} fallbackUrl={item.public_url} />
+        <WebsiteRuntimeInspectionCard card={item.website_evidence_card} fallbackUrl={item.public_url} />
       )}
       {isWebsite && !item.website_evidence_card && (
         <>
@@ -766,7 +580,10 @@ function SkillEvidenceItem({ item }: { item: SkillReportEvidenceItem }) {
       {item.safe_location && !isGitHub && !isDocument && (
         <Mono style={{ fontSize: 11, color: TOKEN.muted }}>📍 {item.safe_location}</Mono>
       )}
-      {item.limitation && (
+      {/* The Website Runtime Inspection card renders its own Section 6
+          limitation, so the row-level limitation is suppressed for a website
+          proof that carries a card (avoids a duplicate limitation line). */}
+      {item.limitation && !(isWebsite && item.website_evidence_card) && (
         <div style={{ fontSize: 11, color: TOKEN.muted }}>
           <strong style={{ color: TOKEN.inkSoft }}>Limitation: </strong>
           {item.limitation}

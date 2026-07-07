@@ -549,19 +549,135 @@ describe("Skill Report page (separate route)", () => {
     expect(screen.getByTestId("evidence-public-link")).toHaveAttribute("href", "https://demo.example.com")
     expect(screen.getByTestId("evidence-public-link")).toHaveTextContent("Open live website →")
     // GitHub-style inspection header: a public URL → directly verifiable live.
-    expect(screen.getByTestId("website-inspection-title")).toHaveTextContent("Website Proof inspection")
+    expect(screen.getByTestId("website-inspection-title")).toHaveTextContent("Website Runtime Inspection")
     expect(screen.getByTestId("website-verification-mode")).toHaveTextContent("Directly verifiable live")
     expect(screen.getByTestId("website-verification-mode")).toHaveAttribute("data-mode", "live")
     expect(screen.getByTestId("website-open-live")).toBeInTheDocument()
     // Live-verifiable proof does not nag for a deployment.
     expect(screen.queryByTestId("website-deployment-recommended")).not.toBeInTheDocument()
-    // Limitation renders via the item row.
-    expect(screen.getByText(/does not, by itself, prove model training/)).toBeInTheDocument()
+    // Limitation renders in the card's Section 6 (its own testid).
+    expect(screen.getByTestId("website-card-limitation")).toHaveTextContent(
+      /does not, by itself, prove model training/,
+    )
     // Raw hydrated payloads never render when the card is present.
     expect(screen.queryByTestId("website-ocr")).not.toBeInTheDocument()
     expect(screen.queryByTestId("website-dom")).not.toBeInTheDocument()
     expect(screen.queryByTestId("website-visual")).not.toBeInTheDocument()
     expect(screen.queryByText(/RAW-OCR-TEXT|RAW-DOM-TEXT|RAW-VISUAL-TEXT/)).not.toBeInTheDocument()
+  })
+
+  it("renders the deep Website Runtime Inspection: claim, target site, action, output, live checklist", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              website_evidence_card: websiteEvidenceCard({
+                runtime_claim_observed:
+                  "Recorded website behavior shows a browser-based Machine Learning workflow where user input leads to a visible prediction/result output.",
+                target_url_safe: "https://demo.example.com",
+                target_domain: "demo.example.com",
+                app_context: "Crash Risk Predictor",
+                page_context_label: "Prediction / output page",
+                is_public_live_url: true,
+                is_local_or_private_url: false,
+                user_action_observed: "Input was provided to run a prediction/inference.",
+                output_observed: "A prediction/result was displayed after the input.",
+                recruiter_checklist: [
+                  "Open the live website.",
+                  "Navigate to the same workflow/page shown in this proof.",
+                  "Provide similar input — input was provided to run a prediction/inference.",
+                  "Confirm the same output/result appears — a prediction/result was displayed after the input.",
+                  "Compare what you see with the recorded evidence below.",
+                ],
+                missing_evidence_note: null,
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("website-inspection-title")).toHaveTextContent(
+      "Website Runtime Inspection",
+    )
+    // Section 1 — the skill-specific runtime claim.
+    expect(screen.getByTestId("website-runtime-claim")).toHaveTextContent(
+      "browser-based Machine Learning workflow",
+    )
+    // Section 2 — concrete observed facts: target site / app context / page context.
+    expect(screen.getByTestId("website-target-site")).toHaveTextContent("demo.example.com")
+    expect(screen.getByTestId("website-app-context")).toHaveTextContent("Crash Risk Predictor")
+    expect(screen.getByTestId("website-page-context")).toHaveTextContent("Prediction / output page")
+    expect(screen.getByTestId("website-user-action")).toHaveTextContent(
+      "Input was provided to run a prediction/inference.",
+    )
+    expect(screen.getByTestId("website-output-observed")).toHaveTextContent(
+      "A prediction/result was displayed after the input.",
+    )
+    // Section 4 — a live recruiter checklist that reproduces the workflow.
+    const steps = screen.getAllByTestId("website-checklist-item").map((s) => s.textContent)
+    expect(steps[0]).toContain("Open the live website.")
+    expect(steps.some((s) => s?.includes("Provide similar input"))).toBe(true)
+    expect(steps.some((s) => s?.includes("Confirm the same output"))).toBe(true)
+    // A rich, live-verifiable capture shows no missing-evidence nag.
+    expect(screen.queryByTestId("website-missing-evidence")).not.toBeInTheDocument()
+    // Never leaks a raw DOM/OCR payload id or storage path.
+    expect(screen.queryByText(/X-Amz-Signature|storage\.internal/)).not.toBeInTheDocument()
+  })
+
+  it("renders a recorded-replay Website Runtime Inspection with a cannot-open checklist and missing-evidence note", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              public_url: null,
+              website_evidence_card: websiteEvidenceCard({
+                verification_mode: "recorded_replay_only",
+                verification_mode_label: "Recorded replay only",
+                deployment_recommended: true,
+                open_website_url: null,
+                target_url_safe: null,
+                target_domain: null,
+                is_public_live_url: false,
+                is_local_or_private_url: true,
+                recruiter_checklist: [
+                  "This proof was recorded from a local/private runtime — a recruiter cannot open it directly.",
+                  "Review the recorded evidence package below (observed workflow, visual/OCR/DOM summaries).",
+                  "Corroborate with the GitHub / Document / Project Defense evidence for this project.",
+                  "Ask the candidate to deploy the site to a public URL for direct verification.",
+                ],
+                missing_evidence_note:
+                  "This proof is missing a public deployment URL. Record a stronger Website Proof showing runtime behavior such as a model prediction, API response, dashboard interaction, route recommendation, or workflow completion.",
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
+    expect(screen.getByTestId("website-verification-mode")).toHaveAttribute("data-mode", "recorded")
+    // Recorded-only proof: the recruiter cannot open localhost — no open-live CTA.
+    expect(screen.queryByTestId("website-open-live")).not.toBeInTheDocument()
+    const steps = screen.getAllByTestId("website-checklist-item").map((s) => s.textContent)
+    expect(steps.some((s) => s?.includes("cannot open it directly"))).toBe(true)
+    expect(steps.some((s) => s?.includes("deploy the site to a public URL"))).toBe(true)
+    // Missing-evidence note recommends a public deployment.
+    expect(screen.getByTestId("website-missing-evidence")).toHaveTextContent(
+      "missing a public deployment URL",
+    )
+    // No private target domain leaks into the header.
+    expect(screen.queryByTestId("website-target-site")).not.toBeInTheDocument()
   })
 
   it("marks a local-only Website Proof as recorded replay only with no open-live CTA", async () => {
