@@ -1154,6 +1154,19 @@ def public_safe_document_inspection_card(card: Any) -> dict[str, Any] | None:
         else _PUBLIC_DOC_PRIVATE_ACCESS_NOTE
     )
 
+    # Skill-specific detail lists ARE recruiter-safe (bounded, normalized claims —
+    # not the raw excerpt, which stays owner-only). Each entry is still scrubbed of
+    # any path/URL/score fragment, dropped if nothing survives, and capped.
+    def _public_detail_list(value: Any) -> list[str]:
+        out: list[str] = []
+        for entry in value if isinstance(value, list) else []:
+            scrubbed = scrub_public_text(entry)
+            if scrubbed and scrubbed not in out:
+                out.append(scrubbed)
+            if len(out) >= 5:
+                break
+        return out
+
     page = card.get("page_number")
     projected = {
         "title": scrub_public_text(card.get("title")),
@@ -1173,7 +1186,20 @@ def public_safe_document_inspection_card(card: Any) -> dict[str, Any] | None:
         "why_supported": scrub_public_text(card.get("why_supported")),
         "corroborates": _scrub_text_or_none(card.get("corroborates")),
         "limitation": scrub_public_text(card.get("limitation")),
+        "skill_specific_claims": _public_detail_list(card.get("skill_specific_claims")),
+        "technical_details": _public_detail_list(card.get("technical_details")),
+        "api_endpoints": _public_detail_list(card.get("api_endpoints")),
+        "request_response_details": _public_detail_list(card.get("request_response_details")),
+        "architecture_details": _public_detail_list(card.get("architecture_details")),
+        "implementation_hints": _public_detail_list(card.get("implementation_hints")),
+        "missing_detail_note": _scrub_text_or_none(card.get("missing_detail_note")),
+        "has_skill_specific_details": bool(card.get("has_skill_specific_details")),
         "access_note": access_note,
+        # Download stays disabled publicly; the label/note explain the private state.
+        "document_access_label": _scrub_text_or_none(card.get("document_access_label"))
+        if can_download
+        else None,
+        "document_access_note": access_note,
         "can_download_document": can_download,
         "document_download_url": download_url,
         "document_open_url": open_url,

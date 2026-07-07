@@ -1059,8 +1059,27 @@ export type DocumentProofInspectionCard = {
   why_supported: string
   corroborates?: string | null
   limitation: string
+  /**
+   * Skill-specific detail lists (bounded, normalized, already-safe strings) mined
+   * from the analyzer's own excerpts for the SELECTED skill — never raw document
+   * text, never invented. Empty when the document only supports the skill at the
+   * claim level (then `missing_detail_note` explains what was not extracted).
+   */
+  skill_specific_claims?: string[]
+  technical_details?: string[]
+  api_endpoints?: string[]
+  request_response_details?: string[]
+  architecture_details?: string[]
+  implementation_hints?: string[]
+  /** "What is still missing" note when exact (e.g. endpoint-level) detail is absent. */
+  missing_detail_note?: string | null
+  has_skill_specific_details?: boolean
   /** Safe download/open gating message — never a storage path or signed URL. */
   access_note: string
+  /** Button label when download is enabled (e.g. "Download document"). */
+  document_access_label?: string | null
+  /** Fuller, honest access explanation — never a storage path or signed URL. */
+  document_access_note?: string
   can_download_document: boolean
   document_download_url?: string | null
   document_open_url?: string | null

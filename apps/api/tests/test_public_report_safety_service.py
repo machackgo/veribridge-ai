@@ -1863,6 +1863,64 @@ def test_public_doc_inspection_disables_download_unless_safe() -> None:
     assert safe["document_open_url"] == "https://example.com/shared/report.pdf"
 
 
+def test_public_doc_inspection_shows_safe_technical_details_and_citation() -> None:
+    """L. Public projection keeps bounded, safe technical detail lists + missing
+    note + locator (recruiter-inspectable), even while the raw excerpt is gone."""
+    projected = public_safe_document_inspection_card(
+        _private_inspection_card(
+            matched_skill="API Development",
+            skill_specific_claims=["API development is demonstrated through a backend service."],
+            technical_details=[
+                "API development is demonstrated through a backend service.",
+                "Document mentions API endpoints and cloud deployment.",
+            ],
+            api_endpoints=["Document mentions API endpoints and cloud deployment."],
+            request_response_details=[],
+            architecture_details=["Exposing the workflow as a backend service."],
+            implementation_hints=[],
+            missing_detail_note="No endpoint route names were extracted from this document.",
+            has_skill_specific_details=True,
+        )
+    )
+    assert projected["safe_snippet"] is None  # raw excerpt still stripped
+    assert projected["technical_details"], "safe technical details survive publicly"
+    assert any("backend service" in d for d in projected["technical_details"])
+    assert projected["api_endpoints"]
+    assert projected["missing_detail_note"] == "No endpoint route names were extracted from this document."
+    assert projected["has_skill_specific_details"] is True
+    # Bounded + capped.
+    assert len(projected["technical_details"]) <= 5
+
+
+def test_public_doc_inspection_scrubs_unsafe_fragments_from_detail_lists() -> None:
+    """M. Any path/signed-URL/token smuggled into a detail bullet never survives."""
+    hostile = _private_inspection_card(
+        matched_skill="API Development",
+        technical_details=[
+            f"backend service {_STORAGE_PATH}",
+            f"endpoint at {_SIGNED_URL}",
+            "clean detail about the backend service",
+        ],
+        api_endpoints=[f"route {_LOCAL_PATH}"],
+        missing_detail_note=f"missing {_ACCESS_TOKEN}",
+    )
+    projected = public_safe_document_inspection_card(hostile)
+    blob = json.dumps(projected)
+    for leak in (_STORAGE_PATH, _SIGNED_URL, _LOCAL_PATH, _ACCESS_TOKEN, "token=", "eyJ"):
+        assert leak not in blob, f"unsafe fragment leaked from detail list: {leak}"
+    assert enforce_public_safe(projected) == projected
+
+
+def test_public_doc_inspection_download_disabled_shows_private_access_note() -> None:
+    """N. With download disabled, the document access note is the neutral private
+    message and no label/URL is emitted."""
+    projected = public_safe_document_inspection_card(_private_inspection_card())
+    assert projected["can_download_document"] is False
+    assert projected["document_access_label"] is None
+    assert "private" in projected["document_access_note"].lower()
+    assert "verified excerpts and locators only" in projected["document_access_note"].lower()
+
+
 def test_public_doc_inspection_none_for_non_dict() -> None:
     assert public_safe_document_inspection_card(None) is None
     assert public_safe_document_inspection_card("nope") is None

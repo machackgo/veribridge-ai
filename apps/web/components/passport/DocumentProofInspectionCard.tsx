@@ -17,6 +17,36 @@ import { Badge, Mono, TOKEN } from "./shared"
  * AND supplied a safe URL (revalidated here with {@link isSafePublicUrl}); every
  * other case shows the safe disabled/private access note instead.
  */
+/** One labelled group of bounded, already-safe skill detail bullets. */
+function DetailList({
+  label,
+  items,
+  testid,
+}: {
+  label: string
+  items?: string[] | null
+  testid: string
+}) {
+  if (!items || items.length === 0) return null
+  return (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: TOKEN.inkSoft, marginBottom: 2 }}>
+        {label}
+      </div>
+      <ul data-testid={testid} style={{ margin: 0, paddingLeft: 16 }}>
+        {items.map((detail, i) => (
+          <li
+            key={`${testid}-${i}`}
+            style={{ fontSize: 12, color: TOKEN.inkSoft, lineHeight: 1.5, marginBottom: 2 }}
+          >
+            {detail}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 export function DocumentProofInspectionCard({ card }: { card: DocumentProofInspectionCardData }) {
   const hasLocator =
     card.page_number != null || !!card.section_label || !!card.citation_label
@@ -24,9 +54,26 @@ export function DocumentProofInspectionCard({ card }: { card: DocumentProofInspe
     Boolean,
   ) as string[]
 
+  const claims = card.skill_specific_claims ?? []
+  const technical = card.technical_details ?? []
+  const endpoints = card.api_endpoints ?? []
+  const reqResp = card.request_response_details ?? []
+  const architecture = card.architecture_details ?? []
+  const hints = card.implementation_hints ?? []
+  const hasAnyDetail =
+    technical.length > 0 ||
+    endpoints.length > 0 ||
+    reqResp.length > 0 ||
+    architecture.length > 0 ||
+    hints.length > 0
+
   const downloadUrl = card.document_download_url && isSafePublicUrl(card.document_download_url) ? card.document_download_url : null
   const openUrl = card.document_open_url && isSafePublicUrl(card.document_open_url) ? card.document_open_url : null
   const canDownload = !!card.can_download_document && (!!downloadUrl || !!openUrl)
+  const accessNote =
+    card.document_access_note ||
+    card.access_note ||
+    "Original document download is not available from this view yet."
 
   return (
     <div
@@ -72,6 +119,63 @@ export function DocumentProofInspectionCard({ card }: { card: DocumentProofInspe
           <p data-testid="document-inspection-why" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
             {card.why_supported}
           </p>
+        </div>
+      )}
+
+      {/* Claim-level statements about the skill (beyond the one-line why). */}
+      {claims.length > 0 && card.why_supported !== claims[0] && (
+        <DetailList label="Claims found in this document" items={claims} testid="document-inspection-claims" />
+      )}
+
+      {/* Skill-specific technical details — the deeper, categorized evidence. */}
+      {hasAnyDetail ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <DetailList
+            label="Skill-specific technical details"
+            items={technical}
+            testid="document-inspection-technical"
+          />
+          <DetailList label="Endpoint / route mentions" items={endpoints} testid="document-inspection-endpoints" />
+          <DetailList
+            label="Request / response behavior"
+            items={reqResp}
+            testid="document-inspection-reqresp"
+          />
+          <DetailList
+            label="Backend / architecture details"
+            items={architecture}
+            testid="document-inspection-architecture"
+          />
+          <DetailList label="Implementation hints" items={hints} testid="document-inspection-hints" />
+        </div>
+      ) : (
+        card.has_skill_specific_details === false &&
+        !card.missing_detail_note && (
+          <p
+            data-testid="document-inspection-no-technical"
+            style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}
+          >
+            No skill-specific technical details were extracted from this document.
+          </p>
+        )
+      )}
+
+      {/* What is still missing — endpoint/schema-level gaps for the skill. */}
+      {card.missing_detail_note && (
+        <div
+          data-testid="document-inspection-missing"
+          style={{
+            fontSize: 11,
+            color: TOKEN.inkSoft,
+            lineHeight: 1.5,
+            background: "#fff7ed",
+            border: `1px solid ${TOKEN.line}`,
+            borderRadius: 8,
+            padding: "6px 8px",
+          }}
+        >
+          <strong style={{ color: TOKEN.inkSoft }}>What is still missing: </strong>
+          {card.missing_detail_note}
         </div>
       )}
 
@@ -180,7 +284,7 @@ export function DocumentProofInspectionCard({ card }: { card: DocumentProofInspe
             data-testid="document-inspection-access-note"
             style={{ fontSize: 11, color: TOKEN.muted }}
           >
-            🔒 {card.access_note || "Original document download is not available from this view yet."}
+            🔒 {accessNote}
           </div>
         )}
       </div>

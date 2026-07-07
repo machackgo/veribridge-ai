@@ -285,6 +285,10 @@ class VaultProofItem(BaseModel):
     # opt-in (documents only; ``None`` for every other proof type). Never a path.
     figure_reference: str | None = None
     full_document_available: bool | None = None
+    # Extra bounded, already-safe skill-related snippets/reasons for THIS skill
+    # (documents only; ``None`` otherwise). Owner-only raw material the Document
+    # Proof inspection card mines for deeper detail — never raw/full document text.
+    detail_snippets: list[str] | None = None
     question_text: str | None = None
     answer_excerpt: str | None = None
     timestamp_label: str | None = None
@@ -581,8 +585,36 @@ class DocumentProofInspectionCard(BaseModel):
     why_supported: str = ""
     corroborates: str | None = None
     limitation: str = ""
-    # Safe, human download/open gating note — never a path or signed URL.
+    # ── Skill-specific detail lists (bounded, normalized, already-safe strings) ──
+    # Deeper-than-one-sentence evidence for the SELECTED skill, mined ONLY from the
+    # analyzer's own bounded safe snippets/reasons for THIS skill — never raw/full
+    # document text, and never invented. Each list is deduped and capped. When the
+    # document only supports the skill at the claim level, the technical lists stay
+    # empty and ``missing_detail_note`` explains exactly what was not extracted.
+    #
+    # ``skill_specific_claims``  — claim-level statements about the skill.
+    # ``technical_details``      — concrete mechanism statements (deeper than a claim).
+    # ``api_endpoints``          — endpoint/route/REST mentions (API skills only).
+    # ``request_response_details`` — request/response/schema mentions (API skills).
+    # ``architecture_details``   — backend/service/architecture/integration mentions.
+    # ``implementation_hints``   — other bounded implementation-flavored detail.
+    skill_specific_claims: list[str] = Field(default_factory=list)
+    technical_details: list[str] = Field(default_factory=list)
+    api_endpoints: list[str] = Field(default_factory=list)
+    request_response_details: list[str] = Field(default_factory=list)
+    architecture_details: list[str] = Field(default_factory=list)
+    implementation_hints: list[str] = Field(default_factory=list)
+    # Safe "what is still missing" note when exact (e.g. endpoint-level) detail was
+    # not extracted — points the recruiter at GitHub Proof / Project Defense.
+    missing_detail_note: str | None = None
+    # Whether ANY skill-specific detail (claim or technical) was found for the skill.
+    has_skill_specific_details: bool = False
+    # Safe, human download/open gating note — never a path or signed URL. The legacy
+    # ``access_note`` is kept for back-compat; ``document_access_note`` carries the
+    # fuller, honest explanation and ``document_access_label`` the button label.
     access_note: str = ""
+    document_access_label: str | None = None
+    document_access_note: str = ""
     # Download/open is gated on explicit student consent AND a safe endpoint. When
     # no safe URL exists both URLs stay ``None`` and the UI shows a disabled state.
     can_download_document: bool = False

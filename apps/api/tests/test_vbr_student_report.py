@@ -153,6 +153,52 @@ def test_document_inspection_limitation_copy_appears(mem_store: dict, pipeline_d
     assert "GitHub Proof" in card["limitation"]
 
 
+def test_skill_specific_details_do_not_leak_across_skills(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """I. A document that matched both API Development and Machine Learning yields,
+    for the ML report, ML detail only — never the API endpoint/request lists."""
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {
+                "skill_name": "API Development",
+                "snippet": "The service exposes REST API endpoints for the workflow.",
+                "reason": "The request payload and response schema are described.",
+                "page_number": 7,
+            },
+            {
+                "skill_name": "Machine Learning",
+                "snippet": "We trained a gradient-boosted model on the dataset.",
+                "reason": "Describes the ML model and evaluation.",
+                "page_number": 4,
+            },
+        ],
+    )
+
+    ml_card = _inspection_cards(
+        collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    )[0]
+    assert ml_card["matched_skill"] == "Machine Learning"
+    # ML card carries ML detail and NONE of the API-only lists.
+    assert ml_card["api_endpoints"] == []
+    assert ml_card["request_response_details"] == []
+    assert any("model" in d.lower() for d in ml_card["technical_details"])
+    # The API-only excerpt/locator never appears in the ML card.
+    blob = repr(ml_card)
+    assert "REST API endpoints" not in blob
+    assert ml_card["page_number"] == 4
+
+    api_card = _inspection_cards(
+        collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    )[0]
+    assert api_card["matched_skill"] == "API Development"
+    assert api_card["api_endpoints"], "API card must carry its own endpoint detail"
+    assert "gradient-boosted model" not in repr(api_card)
+
+
 # ── Ownership ────────────────────────────────────────────────────────────────
 
 def test_report_returns_404_for_unknown_project(client: TestClient) -> None:
