@@ -62,6 +62,12 @@ function makePrivatePassport(overrides: Partial<PrivateWorkPassport> = {}): Priv
         project_summary: "Tracks student skill evidence.",
         repo_full_name: "octocat/Hello-World",
         claimed_skills: ["Python", "React"],
+        // top_skills link Python to the project so the role-area aggregation has
+        // real skill→project evidence (the Data Science / Applied AI chip becomes
+        // an evidence-backed role area, not just a card label).
+        top_skills: [
+          { skill: "Python", status: "Demonstrated", skill_slug: "python", supporting_proof_types: ["GitHub Proof"] },
+        ],
         evidence_sources: ["GitHub Proof", "Document Proof", "Project Defense", "Video Evidence"],
         evidence_package: {
           github_proof_attached: true,
@@ -178,13 +184,29 @@ describe("Verified Passport Card preview (private)", () => {
     expect(within(card).getByTestId("passport-card-evidence-line")).toHaveTextContent(/recruiter-safe/i)
   })
 
-  it("clicking a role-area chip deep-links into the same-page Skills Evidence Map", async () => {
+  it("clicking a role-area chip sets the ROLE AREA filter (aggregation), not just a raw skill", async () => {
     const preview = await renderPrivate()
     const chip = within(preview).getAllByTestId("passport-card-capability")[0]
+    expect(chip).toHaveAttribute("data-label", "Data Science / Applied AI")
     fireEvent.click(chip)
-    // The evidence map narrows to the chip's underlying skill (a real in-page
-    // selection, never a broken deep link).
-    expect(screen.getByText(/Projects for selected skill/i)).toBeInTheDocument()
+
+    // The evidence map opens the role-level CAPABILITY view (aggregation across
+    // the area's underlying skills/projects), never a single raw skill filter.
+    const summary = screen.getByTestId("capability-summary")
+    expect(summary).toHaveAttribute("data-capability", "Data Science / Applied AI")
+    // The Role Area filter is what got selected — not the raw skill dropdown.
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("data-science-applied-ai")
+    expect(screen.getByTestId("passport-skill-filter")).toHaveValue("")
+    // It aggregates the underlying evidence (Python → Data Science, via proj-1):
+    // counts-based headline + qualitative "why".
+    expect(within(summary).getByTestId("capability-summary-text")).toHaveTextContent(
+      /Data Science \/ Applied AI is supported by \d+ connected skill/i,
+    )
+    // The "why" is the richer, fact-grounded narrative: purpose + the connected
+    // project + role-relevant framing.
+    const why = within(summary).getByTestId("capability-why")
+    expect(why).toHaveTextContent(/Data Science \/ Applied AI is about using analysis/i)
+    expect(why).toHaveTextContent(/role-relevant work/i)
   })
 
   it("shows the avatar-only profile (no scan QR) and a publish action while private", async () => {

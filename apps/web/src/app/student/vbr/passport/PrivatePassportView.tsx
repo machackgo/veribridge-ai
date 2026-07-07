@@ -31,6 +31,12 @@ import {
 import { buildPassportGraph, type PassportSkillNode } from "./passport-graph"
 import { PassportCard } from "../../../../../components/passport/PassportCard"
 import { buildPrivateCardModel, type PassportCardCapability } from "@/lib/passport-card"
+import {
+  buildCapabilityAggregates,
+  capabilityRowKeys,
+  presentCapabilities,
+  type CapabilityAggregate,
+} from "@/lib/passport-capabilities"
 
 const SOURCE_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
@@ -543,12 +549,14 @@ function SkillCard({
   selected,
   focusProjectId,
   proofFilter,
+  roleProjectIds,
   onToggleSelect,
 }: {
   node: PassportSkillNode
   selected: boolean
   focusProjectId: string | null
   proofFilter: string | null
+  roleProjectIds: string[] | null
   onToggleSelect: () => void
 }) {
   const topProject = node.strongest?.title ?? null
@@ -607,7 +615,7 @@ function SkillCard({
         {/* Skill → Project → Evidence: each project row shows the proof that
             supports THIS skill in THAT project; vault-only evidence is rendered
             separately and clearly labelled as not attached to a project. */}
-        <SkillEvidenceNav node={node} focusProjectId={focusProjectId} proofFilter={proofFilter} />
+        <SkillEvidenceNav node={node} focusProjectId={focusProjectId} proofFilter={proofFilter} roleProjectIds={roleProjectIds} />
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <Link
@@ -663,18 +671,27 @@ function SkillEvidenceNav({
   node,
   focusProjectId,
   proofFilter,
+  roleProjectIds,
 }: {
   node: PassportSkillNode
   focusProjectId: string | null
   proofFilter: string | null
+  /** When a Role Area filter is active, the exact project ids whose row supports
+   *  THIS skill for that role area — a contextual skill (e.g. ML under Computer
+   *  Vision) shows only its role-relevant project rows, never every project it
+   *  touches. null when no role area is selected. */
+  roleProjectIds: string[] | null
 }) {
   const [expanded, setExpanded] = useState(false)
   const allRows = node.projectEvidence
-  // Rows narrow to the active project and/or proof-type filter. A proof-type
-  // filter shows only rows whose evidence for THIS skill in THAT project actually
-  // includes that proof — never a row that merely has the proof project-wide.
+  // Rows narrow to the active project, role area, and/or proof-type filter. A
+  // proof-type filter shows only rows whose evidence for THIS skill in THAT
+  // project actually includes that proof — never a row that merely has the proof
+  // project-wide. The role-area filter fails closed to the exact skill→project
+  // rows the capability mapping recorded, so an unrelated project never leaks in.
   let rows = allRows
   if (focusProjectId) rows = rows.filter((r) => r.projectId === focusProjectId)
+  if (roleProjectIds) rows = rows.filter((r) => roleProjectIds.includes(r.projectId))
   if (proofFilter) rows = rows.filter((r) => r.evidenceSources.includes(proofFilter))
 
   // No attached project demonstrates this skill yet — its evidence lives only in
@@ -845,8 +862,8 @@ function SkillEvidenceNav({
 
       {/* Vault-only (standalone) evidence for this skill, kept SEPARATE from the
           project rows above so it is never counted as project-attached proof.
-          Hidden in project-filter / proof-type mode (it is not project-attached). */}
-      {!focusProjectId && !proofFilter && node.vaultOnlySources.length > 0 && (
+          Hidden in project / role-area / proof-type mode (it is not project-attached). */}
+      {!focusProjectId && !proofFilter && !roleProjectIds && node.vaultOnlySources.length > 0 && (
         <div
           data-testid="skill-standalone-evidence"
           style={{
@@ -969,6 +986,332 @@ function WebsiteProofProjectLevelEmptyState({
   )
 }
 
+// ── Role-area capability evidence summary ─────────────────────────────────────
+
+/** Qualitative role-level status → chip tone (never a numeric score). */
+const CAPABILITY_STATUS_TONE: Record<string, BadgeTone> = {
+  "Evidence observed": "emerald",
+  "Supporting evidence": "sky",
+  "Partially demonstrated": "amber",
+  "Insufficient evidence": "rose",
+  "Not assessed": "slate",
+}
+
+/**
+ * The visual evidence chain: a chip row connecting the role area to its supporting
+ * evidence — [Skill] ─ [Skill] ─ [Project] ─ [Proof] ─ [Proof] — built with plain
+ * styled divs and connector lines (no chart library). It makes a recruiter see at
+ * a glance that a high-level skill is verified because multiple lower-level skills,
+ * projects, and proofs connect together, not one isolated claim.
+ */
+function EvidenceChain({ nodes }: { nodes: string[] }) {
+  if (nodes.length === 0) return null
+  return (
+    <div
+      data-testid="capability-evidence-chain"
+      style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}
+    >
+      {nodes.map((label, i) => (
+        <span key={`${label}-${i}`} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          {i > 0 && (
+            <span
+              aria-hidden
+              style={{ width: 14, height: 2, borderRadius: 2, background: "#c7d2fe", display: "inline-block" }}
+            />
+          )}
+          <span
+            data-testid="capability-chain-node"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              padding: "4px 10px",
+              borderRadius: 999,
+              fontSize: 11,
+              fontWeight: 600,
+              color: TOKEN.ink,
+              background: "#fff",
+              border: `1px solid ${TOKEN.indigo}`,
+            }}
+          >
+            {label}
+          </span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The role-level evidence view shown when a Role Area (high-level capability) is
+ * selected. It answers, honestly and without a readiness guarantee:
+ *   1. WHY this capability is supported (qualitative explanation + status label),
+ *   2. a VISUAL evidence chain connecting skills → projects → proofs,
+ *   3. the CONNECTED lower-level skills (each with its projects + proof),
+ *   4. the CONNECTED projects (each with a reason, proof, and report links),
+ *   5. WHAT gaps remain.
+ *
+ * Language is deliberately evidence-grounded: "supported by", "role-relevant
+ * evidence", "supporting evidence", "needs stronger proof" — never "ready for
+ * role", "verified" (unless proof is real), "score", or "rank". Every skill /
+ * project / proof / link comes from the same evidence-backed Projects↔Skills graph
+ * the map below renders — no fabricated skills, no unsafe raw fields.
+ */
+function CapabilitySummaryCard({ capability }: { capability: CapabilityAggregate }) {
+  const statusTone = CAPABILITY_STATUS_TONE[capability.statusLabel] ?? "slate"
+  const sectionLabel: CSSProperties = {
+    fontSize: 10,
+    color: TOKEN.muted,
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+  }
+  return (
+    <Card
+      style={{ background: "linear-gradient(160deg,#f5f7ff 0%,#eef2ff 100%)", borderColor: "#c7d2fe" }}
+    >
+      <div
+        data-testid="capability-summary"
+        data-capability={capability.label}
+        style={{ display: "flex", flexDirection: "column", gap: 12 }}
+      >
+        <span data-testid="capability-header" style={{ ...sectionLabel, color: TOKEN.indigo }}>
+          High-level capability selected (1)
+        </span>
+
+        {/* Role name + qualitative status chip. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <h3 style={{ fontSize: 18, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>{capability.label}</h3>
+          <span data-testid="capability-status" data-status={capability.statusLabel}>
+            <Badge tone={statusTone}>{capability.statusLabel}</Badge>
+          </span>
+          {capability.composite && (
+            <span data-testid="capability-composite-note" style={{ fontSize: 11, color: TOKEN.muted, fontWeight: 600 }}>
+              Multi-layer role
+            </span>
+          )}
+        </div>
+
+        {/* Counts line — connected skills / projects / proof sources (no scores). */}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <span data-testid="capability-skill-count">
+            <Badge tone="slate">
+              Connected skills: {capability.skills.length}
+            </Badge>
+          </span>
+          <span data-testid="capability-project-count">
+            <Badge tone="slate">
+              Connected projects: {capability.projects.length}
+            </Badge>
+          </span>
+          {capability.proofTypes.length > 0 && (
+            <span data-testid="capability-proof-source-count">
+              <Badge tone="slate">
+                Proof sources: {capability.proofTypes.map((p) => PROOF_SHORT_LABEL[p] ?? p).join(", ")}
+              </Badge>
+            </span>
+          )}
+        </div>
+
+        <p data-testid="capability-summary-text" style={{ fontSize: 13, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.55 }}>
+          {capability.summary}
+        </p>
+
+        {/* Why this role area is supported — rich, fact-grounded 1–2 paragraph
+            narrative built from the exact connected skills, projects, and proof
+            sources (never a score or fabricated claim). */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={sectionLabel}>Why this role area is supported</span>
+          <div data-testid="capability-why" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {capability.narrative.map((paragraph, i) => (
+              <p
+                key={i}
+                data-testid="capability-why-paragraph"
+                style={{ fontSize: 13, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.6 }}
+              >
+                {paragraph}
+              </p>
+            ))}
+          </div>
+        </div>
+
+        {/* Visual connecting evidence chain. */}
+        {capability.evidenceChain.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            <span style={sectionLabel}>Evidence chain</span>
+            <EvidenceChain nodes={capability.evidenceChain} />
+          </div>
+        )}
+
+        {/* Proof coverage across the whole capability. */}
+        {capability.proofTypes.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={sectionLabel}>Proof coverage</span>
+            <div data-testid="capability-proof-coverage" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {capability.proofTypes.map((label) => (
+                <span key={label} data-testid="capability-proof-chip" data-source={label}>
+                  <Badge tone={SOURCE_TONE[label] ?? "slate"}>{label}</Badge>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Connected lower-level skills — each with its projects + proof + report. */}
+        {capability.skills.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={sectionLabel}>Connected lower-level skills</span>
+            <div data-testid="capability-connected-skills" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {capability.skills.map((s) => (
+                <div
+                  key={s.skillKey}
+                  data-testid="capability-skill"
+                  data-skill={s.skillName}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 3,
+                    padding: "7px 10px",
+                    border: `1px solid ${TOKEN.line}`,
+                    borderRadius: 8,
+                    background: "#fff",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, color: TOKEN.ink }}>{s.skillName}</span>
+                    <Badge tone={SKILL_STATUS_TONE[s.status] ?? "slate"}>{s.status}</Badge>
+                    {s.contextual && (
+                      <span data-testid="capability-skill-contextual" style={{ fontSize: 10, color: TOKEN.muted, fontWeight: 600 }}>
+                        via project context
+                      </span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 11, color: TOKEN.inkSoft }}>
+                    Attached to {s.projectTitles.join(", ")}
+                  </span>
+                  {/* Why this lower-level skill connects to the role area (honest). */}
+                  <p
+                    data-testid="capability-skill-reason"
+                    data-skill={s.skillName}
+                    style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
+                  >
+                    {s.reason}
+                  </p>
+                  {s.proofTypes.length > 0 && (
+                    <div data-testid="capability-skill-proof" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                      {s.proofTypes.map((label) => (
+                        <span key={label} data-testid="capability-skill-proof-chip" data-source={label}>
+                          <Badge tone={SOURCE_TONE[label] ?? "slate"}>{label}</Badge>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <Link
+                    href={skillReportPath(s.skillSlug || fallbackSkillSlug(s.skillName))}
+                    data-testid="capability-skill-report-link"
+                    data-skill={s.skillName}
+                    style={{ fontSize: 11.5, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none", alignSelf: "flex-start" }}
+                  >
+                    Open {s.skillName} skill report →
+                  </Link>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Connected projects — reason + proof + links back to project-safe reports. */}
+        {capability.projects.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={sectionLabel}>Connected projects</span>
+            {capability.projects.map((proj, i) => (
+              <div
+                key={proj.projectId}
+                data-testid="capability-project"
+                data-project-id={proj.projectId}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                  padding: "8px 10px",
+                  border: `1px solid ${TOKEN.line}`,
+                  borderRadius: 8,
+                  background: "#fff",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>{proj.projectTitle}</span>
+                  {i === 0 && (
+                    <span data-testid="capability-strongest-project">
+                      <Badge tone="emerald">Strongest evidence</Badge>
+                    </span>
+                  )}
+                  {proj.contextual && (
+                    <span data-testid="capability-project-contextual" title="Included via project context, not a directly-labelled skill">
+                      <Badge tone="amber">Role-relevant context</Badge>
+                    </span>
+                  )}
+                </div>
+                <p data-testid="capability-project-reason" style={{ fontSize: 11, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                  {proj.reason}
+                </p>
+                <span style={{ fontSize: 11, color: TOKEN.muted }}>
+                  Matched skills: {proj.skillNames.join(", ")}
+                </span>
+                <div data-testid="capability-project-proof" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {proj.proofTypes.map((label) => (
+                    <span key={label} data-testid="capability-project-proof-chip" data-source={label}>
+                      <Badge tone={SOURCE_TONE[label] ?? "slate"}>{label}</Badge>
+                    </span>
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: 2 }}>
+                  <Link
+                    href={proj.reportPath}
+                    data-testid="capability-open-report"
+                    data-project-id={proj.projectId}
+                    style={{ fontSize: 11.5, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+                  >
+                    Open project report →
+                  </Link>
+                  {proj.skillRefs.slice(0, 3).map((ref) => (
+                    <Link
+                      key={ref.slug}
+                      href={skillReportPath(ref.slug || fallbackSkillSlug(ref.name))}
+                      data-testid="capability-open-skill-report"
+                      data-skill={ref.name}
+                      style={{ fontSize: 11.5, fontWeight: 600, color: TOKEN.inkSoft, textDecoration: "none" }}
+                    >
+                      {ref.name} skill report →
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Honest gaps — what still needs stronger proof. */}
+        {capability.gaps.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={sectionLabel}>Still needs stronger proof</span>
+            <ul data-testid="capability-gaps" style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 }}>
+              {capability.gaps.map((gap, i) => (
+                <li key={i} data-testid="capability-gap" style={{ fontSize: 11.5, color: TOKEN.muted, lineHeight: 1.5 }}>
+                  {gap}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <p style={{ fontSize: 10.5, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          Role-relevant evidence, not a readiness guarantee — capability is described qualitatively, never as a score or rank.
+        </p>
+      </div>
+    </Card>
+  )
+}
+
 // ── Skills Evidence Map explorer (evaluator-grade skill proof browser) ─────────
 
 /**
@@ -994,28 +1337,43 @@ function PassportGraphExplorer({
   passportPublished,
   selectedSkillKey,
   onSelectSkillKey,
+  selectedRoleAreaId,
+  onSelectRoleAreaId,
 }: {
   passport: PrivateWorkPassport
   passportPublished: boolean
   /** Controlled skill selection (Card preview deep-link). Defaults to internal. */
   selectedSkillKey?: string | null
   onSelectSkillKey?: (key: string | null) => void
+  /** Controlled Role Area selection (Card role-chip deep-link). Defaults internal. */
+  selectedRoleAreaId?: string | null
+  onSelectRoleAreaId?: (id: string | null) => void
 }) {
   const graph = useMemo(() => buildPassportGraph(passport), [passport])
+  // High-level role-area aggregation over the SAME evidence-backed graph — one
+  // canonical capability mapping (`@/lib/passport-capabilities`), shared with the
+  // Passport Card role chips. Only role areas that actually have evidence become
+  // selectable options.
+  const capabilityAggregates = useMemo(() => buildCapabilityAggregates(graph.skills), [graph])
+  const roleAreaOptions = useMemo(() => presentCapabilities(capabilityAggregates), [capabilityAggregates])
 
-  // Three independent, combinable filters + a name search. Default is All skills.
-  // The skill filter is controlled-or-internal so the top Card preview can drive
-  // it (deep-link a skill into this map) while standalone usage keeps working.
+  // Four independent, combinable filters + a name search. Default is All skills.
+  // The skill and role-area filters are controlled-or-internal so the top Card
+  // preview can drive them (deep-link into this map) while standalone usage works.
   const [internalSkillFilter, setInternalSkillFilter] = useState<string | null>(null)
   const skillFilter = selectedSkillKey !== undefined ? selectedSkillKey : internalSkillFilter
   const setSkillFilter = onSelectSkillKey ?? setInternalSkillFilter
+  const [internalRoleAreaFilter, setInternalRoleAreaFilter] = useState<string | null>(null)
+  const roleAreaFilter = selectedRoleAreaId !== undefined ? selectedRoleAreaId : internalRoleAreaFilter
+  const setRoleAreaFilter = onSelectRoleAreaId ?? setInternalRoleAreaFilter
   const [projectFilter, setProjectFilter] = useState<string | null>(null)
   const [proofFilter, setProofFilter] = useState<string | null>(null)
   const [search, setSearch] = useState("")
 
   const query = search.trim().toLowerCase()
-  const hasFilter = Boolean(skillFilter || projectFilter || proofFilter || query)
+  const hasFilter = Boolean(roleAreaFilter || skillFilter || projectFilter || proofFilter || query)
   const clearFilters = () => {
+    setRoleAreaFilter(null)
     setSkillFilter(null)
     setProjectFilter(null)
     setProofFilter(null)
@@ -1025,6 +1383,35 @@ function PassportGraphExplorer({
   const toggleSkill = (key: string) => setSkillFilter(skillFilter === key ? null : key)
   const toggleProject = (id: string) => setProjectFilter((c) => (c === id ? null : id))
 
+  // The active role area's aggregate + the exact skill→project row keys it maps.
+  // A selected role area that no longer has evidence (stale deep-link) resolves to
+  // null and simply shows the honest empty state.
+  const roleAggregate = roleAreaFilter
+    ? capabilityAggregates.find((a) => a.id === roleAreaFilter) ?? null
+    : null
+  const roleRowKeys = useMemo(() => capabilityRowKeys(roleAggregate), [roleAggregate])
+  // nodeKey → the project ids whose row supports THIS skill for the active role
+  // area (a contextual skill shows only its role-relevant rows).
+  const roleRowsByNode = useMemo(() => {
+    const m = new Map<string, Set<string>>()
+    for (const r of roleAggregate?.rows ?? []) {
+      const set = m.get(r.skillKey) ?? new Set<string>()
+      set.add(r.projectId)
+      m.set(r.skillKey, set)
+    }
+    return m
+  }, [roleAggregate])
+  const roleProjectIdsFor = (node: PassportSkillNode): string[] | null =>
+    roleAreaFilter ? [...(roleRowsByNode.get(node.key) ?? [])] : null
+  const roleProjectIdSet = useMemo(
+    () => new Set(roleAggregate?.rows.map((r) => r.projectId) ?? []),
+    [roleAggregate],
+  )
+  const roleSkillKeys = useMemo(
+    () => new Set(roleAggregate?.rows.map((r) => r.skillKey) ?? []),
+    [roleAggregate],
+  )
+
   // Recruiter-facing proof-type options: every proof type that exists anywhere in
   // the Passport evidence (overview counts, project sources, skill sources,
   // vault-only, and the skill→project map). An option does NOT disappear just
@@ -1033,16 +1420,25 @@ function PassportGraphExplorer({
   // do), so project-level proof is never overclaimed as skill-specific evidence.
   const availableProofTypes = graph.proofTypeOptions
 
+  // Skill-dropdown options narrow to the active role area's underlying skills so
+  // the skill filter reads as "underlying skills for this capability".
+  const skillFilterOptions = roleAreaFilter
+    ? graph.skills.filter((s) => roleSkillKeys.has(s.key))
+    : graph.skills
+
   // Project-level-only Website Proof: attached Website Proofs that mapped no skill
   // (too-generic observed behaviour). Drives the honest Website-Proof empty state
   // below — informational context, NEVER counted or shown as skill evidence.
   const websiteProjectContext = passport.website_proof_project_context ?? []
 
-  // Project + proof filters act on the skill's ROWS (not just its identity), so a
-  // proof type surfaces a skill only where that proof supports the skill in a
-  // still-visible project — fail-closed to the skill→project mapping.
+  // Role-area / project / proof filters act on the skill's ROWS (not just its
+  // identity). The role-area filter fails closed to the exact skill→project rows
+  // the capability mapping recorded, so an unrelated project never leaks in and a
+  // contextual skill (e.g. ML under Computer Vision) surfaces only its
+  // role-relevant project rows.
   const effectiveRows = (node: PassportSkillNode) => {
     let rows = node.projectEvidence
+    if (roleAreaFilter) rows = rows.filter((r) => roleRowKeys.has(`${node.key}::${r.projectId}`))
     if (projectFilter) rows = rows.filter((r) => r.projectId === projectFilter)
     if (proofFilter) rows = rows.filter((r) => r.evidenceSources.includes(proofFilter))
     return rows
@@ -1055,9 +1451,9 @@ function PassportGraphExplorer({
   const visibleSkills = graph.skills.filter((node) => {
     if (skillFilter && node.key !== skillFilter) return false
     if (!matchesSearch(node)) return false
-    // Project / proof filters require a surviving row; skill / search alone keep
-    // vault-only skills (which have no project rows) visible.
-    if (projectFilter || proofFilter) return effectiveRows(node).length > 0
+    // Role-area / project / proof filters require a surviving row; skill / search
+    // alone keep vault-only skills (which have no project rows) visible.
+    if (roleAreaFilter || projectFilter || proofFilter) return effectiveRows(node).length > 0
     return true
   })
 
@@ -1072,6 +1468,7 @@ function PassportGraphExplorer({
     : null
   const visibleProjects = passport.projects.filter((p) => {
     if (projectFilter) return p.project_id === projectFilter
+    if (roleAreaFilter && !roleProjectIdSet.has(p.project_id)) return false
     if (skillProjectIds && !skillProjectIds.has(p.project_id)) return false
     if (proofProjectIds && !proofProjectIds.has(p.project_id)) return false
     if (
@@ -1088,11 +1485,13 @@ function PassportGraphExplorer({
     ? passport.projects.find((p) => p.project_id === projectFilter) ?? null
     : null
 
-  const skillsHeading = projectFilter
-    ? `Skills for selected project (${visibleSkills.length})`
-    : skillFilter
-      ? `Selected skill (${visibleSkills.length})`
-      : `Skills (${graph.skills.length})`
+  const skillsHeading = roleAreaFilter && roleAggregate
+    ? `Skills supporting ${roleAggregate.label} (${visibleSkills.length})`
+    : projectFilter
+      ? `Skills for selected project (${visibleSkills.length})`
+      : skillFilter
+        ? `Selected skill (${visibleSkills.length})`
+        : `Skills (${graph.skills.length})`
   const projectsHeading = skillFilter
     ? `Projects for selected skill (${visibleProjects.length})`
     : projectFilter
@@ -1128,7 +1527,7 @@ function PassportGraphExplorer({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>Explore evidence</span>
-            <span style={{ fontSize: 11, color: TOKEN.muted }}>Filter by skill, project, or proof type.</span>
+            <span style={{ fontSize: 11, color: TOKEN.muted }}>Filter by role area, skill, project, or proof type.</span>
           </div>
           {hasFilter && (
             <button
@@ -1143,16 +1542,42 @@ function PassportGraphExplorer({
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          {roleAreaOptions.length > 0 && (
+            <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              <span style={controlLabelStyle}>Role area</span>
+              <select
+                data-testid="passport-role-area-filter"
+                value={roleAreaFilter ?? ""}
+                onChange={(e) => {
+                  // Role area is a high-level lens: reset the skill filter so the
+                  // capability aggregates across ALL its underlying skills, not a
+                  // single leftover raw-skill selection.
+                  setRoleAreaFilter(e.target.value || null)
+                  setSkillFilter(null)
+                }}
+                style={selectStyle}
+              >
+                <option value="">All role areas</option>
+                {roleAreaOptions.map((cap) => (
+                  <option key={cap.id} value={cap.id}>
+                    {cap.label} — {cap.projects.length} {cap.projects.length === 1 ? "project" : "projects"} ·{" "}
+                    {cap.skillNames.length} {cap.skillNames.length === 1 ? "skill" : "skills"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            <span style={controlLabelStyle}>Skill</span>
+            <span style={controlLabelStyle}>{roleAreaFilter ? "Underlying skill" : "Skill"}</span>
             <select
               data-testid="passport-skill-filter"
               value={skillFilter ?? ""}
               onChange={(e) => setSkillFilter(e.target.value || null)}
               style={selectStyle}
             >
-              <option value="">All skills</option>
-              {graph.skills.map((s) => (
+              <option value="">{roleAreaFilter ? "All underlying skills" : "All skills"}</option>
+              {skillFilterOptions.map((s) => (
                 <option key={s.key} value={s.key}>
                   {s.name} — {s.projectCount} {s.projectCount === 1 ? "project" : "projects"}
                   {s.proofTypes.length > 0 ? ` · ${shortProofList(s.proofTypes)}` : ""}
@@ -1213,13 +1638,20 @@ function PassportGraphExplorer({
           </label>
         </div>
 
-        {/* Selected-filter summaries carry skill/project/proof CONTEXT, not just a
-            bare name (requirements #3–#5). */}
-        {(skillNode || projectSummary || proofFilter) && (
+        {/* Selected-filter summaries carry role/skill/project/proof CONTEXT, not
+            just a bare name (requirements #3–#5). */}
+        {(roleAggregate || skillNode || projectSummary || proofFilter) && (
           <div
             data-testid="graph-filter-summary"
             style={{ display: "flex", flexDirection: "column", gap: 4, paddingTop: 8, borderTop: `1px solid ${TOKEN.line}` }}
           >
+            {roleAggregate && (
+              <span data-testid="summary-role" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
+                Showing role-relevant evidence for: <strong>{roleAggregate.label}</strong> —{" "}
+                {roleAggregate.projects.length} {roleAggregate.projects.length === 1 ? "project" : "projects"} ·{" "}
+                {roleAggregate.skillNames.length} underlying {roleAggregate.skillNames.length === 1 ? "skill" : "skills"}
+              </span>
+            )}
             {skillNode && (
               <span data-testid="summary-skill" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
                 Showing evidence for: <strong>{skillNode.name}</strong> — {skillNode.projectCount}{" "}
@@ -1248,6 +1680,11 @@ function PassportGraphExplorer({
         )}
       </div>
 
+      {/* Role-area capability summary — the role-level evidence view (why, which
+          projects, which skills, which proof, what gaps). Shown above the map so a
+          recruiter reads the aggregated capability first, then the supporting rows. */}
+      {roleAggregate && <CapabilitySummaryCard capability={roleAggregate} />}
+
       {/* PRIMARY — the skill-first evidence map. */}
       <div data-testid="passport-skills-panel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <h3 style={panelHeading}>{skillsHeading}</h3>
@@ -1264,7 +1701,12 @@ function PassportGraphExplorer({
             <WebsiteProofProjectLevelEmptyState contexts={websiteProjectContext} />
           ) : (
             <Card>
-              {proofFilter ? (
+              {proofFilter && roleAggregate ? (
+                <p data-testid="skills-panel-role-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                  No {roleAggregate.label} evidence uses {proofFilter}. Try all proof types, or attach{" "}
+                  {(PROOF_SHORT_LABEL[proofFilter] ?? proofFilter).toLowerCase()} evidence to a project that supports this role area.
+                </p>
+              ) : proofFilter ? (
                 <p data-testid="skills-panel-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
                   No skill-project evidence found for {proofFilter}. Try all proof types or attach{" "}
                   {(PROOF_SHORT_LABEL[proofFilter] ?? proofFilter).toLowerCase()} evidence.
@@ -1284,6 +1726,7 @@ function PassportGraphExplorer({
               selected={skillFilter === node.key}
               focusProjectId={projectFilter}
               proofFilter={proofFilter}
+              roleProjectIds={roleProjectIdsFor(node)}
               onToggleSelect={() => toggleSkill(node.key)}
             />
           ))
@@ -1332,18 +1775,20 @@ function PassportGraphExplorer({
  * {@link PassportCard}), so the student previews exactly what gets shared:
  * identity, high-level role areas, proof coverage, and a scannable profile that
  * opens the full Work Passport. Role chips deep-link into the same-page Skills
- * Evidence Map. The publishing / share controls live in ONE compact "Sharing
- * controls" row directly below the card (no second Public Work Passport block, no
- * standalone QR box). Only recruiter-safe fields are ever shown.
+ * Evidence Map. Role chips deep-link the same-page Skills Evidence Map to the
+ * chip's ROLE AREA (high-level capability aggregation across its underlying
+ * skills/projects), NOT a single raw skill. The publishing / share controls live
+ * in ONE compact "Sharing controls" row directly below the card (no second Public
+ * Work Passport block, no standalone QR box). Only recruiter-safe fields shown.
  */
 function VerifiedPassportCardPreview({
   passport,
   initialStatus,
-  onSelectSkill,
+  onSelectCapability,
 }: {
   passport: PrivateWorkPassport
   initialStatus: WorkPassportStatus
-  onSelectSkill: (key: string) => void
+  onSelectCapability: (capabilityId: string) => void
 }) {
   const [status, setStatus] = useState<WorkPassportStatus>(initialStatus)
   const [busy, setBusy] = useState(false)
@@ -1395,10 +1840,11 @@ function VerifiedPassportCardPreview({
     document.getElementById("skills-evidence-map")?.scrollIntoView?.({ behavior: "smooth", block: "start" })
   }
 
-  // Same-page deep link: select the chip's strongest underlying skill in the
-  // evidence map, then scroll to it (a real in-page selection, never a broken link).
+  // Same-page deep link: set the ROLE AREA filter to this chip's capability so the
+  // evidence map aggregates across ALL its underlying skills/projects — role-area
+  // aggregation, never just a single raw skill. Then scroll to the map.
   const onCapabilityClick = (cap: PassportCardCapability) => {
-    if (cap.key) onSelectSkill(cap.key)
+    onSelectCapability(cap.capabilityId)
     scrollToMap()
   }
 
@@ -1556,6 +2002,17 @@ export function PrivatePassportView() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedSkillKey, setSelectedSkillKey] = useState<string | null>(null)
+  // Role-area deep-link target set by a Passport Card role chip. Kept alongside
+  // the skill selection so a chip click drives role-area aggregation (not a raw
+  // skill) in the Skills Evidence Map below.
+  const [selectedRoleAreaId, setSelectedRoleAreaId] = useState<string | null>(null)
+
+  // A Passport Card role chip selects the ROLE AREA (and clears any leftover raw
+  // skill selection) so the map aggregates across the capability's skills/projects.
+  const selectCapability = (capabilityId: string) => {
+    setSelectedRoleAreaId(capabilityId)
+    setSelectedSkillKey(null)
+  }
 
   const load = () => {
     setLoading(true)
@@ -1588,7 +2045,7 @@ export function PrivatePassportView() {
           credential is the hero of the page (pinned to the very top) and now owns
           the sharing controls too, so there is no second "Public Work Passport" /
           "Verified candidate profile" block competing with it. */}
-      <VerifiedPassportCardPreview passport={passport} initialStatus={status} onSelectSkill={setSelectedSkillKey} />
+      <VerifiedPassportCardPreview passport={passport} initialStatus={status} onSelectCapability={selectCapability} />
 
       {/* 2 — Candidate detail: education, public-status summary, and the full
           summary text that the compact card intentionally omits. */}
@@ -1616,6 +2073,8 @@ export function PrivatePassportView() {
         passportPublished={Boolean(passport.is_published && passport.public_slug)}
         selectedSkillKey={selectedSkillKey}
         onSelectSkillKey={setSelectedSkillKey}
+        selectedRoleAreaId={selectedRoleAreaId}
+        onSelectRoleAreaId={setSelectedRoleAreaId}
       />
 
       {/* 5 — Improve Passport: suggested attachments and unattached-evidence

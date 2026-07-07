@@ -27,6 +27,11 @@ import {
 } from "@/lib/vbr-api"
 import { buildPassportGraph } from "@/app/student/vbr/passport/passport-graph"
 import { publicPassportCardUrl, publicPassportUrl } from "@/lib/app-url"
+import {
+  CAPABILITY_AREAS,
+  capabilityStatusRank,
+  matchAreaIndex,
+} from "@/lib/passport-capabilities"
 
 /** Canonical proof-coverage order for the card's proof chips. */
 export const PROOF_COVERAGE_ORDER = [
@@ -37,111 +42,16 @@ export const PROOF_COVERAGE_ORDER = [
   "Video Evidence",
 ] as const
 
-/**
- * Qualitative status ranking (never a numeric score) — strongest first, with
- * "Not assessed" last so it only appears on the card when nothing better exists.
- */
-const STATUS_RANK: Record<string, number> = {
-  Demonstrated: 0,
-  "Evidence observed": 1,
-  "Partially demonstrated": 2,
-  "Supporting evidence": 3,
-  "Needs review": 5,
-  "Not assessed": 9,
-}
-function statusRank(status: string): number {
-  return STATUS_RANK[status] ?? 4
-}
-
 /** How many high-level role/capability chips the compact card shows. */
 const MAX_CARD_CAPABILITIES = 6
 
 // ── Capability grouping ───────────────────────────────────────────────────────
-
-/**
- * High-level, recruiter-friendly role areas. Detailed evidence skills (e.g.
- * "Teachable Machine", "FastAPI", "Vercel Deployment") are grouped into ONE of
- * these so the card reads like a set of role areas a recruiter can hire for —
- * not a dump of low-level tools. Order is priority: a skill is assigned to the
- * first area whose keyword it contains, so more specific/high-value areas win
- * (e.g. "FastAPI" → Backend APIs before the generic Software Engineering area).
- * `weak` areas (documentation/communication) are ranked BELOW technical areas so
- * they never dominate the card's role chips unless nothing technical exists.
- */
-const CAPABILITY_AREAS: { label: string; keywords: string[]; weak?: boolean }[] = [
-  {
-    label: "Machine Learning",
-    keywords: [
-      "machine learning", "deep learning", "model training", "model train",
-      "teachable machine", "neural network", "neural", "tensorflow", "pytorch",
-      "keras", "scikit", "supervised learning", "unsupervised", "reinforcement",
-      "predictive model", "ml model",
-    ],
-  },
-  {
-    label: "Computer Vision",
-    keywords: [
-      "computer vision", "object detection", "image segmentation", "image recognition",
-      "image classification", "opencv", "face detection", "convolutional", "cnn",
-      "image processing", "computer graphics",
-    ],
-  },
-  {
-    label: "Data Science / Applied AI",
-    keywords: [
-      "data science", "data analysis", "data analytics", "applied ai", "pandas",
-      "numpy", "geospatial", "statistics", "statistical", "analytics",
-      "data visualization", "jupyter", "python",
-    ],
-  },
-  {
-    label: "AI Product Engineering",
-    keywords: [
-      "llm", "large language model", "prompt", "langchain", "openai",
-      "generative ai", "genai", "chatbot", "retrieval augmented", "rag", "ai agent",
-    ],
-  },
-  {
-    label: "Backend APIs",
-    keywords: [
-      "fastapi", "backend api", "backend", "rest api", "restful", "graphql",
-      "flask", "django", "express", "node backend", "server-side", "sql",
-      "postgres", "postgresql", "database", "endpoint", "microservice", "api",
-    ],
-  },
-  {
-    label: "Cloud / MLOps",
-    keywords: [
-      "docker", "kubernetes", "google cloud", "gcp", "aws", "azure", "vercel",
-      "ci/cd", "cicd", "devops", "deployment", "deploy", "mlops", "terraform",
-      "pipeline", "serverless", "cloud run", "cloud",
-    ],
-  },
-  {
-    label: "Full-Stack / Frontend AI",
-    keywords: [
-      "javascript", "typescript", "react", "next.js", "nextjs", "frontend",
-      "front-end", "browser api", "browser", "html", "css", "tailwind", "vue",
-      "svelte", "web app", "interactive demo", "ui/ux", "user interface",
-    ],
-  },
-  {
-    label: "Software Engineering",
-    keywords: [
-      "java", "c++", "c#", "golang", "rust", "kotlin", "algorithm",
-      "data structure", "object-oriented", "software engineering",
-      "software development", "version control", "git", "unit test", "testing",
-    ],
-  },
-  {
-    label: "Documentation & Communication",
-    keywords: [
-      "documentation", "technical writing", "technical documentation",
-      "communication", "presentation", "report writing", "writing",
-    ],
-    weak: true,
-  },
-]
+//
+// The canonical high-level role-area mapping lives in ONE place —
+// {@link CAPABILITY_AREAS} in `@/lib/passport-capabilities` — and is shared by
+// the Work Passport "Role area" filter and its capability evidence summary. The
+// card groups each detailed skill into the first area whose keyword it contains
+// ({@link matchAreaIndex}); it never keeps a second copy of the mapping.
 
 /** One skill's fields the grouping needs, normalized across private/public. */
 type SkillInput = {
@@ -159,6 +69,9 @@ type SkillInput = {
 export type PassportCardCapability = {
   /** High-level role area label, e.g. "Machine Learning". */
   label: string
+  /** Canonical role-area id (kebab slug) — matches the Work Passport Role Area
+   *  filter so a private-preview chip click selects the SAME role area. */
+  capabilityId: string
   /** Strongest qualitative status among the skills grouped into this area. */
   status: string
   /**
@@ -204,22 +117,13 @@ export type PassportCardModel = {
 
 /** Compare two skills by evidence strength (strongest first). */
 function compareSkillStrength(a: SkillInput, b: SkillInput): number {
-  const byStatus = statusRank(a.status) - statusRank(b.status)
+  const byStatus = capabilityStatusRank(a.status) - capabilityStatusRank(b.status)
   if (byStatus !== 0) return byStatus
   const byAttached = (b.projectAttached ? 1 : 0) - (a.projectAttached ? 1 : 0)
   if (byAttached !== 0) return byAttached
   const byProof = b.proofCount - a.proofCount
   if (byProof !== 0) return byProof
   return a.name.localeCompare(b.name)
-}
-
-/** First capability area whose keyword the skill name contains, else -1. */
-function matchAreaIndex(name: string): number {
-  const n = name.toLowerCase()
-  for (let i = 0; i < CAPABILITY_AREAS.length; i += 1) {
-    if (CAPABILITY_AREAS[i].keywords.some((k) => n.includes(k))) return i
-  }
-  return -1
 }
 
 /**
@@ -254,7 +158,7 @@ function deriveCapabilities(skills: SkillInput[], max = MAX_CARD_CAPABILITIES): 
       rep,
       proofSum: members.reduce((sum, s) => sum + s.proofCount, 0),
       anyAttached: members.some((s) => s.projectAttached),
-      bestStatus: Math.min(...members.map((s) => statusRank(s.status))),
+      bestStatus: Math.min(...members.map((s) => capabilityStatusRank(s.status))),
       count: members.length,
     }
   })
@@ -272,6 +176,7 @@ function deriveCapabilities(skills: SkillInput[], max = MAX_CARD_CAPABILITIES): 
 
   return areas.slice(0, max).map(({ area, rep }) => ({
     label: area.label,
+    capabilityId: area.id,
     status: rep.status,
     skill: rep.name,
     slug: rep.slug,

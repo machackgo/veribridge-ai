@@ -1948,7 +1948,7 @@ describe("PrivatePassportView — evaluator Explore-evidence controls", () => {
     await screen.findByTestId("passport-evidence-controls")
 
     expect(screen.getByText("Explore evidence")).toBeInTheDocument()
-    expect(screen.getByText("Filter by skill, project, or proof type.")).toBeInTheDocument()
+    expect(screen.getByText("Filter by role area, skill, project, or proof type.")).toBeInTheDocument()
     // Skill-first default control text is "All skills", never "All projects".
     const skillSelect = screen.getByTestId("passport-skill-filter")
     expect(skillSelect).toHaveValue("")
@@ -2070,6 +2070,478 @@ describe("PrivatePassportView — evaluator Explore-evidence controls", () => {
     expect(screen.getByTestId("passport-proof-filter")).toHaveValue("")
     expect(screen.queryByTestId("graph-filter-summary")).not.toBeInTheDocument()
     expect(screen.getAllByTestId("passport-skill-card").length).toBeGreaterThan(1)
+  })
+})
+
+// ── High-level Role Area (capability) filter + evidence summary ────────────────
+//
+// The Role Area filter aggregates the detailed skills into recruiter-facing role
+// capabilities (Computer Vision, MLOps, Backend APIs, …). It is evidence-grounded:
+// a role area only surfaces skill→project rows that genuinely support it, a
+// contextual skill (ML under Computer Vision) shows only its role-relevant project
+// rows, and unrelated projects (Boston ML) never leak into Computer Vision.
+
+/** A capability-rich passport covering each required role area. */
+function makeRoleAreaPassport(): PrivateWorkPassport {
+  const base = makePassport().projects[0]
+  const ref = (
+    project_title: string,
+    project_id: string,
+    skill_status: string,
+    supporting_proof_types: string[],
+  ) => ({
+    project_title,
+    project_id,
+    skill_status,
+    evidence_sources: supporting_proof_types,
+    supporting_proof_types,
+    report_is_public: false,
+    public_report_path: null,
+  })
+  const skill = (
+    name: string,
+    status: string,
+    projects: ReturnType<typeof ref>[],
+  ) => ({
+    skill: name,
+    status,
+    evidence_chip_count: projects.length,
+    project_count: projects.length,
+    evidence_sources: [...new Set(projects.flatMap((p) => p.supporting_proof_types))],
+    projects,
+    evidence_chips: [],
+    notes: "",
+    limitations: [],
+  })
+  const top = (name: string, status: string, slug: string, proofs: string[]) => ({
+    skill: name,
+    status,
+    skill_slug: slug,
+    supporting_proof_types: proofs,
+  })
+  return makePassport({
+    skills: [
+      skill("Machine Learning", "Demonstrated", [
+        ref("Boston Smart Accident Risk Rerouting", "proj-boston", "Demonstrated", ["GitHub Proof", "Document Proof"]),
+        ref("Teachable Machine Image Classification Demo", "proj-tm", "Demonstrated", ["Website Proof", "Document Proof", "Project Defense", "Video Evidence"]),
+      ]),
+      skill("Image Classification", "Demonstrated", [
+        ref("Teachable Machine Image Classification Demo", "proj-tm", "Demonstrated", ["Website Proof", "Project Defense"]),
+      ]),
+      skill("FastAPI", "Evidence observed", [
+        ref("Boston Smart Accident Risk Rerouting", "proj-boston", "Evidence observed", ["GitHub Proof", "Document Proof"]),
+      ]),
+      skill("Docker", "Demonstrated", [
+        ref("ML Model Cloud Run Deployment", "proj-cloud", "Demonstrated", ["GitHub Proof", "Project Defense"]),
+      ]),
+      skill("Data Visualization", "Evidence observed", [
+        ref("Interactive Analytics Dashboard", "proj-dash", "Evidence observed", ["Website Proof", "Document Proof"]),
+      ]),
+      skill("React", "Partially demonstrated", [
+        ref("Interactive Analytics Dashboard", "proj-dash", "Partially demonstrated", ["GitHub Proof", "Website Proof"]),
+      ]),
+    ],
+    projects: [
+      { ...base, project_id: "proj-boston", project_title: "Boston Smart Accident Risk Rerouting", claimed_skills: ["Machine Learning", "FastAPI"], top_skills: [top("Machine Learning", "Demonstrated", "machine-learning", ["GitHub Proof", "Document Proof"]), top("FastAPI", "Evidence observed", "fastapi", ["GitHub Proof", "Document Proof"])] },
+      { ...base, project_id: "proj-tm", project_title: "Teachable Machine Image Classification Demo", claimed_skills: ["Machine Learning", "Image Classification"], top_skills: [top("Machine Learning", "Demonstrated", "machine-learning", ["Website Proof", "Document Proof", "Video Evidence"]), top("Image Classification", "Demonstrated", "image-classification", ["Website Proof", "Project Defense"])] },
+      { ...base, project_id: "proj-cloud", project_title: "ML Model Cloud Run Deployment", claimed_skills: ["Docker"], top_skills: [top("Docker", "Demonstrated", "docker", ["GitHub Proof", "Project Defense"])] },
+      { ...base, project_id: "proj-dash", project_title: "Interactive Analytics Dashboard", claimed_skills: ["Data Visualization", "React"], top_skills: [top("Data Visualization", "Evidence observed", "data-visualization", ["Website Proof", "Document Proof"]), top("React", "Partially demonstrated", "react", ["GitHub Proof", "Website Proof"])] },
+    ],
+    project_count: 4,
+  })
+}
+
+const roleSkillCard = (name: string) =>
+  screen.queryAllByTestId("passport-skill-card").find((c) => c.getAttribute("data-skill") === name)
+const selectRole = (id: string) =>
+  fireEvent.change(screen.getByTestId("passport-role-area-filter"), { target: { value: id } })
+const capabilityProjectIds = () =>
+  screen.queryAllByTestId("capability-project").map((c) => c.getAttribute("data-project-id"))
+
+describe("PrivatePassportView — high-level Role Area capability filter", () => {
+  beforeEach(() => {
+    const p = makeRoleAreaPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("renders the Role Area filter with an 'All role areas' default and only evidenced areas", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    const roleSelect = screen.getByTestId("passport-role-area-filter")
+    expect(roleSelect).toHaveValue("")
+    expect(within(roleSelect).getByRole("option", { name: /^All role areas$/ })).toBeInTheDocument()
+    // Present role areas become options; unevidenced ones (NLP / LLM) do not.
+    expect(within(roleSelect).getByRole("option", { name: /^Computer Vision/ })).toBeInTheDocument()
+    expect(within(roleSelect).getByRole("option", { name: /^Cloud \/ MLOps/ })).toBeInTheDocument()
+    expect(within(roleSelect).getByRole("option", { name: /^Backend APIs/ })).toBeInTheDocument()
+    expect(within(roleSelect).queryByRole("option", { name: /^NLP \/ LLM/ })).not.toBeInTheDocument()
+  })
+
+  it("selecting Computer Vision shows the capability evidence summary", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    const summary = screen.getByTestId("capability-summary")
+    expect(summary).toHaveAttribute("data-capability", "Computer Vision")
+    // Header framing + qualitative status chip (never a numeric score).
+    expect(within(summary).getByTestId("capability-header")).toHaveTextContent("High-level capability selected (1)")
+    expect(within(summary).getByTestId("capability-status")).toBeInTheDocument()
+    // Counts-based headline + qualitative "why" (role-relevant evidence language).
+    expect(within(summary).getByTestId("capability-summary-text")).toHaveTextContent(
+      /Computer Vision is supported by \d+ connected skill.* across \d+ project.* and \d+ proof source/i,
+    )
+    // The "why" is now a richer, fact-grounded narrative (not the old one-liner):
+    // it states the role area's purpose and names the connected project + skills.
+    const why = within(summary).getByTestId("capability-why")
+    expect(why).toHaveTextContent(/Computer Vision is about using image and visual workflows/i)
+    expect(why).toHaveTextContent(/Teachable Machine Image Classification Demo/)
+    expect(why).toHaveTextContent(/Image Classification/)
+    expect(within(why).getAllByTestId("capability-why-paragraph").length).toBeGreaterThanOrEqual(2)
+    // Not the old generic single-sentence summary.
+    expect(why.textContent).not.toMatch(
+      /is supported by role-relevant evidence from connected skills such as/i,
+    )
+    // Never a readiness/score guarantee (the disclaimer may say "score or rank").
+    expect(summary.textContent).not.toMatch(/hire-ready|guaranteed|ready for (the )?role/i)
+    expect(summary.textContent).not.toMatch(/\d+\s*\/\s*100|\d+\s*%|confidence:\s*\d/i)
+    // Selected-filter summary line names the role area + its coverage.
+    expect(screen.getByTestId("summary-role")).toHaveTextContent("Showing role-relevant evidence for: Computer Vision")
+  })
+
+  it("Computer Vision aggregates Teachable image-classification evidence (underlying skills + proof)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    // Supported by the Teachable project only.
+    expect(capabilityProjectIds()).toEqual(["proj-tm"])
+    const proj = screen.getByTestId("capability-project")
+    expect(proj).toHaveTextContent("Teachable Machine Image Classification Demo")
+    // Underlying skills include the primary CV skill and the contextual ML skill.
+    expect(proj.textContent).toMatch(/Image Classification/)
+    expect(proj.textContent).toMatch(/Machine Learning/)
+    // Proof chips reflect the Teachable evidence (Website + Project Defense).
+    const proofs = within(proj).getAllByTestId("capability-project-proof-chip").map((c) => c.getAttribute("data-source"))
+    expect(proofs).toContain("Website Proof")
+    expect(proofs).toContain("Project Defense")
+    // The skill blocks below narrow to CV's underlying skills only.
+    const skills = screen.getAllByTestId("passport-skill-card").map((c) => c.getAttribute("data-skill"))
+    expect(skills).toEqual(expect.arrayContaining(["Image Classification", "Machine Learning"]))
+    expect(skills).not.toContain("FastAPI")
+    expect(skills).not.toContain("Docker")
+  })
+
+  it("Computer Vision does NOT include unrelated Boston ML (no CV context there)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    // Boston never appears under Computer Vision.
+    expect(capabilityProjectIds()).not.toContain("proj-boston")
+    // The Machine Learning block shows ONLY its Teachable row, not the Boston row.
+    const ml = roleSkillCard("Machine Learning")!
+    const rows = within(ml).getAllByTestId("skill-project-evidence-row")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveAttribute("data-project-id", "proj-tm")
+  })
+
+  it("renders a visual connecting evidence chain (skills → project → proofs)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    const chain = screen.getByTestId("capability-evidence-chain")
+    const nodes = within(chain).getAllByTestId("capability-chain-node").map((n) => n.textContent)
+    // The chain connects lower-level skills, the project, and proof sources.
+    expect(nodes.length).toBeGreaterThanOrEqual(3)
+    expect(nodes).toEqual(expect.arrayContaining([expect.stringMatching(/Image Classification|Machine Learning/)]))
+    expect(nodes).toContain("Teachable Machine Image Classification Demo")
+    expect(nodes).toEqual(expect.arrayContaining([expect.stringMatching(/Website Proof|Project Defense/)]))
+  })
+
+  it("lists connected lower-level skills with proof and a skill-report link", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    const connected = screen.getByTestId("capability-connected-skills")
+    const skillNames = within(connected).getAllByTestId("capability-skill").map((s) => s.getAttribute("data-skill"))
+    expect(skillNames).toEqual(expect.arrayContaining(["Image Classification", "Machine Learning"]))
+    // Each connected skill exposes an owner-only skill-report link + proof chips.
+    const reportLinks = within(connected).getAllByTestId("capability-skill-report-link")
+    expect(reportLinks.length).toBeGreaterThan(0)
+    expect(reportLinks[0].getAttribute("href")).toMatch(/\/student\/vbr\/passport\/skills\//)
+    expect(within(connected).getAllByTestId("capability-skill-proof-chip").length).toBeGreaterThan(0)
+  })
+
+  it("connected projects show a reason and links to the project + skill reports", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    const proj = screen.getByTestId("capability-project")
+    // Plain-language reason (honest, evidence-grounded, no numbers).
+    expect(within(proj).getByTestId("capability-project-reason")).toHaveTextContent(
+      /This project supports Computer Vision through/i,
+    )
+    // Links back to the owner-only project report and relevant skill reports.
+    expect(within(proj).getByTestId("capability-open-report").getAttribute("href")).toMatch(
+      /\/student\/vbr\/projects\/.*\/report/,
+    )
+    expect(within(proj).getAllByTestId("capability-open-skill-report").length).toBeGreaterThan(0)
+  })
+
+  it("shows a qualitative role-level status label (never a numeric score)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    const status = screen.getByTestId("capability-status")
+    expect(status.getAttribute("data-status")).toMatch(
+      /Evidence observed|Supporting evidence|Partially demonstrated|Insufficient evidence|Not assessed/,
+    )
+    // Counts line, not a score.
+    expect(screen.getByTestId("capability-skill-count")).toHaveTextContent(/Connected skills: \d+/)
+    expect(screen.getByTestId("capability-project-count")).toHaveTextContent(/Connected projects: \d+/)
+  })
+
+  it("Machine Learning role area DOES include both Boston and Teachable (broad ML)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("machine-learning")
+    const ids = capabilityProjectIds()
+    expect(ids).toContain("proj-boston")
+    expect(ids).toContain("proj-tm")
+    const ml = roleSkillCard("Machine Learning")!
+    expect(within(ml).getAllByTestId("skill-project-evidence-row")).toHaveLength(2)
+  })
+
+  it("Cloud / MLOps aggregates deployment evidence and does not dominate Computer Vision", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("cloud-mlops")
+    expect(screen.getByTestId("capability-summary")).toHaveAttribute("data-capability", "Cloud / MLOps")
+    // Cloud / MLOps aggregates the deployment project (Docker) and, per the
+    // expanded mapping, the FastAPI/backend project too — but NOT the pure CV/data
+    // projects (Teachable / dashboard).
+    expect(capabilityProjectIds()).toContain("proj-cloud")
+    expect(capabilityProjectIds()).not.toContain("proj-tm")
+    expect(screen.getByTestId("capability-summary").textContent).toMatch(/Docker/)
+
+    // Pivoting back to Computer Vision must NOT drag in the Docker/cloud project.
+    selectRole("computer-vision")
+    expect(capabilityProjectIds()).toEqual(["proj-tm"])
+    expect(screen.getByTestId("capability-summary").textContent).not.toMatch(/Docker/)
+  })
+
+  it("Data Science / Applied AI aggregates the analytics/visualization project", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("data-science-applied-ai")
+    expect(screen.getByTestId("capability-summary")).toHaveAttribute("data-capability", "Data Science / Applied AI")
+    expect(capabilityProjectIds()).toEqual(["proj-dash"])
+    expect(screen.getByTestId("capability-summary").textContent).toMatch(/Data Visualization/)
+  })
+
+  it("Backend APIs aggregates the FastAPI project only", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("backend-apis")
+    expect(capabilityProjectIds()).toEqual(["proj-boston"])
+    const proj = screen.getByTestId("capability-project")
+    expect(proj.textContent).toMatch(/FastAPI/)
+    expect(proj.textContent).not.toMatch(/Docker|React/)
+  })
+
+  it("Full-Stack / Frontend AI aggregates the React dashboard project", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("full-stack-frontend-ai")
+    expect(capabilityProjectIds()).toEqual(["proj-dash"])
+    expect(screen.getByTestId("capability-summary").textContent).toMatch(/React/)
+  })
+
+  it("AI Product Engineering requires multi-layer evidence and aggregates across layers", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Present because evidence spans AI/ML + backend + deployment + frontend.
+    const roleSelect = screen.getByTestId("passport-role-area-filter")
+    expect(within(roleSelect).getByRole("option", { name: /^AI Product Engineering/ })).toBeInTheDocument()
+
+    selectRole("ai-product-engineering")
+    const summary = screen.getByTestId("capability-summary")
+    expect(summary).toHaveAttribute("data-capability", "AI Product Engineering")
+    expect(within(summary).getByTestId("capability-composite-note")).toBeInTheDocument()
+    expect(summary.textContent).toMatch(/multi-layer evidence/i)
+    // It spans multiple projects/layers (ML, FastAPI, Docker, React).
+    const ids = capabilityProjectIds()
+    expect(ids.length).toBeGreaterThan(1)
+  })
+
+  it("Role Area + Proof Type filters compose (Computer Vision + Website Proof)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+    // Teachable CV rows carry Website Proof → they survive.
+    const ml = roleSkillCard("Machine Learning")!
+    const rows = within(ml).getAllByTestId("skill-project-evidence-row")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveAttribute("data-project-id", "proj-tm")
+    expect(screen.getByTestId("summary-proof")).toHaveTextContent("Showing evidence with: Website Proof")
+  })
+
+  it("Role Area + a proof type its evidence lacks shows an honest empty state (GitHub)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Teachable CV evidence has NO GitHub Proof → CV + GitHub yields nothing.
+    selectRole("computer-vision")
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "GitHub Proof" } })
+    expect(screen.getByTestId("skills-panel-role-proof-empty")).toHaveTextContent(/No Computer Vision evidence uses GitHub Proof/i)
+    expect(screen.queryAllByTestId("passport-skill-card")).toHaveLength(0)
+  })
+
+  it("Clear filters resets the Role Area filter too", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("computer-vision")
+    fireEvent.click(screen.getByTestId("clear-filters-button"))
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("")
+    expect(screen.queryByTestId("capability-summary")).not.toBeInTheDocument()
+    expect(screen.getAllByTestId("passport-skill-card").length).toBeGreaterThan(1)
+  })
+
+  it("the capability summary leaks no raw ids, file paths, or numeric scores", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    const text = screen.getByTestId("capability-summary").textContent ?? ""
+    expect(text).not.toMatch(/octocat\/Hello-World/)
+    expect(text).not.toMatch(/\/100|%|confidence:\s*\d/i)
+  })
+
+  // ── Richer role-area narrative (A–H) ───────────────────────────────────────
+
+  it("A/B: Cloud / MLOps 'why' names its connected projects, lower-level skills, and proof sources", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("cloud-mlops")
+    const why = within(screen.getByTestId("capability-summary")).getByTestId("capability-why")
+    // Purpose of the role area is stated (not just a keyword list).
+    expect(why).toHaveTextContent(/Cloud \/ MLOps is about connecting models and products to deployment/i)
+    // Names the exact connected project(s) and lower-level skill(s).
+    expect(why).toHaveTextContent(/ML Model Cloud Run Deployment/)
+    expect(why).toHaveTextContent(/Docker/)
+    // Names concrete proof source(s) backing the connection.
+    expect(why.textContent).toMatch(/GitHub Proof|Project Defense|Document Proof/)
+    // Rendered as 1–2 readable paragraphs.
+    const paras = within(why).getAllByTestId("capability-why-paragraph")
+    expect(paras.length).toBeGreaterThanOrEqual(1)
+    expect(paras.length).toBeLessThanOrEqual(2)
+  })
+
+  it("C: Backend APIs 'why' is a rich narrative, not the old generic sentence", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("backend-apis")
+    const why = within(screen.getByTestId("capability-summary")).getByTestId("capability-why")
+    expect(why).toHaveTextContent(/Backend APIs is about building service and API layers/i)
+    expect(why).toHaveTextContent(/Boston Smart Accident Risk Rerouting/)
+    expect(why).toHaveTextContent(/FastAPI/)
+    // The old one-sentence "role-relevant evidence from connected skills such as …" is gone.
+    expect(why.textContent).not.toMatch(/is supported by role-relevant evidence from connected skills such as/i)
+    // Explains WHY the links support the area (capability pattern / traceable proof).
+    expect(why.textContent).toMatch(/capability pattern|traceable/i)
+  })
+
+  it("D: connected lower-level skill cards show a reason tying the skill to the role area", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("cloud-mlops")
+    const reasons = screen.getAllByTestId("capability-skill-reason")
+    expect(reasons.length).toBeGreaterThan(0)
+    // Every reason ties the skill back to Cloud / MLOps and stays conservative.
+    for (const r of reasons) {
+      expect(r.textContent).toMatch(/Connected to Cloud \/ MLOps/i)
+    }
+    // The Docker reason names the deployment project + its proof (fact-grounded).
+    const docker = reasons.find((r) => r.getAttribute("data-skill") === "Docker")
+    expect(docker).toBeTruthy()
+    expect(docker!.textContent).toMatch(/ML Model Cloud Run Deployment/)
+  })
+
+  it("E: connected project cards explain why the project supports the role area", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("backend-apis")
+    const proj = screen.getByTestId("capability-project")
+    const reason = within(proj).getByTestId("capability-project-reason")
+    expect(reason).toHaveTextContent(/This project supports Backend APIs through/i)
+    expect(reason.textContent).toMatch(/FastAPI/)
+    expect(reason.textContent).toMatch(/GitHub Proof|Document Proof/)
+  })
+
+  it("F: the narrative never exposes raw transcript/OCR/DOM, storage paths, signed URLs, ids, scores, or private routes", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    for (const id of ["cloud-mlops", "backend-apis", "computer-vision"]) {
+      selectRole(id)
+      const text = screen.getByTestId("capability-summary").textContent ?? ""
+      // No raw evidence payloads.
+      expect(text).not.toMatch(/transcript|transcript_segments|raw_text|ocr_text|<html|<div|dom_snapshot/i)
+      // No storage paths / signed URLs / provider JSON.
+      expect(text).not.toMatch(/https?:\/\/|storage\/|supabase\.co|X-Amz-|signature=|\.mp4|\.png|\.pdf/i)
+      // No internal ids.
+      expect(text).not.toMatch(/proj-boston|proj-tm|proj-cloud|proj-dash|[0-9a-f]{8}-[0-9a-f]{4}/)
+      // No numeric confidence / trust scores.
+      expect(text).not.toMatch(/\/100|\bconfidence:\s*\d|\btrust\s*score|\d+\s*%/i)
+    }
+  })
+
+  it("G: the detailed underlying-skill filter still works within a role area", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("computer-vision")
+    // Both CV underlying skills visible before narrowing.
+    expect(roleSkillCard("Machine Learning")).toBeTruthy()
+    expect(roleSkillCard("Image Classification")).toBeTruthy()
+    // Narrow to a single underlying skill via the detailed skill filter
+    // (option value is the skill key = the lowercased skill name).
+    fireEvent.change(screen.getByTestId("passport-skill-filter"), { target: { value: "image classification" } })
+    const cards = screen.getAllByTestId("passport-skill-card").map((c) => c.getAttribute("data-skill"))
+    expect(cards).toEqual(["Image Classification"])
+  })
+
+  it("H: Clear filters clears the role area AND removes the capability narrative", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    selectRole("cloud-mlops")
+    expect(screen.getByTestId("capability-why")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("clear-filters-button"))
+    expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("")
+    expect(screen.queryByTestId("capability-summary")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("capability-why")).not.toBeInTheDocument()
   })
 })
 
