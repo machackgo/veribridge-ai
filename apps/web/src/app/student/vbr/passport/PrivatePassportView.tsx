@@ -34,7 +34,13 @@ import {
 import { buildPassportGraph, type PassportSkillNode } from "./passport-graph"
 import { PassportCard } from "../../../../../components/passport/PassportCard"
 import { QrModal } from "../../../../../components/passport/QrModal"
-import { buildPrivateCardModel, publicSafeAvatarUrl, type PassportCardCapability } from "@/lib/passport-card"
+import {
+  buildPrivateCardModel,
+  cardRoleAreasStorageKey,
+  MAX_CARD_ROLE_AREAS,
+  publicSafeAvatarUrl,
+  type PassportCardCapability,
+} from "@/lib/passport-card"
 import { downloadPassportCardImage } from "@/lib/card-image"
 
 const SOURCE_TONE: Record<string, BadgeTone> = {
@@ -1468,6 +1474,68 @@ function VerifiedPassportCardPreview({
     }
   }
 
+  // ── Customize Passport Card: student-chosen role areas (max 6) ──────────────
+  // The available role areas come from the SAME grouped high-level capability data
+  // the card is built from (never a hardcoded list), and the default is the top
+  // areas that data already ranks. Selection is persisted per-passport in
+  // localStorage (frontend-only MVP — there is no backend field for this yet).
+  const available = model.availableCapabilities
+  const availableLabels = useMemo(() => available.map((c) => c.label), [available])
+  const defaultLabels = useMemo(() => model.capabilities.map((c) => c.label), [model.capabilities])
+  const stableId = model.slug ?? (model.name ? fallbackSkillSlug(model.name) : null)
+  const storageKey = useMemo(() => cardRoleAreasStorageKey(stableId), [stableId])
+
+  const [selectedLabels, setSelectedLabels] = useState<string[]>(defaultLabels)
+  const [showRoleEditor, setShowRoleEditor] = useState(false)
+  const loadedRef = useRef(false)
+
+  // Load the saved selection on the client (localStorage is unavailable during
+  // SSR). Invalid/stale labels are dropped; an empty/missing selection falls back
+  // to the default top areas so the card is never blank.
+  useEffect(() => {
+    let stored: string[] | null = null
+    try {
+      const raw = window.localStorage.getItem(storageKey)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) stored = parsed.filter((x): x is string => typeof x === "string")
+      }
+    } catch {
+      /* localStorage blocked/unavailable — use the default selection. */
+    }
+    const valid = (stored ?? []).filter((l) => availableLabels.includes(l)).slice(0, MAX_CARD_ROLE_AREAS)
+    setSelectedLabels(valid.length > 0 ? valid : defaultLabels)
+    loadedRef.current = true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey])
+
+  // Persist after the initial load so we never clobber a saved selection with the
+  // transient default on first paint.
+  useEffect(() => {
+    if (!loadedRef.current) return
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(selectedLabels))
+    } catch {
+      /* localStorage blocked — selection stays in-memory for this session. */
+    }
+  }, [selectedLabels, storageKey])
+
+  // The card face shows only the selected role areas, ordered by the existing
+  // role-area ranking and capped defensively.
+  const displayedCapabilities = useMemo(
+    () => available.filter((c) => selectedLabels.includes(c.label)).slice(0, MAX_CARD_ROLE_AREAS),
+    [available, selectedLabels],
+  )
+  const atLimit = selectedLabels.length >= MAX_CARD_ROLE_AREAS
+
+  const toggleRoleArea = (label: string) => {
+    setSelectedLabels((prev) => {
+      if (prev.includes(label)) return prev.filter((l) => l !== label)
+      if (prev.length >= MAX_CARD_ROLE_AREAS) return prev // hard cap: never exceed 6
+      return [...prev, label]
+    })
+  }
+
   const runPublish = (action: () => Promise<WorkPassportStatus>) => {
     actedRef.current = true
     setBusy(true)
@@ -1579,6 +1647,7 @@ function VerifiedPassportCardPreview({
         <PassportCard
           model={model}
           variant="private"
+          capabilities={displayedCapabilities}
           onCapabilityClick={onCapabilityClick}
           footer={
             <button
@@ -1668,6 +1737,122 @@ function VerifiedPassportCardPreview({
             onChange={onPhotoSelected}
             style={{ display: "none" }}
           />
+        </div>
+
+        {/* Customize Passport Card — choose which high-level role areas fill the
+            card face (max 6). Options come from the same grouped capability data
+            the card is built from; the choice is saved per-passport in
+            localStorage and updates the preview above instantly. */}
+        <div
+          data-testid="customize-passport-card"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            padding: 14,
+            borderRadius: 12,
+            border: `1px solid ${TOKEN.line}`,
+            background: "#fff",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>Customize Passport Card</span>
+            <span
+              data-testid="card-role-area-count"
+              style={{ fontSize: 12, fontWeight: 600, color: atLimit ? TOKEN.indigo : TOKEN.muted }}
+            >
+              {selectedLabels.length} of {MAX_CARD_ROLE_AREAS} selected
+            </span>
+          </div>
+          <p style={{ fontSize: 11.5, color: TOKEN.muted, margin: 0, lineHeight: 1.6, maxWidth: 620 }}>
+            Choose the role areas you want recruiters to notice first. The full passport still contains all evidence.
+          </p>
+
+          {available.length === 0 ? (
+            <p data-testid="card-role-area-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.6 }}>
+              Role areas appear here once your skills have attached evidence. Attach proof to a project to unlock them.
+            </p>
+          ) : (
+            <>
+              <button
+                type="button"
+                data-testid="edit-card-role-areas"
+                aria-expanded={showRoleEditor}
+                onClick={() => setShowRoleEditor((v) => !v)}
+                style={{
+                  alignSelf: "flex-start",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  padding: "7px 12px",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  border: `1px solid ${TOKEN.line}`,
+                  background: "#fff",
+                  color: TOKEN.inkSoft,
+                }}
+              >
+                {showRoleEditor ? "Done editing role areas" : "Edit card role areas"}
+              </button>
+
+              {showRoleEditor && (
+                <div
+                  data-testid="card-role-area-options"
+                  style={{ display: "flex", flexWrap: "wrap", gap: 8 }}
+                >
+                  {available.map((cap) => {
+                    const selected = selectedLabels.includes(cap.label)
+                    const disabled = !selected && atLimit
+                    return (
+                      <button
+                        key={cap.label}
+                        type="button"
+                        data-testid="card-role-area-option"
+                        data-label={cap.label}
+                        data-selected={selected ? "true" : "false"}
+                        aria-pressed={selected}
+                        disabled={disabled}
+                        onClick={() => toggleRoleArea(cap.label)}
+                        title={
+                          disabled
+                            ? `Deselect a role area first — you can show up to ${MAX_CARD_ROLE_AREAS}.`
+                            : selected
+                              ? `Remove ${cap.label} from the card`
+                              : `Add ${cap.label} to the card`
+                        }
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 7,
+                          padding: "6px 11px",
+                          borderRadius: 999,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: disabled ? "not-allowed" : "pointer",
+                          opacity: disabled ? 0.5 : 1,
+                          border: `1px solid ${selected ? TOKEN.indigo : TOKEN.line}`,
+                          background: selected ? TOKEN.indigo : "#fff",
+                          color: selected ? "#fff" : TOKEN.inkSoft,
+                        }}
+                      >
+                        <span aria-hidden style={{ fontSize: 12, lineHeight: 1 }}>{selected ? "✓" : "+"}</span>
+                        {cap.label}
+                        <span
+                          data-testid="card-role-area-evidence-count"
+                          style={{
+                            fontSize: 10.5,
+                            fontWeight: 600,
+                            color: selected ? "rgba(255,255,255,0.85)" : TOKEN.muted,
+                          }}
+                        >
+                          {cap.evidenceCount} {cap.evidenceCount === 1 ? "skill" : "skills"}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* Sharing controls — secondary, compact row directly below the card
