@@ -30,6 +30,7 @@ from app.services.public_report_safety_service import (
     defense_privacy_is_clean,
     enforce_public_safe,
     public_safe_defense_analysis,
+    public_safe_document_inspection_card,
     public_safe_evidence_artifact,
     public_safe_linked_chain,
     public_safe_skill_name,
@@ -1804,3 +1805,167 @@ def test_public_safe_defense_analysis_is_enforce_public_safe_clean() -> None:
     # enforce_public_safe would raise if the placeholder still smelled unsafe.
     assert enforce_public_safe(projected) == projected
     assert contains_unsafe_fields(projected) is False
+
+
+# ── Document Proof inspection card (public projection) ────────────────────────
+
+
+def _private_inspection_card(**overrides) -> dict:
+    card = {
+        "title": "Final Year Project Report",
+        "source_type": "Document Proof",
+        "status": "Supporting evidence",
+        "matched_skill": "Machine Learning",
+        "project_title": "Housing Price Predictor",
+        "evidence_role": "Corroborating document",
+        "page_number": 4,
+        "section_label": "Model Architecture",
+        "citation_label": "Model Architecture",
+        "safe_snippet": "We trained a gradient-boosted model on the housing dataset.",
+        "figure_reference": "Figure 2",
+        "table_reference": None,
+        "diagram_reference": None,
+        "visual_or_table_summary": None,
+        "why_supported": "Describes the ML model workflow and dataset.",
+        "corroborates": "GitHub implementation",
+        "limitation": "Document Proof supports or corroborates the claim but does not independently prove implementation.",
+        "access_note": "Original document download is not available from this view yet.",
+        "can_download_document": False,
+        "document_download_url": None,
+        "document_open_url": None,
+        "is_public_safe": False,
+        "is_attached_to_project": True,
+    }
+    card.update(overrides)
+    return card
+
+
+def test_public_doc_inspection_strips_snippet_unless_public_safe() -> None:
+    """I. The snippet is stripped when the card is not explicitly public-safe, and
+    kept only when it is."""
+    private = public_safe_document_inspection_card(_private_inspection_card())
+    assert private["safe_snippet"] is None
+    # Safe locator + reason still survive so recruiters can still inspect.
+    assert private["page_number"] == 4
+    assert private["citation_label"] == "Model Architecture"
+    assert private["figure_reference"] == "Figure 2"
+    assert private["why_supported"]
+
+    public = public_safe_document_inspection_card(
+        _private_inspection_card(is_public_safe=True, safe_snippet="safe excerpt kept")
+    )
+    assert public["safe_snippet"] == "safe excerpt kept"
+
+
+def test_public_doc_inspection_never_exposes_raw_path_id_or_signed_url() -> None:
+    """J. Hostile raw text / path / id / signed URL smuggled into fields never
+    survive, and the projection passes the whole-payload unsafe scan."""
+    hostile = _private_inspection_card(
+        is_public_safe=True,
+        title=f"Report {_LOCAL_PATH}",
+        why_supported=f"Contains {_SIGNED_URL} and {_ACCESS_TOKEN}",
+        safe_snippet=f"leak {_STORAGE_PATH} {_UUID}",
+        matched_skill=f"Machine Learning {_PRIVATE_ID}",
+        access_note=f"see {_FILE_URI}",
+        section_label=_EMAIL,
+    )
+    projected = public_safe_document_inspection_card(hostile)
+    blob = json.dumps(projected)
+    for leak in (_LOCAL_PATH, _SIGNED_URL, _ACCESS_TOKEN, _STORAGE_PATH, _FILE_URI, _EMAIL, "token=", "eyJ"):
+        assert leak not in blob, f"unsafe fragment leaked: {leak}"
+    # No internal-id / path / raw keys are introduced by the projection.
+    for forbidden in ("source_id", "file_path", "storage_path", "signed_url", "document_id", "raw_text"):
+        assert forbidden not in projected
+    assert enforce_public_safe(projected) == projected
+
+
+def test_public_doc_inspection_disables_download_unless_safe() -> None:
+    """K. Download stays disabled unless BOTH explicit consent AND a safe URL; a
+    private/unsafe URL never produces a download button."""
+    # Consent but no URL → still disabled, private access note.
+    consent_no_url = public_safe_document_inspection_card(
+        _private_inspection_card(can_download_document=True)
+    )
+    assert consent_no_url["can_download_document"] is False
+    assert consent_no_url["document_download_url"] is None
+    assert consent_no_url["document_open_url"] is None
+    assert "private" in consent_no_url["access_note"].lower()
+
+    # Consent + an unsafe (signed/storage) URL → dropped, still disabled.
+    unsafe_url = public_safe_document_inspection_card(
+        _private_inspection_card(can_download_document=True, document_download_url=_SIGNED_URL)
+    )
+    assert unsafe_url["can_download_document"] is False
+    assert unsafe_url["document_download_url"] is None
+
+    # Consent + a genuinely safe public URL → enabled.
+    safe = public_safe_document_inspection_card(
+        _private_inspection_card(
+            can_download_document=True, document_open_url="https://example.com/shared/report.pdf"
+        )
+    )
+    assert safe["can_download_document"] is True
+    assert safe["document_open_url"] == "https://example.com/shared/report.pdf"
+
+
+def test_public_doc_inspection_shows_safe_technical_details_and_citation() -> None:
+    """L. Public projection keeps bounded, safe technical detail lists + missing
+    note + locator (recruiter-inspectable), even while the raw excerpt is gone."""
+    projected = public_safe_document_inspection_card(
+        _private_inspection_card(
+            matched_skill="API Development",
+            skill_specific_claims=["API development is demonstrated through a backend service."],
+            technical_details=[
+                "API development is demonstrated through a backend service.",
+                "Document mentions API endpoints and cloud deployment.",
+            ],
+            api_endpoints=["Document mentions API endpoints and cloud deployment."],
+            request_response_details=[],
+            architecture_details=["Exposing the workflow as a backend service."],
+            implementation_hints=[],
+            missing_detail_note="No endpoint route names were extracted from this document.",
+            has_skill_specific_details=True,
+        )
+    )
+    assert projected["safe_snippet"] is None  # raw excerpt still stripped
+    assert projected["technical_details"], "safe technical details survive publicly"
+    assert any("backend service" in d for d in projected["technical_details"])
+    assert projected["api_endpoints"]
+    assert projected["missing_detail_note"] == "No endpoint route names were extracted from this document."
+    assert projected["has_skill_specific_details"] is True
+    # Bounded + capped.
+    assert len(projected["technical_details"]) <= 5
+
+
+def test_public_doc_inspection_scrubs_unsafe_fragments_from_detail_lists() -> None:
+    """M. Any path/signed-URL/token smuggled into a detail bullet never survives."""
+    hostile = _private_inspection_card(
+        matched_skill="API Development",
+        technical_details=[
+            f"backend service {_STORAGE_PATH}",
+            f"endpoint at {_SIGNED_URL}",
+            "clean detail about the backend service",
+        ],
+        api_endpoints=[f"route {_LOCAL_PATH}"],
+        missing_detail_note=f"missing {_ACCESS_TOKEN}",
+    )
+    projected = public_safe_document_inspection_card(hostile)
+    blob = json.dumps(projected)
+    for leak in (_STORAGE_PATH, _SIGNED_URL, _LOCAL_PATH, _ACCESS_TOKEN, "token=", "eyJ"):
+        assert leak not in blob, f"unsafe fragment leaked from detail list: {leak}"
+    assert enforce_public_safe(projected) == projected
+
+
+def test_public_doc_inspection_download_disabled_shows_private_access_note() -> None:
+    """N. With download disabled, the document access note is the neutral private
+    message and no label/URL is emitted."""
+    projected = public_safe_document_inspection_card(_private_inspection_card())
+    assert projected["can_download_document"] is False
+    assert projected["document_access_label"] is None
+    assert "private" in projected["document_access_note"].lower()
+    assert "verified excerpts and locators only" in projected["document_access_note"].lower()
+
+
+def test_public_doc_inspection_none_for_non_dict() -> None:
+    assert public_safe_document_inspection_card(None) is None
+    assert public_safe_document_inspection_card("nope") is None

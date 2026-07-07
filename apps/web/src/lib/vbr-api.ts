@@ -1090,6 +1090,63 @@ export type SkillReportProjectUsage = {
  * A document shown as connected *corroboration* — never a standalone dump. It
  * answers "what does this document corroborate?" with one safe citation.
  */
+/**
+ * Skill-specific, recruiter-facing inspection view of one Document Proof — what
+ * the document says (bounded safe snippet), where (page/section/citation/figure),
+ * and why it supports the SELECTED skill. Never a whole-document dump: it carries
+ * no raw text, OCR/provider JSON, storage paths, signed URLs, or internal ids.
+ * On a public projection `safe_snippet` is stripped unless `is_public_safe`, and
+ * download is disabled unless `can_download_document` AND a safe URL are present.
+ */
+export type DocumentProofInspectionCard = {
+  title: string
+  source_type?: string | null
+  status?: string | null
+  matched_skill?: string | null
+  project_title?: string | null
+  /** "Supporting evidence" / "Corroborating document". */
+  evidence_role: string
+  page_number?: number | null
+  section_label?: string | null
+  citation_label?: string | null
+  /** Bounded excerpt only; absent on a public projection unless public-safe. */
+  safe_snippet?: string | null
+  /** Safe reference labels (e.g. "Figure 2", "Table 1") — never the raw figure. */
+  figure_reference?: string | null
+  table_reference?: string | null
+  diagram_reference?: string | null
+  visual_or_table_summary?: string | null
+  why_supported: string
+  corroborates?: string | null
+  limitation: string
+  /**
+   * Skill-specific detail lists (bounded, normalized, already-safe strings) mined
+   * from the analyzer's own excerpts for the SELECTED skill — never raw document
+   * text, never invented. Empty when the document only supports the skill at the
+   * claim level (then `missing_detail_note` explains what was not extracted).
+   */
+  skill_specific_claims?: string[]
+  technical_details?: string[]
+  api_endpoints?: string[]
+  request_response_details?: string[]
+  architecture_details?: string[]
+  implementation_hints?: string[]
+  /** "What is still missing" note when exact (e.g. endpoint-level) detail is absent. */
+  missing_detail_note?: string | null
+  has_skill_specific_details?: boolean
+  /** Safe download/open gating message — never a storage path or signed URL. */
+  access_note: string
+  /** Button label when download is enabled (e.g. "Download document"). */
+  document_access_label?: string | null
+  /** Fuller, honest access explanation — never a storage path or signed URL. */
+  document_access_note?: string
+  can_download_document: boolean
+  document_download_url?: string | null
+  document_open_url?: string | null
+  is_public_safe: boolean
+  is_attached_to_project: boolean
+}
+
 export type SkillReportDocumentCorrelation = {
   source_id: string
   document_title: string
@@ -1113,6 +1170,11 @@ export type SkillReportDocumentCorrelation = {
   /** Safe download gating message — never a storage path or signed URL. */
   document_access_note?: string
   limitation: string
+  /**
+   * Skill-specific inspection view of this document (what it says, where, and why
+   * it supports the SELECTED skill). Absent on legacy payloads built before it.
+   */
+  inspection_card?: DocumentProofInspectionCard | null
 }
 
 /** One evidence-cited synthesis statement (Proof Synthesis Agent). */

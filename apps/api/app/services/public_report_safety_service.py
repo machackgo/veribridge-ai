@@ -109,6 +109,7 @@ __all__ = [
     "public_safe_synthesis_result",
     "public_safe_stale_marker",
     "public_safe_skill_report",
+    "public_safe_document_inspection_card",
     "defense_privacy_is_clean",
     "public_safe_defense_analysis",
     "public_safe_defense_answer_evidence",
@@ -1125,6 +1126,104 @@ def public_safe_skill_report(report: dict[str, Any]) -> dict[str, Any]:
         "limitations": _scrub_str_list(report.get("limitations")),
     }
     return enforce_public_safe(projected)
+
+
+# Public replacement note shown on a Document Proof inspection card when the
+# document is not intentionally share-safe — recruiters see the locator + reason,
+# never the excerpt, and there is no download button.
+_PUBLIC_DOC_PRIVATE_ACCESS_NOTE = (
+    "Original document is private. Recruiters see verified excerpts and locators only."
+)
+
+
+def public_safe_document_inspection_card(card: Any) -> dict[str, Any] | None:
+    """Project a Document Proof inspection card to a recruiter-safe shape, fail-closed.
+
+    The private card (built by ``_build_document_inspection_card``) already avoids
+    raw text / paths / signed URLs / internal ids. This projection additionally:
+
+    * STRIPS ``safe_snippet`` unless the card is explicitly ``is_public_safe`` —
+      recruiters otherwise see only the locator (page/section/citation/figure) and
+      the why-supported reason, never the document excerpt;
+    * DISABLES download — ``can_download_document`` is forced ``False`` and both
+      URLs to ``None`` unless the card explicitly allows download AND carries a URL
+      that survives :func:`safe_public_url`; when disabled the access note is
+      replaced with a neutral "document is private" message;
+    * scrubs every free-text field and echoes only the documented safe fields, so
+      no internal id / path / provider JSON can ride out.
+
+    Returns ``None`` for a ``None`` / non-dict card.
+    """
+    if not isinstance(card, dict):
+        return None
+
+    is_public_safe = bool(card.get("is_public_safe"))
+    # Snippet is owner-only unless explicitly public-safe.
+    safe_snippet = _scrub_text_or_none(card.get("safe_snippet")) if is_public_safe else None
+
+    # Download stays closed unless BOTH explicit consent AND a genuinely safe URL.
+    download_url = safe_public_url(card.get("document_download_url")) if card.get("can_download_document") else None
+    open_url = safe_public_url(card.get("document_open_url")) if card.get("can_download_document") else None
+    can_download = bool(card.get("can_download_document")) and bool(download_url or open_url)
+    access_note = (
+        _scrub_text_or_none(card.get("access_note")) or ""
+        if can_download
+        else _PUBLIC_DOC_PRIVATE_ACCESS_NOTE
+    )
+
+    # Skill-specific detail lists ARE recruiter-safe (bounded, normalized claims —
+    # not the raw excerpt, which stays owner-only). Each entry is still scrubbed of
+    # any path/URL/score fragment, dropped if nothing survives, and capped.
+    def _public_detail_list(value: Any) -> list[str]:
+        out: list[str] = []
+        for entry in value if isinstance(value, list) else []:
+            scrubbed = scrub_public_text(entry)
+            if scrubbed and scrubbed not in out:
+                out.append(scrubbed)
+            if len(out) >= 5:
+                break
+        return out
+
+    page = card.get("page_number")
+    projected = {
+        "title": scrub_public_text(card.get("title")),
+        "source_type": _scrub_text_or_none(card.get("source_type")),
+        "status": _scrub_text_or_none(card.get("status")),
+        "matched_skill": public_safe_skill_name(card.get("matched_skill")),
+        "project_title": public_safe_skill_name(card.get("project_title")),
+        "evidence_role": scrub_public_text(card.get("evidence_role")) or "Supporting evidence",
+        "page_number": page if isinstance(page, int) else None,
+        "section_label": _scrub_text_or_none(card.get("section_label")),
+        "citation_label": _scrub_text_or_none(card.get("citation_label")),
+        "safe_snippet": safe_snippet,
+        "figure_reference": _scrub_text_or_none(card.get("figure_reference")),
+        "table_reference": _scrub_text_or_none(card.get("table_reference")),
+        "diagram_reference": _scrub_text_or_none(card.get("diagram_reference")),
+        "visual_or_table_summary": _scrub_text_or_none(card.get("visual_or_table_summary")),
+        "why_supported": scrub_public_text(card.get("why_supported")),
+        "corroborates": _scrub_text_or_none(card.get("corroborates")),
+        "limitation": scrub_public_text(card.get("limitation")),
+        "skill_specific_claims": _public_detail_list(card.get("skill_specific_claims")),
+        "technical_details": _public_detail_list(card.get("technical_details")),
+        "api_endpoints": _public_detail_list(card.get("api_endpoints")),
+        "request_response_details": _public_detail_list(card.get("request_response_details")),
+        "architecture_details": _public_detail_list(card.get("architecture_details")),
+        "implementation_hints": _public_detail_list(card.get("implementation_hints")),
+        "missing_detail_note": _scrub_text_or_none(card.get("missing_detail_note")),
+        "has_skill_specific_details": bool(card.get("has_skill_specific_details")),
+        "access_note": access_note,
+        # Download stays disabled publicly; the label/note explain the private state.
+        "document_access_label": _scrub_text_or_none(card.get("document_access_label"))
+        if can_download
+        else None,
+        "document_access_note": access_note,
+        "can_download_document": can_download,
+        "document_download_url": download_url,
+        "document_open_url": open_url,
+        "is_public_safe": is_public_safe,
+        "is_attached_to_project": bool(card.get("is_attached_to_project")),
+    }
+    return projected
 
 
 # ── Project Defense analysis (privacy fail-closed) ────────────────────────────

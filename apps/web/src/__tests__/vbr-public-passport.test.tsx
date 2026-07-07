@@ -474,3 +474,76 @@ describe("PublicPassportView — Step 5 recruiter-ready publishing", () => {
     expect(document.body.textContent).not.toMatch(/suggested attachments/i)
   })
 })
+
+describe("PublicPassportView — Document Proof trace safety", () => {
+  function documentTracePassport(): PublicWorkPassport {
+    return makePublicPassport({
+      top_skills: [
+        {
+          skill: "Machine Learning",
+          status: "Demonstrated",
+          evidence_sources: ["Document Proof"],
+          projects: [
+            { project_title: "Housing Price Predictor", evidence_sources: ["Document Proof"], public_report_path: "/vbr/report/tok-abc" },
+          ],
+          evidence_chips: [],
+          limitations: [],
+          evidence_traces: [
+            {
+              trace_id: "document-1-machine-learning",
+              source_type: "Document Proof",
+              source_title: "Final Year Project Report",
+              skill_names: ["Machine Learning"],
+              qualitative_status: "Supporting evidence",
+              safe_summary: "A supporting document the analyzer matched to Machine Learning on page 4.",
+              safe_detail: "A safe excerpt/page is shown for recruiters rather than the raw file.",
+              evidence_anchor: "",
+              location_type: "document_page",
+              location_label: "Page 4",
+              location_detail: "Page 4 · Model Architecture",
+              page_number: 4,
+              citation: "Model Architecture",
+              // Public projection strips the raw excerpt — no snippet on a public trace.
+              snippet: null,
+              public_url: null,
+              public_url_label: null,
+              timestamp: null,
+              limitation: "Document evidence supports but does not independently prove implementation or authorship.",
+              is_publicly_openable: false,
+              private_evidence_note: "Private document; only a safe citation is shown.",
+            },
+          ],
+        },
+      ],
+    })
+  }
+
+  it("S. public document trace exposes no raw snippet, storage path, or internal id", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(documentTracePassport())
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+    fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
+    const detail = await screen.findByTestId("public-skill-detail")
+
+    // No raw excerpt is rendered for a public document trace.
+    expect(detail.querySelector('[data-testid="evidence-trace-snippet"]')).toBeNull()
+    const html = detail.innerHTML
+    expect(html).not.toContain("uploads/")
+    expect(html).not.toContain("?token=")
+    expect(html).not.toContain("document_id")
+    expect(html).not.toContain("source_id")
+    expect(html).not.toContain("optional_evidence_submissions")
+  })
+
+  it("T. public document trace shows the safe locator and limitation", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(documentTracePassport())
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+    fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
+    const detail = await screen.findByTestId("public-skill-detail")
+
+    expect(detail.querySelector('[data-testid="evidence-trace-page"]')?.textContent).toContain("Page 4")
+    expect(detail.querySelector('[data-testid="evidence-trace-citation"]')?.textContent).toContain("Model Architecture")
+    expect(detail.textContent).toContain("does not independently prove implementation")
+  })
+})

@@ -435,6 +435,323 @@ def test_collect_skill_report_returns_document_citation(mem_store: dict, pipelin
     assert doc["safe_snippet"] == "Implemented the training loop in Python."
 
 
+# ── Document Proof inspection card ────────────────────────────────────────────
+
+
+def _doc_correlations(report: dict) -> list[dict]:
+    """Every Document corroboration card across chains + the standalone bucket."""
+    out: list[dict] = []
+    for chain in report.get("projects") or []:
+        out += chain.get("document_correlations") or []
+    out += (report.get("standalone_evidence") or {}).get("documents") or []
+    return out
+
+
+def _seed_ml_document(mem_store: dict) -> None:
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Final Year Project Report"},
+        evidence_objects=[
+            {
+                "skill_name": "Machine Learning",
+                "confidence": "high",
+                "snippet": "We trained a gradient-boosted model on the housing dataset.",
+                "page_number": 4,
+                "section_label": "Model Architecture",
+                "reason": "Describes the ML model workflow and dataset.",
+                "figure_reference": "Figure 2",
+            }
+        ],
+    )
+
+
+def test_document_inspection_card_includes_locator_snippet_figure_and_limitation(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A. The DTO carries title, matched skill, page, citation, safe snippet,
+    figure reference, why_supported, and the limitation copy."""
+    _seed_ml_document(mem_store)
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    corrs = _doc_correlations(report)
+    assert corrs, "a document correlation must exist"
+    card = corrs[0]["inspection_card"]
+    assert card is not None
+    assert card["title"] == "Final Year Project Report"
+    assert card["matched_skill"] == "Machine Learning"
+    assert card["page_number"] == 4
+    assert card["citation_label"] == "Model Architecture"
+    assert card["safe_snippet"] == "We trained a gradient-boosted model on the housing dataset."
+    assert card["figure_reference"] == "Figure 2"
+    assert card["why_supported"]
+    # Base limitation always present + the ML-specific clause.
+    assert "does not" in card["limitation"] and "independently prove" in card["limitation"]
+    assert "model workflow" in card["limitation"]
+
+
+def test_document_inspection_card_routes_table_reference(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A table reference lands in table_reference, not figure_reference."""
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {
+                "skill_name": "Machine Learning",
+                "snippet": "Dataset features are enumerated below.",
+                "page_number": 2,
+                "table_reference": "Table 1",
+            }
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["table_reference"] == "Table 1"
+    assert card["figure_reference"] is None
+
+
+def test_document_inspection_card_never_exposes_unsafe_fields(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """B. The DTO does not carry raw_text, file_path, signed URL, storage path,
+    internal id, or raw provider JSON."""
+    _seed_document_evidence(
+        mem_store,
+        file_path="uploads/user-123/secret-report.pdf",
+        analysis_json={
+            "title": "Report",
+            "raw_text": "SHOULD-NEVER-LEAK full document body",
+            "extracted_text_preview": "SHOULD-NEVER-LEAK preview",
+            "signed_url": "https://bucket.example.com/x?token=SECRET",
+        },
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "snippet": "safe excerpt", "page_number": 1}
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    blob = repr(card)
+    for leak in ("raw_text", "file_path", "extracted_text_preview", "signed_url", "SECRET", "SHOULD-NEVER-LEAK", "uploads/user-123"):
+        assert leak not in blob, f"unsafe fragment leaked: {leak}"
+    for forbidden in ("file_path", "storage_path", "signed_url", "document_id", "source_id", "raw_text"):
+        assert forbidden not in card
+
+
+def test_document_inspection_card_is_supporting_not_implementation_proof(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """C. The document is labeled supporting/corroborating — never implementation proof."""
+    _seed_ml_document(mem_store)
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["evidence_role"] in ("Supporting evidence", "Corroborating document")
+    assert card["status"] == "Supporting evidence"
+    assert "does not" in card["limitation"] and "Demonstrated" not in card["evidence_role"]
+
+
+def test_document_inspection_card_download_disabled_without_consent(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """D. Download fields are null/disabled unless safe access is available."""
+    _seed_ml_document(mem_store)  # no download consent flag
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["can_download_document"] is False
+    assert card["document_download_url"] is None
+    assert card["document_open_url"] is None
+    assert "not available" in card["access_note"].lower()
+
+
+def test_document_inspection_card_download_consent_flags_capability_only(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Explicit student consent flips the capability flag but STILL mints no URL
+    from this view (any real download stays gated by its own endpoint)."""
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Shared Report", "recruiter_shareable": True},
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "snippet": "safe excerpt", "page_number": 1}
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["can_download_document"] is True
+    assert card["document_download_url"] is None
+    assert card["document_open_url"] is None
+
+
+def test_document_inspection_card_no_locator_states_it_plainly(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """With no page/section/citation/snippet/figure, the card says so for the skill
+    (never invents a locator) and reports no figure/table evidence."""
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Machine Learning", "confidence": "high"}],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["page_number"] is None and card["citation_label"] is None
+    assert "no skill-specific citation was found for Machine Learning" in card["why_supported"]
+    assert card["visual_or_table_summary"] == (
+        "No skill-specific figure/table evidence was extracted from this document."
+    )
+
+
+# ── Skill-specific detail extraction (richer inspection) ──────────────────────
+
+
+def _seed_api_document(mem_store: dict, **evidence) -> None:
+    base = {
+        "skill_name": "API Development",
+        "confidence": "high",
+        "page_number": 7,
+        "section_label": "System Architecture",
+    }
+    base.update(evidence)
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Final Year Project Report"},
+        evidence_objects=[base],
+    )
+
+
+def test_api_document_card_includes_skill_specific_claims_and_technical_details(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """API Development card mines claim-level + technical detail bullets from the
+    analyzer's own bounded excerpts — not just one generic sentence."""
+    _seed_api_document(
+        mem_store,
+        snippet="API development is demonstrated through exposing the workflow as a backend service.",
+        reason="Document mentions API endpoints and cloud deployment as part of the routing workflow.",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["matched_skill"] == "API Development"
+    assert card["has_skill_specific_details"] is True
+    assert card["skill_specific_claims"], "claim-level statements must be surfaced"
+    assert any("backend service" in d for d in card["technical_details"])
+
+
+def test_api_document_card_surfaces_endpoint_and_request_response_details(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """When endpoint / request-response text is present it lands in the right lists."""
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "API Report"},
+        evidence_objects=[
+            {
+                "skill_name": "API Development",
+                "snippet": "The service exposes REST API endpoints for the routing workflow.",
+                "reason": "The request payload carries coordinates and the response returns a ranked route list.",
+                "page_number": 7,
+            }
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert any("endpoint" in d.lower() for d in card["api_endpoints"])
+    assert any("request payload" in d.lower() for d in card["request_response_details"])
+    assert any("service" in d.lower() for d in card["architecture_details"])
+    # Endpoint-level detail present → no missing note.
+    assert card["missing_detail_note"] is None
+
+
+def test_api_document_card_missing_note_when_no_endpoint_details(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """API claim without endpoint/request/response detail → explicit missing note."""
+    _seed_api_document(
+        mem_store,
+        snippet="This project involved API development for the workflow.",
+        reason="API development supported the overall project.",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["api_endpoints"] == []
+    assert card["request_response_details"] == []
+    assert card["missing_detail_note"]
+    assert "endpoint route names" in card["missing_detail_note"]
+    assert "API Development" in card["missing_detail_note"]
+    # Still supports at the claim level.
+    assert card["skill_specific_claims"]
+
+
+def test_api_limitation_clause_applied(mem_store: dict, pipeline_db: dict) -> None:
+    """API family adds an API-specific limitation clause to the base limitation."""
+    _seed_api_document(mem_store, snippet="Backend API endpoints expose the workflow.")
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert "independently prove" in card["limitation"]
+    assert "endpoint routes" in card["limitation"]
+
+
+def test_document_detail_lists_are_bounded_and_never_whole_document(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Detail lists are capped and each bullet is bounded — never the raw document."""
+    huge = "The API endpoint returns JSON. " * 40  # would be a whole-document dump
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Big Report"},
+        evidence_objects=[
+            {
+                "skill_name": "API Development",
+                "snippet": huge,
+                "reason": "API service backend endpoint request response integration.",
+                "page_number": 2,
+            }
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert len(card["technical_details"]) <= 5
+    for bullet in card["technical_details"]:
+        assert len(bullet) <= 200
+    # The raw multi-hundred-char blob is never echoed verbatim.
+    assert huge.strip() not in repr(card)
+
+
+def test_api_details_do_not_leak_into_unrelated_skill(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """API-flavored text filed under an unrelated skill does not populate API lists."""
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Mixed Report"},
+        evidence_objects=[
+            {
+                "skill_name": "Machine Learning",
+                "snippet": "We trained a model and exposed an API endpoint for predictions.",
+                "reason": "Describes the ML model and dataset.",
+                "page_number": 3,
+            }
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    # ML card mines ML detail, never the API endpoint/request lists.
+    assert card["api_endpoints"] == []
+    assert card["request_response_details"] == []
+    assert any("model" in d.lower() for d in card["technical_details"])
+
+
+def test_document_card_download_note_explains_file_not_retained(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """The honest document_access_note explains the original file is not retained,
+    and download stays disabled with no URL."""
+    _seed_ml_document(mem_store)
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["can_download_document"] is False
+    assert card["document_download_url"] is None and card["document_open_url"] is None
+    assert "not retained" in card["document_access_note"]
+    assert card["document_access_label"] is None
+
+
 def test_collect_skill_report_lists_project_usage_and_gaps(mem_store: dict, pipeline_db: dict) -> None:
     _seed_workflow_analysis(mem_store, supported_skills=["Python"])
     report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Python")

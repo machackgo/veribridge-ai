@@ -204,6 +204,50 @@ def test_public_report_exposes_safe_links_only(client: TestClient, mem_store: di
     assert "storage_path" not in raw
 
 
+def test_public_report_shows_safe_document_reference_only(
+    client: TestClient, mem_store: dict
+) -> None:
+    """L. The public project report exposes a safe document reference (title/page/
+    citation) but never the raw excerpt, storage path, or internal document id."""
+    github_proof_id = _seed_github_proof(mem_store)
+    document_id = _seed_document_evidence(
+        mem_store,
+        file_path="uploads/user-123/secret-report.pdf",
+        analysis_json={"title": "Final Year Project Report"},
+        evidence_objects=[
+            {
+                "skill_name": "Machine Learning",
+                "snippet": "RAWDOCEXCERPTSHOULDNOTLEAK trained a model on the dataset.",
+                "page_number": 4,
+                "section_label": "Model Architecture",
+                "reason": "Describes the ML workflow.",
+            }
+        ],
+    )
+    created = _create_project_defense(
+        client,
+        attached_proofs={
+            "github_proof_id": github_proof_id,
+            "document_evidence_ids": [document_id],
+        },
+    ).json()
+    project_id = created["project"]["id"]
+    token = _publish(client, project_id).json()["public_token"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, token).json()
+    raw = json.dumps(body)
+
+    # No raw excerpt, storage path, or internal document id ever reaches the public
+    # surface.
+    assert "RAWDOCEXCERPTSHOULDNOTLEAK" not in raw
+    assert "uploads/user-123" not in raw
+    assert "secret-report.pdf" not in raw
+    assert document_id not in raw
+    # A safe document reference (the title) is still present for recruiters.
+    assert "Final Year Project Report" in raw
+
+
 def test_invalid_token_returns_404(client: TestClient) -> None:
     assert _get_public(client, "definitely-not-a-real-token").status_code == 404
 

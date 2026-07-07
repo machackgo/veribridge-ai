@@ -284,6 +284,11 @@ _LOCATOR_KEYS = (
     "display_mode",
     "evidence_strength",
     "evidence_quality_grade",
+    # Extra bounded, already-safe skill-related snippets/reasons the analyzer
+    # stored for THIS skill (beyond the single primary snippet) — the raw material
+    # the Document Proof inspection card mines for skill-specific technical detail.
+    # A list of short safe strings; never raw/full document text or a path.
+    "detail_snippets",
     # Conservative DESCRIPTIVE code role (documentation_header / imports_setup /
     # model_training / …). Says what the block appears to be — never proof
     # strength; the grade above still governs that.
@@ -732,18 +737,32 @@ def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list
         )
 
         evidence_objects = row.get("evidence_objects") if isinstance(row.get("evidence_objects"), list) else []
-        seen_skills: set[str] = set()
+        # Group the analyzer's evidence objects by (normalized) skill, preserving
+        # order. The FIRST object per skill supplies the primary locator/snippet;
+        # EVERY object for the skill contributes its bounded safe snippet + reason
+        # to ``detail_snippets`` — the raw material the inspection card mines for
+        # deeper, skill-specific technical detail (endpoints, request/response,
+        # architecture, …). Only already-safe bounded text ever enters the list.
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        order: list[str] = []
         for obj in evidence_objects:
             if not isinstance(obj, dict):
                 continue
-            skill = str(obj.get("skill_name") or "").strip()
-            key = _norm(skill)
-            if not key or key in seen_skills:
+            key = _norm(str(obj.get("skill_name") or "").strip())
+            if not key:
                 continue
-            seen_skills.add(key)
-            page = obj.get("page_number")
-            section = _trace_text(str(obj.get("section_label") or ""), 80) or None
-            snippet = _trace_text(_scrub_score_fragments(str(obj.get("snippet") or "")), 200) or None
+            if key not in grouped:
+                grouped[key] = []
+                order.append(key)
+            grouped[key].append(obj)
+
+        for key in order:
+            objs = grouped[key]
+            primary = objs[0]
+            skill = str(primary.get("skill_name") or "").strip()
+            page = primary.get("page_number")
+            section = _trace_text(str(primary.get("section_label") or ""), 80) or None
+            snippet = _trace_text(_scrub_score_fragments(str(primary.get("snippet") or "")), 200) or None
             if isinstance(page, int) or (isinstance(page, str) and page.isdigit()):
                 location = f"Page {page}" + (f" · {section}" if section else "")
             elif section:
@@ -751,20 +770,37 @@ def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list
             else:
                 location = "matched skill"
             page_int = page if isinstance(page, int) else (int(page) if isinstance(page, str) and page.isdigit() else None)
-            reason = _trace_text(_scrub_score_fragments(str(obj.get("reason") or "")), 200) or None
+            reason = _trace_text(_scrub_score_fragments(str(primary.get("reason") or "")), 200) or None
             # Safe figure/diagram/table reference label (e.g. "Figure 3", "Table 2")
             # — only the analyzer's reference label, never the raw image/text.
             figure_reference = _trace_text(
                 str(
-                    obj.get("figure_reference")
-                    or obj.get("figure")
-                    or obj.get("table_reference")
-                    or obj.get("diagram_reference")
-                    or obj.get("exhibit")
+                    primary.get("figure_reference")
+                    or primary.get("figure")
+                    or primary.get("table_reference")
+                    or primary.get("diagram_reference")
+                    or primary.get("exhibit")
                     or ""
                 ),
                 60,
             ) or None
+            # Bounded, deduped detail material from ALL objects for this skill.
+            detail_snippets: list[str] = []
+            seen_details: set[str] = set()
+            for obj in objs:
+                for candidate in (obj.get("snippet"), obj.get("reason")):
+                    text = _trace_text(_scrub_score_fragments(str(candidate or "")), 200) or None
+                    if not text:
+                        continue
+                    norm = _norm(text)
+                    if norm in seen_details:
+                        continue
+                    seen_details.add(norm)
+                    detail_snippets.append(text)
+                    if len(detail_snippets) >= _DOC_DETAIL_SOURCE_CAP:
+                        break
+                if len(detail_snippets) >= _DOC_DETAIL_SOURCE_CAP:
+                    break
             items.append(
                 _make_item(
                     skill_name=skill,
@@ -788,11 +824,12 @@ def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list
                         "citation": section,
                         "figure_reference": figure_reference,
                         "full_document_available": full_download_allowed,
+                        "detail_snippets": detail_snippets,
                     },
                 )
             )
 
-        if not seen_skills:
+        if not grouped:
             # Document with no analyzer-matched skill — project-level context only.
             items.append(
                 _make_item(
@@ -1733,6 +1770,427 @@ _DOC_CORROBORATION_BASE_LIMITATION = (
 _DOC_PRIVATE_NOTE = "Private document; only a safe citation is shown."
 _DOC_DOWNLOAD_GATED_NOTE = "Full document available only with candidate permission."
 
+# ── Document Proof inspection card (skill-specific recruiter view) ─────────────
+#
+# The base limitation shown on EVERY Document Proof inspection card — a document
+# corroborates a claim but never independently proves code/runtime/authorship.
+_DOC_INSPECTION_BASE_LIMITATION = (
+    "Document Proof supports or corroborates the skill/project claim, but it does not "
+    "independently prove code implementation, runtime behavior, or authorship. GitHub Proof, "
+    "Website Proof, and Project Defense provide stronger implementation/runtime evidence."
+)
+# Skill-family-specific limitation clause appended to the base for a recognized family.
+_DOC_INSPECTION_API_LIMITATION = (
+    "This document can describe API/backend design at the claim level, but endpoint routes, "
+    "request/response schemas, and running behavior should be verified with GitHub Proof or "
+    "Project Defense."
+)
+_DOC_INSPECTION_ML_LIMITATION = (
+    "This document can describe model workflow, dataset, or results, but implementation/runtime "
+    "evidence should come from GitHub, Website Proof, or Project Defense."
+)
+_DOC_INSPECTION_FRONTEND_LIMITATION = (
+    "This document can describe UI/product behavior, but runtime interaction evidence should come "
+    "from Website Proof."
+)
+_DOC_INSPECTION_CLOUD_LIMITATION = (
+    "This document can describe deployment or architecture, but direct deployment verification "
+    "requires live URL/deployment proof."
+)
+# Shown in place of an excerpt when the analyzer found no skill-specific locator.
+_DOC_INSPECTION_NO_LOCATOR = (
+    "This document is attached as supporting evidence, but no skill-specific citation was found "
+    "for {skill}."
+)
+# Shown when no figure/table/diagram evidence was extracted for the selected skill.
+_DOC_INSPECTION_NO_VISUAL = (
+    "No skill-specific figure/table evidence was extracted from this document."
+)
+# Safe download/open access notes (never a path or signed URL).
+_DOC_INSPECTION_ACCESS_AVAILABLE = "The candidate shared this document for recruiter review."
+_DOC_INSPECTION_ACCESS_UNAVAILABLE = (
+    "Original document download is not available from this view yet."
+)
+# Honest, fuller download explanation. VeriBridge does NOT retain the original
+# uploaded file after analysis — only verified excerpts and locators are stored —
+# so there is genuinely no file to serve, in owner OR recruiter views. This is a
+# privacy feature, not a missing-endpoint gap.
+_DOC_ACCESS_NOTE_NOT_RETAINED = (
+    "The original document file is not retained after analysis — VeriBridge stores only verified "
+    "excerpts and locators, so there is no file to download. Recruiters see verified excerpts and "
+    "locators only."
+)
+_DOC_ACCESS_NOTE_SHARED_NOT_RETAINED = (
+    "The candidate marked this document shareable, but the original file is not retained after "
+    "analysis — only verified excerpts and locators are stored, so there is no file to download."
+)
+
+# ── Skill-specific detail extraction ─────────────────────────────────────────
+#
+# For a recognized skill family we mine the analyzer's OWN bounded safe snippets/
+# reasons for the selected skill and route each matching sentence into a category
+# (claim / technical / endpoint / request-response / architecture). We NEVER
+# invent an endpoint/route/schema/figure that is not literally present, and we
+# only ever emit already-safe bounded text — never raw/full document body.
+
+# Max source snippets pulled from the analyzer per skill (see _collect_documents).
+_DOC_DETAIL_SOURCE_CAP = 12
+# Max entries emitted per detail category on the card.
+_DOC_DETAIL_CAP = 5
+
+# API-family CLAIM tokens (broad — "does this talk about APIs at all?").
+_DOC_API_CLAIM_TOKENS = (
+    "api", "endpoint", "route", "request", "response", "backend", "service",
+    "server", "integration", "rest", "restful", "fastapi", "flask", "express",
+    "http", "https", "json", "webhook", "graphql", "microservice", "gateway",
+)
+# Category tokens (narrower — "does this describe a concrete mechanism?").
+_DOC_API_ENDPOINT_TOKENS = (
+    "endpoint", "route", "rest", "restful", "webhook", "graphql", "/api", "/v1",
+    " get ", " post ", " put ", " patch ", " delete ", "http method",
+)
+_DOC_API_REQRESP_TOKENS = (
+    "request", "response", "payload", "schema", "status code", "json body",
+    "query param", "request body", "response body",
+)
+_DOC_API_ARCH_TOKENS = (
+    "backend", "service", "server", "integration", "architecture", "microservice",
+    "gateway", "middleware", "controller", "server-side",
+)
+_DOC_ML_DETAIL_TOKENS = (
+    "model", "training", "train", "dataset", "prediction", "predict",
+    "classification", "classifier", "feature", "accuracy", "inference",
+    "evaluation", "evaluate", "preprocessing", "regression", "neural",
+)
+_DOC_FRONTEND_DETAIL_TOKENS = (
+    "ui", "interface", "component", "form", "page", "interaction", "state",
+    "user flow", "button", "layout", "render", "frontend", "screen",
+)
+_DOC_CLOUD_DETAIL_TOKENS = (
+    "deploy", "cloud", "container", "docker", "kubernetes", "ci/cd", "cicd",
+    "environment", "production", "hosting", "pipeline", "serverless",
+)
+# Family → (claim tokens, technical tokens). For non-API families claim and
+# technical share the same set (there is no meaningful shallow/deep split there).
+_DOC_FAMILY_DETAIL_TOKENS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "api": (
+        _DOC_API_CLAIM_TOKENS,
+        _DOC_API_ENDPOINT_TOKENS + _DOC_API_REQRESP_TOKENS + _DOC_API_ARCH_TOKENS
+        + ("fastapi", "flask", "express", "graphql"),
+    ),
+    "ml": (_DOC_ML_DETAIL_TOKENS, _DOC_ML_DETAIL_TOKENS),
+    "frontend": (_DOC_FRONTEND_DETAIL_TOKENS, _DOC_FRONTEND_DETAIL_TOKENS),
+    "cloud": (_DOC_CLOUD_DETAIL_TOKENS, _DOC_CLOUD_DETAIL_TOKENS),
+}
+# API skill-name tokens (so "API Development", "Backend", "REST API" → api family).
+_DOC_API_SKILL_TOKENS = (
+    "api", "backend", "rest", "graphql", "microservice", "web service",
+    "server-side", "fastapi", "flask", "express", "django rest",
+)
+
+# Endpoint-level missing note (API family) — exact recruiter-grade wording.
+_DOC_MISSING_ENDPOINT_NOTE = (
+    "No endpoint route names, request schema, or response schema were extracted from this "
+    "document. This document supports {skill} at the claim level; use GitHub Proof or Project "
+    "Defense to inspect implementation details."
+)
+# Generic missing note (recognized non-API family with no concrete detail found).
+_DOC_MISSING_DETAIL_NOTE = (
+    "No {skill}-specific implementation details were extracted from this document. It supports "
+    "{skill} at the claim level; use GitHub Proof, Website Proof, or Project Defense for "
+    "implementation/runtime evidence."
+)
+
+# Frontend / product families for a document skill (Machine Learning is detected
+# via the shared ``is_ml_skill`` helper). Substring match against the normalized
+# skill name — deliberately conservative; unknown skills fall to "general".
+_DOC_FRONTEND_TOKENS = (
+    "frontend", "front end", "front-end", "react", "vue", "angular", "svelte",
+    "ui", "ux", "css", "html", "tailwind", "web design", "user interface",
+)
+_DOC_CLOUD_TOKENS = (
+    "cloud", "mlops", "devops", "deploy", "docker", "kubernetes", "k8s", "aws",
+    "gcp", "azure", "infrastructure", "infra", "container", "terraform", "ci/cd",
+    "cicd", "serverless", "platform engineering",
+)
+
+
+def _document_skill_family(skill: str | None) -> str:
+    """Coarse family for a document's selected skill → skill-specific limitation.
+
+    ``"api"`` / ``"ml"`` / ``"frontend"`` / ``"cloud"`` / ``"general"``. Machine
+    Learning uses the shared :func:`is_ml_skill` helper; API/frontend/cloud are
+    conservative token matches; everything else is ``"general"`` (base limitation
+    only).
+    """
+    if not skill:
+        return "general"
+    if is_ml_skill(skill):
+        return "ml"
+    low = _norm(skill)
+    if any(tok in low for tok in _DOC_API_SKILL_TOKENS):
+        return "api"
+    if any(tok in low for tok in _DOC_FRONTEND_TOKENS):
+        return "frontend"
+    if any(tok in low for tok in _DOC_CLOUD_TOKENS):
+        return "cloud"
+    return "general"
+
+
+def _document_inspection_limitation(skill: str | None) -> str:
+    """Base Document-Proof limitation plus the selected skill's family clause."""
+    family = _document_skill_family(skill)
+    clause = {
+        "api": _DOC_INSPECTION_API_LIMITATION,
+        "ml": _DOC_INSPECTION_ML_LIMITATION,
+        "frontend": _DOC_INSPECTION_FRONTEND_LIMITATION,
+        "cloud": _DOC_INSPECTION_CLOUD_LIMITATION,
+    }.get(family)
+    return f"{_DOC_INSPECTION_BASE_LIMITATION} {clause}" if clause else _DOC_INSPECTION_BASE_LIMITATION
+
+
+def _split_detail_sentences(text: str) -> list[str]:
+    """Split one bounded safe string into bounded sentence-ish fragments.
+
+    The analyzer's snippets/reasons are already short (≤200 chars); we only split
+    on sentence boundaries so a two-sentence snippet can surface as two distinct
+    detail bullets. Each fragment stays bounded and is never re-expanded from raw.
+    """
+    if not text:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    out: list[str] = []
+    for part in parts:
+        frag = part.strip()
+        if len(frag) < 8:
+            continue
+        out.append(_trace_text(frag, 180))
+    return out or ([_trace_text(text.strip(), 180)] if len(text.strip()) >= 8 else [])
+
+
+def _extract_skill_details(
+    skill: str | None, family: str, sources: list[str]
+) -> dict[str, Any]:
+    """Mine bounded, skill-specific detail lists from already-safe source strings.
+
+    Returns claim / technical / endpoint / request-response / architecture lists
+    (each deduped + capped), an ``implementation_hints`` catch-all, and a
+    ``missing_detail_note`` when the recognized family found no concrete detail
+    (endpoint-level for API). Emits ONLY the analyzer's own bounded text — never
+    invents an endpoint/route/schema and never returns raw/full document text.
+    """
+    empty = {
+        "skill_specific_claims": [],
+        "technical_details": [],
+        "api_endpoints": [],
+        "request_response_details": [],
+        "architecture_details": [],
+        "implementation_hints": [],
+        "missing_detail_note": None,
+        "has_skill_specific_details": False,
+    }
+    # Candidate fragments (deduped, order-preserving).
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for src in sources:
+        for frag in _split_detail_sentences(str(src or "")):
+            norm = _norm(frag)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            candidates.append(frag)
+    if not candidates:
+        return empty
+
+    claim_tokens, tech_tokens = _DOC_FAMILY_DETAIL_TOKENS.get(family, ((), ()))
+    if not claim_tokens:
+        # Unknown/general family: fall back to the skill's own name words as the
+        # relevance signal so we still show ONLY skill-relevant fragments.
+        words = tuple(w for w in _norm(skill or "").split() if len(w) > 2)
+        claim_tokens = tech_tokens = words
+
+    def _hit(frag: str, tokens: tuple[str, ...]) -> bool:
+        low = " " + frag.lower() + " "
+        return any(tok in low for tok in tokens)
+
+    claims: list[str] = []
+    technical: list[str] = []
+    endpoints: list[str] = []
+    reqresp: list[str] = []
+    arch: list[str] = []
+    hints: list[str] = []
+    for frag in candidates:
+        if claim_tokens and not _hit(frag, claim_tokens):
+            continue
+        low = " " + frag.lower() + " "
+        claims.append(frag)
+        if tech_tokens and _hit(frag, tech_tokens):
+            technical.append(frag)
+        if family == "api":
+            if any(tok in low for tok in _DOC_API_ENDPOINT_TOKENS):
+                endpoints.append(frag)
+            if any(tok in low for tok in _DOC_API_REQRESP_TOKENS):
+                reqresp.append(frag)
+            if any(tok in low for tok in _DOC_API_ARCH_TOKENS):
+                arch.append(frag)
+        elif frag not in technical:
+            hints.append(frag)
+
+    def _cap(seq: list[str]) -> list[str]:
+        out: list[str] = []
+        for s in seq:
+            if s not in out:
+                out.append(s)
+            if len(out) >= _DOC_DETAIL_CAP:
+                break
+        return out
+
+    claims = _cap(claims)
+    technical = _cap(technical)
+    endpoints = _cap(endpoints)
+    reqresp = _cap(reqresp)
+    arch = _cap(arch)
+    hints = _cap([h for h in hints if h not in technical])
+
+    has_details = bool(claims or technical or endpoints or reqresp or arch)
+    missing: str | None = None
+    if family == "api" and not endpoints and not reqresp:
+        missing = _DOC_MISSING_ENDPOINT_NOTE.format(skill=skill or "API Development")
+    elif family in ("ml", "frontend", "cloud") and not technical:
+        missing = _DOC_MISSING_DETAIL_NOTE.format(skill=skill or "this skill")
+
+    return {
+        "skill_specific_claims": claims,
+        "technical_details": technical,
+        "api_endpoints": endpoints,
+        "request_response_details": reqresp,
+        "architecture_details": arch,
+        "implementation_hints": hints,
+        "missing_detail_note": missing,
+        "has_skill_specific_details": has_details,
+    }
+
+
+def _split_visual_reference(label: str | None) -> tuple[str | None, str | None, str | None]:
+    """Route one safe visual reference label to (figure, table, diagram).
+
+    ``_collect_documents`` collapses figure/table/diagram into a single safe
+    ``figure_reference`` label; here we route it to the right slot by keyword so
+    the card can show "Table 1" as a table and "Figure 2" as a figure. Only the
+    analyzer's reference label is ever used — never a raw image/text/path.
+    """
+    if not label:
+        return None, None, None
+    low = label.lower()
+    if "table" in low:
+        return None, label, None
+    if "diagram" in low or "chart" in low or "graph" in low:
+        return None, None, label
+    return label, None, None
+
+
+def _build_document_inspection_card(
+    item: dict[str, Any],
+    *,
+    skill: str | None,
+    project_title: str | None,
+    corroborates: str,
+    attached_to_project: bool,
+) -> dict[str, Any]:
+    """Build the safe, skill-specific Document Proof inspection card for one doc.
+
+    Consumes ONLY already-safe fields from the report item (title, page, section,
+    citation, bounded snippet, figure reference label, ``full_document_available``
+    consent bool, ``public_safe``). It NEVER reads or emits raw text, OCR/provider
+    JSON, storage/bucket paths, signed URLs, or internal document ids. Download
+    URLs are always ``None`` here (no safe public endpoint is minted from this
+    view); ``can_download_document`` reflects the student's explicit consent flag
+    and the UI shows a disabled state until an authorized endpoint exists.
+    """
+    page = item.get("page_number")
+    section = item.get("section_label")
+    citation = item.get("citation")
+    snippet = item.get("safe_snippet") or None
+    figure_reference, table_reference, diagram_reference = _split_visual_reference(
+        item.get("figure_reference")
+    )
+    has_visual = bool(figure_reference or table_reference or diagram_reference)
+    has_locator = bool(page is not None or section or citation or snippet or has_visual)
+
+    reason = item.get("safe_summary") or item.get("reason") or ""
+
+    # Skill-specific detail mining from the analyzer's own bounded safe text for
+    # THIS skill (primary snippet + reason + every extra ``detail_snippets``).
+    family = _document_skill_family(skill)
+    detail_sources: list[str] = []
+    for src in (snippet, reason, *(item.get("detail_snippets") or [])):
+        if src and str(src) not in detail_sources:
+            detail_sources.append(str(src))
+    details = _extract_skill_details(skill, family, detail_sources)
+
+    if has_locator:
+        why_supported = (
+            reason
+            or f"This document section supports {skill or corroborates.lower()} for this claim."
+        )
+    else:
+        # No skill-specific locator — never invent one; state that plainly.
+        why_supported = _DOC_INSPECTION_NO_LOCATOR.format(skill=skill or "this skill")
+
+    can_download = bool(item.get("full_document_available"))
+    # Download is NEVER served from this view: VeriBridge does not retain the
+    # original uploaded file (only verified excerpts + locators), so there is no
+    # file to download in owner OR recruiter views. ``can_download_document``
+    # still reflects the student's explicit consent flag (capability), but both
+    # URLs stay ``None`` and the note explains, honestly, why the file is absent.
+    document_access_note = (
+        _DOC_ACCESS_NOTE_SHARED_NOT_RETAINED if can_download else _DOC_ACCESS_NOTE_NOT_RETAINED
+    )
+    return {
+        "title": item.get("title") or "Document",
+        "source_type": PROOF_DOCUMENT,
+        "status": "Supporting evidence",
+        "matched_skill": skill,
+        "project_title": project_title,
+        "evidence_role": "Corroborating document" if attached_to_project else "Supporting evidence",
+        "page_number": page,
+        "section_label": section,
+        "citation_label": citation,
+        # Bounded excerpt only (owner view). Public projection strips this unless
+        # ``is_public_safe`` — documents are never public_safe here.
+        "safe_snippet": snippet,
+        "figure_reference": figure_reference,
+        "table_reference": table_reference,
+        "diagram_reference": diagram_reference,
+        "visual_or_table_summary": None if has_visual else _DOC_INSPECTION_NO_VISUAL,
+        "why_supported": why_supported,
+        "corroborates": corroborates or None,
+        "limitation": _document_inspection_limitation(skill),
+        # Skill-specific detail lists (bounded, already-safe, never invented).
+        "skill_specific_claims": details["skill_specific_claims"],
+        "technical_details": details["technical_details"],
+        "api_endpoints": details["api_endpoints"],
+        "request_response_details": details["request_response_details"],
+        "architecture_details": details["architecture_details"],
+        "implementation_hints": details["implementation_hints"],
+        "missing_detail_note": details["missing_detail_note"],
+        "has_skill_specific_details": details["has_skill_specific_details"],
+        "access_note": (
+            _DOC_INSPECTION_ACCESS_AVAILABLE if can_download else _DOC_INSPECTION_ACCESS_UNAVAILABLE
+        ),
+        "document_access_label": "Download document" if can_download else None,
+        "document_access_note": document_access_note,
+        "can_download_document": can_download,
+        # No safe download endpoint exists (the original file is not retained), so
+        # both URLs stay ``None`` and the UI shows a disabled/explained state.
+        "document_download_url": None,
+        "document_open_url": None,
+        # Documents are never publicly linkable here, so the snippet is never
+        # marked public-safe; the public projection relies on this to strip it.
+        "is_public_safe": bool(item.get("public_safe")),
+        "is_attached_to_project": bool(attached_to_project),
+    }
+
 
 def _doc_corroborates_label(*, has_github: bool, has_website: bool, has_defense: bool) -> str:
     """What stronger evidence this document corroborates inside the chain."""
@@ -1751,6 +2209,8 @@ def _doc_correlation(
     corroborates: str,
     attached_to_project: bool,
     confidence: str | None = None,
+    skill: str | None = None,
+    project_title: str | None = None,
 ) -> dict[str, Any]:
     """One safe "Document corroboration" card (never the raw document).
 
@@ -1758,6 +2218,10 @@ def _doc_correlation(
     attachment", "title/project match", "skill-only match", or "weak/standalone"
     — so the UI can show how strongly the document is tied to the claim. A
     document is always *supporting* evidence, never primary proof of authorship.
+
+    ``skill`` (the report's selected skill) and ``project_title`` drive the
+    embedded, skill-specific :attr:`inspection_card` (what the document says,
+    where, and why it supports THIS skill).
     """
     limitations = [_DOC_CORROBORATION_BASE_LIMITATION, _DOC_PRIVATE_NOTE]
     if not attached_to_project:
@@ -1796,6 +2260,16 @@ def _doc_correlation(
         "full_document_available": full_document_available,
         "document_access_note": document_access_note,
         "limitation": " ".join(limitations),
+        # Skill-specific inspection view (what it says / where / why it supports
+        # THIS skill). Built from the same already-safe fields; strips everything
+        # else. A public projection later hides the snippet + download.
+        "inspection_card": _build_document_inspection_card(
+            item,
+            skill=skill,
+            project_title=project_title,
+            corroborates=corroborates,
+            attached_to_project=attached_to_project,
+        ),
     }
 
 
@@ -2713,6 +3187,8 @@ def collect_skill_report(
                 corroborates=corro_label,
                 attached_to_project=bool(d.get("attached_project_ids")),
                 confidence=doc_confidence.get(id(d)),
+                skill=canon,
+                project_title=titles.get(pid, "Project"),
             )
             for d in docs_here
         ]
@@ -2792,6 +3268,8 @@ def collect_skill_report(
             corroborates=standalone_corr_label,
             attached_to_project=False,
             confidence=doc_confidence.get(id(d)) or "weak/standalone",
+            skill=canon,
+            project_title=None,
         )
         for d in standalone_docs
     ]
