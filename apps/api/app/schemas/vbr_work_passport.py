@@ -425,47 +425,6 @@ class PassportWebsiteProofContext(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class ProjectLevelProofContext(BaseModel):
-    """Owner-only, project-level-only proof context (GitHub or Website).
-
-    Surfaced when a project has proof attached (or a repository reference) at the
-    PROJECT level that did NOT map to any specific Passport skill — the proof
-    exists and can be inspected in the project report, but VeriBridge has not
-    mapped it to a skill, so it is deliberately NOT counted as skill-demonstrating
-    evidence. It powers the Skills Evidence Map's honest "Project-level proof
-    attached, not skill-mapped yet" section under the GitHub / Website proof
-    filters, without ever spraying project-level proof across claimed skills.
-
-    Every field is a closed-vocabulary label / already-safe helper sentence. Never
-    a token, storage path, signed URL, raw DOM/OCR text, raw repo payload, or a
-    numeric score. ``has_exact_skill_mapping`` is always False here (this is the
-    NOT-skill-mapped case); it exists so a reader/consumer can assert it never
-    implies the skill is demonstrated."""
-
-    project_id: str
-    project_title: str = ""
-    # Canonical proof-type label: "GitHub Proof" or "Website Proof".
-    proof_type: str = ""
-    # Closed-vocabulary status — always the not-yet-mapped label.
-    status: str = "Needs skill mapping"
-    # One safe sentence describing what the project-level proof is.
-    summary: str = ""
-    # A recruiter-safe source label (e.g. "owner/repo" or a website domain).
-    # Never a raw private path / storage key / signed URL.
-    safe_source_label: str = ""
-    # Owner-only private route to this project's report (never a public link).
-    report_url: str | None = None
-    # Always False here — project-level-only proof never maps a skill.
-    has_exact_skill_mapping: bool = False
-    # Short closed-vocabulary reason the proof did not map to a skill.
-    reason_not_skill_mapped: str = ""
-    # Whether the project report carries analyzed evidence the reader can inspect
-    # (True when a proof was attached/analyzed; False for a bare repo reference).
-    safe_inspection_available: bool = False
-
-    model_config = {"extra": "forbid"}
-
-
 class PublicPassportProject(BaseModel):
     """Public featured project — links to its public VBR report, no internal ids."""
 
@@ -585,15 +544,6 @@ class PrivateWorkPassportResponse(BaseModel):
         default_factory=list
     )
 
-    # Project-level-only proof context (GitHub + Website): proof attached at the
-    # PROJECT level that did NOT map to any specific Passport skill. Powers the
-    # Skills Evidence Map's "Project-level proof attached, not skill-mapped yet"
-    # section under the GitHub / Website proof filters — informational only, NEVER
-    # counted as skill-demonstrating evidence. Owner-only; may be empty.
-    project_level_proof_context: list[ProjectLevelProofContext] = Field(
-        default_factory=list
-    )
-
     # Student Proof Vault — Layer 1: COMPACT per-skill summaries (the main
     # dashboard). Each card carries category, qualitative status, counts, and a
     # few representative previews — never every proof card. The full evidence for
@@ -661,7 +611,6 @@ __all__ = [
     "PassportProjectTopSkill",
     "PublicPassportProjectTopSkill",
     "EvidenceGraphOverview",
-    "ProjectLevelProofContext",
     "PassportProjectSummary",
     "PublicPassportProject",
     "PrivateWorkPassportResponse",

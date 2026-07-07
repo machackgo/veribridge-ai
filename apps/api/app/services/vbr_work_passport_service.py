@@ -376,16 +376,6 @@ def _proof_chain(evidence_sources: list[str]) -> dict[str, Any]:
     return chain
 
 
-def _repo_label_from_proof(github_proof: dict[str, Any]) -> str:
-    """Safe ``owner/name`` label from a GitHub Proof, else a generic label. Never
-    a raw URL with a private host — only the owner/name identity."""
-    owner = str(github_proof.get("repo_owner") or "").strip()
-    name = str(github_proof.get("repo_name") or "").strip()
-    if owner and name:
-        return f"{owner}/{name}"
-    return "GitHub repository"
-
-
 def _private_project_report_path(project_id: Any) -> str | None:
     """Owner-only route to a project's report preview. Private surface only."""
     pid = str(project_id or "").strip()
@@ -1287,10 +1277,6 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     # Website Proofs that did NOT map to any skill. Deduped per (project, focus)
     # so multiple generic captures of the same kind collapse to one honest card.
     website_proof_project_context: list[dict[str, Any]] = []
-    # Project-level-only proof context (GitHub + Website): proof attached at the
-    # PROJECT level that mapped NO Passport skill for this project. Informational
-    # only — NEVER a skill-demonstrating row and NEVER sprayed across skills.
-    project_level_proof_context: list[dict[str, Any]] = []
     for group in groups:
         representative_project, representative_report = group[0]
         token = representative_project.get("public_report_token")
@@ -1373,99 +1359,6 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
                         "action_guidance": str(entry.get("strengthen_action") or ""),
                         "mapped_to_skills": False,
                         "report_path": f"{_PRIVATE_PROJECT_REPORT_PREFIX}{project_id}/report",
-                    }
-                )
-
-        # ── Project-level-only proof context (GitHub + Website) ──────────────
-        # A proof type is EXACT skill-mapped for this project iff a skill-evidence
-        # row in the representative report lists it as a supporting source. When a
-        # proof is attached at the project level but no such row exists, the proof
-        # stays PROJECT-LEVEL only: it can be inspected in the report, but it is
-        # never counted or presented as skill-demonstrating evidence (no spray).
-        report_path = f"{_PRIVATE_PROJECT_REPORT_PREFIX}{project_id}/report"
-        skill_rows = representative_report.get("skill_evidence") or []
-        github_skill_mapped = any(
-            _SRC_GITHUB in (row.get("supporting_sources") or []) for row in skill_rows
-        )
-        website_skill_mapped = any(
-            _SRC_WEBSITE in (row.get("supporting_sources") or []) for row in skill_rows
-        )
-        pkg = representative_report.get("evidence_package") or {}
-
-        # GitHub: an attached GitHub Proof whose detected skills mapped no claimed
-        # skill for this project → project-level only ("needs skill mapping"). A
-        # bare repository reference (no attached/analyzed proof) is labelled even
-        # more carefully and offers no inspectable analyzed evidence.
-        github_proof = representative_report.get("github_proof")
-        github_attached = bool(pkg.get("github_proof_attached")) and isinstance(github_proof, dict)
-        repo_full_name = str(representative_report.get("repo_full_name") or "").strip()
-        repo_url = str(representative_report.get("repo_url") or "").strip()
-        if github_attached and not github_skill_mapped:
-            repo_label = repo_full_name or _repo_label_from_proof(github_proof)
-            # ``public_safe_summary`` is already score-scrubbed + recruiter-safe by
-            # the report builder — never raw repo payload.
-            summary = str(github_proof.get("public_safe_summary") or "").strip()
-            project_level_proof_context.append(
-                {
-                    "project_id": project_id,
-                    "project_title": project_title,
-                    "proof_type": _SRC_GITHUB,
-                    "status": "Needs skill mapping",
-                    "summary": summary
-                    or "GitHub Proof is attached to this project, but VeriBridge has not "
-                    "mapped its repository evidence to a specific Passport skill yet.",
-                    "safe_source_label": repo_label,
-                    "report_url": report_path,
-                    "has_exact_skill_mapping": False,
-                    "reason_not_skill_mapped": (
-                        "GitHub Proof is attached, but its detected skills did not map to a "
-                        "specific skill claimed on this project."
-                    ),
-                    "safe_inspection_available": True,
-                }
-            )
-        elif not github_attached and repo_full_name and not github_skill_mapped:
-            # Repository reference only — no analyzed GitHub Proof to inspect.
-            project_level_proof_context.append(
-                {
-                    "project_id": project_id,
-                    "project_title": project_title,
-                    "proof_type": _SRC_GITHUB,
-                    "status": "Needs skill mapping",
-                    "summary": "A repository is referenced for this project, but no GitHub "
-                    "Proof has been analyzed and mapped to a Passport skill yet.",
-                    "safe_source_label": repo_full_name,
-                    "report_url": report_path,
-                    "has_exact_skill_mapping": False,
-                    "reason_not_skill_mapped": "Repository reference available, GitHub Proof not skill-mapped.",
-                    "safe_inspection_available": False,
-                }
-            )
-
-        # Website: attached Website Proof(s) that mapped no skill for this project.
-        # Reuse the per-focus unmapped context already collected above, but only
-        # when NO exact Website skill row exists for this project (so a project
-        # with some mapped website evidence never also shows a "not mapped" card).
-        if int(pkg.get("website_proofs_count") or 0) > 0 and not website_skill_mapped:
-            for ctx in website_proof_project_context:
-                if ctx["project_id"] != project_id:
-                    continue
-                explanation = str(ctx.get("explanation") or "").strip()
-                project_level_proof_context.append(
-                    {
-                        "project_id": project_id,
-                        "project_title": project_title,
-                        "proof_type": _SRC_WEBSITE,
-                        "status": "Needs skill mapping",
-                        "summary": explanation
-                        or "Website Proof is attached to this project, but VeriBridge has not "
-                        "mapped its runtime evidence to a specific Passport skill yet.",
-                        "safe_source_label": str(ctx.get("focus_label") or ""),
-                        "report_url": report_path,
-                        "has_exact_skill_mapping": False,
-                        "reason_not_skill_mapped": str(ctx.get("reason") or "")
-                        or "Website evidence was too generic to map to a specific skill.",
-                        "safe_inspection_available": True,
                     }
                 )
 
@@ -1637,7 +1530,6 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         "projects": project_summaries,
         "evidence_source_counts": evidence_source_counts,
         "website_proof_project_context": website_proof_project_context,
-        "project_level_proof_context": project_level_proof_context,
         "vault_skill_summaries": vault_skill_summaries,
         "vault_proof_count": len(vault_items),
         "vault_unattached_count": vault_unattached_count,
