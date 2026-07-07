@@ -312,9 +312,17 @@ describe("Verified Passport Card preview (private)", () => {
     delete (navigator as { share?: unknown }).share
   })
 
-  it("surfaces a 'mobile proximity sharing coming later' note (no fake NFC/Bluetooth)", async () => {
-    const preview = await renderPrivate()
-    expect(within(preview).getByTestId("proximity-share-note")).toHaveTextContent(/coming later/i)
+  it("no longer surfaces the proximity-share / nearby-handoff feature", async () => {
+    const preview = await renderPrivate({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
+    // The Proximity Share feature is fully removed from the MVP.
+    expect(within(preview).queryByTestId("proximity-share-note")).not.toBeInTheDocument()
+    expect(within(preview).queryByTestId("share-to-phone-button")).not.toBeInTheDocument()
+    // No leftover nearby-device / NFC / Bluetooth / handoff-code copy.
+    const text = preview.textContent ?? ""
+    expect(text).not.toMatch(/proximity share/i)
+    expect(text).not.toMatch(/nearby (device|share)/i)
+    expect(text).not.toMatch(/handoff code/i)
+    expect(text).not.toMatch(/NFC|Bluetooth|tap-to-phone/i)
   })
 
   it("never leaks raw evidence, file paths, or numeric scores in the card", async () => {
@@ -432,6 +440,45 @@ describe("Verified Passport Card preview (private)", () => {
     const preview = await renderPrivate({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
     expect(screen.queryByTestId("passport-identity-header")).not.toBeInTheDocument()
     expect(within(preview).getAllByTestId("passport-sharing-controls")).toHaveLength(1)
+  })
+
+  // ── MVP sharing only — Proximity Share / nearby handoff removed ──────────────
+
+  it("has no Proximity Share button or phone-share modal in the sharing controls", async () => {
+    const preview = await renderPrivate({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
+    // The removed feature's button and modal must not mount in any state.
+    expect(within(preview).queryByTestId("share-to-phone-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("phone-share-modal")).not.toBeInTheDocument()
+    // The MVP share controls remain: Share Passport + Show QR.
+    expect(within(preview).getByTestId("share-passport-button")).toBeInTheDocument()
+    expect(within(preview).getByTestId("show-qr-button")).toBeInTheDocument()
+  })
+
+  it("has no handoff code or nearby-device copy anywhere in the preview", async () => {
+    const preview = await renderPrivate({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
+    expect(within(preview).queryByTestId("phone-share-handoff-code")).not.toBeInTheDocument()
+    expect(within(preview).queryByTestId("phone-share-receive-link")).not.toBeInTheDocument()
+    const text = preview.textContent ?? ""
+    expect(text).not.toMatch(/handoff code/i)
+    expect(text).not.toMatch(/nearby (device|share)/i)
+    expect(text).not.toMatch(/tap phones to transfer|tap-to-phone|AirDrop|NFC|Bluetooth/i)
+  })
+
+  it("never shares a private /student route through the MVP controls", async () => {
+    const preview = await renderPrivate({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
+    const controls = within(preview).getByTestId("passport-sharing-controls")
+    // Only public /p and /card links are exposed; no private owner route.
+    expect(controls.innerHTML).not.toMatch(/\/student\//)
+    expect(within(controls).getByTestId("open-passport-link").getAttribute("href")).toContain("/p/slug123")
+    expect(within(controls).getByTestId("passport-card-open-card").getAttribute("href")).toContain("/card/slug123")
+  })
+
+  it("shows the localhost testing note when the public link is a localhost URL", async () => {
+    // jsdom's window.origin is http://localhost, so the public link is localhost.
+    const preview = await renderPrivate({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
+    expect(await within(preview).findByTestId("localhost-share-note")).toHaveTextContent(
+      /localhost links only work on this computer.*network url|deploy to the production domain/i,
+    )
   })
 })
 
