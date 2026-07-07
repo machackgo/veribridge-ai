@@ -868,6 +868,47 @@ export function presentCapabilities(aggregates: CapabilityAggregate[]): Capabili
 }
 
 /**
+ * Narrow a role-area aggregate to only the evidence that uses a specific proof
+ * type. A row is kept only when it supports the role area WITH that proof, and
+ * each kept row's proof list is reduced to just that proof — so the capability
+ * summary shown under an active Proof Type filter never displays another proof's
+ * chips, coverage, or evidence chain (e.g. no Document Proof chain while Website
+ * Proof is selected). Returns null when none of the role area's evidence uses the
+ * proof type, so the caller can show an honest "no exact evidence" state instead
+ * of an unfiltered/overall summary.
+ */
+export function filterAggregateByProof(
+  aggregate: CapabilityAggregate,
+  proofType: string,
+): CapabilityAggregate | null {
+  const rows = aggregate.rows
+    .filter((r) => r.proofTypes.includes(proofType))
+    .map((r) => ({ ...r, proofTypes: r.proofTypes.filter((p) => p === proofType) }))
+  if (rows.length === 0) return null
+  const projects = rowsToProjects(aggregate.label, rows)
+  const skills = rowsToSkills(aggregate.label, rows)
+  const skillNames = skills.map((s) => s.skillName)
+  const proofTypes = orderProofTypes(rows.flatMap((r) => r.proofTypes))
+  const narrative = buildRoleAreaEvidenceNarrative(aggregate.id, aggregate.label, skills, projects, proofTypes)
+  return {
+    ...aggregate,
+    present: true,
+    rows,
+    skills,
+    projects,
+    skillNames,
+    proofTypes,
+    statusLabel: capabilityStatusLabel(rows, proofTypes, projects),
+    strongest: projects[0] ?? null,
+    summary: buildSummary(aggregate.label, skills, projects, proofTypes),
+    narrative,
+    why: narrative[0],
+    evidenceChain: buildEvidenceChain(skills, projects, proofTypes),
+    gaps: buildGaps(rows, proofTypes, projects),
+  }
+}
+
+/**
  * Set of `${skillKey}::${projectId}` row keys a role area maps. The Role Area
  * filter uses it to keep only the skill→project rows that actually support the
  * area (fail-closed) — an unrelated project never leaks in.
