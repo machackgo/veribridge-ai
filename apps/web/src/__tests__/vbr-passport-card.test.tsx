@@ -11,19 +11,25 @@
  *  - Public /card/[slug]: recruiter-safe compact card, slug-anchored role-chip
  *    links, share/download/QR controls, and the safe not-found state.
  *
- * The redesigned card face is deliberately clean: NO QR / barcode / scan box, and
- * NO colourful proof-source chip row — only a neutral verification/evidence line.
- * Safety guardrails asserted throughout: the compact card lists NO featured
- * projects and never leaks raw evidence, internal ids, file paths, private
- * routes, or numeric scores on either surface. The card face carries NO QR /
- * barcode — scanning is only available via the optional modal.
+ * The redesigned light-mode card face is deliberately clean: NO QR / barcode /
+ * scan box; proof breadth is a quiet neutral "Proof sources" row (present
+ * sources only) plus one evidence line. Safety guardrails asserted throughout:
+ * the compact card lists NO featured projects and never leaks raw evidence,
+ * internal ids, file paths, private routes, or numeric scores on either surface.
+ * The card face carries NO QR / barcode — scanning lives only in Passport Beam
+ * and the optional QR modal.
+ *
+ * Also covers Passport Beam — the instant in-person sharing panel (large QR,
+ * public-safe URL, copy, native Web Share only where supported, publish-first
+ * state, and NO fake nearby/proximity/AirDrop behaviour).
  */
 
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react"
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
 import { PublicPassportCardView } from "../app/card/[slug]/PublicPassportCardView"
 import { buildPrivateCardModel } from "@/lib/passport-card"
+import { publicPassportUrl } from "@/lib/app-url"
 import { CAPABILITY_AREAS } from "@/lib/passport-capabilities"
 import type { PassportIdentity, PassportSkillSummary, PrivateWorkPassport, PublicWorkPassport, WorkPassportStatus } from "@/lib/vbr-api"
 
@@ -452,16 +458,23 @@ describe("Verified Passport Card preview (private)", () => {
     expect(card.querySelector("svg")).toBeNull() // the QR was the only inline SVG
   })
 
-  // B — no proof-source chip row on the card face.
-  it("renders NO proof-source chip row on the card face", async () => {
+  // B — a quiet, honest proof-source row on the card face (present sources only).
+  it("renders a neutral proof-source row for present evidence sources only", async () => {
     const preview = await renderPrivate()
     const card = within(preview).getByTestId("passport-card-private")
-    expect(within(card).queryByTestId("passport-card-proof-coverage")).not.toBeInTheDocument()
-    expect(within(card).queryByTestId("passport-card-proof-item")).not.toBeInTheDocument()
-    // No colourful per-source chips (GitHub / Document / Website / Defense / Video)
-    // on the face — proof breadth is summarised in the single evidence line only.
+    const row = within(card).getByTestId("passport-card-proof-sources")
+    const labels = within(row)
+      .getAllByTestId("passport-card-proof-chip")
+      .map((c) => c.getAttribute("data-label"))
+    // The default fixture has GitHub/Document/Defense/Video evidence but NO
+    // Website Proof — only present sources render (never a fabricated one).
+    expect(labels).toEqual(["GitHub Proof", "Document Proof", "Project Defense", "Video Evidence"])
+    expect(labels).not.toContain("Website Proof")
+    // Role-area chips stay role areas — proof sources never masquerade as skills.
     const chipLabels = within(card).getAllByTestId("passport-card-capability").map((c) => c.textContent ?? "")
     expect(chipLabels.some((t) => /^GitHub$|^Document$|^Website$|^Defense$|^Video$/.test(t.trim()))).toBe(false)
+    // Proof chips carry no numeric score/percentage — coverage only.
+    expect(row.textContent ?? "").not.toMatch(/\d+\s*%|\/\s*100|score/i)
   })
 
   // C — card shows at most 6 selected role areas.
@@ -956,11 +969,286 @@ describe("Verified Passport Card preview (private)", () => {
   })
 
   it("shows the localhost testing note when the public link is a localhost URL", async () => {
-    // jsdom's window.origin is http://localhost, so the public link is localhost.
-    const preview = await renderPrivate({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
-    expect(await within(preview).findByTestId("localhost-share-note")).toHaveTextContent(
-      /localhost links only work on this computer.*network url|deploy to the production domain/i,
+    // Pin the local-dev condition: no configured production origin, so the link
+    // falls back to jsdom's http://localhost origin (robust even when the test
+    // run itself exports NEXT_PUBLIC_APP_URL).
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "")
+    try {
+      const preview = await renderPrivate({ is_published: true, public_slug: "slug123", public_path: "/p/slug123" })
+      expect(await within(preview).findByTestId("localhost-share-note")).toHaveTextContent(
+        /localhost links only work on this computer.*network url|deploy to the production domain/i,
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})
+
+// ── Passport Beam — instant in-person sharing ────────────────────────────────
+
+describe("Passport Beam (instant share)", () => {
+  const published = { is_published: true, public_slug: "slug123", public_path: "/p/slug123" } as const
+
+  /** Render the private preview and open the Beam panel. */
+  async function openBeam(overrides: Partial<PrivateWorkPassport> = {}) {
+    const preview = await renderPrivate(overrides)
+    fireEvent.click(within(preview).getByTestId("passport-beam-button"))
+    return { preview, modal: await screen.findByTestId("passport-beam-modal") }
+  }
+
+  it("renders the Passport Beam entry point when a public Passport URL exists", async () => {
+    const preview = await renderPrivate(published)
+    const beam = within(preview).getByTestId("passport-beam-button")
+    expect(beam).toHaveTextContent(/Passport Beam/i)
+  })
+
+  it("opens a share panel with a large QR encoding ONLY the public Passport URL", async () => {
+    const { modal } = await openBeam(published)
+    // The fixture has a real name ("Jordan Rivera"), so the subtitle personalizes.
+    expect(within(modal).getByTestId("passport-beam-subtitle")).toHaveTextContent(
+      /Share Jordan[’']s recruiter-safe VeriBridge Passport in seconds/i,
     )
+    expect(within(modal).getByTestId("passport-beam-status")).toHaveTextContent(/Ready to share/i)
+    const qr = within(modal).getByTestId("passport-beam-qr")
+    const encoded = qr.getAttribute("data-qr-value") ?? ""
+    expect(encoded).toContain("/p/slug123")
+    expect(encoded).not.toContain("/card/")
+    expect(encoded).not.toContain("/student/")
+    expect(within(modal).getByTestId("passport-beam-instruction")).toHaveTextContent(
+      /Ask the recruiter to scan this code/i,
+    )
+  })
+
+  it("shows the visible public-safe URL and copies it to the clipboard", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    const { modal } = await openBeam(published)
+    expect(within(modal).getByTestId("passport-beam-url")).toHaveTextContent("/p/slug123")
+    fireEvent.click(within(modal).getByTestId("passport-beam-copy"))
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    expect(writeText.mock.calls[0][0]).toContain("/p/slug123")
+    expect(await within(modal).findByText(/✓ Copied/i)).toBeInTheDocument()
+  })
+
+  it("hides the native share button when navigator.share is unavailable", async () => {
+    delete (navigator as { share?: unknown }).share
+    const { modal } = await openBeam(published)
+    expect(within(modal).queryByTestId("passport-beam-native-share")).not.toBeInTheDocument()
+  })
+
+  it("shows the native share button only when navigator.share exists — and shares the public URL", async () => {
+    const share = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { share })
+    const { modal } = await openBeam(published)
+    const btn = within(modal).getByTestId("passport-beam-native-share")
+    fireEvent.click(btn)
+    await waitFor(() => expect(share).toHaveBeenCalled())
+    expect(share.mock.calls[0][0].url).toContain("/p/slug123")
+    expect(share.mock.calls[0][0].url).not.toContain("/student/")
+    delete (navigator as { share?: unknown }).share
+  })
+
+  it("offers Open public Passport and Download Passport Card actions", async () => {
+    const { modal } = await openBeam(published)
+    const open = within(modal).getByTestId("passport-beam-open-public")
+    expect(open.getAttribute("href")).toContain("/p/slug123")
+    expect(within(modal).getByTestId("passport-beam-download")).toHaveTextContent(/Download Passport Card/i)
+  })
+
+  it("shows the recruiter-safe trust notes", async () => {
+    const { modal } = await openBeam(published)
+    const notes = within(modal).getByTestId("passport-beam-trust-notes")
+    expect(notes).toHaveTextContent(/No recruiter login required/i)
+    expect(notes).toHaveTextContent(/Public-safe proof summary/i)
+    expect(notes).toHaveTextContent(/Private evidence stays protected/i)
+  })
+
+  it("uses the generic subtitle when the candidate has no real name (placeholder identity)", async () => {
+    const { modal } = await openBeam({
+      ...published,
+      candidate_display_name: null,
+      // The backend's placeholder name must NOT personalize the subtitle.
+      identity: makeIdentity({ display_name: "Verified candidate profile" }),
+    })
+    expect(within(modal).getByTestId("passport-beam-subtitle")).toHaveTextContent(
+      /Share your recruiter-safe VeriBridge Passport in seconds/i,
+    )
+    expect(modal.textContent ?? "").not.toMatch(/Verified[’']s|profile[’']s/i)
+  })
+
+  it("shows an honest publish-first state while unpublished (no QR, no fake URL)", async () => {
+    const { modal } = await openBeam({ is_published: false, public_slug: null })
+    expect(within(modal).getByTestId("passport-beam-status")).toHaveTextContent(/Publish your Passport first/i)
+    const publishFirst = within(modal).getByTestId("passport-beam-publish-first")
+    expect(publishFirst).toHaveTextContent(/Publish your recruiter-safe Passport to enable sharing/i)
+    // No QR, no URL box, no share/copy/open actions — nothing fabricated.
+    expect(within(modal).queryByTestId("passport-beam-qr")).not.toBeInTheDocument()
+    expect(within(modal).queryByTestId("passport-beam-url")).not.toBeInTheDocument()
+    expect(within(modal).queryByTestId("passport-beam-copy")).not.toBeInTheDocument()
+    expect(within(modal).queryByTestId("passport-beam-open-public")).not.toBeInTheDocument()
+    expect(modal.querySelector("[data-qr-value]")).toBeNull()
+    // A real publish action is offered instead.
+    expect(within(modal).getByTestId("passport-beam-publish")).toHaveTextContent(/Publish public Passport/i)
+  })
+
+  it("never renders fake nearby/proximity/AirDrop/Bluetooth or fake analytics copy", async () => {
+    const { modal } = await openBeam(published)
+    const text = modal.textContent ?? ""
+    expect(text).not.toMatch(/nearby/i)
+    expect(text).not.toMatch(/proximity/i)
+    expect(text).not.toMatch(/bluetooth|airdrop|namedrop|nfc/i)
+    expect(text).not.toMatch(/searching|scanning for/i)
+    expect(text).not.toMatch(/recruiter (found|opened)|devices? found|\d+\s*views?/i)
+  })
+
+  it("never renders private routes, storage paths, or signed-URL markers", async () => {
+    const { modal } = await openBeam(published)
+    const html = modal.innerHTML
+    expect(html).not.toMatch(/\/student\//)
+    expect(html).not.toMatch(/token=|X-Amz|\/object\/sign\/|supabase|storage\/v1/i)
+    expect(html).not.toMatch(/\/api\//)
+  })
+
+  it("closes via the close button", async () => {
+    const { modal } = await openBeam(published)
+    fireEvent.click(within(modal).getByTestId("passport-beam-close"))
+    await waitFor(() => expect(screen.queryByTestId("passport-beam-modal")).not.toBeInTheDocument())
+  })
+})
+
+// ── Real candidate identity (no generic placeholder identity in production) ──
+
+describe("Real candidate identity on the Passport Card", () => {
+  const published = { is_published: true, public_slug: "slug123", public_path: "/p/slug123" } as const
+
+  it("renders the real student name, real initials, headline, and program when provided", async () => {
+    const preview = await renderPrivate({
+      ...published,
+      candidate_display_name: "Mohammed Mubashir Uddin Faraz",
+      identity: makeIdentity({
+        display_name: "Mohammed Mubashir Uddin Faraz",
+        headline: "AI Engineer / Full-Stack AI",
+        program: "MS Artificial Intelligence · Worcester Polytechnic Institute",
+        region: null,
+      }),
+    })
+    const card = within(preview).getByTestId("passport-card-private")
+    expect(within(card).getByTestId("passport-card-name")).toHaveTextContent("Mohammed Mubashir Uddin Faraz")
+    // Initials derive from the REAL name (first + last), never from placeholder copy.
+    expect(within(card).getByTestId("passport-card-avatar")).toHaveTextContent("MF")
+    expect(within(card).getByTestId("passport-card-headline")).toHaveTextContent("AI Engineer / Full-Stack AI")
+    expect(within(card).getByTestId("passport-card-program")).toHaveTextContent(
+      "MS Artificial Intelligence · Worcester Polytechnic Institute",
+    )
+  })
+
+  it("appends the safe coarse region to the program line when available", async () => {
+    const preview = await renderPrivate({
+      identity: makeIdentity({ program: "Computer Science", region: "US" }),
+    })
+    expect(within(preview).getByTestId("passport-card-program")).toHaveTextContent("Computer Science · US")
+  })
+
+  it("treats the backend placeholder name as NO name — never fake 'VP' initials", async () => {
+    const preview = await renderPrivate({
+      candidate_display_name: null,
+      identity: makeIdentity({
+        display_name: "Verified candidate profile", // backend _SAFE_DISPLAY_NAME sentinel
+        headline: "Verified Work Passport",
+        program: null,
+        region: null,
+        education_summary: "",
+      }),
+      headline: "",
+    })
+    const card = within(preview).getByTestId("passport-card-private")
+    // Visible fallback copy is fine — but it is fallback copy, not a derived identity.
+    expect(within(card).getByTestId("passport-card-name")).toHaveTextContent("Verified candidate profile")
+    const avatar = within(card).getByTestId("passport-card-avatar")
+    expect(avatar.textContent).not.toMatch(/VP/)
+    expect(avatar).toHaveTextContent("★")
+    // The placeholder headline is replaced by honest proof language — never an
+    // invented role claim.
+    const headline = within(card).getByTestId("passport-card-headline")
+    expect(headline).toHaveTextContent("Proof-backed technical candidate")
+    expect(headline.textContent).not.toMatch(/Verified Work Passport/)
+    expect(headline.textContent).not.toMatch(/AI Engineer \/ Software Builder/)
+  })
+
+  it("prefers the student's own Work Passport headline over the backend placeholder", async () => {
+    const preview = await renderPrivate({
+      headline: "Full-stack builder",
+      candidate_display_name: "Jordan Rivera",
+      identity: makeIdentity({ display_name: "Jordan Rivera", headline: "Verified Work Passport" }),
+    })
+    expect(within(preview).getByTestId("passport-card-headline")).toHaveTextContent("Full-stack builder")
+  })
+})
+
+// ── Public share URL — production-domain readiness ───────────────────────────
+//
+// The QR / copy / share URL must come from the ONE configured public origin
+// (NEXT_PUBLIC_APP_URL — the repo's canonical production-origin convention in
+// `@/lib/app-url` and `@/lib/api`) when set, and fall back to the current
+// browser origin in local dev. Never a hardcoded localhost, never a private route.
+
+describe("Public share URL (production-domain readiness)", () => {
+  const published = { is_published: true, public_slug: "slug123", public_path: "/p/slug123" } as const
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  async function openBeamModal(overrides: Partial<PrivateWorkPassport> = {}) {
+    const preview = await renderPrivate(overrides)
+    fireEvent.click(within(preview).getByTestId("passport-beam-button"))
+    return { preview, modal: await screen.findByTestId("passport-beam-modal") }
+  }
+
+  it("uses the configured NEXT_PUBLIC_APP_URL origin for the QR, link box, and copy", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridge-prod.example")
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+
+    const { modal } = await openBeamModal(published)
+    const encoded = within(modal).getByTestId("passport-beam-qr").getAttribute("data-qr-value") ?? ""
+    expect(encoded).toBe("https://veribridge-prod.example/p/slug123")
+    expect(encoded).not.toMatch(/localhost|127\.0\.0\.1/)
+    expect(within(modal).getByTestId("passport-beam-url")).toHaveTextContent(
+      "https://veribridge-prod.example/p/slug123",
+    )
+    fireEvent.click(within(modal).getByTestId("passport-beam-copy"))
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    expect(writeText.mock.calls[0][0]).toBe("https://veribridge-prod.example/p/slug123")
+  })
+
+  it("normalizes a trailing slash on the configured origin (no double slash in the QR)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridge-prod.example/")
+    const { modal } = await openBeamModal(published)
+    const encoded = within(modal).getByTestId("passport-beam-qr").getAttribute("data-qr-value") ?? ""
+    expect(encoded).toBe("https://veribridge-prod.example/p/slug123")
+  })
+
+  it("falls back to the current browser origin when no production origin is configured", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "")
+    const { modal } = await openBeamModal(published)
+    const encoded = within(modal).getByTestId("passport-beam-qr").getAttribute("data-qr-value") ?? ""
+    expect(encoded).toBe(`${window.location.origin}/p/slug123`)
+  })
+
+  it("suppresses the localhost-only warning when a production origin is configured", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridge-prod.example")
+    const preview = await renderPrivate(published)
+    expect(within(preview).queryByTestId("localhost-share-note")).not.toBeInTheDocument()
+  })
+
+  it("only ever builds the public /p/ route — never a private or API route", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridge-prod.example")
+    expect(publicPassportUrl("slug123")).toBe("https://veribridge-prod.example/p/slug123")
+    // The slug is URL-encoded, so it can never escape the public /p/ path.
+    const hostile = publicPassportUrl("../student/vbr/passport")
+    expect(hostile).toBe("https://veribridge-prod.example/p/..%2Fstudent%2Fvbr%2Fpassport")
+    expect(hostile).not.toMatch(/\/p\/\.\.\/|\/student\/|\/api\//)
   })
 })
 
@@ -1010,17 +1298,20 @@ describe("Public Verified Passport Card (/card/[slug])", () => {
     expect(within(modal).getByTestId("passport-modal-qr").getAttribute("data-qr-value")).toContain("/p/slug123")
   })
 
-  // A/B (public) — clean face: no QR/barcode/scan, no proof-source chip row.
-  it("renders NO QR, barcode, scan box, or proof-source chip row on the public card face", async () => {
+  // A/B (public) — clean face: no QR/barcode/scan; a quiet proof-source row.
+  it("renders NO QR/barcode and a present-only proof-source row on the public card face", async () => {
     vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
     render(<PublicPassportCardView slug="slug123" />)
     await screen.findByTestId("public-passport-card")
     const card = screen.getByTestId("passport-card-public")
     expect(within(card).queryByTestId("passport-card-qr")).not.toBeInTheDocument()
-    expect(within(card).queryByTestId("passport-card-proof-coverage")).not.toBeInTheDocument()
-    expect(within(card).queryByTestId("passport-card-proof-item")).not.toBeInTheDocument()
     expect(card.querySelector("svg")).toBeNull()
     expect(card.innerHTML).not.toMatch(/barcode/i)
+    // The public fixture has GitHub Proof + Project Defense evidence only.
+    const labels = within(card)
+      .getAllByTestId("passport-card-proof-chip")
+      .map((c) => c.getAttribute("data-label"))
+    expect(labels).toEqual(["GitHub Proof", "Project Defense"])
   })
 
   // Public route falls back to the default top 6 role areas (localStorage is

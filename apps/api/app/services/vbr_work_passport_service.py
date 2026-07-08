@@ -73,6 +73,7 @@ logger = logging.getLogger(__name__)
 _PASSPORTS_TABLE = "vbr_work_passports"
 _PROJECTS_TABLE = "vbr_projects"
 _ONBOARDING_TABLE = "student_onboarding_profiles"
+_STUDENT_PROFILES_TABLE = "student_profiles"
 
 # Whitelisted, recruiter-safe onboarding profile fields for the identity header.
 # Deliberately excludes every private/sensitive field (visa_status, sponsorship,
@@ -82,6 +83,19 @@ _SAFE_PROFILE_FIELDS = ("degree_level", "major", "graduation_year", "university_
 # of ``_SAFE_PROFILE_FIELDS`` (which is strictly education context); ``avatar_url``
 # is a recruiter-safe public photo URL that is re-sanitized before it is emitted.
 _PROFILE_SELECT_FIELDS = (*_SAFE_PROFILE_FIELDS, "avatar_url")
+
+# Whitelisted, recruiter-safe identity fields read from the student-maintained
+# profile (``student_profiles`` — the same table behind /api/v1/student/profile).
+# Deliberately excludes every private field: work_authorization/visa status,
+# target_locations, links (github/linkedin), email, and any internal id.
+_STUDENT_PROFILE_IDENTITY_FIELDS = (
+    "full_name",
+    "degree",
+    "major",
+    "school_name",
+    "graduation_year",
+    "target_roles",
+)
 
 _VERIFICATION_LABEL = "Verified Work Passport"
 
@@ -977,15 +991,103 @@ def _lookup_candidate_profile(db: Any, user_id: str) -> dict[str, Any]:
     return {k: row.get(k) for k in _PROFILE_SELECT_FIELDS}
 
 
+def _lookup_student_profile_identity(db: Any, user_id: str) -> dict[str, Any]:
+    """Best-effort, safe identity fields from the student-maintained profile.
+
+    Reads ONLY the whitelisted ``_STUDENT_PROFILE_IDENTITY_FIELDS`` from
+    ``student_profiles`` (name, degree, major, university, graduation year,
+    target roles) — never work-authorization/visa status, locations, links,
+    email, or internal ids. Any lookup problem returns ``{}`` so the identity
+    header degrades gracefully to the users-row / placeholder fallbacks.
+    """
+    try:
+        if isinstance(db, dict):
+            row = next(
+                (
+                    r
+                    for r in db.setdefault(_STUDENT_PROFILES_TABLE, {}).values()
+                    if str(r.get("user_id")) == str(user_id)
+                ),
+                None,
+            )
+        else:
+            result = (
+                db.table(_STUDENT_PROFILES_TABLE)
+                .select(",".join(_STUDENT_PROFILE_IDENTITY_FIELDS))
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+            row = rows[0] if rows else None
+    except Exception:  # pragma: no cover - profile identity is optional
+        return {}
+    if not isinstance(row, dict):
+        return {}
+    return {k: row.get(k) for k in _STUDENT_PROFILE_IDENTITY_FIELDS}
+
+
+def _student_profile_display_name(profile: dict[str, Any]) -> str | None:
+    """The student's own saved full name, or ``None`` when not set."""
+    name = profile.get("full_name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return None
+
+
+def _first_target_role(profile: dict[str, Any]) -> str | None:
+    """First non-empty target role from the student profile, or ``None``."""
+    roles = profile.get("target_roles")
+    if not isinstance(roles, list):
+        return None
+    for role in roles:
+        text = str(role or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _merge_identity_profile(
+    onboarding: dict[str, Any], student: dict[str, Any]
+) -> dict[str, Any]:
+    """Overlay safe ``student_profiles`` education fields onto the onboarding
+    education context. The student-maintained profile is the richer, more
+    current source, so its fields win when present; onboarding remains the
+    fallback. Only whitelisted education fields are merged — never any private
+    profile field.
+    """
+    merged = dict(onboarding)
+    for student_key, merged_key in (
+        ("major", "major"),
+        ("degree", "degree"),
+        ("school_name", "university"),
+    ):
+        value = str(student.get(student_key) or "").strip()
+        if value:
+            merged[merged_key] = value
+    grad = student.get("graduation_year")
+    if isinstance(grad, int) and grad > 0:
+        merged["graduation_year"] = grad
+    return merged
+
+
 def _education_summary(profile: dict[str, Any]) -> str:
-    """A single safe education line from whitelisted onboarding fields."""
+    """A single safe education line from whitelisted profile fields."""
     parts: list[str] = []
     major = str(profile.get("major") or "").strip()
     if major:
         parts.append(major)
-    degree = str(profile.get("degree_level") or "").strip()
+    # The student profile's free-text degree ("B.S.", "MS") wins over the
+    # onboarding degree-level enum; exactly one of the two is emitted.
+    degree = str(profile.get("degree") or "").strip()
+    degree_level = str(profile.get("degree_level") or "").strip()
     if degree:
-        parts.append(degree.replace("_", " ").title())
+        parts.append(degree)
+    elif degree_level:
+        parts.append(degree_level.replace("_", " ").title())
+    university = str(profile.get("university") or "").strip()
+    if university:
+        parts.append(university)
     grad = profile.get("graduation_year")
     if isinstance(grad, int) and grad > 0:
         parts.append(f"Class of {grad}")
@@ -1550,12 +1652,27 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     )
 
     status_part = _status_response(passport_row)
-    display_name = _lookup_display_name(db, str(user_id))
+    # Identity source order (private passport): the student-maintained profile
+    # (student_profiles.full_name) first, then the users row, then the neutral
+    # safe placeholder applied inside ``_build_identity``. Only whitelisted safe
+    # profile fields are ever read — real identity, never invented.
+    student_profile = _lookup_student_profile_identity(db, str(user_id))
+    display_name = _student_profile_display_name(student_profile) or _lookup_display_name(
+        db, str(user_id)
+    )
+    # An explicitly saved passport headline wins; without one, the first safe
+    # target role from the student profile is an honest role line; the generic
+    # default headline remains only when neither exists.
+    identity_headline = status_part["headline"]
+    if identity_headline == _DEFAULT_HEADLINE:
+        identity_headline = _first_target_role(student_profile) or _DEFAULT_HEADLINE
     evidence_source_counts = _evidence_source_counts(project_summaries)
     identity = _build_identity(
         display_name=display_name,
-        headline=status_part["headline"],
-        profile=_lookup_candidate_profile(db, str(user_id)),
+        headline=identity_headline,
+        profile=_merge_identity_profile(
+            _lookup_candidate_profile(db, str(user_id)), student_profile
+        ),
         evidence_source_counts=evidence_source_counts,
         public_status="Public passport live" if status_part["is_published"] else "Private only",
         public_path=status_part["public_path"],

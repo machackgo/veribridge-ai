@@ -34,6 +34,7 @@ import {
 } from "../../../../../components/passport/shared"
 import { buildPassportGraph, type PassportSkillNode } from "./passport-graph"
 import { PassportCard } from "../../../../../components/passport/PassportCard"
+import { PassportBeam } from "../../../../../components/passport/PassportBeam"
 import { QrModal } from "../../../../../components/passport/QrModal"
 import {
   buildPrivateCardModel,
@@ -1917,6 +1918,7 @@ function VerifiedPassportCardPreview({
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [qrOpen, setQrOpen] = useState(false)
+  const [beamOpen, setBeamOpen] = useState(false)
   const [downloadNote, setDownloadNote] = useState<string | null>(null)
   const [downloadFallback, setDownloadFallback] = useState(false)
   const [shareNote, setShareNote] = useState<string | null>(null)
@@ -2204,8 +2206,8 @@ function VerifiedPassportCardPreview({
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Verified Passport Card Preview</h2>
           <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.6, maxWidth: 620 }}>
-            Share this recruiter-safe card with your public Work Passport. Save it as an image, copy the link, or open
-            the full Passport. Tap a role area to jump to its evidence below.
+            Your recruiter-safe verified talent card. Use Passport Beam for instant in-person sharing, save the card
+            as an image, copy the link, or open the full Passport. Tap a role area to jump to its evidence below.
           </p>
         </div>
 
@@ -2226,9 +2228,9 @@ function VerifiedPassportCardPreview({
                 padding: "10px 14px",
                 borderRadius: 10,
                 cursor: "pointer",
-                border: "1px solid rgba(255,255,255,0.22)",
-                background: "rgba(255,255,255,0.12)",
-                color: "#fff",
+                border: `1px solid ${TOKEN.line}`,
+                background: TOKEN.bg,
+                color: TOKEN.inkSoft,
               }}
             >
               Open full Work Passport ↓
@@ -2456,6 +2458,15 @@ function VerifiedPassportCardPreview({
           {/* Card actions available in any state — save the card as an image, and
               (once published) share it via the OS share sheet or an optional QR. */}
           <div data-testid="passport-card-actions" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <button
+              type="button"
+              data-testid="passport-beam-button"
+              onClick={() => setBeamOpen(true)}
+              title="Instant in-person sharing — QR code, link, and native share in one panel."
+              style={{ ...shareBtn, background: TOKEN.indigo, color: "#fff", borderColor: TOKEN.indigo }}
+            >
+              ⚡ Passport Beam
+            </button>
             <button type="button" data-testid="download-passport-card-button" onClick={onDownloadCard} style={shareBtn}>
               ⬇ Download Passport Card
             </button>
@@ -2554,6 +2565,18 @@ function VerifiedPassportCardPreview({
       </div>
 
       <QrModal value={model.publicPassportUrl} open={qrOpen} onClose={() => setQrOpen(false)} />
+      {/* Passport Beam — instant in-person sharing. It only ever receives the
+          already-public Passport URL (null while unpublished → honest
+          publish-first state; never a private route or fabricated link). */}
+      <PassportBeam
+        open={beamOpen}
+        onClose={() => setBeamOpen(false)}
+        publicUrl={model.isPublished ? model.publicPassportUrl : null}
+        candidateName={model.name}
+        onDownloadCard={onDownloadCard}
+        onPublish={() => runPublish(() => publishWorkPassport())}
+        publishBusy={busy}
+      />
     </Card>
   )
 }

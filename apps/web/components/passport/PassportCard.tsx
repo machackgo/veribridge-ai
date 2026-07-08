@@ -6,27 +6,47 @@ import type { PassportCardCapability, PassportCardModel } from "@/lib/passport-c
 
 /** Qualitative status → dot colour (never a numeric score). */
 const STATUS_DOT: Record<string, string> = {
-  Demonstrated: "#34d399",
-  "Evidence observed": "#34d399",
-  "Partially demonstrated": "#fbbf24",
-  "Supporting evidence": "#60a5fa",
-  "Needs review": "#fb7185",
+  Demonstrated: "#10b981",
+  "Evidence observed": "#10b981",
+  "Partially demonstrated": "#d97706",
+  "Supporting evidence": "#0ea5e9",
+  "Needs review": "#f43f5e",
   "Not assessed": "#94a3b8",
 }
 
+/** Light-mode palette for the card face (kept local so the card stays portable). */
+const C = {
+  ink: "#0a0e1a",
+  inkSoft: "#1f2a44",
+  muted: "#6b7280",
+  faint: "#9aa3b2",
+  line: "#e6e8ef",
+  lineSoft: "#eef0f6",
+  paper: "#ffffff",
+  wash: "#f8fafc",
+  indigo: "#4f46e5",
+  indigoDeep: "#3730a3",
+  indigoSoft: "#eef2ff",
+  indigoLine: "#dfe4ff",
+  emerald: "#059669",
+  emeraldSoft: "#ecfdf5",
+  emeraldLine: "#a7f3d0",
+} as const
+
 /**
- * The Verified Passport Card — a clean, premium digital-credential (professional
- * ID-card style) shared by the private preview and the public `/card/[slug]`
- * route. It answers a recruiter's five-second question — who is this, what role
- * areas can they apply for, is the profile verified, how do I open the full
- * Passport — WITHOUT being a report: no featured-project list, no raw evidence,
- * no scores.
+ * The Verified Passport Card — a clean, premium, light-mode digital credential
+ * (professional verified-talent-card style) shared by the private preview and the
+ * public `/card/[slug]` route. It answers a recruiter's five-second question —
+ * who is this, what role areas can they apply for, what proof backs that, is the
+ * profile verified, how do I open the full Passport — WITHOUT being a report: no
+ * featured-project list, no raw evidence, no scores.
  *
- * Deliberately recruiter-facing and uncluttered:
- *  - NO QR / barcode / scan box on the card face (a QR belongs only in a separate
- *    share/proximity modal, never on the credential itself);
- *  - NO colourful proof-source chip row on the face — proof breadth is summarised
- *    in one neutral evidence line instead.
+ * Deliberately recruiter-facing and honest:
+ *  - NO QR / barcode / scan box on the card face (a QR belongs only in the
+ *    Passport Beam / QR modal, never on the credential itself);
+ *  - proof breadth is shown as a quiet, neutral "Proof sources" row (present
+ *    sources only) plus one evidence line — proof-backed language, never
+ *    "certified expert", never a numeric confidence score.
  *
  * Role chips deep-link to real, evidence-backed skills (same-page for the private
  * preview via {@link onCapabilityClick}; cross-page for the public card via
@@ -62,6 +82,7 @@ export function PassportCard({
   const portrait = 84
   const radius = 20
   const shownCapabilities = capabilities ?? model.capabilities
+  const presentProof = model.proofCoverage.filter((p) => p.present)
 
   const portraitInner = photo ? (
     <img
@@ -76,7 +97,7 @@ export function PassportCard({
         borderRadius: radius,
         objectFit: "cover",
         display: "block",
-        border: "1px solid rgba(255,255,255,0.28)",
+        border: `1px solid ${C.line}`,
       }}
     />
   ) : (
@@ -94,7 +115,7 @@ export function PassportCard({
         fontWeight: 700,
         fontSize: 32,
         letterSpacing: "0.02em",
-        border: "1px solid rgba(255,255,255,0.22)",
+        border: `1px solid ${C.indigoLine}`,
       }}
     >
       {initials}
@@ -109,22 +130,38 @@ export function PassportCard({
         maxWidth: 480,
         display: "flex",
         flexDirection: "column",
-        gap: 18,
+        gap: 16,
         borderRadius: 20,
-        padding: 22,
-        color: "#fff",
-        background: "linear-gradient(135deg,#0a0e1a 0%,#1e1b4b 52%,#312e81 100%)",
-        border: "1px solid rgba(255,255,255,0.10)",
-        boxShadow: "0 18px 44px -18px rgba(30,27,75,0.7)",
+        padding: "20px 22px 22px",
+        color: C.ink,
+        background: C.paper,
+        border: `1px solid ${C.line}`,
+        boxShadow: "0 1px 2px rgba(10,14,26,0.04), 0 16px 40px -24px rgba(30,27,75,0.25)",
+        position: "relative",
+        overflow: "hidden",
       }}
     >
+      {/* Subtle brand accent — a quiet hairline, never a loud gradient. */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          height: 3,
+          background: "linear-gradient(90deg,#4f46e5 0%,#6366f1 55%,#10b981 100%)",
+          opacity: 0.9,
+        }}
+      />
+
       {/* Top bar — brand + public status */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, letterSpacing: "0.22em", color: "#a5b4fc" }}>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, letterSpacing: "0.22em", color: C.indigo }}>
             VERIBRIDGE AI
           </span>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, letterSpacing: "0.16em", color: "#fff", fontWeight: 600 }}>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, letterSpacing: "0.14em", color: C.ink, fontWeight: 600 }}>
             VERIFIED WORK PASSPORT
           </span>
         </div>
@@ -135,14 +172,14 @@ export function PassportCard({
             display: "inline-flex",
             alignItems: "center",
             gap: 5,
-            padding: "3px 9px",
+            padding: "3px 10px",
             borderRadius: 999,
             fontSize: 10.5,
             fontWeight: 600,
             whiteSpace: "nowrap",
-            background: isLive ? "rgba(52,211,153,0.16)" : "rgba(255,255,255,0.10)",
-            color: isLive ? "#6ee7b7" : "#cbd5e1",
-            border: `1px solid ${isLive ? "rgba(52,211,153,0.4)" : "rgba(255,255,255,0.18)"}`,
+            background: isLive ? C.emeraldSoft : C.wash,
+            color: isLive ? C.emerald : C.muted,
+            border: `1px solid ${isLive ? C.emeraldLine : C.line}`,
           }}
         >
           {isLive ? "✓ " : ""}
@@ -169,7 +206,8 @@ export function PassportCard({
                 height: 26,
                 borderRadius: "50%",
                 background: "#10b981",
-                border: "2px solid #0a0e1a",
+                border: "2px solid #ffffff",
+                boxShadow: "0 1px 3px rgba(10,14,26,0.18)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -184,15 +222,16 @@ export function PassportCard({
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-          <h2 data-testid="passport-card-name" style={{ fontSize: 20, color: "#fff", margin: 0, lineHeight: 1.2, fontWeight: 700 }}>
+          <h2 data-testid="passport-card-name" style={{ fontSize: 20, color: C.ink, margin: 0, lineHeight: 1.2, fontWeight: 700, letterSpacing: "-0.01em" }}>
             {model.name || "Verified candidate profile"}
           </h2>
-          <p data-testid="passport-card-headline" style={{ fontSize: 13, color: "rgba(255,255,255,0.82)", margin: 0, fontWeight: 500 }}>
+          <p data-testid="passport-card-headline" style={{ fontSize: 13, color: C.inkSoft, margin: 0, fontWeight: 500 }}>
             {model.headline}
           </p>
           {model.program && (
-            <p data-testid="passport-card-program" style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", margin: 0 }}>
+            <p data-testid="passport-card-program" style={{ fontSize: 12, color: C.muted, margin: 0 }}>
               🎓 {model.program}
+              {model.region ? ` · ${model.region}` : ""}
             </p>
           )}
         </div>
@@ -202,7 +241,7 @@ export function PassportCard({
       <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
         <span style={sectionLabel}>Role areas</span>
         {shownCapabilities.length === 0 ? (
-          <p data-testid="passport-card-no-capabilities" style={{ fontSize: 12, color: "rgba(255,255,255,0.55)", margin: 0 }}>
+          <p data-testid="passport-card-no-capabilities" style={{ fontSize: 12, color: C.muted, margin: 0 }}>
             Role areas appear once your skills have attached evidence.
           </p>
         ) : (
@@ -219,26 +258,70 @@ export function PassportCard({
         )}
       </div>
 
-      {/* Verification summary — a neutral recruiter-safe line, no proof-chip row */}
+      {/* Proof sources — quiet, neutral chips for the evidence types that actually
+          back this passport (present sources only). Honest coverage language:
+          "evidence available", never a score or a rank. */}
+      {presentProof.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          <span style={sectionLabel}>Proof sources</span>
+          <div data-testid="passport-card-proof-sources" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {presentProof.map((p) => (
+              <span
+                key={p.label}
+                data-testid="passport-card-proof-chip"
+                data-label={p.label}
+                title={`${p.label} evidence is available in the full Passport`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 10px",
+                  borderRadius: 999,
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  background: C.wash,
+                  color: C.inkSoft,
+                  border: `1px solid ${C.lineSoft}`,
+                }}
+              >
+                <span aria-hidden style={{ color: C.emerald, fontSize: 11, lineHeight: 1 }}>✓</span>
+                {p.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Verification summary — a neutral recruiter-safe line, never a score. */}
       <div
         style={{
           display: "flex",
-          flexDirection: "column",
-          gap: 4,
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
           paddingTop: 14,
-          borderTop: "1px solid rgba(255,255,255,0.10)",
+          borderTop: `1px solid ${C.lineSoft}`,
         }}
       >
-        <p
-          data-testid="passport-card-verification-summary"
-          style={{ fontSize: 12.5, color: "rgba(255,255,255,0.9)", margin: 0, fontWeight: 600 }}
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <p
+            data-testid="passport-card-verification-summary"
+            style={{ fontSize: 12.5, color: C.ink, margin: 0, fontWeight: 600 }}
+          >
+            Evidence-backed project profile
+          </p>
+          <p data-testid="passport-card-evidence-line" style={{ fontSize: 11.5, color: C.muted, margin: 0 }}>
+            {model.evidence.projectCount} {model.evidence.projectCount === 1 ? "project" : "projects"} ·{" "}
+            {model.evidence.proofTypeCount} proof {model.evidence.proofTypeCount === 1 ? "type" : "types"} · recruiter-safe
+          </p>
+        </div>
+        <span
+          data-testid="passport-card-trust-line"
+          style={{ fontSize: 10.5, fontWeight: 600, color: C.faint, letterSpacing: "0.02em", whiteSpace: "nowrap" }}
         >
-          Evidence-backed project profile
-        </p>
-        <p data-testid="passport-card-evidence-line" style={{ fontSize: 11.5, color: "rgba(255,255,255,0.66)", margin: 0 }}>
-          {model.evidence.projectCount} {model.evidence.projectCount === 1 ? "project" : "projects"} ·{" "}
-          {model.evidence.proofTypeCount} proof {model.evidence.proofTypeCount === 1 ? "type" : "types"} · recruiter-safe
-        </p>
+          {isLive ? "Verified report available" : "Recruiter-safe public view"}
+        </span>
       </div>
 
       {footer}
@@ -248,7 +331,7 @@ export function PassportCard({
 
 const sectionLabel: CSSProperties = {
   fontSize: 9.5,
-  color: "rgba(255,255,255,0.5)",
+  color: "#9aa3b2",
   fontWeight: 700,
   textTransform: "uppercase",
   letterSpacing: "0.14em",
@@ -264,7 +347,7 @@ function CapabilityChip({
   onClick?: () => void
   href?: string
 }) {
-  const dot = STATUS_DOT[cap.status] ?? "#a5b4fc"
+  const dot = STATUS_DOT[cap.status] ?? "#6366f1"
   const inner = (
     <>
       <span style={{ width: 7, height: 7, borderRadius: "50%", background: dot, flexShrink: 0 }} />
@@ -279,9 +362,9 @@ function CapabilityChip({
     borderRadius: 999,
     fontSize: 12,
     fontWeight: 600,
-    background: "rgba(255,255,255,0.10)",
-    color: "#fff",
-    border: "1px solid rgba(255,255,255,0.16)",
+    background: C.indigoSoft,
+    color: C.indigoDeep,
+    border: `1px solid ${C.indigoLine}`,
     textDecoration: "none",
     cursor: onClick || href ? "pointer" : "default",
   }
