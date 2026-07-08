@@ -87,6 +87,12 @@ export type SkillProjectEvidence = {
    *  "project-level proof exists, but is not mapped to this skill yet" from a
    *  project with no attached proof at all. */
   projectHasProjectLevelProof: boolean
+  /** Proof types attached to this project that are NOT mapped to THIS skill —
+   *  the project's canonical attached sources minus `evidenceSources`. Pure
+   *  presentation split over fields the payload already separates: these render
+   *  as the secondary "project-level proof" tier of the row and are never
+   *  counted as skill evidence. Canonical order. */
+  projectLevelSources: string[]
   /** Owner-only project-report route (always present — projectId is known). */
   reportPath: string
   publicReportPath: string | null
@@ -349,6 +355,17 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
         if (!proj) return null
         const meta = projectMeta?.get(pid)
         const sources = meta ? SKILL_PROOF_TYPE_ORDER.filter((label) => meta.sources.has(label)) : []
+        // The project's attached proof that did NOT map to this skill — the
+        // honest secondary tier of the row. Canonicalized so variant labels in
+        // `evidence_sources` never dodge the subtraction.
+        const attachedToProject = new Set<CanonicalProofType>()
+        for (const src of proj.evidence_sources ?? []) {
+          const canonical = normalizeProofTypeLabel(src)
+          if (canonical) attachedToProject.add(canonical)
+        }
+        const projectLevelSources = SKILL_PROOF_TYPE_ORDER.filter(
+          (label) => attachedToProject.has(label) && !sources.includes(label),
+        )
         return {
           projectId: pid,
           projectTitle: proj.project_title,
@@ -357,6 +374,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
           hasWebsiteProof: sources.includes("Website Proof"),
           websiteEvidenceSummary: sources.includes("Website Proof") ? meta?.websiteSummary : undefined,
           projectHasProjectLevelProof: (proj.evidence_sources?.length ?? 0) > 0,
+          projectLevelSources,
           reportPath: `/student/vbr/projects/${pid}/report`,
           publicReportPath: meta?.publicPath ?? proj.report.public_path ?? null,
           reportIsPublic: meta?.isPublic ?? proj.report.is_public ?? false,

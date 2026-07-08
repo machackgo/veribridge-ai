@@ -33,6 +33,12 @@ import {
   type BadgeTone,
 } from "../../../../../components/passport/shared"
 import { buildPassportGraph, type PassportSkillNode } from "./passport-graph"
+import {
+  EvidenceRelationshipBadge,
+  EvidenceTierSection,
+  ProofRelationshipGuide,
+  ProjectProofRelationshipSummary,
+} from "../../../../../components/passport/ProofRelationshipGuide"
 import { PassportCard } from "../../../../../components/passport/PassportCard"
 import { PassportBeam } from "../../../../../components/passport/PassportBeam"
 import { QrModal } from "../../../../../components/passport/QrModal"
@@ -127,7 +133,7 @@ function proofFilterEmptyCopy(proofFilter: string): string {
     return "No exact skill-project evidence matches Website Proof. Project-level or vault-only Website Proof is kept separate until it is attached to a specific project skill."
   if (proofFilter === GITHUB_PROOF_LABEL)
     return "No exact skill-project evidence matches GitHub Proof. Repository references or vault-only GitHub evidence are kept separate until attached to a specific project skill."
-  return "No skill-project evidence matches the current filters."
+  return `No exact skill evidence matches ${proofFilter}. Related proof may be project-level, attached but not skill-mapped, or still in your Proof Vault — those are listed separately and never counted as skill evidence.`
 }
 
 /** "GitHub · Website · Defense" from canonical proof-type labels. */
@@ -277,6 +283,22 @@ function ImprovePassportCard({ passport }: { passport: PrivateWorkPassport }) {
         <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
           Review suggested attachments and unattached evidence in Proof Vault.
         </p>
+        {/* Honest relationship rules: suggested / unattached / vault-only proof
+            is real but NOT counted anywhere until it is attached to a project. */}
+        <ul
+          data-testid="improve-passport-explainer"
+          style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 }}
+        >
+          <li style={{ fontSize: 11.5, color: TOKEN.muted, lineHeight: 1.5 }}>
+            Suggested or unattached proof is not counted as skill evidence yet.
+          </li>
+          <li style={{ fontSize: 11.5, color: TOKEN.muted, lineHeight: 1.5 }}>
+            Attach proof to a project report to make it eligible as skill evidence.
+          </li>
+          <li style={{ fontSize: 11.5, color: TOKEN.muted, lineHeight: 1.5 }}>
+            Vault-only proof never appears as skill evidence until it is attached.
+          </li>
+        </ul>
         <Link data-testid="open-proof-vault-link" href="/student/vbr/passport/vault" style={{ ...secondaryBtnStyle, alignSelf: "flex-start" }}>
           Open Proof Vault
         </Link>
@@ -424,6 +446,11 @@ function ProjectCard({
         {/* Proof chain completeness */}
         <ProofChainRow project={project} />
 
+        {/* Evidence relationship map: which attached proof backs a specific
+            skill claim vs. supports the project overall, plus vault suggestions.
+            Fails closed on legacy payloads without the skill-specific breakdown. */}
+        <ProjectProofRelationshipSummary project={project} />
+
         {/* Project → Skill links: the strongest evidence-backed skills this
             project demonstrates, each linking into its full Skill Report. */}
         {topSkills.length > 0 && (
@@ -460,19 +487,39 @@ function ProjectCard({
                         View {row.skill} evidence in this project →
                       </span>
                     </Link>
-                    {proofTypes.length > 0 && (
-                      <div
-                        data-testid="project-skill-proof-chips"
-                        data-skill={row.skill}
-                        style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}
-                      >
-                        {proofTypes.map((label) => (
-                          <span key={label} data-testid="project-skill-proof-chip" data-source={label}>
-                            <Badge tone={SOURCE_TONE[label] ?? "slate"}>{label}</Badge>
+                    {proofTypes.length > 0 ? (
+                      <EvidenceTierSection kind="skill">
+                        <div
+                          data-testid="project-skill-proof-chips"
+                          data-skill={row.skill}
+                          style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}
+                        >
+                          <span style={{ fontSize: 10.5, fontWeight: 600, color: TOKEN.muted }}>
+                            Direct skill evidence:
                           </span>
-                        ))}
-                      </div>
-                    )}
+                          {proofTypes.map((label) => (
+                            <span key={label} data-testid="project-skill-proof-chip" data-source={label}>
+                              <Badge tone={SOURCE_TONE[label] ?? "slate"}>{label}</Badge>
+                            </span>
+                          ))}
+                        </div>
+                      </EvidenceTierSection>
+                    ) : row.supporting_proof_types !== undefined ? (
+                      // The mapping recorded NO proof for this skill in this
+                      // project — say so instead of leaving a silent gap. (A
+                      // legacy row without the breakdown renders nothing: the
+                      // split is unknowable, so nothing may be claimed.)
+                      <span
+                        data-testid="project-skill-no-direct"
+                        data-skill={row.skill}
+                        style={{ fontSize: 10.5, color: TOKEN.muted, lineHeight: 1.4 }}
+                      >
+                        No direct skill evidence yet
+                        {(project.evidence_sources?.length ?? 0) > 0
+                          ? " — this project's attached proof is project-level for this skill."
+                          : "."}
+                      </span>
+                    ) : null}
                   </div>
                 )
               })}
@@ -734,19 +781,24 @@ function SkillEvidenceNav({
         data-testid="skill-vault-only"
         style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12, lineHeight: 1.5 }}
       >
-        <p style={{ margin: 0, color: TOKEN.muted, fontWeight: 600 }}>
-          Vault-only evidence — not attached to any project here, so it is not counted for a project.
-        </p>
-        {node.vaultOnlySources.length > 0 && (
-          <ProofTypeChips sources={node.vaultOnlySources} testid="skill-vault-only-chips" chipTestid="skill-vault-only-chip" />
-        )}
-        <Link
-          href="/student/vbr/passport/vault"
-          data-testid="skill-open-proof-vault"
-          style={{ fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
-        >
-          Open Proof Vault →
-        </Link>
+        <EvidenceTierSection kind="vault">
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <EvidenceRelationshipBadge kind="vault" />
+            <p style={{ margin: 0, color: TOKEN.muted, fontWeight: 600 }}>
+              Vault-only evidence — not attached to any project here, so it is not counted for a project.
+            </p>
+          </div>
+          {node.vaultOnlySources.length > 0 && (
+            <ProofTypeChips sources={node.vaultOnlySources} testid="skill-vault-only-chips" chipTestid="skill-vault-only-chip" />
+          )}
+          <Link
+            href="/student/vbr/passport/vault"
+            data-testid="skill-open-proof-vault"
+            style={{ fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+          >
+            Open Proof Vault →
+          </Link>
+        </EvidenceTierSection>
       </div>
     )
   }
@@ -799,59 +851,90 @@ function SkillEvidenceNav({
                 </span>
               )}
             </div>
-            {/* The exact proof types supporting THIS skill in THIS project
-                (fail-closed — a chip only shows where the evidence mapping
-                recorded it). The heading is always shown so the reader knows the
-                chips are scoped to this skill, never the whole project's proof. */}
-            <span
-              data-testid="skill-project-evidence-heading"
-              data-project-id={row.projectId}
-              style={{ fontSize: 11, fontWeight: 600, color: TOKEN.muted }}
-            >
-              Evidence for this skill in this project:
-            </span>
-            {row.evidenceSources.length > 0 ? (
-              <ProofTypeChips
-                sources={row.evidenceSources}
-                testid="skill-project-proof-chips"
-                chipTestid="skill-project-proof-chip"
-                projectId={row.projectId}
-              />
-            ) : row.projectHasProjectLevelProof ? (
+            {/* TIER 1 (primary) — Direct skill evidence: the exact proof types
+                supporting THIS skill in THIS project (fail-closed — a chip only
+                shows where the evidence mapping recorded it). The heading is
+                always shown so the reader knows the chips are scoped to this
+                skill, never the whole project's proof; under a proof filter it
+                names the filtered proof type. A row with no mapped proof states
+                "No direct skill evidence yet." instead of a bare chip gap. */}
+            <EvidenceTierSection kind="skill" testid="skill-project-direct-tier" projectId={row.projectId}>
               <span
-                data-testid="skill-project-proof-unmapped"
+                data-testid="skill-project-evidence-heading"
                 data-project-id={row.projectId}
-                style={{ fontSize: 11, color: TOKEN.muted, lineHeight: 1.4 }}
+                data-proof-filter={proofFilter ?? undefined}
+                style={{ fontSize: 11, fontWeight: 600, color: TOKEN.muted }}
               >
-                Project-level proof exists, but is not mapped to this skill yet.
+                {proofFilter ? `Direct skill evidence · ${proofFilter}:` : "Direct skill evidence in this project:"}
               </span>
-            ) : (
+              {row.evidenceSources.length > 0 ? (
+                <ProofTypeChips
+                  sources={row.evidenceSources}
+                  testid="skill-project-proof-chips"
+                  chipTestid="skill-project-proof-chip"
+                  projectId={row.projectId}
+                />
+              ) : (
+                <span
+                  data-testid="skill-project-no-direct"
+                  data-project-id={row.projectId}
+                  style={{ fontSize: 11, color: TOKEN.muted, lineHeight: 1.4 }}
+                >
+                  No direct skill evidence yet.
+                </span>
+              )}
+              {row.hasWebsiteProof && (
+                <span
+                  data-testid="skill-website-evidence-note"
+                  data-skill={node.name}
+                  data-project={row.projectTitle}
+                  // Precise Website Proof behaviour for THIS skill in THIS project,
+                  // derived from the safe website pipeline summaries (workflow /
+                  // recruiter / demonstrated-action / page-context / OCR-visual
+                  // fields) via the canonical Website→skill mapping — never raw
+                  // DOM/OCR/provider text. Falls back to an honest limited-detail
+                  // note when the capture was too thin to derive specifics.
+                  data-source-classified={row.websiteEvidenceSummary ? "true" : "false"}
+                  style={{ fontSize: 11, color: TOKEN.inkSoft, lineHeight: 1.4 }}
+                >
+                  {row.websiteEvidenceSummary ??
+                    "Website Proof supports runtime/product behavior for this skill, but detailed website evidence is limited."}
+                </span>
+              )}
+            </EvidenceTierSection>
+
+            {/* TIER 2 (secondary) — Project-level proof: real proof attached to
+                this project that is NOT mapped to this skill. Rendered in its own
+                visually-separate tier so it is never read as (or mixed with)
+                direct skill evidence, and hidden under a proof filter — that lens
+                shows counted direct evidence only. */}
+            {!proofFilter && (row.projectLevelSources.length > 0 || (row.evidenceSources.length === 0 && row.projectHasProjectLevelProof)) ? (
+              <EvidenceTierSection kind="project" testid="skill-project-level-tier" projectId={row.projectId}>
+                <span
+                  data-testid="skill-project-proof-unmapped"
+                  data-project-id={row.projectId}
+                  style={{ fontSize: 11, fontWeight: 600, color: TOKEN.muted, lineHeight: 1.4 }}
+                >
+                  Project-level proof — attached to this project, not mapped to this skill yet:
+                </span>
+                {row.projectLevelSources.length > 0 && (
+                  <ProofTypeChips
+                    sources={row.projectLevelSources}
+                    testid="skill-project-level-chips"
+                    chipTestid="skill-project-level-chip"
+                    projectId={row.projectId}
+                  />
+                )}
+              </EvidenceTierSection>
+            ) : !proofFilter && row.evidenceSources.length === 0 && !row.projectHasProjectLevelProof ? (
               <span
                 data-testid="skill-project-proof-unclassified"
                 data-project-id={row.projectId}
                 style={{ fontSize: 11, color: TOKEN.muted, lineHeight: 1.4 }}
               >
-                No skill-specific evidence attached for this project yet.
+                This project has no attached proof yet.
               </span>
-            )}
-            {row.hasWebsiteProof && (
-              <span
-                data-testid="skill-website-evidence-note"
-                data-skill={node.name}
-                data-project={row.projectTitle}
-                // Precise Website Proof behaviour for THIS skill in THIS project,
-                // derived from the safe website pipeline summaries (workflow /
-                // recruiter / demonstrated-action / page-context / OCR-visual
-                // fields) via the canonical Website→skill mapping — never raw
-                // DOM/OCR/provider text. Falls back to an honest limited-detail
-                // note when the capture was too thin to derive specifics.
-                data-source-classified={row.websiteEvidenceSummary ? "true" : "false"}
-                style={{ fontSize: 11, color: TOKEN.inkSoft, lineHeight: 1.4 }}
-              >
-                {row.websiteEvidenceSummary ??
-                  "Website Proof supports runtime/product behavior for this skill, but detailed website evidence is limited."}
-              </span>
-            )}
+            ) : null}
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
               <Link
                 href={row.reportPath}
@@ -896,9 +979,12 @@ function SkillEvidenceNav({
         </button>
       ) : null}
 
-      {/* Vault-only (standalone) evidence for this skill, kept SEPARATE from the
-          project rows above so it is never counted as project-attached proof.
-          Hidden in project / role-area / proof-type mode (it is not project-attached). */}
+      {/* TIER 3 (tertiary) — Vault-only (standalone) evidence for this skill,
+          kept SEPARATE from the project rows above so it is never counted as
+          project-attached proof. Its only action is the Proof Vault — the "Open
+          full skill report" link lives once per card, in the card footer, so it
+          is never duplicated here. Hidden in project / role-area / proof-type
+          mode (it is not project-attached). */}
       {!focusProjectId && !proofFilter && !roleProjectIds && node.vaultOnlySources.length > 0 && (
         <div
           data-testid="skill-standalone-evidence"
@@ -910,17 +996,22 @@ function SkillEvidenceNav({
             borderTop: `1px dashed ${TOKEN.line}`,
           }}
         >
-          <span style={{ fontSize: 11, fontWeight: 700, color: TOKEN.muted }}>
-            Vault-only evidence — not attached to a project report.
-          </span>
-          <ProofTypeChips sources={node.vaultOnlySources} testid="skill-standalone-proof-chips" chipTestid="skill-standalone-proof-chip" />
-          <Link
-            href={skillReportPath(node.slug)}
-            data-testid="skill-standalone-skill-report"
-            style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
-          >
-            Open full {node.name} skill report →
-          </Link>
+          <EvidenceTierSection kind="vault">
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <EvidenceRelationshipBadge kind="vault" />
+              <span style={{ fontSize: 11, fontWeight: 700, color: TOKEN.muted }}>
+                Vault-only evidence — not attached to a project report.
+              </span>
+            </div>
+            <ProofTypeChips sources={node.vaultOnlySources} testid="skill-standalone-proof-chips" chipTestid="skill-standalone-proof-chip" />
+            <Link
+              href="/student/vbr/passport/vault"
+              data-testid="skill-standalone-open-vault"
+              style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+            >
+              Review in Proof Vault →
+            </Link>
+          </EvidenceTierSection>
         </div>
       )}
     </div>
@@ -968,12 +1059,15 @@ function RealUnmappedProofSection({
       style={{ display: "flex", flexDirection: "column", gap: 10 }}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <h3
-          data-testid="real-unmapped-proof-heading"
-          style={{ fontSize: 15, fontWeight: 700, color: TOKEN.ink, margin: 0 }}
-        >
-          Attached proof not yet skill-mapped
-        </h3>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <h3
+            data-testid="real-unmapped-proof-heading"
+            style={{ fontSize: 15, fontWeight: 700, color: TOKEN.ink, margin: 0 }}
+          >
+            Attached proof not yet skill-mapped
+          </h3>
+          <EvidenceRelationshipBadge kind="unmapped" />
+        </div>
         <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, maxWidth: 620, lineHeight: 1.5 }}>
           These proof sources are attached to this project but are not yet mapped to a specific
           skill claim. They are real, analyzed evidence — shown separately so they are never
@@ -983,6 +1077,7 @@ function RealUnmappedProofSection({
 
       {visible.map((ctx, i) => (
         <Card key={`${ctx.project_id}:${ctx.proof_type}:${ctx.evidence_label ?? ""}:${i}`}>
+          <EvidenceTierSection kind="unmapped">
           <div
             data-testid="real-unmapped-proof-card"
             data-proof-type={ctx.proof_type}
@@ -1031,6 +1126,7 @@ function RealUnmappedProofSection({
               </Link>
             </div>
           </div>
+          </EvidenceTierSection>
         </Card>
       ))}
     </div>
@@ -1500,6 +1596,13 @@ function PassportGraphExplorer({
     ? realUnmappedProof.filter((e) => e.proof_type === proofFilter)
     : realUnmappedProof
 
+  // Vault maintenance context for empty states: suggested + unattached proof
+  // waiting in the Proof Vault. A COUNT only, pointing at Improve Passport — it
+  // never renders as evidence and never changes what the map shows.
+  const vaultPendingCount =
+    (passport.attachment_overview?.suggested_count ?? passport.unattached_proof_summary?.suggestion_count ?? 0) +
+    (passport.attachment_overview?.unattached_count ?? passport.vault_unattached_count ?? 0)
+
   // Role-area / project / proof filters act on the skill's ROWS (not just its
   // identity). The role-area filter fails closed to the exact skill→project rows
   // the capability mapping recorded, so an unrelated project never leaks in and a
@@ -1602,6 +1705,10 @@ function PassportGraphExplorer({
           project-skill relationship. Vault-only evidence is listed separately.
         </p>
       </div>
+
+      {/* Compact legend: how each proof source relates to the Passport. Static
+          copy only — it never changes counts, filters, or evidence rows. */}
+      <ProofRelationshipGuide />
 
       {/* Explore evidence — evaluator controls (skill / project / proof type +
           search). Compact and scalable: no long horizontal project-pill strip. */}
@@ -1765,9 +1872,15 @@ function PassportGraphExplorer({
               </>
             )}
             {proofFilter && (
-              <span data-testid="summary-proof" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
-                Showing evidence with: <strong>{proofFilter}</strong>
-              </span>
+              <>
+                <span data-testid="summary-proof" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
+                  Showing direct skill evidence with: <strong>{proofFilter}</strong>
+                </span>
+                <span data-testid="summary-proof-separation-note" style={{ fontSize: 11, color: TOKEN.muted }}>
+                  Project-level, attached-but-not-skill-mapped, and vault-only evidence is listed
+                  separately and never counted here.
+                </span>
+              </>
             )}
           </div>
         )}
@@ -1822,8 +1935,20 @@ function PassportGraphExplorer({
                 {proofFilterEmptyCopy(proofFilter)}
               </p>
             ) : (
-              <p data-testid="skills-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-                No matching skill-project evidence found. Clear filters to see all skills.
+              <p data-testid="skills-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+                No exact skill evidence matches this filter. Related proof may be project-level,
+                attached but not skill-mapped, or still in your Proof Vault — those are listed
+                separately and never counted as skill evidence. Clear filters to see all skills.
+              </p>
+            )}
+            {vaultPendingCount > 0 && (
+              <p
+                data-testid="skills-panel-vault-hint"
+                style={{ fontSize: 11, color: TOKEN.muted, margin: "8px 0 0", lineHeight: 1.5 }}
+              >
+                {vaultPendingCount} {vaultPendingCount === 1 ? "proof is" : "proofs are"} suggested or
+                unattached in your Proof Vault — attach them under Improve Passport to make them
+                eligible as skill evidence.
               </p>
             )}
           </Card>
