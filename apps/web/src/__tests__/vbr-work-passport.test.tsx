@@ -1029,7 +1029,7 @@ describe("PrivatePassportView — skill → project → proof-type breakdown", (
     expect(ml).toHaveAttribute("data-selected", "true")
   })
 
-  it("labels every skill→project row 'Evidence for this skill in this project:' (skill-specific, not project-wide)", async () => {
+  it("labels every skill→project row 'Direct skill evidence in this project:' (skill-specific, not project-wide)", async () => {
     render(<PrivatePassportView />)
     await screen.findByTestId("passport-graph-explorer")
 
@@ -1037,13 +1037,13 @@ describe("PrivatePassportView — skill → project → proof-type breakdown", (
     const headings = within(ml).getAllByTestId("skill-project-evidence-heading")
     expect(headings).toHaveLength(2)
     for (const h of headings) {
-      expect(h).toHaveTextContent("Evidence for this skill in this project:")
+      expect(h).toHaveTextContent("Direct skill evidence in this project:")
     }
     // The vague, project-wide wording is gone.
     expect(ml).not.toHaveTextContent("Supports this skill with")
   })
 
-  it("a skill with project-level proof but no skill mapping reads 'Project-level proof exists, but is not mapped to this skill yet'", async () => {
+  it("a skill with project-level proof but no skill mapping says 'No direct skill evidence yet.' and lists that proof in the separate project-level tier", async () => {
     // Browser APIs is proven-in-project (an attached row exists) but the mapping
     // recorded NO proof type for it in that project → empty supporting_proof_types.
     // The project itself DOES carry project-level proof, so the row must say the
@@ -1080,17 +1080,27 @@ describe("PrivatePassportView — skill → project → proof-type breakdown", (
     const browser = breakdownSkillCard("Browser APIs")
     const row = within(browser).getByTestId("skill-project-evidence-row")
     // Heading is still present (so the reader knows what the empty state means),
-    // followed by the project-level-proof distinction and NO skill proof chips.
+    // followed by the explicit "no direct evidence" statement — never a bare gap.
     expect(within(row).getByTestId("skill-project-evidence-heading")).toBeInTheDocument()
-    expect(within(row).getByTestId("skill-project-proof-unmapped")).toHaveTextContent(
-      "Project-level proof exists, but is not mapped to this skill yet.",
+    expect(within(row).getByTestId("skill-project-no-direct")).toHaveTextContent(
+      "No direct skill evidence yet.",
     )
+    // The project's real attached proof renders in the SEPARATE project-level
+    // tier — clearly labelled as not counted for this skill, never as skill chips.
+    const tier = within(row).getByTestId("skill-project-level-tier")
+    expect(tier).toHaveAttribute("data-tier", "project")
+    expect(within(tier).getByTestId("skill-project-proof-unmapped")).toHaveTextContent(
+      "Project-level proof — attached to this project, not mapped to this skill yet:",
+    )
+    expect(
+      within(tier).getAllByTestId("skill-project-level-chip").map((c) => c.getAttribute("data-source")),
+    ).toEqual(["GitHub Proof", "Document Proof", "Project Defense", "Video Evidence"])
     expect(within(row).queryByTestId("skill-project-proof-chip")).toBeNull()
     // A "Not assessed" row never overclaims — the per-project status is shown as-is.
     expect(within(row).getByTestId("skill-project-status")).toHaveTextContent("Not assessed")
   })
 
-  it("a skill in a project with no attached proof at all reads 'No skill-specific evidence attached for this project yet.'", async () => {
+  it("a skill in a project with no attached proof at all reads 'This project has no attached proof yet.'", async () => {
     // The project row exists but the project carries NO project-level proof, so
     // the honest empty state is "none attached for this project yet".
     const p = makeProofBreakdownPassport()
@@ -1130,9 +1140,15 @@ describe("PrivatePassportView — skill → project → proof-type breakdown", (
 
     const browser = breakdownSkillCard("Browser APIs")
     const row = within(browser).getByTestId("skill-project-evidence-row")
-    expect(within(row).getByTestId("skill-project-proof-unclassified")).toHaveTextContent(
-      "No skill-specific evidence attached for this project yet.",
+    // The direct tier states the gap; with NO attached proof at all there is no
+    // project-level tier to show either — only the honest no-proof line.
+    expect(within(row).getByTestId("skill-project-no-direct")).toHaveTextContent(
+      "No direct skill evidence yet.",
     )
+    expect(within(row).getByTestId("skill-project-proof-unclassified")).toHaveTextContent(
+      "This project has no attached proof yet.",
+    )
+    expect(within(row).queryByTestId("skill-project-level-tier")).toBeNull()
     expect(within(row).queryByTestId("skill-project-proof-unmapped")).toBeNull()
     expect(within(row).queryByTestId("skill-project-proof-chip")).toBeNull()
   })
@@ -1266,11 +1282,13 @@ describe("PrivatePassportView — Skills Evidence Map (skill → project → evi
       .getAllByTestId("skill-standalone-proof-chip")
       .map((c) => c.getAttribute("data-source"))
     expect(vaultChips).toEqual(["GitHub Proof", "Project Defense"])
-    // The standalone section routes to the full skill report, never a project report.
-    expect(within(standalone).getByTestId("skill-standalone-skill-report")).toHaveAttribute(
+    // The standalone section routes to the Proof Vault, never a project report —
+    // and never duplicates the card footer's "Open full skill report" link.
+    expect(within(standalone).getByTestId("skill-standalone-open-vault")).toHaveAttribute(
       "href",
-      "/student/vbr/passport/skills/machine-learning",
+      "/student/vbr/passport/vault",
     )
+    expect(within(ml).getAllByText(/Open full Machine Learning skill report/)).toHaveLength(1)
     // The vault-only chips live only inside the standalone section — they are NOT
     // rendered as project-attached proof chips.
     expect(within(standalone).queryByTestId("skill-project-proof-chip")).toBeNull()
@@ -2048,7 +2066,7 @@ describe("PrivatePassportView — evaluator Explore-evidence controls", () => {
     const rows = within(ml).getAllByTestId("skill-project-evidence-row")
     expect(rows).toHaveLength(1)
     expect(rows[0]).toHaveAttribute("data-project-id", "proj-tm")
-    expect(screen.getByTestId("summary-proof")).toHaveTextContent("Showing evidence with: Video Evidence")
+    expect(screen.getByTestId("summary-proof")).toHaveTextContent("Showing direct skill evidence with: Video Evidence")
   })
 
   it("proof-type filter does NOT surface a skill just because the project has that proof generally", async () => {
@@ -2427,7 +2445,7 @@ describe("PrivatePassportView — high-level Role Area capability filter", () =>
     const rows = within(ml).getAllByTestId("skill-project-evidence-row")
     expect(rows).toHaveLength(1)
     expect(rows[0]).toHaveAttribute("data-project-id", "proj-tm")
-    expect(screen.getByTestId("summary-proof")).toHaveTextContent("Showing evidence with: Website Proof")
+    expect(screen.getByTestId("summary-proof")).toHaveTextContent("Showing direct skill evidence with: Website Proof")
   })
 
   it("Role Area + a proof type its evidence lacks shows an honest empty state (GitHub)", async () => {
@@ -4010,5 +4028,418 @@ describe("PrivatePassportView — proof-filter heading/count consistency", () =>
     expect(proofFilterSkillCard("React")).toBeUndefined()
     expect(proofFilterProjectCard("proj-git")).toBeDefined()
     expect(screen.queryByTestId("skills-panel-proof-empty")).not.toBeInTheDocument()
+  })
+})
+
+// ── Proof Relationship UX — legend, relationship labels, honest separation ─────
+// The guide + relationship labels are pure presentation: they explain how proof
+// relates to the Passport (direct skill evidence / project-level / attached-not-
+// skill-mapped / vault-only) without changing a single count, filter, or row.
+
+describe("PrivatePassportView — Proof Relationship UX", () => {
+  it("renders the compact proof relationship guide with all four relationship tiers", async () => {
+    const p = makeProofBreakdownPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const guide = screen.getByTestId("proof-relationship-guide")
+    expect(guide).toHaveTextContent("Proof relationship guide")
+    const items = within(guide).getAllByTestId("proof-relationship-guide-item")
+    expect(items.map((i) => i.getAttribute("data-kind"))).toEqual(["skill", "project", "unmapped", "vault"])
+    expect(guide).toHaveTextContent("Direct skill evidence")
+    expect(guide).toHaveTextContent("Project-level proof")
+    expect(guide).toHaveTextContent("Attached, not skill-mapped")
+    expect(guide).toHaveTextContent("Vault-only / suggested")
+    // The guide never overclaims: counted-ness is stated honestly.
+    expect(guide).toHaveTextContent("the only proof counted in the map and proof filters")
+    expect(guide).toHaveTextContent("never counted as skill evidence")
+  })
+
+  it("labels skill→project rows as direct skill evidence (heading + project-card chips label)", async () => {
+    const p = makeProofBreakdownPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    // Every skill→project row heading names the relationship explicitly.
+    for (const h of screen.getAllByTestId("skill-project-evidence-heading")) {
+      expect(h).toHaveTextContent("Direct skill evidence in this project:")
+    }
+    // Project-card per-skill chip rows carry the same label.
+    const bostonCard = screen
+      .getAllByTestId("passport-project-card")
+      .find((c) => c.getAttribute("data-project-id") === "proj-boston")!
+    const mlChips = within(bostonCard)
+      .getAllByTestId("project-skill-proof-chips")
+      .find((r) => r.getAttribute("data-skill") === "Machine Learning")!
+    expect(mlChips).toHaveTextContent("Direct skill evidence:")
+  })
+
+  it("project card separates direct skill evidence from project-level-only proof (never mixed)", async () => {
+    // proj-boston (from makeWebsiteGlobalOnlyPassport): attached GitHub + Website,
+    // but only GitHub maps to a skill → Website must appear ONLY as project-level.
+    const p = makeWebsiteGlobalOnlyPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const strip = screen.getByTestId("project-proof-relationships")
+    const skillChips = within(strip)
+      .getAllByTestId("project-relationship-skill-chip")
+      .map((c) => c.getAttribute("data-source"))
+    expect(skillChips).toEqual(["GitHub Proof"])
+    const projectChips = within(strip)
+      .getAllByTestId("project-relationship-project-chip")
+      .map((c) => c.getAttribute("data-source"))
+    expect(projectChips).toEqual(["Website Proof"])
+    // Website Proof is NOT claimed as direct skill evidence anywhere in the strip.
+    expect(skillChips).not.toContain("Website Proof")
+    expect(strip).toHaveTextContent("Project-level proof (not skill-specific):")
+    // The exact skill row in the map still cites only GitHub for ML.
+    const ml = mapSkillCard("Machine Learning")
+    const row = within(ml).getAllByTestId("skill-project-evidence-row")[0]
+    expect(rowChipSources(row)).toEqual(["GitHub Proof"])
+  })
+
+  it("fails closed: legacy payloads without supporting_proof_types render no relationship strip", async () => {
+    // Skill rows exist but carry NO skill-specific breakdown — the skill-vs-
+    // project split is unknowable, so nothing may be inferred or faked.
+    const p = makeWebsiteGlobalOnlyPassport()
+    p.projects = p.projects.map((proj) => ({
+      ...proj,
+      top_skills: (proj.top_skills ?? []).map((t) => {
+        const legacy = { ...t }
+        delete legacy.supporting_proof_types
+        return legacy
+      }),
+    }))
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    expect(screen.queryByTestId("project-proof-relationships")).not.toBeInTheDocument()
+  })
+
+  it("the real-unmapped panel carries the 'Attached, not skill-mapped' relationship badge", async () => {
+    const p = makeRealUnmappedPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    const panel = screen.getByTestId("real-unmapped-proof-section")
+    expect(within(panel).getByTestId("real-unmapped-proof-heading")).toHaveTextContent(
+      "Attached proof not yet skill-mapped",
+    )
+    const badge = within(panel).getByTestId("evidence-relationship-badge")
+    expect(badge).toHaveAttribute("data-kind", "unmapped")
+    expect(badge).toHaveTextContent("Attached, not skill-mapped")
+  })
+
+  it("vault-only sections carry the 'Vault-only / suggested' relationship badge", async () => {
+    const p = makeProofBreakdownPassport()
+    p.skills.push({
+      skill: "Rust",
+      status: "Evidence observed",
+      evidence_chip_count: 1,
+      project_count: 0,
+      evidence_sources: ["GitHub Proof"],
+      projects: [],
+      evidence_chips: [],
+      notes: "",
+      limitations: [],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const rust = breakdownSkillCard("Rust")
+    const vault = within(rust).getByTestId("skill-vault-only")
+    const badge = within(vault).getByTestId("evidence-relationship-badge")
+    expect(badge).toHaveAttribute("data-kind", "vault")
+    expect(badge).toHaveTextContent("Vault-only / suggested")
+  })
+
+  it("an active proof filter states it shows direct skill evidence, with separation noted", async () => {
+    const p = makeProofBreakdownPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+    expect(screen.getByTestId("summary-proof")).toHaveTextContent(
+      "Showing direct skill evidence with: Website Proof",
+    )
+    expect(screen.getByTestId("summary-proof-separation-note")).toHaveTextContent(
+      "Project-level, attached-but-not-skill-mapped, and vault-only evidence is listed separately and never counted here.",
+    )
+  })
+
+  it("the proof-filter empty state explains where related proof may live and points at the vault when pending proof exists", async () => {
+    const p = makeWebsiteGlobalOnlyPassport({
+      vault_unattached_count: 2,
+      attachment_overview: {
+        attached_count: 1,
+        suggested_count: 1,
+        unattached_count: 2,
+        attached: [],
+        suggested: [],
+        unattached: [],
+        note: "",
+      },
+      // Video exists in the vault only → offered as a filter option, matches no row.
+      evidence_source_counts: { "GitHub Proof": 2, "Website Proof": 1, "Video Evidence": 1 },
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Video Evidence" } })
+    expect(screen.getByTestId("skills-panel-proof-empty")).toHaveTextContent(
+      "No exact skill evidence matches Video Evidence. Related proof may be project-level, attached but not skill-mapped, or still in your Proof Vault — those are listed separately and never counted as skill evidence.",
+    )
+    // 1 suggested + 2 unattached → 3 pending, pointed at Improve Passport.
+    expect(screen.getByTestId("skills-panel-vault-hint")).toHaveTextContent(
+      "3 proofs are suggested or unattached in your Proof Vault",
+    )
+  })
+
+  it("Improve Passport explains that suggested/unattached proof is not counted until attached", async () => {
+    const p = makeProofBreakdownPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("improve-passport-card")
+
+    const explainer = screen.getByTestId("improve-passport-explainer")
+    expect(explainer).toHaveTextContent("Suggested or unattached proof is not counted as skill evidence yet.")
+    expect(explainer).toHaveTextContent("Attach proof to a project report to make it eligible as skill evidence.")
+    expect(explainer).toHaveTextContent("Vault-only proof never appears as skill evidence until it is attached.")
+  })
+
+  it("the relationship guide changes no counts, filter options, or evidence rows", async () => {
+    const p = makeRealUnmappedPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Guide present…
+    expect(screen.getByTestId("proof-relationship-guide")).toBeInTheDocument()
+    // …with the same counts and options the pre-guide tests assert.
+    expect(screen.getByText("Skills (1)")).toBeInTheDocument()
+    expect(screen.getByText("Projects (1)")).toBeInTheDocument()
+    expect(proofFilterOptionNames()).toEqual(["All proof types", "GitHub Proof", "Website Proof"])
+    const ml = mapSkillCard("Machine Learning")
+    const row = within(ml).getAllByTestId("skill-project-evidence-row")[0]
+    expect(rowChipSources(row)).toEqual(["GitHub Proof"])
+  })
+
+  it("never renders overclaiming language anywhere on the passport", async () => {
+    const p = makeRealUnmappedPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    expect(screen.queryByText(/certified/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/guaranteed/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/verified expert/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/proof found nearby/i)).not.toBeInTheDocument()
+  })
+})
+
+// ── Proof Relationship UX — cross-skill consistency (second pass) ──────────────
+// EVERY skill card and project row renders the SAME tier structure: direct skill
+// evidence (primary) → project-level proof (secondary) → vault-only (tertiary),
+// with no bare chip rows, no duplicate action links, and unchanged counts.
+
+describe("PrivatePassportView — Proof Relationship UX consistency", () => {
+  /** Breakdown fixture + Machine Learning vault-only sources, so one card has
+   *  all three tiers at once (direct + project-level + vault-only). */
+  function makeAllTiersPassport(): PrivateWorkPassport {
+    const p = makeProofBreakdownPassport()
+    p.skills[0].vault_only_sources = ["GitHub Proof", "Project Defense"]
+    return p
+  }
+
+  beforeEach(() => {
+    const p = makeAllTiersPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("every skill→project row renders the SAME primary direct-evidence tier (no bare chip rows)", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const rows = screen.getAllByTestId("skill-project-evidence-row")
+    expect(rows.length).toBeGreaterThan(0)
+    for (const row of rows) {
+      // Consistent tier container + heading in every row, across every skill.
+      const tier = within(row).getByTestId("skill-project-direct-tier")
+      expect(tier).toHaveAttribute("data-tier", "skill")
+      expect(within(tier).getByTestId("skill-project-evidence-heading")).toHaveTextContent(
+        "Direct skill evidence in this project:",
+      )
+      // Never a silent gap: either scoped chips or the explicit no-direct line.
+      const hasChips = within(row).queryAllByTestId("skill-project-proof-chip").length > 0
+      const hasNoDirect = within(row).queryByTestId("skill-project-no-direct") !== null
+      expect(hasChips || hasNoDirect).toBe(true)
+    }
+  })
+
+  it("a row WITH direct evidence still separates the project's remaining proof into the project-level tier", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    // ML in Boston: direct = GitHub/Website/Document/Defense; the project also
+    // carries Video Evidence, which is NOT mapped to ML → project-level tier.
+    const ml = breakdownSkillCard("Machine Learning")
+    const boston = within(ml)
+      .getAllByTestId("skill-project-evidence-row")
+      .find((r) => r.getAttribute("data-project-id") === "proj-boston")!
+    expect(rowChipSources(boston)).toEqual(["GitHub Proof", "Website Proof", "Document Proof", "Project Defense"])
+    const tier = within(boston).getByTestId("skill-project-level-tier")
+    expect(
+      within(tier).getAllByTestId("skill-project-level-chip").map((c) => c.getAttribute("data-source")),
+    ).toEqual(["Video Evidence"])
+    // The tiers never mix: project-level chips are not direct chips and vice versa.
+    expect(rowChipSources(boston)).not.toContain("Video Evidence")
+    expect(within(tier).queryByTestId("skill-project-proof-chip")).toBeNull()
+
+    // FastAPI in the SAME project gets the SAME treatment (consistency across
+    // skills): direct GitHub/Document; the project's other ATTACHED sources
+    // (Defense/Video — Website is not attached at the project level here) land
+    // in the project-level tier, never as FastAPI evidence.
+    const fastapi = breakdownSkillCard("FastAPI")
+    const faRow = within(fastapi).getAllByTestId("skill-project-evidence-row")[0]
+    expect(rowChipSources(faRow)).toEqual(["GitHub Proof", "Document Proof"])
+    expect(
+      within(faRow).getAllByTestId("skill-project-level-chip").map((c) => c.getAttribute("data-source")),
+    ).toEqual(["Project Defense", "Video Evidence"])
+  })
+
+  it("a skill card with exact + vault-only evidence renders them in separate tiers with one skill-report link", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const ml = breakdownSkillCard("Machine Learning")
+    // Direct rows (primary) and the vault-only section (tertiary) coexist, apart.
+    expect(within(ml).getAllByTestId("skill-project-direct-tier").length).toBeGreaterThan(0)
+    const standalone = within(ml).getByTestId("skill-standalone-evidence")
+    expect(within(standalone).getByTestId("evidence-relationship-badge")).toHaveAttribute("data-kind", "vault")
+    expect(
+      within(standalone).getAllByTestId("skill-standalone-proof-chip").map((c) => c.getAttribute("data-source")),
+    ).toEqual(["GitHub Proof", "Project Defense"])
+    // Vault-only chips never render as direct chips.
+    expect(within(standalone).queryByTestId("skill-project-proof-chip")).toBeNull()
+    // Deduped actions: exactly ONE "Open full … skill report" link per card
+    // (the footer), and the vault section routes to the Proof Vault instead.
+    expect(within(ml).getAllByText(/Open full Machine Learning skill report/)).toHaveLength(1)
+    expect(within(standalone).getByTestId("skill-standalone-open-vault")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/vault",
+    )
+  })
+
+  it("under the Website Proof filter every visible row keeps the direct-evidence label, naming the filter", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+
+    const rows = screen.getAllByTestId("skill-project-evidence-row")
+    expect(rows.length).toBeGreaterThan(0)
+    for (const row of rows) {
+      expect(within(row).getByTestId("skill-project-evidence-heading")).toHaveTextContent(
+        "Direct skill evidence · Website Proof:",
+      )
+      expect(rowChipSources(row)).toContain("Website Proof")
+      // The proof-filter lens shows counted direct evidence only — no secondary
+      // project-level tier that could read as matching the filter.
+      expect(within(row).queryByTestId("skill-project-level-tier")).toBeNull()
+    }
+  })
+
+  it("under the Project Defense filter every visible row keeps the direct-evidence label, naming the filter", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Project Defense" } })
+
+    const rows = screen.getAllByTestId("skill-project-evidence-row")
+    expect(rows.length).toBeGreaterThan(0)
+    for (const row of rows) {
+      expect(within(row).getByTestId("skill-project-evidence-heading")).toHaveTextContent(
+        "Direct skill evidence · Project Defense:",
+      )
+      expect(rowChipSources(row)).toContain("Project Defense")
+    }
+  })
+
+  it("project-card skill rows state 'No direct skill evidence yet' instead of a silent chip gap", async () => {
+    const p = makeAllTiersPassport()
+    // A top-skill whose mapping recorded NO proof types for it in this project.
+    p.projects[0].top_skills!.push({
+      skill: "Browser APIs",
+      status: "Not assessed",
+      skill_slug: "browser-apis",
+      supporting_proof_types: [],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const bostonCard = screen
+      .getAllByTestId("passport-project-card")
+      .find((c) => c.getAttribute("data-project-id") === "proj-boston")!
+    const row = within(bostonCard)
+      .getAllByTestId("project-top-skill-row")
+      .find((r) => r.getAttribute("data-skill") === "Browser APIs")!
+    expect(within(row).getByTestId("project-skill-no-direct")).toHaveTextContent(
+      "No direct skill evidence yet — this project's attached proof is project-level for this skill.",
+    )
+    expect(within(row).queryByTestId("project-skill-proof-chip")).toBeNull()
+    // Rows with a recorded mapping keep their labelled direct chips.
+    const mlRow = within(bostonCard)
+      .getAllByTestId("project-top-skill-row")
+      .find((r) => r.getAttribute("data-skill") === "Machine Learning")!
+    expect(within(mlRow).getByTestId("project-skill-proof-chips")).toHaveTextContent("Direct skill evidence:")
+  })
+
+  it("the tier split changes no proof counts, filter options, or direct chips", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    // Same skill/project counts and direct chips the pre-split tests assert.
+    expect(screen.getByText("Skills (2)")).toBeInTheDocument()
+    expect(screen.getByText("Projects (2)")).toBeInTheDocument()
+    const ml = breakdownSkillCard("Machine Learning")
+    const teachable = within(ml)
+      .getAllByTestId("skill-project-evidence-row")
+      .find((r) => r.getAttribute("data-project-id") === "proj-tm")!
+    expect(rowChipSources(teachable)).toEqual(["Website Proof", "Document Proof", "Project Defense", "Video Evidence"])
   })
 })
