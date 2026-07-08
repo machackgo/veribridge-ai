@@ -130,6 +130,44 @@ class WebsiteProofSkillEvidence(BaseModel):
 
 
 
+class RealUnmappedProofContext(BaseModel):
+    """One REAL, analyzed, project-attached proof source that no exact claimed
+    skill row consumed — PRIVATE surfaces only (owner report + owner passport).
+
+    The honesty layer between exact skill evidence and hiding proof entirely:
+    exact skill-mapped evidence stays exact; real analyzed-but-unmapped proof is
+    shown separately with an honest reason. Strictly context — it is NEVER skill
+    evidence, never counted in proof filter counts / capability aggregates /
+    graph nodes, and never present on any public payload. Only closed labels and
+    already-safe summaries: no proof/session/evidence ids, storage paths, signed
+    URLs, raw transcripts/docs/DOM/OCR/provider text, or numeric scores. Fake
+    metadata (a repo URL, a website URL, a filename, an unanswered question
+    plan) can never produce an entry."""
+
+    # Canonical proof-type label: "GitHub Proof" / "Website Proof" /
+    # "Document Proof" / "Project Defense".
+    proof_type: str
+    project_id: str
+    project_title: str = ""
+    # Owner-only private route to this project's report preview.
+    report_url: str | None = None
+    # Honest closed reason the proof did not map to an exact skill row.
+    reason: str = ""
+    # One safe, bounded sentence describing the real analyzed proof.
+    safe_summary: str = ""
+    # Short label for the kind of analyzed evidence ("Analyzed source evidence",
+    # a website observed-behaviour label, …).
+    evidence_label: str | None = None
+    observed_at: str | None = None
+    # Count of analyzed evidence items backing this entry (never a score).
+    source_count: int | None = None
+    # In-page anchor of the matching proof section on the project report
+    # ("github-proof" / "website-proof" / "documents" / "project-defense").
+    inspection_anchor: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class VBRReportEvidencePackageSummary(BaseModel):
     github_proof_attached: bool = False
     documents_count: int = 0
@@ -1192,6 +1230,11 @@ class VBRStudentProjectReportResponse(BaseModel):
     # Flat list of every claim→evidence trace referenced by the skill matrix.
     evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
 
+    # REAL analyzed, project-attached proof that no exact skill row consumed —
+    # "Attached proof not yet skill-mapped". Context only (never skill evidence,
+    # never counted, never public); private student preview surface only.
+    real_unmapped_proof_context: list[RealUnmappedProofContext] = Field(default_factory=list)
+
     # "Other student proofs for related skills" — safe student-vault proofs that
     # match this report's claimed skills but are NOT attached to this project.
     # They are cross-proof / vault evidence, never folded into the primary
@@ -1224,6 +1267,7 @@ __all__ = [
     "VBRReportWebsiteProofSummary",
     "WebsiteProofSkillRelevance",
     "WebsiteProofSkillEvidence",
+    "RealUnmappedProofContext",
     "VBRReportEvidencePackageSummary",
     "VBRReportQuestionSummary",
     "VBREvidenceTrace",

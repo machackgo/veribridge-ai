@@ -24,6 +24,8 @@ All storage is in-memory (dict mode). No network / LLM calls.
 
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 
 import pytest
@@ -497,14 +499,16 @@ def test_passport_generic_website_adds_no_website_proof_to_skill(
             assert "Website Proof" not in (ref.get("supporting_proof_types") or [])
 
 
-# ── Collapsed-attempt navigation consistency (Website Proof leak fix) ─────────
+# ── Grouped-attempt proof aggregation (Work Passport) ─────────────────────────
 #
 # Repeated attempts of the SAME project (same repo) collapse into ONE passport
-# card that links to exactly ONE report — the representative's. Evidence shown on
-# the card / skill refs must therefore come from the representative report ONLY,
-# never unioned across the other collapsed attempts. Otherwise a Website Proof
-# attached to a *different* attempt rides onto the card while the report it links
-# to shows "Website proof not attached" — the observed Teachable-Machine leak.
+# card. The representative attempt still provides the card's stable display
+# metadata (title / the single report link / publish state), but PROOF is
+# aggregated across EVERY grouped attempt: real, report-qualified proof attached
+# to a non-representative attempt must never disappear from the card's evidence
+# badges, the skill→project rows, or the real-unmapped context. Each attempt's
+# own report remains the drill-down source of truth for which attempt carries
+# which proof.
 
 
 def _bump_created_at(mem_store: dict, project_id: str, iso: str) -> None:
@@ -514,15 +518,15 @@ def _bump_created_at(mem_store: dict, project_id: str, iso: str) -> None:
     row["updated_at"] = iso
 
 
-def test_collapsed_attempt_website_proof_does_not_leak_onto_representative(
+def test_grouped_attempt_website_proof_aggregates_onto_card_and_skill_row(
     client: TestClient, mem_store: dict
 ) -> None:
-    """Scenarios C/E/F/G: two collapsed attempts of the same repo — the OLDER one
-    carries a Website Proof mapping ML; the NEWER (representative) one has NO
-    Website Proof. The single card links to the representative report (no website),
-    so neither the card's evidence badges nor any ML skill→project ref may claim
-    Website Proof — it would contradict the report the card opens."""
-    # Attempt A (older): same repo, WITH a Website Proof that maps ML.
+    """Two collapsed attempts of the same repo — the OLDER one carries a Website
+    Proof that maps ML; the NEWER (representative) one has only Document proof.
+    The grouped card and the ML skill→project row must aggregate the Website
+    Proof from the non-representative attempt (it is real, exact, skill-mapped
+    proof), while the card still links to the representative report."""
+    # Attempt A (older): same repo, WITH a Website Proof that maps ML (derived).
     session_id = _seed_workflow_analysis(
         mem_store,
         supported_skills=[],
@@ -535,7 +539,7 @@ def test_collapsed_attempt_website_proof_does_not_leak_onto_representative(
         attached_proofs={"website_proof_session_ids": [session_id]},
     ).json()
     proj_a = created_a["project"]["id"]
-    # Attempt B (newer → representative): same repo, only Document/Defense proof.
+    # Attempt B (newer → representative): same repo, only Document proof.
     doc_id = _seed_document_evidence(mem_store)
     created_b = _create_project_defense(
         client,
@@ -555,29 +559,339 @@ def test_collapsed_attempt_website_proof_does_not_leak_onto_representative(
     rep_id = card["project_id"]
     assert rep_id == proj_b  # newest attempt is the representative the card links to
 
-    # The report the card links to is the source of truth for what is attached.
-    report = client.get(f"/api/v1/student/vbr/projects/{rep_id}/report").json()
-    website_attached = (
-        int((report.get("evidence_package") or {}).get("website_proofs_count") or 0) > 0
-    )
-    assert website_attached is False  # representative attempt has no Website Proof
+    # Attempt A's Website Proof is real and exact — the grouped card must carry
+    # BOTH proof sources, not only the representative's.
+    assert "Website Proof" in card["evidence_sources"]
+    assert "Document Proof" in card["evidence_sources"]
+    assert card["proof_chain"]["website"] is True
 
-    # (F) The card must not advertise Website Proof its linked report denies.
-    assert "Website Proof" not in card["evidence_sources"]
-    # (C/G) No ML skill→project ref may claim Website Proof for this collapsed card.
+    # The ML skill row keeps ONE deduplicated grouped-project ref that unions the
+    # exact proof types across attempts — Website Proof does not disappear just
+    # because the representative attempt lacks it.
+    ml = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "machine learning")
+    ml_refs = [ref for ref in ml["projects"] if str(ref.get("project_id")) == rep_id]
+    assert len(ml_refs) == 1, "grouped attempts must dedupe to one project ref"
+    assert "Website Proof" in (ml_refs[0].get("supporting_proof_types") or [])
+
+    # The aggregated proof is exact skill-mapped Website Proof from attempt A's
+    # own report — proving it was report-qualified, never fabricated here.
+    report_a = client.get(f"/api/v1/student/vbr/projects/{proj_a}/report").json()
+    assert any(
+        "Website Proof" in (row.get("supporting_sources") or [])
+        for row in report_a["skill_evidence"]
+        if _norm_skill(row["skill"]) == "machine learning"
+    )
+
+
+def test_grouped_attempts_aggregate_exact_proof_sources_across_attempts(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Three attempts of the same repo, each carrying a DIFFERENT exact proof:
+    A → GitHub Proof mapped to Python, B → Document Proof mapped to Data
+    Analysis, C (representative) → a completed Project Defense. The grouped card
+    must union all exact proof source labels, and each skill row must carry the
+    proof types for its exact skill from whichever attempt earned them."""
+    claims = ["Python", "Data Analysis"]
+    # Attempt A: analyzed GitHub proof with line-level Python code evidence.
+    github_proof_id = _seed_github_proof(
+        mem_store,
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {
+                    "skill": "Python",
+                    "file_path": "src/main.py",
+                    "line_start": 1,
+                    "line_end": 15,
+                    "function_name": "main",
+                    "code_snippet": "def main():\n    print('hello')",
+                    "github_url": "https://github.com/octocat/Hello-World/blob/main/src/main.py#L1-L15",
+                }
+            ]
+        },
+    )
+    proj_a = _create_project_defense(
+        client, claimed_skills=claims, attached_proofs={"github_proof_id": github_proof_id}
+    ).json()["project"]["id"]
+    # Attempt B: analyzed document whose analyzer output matched Data Analysis.
+    doc_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Data Analysis", "confidence": "high", "snippet": "built the analysis", "page_number": 2}
+        ],
+    )
+    proj_b = _create_project_defense(
+        client, claimed_skills=claims, attached_proofs={"document_evidence_ids": [doc_id]}
+    ).json()["project"]["id"]
+    # Attempt C (newest → representative): completed Project Defense only.
+    proj_c = _create_project_defense(client, claimed_skills=claims).json()["project"]["id"]
+    session_id = _generate_questions(client, proj_c).json()["session_id"]
+    chunk_id = str(uuid4())
+    mem_store.setdefault("vbr_video_chunks", {})[chunk_id] = {
+        "id": chunk_id,
+        "session_id": session_id,
+        "chunk_index": 0,
+        "bytes": 1024,
+        "sha256": "deadbeef",
+    }
+    _seed_auto_video_transcript(mem_store, session_id, VIDEO_TRANSCRIPT_SEGMENTS)
+    _submit_defense(client, session_id, combined_text=_SUBSTANTIVE_DEFENSE_TRANSCRIPT)
+
+    _bump_created_at(mem_store, proj_a, "2020-01-01T00:00:00+00:00")
+    _bump_created_at(mem_store, proj_b, "2020-02-01T00:00:00+00:00")
+    _bump_created_at(mem_store, proj_c, "2020-06-01T00:00:00+00:00")
+
+    body = _get_private(client).json()
+    assert body["project_count"] == 1
+    card = body["projects"][0]
+    assert card["project_id"] == proj_c
+    assert card["attempt_count"] == 3
+
+    # Every attempt's exact proof source label survives onto the grouped card.
+    for label in ("GitHub Proof", "Document Proof", "Project Defense"):
+        assert label in card["evidence_sources"], f"missing {label} on grouped card"
+
+    # Skill rows carry the exact proof types their attempt earned — so each proof
+    # filter (GitHub / Document) finds its skill row.
+    py = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "python")
+    py_ref = next(ref for ref in py["projects"] if str(ref.get("project_id")) == proj_c)
+    assert "GitHub Proof" in (py_ref.get("supporting_proof_types") or [])
+    da = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "data analysis")
+    da_ref = next(ref for ref in da["projects"] if str(ref.get("project_id")) == proj_c)
+    assert "Document Proof" in (da_ref.get("supporting_proof_types") or [])
+    # No cross-skill spray: the document never earns GitHub Proof and vice versa.
+    assert "GitHub Proof" not in (da_ref.get("supporting_proof_types") or [])
+
+
+def test_representative_report_does_not_drop_older_attempt_document_proof(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The representative (newest) attempt lacks Document Proof; an OLDER grouped
+    attempt carries an exact Python-mapped Document Proof. The exact proof must
+    still appear on the card and on the Python skill row."""
+    doc_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Python", "confidence": "high", "snippet": "built the API", "page_number": 1}
+        ],
+    )
+    proj_a = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [doc_id]}
+    ).json()["project"]["id"]
+    proj_b = _create_project_defense(client).json()["project"]["id"]
+
+    _bump_created_at(mem_store, proj_a, "2020-01-01T00:00:00+00:00")
+    _bump_created_at(mem_store, proj_b, "2020-06-01T00:00:00+00:00")
+
+    body = _get_private(client).json()
+    assert body["project_count"] == 1
+    card = body["projects"][0]
+    assert card["project_id"] == proj_b  # representative has no Document Proof itself
+    assert "Document Proof" in card["evidence_sources"]
+
+    py = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "python")
+    py_ref = next(ref for ref in py["projects"] if str(ref.get("project_id")) == proj_b)
+    assert "Document Proof" in (py_ref.get("supporting_proof_types") or [])
+
+
+def test_grouped_attempts_aggregate_real_unmapped_website_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """An OLDER grouped attempt carries a real, attached, analyzed Website Proof
+    that maps NO skill; the representative attempt has no Website Proof. The
+    passport's real_unmapped_proof_context must include the Website Proof entry
+    (linking to the attempt's own report) — and it must still never count as
+    exact skill evidence."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="A landing page describing the product and its features was shown.",
+    )
+    proj_a = _create_project_defense(
+        client, attached_proofs={"website_proof_session_ids": [session_id]}
+    ).json()["project"]["id"]
+    doc_id = _seed_document_evidence(mem_store)
+    proj_b = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [doc_id]}
+    ).json()["project"]["id"]
+
+    _bump_created_at(mem_store, proj_a, "2020-01-01T00:00:00+00:00")
+    _bump_created_at(mem_store, proj_b, "2020-06-01T00:00:00+00:00")
+
+    body = _get_private(client).json()
+    assert body["project_count"] == 1
+    assert body["projects"][0]["project_id"] == proj_b
+
+    website_ctx = [
+        e for e in body["real_unmapped_proof_context"] if e["proof_type"] == "Website Proof"
+    ]
+    assert len(website_ctx) == 1, "attached analyzed Website Proof context must survive grouping"
+    # The entry links to the report of the attempt that actually carries the proof.
+    assert website_ctx[0]["project_id"] == proj_a
+    assert website_ctx[0]["report_url"] == f"/student/vbr/projects/{proj_a}/report"
+
+    # Unmapped context is NEVER exact skill evidence: no skill row claims it.
     for skill in body["skills"]:
         for ref in skill["projects"]:
-            if str(ref.get("project_id")) == rep_id:
-                assert "Website Proof" not in (ref.get("supporting_proof_types") or [])
-            # (F) Global invariant: a ref claiming Website Proof must resolve to a
-            # project whose own report has Website Proof attached.
-            if "Website Proof" in (ref.get("supporting_proof_types") or []):
-                ref_report = client.get(
-                    f"/api/v1/student/vbr/projects/{ref['project_id']}/report"
-                ).json()
-                assert int(
-                    (ref_report.get("evidence_package") or {}).get("website_proofs_count") or 0
-                ) > 0
+            assert "Website Proof" not in (ref.get("supporting_proof_types") or [])
+
+
+def test_vault_only_proof_never_becomes_grouped_attached_evidence(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Proof that exists ONLY in the vault (never attached to any attempt) must
+    not surface as grouped project evidence: no card chip, no skill-row proof
+    type, no real_unmapped context — it stays in the vault/Improve Passport
+    lane."""
+    proj_a = _create_project_defense(client).json()["project"]["id"]
+    proj_b = _create_project_defense(client).json()["project"]["id"]
+    _bump_created_at(mem_store, proj_a, "2020-01-01T00:00:00+00:00")
+    _bump_created_at(mem_store, proj_b, "2020-06-01T00:00:00+00:00")
+    # Vault-only analyzed Document Proof for Python — NEVER attached.
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Python", "confidence": "high", "snippet": "standalone notes", "page_number": 5}
+        ],
+    )
+
+    body = _get_private(client).json()
+    assert body["project_count"] == 1
+    card = body["projects"][0]
+    assert "Document Proof" not in card["evidence_sources"]
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            assert "Document Proof" not in (ref.get("supporting_proof_types") or [])
+    assert not any(
+        e["proof_type"] == "Document Proof" for e in body["real_unmapped_proof_context"]
+    )
+    # …while the vault/Improve Passport lane still knows about it, separately.
+    assert body["vault_unattached_count"] >= 1
+    py = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "python")
+    assert "Document Proof" in (py.get("vault_only_sources") or [])
+
+
+def test_url_only_metadata_creates_no_proof_across_grouped_attempts(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Two grouped attempts whose only 'evidence' is the project's repo URL (no
+    attached/analyzed proof of any kind): aggregation must not invent GitHub /
+    Website / Document Proof anywhere — chips, skill rows, or real-unmapped
+    context."""
+    proj_a = _create_project_defense(client).json()["project"]["id"]
+    proj_b = _create_project_defense(client).json()["project"]["id"]
+    _bump_created_at(mem_store, proj_a, "2020-01-01T00:00:00+00:00")
+    _bump_created_at(mem_store, proj_b, "2020-06-01T00:00:00+00:00")
+
+    body = _get_private(client).json()
+    assert body["project_count"] == 1
+    card = body["projects"][0]
+    for label in ("GitHub Proof", "Website Proof", "Document Proof"):
+        assert label not in card["evidence_sources"]
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            assert not (
+                set(ref.get("supporting_proof_types") or [])
+                & {"GitHub Proof", "Website Proof", "Document Proof"}
+            )
+    assert body["real_unmapped_proof_context"] == []
+
+
+def test_same_proof_across_attempts_dedupes_chips_refs_and_unmapped_entries(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The SAME document and the SAME unmapped Website Proof attached to two
+    grouped attempts must not duplicate anything: one chip per source label, one
+    grouped skill→project ref per skill, one real_unmapped entry."""
+    doc_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Python", "confidence": "high", "snippet": "built the API", "page_number": 1}
+        ],
+    )
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="A landing page describing the product and its features was shown.",
+    )
+    shared_proofs = {
+        "document_evidence_ids": [doc_id],
+        "website_proof_session_ids": [session_id],
+    }
+    proj_a = _create_project_defense(client, attached_proofs=shared_proofs).json()["project"]["id"]
+    proj_b = _create_project_defense(client, attached_proofs=shared_proofs).json()["project"]["id"]
+    _bump_created_at(mem_store, proj_a, "2020-01-01T00:00:00+00:00")
+    _bump_created_at(mem_store, proj_b, "2020-06-01T00:00:00+00:00")
+
+    body = _get_private(client).json()
+    assert body["project_count"] == 1
+    card = body["projects"][0]
+    # No duplicate proof chips on the grouped card.
+    assert len(card["evidence_sources"]) == len(set(card["evidence_sources"]))
+    # One deduplicated grouped ref per skill (never one per attempt), and no
+    # duplicated proof types inside a ref.
+    for skill in body["skills"]:
+        assert len(skill["projects"]) == 1
+        spt = skill["projects"][0].get("supporting_proof_types") or []
+        assert len(spt) == len(set(spt))
+    # The identical unmapped Website Proof across both attempts → ONE entry.
+    website_ctx = [
+        e for e in body["real_unmapped_proof_context"] if e["proof_type"] == "Website Proof"
+    ]
+    assert len(website_ctx) == 1
+
+
+def test_public_passport_unpublished_attempt_proof_stays_off_public_card(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Public safety regression: private grouped-attempt aggregation must not
+    change the public projection. An UNPUBLISHED older attempt's Website Proof
+    never reaches the public featured card, and no private/internal/raw fields
+    appear in the public payload."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    proj_a = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()["project"]["id"]
+    doc_id = _seed_document_evidence(mem_store)
+    proj_b = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"document_evidence_ids": [doc_id]},
+    ).json()["project"]["id"]
+    _bump_created_at(mem_store, proj_a, "2020-01-01T00:00:00+00:00")
+    _bump_created_at(mem_store, proj_b, "2020-06-01T00:00:00+00:00")
+
+    # Only the representative (no-website) attempt is published.
+    _publish_project_report(client, proj_b)
+    slug = _publish(client).json()["public_slug"]
+
+    # Privately, the aggregated card DOES carry the Website Proof…
+    private_card = _get_private(client).json()["projects"][0]
+    assert "Website Proof" in private_card["evidence_sources"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    response = _get_public(client, slug)
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    # …but the public featured card is built from published reports only: the
+    # unpublished attempt's Website Proof never leaks onto it.
+    assert body["featured_project_count"] == 1
+    assert "Website Proof" not in body["featured_projects"][0]["evidence_sources"]
+    # No private context layers or internal ids on the public payload.
+    blob = json.dumps(body).lower()
+    assert "real_unmapped" not in blob
+    assert proj_a not in blob
+    assert proj_b not in blob
+    assert USER_ID not in blob
 
 
 def test_collapsed_attempt_website_proof_kept_when_representative_has_it(
@@ -2876,3 +3190,65 @@ def test_public_passport_never_carries_attachment_overview_or_suggestions(
     assert "relation_reason" not in text
     assert "relation_strength" not in text
     assert "suggestion_reason" not in text
+
+
+# ── Real-unmapped-proof context (mirrored from project reports) ───────────────
+
+
+def test_private_passport_mirrors_report_real_unmapped_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """10. The private Work Passport mirrors each project report's
+    real_unmapped_proof_context 1:1 (the report is the source of truth), and the
+    mirrored context never inflates any evidence count."""
+    from tests.test_vbr_student_report import _seed_canonical_skill_evidence
+
+    # Canonical analyzed GitHub code evidence for an UNCLAIMED skill: real proof,
+    # attached to this project's repo, consumed by no exact skill row.
+    _seed_canonical_skill_evidence(mem_store, skill_name="Docker")
+    project_id = _create_project_defense(client).json()["project"]["id"]  # claims Python/React
+
+    body = _get_private(client).json()
+
+    entries = [
+        e for e in body["real_unmapped_proof_context"] if e["proof_type"] == "GitHub Proof"
+    ]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["project_id"] == project_id
+    assert entry["report_url"] == f"/student/vbr/projects/{project_id}/report"
+    assert entry["reason"] == "Analyzed source evidence exists, but no exact skill row consumed it yet."
+
+    # …and it mirrors exactly what the project report itself knows about.
+    report = client.get(f"/api/v1/student/vbr/projects/{project_id}/report").json()
+    assert entries == [
+        e for e in report["real_unmapped_proof_context"] if e["proof_type"] == "GitHub Proof"
+    ]
+
+    # NEVER counted: no skill row cites GitHub Proof, the project card carries no
+    # GitHub Proof badge, and the passport-wide source counts stay at zero.
+    for skill in body["skills"]:
+        for ref in skill["projects"]:
+            assert "GitHub Proof" not in (ref.get("supporting_proof_types") or [])
+    for project in body["projects"]:
+        assert "GitHub Proof" not in project["evidence_sources"]
+    assert body["evidence_source_counts"].get("GitHub Proof", 0) == 0
+
+
+def test_public_passport_never_exposes_real_unmapped_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The public Work Passport payload never carries the private
+    real_unmapped_proof_context layer (or any 'real_unmapped' fragment)."""
+    from tests.test_vbr_student_report import _seed_canonical_skill_evidence
+
+    _seed_canonical_skill_evidence(mem_store, skill_name="Docker")
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    _publish_project_report(client, project_id)
+    slug = _publish(client).json()["public_slug"]
+
+    public = _get_public(client, slug)
+    assert public.status_code == 200, public.text
+    body = public.json()
+    assert "real_unmapped_proof_context" not in body
+    assert "real_unmapped" not in json.dumps(body).lower()

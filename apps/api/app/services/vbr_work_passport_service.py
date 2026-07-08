@@ -1277,8 +1277,16 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     # Website Proofs that did NOT map to any skill. Deduped per (project, focus)
     # so multiple generic captures of the same kind collapse to one honest card.
     website_proof_project_context: list[dict[str, Any]] = []
+    # Real-unmapped-proof context mirrored from each project's private report
+    # (the report is the single source of truth — the passport never re-detects
+    # proof itself). Aggregated across EVERY report attempt in each grouped
+    # project (deduped), so real analyzed proof attached to a non-representative
+    # attempt never disappears. Context only: never skill evidence, never
+    # counted anywhere, and never on the public passport projection.
+    real_unmapped_proof_context: list[dict[str, Any]] = []
     for group in groups:
         representative_project, representative_report = group[0]
+        group_reports = [report for _, report in group]
         token = representative_project.get("public_report_token")
         has_public_report = bool(token)
 
@@ -1287,21 +1295,29 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         claimed_skills = _dedupe_preserve(
             [s for _, report in group for s in (report.get("claimed_skills") or [])]
         )
-        # NAVIGATION-CONSISTENCY (fail-closed): a collapsed card links to exactly
-        # ONE report — the representative's (its private report route + published
-        # token). So the card's evidence badges, proof chain, evidence package and
-        # top skills are derived from the REPRESENTATIVE report ONLY, never unioned
-        # across the other collapsed attempts. Unioning let a Website Proof (or any
-        # proof) attached to a *different* attempt ride onto this card while the
-        # report it links to shows that proof "not attached" — the exact leak that
-        # made a Teachable-Machine card advertise Website Proof its own report
-        # denied. The per-attempt evidence still lives on each attempt's own report.
+        # GROUPED-ATTEMPT AGGREGATION: the representative report still provides
+        # the card's stable display metadata (title / description / repo identity /
+        # the single report link + publish state), but PROOF-BEARING fields are
+        # aggregated across EVERY report attempt in the group. Each attempt's
+        # evidence badges are derived by the same fail-closed report logic
+        # (``_evidence_sources`` reads only the report's attached, analyzed
+        # ``evidence_package``), so unioning them never invents proof — it only
+        # stops real attached proof on a non-representative attempt from
+        # disappearing off the card. Vault-only / suggested / unattached proof is
+        # never part of any report's evidence package, so it can never ride in.
+        # Each attempt's own report remains the drill-down source of truth for
+        # exactly which attempt carries which proof.
         evidence_sources = _dedupe_preserve(
-            _evidence_sources(representative_report, has_public_report)
+            [
+                src
+                for report in group_reports
+                for src in _evidence_sources(report, has_public_report=False)
+            ]
+            + ([_SRC_REPORT] if has_public_report else [])
         )
         evidence_package = representative_report.get("evidence_package") or {}
 
-        top_skills = _project_top_skills([representative_report])
+        top_skills = _project_top_skills(group_reports)
         project_summaries.append(
             {
                 "project_id": str(representative_project["id"]),
@@ -1335,12 +1351,15 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
 
         # Collect this project's Website Proofs that stayed PROJECT-LEVEL only
         # (mapped no skill) so the Skills Evidence Map can explain the honest gap.
-        project_id = str(representative_project["id"])
         project_title = representative_report.get("project_title") or ""
         seen_focus: set[str] = set()
-        # Representative report only — the card links to it, so its project-level
-        # Website Proof context is the only context consistent with that report.
-        for report in (representative_report,):
+        # Every attempt in the group — a project-level Website Proof attached to a
+        # non-representative attempt is still real, attached context for this
+        # grouped project. Each entry links to the report of the attempt that
+        # actually carries it (owner-only route), deduped per focus so repeated
+        # generic captures across attempts collapse to one honest card.
+        for member_project, report in group:
+            member_id = str(member_project["id"])
             for entry in report.get("website_skill_evidence") or []:
                 if entry.get("skill_mapping_available"):
                     continue  # mapped a skill — surfaced as skill evidence, not here
@@ -1350,7 +1369,7 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
                 seen_focus.add(focus_key)
                 website_proof_project_context.append(
                     {
-                        "project_id": project_id,
+                        "project_id": member_id,
                         "project_title": project_title,
                         "focus_key": focus_key,
                         "focus_label": str(entry.get("website_purpose_label") or ""),
@@ -1358,22 +1377,48 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
                         "reason": str(entry.get("unmapped_reason") or ""),
                         "action_guidance": str(entry.get("strengthen_action") or ""),
                         "mapped_to_skills": False,
-                        "report_path": f"{_PRIVATE_PROJECT_REPORT_PREFIX}{project_id}/report",
+                        "report_path": f"{_PRIVATE_PROJECT_REPORT_PREFIX}{member_id}/report",
                     }
                 )
 
+        # Mirror EVERY attempt's real-unmapped-proof context — no re-detection,
+        # the report builder already fail-closed-qualified each entry. Entries
+        # keep their own attempt's report_url (that report is where the proof
+        # actually lives), and identical proof recurring across attempts of this
+        # grouped project is deduped by its safe display identity so it never
+        # renders twice.
+        seen_unmapped: set[tuple[str, str, str, str]] = set()
+        for report in group_reports:
+            for ctx in report.get("real_unmapped_proof_context") or []:
+                if not isinstance(ctx, dict):
+                    continue
+                unmapped_key = (
+                    str(ctx.get("proof_type") or "").strip().lower(),
+                    str(ctx.get("evidence_label") or "").strip().lower(),
+                    str(ctx.get("reason") or "").strip().lower(),
+                    str(ctx.get("safe_summary") or "").strip().lower(),
+                )
+                if unmapped_key in seen_unmapped:
+                    continue
+                seen_unmapped.add(unmapped_key)
+                real_unmapped_proof_context.append(dict(ctx))
+
     published_report_count = sum(1 for p in project_summaries if p["report"]["is_public"])
 
-    # Skills aggregate from the REPRESENTATIVE report of each grouped project —
-    # the same report the project card links to — so a skill→project ref can never
-    # advertise a proof (e.g. Website Proof) that lives only on a *different*
-    # collapsed attempt and is absent from the report the ref routes to. This keeps
-    # the Website Proof filter honest: a skill row shows Website Proof only when the
-    # linked project report actually has it attached. ``project_count`` still
-    # reflects distinct projects, not duplicate attempts.
+    # Skills aggregate from EVERY report attempt of each grouped project: one
+    # shared project summary paired with each attempt report, so exact skill
+    # evidence recorded on a non-representative attempt (its fail-closed,
+    # skill-specific ``supporting_sources`` / trace references) merges into the
+    # grouped skill→project row instead of disappearing. The aggregation dedupes
+    # the grouped project to a single reference (``_project_ref_identity``),
+    # unions each skill's proof types, keeps the strongest qualitative label any
+    # attempt earned, and never fabricates proof — only report-qualified skill
+    # rows contribute. ``project_count`` still reflects distinct projects, not
+    # duplicate attempts.
     skill_cards = [
-        (project_summaries[i], groups[i][0][1])
-        for i in range(len(groups))
+        (project_summaries[i], report)
+        for i, group in enumerate(groups)
+        for _, report in group
     ]
     skills = _aggregate_skills_with_detail(skill_cards, public=False)
 
@@ -1530,6 +1575,7 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         "projects": project_summaries,
         "evidence_source_counts": evidence_source_counts,
         "website_proof_project_context": website_proof_project_context,
+        "real_unmapped_proof_context": real_unmapped_proof_context,
         "vault_skill_summaries": vault_skill_summaries,
         "vault_proof_count": len(vault_items),
         "vault_unattached_count": vault_unattached_count,

@@ -365,6 +365,12 @@ _EXTRA_UNSAFE_KEYS = {
     "ocrtext",
     "rawtranscript",
     "providerconfig",
+    # Private-only real-unmapped-proof layer ("Attached proof not yet
+    # skill-mapped"). It exists ONLY on the owner report / owner passport; the
+    # public builders allowlist their fields and omit it, and this key makes an
+    # accidental leak fail closed at the public gate.
+    "realunmappedproofcontext",
+    "real_unmapped_proof_context",
 }
 
 # Extra unsafe substrings to reject on (lower-cased value match), layered on top

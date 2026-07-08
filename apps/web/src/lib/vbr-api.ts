@@ -1644,6 +1644,14 @@ export type VBRStudentProjectReportResponse = {
   evidence_traces?: EvidenceTrace[]
 
   /**
+   * PRIVATE-ONLY "Attached proof not yet skill-mapped": REAL analyzed proof
+   * attached to this project that no exact claimed skill row consumed. Context
+   * only — never part of the skill evidence matrix, never on the public
+   * projection. Absent on older payloads.
+   */
+  real_unmapped_proof_context?: RealUnmappedProofContext[]
+
+  /**
    * "Other student proofs for related skills" — safe student-vault proofs that
    * match this report's claimed skills but are NOT attached to this project.
    * Cross-proof / vault evidence, kept separate from the attached skill matrix
@@ -2249,6 +2257,38 @@ export type PassportWebsiteProofContext = {
   report_path: string
 }
 
+/**
+ * PRIVATE-ONLY: one REAL, analyzed, project-attached proof source that no exact
+ * claimed skill row consumed — the "Attached proof not yet skill-mapped" layer.
+ *
+ * Exact skill-mapped evidence stays exact; this context is shown separately so
+ * real proof is never hidden AND never confused with a skill claim. It is NEVER
+ * skill evidence, never counted in proof filter counts / skill / project counts
+ * / capability aggregates / graph nodes, and never present on public payloads.
+ * Fake metadata (a repo URL, a website URL, a filename, an unanswered question
+ * plan) can never produce an entry — the backend qualifies only genuinely
+ * analyzed proof.
+ */
+export type RealUnmappedProofContext = {
+  /** Canonical proof-type label: "GitHub Proof" | "Website Proof" | "Document Proof" | "Project Defense". */
+  proof_type: "GitHub Proof" | "Website Proof" | "Document Proof" | "Project Defense" | string
+  project_id: string
+  project_title: string
+  /** Owner-only private route to the project's report preview. */
+  report_url?: string | null
+  /** Honest closed reason the proof did not map to an exact skill row. */
+  reason: string
+  /** One safe, bounded sentence describing the real analyzed proof. */
+  safe_summary: string
+  /** Short label for the kind of analyzed evidence (e.g. "Analyzed source evidence"). */
+  evidence_label?: string | null
+  observed_at?: string | null
+  /** Count of analyzed evidence items backing this entry (never a score). */
+  source_count?: number | null
+  /** In-page anchor of the matching proof section on the project report. */
+  inspection_anchor?: string | null
+}
+
 /** The owner-only private Work Passport (full evidence wallet). */
 /**
  * Recruiter-safe candidate identity header for the Verified Work Passport.
@@ -2303,6 +2343,13 @@ export type PrivateWorkPassport = {
    * state. Never counted as skill evidence; may be absent on older payloads.
    */
   website_proof_project_context?: PassportWebsiteProofContext[]
+  /**
+   * PRIVATE-ONLY "Attached proof not yet skill-mapped" layer, mirrored from
+   * each project's private report. Rendered as a standing secondary panel
+   * below the Skill Evidence Map — never as skill evidence, never counted in
+   * any filter count / aggregate / graph. Absent on older payloads.
+   */
+  real_unmapped_proof_context?: RealUnmappedProofContext[]
   /**
    * Student Proof Vault — Layer 1: COMPACT per-skill summaries (the main
    * dashboard). Each card carries category, qualitative status, counts, and a

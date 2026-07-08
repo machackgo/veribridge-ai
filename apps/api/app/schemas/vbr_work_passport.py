@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from app.schemas.vbr_student_report import (
     ProofAttachmentEntry,
+    RealUnmappedProofContext,
     VaultSkillSummary,
     VBREvidenceTrace,
 )
@@ -543,6 +544,14 @@ class PrivateWorkPassportResponse(BaseModel):
     website_proof_project_context: list[PassportWebsiteProofContext] = Field(
         default_factory=list
     )
+
+    # REAL analyzed, project-attached proof that no exact skill row consumed —
+    # mirrored from each project's private report (the source of truth) so the
+    # passport shows the same "Attached proof not yet skill-mapped" context the
+    # report knows about. Context only: never skill evidence, never counted in
+    # proof filter counts / capability aggregates / graph nodes, and never on
+    # the public passport projection.
+    real_unmapped_proof_context: list[RealUnmappedProofContext] = Field(default_factory=list)
 
     # Student Proof Vault — Layer 1: COMPACT per-skill summaries (the main
     # dashboard). Each card carries category, qualitative status, counts, and a

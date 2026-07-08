@@ -17,8 +17,8 @@ import {
   PROOF_CHAIN_STEPS,
   type EvidenceGraphOverview,
   type PassportProjectSummary,
-  type PassportWebsiteProofContext,
   type PrivateWorkPassport,
+  type RealUnmappedProofContext,
   type WorkPassportStatus,
 } from "@/lib/vbr-api"
 import { buildPublicAppUrl } from "@/lib/api"
@@ -926,88 +926,103 @@ function SkillEvidenceNav({
   )
 }
 
-// ── Project-level-only Website Proof (Diagnosis-C explainer) ──────────────────
+// ── Real proof, not skill-mapped yet (standing secondary panel) ───────────────
+
+/** Honest per-proof-type fallback reason for a real-but-unmapped proof entry. */
+const REAL_UNMAPPED_TYPE_REASON: Record<string, string> = {
+  "GitHub Proof": "Analyzed source evidence exists, but no exact skill row consumed it yet.",
+  "Website Proof": "Runtime proof exists, but it is not mapped to a specific skill yet.",
+  "Document Proof": "Analyzed document evidence exists, but it is not mapped to a specific skill yet.",
+  "Project Defense": "Defense evidence exists, but it is not mapped to a specific skill yet.",
+}
 
 /**
- * Shown when the evaluator filters Proof type = Website Proof but NO skill→project
- * row maps it, yet the passport DOES carry project-level Website Proof. Instead of
- * the generic "nothing here" copy, it states the honest truth: Website Proof
- * exists, it just hasn't been mapped to a specific skill because the observed
- * behaviour was navigation/layout-only — then tells the student exactly how to
- * strengthen it. It never renders these as skill evidence and never counts them.
+ * Standing secondary panel below the Skill Evidence Map: REAL analyzed proof
+ * that is attached to a project but not yet mapped to a specific skill claim.
+ * Generalizes the old Website-only project-level empty state to every proof
+ * type (GitHub / Website / Document / Project Defense).
+ *
+ * Honesty invariants:
+ *  - renders alongside exact skill rows (it is NOT only an empty state);
+ *  - a live Proof Type filter narrows it to that proof type only;
+ *  - entries are informational context — they never appear as skill evidence
+ *    and never change proof filter counts, skill/project counts, role-area
+ *    filters, graph nodes, or capability aggregates (the backend already
+ *    excludes them from all of those; this panel reads its own list only);
+ *  - only real analyzed proof reaches this list (the backend never qualifies
+ *    a bare repo URL / website URL / filename / unanswered question plan).
  */
-function WebsiteProofProjectLevelEmptyState({
-  contexts,
+function RealUnmappedProofSection({
+  entries,
+  proofFilter,
 }: {
-  contexts: PassportWebsiteProofContext[]
+  entries: RealUnmappedProofContext[]
+  proofFilter: string | null
 }) {
+  const visible = proofFilter ? entries.filter((e) => e.proof_type === proofFilter) : entries
+  if (visible.length === 0) return null
   return (
     <div
-      data-testid="website-proof-project-level-empty"
-      style={{ display: "flex", flexDirection: "column", gap: 12 }}
+      data-testid="real-unmapped-proof-section"
+      style={{ display: "flex", flexDirection: "column", gap: 10 }}
     >
-      <Card>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <Badge tone="purple">Website Proof</Badge>
-            <span style={{ fontSize: 11, fontWeight: 600, color: TOKEN.muted }}>Project-level only</span>
-          </div>
-          <p
-            data-testid="website-proof-empty-headline"
-            style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}
-          >
-            Website Proof exists, but it has not been mapped to specific skills yet.
-          </p>
-          <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
-            Current website evidence was classified as navigation/layout, which proves the site can
-            be inspected but does not strongly demonstrate a specific skill. Record a stronger
-            Website Proof showing runtime behavior such as model prediction, API response, dashboard
-            interaction, route recommendation, or workflow completion.
-          </p>
-        </div>
-      </Card>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <h3
+          data-testid="real-unmapped-proof-heading"
+          style={{ fontSize: 15, fontWeight: 700, color: TOKEN.ink, margin: 0 }}
+        >
+          Attached proof not yet skill-mapped
+        </h3>
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, maxWidth: 620, lineHeight: 1.5 }}>
+          These proof sources are attached to this project but are not yet mapped to a specific
+          skill claim. They are real, analyzed evidence — shown separately so they are never
+          confused with exact skill evidence, and never counted in the map above.
+        </p>
+      </div>
 
-      {/* Project-level Website Proof cards — informational, never skill evidence. */}
-      {contexts.map((ctx) => (
-        <Card key={`${ctx.project_id}:${ctx.focus_key}`}>
+      {visible.map((ctx, i) => (
+        <Card key={`${ctx.project_id}:${ctx.proof_type}:${ctx.evidence_label ?? ""}:${i}`}>
           <div
-            data-testid="website-proof-project-context-card"
+            data-testid="real-unmapped-proof-card"
+            data-proof-type={ctx.proof_type}
+            data-project-id={ctx.project_id}
             style={{ display: "flex", flexDirection: "column", gap: 6 }}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>
-                {ctx.project_title || "Untitled project"}
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <Badge tone={SOURCE_TONE[ctx.proof_type] ?? "slate"}>{ctx.proof_type}</Badge>
+                <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>
+                  {ctx.project_title || "Untitled project"}
+                </span>
+              </div>
               <span style={{ fontSize: 11, fontWeight: 600, color: TOKEN.muted }}>
-                Website Proof: Project-level only
+                Real proof · not skill-mapped yet
               </span>
             </div>
-            {ctx.explanation && (
-              <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{ctx.explanation}</p>
-            )}
-            {ctx.reason && (
-              <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
-                Reason: {ctx.reason}
-                {ctx.focus_label ? ` · ${ctx.focus_label}` : ""}
+            {ctx.safe_summary && (
+              <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                {ctx.safe_summary}
               </p>
             )}
-            {ctx.action_guidance && (
-              <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
-                Action: {ctx.action_guidance}
-              </p>
-            )}
+            <p data-testid="real-unmapped-proof-reason" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
+              {ctx.reason || REAL_UNMAPPED_TYPE_REASON[ctx.proof_type] || "Not mapped to a specific skill yet."}
+              {ctx.evidence_label ? ` · ${ctx.evidence_label}` : ""}
+              {typeof ctx.source_count === "number" && ctx.source_count > 0
+                ? ` · ${ctx.source_count} analyzed evidence ${ctx.source_count === 1 ? "item" : "items"}`
+                : ""}
+            </p>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
-              {ctx.report_path && (
+              {ctx.report_url && (
                 <Link
-                  data-testid="website-proof-context-open-report"
-                  href={ctx.report_path}
+                  data-testid="real-unmapped-open-report"
+                  href={ctx.inspection_anchor ? `${ctx.report_url}#${ctx.inspection_anchor}` : ctx.report_url}
                   style={{ ...secondaryBtnStyle, padding: "5px 10px", fontSize: 12 }}
                 >
                   Open project report →
                 </Link>
               )}
               <Link
-                data-testid="website-proof-context-open-vault"
+                data-testid="real-unmapped-open-vault"
                 href="/student/vbr/passport/vault"
                 style={{ ...secondaryBtnStyle, padding: "5px 10px", fontSize: 12 }}
               >
@@ -1461,10 +1476,28 @@ function PassportGraphExplorer({
     ? graph.skills.filter((s) => roleSkillKeys.has(s.key))
     : graph.skills
 
-  // Project-level-only Website Proof: attached Website Proofs that mapped no skill
-  // (too-generic observed behaviour). Drives the honest Website-Proof empty state
-  // below — informational context, NEVER counted or shown as skill evidence.
-  const websiteProjectContext = passport.website_proof_project_context ?? []
+  // "Attached proof not yet skill-mapped": REAL analyzed proof attached to a
+  // project that no exact skill row consumed. Standing secondary panel below the
+  // map — informational context, NEVER counted or shown as skill evidence, and
+  // NEVER folded into filter counts / aggregates / the graph. Older payloads
+  // without the new field fall back to the legacy Website-only project context
+  // so previously-honest Website entries keep rendering.
+  const realUnmappedProof: RealUnmappedProofContext[] =
+    passport.real_unmapped_proof_context ??
+    (passport.website_proof_project_context ?? []).map((ctx) => ({
+      proof_type: WEBSITE_PROOF_LABEL,
+      project_id: ctx.project_id,
+      project_title: ctx.project_title,
+      report_url: ctx.report_path || null,
+      reason: ctx.reason || REAL_UNMAPPED_TYPE_REASON[WEBSITE_PROOF_LABEL],
+      safe_summary: ctx.explanation,
+      evidence_label: ctx.focus_label || null,
+      inspection_anchor: "website-proof",
+    }))
+  // Real-unmapped entries matching the active proof filter (all when unfiltered).
+  const visibleRealUnmapped = proofFilter
+    ? realUnmappedProof.filter((e) => e.proof_type === proofFilter)
+    : realUnmappedProof
 
   // Role-area / project / proof filters act on the skill's ROWS (not just its
   // identity). The role-area filter fails closed to the exact skill→project rows
@@ -1769,28 +1802,30 @@ function PassportGraphExplorer({
             </p>
           </Card>
         ) : visibleSkills.length === 0 ? (
-          proofFilter === WEBSITE_PROOF_LABEL && websiteProjectContext.length > 0 ? (
-            // Website Proof exists at project level but mapped no skill — explain
-            // the honest gap + how to strengthen it, instead of the generic copy.
-            <WebsiteProofProjectLevelEmptyState contexts={websiteProjectContext} />
-          ) : (
-            <Card>
-              {proofFilter && roleAggregate ? (
-                <p data-testid="skills-panel-role-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-                  No {roleAggregate.label} evidence uses {proofFilter}. Try all proof types, or attach{" "}
-                  {(PROOF_SHORT_LABEL[proofFilter] ?? proofFilter).toLowerCase()} evidence to a project that supports this role area.
-                </p>
-              ) : proofFilter ? (
-                <p data-testid="skills-panel-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
-                  {proofFilterEmptyCopy(proofFilter)}
-                </p>
-              ) : (
-                <p data-testid="skills-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-                  No matching skill-project evidence found. Clear filters to see all skills.
-                </p>
-              )}
-            </Card>
-          )
+          <Card>
+            {proofFilter && visibleRealUnmapped.length > 0 ? (
+              // Real analyzed proof of this type exists but mapped no skill —
+              // the honest gap is stated here; the entries render in the
+              // standing "Attached proof not yet skill-mapped" panel below.
+              <p data-testid="skills-panel-proof-empty-with-context" style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+                No exact skill-mapped evidence uses {proofFilter} yet. Real attached {PROOF_SHORT_LABEL[proofFilter] ?? proofFilter}{" "}
+                proof exists — see &ldquo;Attached proof not yet skill-mapped&rdquo; below.
+              </p>
+            ) : proofFilter && roleAggregate ? (
+              <p data-testid="skills-panel-role-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                No {roleAggregate.label} evidence uses {proofFilter}. Try all proof types, or attach{" "}
+                {(PROOF_SHORT_LABEL[proofFilter] ?? proofFilter).toLowerCase()} evidence to a project that supports this role area.
+              </p>
+            ) : proofFilter ? (
+              <p data-testid="skills-panel-proof-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+                {proofFilterEmptyCopy(proofFilter)}
+              </p>
+            ) : (
+              <p data-testid="skills-panel-filtered-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                No matching skill-project evidence found. Clear filters to see all skills.
+              </p>
+            )}
+          </Card>
         ) : (
           visibleSkills.map((node) => (
             <SkillCard
@@ -1805,6 +1840,12 @@ function PassportGraphExplorer({
           ))
         )}
       </div>
+
+      {/* STANDING SECONDARY PANEL — real analyzed proof attached to a project
+          but not yet mapped to a specific skill claim. Renders alongside exact
+          skill rows (not only as an empty state), narrows with the active Proof
+          Type filter, and never affects any count, aggregate, or graph node. */}
+      <RealUnmappedProofSection entries={realUnmappedProof} proofFilter={proofFilter} />
 
       {/* SECONDARY — the project lens (report publishing / proof chain). */}
       <div data-testid="passport-projects-panel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>

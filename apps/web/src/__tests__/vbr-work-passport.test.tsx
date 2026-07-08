@@ -2794,7 +2794,7 @@ describe("PrivatePassportView — Proof Type dropdown reflects the whole passpor
     expect(rows.map((r) => r.getAttribute("data-project-id"))).toEqual(["proj-tm"])
   })
 
-  it("explains the project-level-only Website Proof and lists context cards when the passport carries it", async () => {
+  it("renders legacy project-level Website Proof context in the real-unmapped panel (fallback for older payloads)", async () => {
     const p = makeWebsiteGlobalOnlyPassport({
       website_proof_project_context: [
         {
@@ -2819,26 +2819,26 @@ describe("PrivatePassportView — Proof Type dropdown reflects the whole passpor
 
     fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
 
-    // The honest explanatory empty state replaces the generic copy.
+    // The honest with-context empty copy replaces the generic copy, and the
+    // standing real-unmapped panel carries the entry.
     expect(screen.queryByTestId("skills-panel-proof-empty")).not.toBeInTheDocument()
-    const panel = screen.getByTestId("website-proof-project-level-empty")
-    expect(within(panel).getByTestId("website-proof-empty-headline")).toHaveTextContent(
-      "Website Proof exists, but it has not been mapped to specific skills yet.",
-    )
-    expect(panel).toHaveTextContent(
-      "Current website evidence was classified as navigation/layout",
+    expect(screen.getByTestId("skills-panel-proof-empty-with-context")).toBeInTheDocument()
+    const panel = screen.getByTestId("real-unmapped-proof-section")
+    expect(within(panel).getByTestId("real-unmapped-proof-heading")).toHaveTextContent(
+      "Attached proof not yet skill-mapped",
     )
 
-    // A project-level context card names the project, reason, action and safe routes.
-    const card = within(panel).getByTestId("website-proof-project-context-card")
+    // The context card names the project, reason, and safe routes.
+    const card = within(panel).getByTestId("real-unmapped-proof-card")
+    expect(card).toHaveAttribute("data-proof-type", "Website Proof")
     expect(card).toHaveTextContent("Boston Smart Accident Risk Rerouting")
-    expect(card).toHaveTextContent("Website Proof: Project-level only")
+    expect(card).toHaveTextContent("Real proof · not skill-mapped yet")
     expect(card).toHaveTextContent("Navigation/layout evidence only")
-    expect(within(card).getByTestId("website-proof-context-open-report")).toHaveAttribute(
+    expect(within(card).getByTestId("real-unmapped-open-report")).toHaveAttribute(
       "href",
-      "/student/vbr/projects/proj-boston/report",
+      "/student/vbr/projects/proj-boston/report#website-proof",
     )
-    expect(within(card).getByTestId("website-proof-context-open-vault")).toHaveAttribute(
+    expect(within(card).getByTestId("real-unmapped-open-vault")).toHaveAttribute(
       "href",
       "/student/vbr/passport/vault",
     )
@@ -2862,6 +2862,131 @@ describe("PrivatePassportView — Proof Type dropdown reflects the whole passpor
     const options = proofFilterOptionNames()
     expect(options.filter((o) => o === "Website Proof")).toHaveLength(1)
     expect(options).toContain("Website Proof")
+  })
+})
+
+/** Passport carrying exact skill rows AND real-unmapped proof context. */
+function makeRealUnmappedPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  return makeWebsiteGlobalOnlyPassport({
+    real_unmapped_proof_context: [
+      {
+        proof_type: "Website Proof",
+        project_id: "proj-boston",
+        project_title: "Boston Smart Accident Risk Rerouting",
+        report_url: "/student/vbr/projects/proj-boston/report",
+        reason: "Runtime proof exists, but it is not mapped to a specific skill yet.",
+        safe_summary: "A recorded website runtime proof is attached to this project.",
+        evidence_label: "Navigation / page layout",
+        inspection_anchor: "website-proof",
+      },
+      {
+        proof_type: "Project Defense",
+        project_id: "proj-boston",
+        project_title: "Boston Smart Accident Risk Rerouting",
+        report_url: "/student/vbr/projects/proj-boston/report",
+        reason: "Defense evidence exists, but it is not mapped to a specific skill yet.",
+        safe_summary: "An answered and analyzed Project Defense session is attached to this project.",
+        evidence_label: "Analyzed defense evidence",
+        inspection_anchor: "project-defense",
+      },
+    ],
+    ...overrides,
+  })
+}
+
+describe("PrivatePassportView — real-unmapped proof panel (Attached proof not yet skill-mapped)", () => {
+  it("renders the panel alongside exact skill rows — it is a standing section, not only an empty state", async () => {
+    const p = makeRealUnmappedPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Exact skill rows are visible (no filter) …
+    expect(screen.getAllByTestId("passport-skill-card").map((c) => c.getAttribute("data-skill"))).toEqual([
+      "Machine Learning",
+    ])
+    // … AND the real-unmapped panel renders at the same time.
+    const panel = screen.getByTestId("real-unmapped-proof-section")
+    expect(within(panel).getByTestId("real-unmapped-proof-heading")).toHaveTextContent(
+      "Attached proof not yet skill-mapped",
+    )
+    expect(panel).toHaveTextContent(
+      "These proof sources are attached to this project but are not yet mapped to a specific skill claim",
+    )
+    const cards = within(panel).getAllByTestId("real-unmapped-proof-card")
+    expect(cards.map((c) => c.getAttribute("data-proof-type"))).toEqual(["Website Proof", "Project Defense"])
+    // Entries link to the project report (with the proof-section anchor).
+    expect(within(cards[0]).getByTestId("real-unmapped-open-report")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-boston/report#website-proof",
+    )
+  })
+
+  it("does not change skill/project counts, proof filter options, or exact evidence rows", async () => {
+    const p = makeRealUnmappedPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Skill / project counts stay exactly what the exact evidence map holds.
+    expect(screen.getByText("Skills (1)")).toBeInTheDocument()
+    expect(screen.getByText("Projects (1)")).toBeInTheDocument()
+    // "Project Defense" exists ONLY as real-unmapped context here — it must NOT
+    // become a proof filter option (real-unmapped context never feeds counts).
+    const options = proofFilterOptionNames()
+    expect(options).not.toContain("Project Defense")
+    // The exact ML row still cites only its skill-specific proof (GitHub).
+    const ml = mapSkillCard("Machine Learning")
+    const row = within(ml).getAllByTestId("skill-project-evidence-row")[0]
+    expect(rowChipSources(row)).toEqual(["GitHub Proof"])
+  })
+
+  it("narrows to the active proof type: only matching real-unmapped entries render under a filter", async () => {
+    const p = makeRealUnmappedPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    // Website Proof filter → no exact row maps website, so the honest
+    // with-context copy shows, and ONLY the Website entry renders (not Defense).
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+    expect(screen.getByTestId("skills-panel-proof-empty-with-context")).toBeInTheDocument()
+    const cards = screen.getAllByTestId("real-unmapped-proof-card")
+    expect(cards.map((c) => c.getAttribute("data-proof-type"))).toEqual(["Website Proof"])
+
+    // GitHub Proof filter → exact GitHub rows still render; no GitHub entry
+    // exists in the real-unmapped context, so the panel disappears entirely.
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "GitHub Proof" } })
+    expect(screen.getAllByTestId("passport-skill-card")).toHaveLength(1)
+    expect(screen.queryByTestId("real-unmapped-proof-section")).not.toBeInTheDocument()
+  })
+
+  it("renders nothing for URL-only metadata: an empty context list never fakes a proof card", async () => {
+    // The project carries a repo_full_name AND a Website Proof source badge, but
+    // the backend qualified NO real-unmapped proof (repo URL / website URL alone
+    // are not proof) → the panel must not render at all.
+    const p = makeRealUnmappedPassport({ real_unmapped_proof_context: [] })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-evidence-controls")
+
+    expect(screen.queryByTestId("real-unmapped-proof-section")).not.toBeInTheDocument()
+    expect(screen.queryByText("Attached proof not yet skill-mapped")).not.toBeInTheDocument()
+
+    // Under the Website Proof filter the generic honest empty copy returns —
+    // never the with-context copy and never a fake proof card.
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+    expect(screen.getByTestId("skills-panel-proof-empty")).toBeInTheDocument()
+    expect(screen.queryByTestId("skills-panel-proof-empty-with-context")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("real-unmapped-proof-card")).not.toBeInTheDocument()
   })
 })
 

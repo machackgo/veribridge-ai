@@ -1412,3 +1412,88 @@ describe("ProjectReportView — Project Defense inspection", () => {
     }
   })
 })
+
+describe("ProjectReportView — Attached proof not yet skill-mapped strip", () => {
+  const realUnmappedReport = () =>
+    makeReport({
+      real_unmapped_proof_context: [
+        {
+          proof_type: "GitHub Proof",
+          project_id: "proj-1",
+          project_title: "Skill Evidence Tracker",
+          report_url: "/student/vbr/projects/proj-1/report",
+          reason: "Analyzed source evidence exists, but no exact skill row consumed it yet.",
+          safe_summary: "Analyzed GitHub source-code evidence is attached to this project.",
+          evidence_label: "Analyzed source evidence",
+          source_count: 2,
+          inspection_anchor: "github-proof",
+        },
+        {
+          proof_type: "Document Proof",
+          project_id: "proj-1",
+          project_title: "Skill Evidence Tracker",
+          report_url: "/student/vbr/projects/proj-1/report",
+          reason: "Analyzed document evidence exists, but it is not mapped to a specific skill yet.",
+          safe_summary: "Final Year Project Report was analyzed and is attached as project context.",
+          evidence_label: "Analyzed document evidence",
+          inspection_anchor: "documents",
+        },
+      ],
+    })
+
+  it("renders the strip with per-proof-type honest entries and section jump links", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(realUnmappedReport())
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    const strip = await screen.findByTestId("report-real-unmapped-strip")
+    expect(strip).toHaveTextContent("Attached proof not yet skill-mapped")
+    expect(strip).toHaveTextContent(
+      "These proof sources are attached to this project but are not yet mapped to a specific skill claim",
+    )
+
+    const entries = screen.getAllByTestId("report-real-unmapped-entry")
+    expect(entries.map((e) => e.getAttribute("data-proof-type"))).toEqual([
+      "GitHub Proof",
+      "Document Proof",
+    ])
+    expect(entries[0]).toHaveTextContent(
+      "Analyzed source evidence exists, but no exact skill row consumed it yet.",
+    )
+    expect(entries[1]).toHaveTextContent(
+      "Analyzed document evidence exists, but it is not mapped to a specific skill yet.",
+    )
+
+    // Entries jump to the existing proof sections instead of duplicating cards.
+    const jumps = screen.getAllByTestId("report-real-unmapped-jump")
+    expect(jumps.map((j) => j.getAttribute("href"))).toEqual(["#github-proof", "#documents"])
+  })
+
+  it("keeps the strip separate from the skill evidence cards — exact rows stay exact", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(realUnmappedReport())
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByTestId("report-real-unmapped-strip")
+
+    // The skill cards still render exactly the claimed skills, unchanged and
+    // Not assessed — the unmapped context never promotes a skill claim.
+    const cards = screen.getAllByTestId("skill-evidence-card")
+    expect(cards.map((c) => c.getAttribute("data-skill"))).toEqual(["Python", "React"])
+    for (const card of cards) {
+      expect(card.getAttribute("data-status")).toBe("Not assessed")
+    }
+    // No unmapped entry renders inside a skill evidence card.
+    for (const card of cards) {
+      expect(card.textContent).not.toContain("not yet skill-mapped")
+    }
+  })
+
+  it("renders no strip when the report has no real-unmapped context (URL-only metadata is never proof)", async () => {
+    // repo_url is set on the report, but the backend qualified nothing.
+    vi.mocked(getVBRProjectReport).mockResolvedValue(makeReport())
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(screen.queryByTestId("report-real-unmapped-strip")).not.toBeInTheDocument()
+    expect(screen.queryByText("Attached proof not yet skill-mapped")).not.toBeInTheDocument()
+  })
+})

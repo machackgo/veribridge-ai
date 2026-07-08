@@ -2201,3 +2201,28 @@ def test_public_inspection_scrubs_unsafe_transcript_excerpt() -> None:
     blob = json.dumps(cards[0])
     for unsafe in ("vbr/sessions", "token=abc123", "storage_path=vbr"):
         assert unsafe not in blob
+
+
+# ── Real-unmapped-proof context is a private-only key (fail-closed) ──────────
+
+
+def test_real_unmapped_proof_context_key_fails_the_public_scan() -> None:
+    """12. ``real_unmapped_proof_context`` is a PRIVATE-only layer: if it ever
+    reaches a public payload (any nesting, any casing shape), the unsafe-field
+    scan trips and the public gate refuses to serve the payload."""
+    from app.services.public_report_safety_service import (
+        PublicReportUnsafeError,
+        contains_unsafe_fields,
+        enforce_public_safe,
+    )
+
+    leaked = {"report_title": "Verified Build Report", "real_unmapped_proof_context": []}
+    assert contains_unsafe_fields(leaked)
+    with pytest.raises(PublicReportUnsafeError):
+        enforce_public_safe(leaked)
+
+    nested = {"projects": [{"realUnmappedProofContext": [{"proof_type": "GitHub Proof"}]}]}
+    assert contains_unsafe_fields(nested)
+
+    clean = {"report_title": "Verified Build Report", "skill_evidence": []}
+    assert not contains_unsafe_fields(clean)

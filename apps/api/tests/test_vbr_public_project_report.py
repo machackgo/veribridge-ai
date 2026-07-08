@@ -1446,3 +1446,33 @@ def test_public_report_flagged_inspection_is_withheld(
     assert card["question_text"] is None
     assert card["clip_available"] is False
     assert card["corroborates_github"] is False
+
+
+# ── Real-unmapped-proof context must never reach the public report ────────────
+
+
+def test_public_report_excludes_real_unmapped_proof_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """11. The private report carries real_unmapped_proof_context, but the public
+    projection never includes it (nor any 'real_unmapped' fragment)."""
+    from tests.test_vbr_student_report import _seed_canonical_skill_evidence
+
+    # Real analyzed GitHub code evidence for an UNCLAIMED skill → the private
+    # report has a real-unmapped GitHub entry.
+    _seed_canonical_skill_evidence(mem_store, skill_name="Docker")
+    project_id = _create_project_defense(client).json()["project"]["id"]
+
+    private = client.get(f"/api/v1/student/vbr/projects/{project_id}/report").json()
+    assert any(
+        e["proof_type"] == "GitHub Proof"
+        for e in private["real_unmapped_proof_context"]
+    ), "precondition: the private report must carry the unmapped context"
+
+    token = _publish(client, project_id).json()["public_token"]
+    response = _get_public(client, token)
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert "real_unmapped_proof_context" not in body
+    assert "real_unmapped" not in json.dumps(body).lower()

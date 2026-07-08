@@ -136,6 +136,31 @@ _SKILL_UNEVIDENCED_LIMITATION = (
     "Not yet strongly evidenced — treat as a claim pending more proof."
 )
 
+# ── Real-unmapped-proof context (private surfaces only) ──────────────────────
+#
+# Honest per-proof-type reasons for the "Attached proof not yet skill-mapped"
+# layer: REAL analyzed proof is attached to the project, but no exact claimed
+# skill row consumed it. Never generated from metadata alone (a repo URL, a
+# website URL, a filename, an unanswered question plan), never counted as skill
+# evidence, and never included in any public payload.
+_REAL_UNMAPPED_GITHUB_REASON = (
+    "Analyzed source evidence exists, but no exact skill row consumed it yet."
+)
+_REAL_UNMAPPED_WEBSITE_REASON = (
+    "Runtime proof exists, but it is not mapped to a specific skill yet."
+)
+_REAL_UNMAPPED_DOCUMENT_REASON = (
+    "Analyzed document evidence exists, but it is not mapped to a specific skill yet."
+)
+_REAL_UNMAPPED_DEFENSE_REASON = (
+    "Defense evidence exists, but it is not mapped to a specific skill yet."
+)
+
+# Owner-only route prefix for a project's private report preview (mirrors
+# ``vbr_work_passport_service._PRIVATE_PROJECT_REPORT_PREFIX``). Private
+# surfaces only — the public projections never include this context at all.
+_PRIVATE_PROJECT_REPORT_PREFIX = "/student/vbr/projects/"
+
 
 def _defense_area_label(score: int) -> str:
     """Map a 0-100 Project Defense analysis score to a qualitative label.
@@ -410,6 +435,28 @@ def _collect_github_smart_supported_skills(
         if match is not None:
             supported.add(_norm(match))
     return supported
+
+
+def _collect_github_smart_project_evidence_count(
+    db: Any, user_id: str, *, project_repo_ids: set[str]
+) -> int:
+    """Count canonical Smart GitHub code-evidence rows belonging to THIS project.
+
+    Counts every canonical ``skill_evidence`` row whose repository identity
+    matches one of ``project_repo_ids`` — regardless of whether its skill is
+    claimed on the project. Each canonical row carries a real repo-relative
+    ``file_path`` by construction, so this can only ever count genuine analyzed
+    source-code evidence (never repo metadata / a bare repo URL). Used solely to
+    decide whether REAL unmapped GitHub proof exists for the private
+    ``real_unmapped_proof_context`` layer; it never creates a skill row.
+    """
+    if not project_repo_ids:
+        return 0
+    try:
+        evidence = collect_canonical_github_skill_evidence(db, user_id)
+    except Exception:  # pragma: no cover - Smart GitHub bridge is best-effort
+        return 0
+    return sum(1 for ev in evidence if ev.repo_id and ev.repo_id in project_repo_ids)
 
 
 def _evidence_chip_count_for_skill(skill: str, video_chips: list[dict[str, Any]]) -> int:
@@ -1866,6 +1913,210 @@ def _enrich_skill_row(
     return row
 
 
+def _real_unmapped_entry(
+    *,
+    proof_type: str,
+    project_id: str,
+    project_title: str,
+    reason: str,
+    safe_summary: str,
+    evidence_label: str | None = None,
+    observed_at: str | None = None,
+    source_count: int | None = None,
+    inspection_anchor: str | None = None,
+) -> dict[str, Any]:
+    """One private-safe real-unmapped-proof context entry (closed field set).
+
+    Only safe display fields: never a proof/session/evidence id, storage path,
+    signed URL, raw text, or numeric score. Optional fields are omitted when
+    unknown rather than emitted as nulls."""
+    entry: dict[str, Any] = {
+        "proof_type": proof_type,
+        "project_id": project_id,
+        "project_title": project_title,
+        "report_url": f"{_PRIVATE_PROJECT_REPORT_PREFIX}{project_id}/report",
+        "reason": reason,
+        "safe_summary": _trace_text(safe_summary),
+    }
+    if evidence_label:
+        entry["evidence_label"] = evidence_label
+    if observed_at:
+        entry["observed_at"] = observed_at
+    if isinstance(source_count, int) and source_count > 0:
+        entry["source_count"] = source_count
+    if inspection_anchor:
+        entry["inspection_anchor"] = inspection_anchor
+    return entry
+
+
+def _build_real_unmapped_proof_context(
+    *,
+    project_id: str,
+    project_title: str,
+    skill_evidence: list[dict[str, Any]],
+    github_proof: dict[str, Any] | None,
+    github_code_evidence: list[dict[str, Any]],
+    github_smart_evidence_count: int,
+    website_entries: list[dict[str, Any]],
+    website_skill_evidence: list[dict[str, Any]],
+    document_entries: list[dict[str, Any]],
+    analysis: dict[str, Any] | None,
+    defense_questions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """REAL analyzed, project-attached proof that no exact skill row consumed.
+
+    The honesty layer between "exact skill-mapped evidence" and "hidden": when a
+    project carries genuinely analyzed proof (analyzed GitHub source code,
+    recorded/analyzed website runtime behaviour, an analyzed document, an
+    answered+analyzed Project Defense) but the skill matrix mapped none of it to
+    an exact claimed skill row, that proof is surfaced HERE — clearly separated
+    from skill evidence — instead of disappearing.
+
+    Fail-closed qualification per proof type (metadata is NEVER proof):
+
+    * GitHub — requires analyzed source evidence with real provenance: canonical
+      Smart GitHub code rows for THIS project's repo, line-level
+      ``skill_code_evidence`` from the attached analyzed proof, or the analyzed
+      proof's own ``detected_skills`` / ``evidence_files``. A bare repo URL /
+      ``repo_full_name`` / an attached-but-unanalyzed link qualifies nothing.
+    * Website — requires an attached Website Proof from a REAL recorded/analyzed
+      proof session (``proof_session_id`` present — attach-time validation only
+      accepts sessions with a completed analysis) whose canonical mapping
+      consumed no skill. A bare live/deployment URL qualifies nothing.
+    * Document — requires an analyzed document (explicit ``analyzed`` status or
+      recovered analyzer evidence locators) that matched no claimed skill.
+      A filename / upload metadata alone qualifies nothing.
+    * Project Defense — requires an answered, ANALYZED defense session
+      (``analysis`` present) whose explanation evidence mapped to no claimed
+      skill row. A question plan / unanswered defense qualifies nothing.
+
+    Entries are context only. They are never skill evidence, never counted in
+    proof filter counts / capability aggregates / graph nodes, and never present
+    on any public payload.
+    """
+    out: list[dict[str, Any]] = []
+
+    # Proof types an exact skill row already consumed — those never duplicate
+    # into this layer (the exact row IS the evidence surface for them).
+    consumed_proof_types = {
+        str(src)
+        for row in skill_evidence
+        for src in (row.get("supporting_sources") or [])
+    }
+
+    # ── GitHub Proof ──────────────────────────────────────────────────────────
+    if _SRC_GITHUB not in consumed_proof_types:
+        gp = github_proof or {}
+        analyzed_detected = [str(s) for s in (gp.get("detected_skills") or []) if str(s).strip()]
+        analyzed_files = [str(f) for f in (gp.get("evidence_files") or []) if str(f).strip()]
+        analyzed_item_count = github_smart_evidence_count + len(github_code_evidence)
+        has_real_github_evidence = bool(
+            analyzed_item_count or analyzed_detected or analyzed_files
+        )
+        if has_real_github_evidence:
+            summary = _scrub_score_fragments(str(gp.get("public_safe_summary") or "")) or (
+                "Analyzed GitHub source-code evidence is attached to this project, but it is "
+                "not mapped to a specific claimed skill yet."
+            )
+            out.append(
+                _real_unmapped_entry(
+                    proof_type=_SRC_GITHUB,
+                    project_id=project_id,
+                    project_title=project_title,
+                    reason=_REAL_UNMAPPED_GITHUB_REASON,
+                    safe_summary=summary,
+                    evidence_label="Analyzed source evidence",
+                    source_count=analyzed_item_count or None,
+                    inspection_anchor="github-proof",
+                )
+            )
+
+    # ── Website Proof ─────────────────────────────────────────────────────────
+    # One honest entry per distinct unmapped observed-behaviour classification.
+    # ``website_skill_evidence`` is parallel to ``website_entries`` (one per
+    # attached proof, in order), so zip re-associates each mapping with its
+    # session-backed entry.
+    seen_website_focus: set[str] = set()
+    for entry, wse in zip(website_entries, website_skill_evidence):
+        if wse.get("skill_mapping_available"):
+            continue  # consumed as exact skill evidence — never duplicated here
+        # A REAL recorded/analyzed proof session is required: attach-time
+        # validation only accepts sessions with a completed analysis, so a
+        # session id is the honest provenance marker. A URL-only metadata row
+        # (no session) is not proof and must never appear in this layer.
+        if not str(entry.get("proof_session_id") or "").strip():
+            continue
+        focus_key = str(wse.get("website_purpose_key") or "")
+        if focus_key in seen_website_focus:
+            continue
+        seen_website_focus.add(focus_key)
+        summary = (
+            str(wse.get("website_purpose_summary") or "").strip()
+            or str(wse.get("behavior_claim") or "").strip()
+            or "A recorded website runtime proof is attached to this project, but it is not "
+            "mapped to a specific claimed skill yet."
+        )
+        source_types = [str(t) for t in (wse.get("evidence_source_types") or []) if str(t).strip()]
+        out.append(
+            _real_unmapped_entry(
+                proof_type=_SRC_WEBSITE,
+                project_id=project_id,
+                project_title=project_title,
+                reason=str(wse.get("unmapped_reason") or "").strip() or _REAL_UNMAPPED_WEBSITE_REASON,
+                safe_summary=summary,
+                evidence_label=str(wse.get("website_purpose_label") or "").strip() or "Runtime proof",
+                source_count=len(source_types) or None,
+                inspection_anchor="website-proof",
+            )
+        )
+
+    # ── Document Proof ────────────────────────────────────────────────────────
+    for doc in document_entries:
+        if doc.get("skills"):
+            continue  # matched a claimed skill — consumed as exact skill evidence
+        # Real analyzed evidence only: an explicit analyzed status or recovered
+        # analyzer locators. A filename / upload metadata row qualifies nothing.
+        if not doc.get("has_analyzed_evidence"):
+            continue
+        title = str(doc.get("title") or "Document")
+        out.append(
+            _real_unmapped_entry(
+                proof_type=_SRC_DOCUMENT,
+                project_id=project_id,
+                project_title=project_title,
+                reason=_REAL_UNMAPPED_DOCUMENT_REASON,
+                safe_summary=(
+                    f"{title} was analyzed and is attached as project context, but it is not "
+                    "mapped to a specific claimed skill yet."
+                ),
+                evidence_label="Analyzed document evidence",
+                inspection_anchor="documents",
+            )
+        )
+
+    # ── Project Defense ───────────────────────────────────────────────────────
+    if _SRC_DEFENSE not in consumed_proof_types and analysis is not None:
+        answered_count = sum(1 for q in defense_questions if q.get("answered"))
+        out.append(
+            _real_unmapped_entry(
+                proof_type=_SRC_DEFENSE,
+                project_id=project_id,
+                project_title=project_title,
+                reason=_REAL_UNMAPPED_DEFENSE_REASON,
+                safe_summary=(
+                    "An answered and analyzed Project Defense session is attached to this "
+                    "project, but its explanation evidence is not mapped to a specific "
+                    "claimed skill yet."
+                ),
+                evidence_label="Analyzed defense evidence",
+                source_count=answered_count or None,
+                inspection_anchor="project-defense",
+            )
+        )
+
+    return out
+
+
 def build_student_vbr_report(
     db: Any,
     pipeline_db: Any,
@@ -1942,6 +2193,12 @@ def build_student_vbr_report(
                 # ``evidence_objects`` entry for a skill the project never claimed
                 # can never leak through as a document locator.
                 "skill_locators": {key: val for key, val in locators.items() if key in matched_norms},
+                # Whether REAL analyzer output exists for this document (explicit
+                # analyzed status or recovered evidence locators). Drives the
+                # real-unmapped-proof layer only — filename/upload metadata alone
+                # stays False and can never qualify as proof.
+                "has_analyzed_evidence": bool(locators)
+                or str(doc.get("status") or "").strip().lower() == "analyzed",
             }
         )
 
@@ -2147,6 +2404,27 @@ def build_student_vbr_report(
     for row in skill_evidence:
         _enrich_skill_row(row, traces_by_skill.get(_norm(row["skill"]), []), traces_index)
 
+    # ── Real-unmapped-proof context (private surfaces only) ──────────────────
+    # REAL analyzed proof attached to this project that no exact skill row
+    # consumed. Context only: never skill evidence, never counted anywhere, and
+    # never included on public projections (the public builders allowlist their
+    # fields and omit this one).
+    real_unmapped_proof_context = _build_real_unmapped_proof_context(
+        project_id=str(project["id"]),
+        project_title=project.get("title") or "",
+        skill_evidence=skill_evidence,
+        github_proof=github_proof,
+        github_code_evidence=github_code_evidence,
+        github_smart_evidence_count=_collect_github_smart_project_evidence_count(
+            db, user_id, project_repo_ids=project_repo_ids
+        ),
+        website_entries=website_entries,
+        website_skill_evidence=website_skill_evidence,
+        document_entries=document_entries,
+        analysis=analysis,
+        defense_questions=defense_questions,
+    )
+
     # ── Other student proofs for related skills (cross-proof vault matches) ───
     # The primary skill matrix + evidence traces above are built ONLY from proofs
     # attached to THIS project, so it stays project-honest. Separately, we surface
@@ -2294,6 +2572,7 @@ def build_student_vbr_report(
         "video_evidence_chips": video_chips,
         "skill_evidence": skill_evidence,
         "evidence_traces": evidence_traces,
+        "real_unmapped_proof_context": real_unmapped_proof_context,
         "other_student_proofs": other_student_proofs,
         "suggested_evidence": suggested_evidence,
         "limitations": limitations,

@@ -2588,3 +2588,223 @@ def test_public_project_report_never_carries_suggested_evidence(
     assert "Suggested — not counted until attached" not in text
     assert "relation_reason" not in text
     assert "relation_strength" not in text
+
+
+# ── Real-unmapped-proof context ("Attached proof not yet skill-mapped") ───────
+#
+# REAL analyzed, project-attached proof that no exact skill row consumed is
+# surfaced as private context — never as skill evidence, and never generated
+# from metadata alone (a repo URL, a website URL, a filename, an unanswered
+# question plan).
+
+_ALLOWED_UNMAPPED_KEYS = {
+    "proof_type",
+    "project_id",
+    "project_title",
+    "report_url",
+    "reason",
+    "safe_summary",
+    "evidence_label",
+    "observed_at",
+    "source_count",
+    "inspection_anchor",
+}
+
+
+def _unmapped_of(body: dict, proof_type: str) -> list[dict]:
+    return [
+        e
+        for e in body.get("real_unmapped_proof_context") or []
+        if e["proof_type"] == proof_type
+    ]
+
+
+def _assert_unmapped_entry_is_safe(entry: dict) -> None:
+    """Every context entry carries only the closed, private-safe field set."""
+    assert set(entry.keys()) <= _ALLOWED_UNMAPPED_KEYS, entry.keys()
+    dumped = json.dumps(entry).lower()
+    for unsafe in ("proof_session_id", "storage", "signed_url", "artifact_data", "bucket"):
+        assert unsafe not in dumped
+
+
+def test_repo_url_alone_creates_no_github_row_and_no_unmapped_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """1. A bare repo_url (no analyzed GitHub evidence of any kind) creates NO
+    GitHub Proof skill row and NO real-unmapped GitHub context — repo metadata
+    is never proof."""
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    body = _get_report(client, project_id).json()
+    for row in body["skill_evidence"]:
+        assert "GitHub Proof" not in row["supporting_sources"]
+    assert body["real_unmapped_proof_context"] == []
+
+
+def test_canonical_github_evidence_for_unclaimed_skill_creates_unmapped_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """2. Real canonical Smart GitHub code evidence for THIS project's repo whose
+    skill is NOT claimed maps no skill row — it surfaces as real-unmapped GitHub
+    context instead of disappearing (and never as skill evidence)."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Docker")
+    project_id = _create_project_defense(client).json()["project"]["id"]  # claims Python/React
+    body = _get_report(client, project_id).json()
+
+    for row in body["skill_evidence"]:
+        assert "GitHub Proof" not in row["supporting_sources"]
+
+    entries = _unmapped_of(body, "GitHub Proof")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["project_id"] == project_id
+    assert entry["reason"] == "Analyzed source evidence exists, but no exact skill row consumed it yet."
+    assert entry["report_url"] == f"/student/vbr/projects/{project_id}/report"
+    assert entry["inspection_anchor"] == "github-proof"
+    assert entry["source_count"] == 1
+    _assert_unmapped_entry_is_safe(entry)
+
+
+def test_canonical_github_evidence_mapped_to_claimed_skill_creates_no_duplicate_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """3. Canonical GitHub evidence that maps an exact claimed skill row is
+    consumed there — no duplicate real-unmapped GitHub context appears."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Python")
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    body = _get_report(client, project_id).json()
+
+    rows = {row["skill"]: row for row in body["skill_evidence"]}
+    assert "GitHub Proof" in rows["Python"]["supporting_sources"]
+    assert _unmapped_of(body, "GitHub Proof") == []
+
+
+def test_generic_website_proof_attached_but_unmapped_creates_website_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """4. A REAL recorded/analyzed Website Proof (a completed proof session)
+    attached to the project that maps no skill creates Website real-unmapped
+    context — visible, honest, and never a skill row."""
+    session_id = _seed_workflow_analysis(mem_store, supported_skills=[])
+    project_id = _create_project_defense(
+        client, attached_proofs={"website_proof_session_ids": [session_id]}
+    ).json()["project"]["id"]
+    body = _get_report(client, project_id).json()
+
+    for row in body["skill_evidence"]:
+        assert "Website Proof" not in row["supporting_sources"]
+
+    entries = _unmapped_of(body, "Website Proof")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["project_id"] == project_id
+    assert entry["reason"], "unmapped website context must state an honest reason"
+    assert entry["inspection_anchor"] == "website-proof"
+    _assert_unmapped_entry_is_safe(entry)
+
+
+def test_website_url_alone_creates_no_row_and_no_website_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """5. A website URL alone (metadata without a real recorded proof session)
+    creates no Website skill row AND no Website real-unmapped context."""
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    project_row = mem_store["vbr_projects"][project_id]
+    project_row["metadata"]["attached_proofs"] = {
+        "website_proofs": [{"target_website": "https://demo.example.com"}]
+    }
+    body = _get_report(client, project_id).json()
+
+    for row in body["skill_evidence"]:
+        assert "Website Proof" not in row["supporting_sources"]
+    assert _unmapped_of(body, "Website Proof") == []
+
+
+def test_analyzed_document_with_no_skill_match_creates_document_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """6. An ANALYZED document that matched no claimed skill creates Document
+    real-unmapped context (project context stays visible, never a skill row)."""
+    document_id = _seed_document_evidence(mem_store)  # status=analyzed, no skill match
+    project_id = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()["project"]["id"]
+    body = _get_report(client, project_id).json()
+
+    for row in body["skill_evidence"]:
+        assert "Document Proof" not in row["supporting_sources"]
+
+    entries = _unmapped_of(body, "Document Proof")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert "Final Year Project Report" in entry["safe_summary"]
+    assert entry["reason"] == (
+        "Analyzed document evidence exists, but it is not mapped to a specific skill yet."
+    )
+    assert entry["inspection_anchor"] == "documents"
+    _assert_unmapped_entry_is_safe(entry)
+
+
+def test_filename_metadata_alone_creates_no_document_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """7. A filename/upload-metadata-only document (no analyzed status, no
+    analyzer evidence) creates NO Document real-unmapped context."""
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    project_row = mem_store["vbr_projects"][project_id]
+    project_row["metadata"]["attached_proofs"] = {
+        "documents": [{"title": "resume.pdf", "source_type": "document"}]
+    }
+    body = _get_report(client, project_id).json()
+    assert _unmapped_of(body, "Document Proof") == []
+
+
+def test_analyzed_defense_with_no_skill_match_creates_defense_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """8. An answered + analyzed Project Defense whose explanation maps no
+    claimed skill creates Project Defense real-unmapped context."""
+    project_id = _create_project_defense(client, claimed_skills=["Rust"]).json()["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    submit = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+    assert submit.status_code == 200, submit.text
+
+    body = _get_report(client, project_id).json()
+    rows = {row["skill"]: row for row in body["skill_evidence"]}
+    assert "Project Defense" not in rows["Rust"]["supporting_sources"]
+
+    entries = _unmapped_of(body, "Project Defense")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["reason"] == (
+        "Defense evidence exists, but it is not mapped to a specific skill yet."
+    )
+    assert entry["inspection_anchor"] == "project-defense"
+    _assert_unmapped_entry_is_safe(entry)
+
+
+def test_question_plan_alone_creates_no_defense_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """9. A generated (but unanswered / unanalyzed) defense question plan
+    creates NO Project Defense real-unmapped context."""
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    _generate_questions(client, project_id)
+    body = _get_report(client, project_id).json()
+    assert _unmapped_of(body, "Project Defense") == []
+
+
+def test_defense_mapped_to_claimed_skill_creates_no_duplicate_defense_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """An analyzed defense whose explanation supports a claimed skill is consumed
+    by that exact row — no duplicate Project Defense context appears."""
+    project_id = _create_project_defense(client).json()["project"]["id"]  # Python/React
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    submit = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+    assert submit.status_code == 200, submit.text
+
+    body = _get_report(client, project_id).json()
+    assert any(
+        "Project Defense" in row["supporting_sources"] for row in body["skill_evidence"]
+    )
+    assert _unmapped_of(body, "Project Defense") == []

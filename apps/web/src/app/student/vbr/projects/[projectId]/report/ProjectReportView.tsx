@@ -13,6 +13,7 @@ import {
   unpublishVBRProjectReport,
   type EvidenceTrace,
   type ProjectReportPublishStatus,
+  type RealUnmappedProofContext,
   type VBRReportSkillEvidenceRow,
   type VBRStudentProjectReportResponse,
   type VideoEvidenceChip,
@@ -243,6 +244,71 @@ function SkillEvidenceCard({
         </Link>
       </div>
     </div>
+  )
+}
+
+/**
+ * "Attached proof not yet skill-mapped" strip — REAL analyzed proof attached to
+ * THIS project that no exact claimed skill row consumed. Secondary context, not
+ * part of the skill evidence cards above: it never counts as skill evidence and
+ * never appears on the public report. Each entry jumps to the existing proof
+ * section (GitHub Proof / Website Proof / Documents / Project Defense) instead
+ * of duplicating those cards.
+ */
+function RealUnmappedProofStrip({ entries }: { entries: RealUnmappedProofContext[] }) {
+  if (entries.length === 0) return null
+  return (
+    <Card id="real-unmapped-proof" style={ANCHOR_OFFSET}>
+      <div data-testid="report-real-unmapped-strip" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <CardHeader
+          title="Attached proof not yet skill-mapped"
+          eyebrow="Real proof exists, not skill-mapped yet"
+          icon="🧭"
+        />
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          These proof sources are attached to this project but are not yet mapped to a specific skill claim. They are
+          real, analyzed evidence — kept separate from the skill cards above so exact skill evidence stays exact.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {entries.map((ctx, i) => (
+            <div
+              key={`${ctx.proof_type}:${ctx.evidence_label ?? ""}:${i}`}
+              data-testid="report-real-unmapped-entry"
+              data-proof-type={ctx.proof_type}
+              style={{
+                border: `1px solid ${TOKEN.line}`,
+                borderRadius: 8,
+                padding: 10,
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                background: TOKEN.bg,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <Badge tone={SOURCE_TONE[ctx.proof_type] ?? "slate"}>{ctx.proof_type}</Badge>
+                {ctx.evidence_label && (
+                  <span style={{ fontSize: 11, fontWeight: 600, color: TOKEN.muted }}>{ctx.evidence_label}</span>
+                )}
+              </div>
+              {ctx.safe_summary && (
+                <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{ctx.safe_summary}</p>
+              )}
+              <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>{ctx.reason}</p>
+              {ctx.inspection_anchor && (
+                <a
+                  href={`#${ctx.inspection_anchor}`}
+                  data-testid="report-real-unmapped-jump"
+                  style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+                >
+                  Inspect this proof section →
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
   )
 }
 
@@ -558,6 +624,10 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
           </div>
         )}
       </Card>
+
+      {/* Attached proof not yet skill-mapped — real analyzed proof with no exact
+          skill row. Secondary strip; jumps into the proof sections below. */}
+      <RealUnmappedProofStrip entries={report.real_unmapped_proof_context ?? []} />
 
       {/* Evidence by source — secondary supporting detail beneath the skill
           cards (the per-source proof breakdown + Website Behavior Evidence). */}
