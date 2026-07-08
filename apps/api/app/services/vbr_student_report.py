@@ -40,6 +40,10 @@ from app.services.defense_evidence_access_service import (
     build_recording_playback,
     build_safe_answer_excerpts,
 )
+from app.services.github_canonical_skill_evidence_adapter import (
+    collect_canonical_github_skill_evidence,
+    repo_identity,
+)
 from app.services.github_skill_evidence_service import (
     is_strong_code_snippet as _is_strong_code_snippet,
 )
@@ -53,6 +57,7 @@ from app.services.github_skill_evidence_service import (
     safe_commit_sha as _safe_commit_sha,
 )
 from app.services.safe_public_url import is_safe_public_url, safe_repo_relative_path
+from app.services.skill_normalization import canonical_skill
 from app.services.skill_evidence_pipeline_service import (
     PipelineNotFoundError,
     SkillEvidencePipelineService,
@@ -319,6 +324,94 @@ def _build_pipeline_lookup(pipeline_db: Any, user_id: str, skill_pipeline_ids: l
     return lookup
 
 
+def _project_repo_identities(
+    project: dict[str, Any], github_proof: dict[str, Any] | None
+) -> set[str]:
+    """Resolved ``owner/name`` repo identities this project points at.
+
+    Collapses every repo reference available on the project (its own
+    ``repo_full_name`` / ``repo_url``) and its attached GitHub Proof
+    (``repo_url`` or ``repo_owner``/``repo_name``) into normalized identities via
+    :func:`repo_identity`. These are used ONLY to CORRELATE canonical GitHub code
+    evidence to this project — never as evidence themselves. An empty set means
+    the repo is ambiguous, so Smart GitHub evidence conservatively maps nothing.
+    """
+    gp = github_proof or {}
+    owner = str(gp.get("repo_owner") or "").strip()
+    name = str(gp.get("repo_name") or "").strip()
+    candidates = [
+        project.get("repo_full_name"),
+        project.get("repo_url"),
+        gp.get("repo_url"),
+        f"{owner}/{name}" if owner and name else None,
+    ]
+    return {rid for rid in (repo_identity(c) for c in candidates) if rid}
+
+
+def _collect_github_smart_supported_skills(
+    db: Any,
+    user_id: str,
+    *,
+    project_repo_ids: set[str],
+    claimed_skills: list[str],
+) -> set[str]:
+    """Normalized CLAIMED-skill names backed by real Smart GitHub code evidence.
+
+    Bridges the canonical GitHub skill-evidence engine
+    (:func:`collect_canonical_github_skill_evidence` → the ``skill_evidence`` rows
+    the older GitHub Portfolio & Proof scanner persisted with exact file/line
+    locators) into the Project Report's per-skill supporting-source decision, so a
+    skill can earn "GitHub Proof" from analyzed code even when it is absent from
+    the attached GitHub Proof's ``detected_skills``.
+
+    Strict, conservative matching — a claimed skill is returned ONLY when a
+    canonical GitHub *source-code* row exists that satisfies ALL of:
+
+    * it is genuine analyzed code evidence — every row from the canonical
+      collector carries a repo-relative ``file_path`` (repo metadata / a bare
+      repo URL / ``repo_full_name`` / a source count can never produce one);
+    * its repository identity (``owner/name``) matches one of THIS project's
+      ``project_repo_ids`` — evidence from an unrelated repo never maps, and an
+      ownerless / ambiguous row (empty ``repo_id``) is dropped;
+    * its skill matches a skill THIS project actually CLAIMS (by raw or canonical
+      name) — evidence for a skill the project never claimed can never spray
+      GitHub Proof onto other claimed skills.
+
+    Returns ``set()`` when the repo is ambiguous (no ``project_repo_ids``), when
+    there are no claimed skills, or when nothing matches — so the caller never
+    manufactures GitHub Proof from project metadata alone.
+    """
+    if not project_repo_ids or not claimed_skills:
+        return set()
+
+    # Each claimed skill, indexed by the keys a canonical row could match it by.
+    claimed_by_norm: dict[str, str] = {}
+    claimed_by_canon: dict[str, str] = {}
+    for skill in claimed_skills:
+        norm = _norm(skill)
+        if not norm:
+            continue
+        claimed_by_norm.setdefault(norm, skill)
+        claimed_by_canon.setdefault(_norm(canonical_skill(skill)), skill)
+
+    supported: set[str] = set()
+    try:
+        evidence = collect_canonical_github_skill_evidence(db, user_id)
+    except Exception:  # pragma: no cover - Smart GitHub bridge is best-effort
+        return set()
+    for ev in evidence:
+        # Ownerless / unrelated-repo evidence never maps to this project.
+        if not ev.repo_id or ev.repo_id not in project_repo_ids:
+            continue
+        # Map the row's skill onto a skill THIS project claims (raw or canonical).
+        match = claimed_by_norm.get(ev.skill_key) or claimed_by_canon.get(
+            _norm(ev.canonical_skill_name)
+        )
+        if match is not None:
+            supported.add(_norm(match))
+    return supported
+
+
 def _evidence_chip_count_for_skill(skill: str, video_chips: list[dict[str, Any]]) -> int:
     target = _norm(skill)
     count = 0
@@ -337,6 +430,7 @@ def _skill_evidence_row(
     document_supported_skills: set[str],
     pipeline_lookup: dict[str, dict[str, Any]],
     video_chips: list[dict[str, Any]],
+    github_smart_skills: set[str] | None = None,
 ) -> dict[str, Any]:
     candidates: list[tuple[str, str]] = []
     # Canonical source labels that contributed evidence for this skill, in a
@@ -371,8 +465,20 @@ def _skill_evidence_row(
             )
             supporting_sources.append(_SRC_DEFENSE)
 
-    if normalized in github_detected_skills:
-        candidates.append((_SUPPORTING_EVIDENCE, "Detected in the attached GitHub Proof."))
+    # GitHub Proof is earned two conservative ways, either of which is real
+    # analyzed code evidence (never repo metadata / a bare repo URL / a source
+    # count): the attached GitHub Proof's own ``detected_skills`` (legacy path),
+    # OR a canonical Smart GitHub code-evidence row (exact file/line locators the
+    # Portfolio & Proof scanner persisted) that matches THIS project's repo AND
+    # this claimed skill. The note stays honest about which path supported it.
+    smart_skills = github_smart_skills or set()
+    if normalized in github_detected_skills or normalized in smart_skills:
+        github_note = (
+            "Backed by analyzed GitHub code evidence located in this project's repository."
+            if normalized in smart_skills
+            else "Detected in the attached GitHub Proof."
+        )
+        candidates.append((_SUPPORTING_EVIDENCE, github_note))
         supporting_sources.append(_SRC_GITHUB)
 
     if normalized in website_supported_skills:
@@ -1952,6 +2058,20 @@ def build_student_vbr_report(
     # ── Skill evidence table ────────────────────────────────────────────────
     github_detected_skills = {_norm(s) for s in (github_proof.get("detected_skills") or [])} if github_proof else set()
 
+    # Bridge the newer Smart GitHub Evidence pipeline (canonical ``skill_evidence``
+    # code-line rows) into the per-skill decision: a claimed skill earns "GitHub
+    # Proof" when real analyzed code evidence for THIS project's repo maps to it,
+    # even if it is missing from the attached proof's ``detected_skills``. Matched
+    # strictly by repo identity + claimed skill so repo metadata alone, an
+    # unrelated repo, or an unclaimed skill can never manufacture GitHub Proof.
+    project_repo_ids = _project_repo_identities(project, github_proof)
+    github_smart_skills = _collect_github_smart_supported_skills(
+        db,
+        user_id,
+        project_repo_ids=project_repo_ids,
+        claimed_skills=claimed_skills,
+    )
+
     # Skill-specific Website Behavior Evidence (owner/private view only): what each
     # attached Website Proof demonstrably showed + an honest per-skill relevance,
     # mapped to the claimed skills the proof's extracted supported-skills name OR
@@ -2001,6 +2121,7 @@ def build_student_vbr_report(
             document_supported_skills,
             pipeline_lookup,
             video_chips,
+            github_smart_skills,
         )
         for skill in claimed_skills
     ]

@@ -379,6 +379,116 @@ def test_report_unevidenced_skill_carries_honest_limitation(client: TestClient) 
         assert any("pending more proof" in line for line in row["limitations"])
 
 
+# ── Smart GitHub Evidence bridge (canonical skill_evidence → GitHub Proof) ────
+
+
+def _seed_canonical_skill_evidence(
+    mem_store: dict,
+    *,
+    user_id: str = USER_ID,
+    skill_name: str = "Python",
+    repository_url: str = "https://github.com/octocat/Hello-World",
+    file_path: str = "app/api/routes.py",
+    line_start: int | None = 10,
+    line_end: int | None = 20,
+    evidence_type: str = "github repository",
+    proof_visibility: str = "public",
+) -> str:
+    """Seed one canonical ``skill_evidence`` GitHub code-line row (the newer Smart
+    GitHub Evidence path the Portfolio & Proof scanner persists)."""
+    evidence_id = str(uuid4())
+    now_iso = datetime.now(UTC).isoformat()
+    mem_store.setdefault("skill_evidence", {})[evidence_id] = {
+        "id": evidence_id,
+        "user_id": user_id,
+        "skill_name": skill_name,
+        "evidence_type": evidence_type,
+        "repository_url": repository_url,
+        "file_path": file_path,
+        "line_start": line_start,
+        "line_end": line_end,
+        "evidence_description": f"Code evidence for {skill_name}.",
+        "proof_visibility": proof_visibility,
+        "verification_status": "verified",
+        "metadata": {
+            "evidence_title": "Skill Evidence Tracker",
+            "selection_reason": "function implementation",
+            "branch_ref": "main",
+            "confidence_label": "high",
+        },
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    return evidence_id
+
+
+def test_report_repo_metadata_only_does_not_create_github_proof(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A. A project with a repo_url but NO attached GitHub Proof and NO analyzed
+    GitHub code evidence never manufactures a GitHub Proof supporting source."""
+    project_id = _create_project_defense(client).json()["project"]["id"]  # repo_url set
+    rows = {row["skill"]: row for row in _get_report(client, project_id).json()["skill_evidence"]}
+    for row in rows.values():
+        assert "GitHub Proof" not in row["supporting_sources"]
+
+
+def test_report_smart_github_evidence_maps_to_exact_claimed_skill(
+    client: TestClient, mem_store: dict
+) -> None:
+    """C. Real canonical Smart GitHub code evidence for THIS project's repo + a
+    claimed skill adds GitHub Proof to that skill's supporting sources — even with
+    NO attached GitHub Proof (``detected_skills``)."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Python")
+    project_id = _create_project_defense(client).json()["project"]["id"]  # octocat/Hello-World
+
+    rows = {row["skill"]: row for row in _get_report(client, project_id).json()["skill_evidence"]}
+    assert "GitHub Proof" in rows["Python"]["supporting_sources"]
+    # No broad spray: React (also claimed) has no code evidence, so no GitHub Proof.
+    assert "GitHub Proof" not in rows["React"]["supporting_sources"]
+
+
+def test_report_smart_github_unrelated_repo_does_not_map(
+    client: TestClient, mem_store: dict
+) -> None:
+    """D. Canonical GitHub evidence from a DIFFERENT repository never maps to this
+    project's skills."""
+    _seed_canonical_skill_evidence(
+        mem_store,
+        skill_name="Python",
+        repository_url="https://github.com/someone-else/other-repo",
+    )
+    project_id = _create_project_defense(client).json()["project"]["id"]  # octocat/Hello-World
+    rows = {row["skill"]: row for row in _get_report(client, project_id).json()["skill_evidence"]}
+    assert "GitHub Proof" not in rows["Python"]["supporting_sources"]
+
+
+def test_report_smart_github_ownerless_evidence_does_not_map(
+    client: TestClient, mem_store: dict
+) -> None:
+    """E. Canonical GitHub evidence with no resolvable repo identity (ambiguous /
+    ownerless) never maps to this project's skills."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Python", repository_url="")
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    rows = {row["skill"]: row for row in _get_report(client, project_id).json()["skill_evidence"]}
+    assert "GitHub Proof" not in rows["Python"]["supporting_sources"]
+
+
+def test_report_smart_github_no_spray_to_unmatched_skills(
+    client: TestClient, mem_store: dict
+) -> None:
+    """F. Smart GitHub evidence that maps only one claimed skill never sprays
+    GitHub Proof onto the project's OTHER claimed skills."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Python")
+    project_id = _create_project_defense(
+        client, claimed_skills=["Python", "React", "Machine Learning"]
+    ).json()["project"]["id"]
+    rows = {row["skill"]: row for row in _get_report(client, project_id).json()["skill_evidence"]}
+    assert "GitHub Proof" in rows["Python"]["supporting_sources"]
+    assert "GitHub Proof" not in rows["React"]["supporting_sources"]
+    assert "GitHub Proof" not in rows["Machine Learning"]["supporting_sources"]
+
+
 # ── Project Defense analysis + skill evidence table ─────────────────────────
 
 def test_report_includes_project_defense_analysis_and_skill_evidence(client: TestClient) -> None:

@@ -349,6 +349,64 @@ def test_passport_supporting_proof_types_include_derived_website_proof(
     )
 
 
+def _seed_canonical_skill_evidence(
+    mem_store: dict,
+    *,
+    user_id: str = USER_ID,
+    skill_name: str = "Python",
+    repository_url: str = "https://github.com/octocat/Hello-World",
+    file_path: str = "app/api/routes.py",
+    line_start: int | None = 10,
+    line_end: int | None = 20,
+) -> str:
+    """Seed one canonical ``skill_evidence`` GitHub code-line row (Smart GitHub)."""
+    evidence_id = str(uuid4())
+    mem_store.setdefault("skill_evidence", {})[evidence_id] = {
+        "id": evidence_id,
+        "user_id": user_id,
+        "skill_name": skill_name,
+        "evidence_type": "github repository",
+        "repository_url": repository_url,
+        "file_path": file_path,
+        "line_start": line_start,
+        "line_end": line_end,
+        "evidence_description": f"Code evidence for {skill_name}.",
+        "proof_visibility": "public",
+        "verification_status": "verified",
+        "metadata": {"selection_reason": "function implementation", "branch_ref": "main"},
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    return evidence_id
+
+
+def test_passport_supporting_proof_types_include_smart_github_evidence(
+    client: TestClient, mem_store: dict
+) -> None:
+    """C (passport). Real canonical Smart GitHub code evidence for a project's repo
+    + claimed skill flows through the project report's ``supporting_sources`` into
+    the passport skill→project ref's ``supporting_proof_types`` — even with NO
+    attached GitHub Proof."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Python")
+    _create_project_defense(
+        client,
+        claimed_skills=["Python", "React"],
+    )  # repo_url octocat/Hello-World, no attached github proof
+    body = _get_private(client).json()
+
+    py = next(s for s in body["skills"] if _norm_skill(s["skill"]) == "python")
+    assert py["projects"], "expected a project ref for Python"
+    assert any(
+        "GitHub Proof" in (ref.get("supporting_proof_types") or [])
+        for ref in py["projects"]
+    )
+    # No spray: React earns no GitHub Proof from Python's code evidence.
+    react = next((s for s in body["skills"] if _norm_skill(s["skill"]) == "react"), None)
+    if react is not None:
+        for ref in react["projects"]:
+            assert "GitHub Proof" not in (ref.get("supporting_proof_types") or [])
+
+
 def test_passport_mapped_website_proof_carries_safe_skill_behaviour_summary(
     client: TestClient, mem_store: dict
 ) -> None:
