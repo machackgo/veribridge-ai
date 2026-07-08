@@ -29,7 +29,7 @@ Stack: **Vercel** (Next.js web app) · **Render** (FastAPI backend) · **Supabas
 - [ ] **Environment variables** (Production scope):
   - [ ] `NEXT_PUBLIC_API_URL=https://api.veribridgeai.com`
   - [ ] `NEXT_PUBLIC_API_BASE_URL=https://api.veribridgeai.com` (legacy fallback — keep in sync)
-  - [ ] `NEXT_PUBLIC_APP_URL=https://veribridgeai.com`
+  - [ ] `NEXT_PUBLIC_APP_URL=https://veribridgeai.com` — also drives the Passport Beam / QR share URLs: once set, the QR + copy/share links point at `https://veribridgeai.com/p/<slug>` (a recruiter's phone opens the public Passport with no login); when unset, they fall back to the current browser origin (local dev).
   - [ ] `NEXT_PUBLIC_APP_NAME=VeriBridge AI`
   - [ ] `NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co`
   - [ ] `NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key>`

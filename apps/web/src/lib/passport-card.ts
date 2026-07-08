@@ -147,8 +147,14 @@ export type PassportCardCapability = {
 export type PassportCardProofCoverage = { label: string; present: boolean }
 
 export type PassportCardModel = {
+  /**
+   * The candidate's REAL display name, or null when none exists. Backend
+   * placeholder copy ("Verified candidate profile") is normalized to null here
+   * (see {@link realDisplayName}) so it can never masquerade as a real name.
+   */
   name: string | null
-  /** Up to two initials for the avatar/profile placeholder (empty if no name). */
+  /** Up to two initials from the REAL name (empty if no name — never "VP" from
+   *  placeholder copy). */
   initials: string
   /**
    * Public-safe profile photo URL for the card's portrait, or null to fall back
@@ -158,6 +164,9 @@ export type PassportCardModel = {
   profileImageUrl: string | null
   headline: string
   program: string | null
+  /** Safe coarse location (country/region from the scrubbed identity payload —
+   *  never a street/city-level location), or null when unavailable. */
+  region: string | null
   /** Human status label ("Public passport live" / "Private only" / public label). */
   publicStatus: string
   isPublished: boolean
@@ -365,6 +374,40 @@ function initialsFromName(name: string | null): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
 }
 
+// ── Identity realness — backend placeholders are NOT real profile data ────────
+
+/**
+ * The backend substitutes these exact strings when the student has no stored
+ * name / headline (`_SAFE_DISPLAY_NAME` / `_DEFAULT_HEADLINE` in
+ * `vbr_work_passport_service.py`). The card must treat them as "no data":
+ * deriving initials from the placeholder ("Verified candidate profile" → "VP")
+ * or presenting it as a role line would fabricate an identity the student never
+ * provided. `model.name` is therefore only ever a REAL name — the placeholder
+ * copy is applied at render time, where it is visibly fallback text.
+ */
+export const PLACEHOLDER_DISPLAY_NAME = "Verified candidate profile"
+export const PLACEHOLDER_HEADLINE = "Verified Work Passport"
+
+/** A real, human-entered display name — blank/placeholder values become null. */
+export function realDisplayName(value: string | null | undefined): string | null {
+  const v = value?.trim()
+  if (!v) return null
+  return v.toLowerCase() === PLACEHOLDER_DISPLAY_NAME.toLowerCase() ? null : v
+}
+
+/** A real headline / target-role line — blank/placeholder values become null. */
+function realHeadline(value: string | null | undefined): string | null {
+  const v = value?.trim()
+  if (!v) return null
+  return v.toLowerCase() === PLACEHOLDER_HEADLINE.toLowerCase() ? null : v
+}
+
+/** First name for personalized share copy ("Share Mohammed’s …"), or null. */
+export function firstNameFrom(name: string | null | undefined): string | null {
+  const first = name?.trim().split(/\s+/)[0]
+  return first || null
+}
+
 /** Prefer a concise program name; fall back to the safe education summary. */
 function programFromIdentity(program?: string | null, educationSummary?: string): string | null {
   const p = program?.trim()
@@ -373,7 +416,12 @@ function programFromIdentity(program?: string | null, educationSummary?: string)
   return e || null
 }
 
-const HEADLINE_FALLBACK = "AI Engineer / Software Builder"
+/**
+ * Shown when the student has no real headline. Deliberately proof-language, not
+ * an invented role claim ("AI Engineer / …") — the card must never assert a
+ * target role the student didn't provide.
+ */
+const HEADLINE_FALLBACK = "Proof-backed technical candidate"
 
 // ── Private preview (owner-only passport → card preview) ──────────────────────
 
@@ -402,7 +450,10 @@ export function buildPrivateCardModel(
   const capabilities = defaultAggregateCapabilities(aggregates)
 
   const proofCoverage = proofCoverageFromCounts(passport.evidence_source_counts)
-  const name = passport.identity?.display_name ?? passport.candidate_display_name ?? null
+  // Only a REAL name survives (backend placeholder copy → null → safe fallback
+  // rendering, never fake "VP" initials).
+  const name =
+    realDisplayName(passport.identity?.display_name) ?? realDisplayName(passport.candidate_display_name)
   const isPublished = Boolean(status.is_published && status.public_slug)
   const slug = status.public_slug
 
@@ -410,8 +461,9 @@ export function buildPrivateCardModel(
     name,
     initials: initialsFromName(name),
     profileImageUrl: publicSafeAvatarUrl(passport.identity?.avatar_url),
-    headline: passport.identity?.headline || passport.headline || HEADLINE_FALLBACK,
+    headline: realHeadline(passport.identity?.headline) ?? realHeadline(passport.headline) ?? HEADLINE_FALLBACK,
     program: programFromIdentity(passport.identity?.program, passport.identity?.education_summary),
+    region: passport.identity?.region?.trim() || null,
     publicStatus: isPublished ? "Public passport live" : "Private only",
     isPublished,
     slug: slug ?? null,
@@ -447,14 +499,17 @@ export function buildPublicCardModel(passport: PublicWorkPassport, slug: string)
   const capabilities = topCapabilities(availableCapabilities)
 
   const proofCoverage = proofCoverageFromCounts(passport.evidence_source_counts)
-  const name = passport.identity?.display_name ?? passport.candidate_display_name ?? null
+  // Same realness rule as the private builder: placeholder copy is never a name.
+  const name =
+    realDisplayName(passport.identity?.display_name) ?? realDisplayName(passport.candidate_display_name)
 
   return {
     name,
     initials: initialsFromName(name),
     profileImageUrl: publicSafeAvatarUrl(passport.identity?.avatar_url),
-    headline: passport.identity?.headline || passport.headline || HEADLINE_FALLBACK,
+    headline: realHeadline(passport.identity?.headline) ?? realHeadline(passport.headline) ?? HEADLINE_FALLBACK,
     program: programFromIdentity(passport.identity?.program, passport.identity?.education_summary),
+    region: passport.identity?.region?.trim() || null,
     publicStatus: "Verified public passport",
     isPublished: true,
     slug,

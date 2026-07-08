@@ -49,6 +49,11 @@ function textWidth(text: string, fontSize: number): number {
 
 type Chip = { text: string; dot?: string }
 
+/** Chip surface styling (light theme variants for role vs. proof chips). */
+type ChipStyle = { fill: string; stroke: string; color: string }
+const ROLE_CHIP: ChipStyle = { fill: "#eef2ff", stroke: "#dfe4ff", color: "#3730a3" }
+const PROOF_CHIP: ChipStyle = { fill: "#f8fafc", stroke: "#eef0f6", color: "#1f2a44" }
+
 /**
  * Lay chips out into wrapped rows within `maxWidth`. Returns the SVG fragment and
  * the total height consumed so the caller can flow the next section below it.
@@ -58,6 +63,7 @@ function layoutChips(
   originX: number,
   originY: number,
   maxWidth: number,
+  style: ChipStyle,
 ): { svg: string; height: number } {
   const H = 24
   const GAP = 7
@@ -77,7 +83,7 @@ function layoutChips(
       rows += 1
     }
     parts.push(
-      `<rect x="${x}" y="${y}" width="${w}" height="${H}" rx="12" fill="rgba(255,255,255,0.10)" stroke="rgba(255,255,255,0.16)"/>`,
+      `<rect x="${x}" y="${y}" width="${w}" height="${H}" rx="12" fill="${style.fill}" stroke="${style.stroke}"/>`,
     )
     let tx = x + padX
     if (chip.dot) {
@@ -85,7 +91,7 @@ function layoutChips(
       tx += dotW
     }
     parts.push(
-      `<text x="${tx}" y="${y + H / 2 + 4}" font-size="12" font-weight="600" fill="#ffffff">${xml(chip.text)}</text>`,
+      `<text x="${tx}" y="${y + H / 2 + 4}" font-size="12" font-weight="600" fill="${style.color}">${xml(chip.text)}</text>`,
     )
     x += w + GAP
   }
@@ -93,11 +99,11 @@ function layoutChips(
 }
 
 const STATUS_DOT: Record<string, string> = {
-  Demonstrated: "#34d399",
-  "Evidence observed": "#34d399",
-  "Partially demonstrated": "#fbbf24",
-  "Supporting evidence": "#60a5fa",
-  "Needs review": "#fb7185",
+  Demonstrated: "#10b981",
+  "Evidence observed": "#10b981",
+  "Partially demonstrated": "#d97706",
+  "Supporting evidence": "#0ea5e9",
+  "Needs review": "#f43f5e",
   "Not assessed": "#94a3b8",
 }
 
@@ -127,25 +133,28 @@ function buildCardSvg(model: PassportCardModel, photoDataUri: string | null): { 
   const px = PAD
   const py = 64
 
-  // Identity column (right of the portrait).
+  // Identity column (right of the portrait). `model.name` is only ever a REAL
+  // name (placeholders are normalized to null upstream), so the fallback here is
+  // honest fallback copy — and the initials block correspondingly stays "★".
   const ix = px + portrait + 16
   const name = model.name || "Verified candidate profile"
+  const programLine = model.program ? `${model.program}${model.region ? ` · ${model.region}` : ""}` : null
 
   // Portrait: photo (clipped rounded square) or initials gradient.
   const portraitSvg = photoDataUri
     ? `<image x="${px}" y="${py}" width="${portrait}" height="${portrait}" href="${photoDataUri}" preserveAspectRatio="xMidYMid slice" clip-path="url(#pfClip)"/>` +
-      `<rect x="${px}" y="${py}" width="${portrait}" height="${portrait}" rx="20" fill="none" stroke="rgba(255,255,255,0.28)" stroke-width="1.5"/>`
-    : `<rect x="${px}" y="${py}" width="${portrait}" height="${portrait}" rx="20" fill="url(#pfGrad)" stroke="rgba(255,255,255,0.22)"/>` +
+      `<rect x="${px}" y="${py}" width="${portrait}" height="${portrait}" rx="20" fill="none" stroke="#e6e8ef" stroke-width="1.5"/>`
+    : `<rect x="${px}" y="${py}" width="${portrait}" height="${portrait}" rx="20" fill="url(#pfGrad)" stroke="#dfe4ff"/>` +
       `<text x="${px + portrait / 2}" y="${py + portrait / 2 + 11}" font-size="32" font-weight="700" fill="#ffffff" text-anchor="middle">${xml(initials)}</text>`
 
   // Verified badge on the portrait (published only).
   const badge = model.isPublished
-    ? `<circle cx="${px + portrait - 6}" cy="${py + portrait - 6}" r="12" fill="#10b981" stroke="#0a0e1a" stroke-width="2"/>` +
+    ? `<circle cx="${px + portrait - 6}" cy="${py + portrait - 6}" r="12" fill="#10b981" stroke="#ffffff" stroke-width="2"/>` +
       `<path d="M ${px + portrait - 11} ${py + portrait - 6} l 3.4 3.4 l 6 -6.6" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`
     : ""
 
   // Role-area chips.
-  const roleChips: Chip[] = model.capabilities.map((c) => ({ text: c.label, dot: STATUS_DOT[c.status] ?? "#a5b4fc" }))
+  const roleChips: Chip[] = model.capabilities.map((c) => ({ text: c.label, dot: STATUS_DOT[c.status] ?? "#6366f1" }))
   // Proof coverage chips (present sources only, short labels).
   const proofChips: Chip[] = model.proofCoverage
     .filter((c) => c.present)
@@ -156,14 +165,14 @@ function buildCardSvg(model: PassportCardModel, photoDataUri: string | null): { 
   const roleLabelY = y
   y += 16
   const roles = roleChips.length
-    ? layoutChips(roleChips, px, y, WIDTH - px * 2)
-    : { svg: `<text x="${px}" y="${y + 14}" font-size="12" fill="rgba(255,255,255,0.55)">Role areas appear once skills have evidence.</text>`, height: 22 }
+    ? layoutChips(roleChips, px, y, WIDTH - px * 2, ROLE_CHIP)
+    : { svg: `<text x="${px}" y="${y + 14}" font-size="12" fill="#9aa3b2">Role areas appear once skills have evidence.</text>`, height: 22 }
   y += roles.height + 20
 
   const proofLabelY = y
   y += 16
   const proofs = proofChips.length
-    ? layoutChips(proofChips, px, y, WIDTH - px * 2)
+    ? layoutChips(proofChips, px, y, WIDTH - px * 2, PROOF_CHIP)
     : { svg: "", height: 0 }
   y += proofs.height + 18
 
@@ -176,33 +185,35 @@ function buildCardSvg(model: PassportCardModel, photoDataUri: string | null): { 
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${height}" viewBox="0 0 ${WIDTH} ${height}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0a0e1a"/>
-      <stop offset="0.52" stop-color="#1e1b4b"/>
-      <stop offset="1" stop-color="#312e81"/>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4f46e5"/>
+      <stop offset="0.55" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#10b981"/>
     </linearGradient>
     <linearGradient id="pfGrad" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#6366f1"/>
       <stop offset="1" stop-color="#4338ca"/>
     </linearGradient>
     <clipPath id="pfClip"><rect x="${px}" y="${py}" width="${portrait}" height="${portrait}" rx="20"/></clipPath>
+    <clipPath id="cardClip"><rect x="0" y="0" width="${WIDTH}" height="${height}" rx="18"/></clipPath>
   </defs>
-  <rect x="0" y="0" width="${WIDTH}" height="${height}" rx="18" fill="url(#bg)"/>
-  <rect x="0.5" y="0.5" width="${WIDTH - 1}" height="${height - 1}" rx="18" fill="none" stroke="rgba(255,255,255,0.12)"/>
-  <text x="${px}" y="${PAD + 8}" font-size="10" letter-spacing="2.2" fill="#a5b4fc" font-family="'JetBrains Mono', monospace">VERIBRIDGE AI</text>
-  <text x="${px}" y="${PAD + 26}" font-size="13" letter-spacing="1.6" font-weight="600" fill="#ffffff" font-family="'JetBrains Mono', monospace">VERIFIED WORK PASSPORT</text>
-  <rect x="${WIDTH - px - 96}" y="${PAD - 4}" width="96" height="24" rx="12" fill="${model.isPublished ? "rgba(52,211,153,0.16)" : "rgba(255,255,255,0.10)"}" stroke="${model.isPublished ? "rgba(52,211,153,0.4)" : "rgba(255,255,255,0.18)"}"/>
-  <text x="${WIDTH - px - 48}" y="${PAD + 11}" font-size="11" font-weight="600" text-anchor="middle" fill="${model.isPublished ? "#6ee7b7" : "#cbd5e1"}">${model.isPublished ? "✓ Verified" : "Private"}</text>
+  <rect x="0" y="0" width="${WIDTH}" height="${height}" rx="18" fill="#ffffff"/>
+  <rect x="0" y="0" width="${WIDTH}" height="3" fill="url(#accent)" clip-path="url(#cardClip)"/>
+  <rect x="0.5" y="0.5" width="${WIDTH - 1}" height="${height - 1}" rx="18" fill="none" stroke="#e6e8ef"/>
+  <text x="${px}" y="${PAD + 8}" font-size="10" letter-spacing="2.2" fill="#4f46e5" font-family="'JetBrains Mono', monospace">VERIBRIDGE AI</text>
+  <text x="${px}" y="${PAD + 26}" font-size="13" letter-spacing="1.6" font-weight="600" fill="#0a0e1a" font-family="'JetBrains Mono', monospace">VERIFIED WORK PASSPORT</text>
+  <rect x="${WIDTH - px - 96}" y="${PAD - 4}" width="96" height="24" rx="12" fill="${model.isPublished ? "#ecfdf5" : "#f8fafc"}" stroke="${model.isPublished ? "#a7f3d0" : "#e6e8ef"}"/>
+  <text x="${WIDTH - px - 48}" y="${PAD + 11}" font-size="11" font-weight="600" text-anchor="middle" fill="${model.isPublished ? "#059669" : "#6b7280"}">${model.isPublished ? "✓ Verified" : "Private"}</text>
   ${portraitSvg}
   ${badge}
-  <text x="${ix}" y="${py + 20}" font-size="20" font-weight="700" fill="#ffffff">${xml(name.length > 22 ? name.slice(0, 21) + "…" : name)}</text>
-  <text x="${ix}" y="${py + 40}" font-size="13" font-weight="500" fill="rgba(255,255,255,0.82)">${xml(model.headline.length > 34 ? model.headline.slice(0, 33) + "…" : model.headline)}</text>
-  ${model.program ? `<text x="${ix}" y="${py + 60}" font-size="12" fill="rgba(255,255,255,0.6)">${xml(model.program.length > 36 ? model.program.slice(0, 35) + "…" : model.program)}</text>` : ""}
-  <text x="${px}" y="${roleLabelY + 10}" font-size="9.5" letter-spacing="1.4" font-weight="700" fill="rgba(255,255,255,0.5)">ROLE AREAS</text>
+  <text x="${ix}" y="${py + 20}" font-size="20" font-weight="700" fill="#0a0e1a">${xml(name.length > 22 ? name.slice(0, 21) + "…" : name)}</text>
+  <text x="${ix}" y="${py + 40}" font-size="13" font-weight="500" fill="#1f2a44">${xml(model.headline.length > 34 ? model.headline.slice(0, 33) + "…" : model.headline)}</text>
+  ${programLine ? `<text x="${ix}" y="${py + 60}" font-size="12" fill="#6b7280">${xml(programLine.length > 36 ? programLine.slice(0, 35) + "…" : programLine)}</text>` : ""}
+  <text x="${px}" y="${roleLabelY + 10}" font-size="9.5" letter-spacing="1.4" font-weight="700" fill="#9aa3b2">ROLE AREAS</text>
   ${roles.svg}
-  ${proofChips.length ? `<text x="${px}" y="${proofLabelY + 10}" font-size="9.5" letter-spacing="1.4" font-weight="700" fill="rgba(255,255,255,0.5)">EVIDENCE</text>` : ""}
+  ${proofChips.length ? `<text x="${px}" y="${proofLabelY + 10}" font-size="9.5" letter-spacing="1.4" font-weight="700" fill="#9aa3b2">PROOF SOURCES</text>` : ""}
   ${proofs.svg}
-  <text x="${px}" y="${footerY + 10}" font-size="11" fill="rgba(255,255,255,0.62)" font-family="'JetBrains Mono', monospace">${footer}</text>
+  <text x="${px}" y="${footerY + 10}" font-size="11" fill="#6b7280" font-family="'JetBrains Mono', monospace">${footer}</text>
 </svg>`
 
   return { svg, height }

@@ -141,15 +141,15 @@ export function PublicPassportCardView({ slug }: { slug: string }) {
               textAlign: "center",
               padding: "11px 16px",
               borderRadius: 10,
-              background: "rgba(255,255,255,0.14)",
+              background: TOKEN.indigo,
               color: "#fff",
               fontSize: 14,
               fontWeight: 600,
               textDecoration: "none",
-              border: "1px solid rgba(255,255,255,0.22)",
+              border: `1px solid ${TOKEN.indigo}`,
             }}
           >
-            View full Work Passport →
+            View Verified Passport →
           </a>
         }
       />

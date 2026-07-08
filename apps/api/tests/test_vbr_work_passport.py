@@ -1707,6 +1707,149 @@ def test_public_passport_identity_is_recruiter_safe(client: TestClient, mem_stor
     assert "F1" not in blob and USER_ID not in blob
 
 
+# ── Student-profile identity (student_profiles is the primary identity source) ─
+#
+# The private Work Passport identity header reads the student-maintained profile
+# (``student_profiles`` — the table behind /api/v1/student/profile) FIRST, then
+# the ``users`` row, then the neutral safe placeholder. Only whitelisted safe
+# fields are read: full_name, degree, major, school_name, graduation_year,
+# target_roles — never visa/work-authorization, locations, links, or email.
+
+
+def _seed_student_profile(mem_store: dict, user_id: str = USER_ID, **fields) -> None:
+    row = {"id": str(uuid4()), "user_id": user_id}
+    row.update(fields)
+    mem_store.setdefault("student_profiles", {})[row["id"]] = row
+
+
+def test_identity_uses_student_profile_name_when_users_row_missing(
+    client: TestClient, mem_store: dict
+) -> None:
+    # No users row at all — the student-maintained profile still supplies identity.
+    _seed_student_profile(mem_store, full_name="Grace Hopper")
+    body = _get_private(client).json()
+    assert body["identity"]["display_name"] == "Grace Hopper"
+    assert body["candidate_display_name"] == "Grace Hopper"
+
+
+def test_identity_prefers_student_profile_name_over_users_full_name(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_user(mem_store, full_name="Ada Lovelace")
+    _seed_student_profile(mem_store, full_name="Grace Hopper")
+    body = _get_private(client).json()
+    assert body["identity"]["display_name"] == "Grace Hopper"
+    assert body["candidate_display_name"] == "Grace Hopper"
+
+
+def test_identity_falls_back_to_users_full_name_without_student_profile(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_user(mem_store, full_name="Ada Lovelace")
+    identity = _get_private(client).json()["identity"]
+    assert identity["display_name"] == "Ada Lovelace"
+
+
+def test_identity_headline_uses_first_safe_target_role(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_student_profile(
+        mem_store,
+        full_name="Grace Hopper",
+        target_roles=["", "Machine Learning Engineer", "Data Scientist"],
+    )
+    identity = _get_private(client).json()["identity"]
+    assert identity["headline"] == "Machine Learning Engineer"
+
+
+def test_explicit_passport_headline_wins_over_target_role(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_student_profile(mem_store, target_roles=["Machine Learning Engineer"])
+    _publish(client, headline="Builder of verified AI products")
+    identity = _get_private(client).json()["identity"]
+    assert identity["headline"] == "Builder of verified AI products"
+
+
+def test_identity_education_summary_from_student_profile(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_student_profile(
+        mem_store,
+        full_name="Grace Hopper",
+        degree="Master of Science",
+        major="Computer Science",
+        school_name="State University",
+        graduation_year=2027,
+    )
+    identity = _get_private(client).json()["identity"]
+    assert identity["program"] == "Computer Science"
+    assert identity["graduation_year"] == 2027
+    summary = identity["education_summary"]
+    assert "Computer Science" in summary
+    assert "Master of Science" in summary
+    assert "State University" in summary
+    assert "Class of 2027" in summary
+
+
+def test_student_profile_education_overrides_onboarding(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_onboarding(mem_store, major="Information Systems", degree_level="masters")
+    _seed_student_profile(mem_store, major="Computer Science", degree="Bachelor of Science")
+    identity = _get_private(client).json()["identity"]
+    assert identity["program"] == "Computer Science"
+    summary = identity["education_summary"]
+    assert "Bachelor of Science" in summary
+    # The student profile's free-text degree replaces the onboarding enum in the
+    # summary; onboarding education never overrides the student's own profile.
+    assert "Masters" not in summary
+    assert "Information Systems" not in summary
+
+
+def test_identity_placeholder_fallback_without_any_profile(
+    client: TestClient, mem_store: dict
+) -> None:
+    identity = _get_private(client).json()["identity"]
+    assert identity["display_name"] == "Verified candidate profile"
+    assert identity["headline"] == "Verified Work Passport"
+    assert identity["program"] is None
+
+
+def test_student_profile_uuid_name_scrubbed_to_placeholder(
+    client: TestClient, mem_store: dict
+) -> None:
+    raw_uuid = str(uuid4())
+    _seed_student_profile(mem_store, full_name=raw_uuid)
+    identity = _get_private(client).json()["identity"]
+    assert identity["display_name"] == "Verified candidate profile"
+    assert raw_uuid not in str(identity)
+
+
+def test_student_profile_private_fields_never_leak(
+    client: TestClient, mem_store: dict
+) -> None:
+    _seed_student_profile(
+        mem_store,
+        full_name="Grace Hopper",
+        target_roles=["Machine Learning Engineer"],
+        # Private fields that must NEVER surface on the identity header.
+        work_authorization="F1 OPT",
+        target_locations=["Boston"],
+        links={
+            "github_url": "https://github.com/private-handle",
+            "linkedin_url": "https://linkedin.com/in/private-handle",
+        },
+    )
+    blob = str(_get_private(client).json()["identity"])
+    assert "F1" not in blob
+    assert "OPT" not in blob
+    assert "Boston" not in blob
+    assert "linkedin" not in blob.lower()
+    assert "private-handle" not in blob
+    assert "work_authorization" not in blob
+
+
 # ── Must-fix: identity header scrubs UUID / private-id / email onboarding values ─
 #
 # Onboarding-derived identity fields are untrusted free text. A value shaped like
