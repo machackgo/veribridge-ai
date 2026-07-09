@@ -416,3 +416,156 @@ def test_no_project_specific_hardcoding() -> None:
     assert "boston" not in source
     assert "react demo" not in source
     assert "repo name" not in source
+
+
+# ── Fresh-user provisioning & safe errors ─────────────────────────────────────
+
+
+FRESH_USER_ID = "00000000-0000-0000-0000-0000000000aa"
+
+
+def test_fresh_user_can_submit_standalone_github_proof(client: TestClient, mem_store: dict) -> None:
+    """A brand-new user with no session and no public.users row can submit."""
+    saved = _submit(
+        client,
+        repo_url="https://github.com/machackgo/boston-smart-accident-risk-rerouting-google-cloud",
+        submitted_skill_claims=["Python", "Machine Learning", "FastAPI", "Google Cloud"],
+    )
+
+    assert saved["status"] == "submitted"
+    assert saved["repo_owner"] == "machackgo"
+    assert saved["proof_session_id"] is None
+    # The submission owns exactly one proof, attributed to the caller.
+    proofs = list(mem_store["github_proof_submissions"].values())
+    assert len(proofs) == 1
+    assert proofs[0]["user_id"] == USER_ID
+
+
+def test_submit_provisions_the_callers_own_user_row(client: TestClient, mem_store: dict) -> None:
+    """The FK-parent public.users row is created for the authenticated caller."""
+    assert "users" not in mem_store or USER_ID not in mem_store.get("users", {})
+
+    _submit(client, repo_url="https://github.com/example/fresh-repo", submitted_skill_claims=[])
+
+    users = mem_store["users"]
+    assert USER_ID in users
+    assert users[USER_ID]["id"] == USER_ID
+    assert users[USER_ID]["role"] == "student"
+    # Only the caller's own row is provisioned — no other tenant is touched.
+    assert list(users.keys()) == [USER_ID]
+
+
+def test_submit_provisioning_uses_verified_email_claim() -> None:
+    """When the JWT email claim is known, it seeds the provisioned users row."""
+    store: dict = {}
+    GitHubProofService(store).submit_github_proof(
+        FRESH_USER_ID,
+        "https://github.com/example/fresh-repo",
+        email="fresh.user@example.com",
+    )
+
+    assert store["users"][FRESH_USER_ID]["email"] == "fresh.user@example.com"
+
+
+def test_fresh_user_proof_is_isolated_from_other_users(mem_store: dict) -> None:
+    """User B's submitted proof is invisible to User A and vice versa."""
+    # User A submits.
+    app.dependency_overrides[get_db] = lambda: mem_store
+    app.dependency_overrides[get_current_user_id] = lambda: USER_ID
+    with TestClient(app) as a_client:
+        _submit(a_client, repo_url="https://github.com/example/user-a-repo", submitted_skill_claims=[])
+
+    # User B submits a different repo.
+    app.dependency_overrides[get_current_user_id] = lambda: OTHER_USER_ID
+    with TestClient(app) as b_client:
+        _submit(b_client, repo_url="https://github.com/example/user-b-repo", submitted_skill_claims=[])
+        b_rows = b_client.get("/api/v1/student/github-proofs").json()
+
+    # User A lists again.
+    app.dependency_overrides[get_current_user_id] = lambda: USER_ID
+    with TestClient(app) as a_client:
+        a_rows = a_client.get("/api/v1/student/github-proofs").json()
+
+    app.dependency_overrides.clear()
+
+    assert [row["repo_name"] for row in b_rows] == ["user-b-repo"]
+    assert [row["repo_name"] for row in a_rows] == ["user-a-repo"]
+
+
+def test_submit_provisions_user_row_via_real_client_insert() -> None:
+    """Against a real (non-dict) client, a missing users row is inserted once."""
+    mock_client = MagicMock()
+    empty = MagicMock()
+    empty.data = []
+    # users existence check: .select("id").eq("id", ...).limit(1).execute()
+    mock_client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = empty
+    # _rows_for_user: .select("*").eq("user_id", ...).execute()
+    mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = empty
+
+    upsert_result = MagicMock()
+    upsert_result.data = [{"id": str(uuid4()), "user_id": FRESH_USER_ID, "repo_url": "https://github.com/example/project", "status": "submitted", "created_at": datetime.now(UTC).isoformat(), "updated_at": datetime.now(UTC).isoformat()}]
+    mock_client.table.return_value.upsert.return_value.execute.return_value = upsert_result
+
+    GitHubProofService(mock_client).submit_github_proof(
+        FRESH_USER_ID, "https://github.com/example/project", email="fresh@example.com"
+    )
+
+    insert_payload = mock_client.table.return_value.insert.call_args[0][0]
+    assert insert_payload["id"] == FRESH_USER_ID
+    assert insert_payload["email"] == "fresh@example.com"
+    assert insert_payload["role"] == "student"
+
+
+def test_submit_foreign_key_error_returns_safe_conflict(client: TestClient) -> None:
+    """A residual FK violation surfaces a clean 409 — never a raw 500 traceback."""
+    from app.db.supabase import SupabaseFKError
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise SupabaseFKError("INSERT users failed: foreign-key constraint")
+
+    original = GitHubProofService._ensure_user_row
+    GitHubProofService._ensure_user_row = _boom  # type: ignore[assignment]
+    try:
+        response = client.post(
+            "/api/v1/student/github-proofs",
+            json={"repo_url": "https://github.com/example/project", "submitted_skill_claims": []},
+        )
+    finally:
+        GitHubProofService._ensure_user_row = original  # type: ignore[assignment]
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["detail"]["code"] == "github_proof_account_not_ready"
+    assert "traceback" not in json.dumps(body).lower()
+
+
+def test_submit_database_outage_returns_safe_503(client: TestClient) -> None:
+    """A generic Supabase failure maps to a safe 503, not a leaky 500."""
+    from app.db.supabase import SupabaseConnectionError
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise SupabaseConnectionError("network error")
+
+    original = GitHubProofService._ensure_user_row
+    GitHubProofService._ensure_user_row = _boom  # type: ignore[assignment]
+    try:
+        response = client.post(
+            "/api/v1/student/github-proofs",
+            json={"repo_url": "https://github.com/example/project", "submitted_skill_claims": []},
+        )
+    finally:
+        GitHubProofService._ensure_user_row = original  # type: ignore[assignment]
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "github_proof_unavailable"
+
+
+def test_classify_db_error_detects_foreign_key_violation() -> None:
+    from app.db.supabase import SupabaseAPIError, SupabaseFKError
+    from app.services.github_proof_service import _classify_db_error
+
+    fk = _classify_db_error(Exception('code 23503 violates foreign key constraint'), "INSERT", "users")
+    assert isinstance(fk, SupabaseFKError)
+
+    other = _classify_db_error(Exception("bad request 400"), "UPSERT", "github_proof_submissions")
+    assert isinstance(other, SupabaseAPIError)

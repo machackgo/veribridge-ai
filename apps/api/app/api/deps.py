@@ -11,12 +11,18 @@ Override these in tests via ``app.dependency_overrides``:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.core.auth import AuthTokenExpired, AuthTokenInvalid, extract_user_id
+from app.core.auth import (
+    AuthTokenExpired,
+    AuthTokenInvalid,
+    extract_user_id,
+    verify_supabase_jwt,
+)
 from app.core.config import settings
 from app.db.supabase import get_supabase_client
 
@@ -163,6 +169,51 @@ def get_current_user_id(
         },
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+@dataclass(frozen=True)
+class AuthenticatedUser:
+    """The verified identity of the calling user.
+
+    ``email`` is the JWT ``email`` claim when present (used to self-provision the
+    caller's own ``public.users`` row on first write); it is ``None`` when the
+    token omits it or for the no-token dev demo fallback.
+    """
+
+    id: str
+    email: Optional[str] = None
+
+
+def get_current_user_identity(
+    user_id: str = Depends(get_current_user_id),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> AuthenticatedUser:
+    """Resolve the caller's verified id AND (best-effort) email.
+
+    Authentication — including all fail-closed 401s and the opt-in no-token demo
+    fallback — is delegated entirely to :func:`get_current_user_id`, so this
+    dependency inherits that audited behavior unchanged and honors any test
+    override of it. The token's ``email`` claim is then read best-effort (the
+    token was already verified by ``get_current_user_id``) so first-write
+    endpoints can self-provision the caller's own ``public.users`` row. Email is
+    ``None`` when no token is present (demo fallback) or it carries no email
+    claim; it is never required for authorization.
+    """
+    email: Optional[str] = None
+    if credentials is not None:
+        secret = settings.supabase_jwt_secret.get_secret_value()
+        try:
+            payload = verify_supabase_jwt(
+                credentials.credentials, secret, settings.supabase_jwks_url
+            )
+            claim = payload.get("email")
+            email = str(claim) if claim else None
+        except (AuthTokenExpired, AuthTokenInvalid):
+            # Unreachable in practice (get_current_user_id already accepted the
+            # token), but never let email extraction turn a valid request into
+            # an error — the id is already authoritative.
+            email = None
+    return AuthenticatedUser(id=user_id, email=email)
 
 
 def get_optional_user_id(

@@ -7,7 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import AuthenticatedUser, get_current_user_id, get_current_user_identity, get_db
+from app.db.supabase import SupabaseError, SupabaseFKError
 from app.schemas.github_proof_submission import GitHubProofSubmissionCreate, GitHubProofSubmissionResponse
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
 from app.services.github_proof_service import (
@@ -28,15 +29,16 @@ router = APIRouter()
 )
 def submit_github_proof(
     body: GitHubProofSubmissionCreate,
-    user_id: str = Depends(get_current_user_id),
+    identity: AuthenticatedUser = Depends(get_current_user_identity),
     db: Any = Depends(get_db),
 ) -> GitHubProofSubmissionResponse:
     try:
         return GitHubProofService(db).submit_github_proof(
-            user_id=user_id,
+            user_id=identity.id,
             repo_url=body.repo_url,
             proof_session_id=body.proof_session_id,
             submitted_skill_claims=body.submitted_skill_claims,
+            email=identity.email,
         )
     except ExtensionProofSessionNotFoundError as exc:
         raise HTTPException(
@@ -52,8 +54,33 @@ def submit_github_proof(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": "github_proof_invalid", "message": str(exc)},
         ) from exc
+    except SupabaseFKError as exc:
+        # A required parent row is missing despite provisioning (e.g. the auth
+        # user id is not in auth.users). Surface a clear, safe conflict — never
+        # a raw traceback — instead of a generic 500.
+        logger.warning("POST /student/github-proofs: FK violation for user %s", identity.id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "github_proof_account_not_ready",
+                "message": "Your account is still being set up. Please try again in a moment.",
+            },
+        ) from exc
+    except SupabaseError as exc:
+        logger.error(
+            "POST /student/github-proofs: database error for user %s (%s)",
+            identity.id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "github_proof_unavailable",
+                "message": "GitHub proof service is temporarily unavailable. Please try again.",
+            },
+        ) from exc
     except Exception as exc:
-        logger.exception("POST /student/github-proofs: unexpected error for user %s", user_id)
+        logger.exception("POST /student/github-proofs: unexpected error for user %s", identity.id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"message": "GitHub proof submission failed unexpectedly."},
