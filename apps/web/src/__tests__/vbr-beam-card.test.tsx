@@ -1,5 +1,5 @@
 /**
- * Premium Beam Card (`/beam`, Phase 1) — frontend tests.
+ * Premium Beam Card (`/beam`, Phase 1 + Phase 2 short link) — frontend tests.
  *
  * Covers the full-screen in-person handoff surface:
  *  - the card renders the candidate's REAL identity (name / headline / program),
@@ -7,29 +7,36 @@
  *    fallback copy when there is no real name;
  *  - proof-source chips render ONLY the proof types that actually back the
  *    passport (present sources, canonical order);
- *  - the QR encodes EXACTLY the public Passport URL (`/p/{slug}`) — Phase 1
- *    payload — never a card/private/owner route;
+ *  - Phase 2 payload: the QR / copy / share carry EXACTLY the revocable short
+ *    link (`{app}/b/{code}`) — never the direct public URL when a Beam link
+ *    exists, and never a card/private/owner route;
+ *  - honest fallback: when the Beam link service fails, the card falls back to
+ *    the direct public Passport URL with a visible note and a retry action;
  *  - Share Passport uses `navigator.share` when available and falls back to
  *    copying the link when not; Copy link shows the "Link copied" toast;
  *  - the honest publish-first state (no QR, no fabricated link) when the
  *    passport is unpublished;
- *  - the last-card offline fallback (cached public-safe model, visible offline
- *    note) when the network load fails;
+ *  - the last-card offline fallback (cached public-safe model + cached short
+ *    link, visible offline note) when the network load fails;
  *  - safety guardrails: no fake wallet/NFC buttons, no raw evidence, internal
- *    ids, private routes, or numeric scores anywhere on the surface.
+ *    ids, private routes, or numeric scores anywhere on the surface; no
+ *    hardcoded localhost in production URL generation.
  */
 
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react"
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
 import { BeamView } from "../app/beam/BeamView"
 import {
   BEAM_CARD_CACHE_KEY,
+  BEAM_LINK_CACHE_KEY,
   buildBeamCardModel,
   loadBeamCardCache,
+  loadBeamLinkCache,
 } from "@/lib/beam-card"
-import { publicPassportUrl } from "@/lib/app-url"
+import { beamShortUrl, publicPassportUrl } from "@/lib/app-url"
 import type {
+  BeamLink,
   PassportIdentity,
   PassportSkillSummary,
   PrivateWorkPassport,
@@ -41,9 +48,14 @@ vi.mock("@/lib/vbr-api", async (importActual) => ({
   ...(await importActual<typeof import("@/lib/vbr-api")>()),
   getPrivateWorkPassport: vi.fn(),
   getWorkPassportStatus: vi.fn(),
+  getOrCreateBeamLink: vi.fn(),
 }))
 
-import { getPrivateWorkPassport, getWorkPassportStatus } from "@/lib/vbr-api"
+import {
+  getOrCreateBeamLink,
+  getPrivateWorkPassport,
+  getWorkPassportStatus,
+} from "@/lib/vbr-api"
 
 // ── Factories ────────────────────────────────────────────────────────────────
 
@@ -189,6 +201,24 @@ const unpublishedStatus: WorkPassportStatus = {
   summary: "",
 }
 
+/** The active revocable short link the Beam link service returns by default. */
+const BEAM_CODE = "k7GhQ2mZ9pTw4Rx_"
+
+function makeBeamLink(overrides: Partial<BeamLink> = {}): BeamLink {
+  return {
+    id: "link-1",
+    code: BEAM_CODE,
+    status: "active",
+    short_path: `/b/${BEAM_CODE}`,
+    public_passport_path: "/p/slug123",
+    event_tag: null,
+    expires_at: null,
+    revoked_at: null,
+    created_at: "2026-01-02T00:00:00Z",
+    ...overrides,
+  }
+}
+
 async function renderBeam(
   passport: PrivateWorkPassport = makePassport(),
   status: WorkPassportStatus = publishedStatus,
@@ -202,8 +232,14 @@ async function renderBeam(
 beforeEach(() => {
   vi.mocked(getPrivateWorkPassport).mockReset()
   vi.mocked(getWorkPassportStatus).mockReset()
+  vi.mocked(getOrCreateBeamLink).mockReset()
+  vi.mocked(getOrCreateBeamLink).mockResolvedValue(makeBeamLink())
   window.localStorage.clear()
   delete (navigator as { share?: unknown }).share
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
 })
 
 // ── Identity ─────────────────────────────────────────────────────────────────
@@ -288,54 +324,108 @@ describe("Beam Card proof summary", () => {
   })
 })
 
-// ── QR + link (Phase 1 payload) ──────────────────────────────────────────────
+// ── QR + link (Phase 2 payload: revocable short link) ────────────────────────
 
 describe("Beam Card QR", () => {
-  it("encodes EXACTLY the public Passport URL — never a card/private route", async () => {
+  it("encodes EXACTLY the revocable short link — not the direct public URL, never a private route", async () => {
     const card = await renderBeam()
     const qr = within(card).getByTestId("beam-card-qr")
     const encoded = qr.getAttribute("data-qr-value") ?? ""
-    expect(encoded).toBe(publicPassportUrl("slug123"))
-    expect(encoded).toContain("/p/slug123")
+    expect(encoded).toBe(beamShortUrl(BEAM_CODE))
+    expect(encoded).toContain(`/b/${BEAM_CODE}`)
+    expect(encoded).not.toContain("/p/")
     expect(encoded).not.toContain("/card/")
     expect(encoded).not.toContain("/student/")
     expect(encoded).not.toContain("/beam")
   })
 
-  it("shows the scan caption, visible link, no-login note, and trust line", async () => {
+  it("shows the scan caption, visible short link, no-login note, and trust line", async () => {
     const card = await renderBeam()
     expect(within(card).getByTestId("beam-card-qr-caption")).toHaveTextContent(
       "Scan to open the live public Passport",
     )
-    expect(within(card).getByTestId("beam-card-link")).toHaveTextContent("/p/slug123")
+    expect(within(card).getByTestId("beam-card-link")).toHaveTextContent(`/b/${BEAM_CODE}`)
     expect(within(card).getByTestId("beam-card-no-login")).toHaveTextContent("No login required")
     expect(within(card).getByTestId("beam-card-trust-line")).toHaveTextContent(
       "Public-safe proof summary — private evidence protected",
     )
+  })
+
+  it("falls back to the direct public URL with a visible note + retry when the link service fails", async () => {
+    vi.mocked(getOrCreateBeamLink).mockRejectedValue(new Error("beam service down"))
+    const card = await renderBeam()
+    const encoded = within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value")
+    expect(encoded).toBe(publicPassportUrl("slug123"))
+    expect(screen.getByTestId("beam-link-fallback-note")).toHaveTextContent(
+      /secure short link unavailable/i,
+    )
+    expect(screen.getByTestId("beam-link-retry")).toBeInTheDocument()
+  })
+
+  it("retry re-attempts the Beam link and swaps the QR to the short link", async () => {
+    vi.mocked(getOrCreateBeamLink).mockRejectedValueOnce(new Error("beam service down"))
+    await renderBeam()
+    fireEvent.click(screen.getByTestId("beam-link-retry"))
+    await waitFor(() =>
+      expect(screen.getByTestId("beam-card-qr").getAttribute("data-qr-value")).toBe(
+        beamShortUrl(BEAM_CODE),
+      ),
+    )
+    expect(screen.queryByTestId("beam-link-fallback-note")).not.toBeInTheDocument()
+  })
+
+  it("reuses this device's last saved short link when the link service fails", async () => {
+    window.localStorage.setItem(BEAM_LINK_CACHE_KEY, beamShortUrl("cachedCode123456"))
+    vi.mocked(getOrCreateBeamLink).mockRejectedValue(new Error("beam service down"))
+    const card = await renderBeam()
+    expect(within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value")).toBe(
+      beamShortUrl("cachedCode123456"),
+    )
+    // A revocable link is still in play — no fallback warning needed.
+    expect(screen.queryByTestId("beam-link-fallback-note")).not.toBeInTheDocument()
+  })
+
+  it("never asks for a Beam link while the passport is unpublished", async () => {
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(
+      makePassport({ is_published: false, public_slug: null, public_path: null }),
+    )
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(unpublishedStatus)
+    render(<BeamView />)
+    await screen.findByTestId("beam-publish-first")
+    expect(getOrCreateBeamLink).not.toHaveBeenCalled()
+  })
+
+  it("uses the configured production origin — never a hardcoded localhost", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridgeai.com")
+    const card = await renderBeam()
+    const encoded = within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value") ?? ""
+    expect(encoded).toBe(`https://veribridgeai.com/b/${BEAM_CODE}`)
+    expect(encoded).not.toContain("localhost")
   })
 })
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 
 describe("Beam actions", () => {
-  it("copies the public link and shows the 'Link copied' toast", async () => {
+  it("copies the revocable short link and shows the 'Link copied' toast", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
     await renderBeam()
     fireEvent.click(screen.getByTestId("beam-copy"))
     await waitFor(() => expect(writeText).toHaveBeenCalled())
-    expect(writeText.mock.calls[0][0]).toBe(publicPassportUrl("slug123"))
+    expect(writeText.mock.calls[0][0]).toBe(beamShortUrl(BEAM_CODE))
     expect(await screen.findByTestId("beam-copy-toast")).toHaveTextContent("Link copied")
   })
 
-  it("Share Passport uses navigator.share when available — with the public URL only", async () => {
+  it("Share Passport uses navigator.share when available — with the short link only", async () => {
     const share = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { share })
     await renderBeam()
     fireEvent.click(screen.getByTestId("beam-share"))
     await waitFor(() => expect(share).toHaveBeenCalled())
-    expect(share.mock.calls[0][0].url).toBe(publicPassportUrl("slug123"))
+    expect(share.mock.calls[0][0].url).toBe(beamShortUrl(BEAM_CODE))
     expect(share.mock.calls[0][0].url).not.toContain("/student/")
+    expect(share.mock.calls[0][0].url).not.toContain("/p/")
   })
 
   it("Share Passport falls back to copying when navigator.share is unavailable", async () => {
@@ -347,7 +437,9 @@ describe("Beam actions", () => {
     expect(await screen.findByTestId("beam-share-note")).toHaveTextContent(/link copied instead/i)
   })
 
-  it("Open public Passport links to the public URL in a new tab", async () => {
+  it("Open public Passport links straight to the public URL in a new tab", async () => {
+    // The owner's own "open" action skips the short-link hop on purpose —
+    // still a public-safe URL, just no pointless redirect for the holder.
     await renderBeam()
     const open = screen.getByTestId("beam-open-public")
     expect(open.getAttribute("href")).toBe(publicPassportUrl("slug123"))
@@ -376,18 +468,20 @@ describe("Beam publish-first state", () => {
 // ── Offline / last-card fallback ─────────────────────────────────────────────
 
 describe("Beam offline fallback", () => {
-  it("caches the published card on a successful load", async () => {
+  it("caches the published card AND the short link on a successful load", async () => {
     await renderBeam()
     await waitFor(() => expect(window.localStorage.getItem(BEAM_CARD_CACHE_KEY)).toBeTruthy())
     const cached = loadBeamCardCache()
     expect(cached?.name).toBe("Jordan Rivera")
     expect(cached?.publicPassportUrl).toBe(publicPassportUrl("slug123"))
+    expect(loadBeamLinkCache()).toBe(beamShortUrl(BEAM_CODE))
   })
 
-  it("renders the last saved card with an offline note when the load fails", async () => {
-    // Seed the cache exactly as a previous successful visit would have.
+  it("renders the last saved card + cached short link with an offline note when the load fails", async () => {
+    // Seed both caches exactly as a previous successful visit would have.
     const model = buildBeamCardModel(makePassport(), publishedStatus)
     window.localStorage.setItem(BEAM_CARD_CACHE_KEY, JSON.stringify(model))
+    window.localStorage.setItem(BEAM_LINK_CACHE_KEY, beamShortUrl(BEAM_CODE))
 
     vi.mocked(getPrivateWorkPassport).mockRejectedValue(new Error("network down"))
     vi.mocked(getWorkPassportStatus).mockRejectedValue(new Error("network down"))
@@ -396,9 +490,36 @@ describe("Beam offline fallback", () => {
     const card = await screen.findByTestId("beam-card")
     expect(screen.getByTestId("beam-offline-note")).toHaveTextContent(/offline copy/i)
     expect(within(card).getByTestId("beam-card-name")).toHaveTextContent("Jordan Rivera")
+    // The offline QR still carries the SHORT link — a revoked code shows the
+    // safe inactive page at scan time even from an offline-rendered card.
+    expect(within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value")).toBe(
+      beamShortUrl(BEAM_CODE),
+    )
+  })
+
+  it("falls back to the direct public URL offline when no short link was ever cached", async () => {
+    const model = buildBeamCardModel(makePassport(), publishedStatus)
+    window.localStorage.setItem(BEAM_CARD_CACHE_KEY, JSON.stringify(model))
+
+    vi.mocked(getPrivateWorkPassport).mockRejectedValue(new Error("network down"))
+    vi.mocked(getWorkPassportStatus).mockRejectedValue(new Error("network down"))
+    render(<BeamView />)
+
+    const card = await screen.findByTestId("beam-card")
     expect(within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value")).toBe(
       publicPassportUrl("slug123"),
     )
+  })
+
+  it("rejects a tampered short-link cache instead of encoding it", () => {
+    window.localStorage.setItem(BEAM_LINK_CACHE_KEY, "https://evil.example.com/steal")
+    expect(loadBeamLinkCache()).toBeNull()
+    window.localStorage.setItem(BEAM_LINK_CACHE_KEY, "javascript:alert(1)")
+    expect(loadBeamLinkCache()).toBeNull()
+    window.localStorage.setItem(BEAM_LINK_CACHE_KEY, "http://localhost:3000/b/short")
+    expect(loadBeamLinkCache()).toBeNull() // code too short to be minted
+    window.localStorage.setItem(BEAM_LINK_CACHE_KEY, "http://localhost:3000/p/slug123")
+    expect(loadBeamLinkCache()).toBeNull() // not a /b/ short link
   })
 
   it("shows the error state (not a fabricated card) when the load fails with no cache", async () => {

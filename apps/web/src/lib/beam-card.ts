@@ -199,3 +199,51 @@ export function loadBeamCardCache(): BeamCardModel | null {
     return null
   }
 }
+
+// ── Beam short-link offline cache (Phase 2) ──────────────────────────────────
+//
+// The short URL (`{app}/b/{code}`) is the QR payload, so the offline card needs
+// it too. Caching it is SAFER than caching the direct public URL ever was: a
+// cached short link still resolves through the backend at scan time, so a
+// revoked/rotated code shows the safe inactive page even when the student's
+// device rendered the card offline — revocation always wins.
+
+export const BEAM_LINK_CACHE_KEY = "veribridge-beam-card:short-link"
+
+/** `{origin}/b/{code}` with a minted-looking code — the only cacheable shape. */
+const SHORT_URL_PATH_PATTERN = /^\/b\/[A-Za-z0-9_-]{12,64}$/
+
+/** Validate a short URL before trusting it (the cache is user-editable). */
+export function isValidBeamShortUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false
+  try {
+    const url = new URL(value)
+    return (url.protocol === "https:" || url.protocol === "http:") &&
+      SHORT_URL_PATH_PATTERN.test(url.pathname)
+  } catch {
+    return false
+  }
+}
+
+/** Cache the current Beam short URL on this device (published cards only). */
+export function saveBeamLinkCache(shortUrl: string): void {
+  if (!isValidBeamShortUrl(shortUrl)) return
+  try {
+    window.localStorage.setItem(BEAM_LINK_CACHE_KEY, shortUrl)
+  } catch {
+    /* Storage blocked/full — the live link still rendered; skip the cache. */
+  }
+}
+
+/**
+ * Load the cached Beam short URL, failing closed on anything that is not a
+ * well-formed `{origin}/b/{code}` URL (localStorage is user-editable).
+ */
+export function loadBeamLinkCache(): string | null {
+  try {
+    const raw = window.localStorage.getItem(BEAM_LINK_CACHE_KEY)
+    return isValidBeamShortUrl(raw) ? raw : null
+  } catch {
+    return null
+  }
+}

@@ -3,15 +3,19 @@
 import { useEffect, useState, type CSSProperties } from "react"
 
 import {
+  getOrCreateBeamLink,
   getPrivateWorkPassport,
   getWorkPassportStatus,
 } from "@/lib/vbr-api"
 import {
   buildBeamCardModel,
   loadBeamCardCache,
+  loadBeamLinkCache,
   saveBeamCardCache,
+  saveBeamLinkCache,
   type BeamCardModel,
 } from "@/lib/beam-card"
+import { beamShortUrl } from "@/lib/app-url"
 import { BeamCard } from "../../../components/passport/BeamCard"
 import { LoadingState } from "../../../components/passport/shared"
 
@@ -20,19 +24,32 @@ import { LoadingState } from "../../../components/passport/shared"
  * {@link BeamCardModel}, and present the premium full-screen Beam Card with the
  * share/copy/open actions underneath.
  *
+ * Phase 2 — dynamic revocable short QR: for a PUBLISHED passport the view also
+ * creates/reuses the owner's Beam short link and the QR / copy / share payload
+ * becomes `{app}/b/{code}` instead of the direct public URL. The backend
+ * resolver decides where the code goes at scan time, so every QR the student
+ * has ever handed out can be rotated/revoked later. If the link service is
+ * unavailable, the card falls back to the direct public Passport URL with a
+ * visible note (honest, still public-safe) — the handoff moment never dies.
+ *
  * Honesty rules, same as Passport Beam:
  *  - unpublished passport → an honest publish-first state (never a fabricated
  *    link, never a private/owner route in the QR);
- *  - the ONLY value shared/copied/encoded is the public Passport URL;
+ *  - the ONLY values shared/copied/encoded are the public short link or the
+ *    public Passport URL;
  *  - no fake wallet passes, no NFC/proximity magic, no invented analytics.
  *
- * Offline fallback: the last successfully loaded PUBLISHED card is cached on
- * this device ({@link saveBeamCardCache}) — every cached field is public-safe by
- * construction. If the network load fails (career-fair Wi-Fi), the cached card
- * renders with a visible "offline copy" note instead of an error dead-end.
+ * Offline fallback: the last successfully loaded PUBLISHED card + short link
+ * are cached on this device — every cached field is public-safe by
+ * construction, and a cached short link STILL resolves (and can still be
+ * revoked) server-side at scan time. If the network load fails (career-fair
+ * Wi-Fi), the cached card renders with a visible "offline copy" note instead
+ * of an error dead-end.
  */
 export function BeamView() {
   const [model, setModel] = useState<BeamCardModel | null>(null)
+  const [shortUrl, setShortUrl] = useState<string | null>(null)
+  const [linkFallback, setLinkFallback] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [offline, setOffline] = useState(false)
@@ -43,10 +60,27 @@ export function BeamView() {
     setLoading(true)
     setError(null)
     setOffline(false)
+    setLinkFallback(false)
     Promise.all([getPrivateWorkPassport(), getWorkPassportStatus()])
-      .then(([passport, status]) => {
+      .then(async ([passport, status]) => {
         const built = buildBeamCardModel(passport, status)
+        let short: string | null = null
+        if (built.isPublished) {
+          try {
+            // Create/reuse the revocable short link — the Phase 2 QR payload.
+            const link = await getOrCreateBeamLink()
+            short = beamShortUrl(link.code)
+            saveBeamLinkCache(short)
+          } catch {
+            // Link service unavailable → this device's last saved short link
+            // (still revocable server-side), else the direct public URL with
+            // a visible note. Never a dead card at the career fair.
+            short = loadBeamLinkCache()
+            if (!short) setLinkFallback(true)
+          }
+        }
         setModel(built)
+        setShortUrl(short)
         // Keep the device's last-card copy fresh (published cards only).
         saveBeamCardCache(built)
       })
@@ -56,6 +90,7 @@ export function BeamView() {
         const cached = loadBeamCardCache()
         if (cached) {
           setModel(cached)
+          setShortUrl(loadBeamLinkCache())
           setOffline(true)
         } else {
           setError(err instanceof Error ? err.message : "Failed to load your Passport.")
@@ -69,12 +104,15 @@ export function BeamView() {
   }, [])
 
   const publicUrl = model?.publicPassportUrl ?? null
+  // The ONE QR / copy / share payload: revocable short link when available,
+  // direct public Passport URL as the honest fallback. Both are public-safe.
+  const shareUrl = shortUrl ?? publicUrl
 
   const copyLink = async () => {
-    if (!publicUrl) return
+    if (!shareUrl) return
     setShareNote(null)
     try {
-      await navigator.clipboard.writeText(publicUrl)
+      await navigator.clipboard.writeText(shareUrl)
       setCopied(true)
       setTimeout(() => setCopied(false), 1600)
     } catch {
@@ -83,9 +121,9 @@ export function BeamView() {
   }
 
   // Native share sheet when the browser has one; otherwise fall back to copy so
-  // the button always does something useful. Only ever shares the public URL.
+  // the button always does something useful. Only ever shares the public link.
   const sharePassport = async () => {
-    if (!publicUrl) return
+    if (!shareUrl) return
     setShareNote(null)
     const nav = navigator as Navigator & { share?: (data: ShareData) => Promise<void> }
     if (typeof nav.share === "function") {
@@ -93,7 +131,7 @@ export function BeamView() {
         await nav.share({
           title: "Verified Work Passport",
           text: model?.name ? `${model.name} — Verified Work Passport` : "Verified Work Passport",
-          url: publicUrl,
+          url: shareUrl,
         })
         return
       } catch {
@@ -168,7 +206,45 @@ export function BeamView() {
             </p>
           )}
 
-          <BeamCard model={model} />
+          {linkFallback && !offline && (
+            <p
+              data-testid="beam-link-fallback-note"
+              style={{
+                margin: 0,
+                fontSize: 11.5,
+                fontWeight: 600,
+                color: "#92400e",
+                background: "#fef3c7",
+                border: "1px solid #fde68a",
+                borderRadius: 999,
+                padding: "4px 12px",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              Secure short link unavailable — sharing your direct public Passport link.
+              <button
+                type="button"
+                data-testid="beam-link-retry"
+                onClick={load}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  color: "#92400e",
+                  fontSize: 11.5,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  textDecoration: "underline",
+                  padding: 0,
+                }}
+              >
+                Retry
+              </button>
+            </p>
+          )}
+
+          <BeamCard model={model} shareUrl={shareUrl} />
 
           {/* Actions — off the card face so the credential stays clean. */}
           <div data-testid="beam-actions" style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", maxWidth: 430 }}>

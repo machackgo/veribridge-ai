@@ -17,12 +17,18 @@ import { QrCode } from "./QrCode"
  * (the same recruiter-safe fields the Passport Card and public Passport show) —
  * never raw evidence, private documents, internal ids, or numeric scores. One
  * trust mark only (the verified pill in the header); no fake certification, no
- * fake score, no wallet passes. The ONLY value the QR ever encodes is the
- * public Passport URL.
+ * fake score, no wallet passes.
+ *
+ * QR payload (Phase 2): `shareUrl` — the revocable short link (`{app}/b/{code}`)
+ * when the Beam link service provided one, else the direct public Passport URL
+ * as an honest fallback. Both are public-safe; the short link is preferred
+ * because the student can rotate/revoke it after the handoff.
  */
-export function BeamCard({ model }: { model: BeamCardModel }) {
+export function BeamCard({ model, shareUrl }: { model: BeamCardModel; shareUrl?: string | null }) {
   const photo = model.profileImageUrl
   const portrait = 64
+  // The ONE value the QR stub encodes and displays.
+  const scanUrl = shareUrl ?? model.publicPassportUrl
 
   return (
     <div
@@ -265,14 +271,14 @@ export function BeamCard({ model }: { model: BeamCardModel }) {
           background: C.wash,
         }}
       >
-        <QrCode value={model.publicPassportUrl} size={224} data-testid="beam-card-qr" />
+        <QrCode value={scanUrl} size={224} data-testid="beam-card-qr" />
         <p
           data-testid="beam-card-qr-caption"
           style={{ fontSize: 13, fontWeight: 600, color: C.inkSoft, margin: 0, textAlign: "center" }}
         >
           Scan to open the live public Passport
         </p>
-        {model.publicPassportUrl && (
+        {scanUrl && (
           <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "center", width: "100%" }}>
             <div
               data-testid="beam-card-link"
@@ -289,7 +295,7 @@ export function BeamCard({ model }: { model: BeamCardModel }) {
                 maxWidth: "100%",
               }}
             >
-              {model.publicPassportUrl}
+              {scanUrl}
             </div>
             <span data-testid="beam-card-no-login" style={{ fontSize: 11, color: C.muted }}>
               No login required
