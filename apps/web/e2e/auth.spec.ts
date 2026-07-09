@@ -31,7 +31,7 @@ import path from "node:path"
 
 const EDU_EMAIL = "maya.reyes@wpi.edu"
 const NON_EDU_EMAIL = "user@gmail.com"
-const VALID_OTP = "123456"
+const VALID_OTP = "48210573" // 8-digit code (matches Supabase Email OTP Length)
 
 /** Intercept Supabase OTP-send and return a success stub. */
 async function mockOtpSend(page: Parameters<typeof page.route>[0]) {
@@ -309,7 +309,7 @@ test.describe("Login page — OTP screen", () => {
     await goToOtpStep(page)
     await page.getByTestId("otp-input").fill("123")
     await page.getByRole("button", { name: /verify and continue/i }).click()
-    await expect(page.getByTestId("error-banner")).toContainText(/6-digit/i)
+    await expect(page.getByTestId("error-banner")).toContainText(/8-digit/i)
   })
 
   test("wrong OTP shows error from server", async ({ page }) => {
