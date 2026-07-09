@@ -398,8 +398,16 @@ def test_reassemble_chunks_into_stream_byte_concatenates_in_order(tmp_path) -> N
     assert output_path.read_bytes() == b"".join(fragments)
 
 
-def test_download_fails_closed_without_configured_bucket() -> None:
+def test_download_fails_closed_without_configured_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Real (non-dict) DBs must fail closed if the media bucket isn't configured."""
+    from app.core.config import settings
+
+    # Force the "bucket not configured" precondition regardless of the local
+    # .env (which sets a real bucket) so this test deterministically exercises
+    # the bucket-not-configured fail-closed branch it is named for.
+    monkeypatch.setattr(settings, "supabase_vbr_media_bucket", "")
 
     class _FakeRealDb:
         """Stand-in for a real Supabase client with no storage configured."""
@@ -575,8 +583,16 @@ def test_fake_db_upload_stores_full_video_bytes(tmp_path) -> None:
     assert mem_store["_vbr_media_objects"][storage_path] == _FAKE_FULL_VIDEO_BYTES
 
 
-def test_upload_full_video_fails_closed_without_configured_bucket(tmp_path) -> None:
+def test_upload_full_video_fails_closed_without_configured_bucket(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Real (non-dict) DBs must fail closed if the media bucket isn't configured."""
+    from app.core.config import settings
+
+    # Force the "bucket not configured" precondition regardless of the local
+    # .env (which sets a real bucket) so this test deterministically exercises
+    # the bucket-not-configured fail-closed branch it is named for.
+    monkeypatch.setattr(settings, "supabase_vbr_media_bucket", "")
 
     class _FakeRealDb:
         """Stand-in for a real Supabase client with no storage configured."""

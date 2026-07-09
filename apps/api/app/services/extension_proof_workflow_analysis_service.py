@@ -704,9 +704,14 @@ def _build_frame_ocr_evidence_summary(
             continue
         if len(s) < 3:
             continue
-        clean_snippets.append(s[:120])   # cap snippet length
+        clean_snippets.append(s)
 
-    top_snippets = clean_snippets[:8]
+    # Display list is length-capped per snippet; classification below must run on
+    # the FULL cleaned text — a single OCR frame often packs multiple marketing
+    # phrases ("no expertise or coding required. Get Started. Watch video.") into
+    # one long snippet, and truncating to 120 chars for display would drop the
+    # signals the page-context/skill matchers depend on.
+    top_snippets = [s[:120] for s in clean_snippets[:8]]
 
     # Detect page context from the combined OCR text
     filtered_visual_summary = " | ".join(clean_snippets)

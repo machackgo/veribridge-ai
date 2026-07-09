@@ -47,9 +47,54 @@ export function buildPublicAppUrl(path: string): string {
 }
 
 /**
+ * API path prefixes whose backend routes REQUIRE an authenticated user
+ * (FastAPI `get_current_user_id`). Calling them without a session can only
+ * ever produce a 401, so `fetchAPI` short-circuits those calls locally
+ * instead of spamming the API anonymously. Dual owner/public routes
+ * (e.g. `/api/v1/proofs/...`, backed by `get_optional_user_id`) are NOT
+ * listed — anonymous recruiters legitimately call them from public pages.
+ */
+const AUTH_REQUIRED_PATH_PREFIXES = ["/api/v1/student", "/api/v1/admin"]
+
+function isAuthRequiredPath(path: string): boolean {
+  return AUTH_REQUIRED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix))
+}
+
+/** Error code fetchAPI uses for its locally synthesized signed-out 401. */
+export const AUTH_SESSION_MISSING_CODE = "auth_session_missing"
+
+function authSessionMissingResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      detail: {
+        code: AUTH_SESSION_MISSING_CODE,
+        message: "You are signed out. Please sign in to view your VeriBridge data.",
+      },
+    }),
+    { status: 401, headers: { "Content-Type": "application/json" } }
+  )
+}
+
+/** True when a 401 response body carries the backend's token_expired code. */
+async function isTokenExpired401(res: Response): Promise<boolean> {
+  if (res.status !== 401) return false
+  try {
+    const body = (await res.clone().json()) as { detail?: { code?: string } }
+    return body?.detail?.code === "token_expired"
+  } catch {
+    return false
+  }
+}
+
+/**
  * Authenticated fetch wrapper for the VeriBridge backend API.
- * Reads the current Supabase session and injects the access token
- * as an Authorization: Bearer header when present.
+ *
+ * Reads the current Supabase session and injects the access token as an
+ * Authorization: Bearer header. Auth-required paths are never called
+ * anonymously — with no session they resolve to a local 401
+ * (`auth_session_missing`) without a network round-trip. If the backend
+ * reports the token expired, the session is refreshed once and the request
+ * retried before the 401 is surfaced.
  */
 export async function fetchAPI(
   path: string,
@@ -60,21 +105,40 @@ export async function fetchAPI(
     data: { session },
   } = await supabase.auth.getSession()
 
+  if (!session?.access_token && isAuthRequiredPath(path)) {
+    return authSessionMissingResponse()
+  }
+
   // For multipart/FormData uploads the browser must set Content-Type itself
   // (it appends the multipart boundary), so we only default to JSON otherwise.
   const isFormData =
     typeof FormData !== "undefined" && options.body instanceof FormData
 
-  const headers: Record<string, string> = {
+  const baseHeaders: Record<string, string> = {
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...((options.headers as Record<string, string> | undefined) ?? {}),
   }
 
-  if (session?.access_token) {
-    headers["Authorization"] = `Bearer ${session.access_token}`
+  const doFetch = (accessToken: string | undefined) => {
+    const headers = { ...baseHeaders }
+    if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`
+    return fetch(`${API_BASE}${path}`, { ...options, headers })
   }
 
-  return fetch(`${API_BASE}${path}`, { ...options, headers })
+  const res = await doFetch(session?.access_token)
+
+  // A request body (stream/FormData) may not be replayable — only retry
+  // idempotent-safe bodyless requests after a token refresh.
+  if (session?.access_token && options.body == null && (await isTokenExpired401(res))) {
+    const {
+      data: { session: refreshed },
+    } = await supabase.auth.refreshSession()
+    if (refreshed?.access_token && refreshed.access_token !== session.access_token) {
+      return doFetch(refreshed.access_token)
+    }
+  }
+
+  return res
 }
 
 export async function getStudentProfile(): Promise<unknown | null> {

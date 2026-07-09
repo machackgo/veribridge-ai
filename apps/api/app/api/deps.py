@@ -89,6 +89,23 @@ def get_pipeline_db(
     return _DEV_PIPELINE_STORE if _pipeline_use_dev_store else db
 
 
+def _demo_fallback_enabled() -> bool:
+    """Whether the DEMO_USER_ID no-token fallback may apply for this request.
+
+    SECURITY: this must be a hard, explicit opt-in. The demo user is a real,
+    data-bearing account; letting an unauthenticated request resolve to it is a
+    cross-tenant data leak. It is therefore only ever active in non-production
+    when ``ENABLE_DEMO_USER_FALLBACK=true`` is set. It applies ONLY to requests
+    with no Authorization header — a present-but-invalid/expired token always
+    fails closed (401 / anonymous), never silently downgrades to the demo user.
+    """
+    return (
+        settings.environment != "production"
+        and settings.enable_demo_user_fallback
+        and bool(settings.demo_user_id)
+    )
+
+
 def get_current_user_id(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
 ) -> str:
@@ -97,21 +114,25 @@ def get_current_user_id(
 
     Priority:
       1. If an Authorization: Bearer <token> header is present, verify the
-         Supabase HS256 JWT and return the ``sub`` claim.
-      2. In non-production environments without a token, fall back to
-         ``DEMO_USER_ID`` so curl/Swagger still works without a real session.
-      3. In production with no token → 401.
+         Supabase JWT — HS256 via SUPABASE_JWT_SECRET or ES256/RS256 via the
+         project JWKS — and return the ``sub`` claim. A token that is
+         expired, malformed, wrongly signed, or unverifiable (e.g. neither
+         secret nor JWKS available) → 401. It is NEVER downgraded to
+         the demo user — doing so would attribute a real user's request, or a
+         stranger's, to one shared account.
+      2. With NO token: only when the explicit dev demo fallback is enabled
+         (see ``_demo_fallback_enabled``) return ``DEMO_USER_ID`` so curl /
+         Swagger can poke the API without a session. Otherwise → 401.
 
     Raises HTTP 401 with a structured JSON body on any auth failure.
     """
     if credentials is not None:
         secret = settings.supabase_jwt_secret.get_secret_value()
         try:
-            return extract_user_id(credentials.credentials, secret)
+            return extract_user_id(
+                credentials.credentials, secret, settings.supabase_jwks_url
+            )
         except AuthTokenExpired:
-            # In dev mode fall back to demo user so local testing works with a stale session.
-            if settings.environment != "production" and settings.demo_user_id:
-                return settings.demo_user_id
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={
@@ -121,9 +142,6 @@ def get_current_user_id(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         except AuthTokenInvalid:
-            # In dev mode (e.g. JWT secret not configured) fall back to demo user.
-            if settings.environment != "production" and settings.demo_user_id:
-                return settings.demo_user_id
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={
@@ -134,7 +152,7 @@ def get_current_user_id(
             )
 
     # No token supplied.
-    if settings.environment != "production" and settings.demo_user_id:
+    if _demo_fallback_enabled():
         return settings.demo_user_id
 
     raise HTTPException(
@@ -145,6 +163,41 @@ def get_current_user_id(
         },
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def get_optional_user_id(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> Optional[str]:
+    """Resolve the caller's user id when a valid token is present, else None.
+
+    For endpoints that serve BOTH the owner (full private access) and anonymous
+    public/recruiter surfaces (gated to public-safe artifacts only). An invalid
+    or expired token degrades to anonymous instead of raising — the endpoint's
+    own access policy then decides what an anonymous caller may see.
+
+    Note: unlike ``get_current_user_id`` this never falls back to
+    ``DEMO_USER_ID`` on a *present-but-invalid* token; the dev fallback applies
+    only when no token is supplied at all AND the explicit demo fallback is
+    enabled. Without that opt-in, no token → anonymous (``None``) — an
+    unauthenticated caller must never be treated as the demo *owner*, or these
+    dual owner/public endpoints would hand a stranger the owner's private view.
+
+    Override in tests:
+        app.dependency_overrides[get_optional_user_id] = lambda: None  # anonymous
+    """
+    if credentials is not None:
+        secret = settings.supabase_jwt_secret.get_secret_value()
+        try:
+            return extract_user_id(
+                credentials.credentials, secret, settings.supabase_jwks_url
+            )
+        except (AuthTokenExpired, AuthTokenInvalid):
+            return None
+
+    if _demo_fallback_enabled():
+        return settings.demo_user_id
+
+    return None
 
 
 def require_recruiter_session(

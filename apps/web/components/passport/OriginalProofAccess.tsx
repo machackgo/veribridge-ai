@@ -33,13 +33,19 @@ import { useEffect, useRef, useState } from "react"
 
 import {
   fetchFrameThumbnailObjectUrl,
+  fetchProofArtifactObjectUrl,
   getVBRSessionTranscript,
+  getVideoProofTranscript,
   isSafePublicUrl,
+  listVideoProofFrames,
   listWebsiteProofFrames,
   type SafeVisualFrameDescriptor,
   type SkillReport,
   type SkillReportProjectChain,
+  type SkillReportVideoProofCard,
   type VBRTranscriptSegment,
+  type VideoProofFrameDescriptor,
+  type VideoProofTranscriptSegment,
 } from "@/lib/vbr-api"
 import { Badge, Mono, TOKEN, type BadgeTone } from "./shared"
 
@@ -372,12 +378,403 @@ export function DefenseTranscriptViewer({
   )
 }
 
+// ── Document — retained-original viewer ────────────────────────────────────────
+
+const _ACTION_BUTTON_STYLE: React.CSSProperties = {
+  alignSelf: "flex-start",
+  fontSize: 12,
+  fontWeight: 600,
+  color: TOKEN.indigo,
+  background: TOKEN.indigoSoft,
+  border: "none",
+  borderRadius: 6,
+  padding: "6px 12px",
+  cursor: "pointer",
+}
+
+/**
+ * Opens a RETAINED original document through the access-gated artifact route.
+ * The bytes stream into a local object URL that opens in a new tab — no storage
+ * path or signed URL ever reaches the DOM, and the backend re-checks access per
+ * request (an owner-only artifact 404s for anyone else). Fails soft to an
+ * honest note — never a broken link.
+ */
+export function DocumentOriginalViewer({ artifactId }: { artifactId: string }) {
+  const [phase, setPhase] = useState<"idle" | "loading" | "opened" | "error">("idle")
+  const urlRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current)
+    }
+  }, [])
+
+  const open = async () => {
+    setPhase("loading")
+    const objectUrl = await fetchProofArtifactObjectUrl(artifactId)
+    if (!objectUrl) {
+      setPhase("error")
+      return
+    }
+    urlRef.current = objectUrl
+    window.open(objectUrl, "_blank", "noopener")
+    setPhase("opened")
+  }
+
+  if (phase === "error") {
+    return (
+      <span
+        data-testid="document-original-unavailable"
+        style={{ fontSize: 11, color: TOKEN.muted, fontStyle: "italic" }}
+      >
+        The original document could not be loaded right now.
+      </span>
+    )
+  }
+  return (
+    <button
+      type="button"
+      data-testid="document-original-view-button"
+      onClick={open}
+      disabled={phase === "loading"}
+      style={{ ..._ACTION_BUTTON_STYLE, opacity: phase === "loading" ? 0.6 : 1 }}
+    >
+      {phase === "loading" ? "Opening document…" : "View original document"}
+    </button>
+  )
+}
+
+// ── Video Proof — replay / transcript / frames access block ───────────────────
+
+/** Format seconds as m:ss for transcript rows. */
+function fmtSeconds(s: number): string {
+  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`
+}
+
+/**
+ * Owner (or shared) playback of the RETAINED demo video: streamed through the
+ * gated artifact route into a local object URL for a <video> element — never a
+ * storage path or signed URL in the DOM. Fails soft to an honest note.
+ */
+function VideoProofPlayer({ artifactId }: { artifactId: string }) {
+  const [phase, setPhase] = useState<"idle" | "loading" | "playing" | "error">("idle")
+  const [objectUrl, setObjectUrl] = useState<string | null>(null)
+  const urlRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current)
+    }
+  }, [])
+
+  const load = async () => {
+    setPhase("loading")
+    const url = await fetchProofArtifactObjectUrl(artifactId)
+    if (!url) {
+      setPhase("error")
+      return
+    }
+    urlRef.current = url
+    setObjectUrl(url)
+    setPhase("playing")
+  }
+
+  if (phase === "idle" || phase === "loading") {
+    return (
+      <button
+        type="button"
+        data-testid="video-proof-play-button"
+        onClick={load}
+        disabled={phase === "loading"}
+        style={{ ..._ACTION_BUTTON_STYLE, opacity: phase === "loading" ? 0.6 : 1 }}
+      >
+        {phase === "loading" ? "Loading video…" : "Play video proof"}
+      </button>
+    )
+  }
+  if (phase === "error" || !objectUrl) {
+    return (
+      <span
+        data-testid="video-proof-player-unavailable"
+        style={{ fontSize: 11, color: TOKEN.muted, fontStyle: "italic" }}
+      >
+        The video could not be loaded right now.
+      </span>
+    )
+  }
+  return (
+    <video
+      data-testid="video-proof-player"
+      src={objectUrl}
+      controls
+      style={{ width: "100%", maxWidth: 420, borderRadius: 8, border: `1px solid ${TOKEN.line}` }}
+    />
+  )
+}
+
+/** Lazy timestamped narration transcript viewer for one Video Proof. */
+function VideoProofTranscriptViewer({ proofId }: { proofId: string }) {
+  const [phase, setPhase] = useState<"idle" | "loading" | "loaded" | "empty" | "error">("idle")
+  const [segments, setSegments] = useState<VideoProofTranscriptSegment[]>([])
+
+  const load = async () => {
+    setPhase("loading")
+    try {
+      const transcript = await getVideoProofTranscript(proofId)
+      const rows = (transcript.segments ?? []).filter((s) => (s.text ?? "").trim())
+      if (rows.length === 0) {
+        setPhase("empty")
+        return
+      }
+      setSegments(rows)
+      setPhase("loaded")
+    } catch {
+      setPhase("error")
+    }
+  }
+
+  if (phase === "idle") {
+    return (
+      <button type="button" data-testid="video-proof-transcript-button" onClick={load} style={_ACTION_BUTTON_STYLE}>
+        View transcript
+      </button>
+    )
+  }
+  if (phase === "loading") {
+    return (
+      <span data-testid="video-proof-transcript-loading" style={{ fontSize: 11, color: TOKEN.muted }}>
+        Loading transcript…
+      </span>
+    )
+  }
+  if (phase === "error" || phase === "empty") {
+    return (
+      <span
+        data-testid="video-proof-transcript-unavailable"
+        style={{ fontSize: 11, color: TOKEN.muted, fontStyle: "italic" }}
+      >
+        {phase === "error"
+          ? "The video transcript could not be loaded right now."
+          : "No transcript text is stored for this video."}
+      </span>
+    )
+  }
+  return (
+    <div
+      data-testid="video-proof-transcript-viewer"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        maxHeight: 220,
+        overflowY: "auto",
+        border: `1px solid ${TOKEN.line}`,
+        borderRadius: 8,
+        padding: "8px 10px",
+        background: "#fff",
+      }}
+    >
+      {segments.map((seg, i) => (
+        <div key={`${seg.seq}-${i}`} data-testid="video-proof-transcript-segment" style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+          <Mono style={{ fontSize: 10, color: TOKEN.muted, whiteSpace: "nowrap" }}>{fmtSeconds(seg.start_s)}</Mono>
+          <span style={{ fontSize: 12, color: TOKEN.inkSoft, lineHeight: 1.5 }}>{seg.text}</span>
+        </div>
+      ))}
+      <p style={{ fontSize: 10, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+        Narration transcript extracted from the demo video&rsquo;s audio track.
+      </p>
+    </div>
+  )
+}
+
+const MAX_VIDEO_PROOF_FRAMES = 8
+
+type VideoProofGalleryFrame = VideoProofFrameDescriptor & { objectUrl: string }
+
+/** Lazy gallery of the frames extracted from one Video Proof — streamed through
+ * the gated artifact route into object URLs; no paths/signed URLs in the DOM. */
+function VideoProofFramesGallery({ proofId }: { proofId: string }) {
+  const [phase, setPhase] = useState<"idle" | "loading" | "loaded" | "empty" | "error">("idle")
+  const [frames, setFrames] = useState<VideoProofGalleryFrame[]>([])
+  const urlsRef = useRef<string[]>([])
+
+  useEffect(() => {
+    const urls = urlsRef.current
+    return () => {
+      for (const url of urls) URL.revokeObjectURL(url)
+    }
+  }, [])
+
+  const load = async () => {
+    setPhase("loading")
+    try {
+      const listing = await listVideoProofFrames(proofId)
+      const viewable = (listing.frames ?? []).filter((f) => f.frame_artifact_id).slice(0, MAX_VIDEO_PROOF_FRAMES)
+      const resolved: VideoProofGalleryFrame[] = []
+      for (const frame of viewable) {
+        const objectUrl = await fetchProofArtifactObjectUrl(frame.frame_artifact_id as string)
+        if (objectUrl) {
+          urlsRef.current.push(objectUrl)
+          resolved.push({ ...frame, objectUrl })
+        }
+      }
+      if (resolved.length === 0) {
+        setPhase("empty")
+        return
+      }
+      setFrames(resolved)
+      setPhase("loaded")
+    } catch {
+      setPhase("error")
+    }
+  }
+
+  if (phase === "idle") {
+    return (
+      <button type="button" data-testid="video-proof-frames-button" onClick={load} style={_ACTION_BUTTON_STYLE}>
+        View captured frames
+      </button>
+    )
+  }
+  if (phase === "loading") {
+    return (
+      <span data-testid="video-proof-frames-loading" style={{ fontSize: 11, color: TOKEN.muted }}>
+        Loading captured frames…
+      </span>
+    )
+  }
+  if (phase === "error" || phase === "empty") {
+    return (
+      <span
+        data-testid="video-proof-frames-unavailable"
+        style={{ fontSize: 11, color: TOKEN.muted, fontStyle: "italic" }}
+      >
+        {phase === "error"
+          ? "Captured frames could not be loaded right now."
+          : "No viewable frames were stored for this video."}
+      </span>
+    )
+  }
+  return (
+    <div data-testid="video-proof-frames-gallery" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      {frames.map((frame) => (
+        <figure
+          key={frame.frame_id}
+          data-testid="video-proof-frame"
+          style={{ margin: 0, display: "flex", flexDirection: "column", gap: 2, alignItems: "center" }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element -- authorized blob object URL, not a remote asset */}
+          <img
+            src={frame.objectUrl}
+            alt={`Video proof frame${frame.timestamp_label ? ` at ${frame.timestamp_label}` : ""}`}
+            style={{ width: 148, borderRadius: 6, border: `1px solid ${TOKEN.line}`, display: "block" }}
+          />
+          {frame.timestamp_label && (
+            <figcaption>
+              <Mono style={{ fontSize: 10, color: TOKEN.muted }}>⏱ {frame.timestamp_label}</Mono>
+            </figcaption>
+          )}
+        </figure>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The full access block for ONE Video Proof: honest availability chips, the
+ * deterministic demo summary + proof-strength wording, then ONLY the real
+ * affordances — player when a replay is retained, transcript viewer when
+ * narration was extracted, frames gallery when frames exist. Non-owner
+ * surfaces render actions only when the owner shared the proof (public_safe);
+ * the backend still re-checks access on every byte served.
+ */
+export function VideoProofAccessBlock({
+  proof,
+  ownerSurface = false,
+}: {
+  proof: SkillReportVideoProofCard
+  ownerSurface?: boolean
+}) {
+  const actionsAllowed = ownerSurface || proof.public_safe
+  return (
+    <div
+      data-testid="video-proof-access-block"
+      data-proof-id={proof.proof_id}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: "8px 10px",
+        border: `1px solid ${TOKEN.line}`,
+        borderRadius: 8,
+        background: TOKEN.bg,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: TOKEN.ink }}>{proof.title}</span>
+        <Badge tone="slate">{proof.source_kind_label}</Badge>
+        {proof.duration_label && <Mono style={{ fontSize: 10, color: TOKEN.muted }}>{proof.duration_label}</Mono>}
+        {proof.replay_available && (
+          <span data-testid="video-proof-availability-chip" data-kind="replay">
+            <Badge tone="sky">Video replay available</Badge>
+          </span>
+        )}
+        {proof.transcript_available && (
+          <span data-testid="video-proof-availability-chip" data-kind="transcript">
+            <Badge tone="sky">Transcript available</Badge>
+          </span>
+        )}
+        {proof.frames_available && (
+          <span data-testid="video-proof-availability-chip" data-kind="frames">
+            <Badge tone="sky">Frames available</Badge>
+          </span>
+        )}
+        {!proof.replay_available && !proof.transcript_available && !proof.frames_available && (
+          <span data-testid="video-proof-availability-chip" data-kind="summary-only">
+            <Badge tone="slate">Summary only</Badge>
+          </span>
+        )}
+        {!proof.public_safe && !ownerSurface && (
+          <span data-testid="video-proof-availability-chip" data-kind="not-public-safe">
+            <Badge tone="slate">Not public-safe</Badge>
+          </span>
+        )}
+        {proof.needs_review && <Badge tone="amber">Needs review</Badge>}
+      </div>
+      {proof.demo_summary && (
+        <p style={{ fontSize: 11, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{proof.demo_summary}</p>
+      )}
+      {proof.proof_strength_label && (
+        <p style={{ fontSize: 10, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>{proof.proof_strength_label}</p>
+      )}
+      {actionsAllowed && proof.replay_available && proof.original_artifact_id && (
+        <VideoProofPlayer artifactId={proof.original_artifact_id} />
+      )}
+      {actionsAllowed && proof.transcript_available && <VideoProofTranscriptViewer proofId={proof.proof_id} />}
+      {actionsAllowed && proof.frames_available && <VideoProofFramesGallery proofId={proof.proof_id} />}
+      {proof.limitations.length > 0 && (
+        <p data-testid="video-proof-limitation" style={{ fontSize: 10, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          {proof.limitations[0]}
+        </p>
+      )}
+    </div>
+  )
+}
+
 // ── Per-chain access derivation (pure, fail-closed) ───────────────────────────
 
 export type ChainAccessRow = {
   source: string
   state: OriginalAccessState
   note: string
+}
+
+/** Compact badge label for one access-row source. "Video Proof" stays
+ * distinguishable from Project-Defense "Video Evidence" (both would
+ * otherwise shorten to "Video"). */
+function sourceBadgeLabel(source: string): string {
+  if (source === "Video Proof") return "Demo Video"
+  return source.replace(" Proof", "").replace(" Evidence", "")
 }
 
 function itemsHaveSafeUrl(items: Array<{ public_url?: string | null }> | undefined): boolean {
@@ -433,7 +830,9 @@ export function deriveChainAccessRows(chain: SkillReportProjectChain): ChainAcce
       rows.push({
         source: "Website Proof",
         state: "original_available",
-        note: "Public live URL — recruiter can open the current deployment and verify runtime behaviour themselves.",
+        note:
+          "Public live URL — recruiter can open the current deployment and verify runtime behaviour themselves. " +
+          "Note: the live site may have changed since VeriBridge's recorded inspection.",
       })
     } else if (hasFrames) {
       rows.push({
@@ -452,28 +851,44 @@ export function deriveChainAccessRows(chain: SkillReportProjectChain): ChainAcce
     }
   }
 
-  // Document — the original file is not retained after analysis (privacy
-  // feature); a download exists only when the backend explicitly gated it open.
+  // Document — three honest levels: retained & shared (original can be
+  // opened via the gated document routes), retained privately (owner-only
+  // original; recruiters keep excerpts), or not retained at all (legacy —
+  // verified excerpts and locators are all that exists).
   const docs = chain.document_correlations ?? []
   if (docs.length > 0) {
-    const downloadable = docs.some(
-      (d) =>
-        d.inspection_card?.can_download_document &&
-        isSafePublicUrl(d.inspection_card.document_download_url ?? d.inspection_card.document_open_url ?? null),
-    )
+    const downloadable = docs.some((d) => {
+      const card = d.inspection_card
+      if (!card?.can_download_document) return false
+      return (
+        (card.document_retained && Boolean(card.document_artifact_id)) ||
+        isSafePublicUrl(card.document_download_url ?? card.document_open_url ?? null)
+      )
+    })
+    const retained = docs.some((d) => d.document_retained || d.inspection_card?.document_retained)
     rows.push(
       downloadable
         ? {
             source: "Document Proof",
             state: "original_available",
-            note: "The candidate shared the original document for recruiter review — see the document card above.",
-          }
-        : {
-            source: "Document Proof",
-            state: "excerpts_only",
             note:
-              "Original document was not retained after analysis; VeriBridge stores verified excerpts and locators.",
-          },
+              "The candidate shared the original document — it can be viewed or downloaded through " +
+              "VeriBridge's access-gated document routes.",
+          }
+        : retained
+          ? {
+              source: "Document Proof",
+              state: "excerpts_only",
+              note:
+                "The original document is retained privately (not shared for download); recruiters see " +
+                "verified excerpts and locators.",
+            }
+          : {
+              source: "Document Proof",
+              state: "excerpts_only",
+              note:
+                "Original document was not retained after analysis; VeriBridge stores verified excerpts and locators.",
+            },
     )
   }
 
@@ -530,7 +945,62 @@ export function deriveChainAccessRows(chain: SkillReportProjectChain): ChainAcce
     )
   }
 
+  // First-class Video Proofs (uploaded/recorded demo videos). Availability
+  // flags come straight from the retained data — never inferred here.
+  const videoProofRow = deriveVideoProofAccessRow(chain.video_proofs ?? [])
+  if (videoProofRow) rows.push(videoProofRow)
+
   return rows
+}
+
+/**
+ * The honest access row for a set of Video Proof cards — the best genuinely
+ * available access level: replay > frames > transcript > summary only. The
+ * note carries the finer recruiter-facing labels ("Video replay available",
+ * "Frames only", "Transcript available"). Null when there are no cards.
+ */
+export function deriveVideoProofAccessRow(
+  proofs: SkillReportVideoProofCard[],
+): ChainAccessRow | null {
+  if (proofs.length === 0) return null
+  const hasReplay = proofs.some((v) => v.replay_available)
+  const hasTranscript = proofs.some((v) => v.transcript_available)
+  const hasFrames = proofs.some((v) => v.frames_available)
+  if (hasReplay) {
+    const extras = [
+      hasTranscript ? "narration transcript" : null,
+      hasFrames ? "captured frames" : null,
+    ].filter(Boolean)
+    return {
+      source: "Video Proof",
+      state: "recorded_evidence",
+      note:
+        "Video replay available — the retained demo video can be played through VeriBridge's gated access" +
+        (extras.length > 0 ? `, with ${extras.join(" and ")}.` : ".") +
+        " A demo video shows runtime behaviour and the candidate's explanation; it does not prove authorship.",
+    }
+  }
+  if (hasFrames) {
+    return {
+      source: "Video Proof",
+      state: "recorded_evidence",
+      note:
+        "Frames only — extracted visual frames from the demo video are available" +
+        (hasTranscript ? ", with a narration transcript." : "; no replay is retained."),
+    }
+  }
+  if (hasTranscript) {
+    return {
+      source: "Video Proof",
+      state: "transcript_available",
+      note: "Transcript available — the demo narration is inspectable; no replay or frames were retained.",
+    }
+  }
+  return {
+    source: "Video Proof",
+    state: "no_original_access",
+    note: "Summary only — no replay, transcript, or frames were retained for this demo video.",
+  }
 }
 
 /** First defense-session id a chain's payload names (for the owner transcript). */
@@ -577,6 +1047,19 @@ export function ChainOriginalProofAccess({
     ...(chain.defense_evidence ?? []).map((it) => it.timestamp_label),
     ...(chain.video_evidence ?? []).map((it) => it.timestamp_label),
   ]
+  // Retained-original document access: the owner can always open their own
+  // retained original; a non-owner surface gets the viewer ONLY when the
+  // candidate shared it (can_download). The artifact route re-checks access
+  // on every request either way.
+  const retainedDocArtifactId = (() => {
+    for (const corr of chain.document_correlations ?? []) {
+      const card = corr.inspection_card
+      if (!card?.document_retained || !card.document_artifact_id) continue
+      if (ownerSurface || card.can_download_document) return card.document_artifact_id
+    }
+    return null
+  })()
+  const videoProofs = chain.video_proofs ?? []
 
   return (
     <div data-testid="chain-original-proof-access" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -594,7 +1077,7 @@ export function ChainOriginalProofAccess({
           style={{ display: "flex", flexDirection: "column", gap: 4 }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            <Badge tone="slate">{row.source.replace(" Proof", "").replace(" Evidence", "")}</Badge>
+            <Badge tone="slate">{sourceBadgeLabel(row.source)}</Badge>
             <OriginalAccessBadge state={row.state} />
           </div>
           <p style={{ fontSize: 11, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{row.note}</p>
@@ -606,6 +1089,13 @@ export function ChainOriginalProofAccess({
             defenseSessionId && (
               <DefenseTranscriptViewer sessionId={defenseSessionId} citedTimestampLabels={citedLabels} />
             )}
+          {row.source === "Document Proof" && retainedDocArtifactId && (
+            <DocumentOriginalViewer artifactId={retainedDocArtifactId} />
+          )}
+          {row.source === "Video Proof" &&
+            videoProofs.map((proof) => (
+              <VideoProofAccessBlock key={proof.proof_id} proof={proof} ownerSurface={ownerSurface} />
+            ))}
         </div>
       ))}
     </div>
@@ -711,23 +1201,33 @@ export function deriveVerificationAccessRows(report: SkillReport): VerificationA
   const stdDocs = std?.documents ?? []
   if (doc) rows.push(doc)
   else if (stdDocs.length > 0) {
-    const downloadable = stdDocs.some(
-      (d) =>
-        d.inspection_card?.can_download_document &&
-        isSafePublicUrl(d.inspection_card.document_download_url ?? d.inspection_card.document_open_url ?? null),
-    )
+    const downloadable = stdDocs.some((d) => {
+      const card = d.inspection_card
+      if (!card?.can_download_document) return false
+      return (
+        (card.document_retained && Boolean(card.document_artifact_id)) ||
+        isSafePublicUrl(card.document_download_url ?? card.document_open_url ?? null)
+      )
+    })
+    const retained = stdDocs.some((d) => d.document_retained || d.inspection_card?.document_retained)
     rows.push(
       downloadable
         ? {
             source: "Document Proof",
             state: "original_available",
-            note: "The candidate shared the original document for recruiter review.",
+            note: "The candidate shared the original document — it can be opened through gated document access.",
           }
-        : {
-            source: "Document Proof",
-            state: "excerpts_only",
-            note: "Original file not retained after analysis — verified excerpts and locators are shown.",
-          },
+        : retained
+          ? {
+              source: "Document Proof",
+              state: "excerpts_only",
+              note: "Original document retained privately (not shared) — verified excerpts and locators are shown.",
+            }
+          : {
+              source: "Document Proof",
+              state: "excerpts_only",
+              note: "Original file not retained after analysis — verified excerpts and locators are shown.",
+            },
     )
   }
 
@@ -756,6 +1256,14 @@ export function deriveVerificationAccessRows(report: SkillReport): VerificationA
         ? "Timestamped video moments are cited in the evidence."
         : "Only summarized video observations are available.",
     })
+  }
+
+  // First-class Video Proofs — best chain row, else the standalone bucket.
+  const videoProof = best("Video Proof")
+  if (videoProof) rows.push(videoProof)
+  else {
+    const stdRow = deriveVideoProofAccessRow(std?.video_proofs ?? [])
+    if (stdRow) rows.push(stdRow)
   }
 
   return rows
@@ -797,7 +1305,7 @@ export function RecruiterVerificationAccessSummary({ report }: { report: SkillRe
             style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}
           >
             <span style={{ fontSize: 12, fontWeight: 600, color: TOKEN.ink, minWidth: 74 }}>
-              {row.source.replace(" Proof", "").replace(" Evidence", "")}
+              {sourceBadgeLabel(row.source)}
             </span>
             <OriginalAccessBadge state={row.state} />
             <span style={{ fontSize: 11, color: TOKEN.muted, lineHeight: 1.5 }}>{row.note}</span>

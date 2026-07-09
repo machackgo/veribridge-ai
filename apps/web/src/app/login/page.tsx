@@ -9,6 +9,17 @@ type Step = "email" | "otp"
 
 const RESEND_DELAY = 60
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+// Length of the email verification code. This MUST match the Supabase project's
+// "Email OTP Length" auth setting (GoTrue supports 6–10 digits). Our project is
+// configured to send 8-digit codes; override per-environment with
+// NEXT_PUBLIC_OTP_CODE_LENGTH if that setting is changed. The code itself is
+// still generated and verified by Supabase — this only sizes the input so users
+// can type the full code they were emailed.
+const OTP_CODE_LENGTH = (() => {
+  const raw = Number(process.env.NEXT_PUBLIC_OTP_CODE_LENGTH)
+  return Number.isInteger(raw) && raw >= 6 && raw <= 10 ? raw : 8
+})()
 const SMTP_DELIVERY_ERROR_MESSAGE =
   "Verification email could not be sent. For local development, enable demo mode. For production, configure a verified SMTP sender domain."
 
@@ -417,10 +428,10 @@ function OtpStep({
         inputMode="numeric"
         autoComplete="one-time-code"
         pattern="[0-9]*"
-        placeholder="000000"
-        maxLength={6}
+        placeholder={"0".repeat(OTP_CODE_LENGTH)}
+        maxLength={OTP_CODE_LENGTH}
         value={otp}
-        onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+        onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, OTP_CODE_LENGTH))}
         required
         data-testid="otp-input"
         style={{
@@ -588,8 +599,8 @@ function LoginInner() {
     setError(null)
     const code = otp.trim()
 
-    if (code.length !== 6) {
-      setError("Please enter the 6-digit code from your email.")
+    if (code.length !== OTP_CODE_LENGTH) {
+      setError(`Please enter the ${OTP_CODE_LENGTH}-digit code from your email.`)
       return
     }
 

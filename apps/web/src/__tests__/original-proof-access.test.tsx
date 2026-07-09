@@ -23,10 +23,12 @@ import { SkillReportView } from "../../components/passport/VaultProofs"
 import {
   deriveChainAccessRows,
   deriveVerificationAccessRows,
+  deriveVideoProofAccessRow,
 } from "../../components/passport/OriginalProofAccess"
 import type {
   SkillReport,
   SkillReportProjectChain,
+  SkillReportVideoProofCard,
   WebsiteEvidenceCard,
 } from "@/lib/vbr-api"
 
@@ -35,11 +37,17 @@ vi.mock("@/lib/vbr-api", async (importActual) => ({
   listWebsiteProofFrames: vi.fn(),
   fetchFrameThumbnailObjectUrl: vi.fn(),
   getVBRSessionTranscript: vi.fn(),
+  fetchProofArtifactObjectUrl: vi.fn(),
+  getVideoProofTranscript: vi.fn(),
+  listVideoProofFrames: vi.fn(),
 }))
 
 import {
   fetchFrameThumbnailObjectUrl,
+  fetchProofArtifactObjectUrl,
   getVBRSessionTranscript,
+  getVideoProofTranscript,
+  listVideoProofFrames,
   listWebsiteProofFrames,
 } from "@/lib/vbr-api"
 
@@ -186,10 +194,37 @@ const TRANSCRIPT = {
   ],
 }
 
+function videoProofCard(overrides: Partial<SkillReportVideoProofCard> = {}): SkillReportVideoProofCard {
+  return {
+    proof_id: "vp-1",
+    title: "ML classifier demo",
+    source_kind: "hackathon_demo",
+    source_kind_label: "Hackathon demo video",
+    duration_label: "3m 12s",
+    replay_available: true,
+    transcript_available: true,
+    frames_available: true,
+    segment_count: 12,
+    frame_count: 6,
+    original_artifact_id: "art-vp-1",
+    demo_summary: "Hackathon demo video retained for recruiter review (3m 12s).",
+    proof_strength_label: "Demo / presentation evidence — requires corroboration for implementation claims.",
+    skills_supported: [{ skill: "Machine Learning", basis: "mentioned_in_narration", verified: false }],
+    limitations: ["A demo video shows runtime behaviour — it does not prove authorship of the code."],
+    corroborates_with: ["github", "website"],
+    needs_review: true,
+    public_safe: false,
+    ...overrides,
+  }
+}
+
 beforeEach(() => {
   vi.mocked(listWebsiteProofFrames).mockReset()
   vi.mocked(fetchFrameThumbnailObjectUrl).mockReset()
   vi.mocked(getVBRSessionTranscript).mockReset()
+  vi.mocked(fetchProofArtifactObjectUrl).mockReset()
+  vi.mocked(getVideoProofTranscript).mockReset()
+  vi.mocked(listVideoProofFrames).mockReset()
 })
 
 // ── Recruiter verification access summary ─────────────────────────────────────
@@ -648,5 +683,245 @@ describe("Fail-closed original access", () => {
     expect(row).toHaveAttribute("data-source", "Project Defense")
     expect(row).toHaveAttribute("data-state", "no_original_access")
     expect(screen.queryByTestId("defense-transcript-view-button")).not.toBeInTheDocument()
+  })
+})
+
+// ── Retained document access (migration 056) ──────────────────────────────────
+
+describe("Retained document original access", () => {
+  const retainedSharedDoc = {
+    source_id: "doc-1",
+    document_title: "Final Report",
+    corroborates: "GitHub implementation",
+    reason: "Describes the training pipeline.",
+    limitation: "Document supports the claim only.",
+    document_retained: true,
+    inspection_card: {
+      title: "Final Report",
+      evidence_role: "Corroborating document",
+      why_supported: "Cites the training pipeline.",
+      limitation: "Supporting evidence only.",
+      access_note: "The candidate shared this document for recruiter review.",
+      can_download_document: true,
+      is_public_safe: false,
+      is_attached_to_project: true,
+      document_retained: true,
+      document_artifact_id: "art-doc-1",
+    },
+  } as SkillReport["standalone_evidence"]["documents"][number]
+
+  it("derives original_available when the original is retained and shared", () => {
+    const rows = deriveChainAccessRows(chain({ document_correlations: [retainedSharedDoc] }))
+    const doc = rows.find((r) => r.source === "Document Proof")
+    expect(doc?.state).toBe("original_available")
+    expect(doc?.note).toContain("access-gated")
+  })
+
+  it("derives excerpts_only with a retained-privately note when not shared", () => {
+    const privateDoc = {
+      ...retainedSharedDoc,
+      inspection_card: {
+        ...retainedSharedDoc.inspection_card!,
+        can_download_document: false,
+      },
+    }
+    const rows = deriveChainAccessRows(chain({ document_correlations: [privateDoc] }))
+    const doc = rows.find((r) => r.source === "Document Proof")
+    expect(doc?.state).toBe("excerpts_only")
+    expect(doc?.note).toContain("retained privately")
+  })
+
+  it("keeps the honest not-retained wording for legacy documents", () => {
+    const legacyDoc = {
+      ...retainedSharedDoc,
+      document_retained: false,
+      inspection_card: {
+        ...retainedSharedDoc.inspection_card!,
+        can_download_document: false,
+        document_retained: false,
+        document_artifact_id: null,
+      },
+    }
+    const rows = deriveChainAccessRows(chain({ document_correlations: [legacyDoc] }))
+    const doc = rows.find((r) => r.source === "Document Proof")
+    expect(doc?.state).toBe("excerpts_only")
+    expect(doc?.note).toContain("not retained")
+  })
+
+  it("owner surface offers View original document and streams via the gated route", async () => {
+    vi.mocked(fetchProofArtifactObjectUrl).mockResolvedValue("blob:doc-object-url")
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null)
+
+    const report = skillReport({
+      proof_chains: [chain({ sources: ["Document Proof"], document_correlations: [retainedSharedDoc] })],
+    })
+    render(<SkillReportView report={report} />)
+
+    const button = screen.getByTestId("document-original-view-button")
+    fireEvent.click(button)
+    await screen.findByTestId("document-original-view-button")
+    expect(fetchProofArtifactObjectUrl).toHaveBeenCalledWith("art-doc-1")
+    expect(openSpy).toHaveBeenCalledWith("blob:doc-object-url", "_blank", "noopener")
+    expect(document.body.innerHTML).not.toContain("proof-artifacts/")
+    expect(document.body.innerHTML).not.toContain("storage_path")
+    openSpy.mockRestore()
+  })
+
+  it("shows no document view button when the original was not retained", () => {
+    const legacyDoc = {
+      ...retainedSharedDoc,
+      document_retained: false,
+      inspection_card: {
+        ...retainedSharedDoc.inspection_card!,
+        can_download_document: false,
+        document_retained: false,
+        document_artifact_id: null,
+      },
+    }
+    const report = skillReport({
+      proof_chains: [chain({ sources: ["Document Proof"], document_correlations: [legacyDoc] })],
+    })
+    render(<SkillReportView report={report} />)
+    expect(screen.queryByTestId("document-original-view-button")).not.toBeInTheDocument()
+  })
+})
+
+// ── First-class Video Proof access ─────────────────────────────────────────────
+
+describe("Video Proof original access", () => {
+  it("derives the honest access ladder: replay > frames > transcript > summary", () => {
+    expect(deriveVideoProofAccessRow([videoProofCard()])).toMatchObject({
+      source: "Video Proof",
+      state: "recorded_evidence",
+      note: expect.stringContaining("Video replay available"),
+    })
+    expect(
+      deriveVideoProofAccessRow([videoProofCard({ replay_available: false })]),
+    ).toMatchObject({ state: "recorded_evidence", note: expect.stringContaining("Frames only") })
+    expect(
+      deriveVideoProofAccessRow([
+        videoProofCard({ replay_available: false, frames_available: false }),
+      ]),
+    ).toMatchObject({ state: "transcript_available", note: expect.stringContaining("Transcript available") })
+    expect(
+      deriveVideoProofAccessRow([
+        videoProofCard({ replay_available: false, frames_available: false, transcript_available: false }),
+      ]),
+    ).toMatchObject({ state: "no_original_access", note: expect.stringContaining("Summary only") })
+    expect(deriveVideoProofAccessRow([])).toBeNull()
+  })
+
+  it("chain access rows include a Video Proof row when cards exist", () => {
+    const rows = deriveChainAccessRows(chain({ video_proofs: [videoProofCard()] }))
+    expect(rows.map((r) => r.source)).toContain("Video Proof")
+  })
+
+  it("verification summary surfaces standalone video proofs", () => {
+    const report = skillReport({
+      standalone_evidence: { ...emptyStandalone(), video_proofs: [videoProofCard()] },
+    })
+    const rows = deriveVerificationAccessRows(report)
+    const row = rows.find((r) => r.source === "Video Proof")
+    expect(row?.state).toBe("recorded_evidence")
+  })
+
+  it("owner surface renders play/transcript/frames actions and streams safely", async () => {
+    vi.mocked(fetchProofArtifactObjectUrl).mockResolvedValue("blob:video-object-url")
+    vi.mocked(getVideoProofTranscript).mockResolvedValue({
+      video_proof_id: "vp-1",
+      transcript_status: "completed",
+      segment_count: 2,
+      segments: [
+        { seq: 0, start_s: 0, end_s: 8, text: "This is our crash risk predictor demo." },
+        { seq: 1, start_s: 9, end_s: 20, text: "Uploading a dataset produces a prediction." },
+      ],
+    })
+
+    const report = skillReport({
+      proof_chains: [chain({ sources: [], video_proofs: [videoProofCard()] })],
+    })
+    render(<SkillReportView report={report} />)
+
+    const block = screen.getByTestId("video-proof-access-block")
+    expect(block).toHaveTextContent("ML classifier demo")
+    expect(within(block).getAllByTestId("video-proof-availability-chip").map((c) => c.getAttribute("data-kind"))).toEqual(
+      ["replay", "transcript", "frames"],
+    )
+
+    fireEvent.click(screen.getByTestId("video-proof-play-button"))
+    const player = await screen.findByTestId("video-proof-player")
+    expect(player).toHaveAttribute("src", "blob:video-object-url")
+    expect(fetchProofArtifactObjectUrl).toHaveBeenCalledWith("art-vp-1")
+
+    fireEvent.click(screen.getByTestId("video-proof-transcript-button"))
+    await screen.findByTestId("video-proof-transcript-viewer")
+    expect(screen.getAllByTestId("video-proof-transcript-segment")).toHaveLength(2)
+
+    expect(document.body.innerHTML).not.toContain("proof-artifacts/")
+    expect(document.body.innerHTML).not.toContain("storage_path")
+  })
+
+  it("renders frames through the gated artifact route", async () => {
+    vi.mocked(listVideoProofFrames).mockResolvedValue({
+      video_proof_id: "vp-1",
+      frames_status: "completed",
+      frame_count: 2,
+      frames: [
+        { frame_id: "f-1", timestamp_s: 3, timestamp_label: "0:03", frame_artifact_id: "art-f-1" },
+        { frame_id: "f-2", timestamp_s: 9, timestamp_label: "0:09", frame_artifact_id: "art-f-2" },
+      ],
+    })
+    vi.mocked(fetchProofArtifactObjectUrl).mockResolvedValue("blob:frame-object-url")
+
+    const report = skillReport({
+      proof_chains: [chain({ video_proofs: [videoProofCard({ replay_available: false, transcript_available: false })] })],
+    })
+    render(<SkillReportView report={report} />)
+
+    fireEvent.click(screen.getByTestId("video-proof-frames-button"))
+    const gallery = await screen.findByTestId("video-proof-frames-gallery")
+    expect(within(gallery).getAllByTestId("video-proof-frame")).toHaveLength(2)
+    expect(fetchProofArtifactObjectUrl).toHaveBeenCalledWith("art-f-1")
+    expect(document.body.innerHTML).not.toContain("proof-artifacts/")
+  })
+
+  it("summary-only video proofs never render fake action buttons", () => {
+    const report = skillReport({
+      proof_chains: [
+        chain({
+          video_proofs: [
+            videoProofCard({
+              replay_available: false,
+              transcript_available: false,
+              frames_available: false,
+              original_artifact_id: null,
+            }),
+          ],
+        }),
+      ],
+    })
+    render(<SkillReportView report={report} />)
+
+    const block = screen.getByTestId("video-proof-access-block")
+    expect(within(block).getByTestId("video-proof-availability-chip")).toHaveAttribute("data-kind", "summary-only")
+    expect(screen.queryByTestId("video-proof-play-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("video-proof-transcript-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("video-proof-frames-button")).not.toBeInTheDocument()
+  })
+
+  it("a public surface hides actions for an unshared video proof", () => {
+    const report = skillReport({
+      proof_chains: [chain({ video_proofs: [videoProofCard({ public_safe: false })] })],
+    })
+    render(<SkillReportView report={report} publicSafe />)
+
+    const block = screen.getByTestId("video-proof-access-block")
+    const kinds = within(block)
+      .getAllByTestId("video-proof-availability-chip")
+      .map((c) => c.getAttribute("data-kind"))
+    expect(kinds).toContain("not-public-safe")
+    expect(screen.queryByTestId("video-proof-play-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("video-proof-transcript-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("video-proof-frames-button")).not.toBeInTheDocument()
   })
 })
