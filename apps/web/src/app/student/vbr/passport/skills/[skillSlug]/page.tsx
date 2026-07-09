@@ -12,7 +12,7 @@ export default function Page({ params }: { params: Promise<{ skillSlug: string }
       <PageHeader
         eyebrow="Verified Work Passport · Skill Report"
         title="Skill Report"
-        description="A recruiter-verifiable, connected-evidence report for one skill — GitHub, Website, Document, Project Defense, and Video proofs grouped into proof chains, with honest gaps. Documents appear as corroboration connected to your stronger evidence, never as a raw dump."
+        description="A recruiter-verifiable evidence argument for one skill: the claim, the projects that demonstrate it, the exact proof behind each — with project-level, unmapped, and vault-only proof separated and honestly marked as not counted. Never a raw evidence dump."
       />
       <SkillReportPageView skillSlug={skillSlug} />
     </div>

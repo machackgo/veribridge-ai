@@ -29,6 +29,17 @@ import { Badge, Mono, TOKEN, type BadgeTone } from "./shared"
 import { WebsiteRuntimeInspectionCard } from "./WebsiteRuntimeInspectionCard"
 import { DocumentProofInspectionCard } from "./DocumentProofInspectionCard"
 import { ProjectDefenseInspectionSection } from "./ProjectDefenseInspectionCard"
+import { EvidenceRelationshipBadge, EvidenceTierSection } from "./ProofRelationshipGuide"
+import {
+  EvidenceLimitations,
+  ProjectContextEvidenceList,
+  ProofInspectActions,
+  SkillEvidenceThesis,
+  SkillProofMatrix,
+  UnmappedProofNotice,
+  VaultSuggestedEvidenceList,
+  type SkillReportIntelligenceContext,
+} from "./SkillReportIntelligence"
 
 const PROOF_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
@@ -1641,16 +1652,48 @@ function evidenceFallbackIdentity(p: {
   return [n(p.proof_type), n(p.title), n(p.safe_location), summary.slice(0, 160)].join("|")
 }
 
+// Closed status→claim map: the one-line recruiter-readable claim when the
+// backend sent no synthesis_summary. Labels only — never a score, never a
+// stronger word than the qualitative status itself supports.
+const CLAIM_BY_STATUS: Record<string, string> = {
+  Demonstrated: "The connected evidence below demonstrates this skill.",
+  "Partially demonstrated": "The evidence below supports parts of this skill claim — see the limitations.",
+  "Evidence observed": "Evidence supporting this skill was observed — see the limitations for what it does not prove.",
+  "Needs review": "Evidence exists but needs review before it can support this claim.",
+  "Not assessed": "This skill has not been assessed yet.",
+  "Insufficient evidence": "There is not enough direct evidence yet to support this claim.",
+}
+
 /**
- * The full Skill Report for one skill — a recruiter-trust instrument: connected
- * proof chains, evidence-cited synthesis claims and honest limitations, never a
- * raw dump. ``publicSafe`` (only true on a public surface) drops any synthesis
- * claim/chain that is not public-safe; the default private view shows everything.
+ * The full Skill Report for one skill — a recruiter-trust instrument structured
+ * as an evidence ARGUMENT: skill claim → evidence thesis → direct skill
+ * evidence (connected proof chains) → project-context / unmapped / vault-only
+ * tiers (each honestly "not counted") → proof coverage matrix → limitations →
+ * inspect actions. Never a raw dump.
+ *
+ * ``publicSafe`` (only true on a public surface) drops any synthesis
+ * claim/chain that is not public-safe and every owner-only route.
+ * ``context`` is the OWNER's passport-derived slice powering the project-context
+ * and unmapped tiers plus the matrix's context cells; when absent those pieces
+ * fail closed and the report renders from its own payload alone.
  */
-export function SkillReportView({ report, publicSafe = false }: { report: SkillReport; publicSafe?: boolean }) {
+export function SkillReportView({
+  report,
+  publicSafe = false,
+  context = null,
+}: {
+  report: SkillReport
+  publicSafe?: boolean
+  context?: SkillReportIntelligenceContext | null
+}) {
   // Prefer the Proof Synthesis Agent's project-anchored chains; fall back to the
   // attached project chains for older payloads without synthesis fields.
-  const attachedChains = report.proof_chains ?? report.projects?.filter((p) => p.attached) ?? []
+  const allChains = report.proof_chains ?? report.projects?.filter((p) => p.attached) ?? []
+  // Direct skill evidence = chains attached to a project. An unattached chain is
+  // vault-tier: its proof maps to the skill but is not project-connected, so it
+  // renders under "Vault-only / suggested" and is never framed as counted.
+  const attachedChains = allChains.filter((c) => c.attached)
+  const vaultChains = allChains.filter((c) => !c.attached)
   const unlinked = report.unlinked_supporting_evidence
   const std = report.standalone_evidence
   // The "Unlinked supporting evidence" bucket is derived from the SAME standalone
@@ -1732,10 +1775,18 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
           <Badge tone={statusTone(report.status)}>{report.status}</Badge>
           <span style={{ fontSize: 11, color: TOKEN.muted }}>{report.category}</span>
         </div>
-        {report.synthesis_summary && (
+        {report.synthesis_summary ? (
           <p data-testid="skill-report-synthesis-summary" style={{ fontSize: 12, color: TOKEN.ink, margin: 0, fontWeight: 600 }}>
             {report.synthesis_summary}
           </p>
+        ) : (
+          // No synthesis summary → the closed status-derived claim line, so the
+          // report always opens with ONE recruiter-readable sentence.
+          CLAIM_BY_STATUS[report.status] && (
+            <p data-testid="skill-report-claim" style={{ fontSize: 12, color: TOKEN.ink, margin: 0, fontWeight: 600 }}>
+              {CLAIM_BY_STATUS[report.status]}
+            </p>
+          )
         )}
         {(report.summary || report.overview?.why_supported) && (
           <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0 }}>
@@ -1762,18 +1813,31 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
         )}
       </div>
 
-      {/* B — Connected proof chain(s): the skill, the project that supports it,
-          and the code / runtime / document / defense evidence that corroborates
-          the same claim. Always shown with a calm empty state so the report reads
+      {/* B — Evidence thesis: one derived sentence stating what backs the claim
+          plus the standing "only direct evidence counts" rule. */}
+      <SkillEvidenceThesis report={report} directChains={attachedChains} />
+
+      {/* C — Direct skill evidence: the connected proof chains. The skill, the
+          project that supports it, and the code / runtime / document / defense
+          evidence that corroborates the same claim. The ONLY tier counted for
+          the claim. Always shown with a calm empty state so the report reads
           as an audit instrument even before any chain exists. */}
       <div data-testid="skill-report-chains" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
-          Connected proof chain
+          Direct skill evidence
         </h3>
+        <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          Proof mapped to {report.skill}, connected through the project(s) below — the only evidence
+          counted for this claim.
+        </p>
         {attachedChains.length > 0 ? (
-          attachedChains.map((chain, i) => (
-            <ProjectChainCard key={`${chain.project_id ?? "p"}-${i}`} chain={chain} />
-          ))
+          <EvidenceTierSection kind="skill" testid="skill-report-direct">
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {attachedChains.map((chain, i) => (
+                <ProjectChainCard key={`${chain.project_id ?? "p"}-${i}`} chain={chain} />
+              ))}
+            </div>
+          </EvidenceTierSection>
         ) : (
           <EmptyState testId="skill-report-chains-empty">
             No linked proof chain yet — attach this skill&rsquo;s proofs to a VBR project to connect them.
@@ -1800,7 +1864,20 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
         </div>
       )}
 
-      {/* C — Unlinked supporting evidence (synthesis): capped, clearly separated
+      {/* D — Project proof (context only): sources attached to the same
+          project(s) that are NOT mapped to this skill. Chips + honest label,
+          never counted, never full evidence cards. Owner-only (needs the
+          passport context) — fails closed on public/legacy surfaces. */}
+      {!publicSafe && (
+        <ProjectContextEvidenceList chains={attachedChains} context={context} skill={report.skill} />
+      )}
+
+      {/* E — Attached proof not yet skill-mapped: real analyzed proof on this
+          skill's project(s) that no skill claim consumed. Owner-only; fails
+          closed without the passport context. */}
+      {!publicSafe && <UnmappedProofNotice chains={attachedChains} context={context} />}
+
+      {/* C2 — Unlinked supporting evidence (synthesis): capped, clearly separated
           from the strong chains so unrelated proofs are never folded into them.
           Items already shown in the canonical standalone section (D) are dropped
           so the same proof never appears in both sections. */}
@@ -1820,28 +1897,63 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
         </div>
       )}
 
-      {/* D — Standalone supporting proofs (not attached to a VBR project). */}
-      {hasStandalone && (
-        <div data-testid="skill-report-standalone" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
-            Standalone supporting proofs (not attached to a VBR project)
-          </h3>
-          {stdGithubGroups.length > 0 ? (
-            <StandaloneGitHubGroups groups={stdGithubGroups} />
-          ) : (
-            <SkillReportSection testId="skill-report-github" title="GitHub evidence" items={std.github} />
-          )}
-          <SkillReportSection testId="skill-report-website" title="Website evidence" items={std.website} />
-          <DocumentCorrelations
-            testId="skill-report-documents"
-            items={std.documents}
-            moreCount={std.document_more_count}
-          />
-          <SkillReportSection testId="skill-report-defense" title="Project Defense evidence" items={std.defense} />
-          <SkillReportSection testId="skill-report-video" title="Video evidence" items={std.video} />
-          <SkillReportSection testId="skill-report-skill-graph" title="Skill Graph evidence" items={std.skill_graph} />
+      {/* F — Vault-only / suggested evidence: proof saved in the vault (not
+          attached to any VBR project), unattached proof chains, and vault
+          suggestions naming this skill. Honestly labelled and never counted. */}
+      {(hasStandalone || vaultChains.length > 0 || (context?.suggestedForSkill.length ?? 0) > 0) && (
+        <div data-testid="skill-report-vault-only" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Vault-only / suggested evidence
+            </h3>
+            <EvidenceRelationshipBadge kind="vault" />
+            <span data-testid="vault-only-not-counted">
+              <Badge tone="amber">Not counted yet</Badge>
+            </span>
+          </div>
+          <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+            Saved in the Proof Vault or suggested — not attached to a VBR project, so it does not
+            count toward this skill claim until it is attached and skill-mapped.
+          </p>
+          <EvidenceTierSection kind="vault">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {vaultChains.map((chain, i) => (
+                <ProjectChainCard key={`v-${chain.project_id ?? "p"}-${i}`} chain={chain} />
+              ))}
+              {hasStandalone && (
+                <div data-testid="skill-report-standalone" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {stdGithubGroups.length > 0 ? (
+                    <StandaloneGitHubGroups groups={stdGithubGroups} />
+                  ) : (
+                    <SkillReportSection testId="skill-report-github" title="GitHub evidence" items={std.github} />
+                  )}
+                  <SkillReportSection testId="skill-report-website" title="Website evidence" items={std.website} />
+                  <DocumentCorrelations
+                    testId="skill-report-documents"
+                    items={std.documents}
+                    moreCount={std.document_more_count}
+                  />
+                  <SkillReportSection testId="skill-report-defense" title="Project Defense evidence" items={std.defense} />
+                  <SkillReportSection testId="skill-report-video" title="Video evidence" items={std.video} />
+                  <SkillReportSection testId="skill-report-skill-graph" title="Skill Graph evidence" items={std.skill_graph} />
+                </div>
+              )}
+              {!publicSafe && <VaultSuggestedEvidenceList entries={context?.suggestedForSkill} />}
+            </div>
+          </EvidenceTierSection>
         </div>
       )}
+
+      {/* G — Proof coverage matrix: one row per direct-evidence project plus a
+          vault row, one column per proof source, each cell the tier that source
+          holds for THIS skill. Context cells fail closed without the passport
+          context. */}
+      <SkillProofMatrix
+        directChains={attachedChains}
+        standalone={std}
+        context={context}
+        suggested={context?.suggestedForSkill}
+      />
 
       {/* H — Gaps / limitations */}
       {report.gaps?.length > 0 && (
@@ -1854,6 +1966,13 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
           </ul>
         </div>
       )}
+
+      {/* I — Standing honesty block: what this report does not claim. */}
+      <EvidenceLimitations skill={report.skill} />
+
+      {/* J — Inspect actions: each direct-evidence project's report + the Proof
+          Vault, deduplicated. Owner-only routes — never on a public surface. */}
+      {!publicSafe && <ProofInspectActions directChains={attachedChains} />}
     </div>
   )
 }

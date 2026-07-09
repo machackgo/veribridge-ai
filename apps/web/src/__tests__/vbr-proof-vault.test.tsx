@@ -8,7 +8,7 @@
  * absence of any private vault structure on the recruiter-facing public passport.
  */
 
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render, screen, fireEvent, within } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
 import { ProofVaultView } from "../app/student/vbr/passport/vault/ProofVaultView"
@@ -3609,5 +3609,321 @@ describe("Document Proof inspection card", () => {
     expect(html).not.toContain("supabase.co/storage")
     expect(html).not.toContain("?token=")
     expect(html).not.toContain("uploads/")
+  })
+})
+
+// ── Skill Report intelligence — the proof-backed skill argument ────────────────
+//
+// The Skill Report is structured as an evidence ARGUMENT with the passport's
+// four-tier proof vocabulary: Direct skill evidence (counted) / Project proof
+// (context only) / Attached-not-skill-mapped / Vault-only-suggested (all
+// honestly "Not counted yet"), plus a proof coverage matrix, a standing
+// "what this report does not claim" block and deduplicated inspect actions.
+
+import { buildSkillReportIntelligenceContext } from "../../components/passport/SkillReportIntelligence"
+import type { PassportProjectSummary, SkillReportProjectChain as IntelChain } from "@/lib/vbr-api"
+
+function intelChain(overrides: Partial<IntelChain> = {}): IntelChain {
+  return {
+    project_id: "proj-1",
+    project_title: "Boston Smart Accident Risk Rerouting",
+    attached: true,
+    attached_status: "Attached to a VBR project",
+    sources: ["GitHub Proof", "Project Defense"],
+    evidence_chain_summary: "GitHub code and the defense explanation corroborate the same claim.",
+    github_evidence: [{ ...GITHUB_ITEM, is_attached_to_project: true, attached_project_ids: ["proj-1"] }],
+    website_evidence: [],
+    document_correlations: [],
+    document_more_count: 0,
+    defense_evidence: [],
+    video_evidence: [],
+    limitations: [],
+    ...overrides,
+  }
+}
+
+function intelProject(overrides: Partial<PassportProjectSummary> = {}): PassportProjectSummary {
+  return {
+    project_id: "proj-1",
+    project_title: "Boston Smart Accident Risk Rerouting",
+    project_summary: "Reroutes traffic around predicted accident risk.",
+    repo_full_name: "octocat/Hello-World",
+    claimed_skills: ["Python"],
+    // GitHub + Defense are direct for Python (the chain's sources); Website is
+    // attached but supports other skills (project context); Document is
+    // attached but not mapped to ANY skill (real unmapped entry below).
+    evidence_sources: ["GitHub Proof", "Project Defense", "Website Proof", "Document Proof"],
+    evidence_package: {
+      github_proof_attached: true,
+      documents_count: 1,
+      website_proofs_count: 1,
+      project_defense_completed: true,
+      video_defense_recorded: false,
+      video_evidence_chip_count: 0,
+    },
+    attempt_count: 1,
+    report: { is_public: false, public_token: null, public_path: null, published_at: null },
+    ...overrides,
+  }
+}
+
+function intelPassport(): PrivateWorkPassport {
+  return makePassport({
+    projects: [intelProject()],
+    real_unmapped_proof_context: [
+      {
+        proof_type: "Document Proof",
+        project_id: "proj-1",
+        project_title: "Boston Smart Accident Risk Rerouting",
+        report_url: "/student/vbr/projects/proj-1/report",
+        reason: "Analyzed document evidence not mapped to a specific skill yet.",
+        safe_summary: "Final report document was analyzed.",
+        evidence_label: "Analyzed source evidence",
+        inspection_anchor: "documents",
+      },
+    ],
+    attachment_overview: {
+      attached: [],
+      suggested: [
+        {
+          entry_id_safe: "sugg-1",
+          proof_type: "Website Proof",
+          display_title: "https://demo.example.com",
+          source_label: "Website Proof",
+          attachment_state: "suggested",
+          relation_reason: "skill_overlap_suggestion",
+          relation_strength: "likely",
+          reason_label: "Skill overlap with this project",
+          status_label: "Suggested — not counted until attached",
+          project_titles: ["Boston Smart Accident Risk Rerouting"],
+          project_refs_safe: [],
+          skill_names: ["Python"],
+          duplicate_count: 1,
+        },
+      ],
+      unattached: [],
+      attached_count: 0,
+      suggested_count: 1,
+      unattached_count: 0,
+      note: "Suggested evidence is never counted until attached.",
+    },
+  })
+}
+
+function intelReport(overrides: Partial<SkillReport> = {}): SkillReport {
+  return skillReport({
+    proof_chains: [intelChain()],
+    projects: [],
+    // One vault-only standalone GitHub proof (not attached to any project).
+    standalone_evidence: { ...emptyStandalone(), github: [{ ...GITHUB_ITEM }] },
+    ...overrides,
+  })
+}
+
+function intelContext() {
+  return buildSkillReportIntelligenceContext(intelPassport(), intelReport())
+}
+
+describe("Skill Report intelligence — evidence thesis and direct tier", () => {
+  it("renders a derived evidence thesis with the only-direct-counts rule", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const thesis = screen.getByTestId("skill-report-thesis")
+    expect(thesis).toHaveTextContent("supported by 1 connected project")
+    expect(thesis).toHaveTextContent("GitHub Proof, Project Defense")
+    expect(thesis).toHaveTextContent("Only direct, skill-mapped evidence counts")
+  })
+
+  it("renders connected chains under the Direct skill evidence tier", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const direct = screen.getByTestId("skill-report-direct")
+    expect(direct).toHaveAttribute("data-tier", "skill")
+    expect(within(direct).getByTestId("skill-report-chain")).toHaveAttribute("data-project", "proj-1")
+    // The section is titled with the shared tier vocabulary and states the
+    // only-counted-tier rule.
+    const chains = screen.getByTestId("skill-report-chains")
+    expect(chains).toHaveTextContent("Direct skill evidence")
+    expect(chains).toHaveTextContent("the only evidence counted for this claim")
+  })
+
+  it("renders a status-derived one-line claim when there is no synthesis summary", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    expect(screen.getByTestId("skill-report-claim")).toHaveTextContent(
+      "The connected evidence below demonstrates this skill.",
+    )
+  })
+
+  it("moves an UNATTACHED proof chain into the vault tier, never the direct tier", () => {
+    const report = intelReport({
+      proof_chains: [
+        intelChain(),
+        intelChain({
+          project_id: null,
+          project_title: "Standalone vault proofs",
+          attached: false,
+          attached_status: "Not attached to a VBR project",
+        }),
+      ],
+    })
+    render(<SkillReportView report={report} context={intelContext()} />)
+    const direct = screen.getByTestId("skill-report-direct")
+    expect(within(direct).getAllByTestId("skill-report-chain")).toHaveLength(1)
+    const vault = screen.getByTestId("skill-report-vault-only")
+    expect(within(vault).getByTestId("skill-report-chain")).toHaveAttribute("data-attached", "false")
+  })
+})
+
+describe("Skill Report intelligence — project context / unmapped / vault tiers", () => {
+  it("shows project-level proof separately as context chips, never counted", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const section = screen.getByTestId("skill-report-project-context")
+    // Website Proof is attached to the project but not mapped to this skill.
+    const chips = within(section).getAllByTestId("project-context-chip")
+    expect(chips).toHaveLength(1)
+    expect(chips[0]).toHaveAttribute("data-source", "Website Proof")
+    // Direct sources never leak into the context tier.
+    expect(within(section).queryByText("GitHub Proof")).not.toBeInTheDocument()
+    expect(section).toHaveTextContent("not counted as direct skill evidence")
+    expect(within(section).getByTestId("evidence-relationship-badge")).toHaveAttribute("data-kind", "project")
+  })
+
+  it("shows attached-but-not-skill-mapped proof in its own not-counted section", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const section = screen.getByTestId("skill-report-unmapped")
+    const entry = within(section).getByTestId("skill-report-unmapped-entry")
+    expect(entry).toHaveAttribute("data-proof-type", "Document Proof")
+    expect(entry).toHaveTextContent("Final report document was analyzed.")
+    expect(within(section).getByTestId("not-counted-badge")).toBeInTheDocument()
+    expect(within(section).getByTestId("unmapped-inspect-link")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-1/report#documents",
+    )
+  })
+
+  it("labels the vault tier 'Not counted yet' and nests standalone proofs inside it", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const vault = screen.getByTestId("skill-report-vault-only")
+    expect(within(vault).getByTestId("vault-only-not-counted")).toHaveTextContent("Not counted yet")
+    expect(within(vault).getByTestId("skill-report-standalone")).toBeInTheDocument()
+  })
+
+  it("lists vault suggestions naming this skill as suggested, not counted", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const entry = screen.getByTestId("skill-report-suggested-entry")
+    expect(entry).toHaveAttribute("data-proof-type", "Website Proof")
+    expect(entry).toHaveTextContent("https://demo.example.com")
+    expect(within(entry).getByTestId("not-counted-badge")).toBeInTheDocument()
+  })
+
+  it("fails closed: without passport context the context tiers render nothing", () => {
+    render(<SkillReportView report={intelReport()} />)
+    expect(screen.getByTestId("skill-report-chain")).toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-project-context")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-unmapped")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-suggested")).not.toBeInTheDocument()
+  })
+
+  it("suggestions for OTHER skills never appear on this skill's report", () => {
+    const passport = intelPassport()
+    passport.attachment_overview!.suggested[0].skill_names = ["React"]
+    const context = buildSkillReportIntelligenceContext(passport, intelReport())
+    render(<SkillReportView report={intelReport()} context={context} />)
+    expect(screen.queryByTestId("skill-report-suggested")).not.toBeInTheDocument()
+  })
+})
+
+describe("Skill Report intelligence — proof coverage matrix", () => {
+  it("classifies each cell by tier: direct / context / not mapped / vault / absent", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const row = screen.getByTestId("matrix-project-row")
+    const cell = (source: string) =>
+      within(row)
+        .getAllByTestId("matrix-cell")
+        .find((c) => c.getAttribute("data-source") === source)!
+    expect(cell("GitHub Proof")).toHaveAttribute("data-state", "direct")
+    expect(cell("Project Defense")).toHaveAttribute("data-state", "direct")
+    expect(cell("Website Proof")).toHaveAttribute("data-state", "context")
+    expect(cell("Document Proof")).toHaveAttribute("data-state", "unmapped")
+    expect(cell("Video Evidence")).toHaveAttribute("data-state", "absent")
+
+    const vaultRow = screen.getByTestId("matrix-vault-row")
+    const vaultCell = (source: string) =>
+      within(vaultRow)
+        .getAllByTestId("matrix-cell")
+        .find((c) => c.getAttribute("data-source") === source)!
+    // Standalone GitHub proof + the suggested Website proof are vault-only.
+    expect(vaultCell("GitHub Proof")).toHaveAttribute("data-state", "vault")
+    expect(vaultCell("Website Proof")).toHaveAttribute("data-state", "vault")
+    expect(vaultCell("Project Defense")).toHaveAttribute("data-state", "absent")
+  })
+
+  it("fails closed without context: unknown cells render absent, never guessed", () => {
+    render(<SkillReportView report={intelReport()} />)
+    const row = screen.getByTestId("matrix-project-row")
+    const cell = (source: string) =>
+      within(row)
+        .getAllByTestId("matrix-cell")
+        .find((c) => c.getAttribute("data-source") === source)!
+    expect(cell("GitHub Proof")).toHaveAttribute("data-state", "direct")
+    expect(cell("Website Proof")).toHaveAttribute("data-state", "absent")
+    expect(cell("Document Proof")).toHaveAttribute("data-state", "absent")
+  })
+})
+
+describe("Skill Report intelligence — limitations and inspect actions", () => {
+  it("always renders the honest 'what this report does not claim' block", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const block = screen.getByTestId("skill-report-disclaimers")
+    expect(block).toHaveTextContent("does not certify professional employment experience")
+    expect(block).toHaveTextContent("not every subtopic of Python")
+    expect(block).toHaveTextContent("not counted until skill-mapped")
+  })
+
+  it("renders ONE deduplicated project-report action per project plus the vault", () => {
+    const report = intelReport({
+      proof_chains: [intelChain(), intelChain({ project_title: "Boston (attempt 2)" })],
+    })
+    render(<SkillReportView report={report} context={intelContext()} />)
+    const actions = screen.getByTestId("skill-report-actions")
+    const projectLinks = within(actions).getAllByTestId("skill-report-project-report-link")
+    expect(projectLinks).toHaveLength(1)
+    expect(projectLinks[0]).toHaveAttribute("href", "/student/vbr/projects/proj-1/report")
+    expect(within(actions).getByTestId("skill-report-vault-link")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/vault",
+    )
+  })
+
+  it("hides owner-only tiers and actions on a public-safe surface", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} publicSafe />)
+    expect(screen.queryByTestId("skill-report-actions")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-project-context")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-unmapped")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-suggested")).not.toBeInTheDocument()
+  })
+
+  it("never renders raw/private evidence fields in the intelligence sections", () => {
+    const { container } = render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const html = container.innerHTML
+    for (const forbidden of ["raw_payload", "signed_url", "?token=", "supabase.co/storage", "ev_raw"]) {
+      expect(html).not.toContain(forbidden)
+    }
+  })
+})
+
+describe("Skill Report page — passport context is enhancement-only", () => {
+  it("still renders the report when the passport fetch fails", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(intelReport())
+    vi.mocked(getPrivateWorkPassport).mockRejectedValue(new Error("passport down"))
+    render(<SkillReportPageView skillSlug="python" />)
+    expect(await screen.findByTestId("skill-report")).toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-project-context")).not.toBeInTheDocument()
+  })
+
+  it("derives the context tiers when the passport loads", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(intelReport())
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(intelPassport())
+    render(<SkillReportPageView skillSlug="python" />)
+    expect(await screen.findByTestId("skill-report-project-context")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-report-unmapped")).toBeInTheDocument()
   })
 })
