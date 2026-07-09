@@ -53,6 +53,24 @@ export default function RecruitersPage() {
         </div>
       </Card>
 
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <a
+          data-testid="recruiters-request-vbr-link"
+          href="/recruiters/request-vbr"
+          style={{
+            padding: "10px 18px",
+            borderRadius: 8,
+            background: TOKEN.indigo,
+            color: "#fff",
+            fontSize: 13,
+            fontWeight: 600,
+            textDecoration: "none",
+          }}
+        >
+          Request a VBR from your candidates
+        </a>
+      </div>
+
       <p style={{ fontSize: 12, color: TOKEN.muted, textAlign: "center", margin: 0 }}>
         Have a candidate&apos;s passport link? Open it to see their Verified Build Reports.
       </p>

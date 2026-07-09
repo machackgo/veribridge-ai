@@ -2908,3 +2908,136 @@ export async function getPublicWorkPassportBySlug(
 
   return response.json()
 }
+
+// ── Public Skill Report (recruiter link-review) ───────────────────────────────
+
+/**
+ * One public-safe evidence member inside a public linked proof chain. The
+ * backend whitelist projection guarantees: no source ids, storage paths,
+ * snippets, or owner routes — `public_url` is only ever a revalidated public
+ * http(s) link, and every free-text field is scrubbed prose.
+ */
+export type PublicSkillReportEvidence = {
+  evidence_id: string | null
+  source_type: string
+  source_label: string
+  canonical_skill_name: string | null
+  subskill_name?: string | null
+  project_title: string | null
+  exact_location: string | null
+  safe_summary: string
+  proof_strength: string
+  public_safe: boolean
+  limitations: string[]
+  public_url: string | null
+  // Website-only extras (closed-vocabulary labels; absent on other sources).
+  website_purpose_label?: string
+  website_behavior_claim?: string
+  website_skill_relevance_label?: string
+  website_evidence_chips?: string[]
+  website_screenshot_available?: boolean
+  website_screenshot_access_label?: string
+  website_verification_mode_label?: string
+  website_verification_note?: string
+}
+
+/** One public-safe linked proof chain (Step 3 projection). */
+export type PublicSkillReportChain = {
+  chain_id: string | null
+  project_title: string | null
+  canonical_skill_name: string | null
+  chain_label: string
+  linked_evidence_ids: string[]
+  source_types_present: string[]
+  primary_source_type: string | null
+  connection_reasons: string[]
+  proof_strength_summary: { label?: string; strengths_present?: string[] }
+  limitations: string[]
+  public_safe: boolean
+  evidence: PublicSkillReportEvidence[]
+}
+
+/** One cited public synthesis claim — always carries opaque `ev_…` citations. */
+export type PublicSkillSynthesisClaim = {
+  claim_id: string | null
+  claim: string
+  supporting_evidence_ids: string[]
+  why_connected: string
+  limitations: string[]
+  qualitative_tier: string
+  public_safe: boolean
+}
+
+/** One chain's public synthesis result (Step 4 projection). */
+export type PublicSkillSynthesisResult = {
+  chain_id: string | null
+  canonical_skill_name: string | null
+  project_title: string | null
+  claims: PublicSkillSynthesisClaim[]
+  overall_summary: string
+  limitations: string[]
+  public_safe: boolean
+  source: string
+}
+
+/** A compact safe card for a proof that joins no chain. */
+export type PublicSkillReportUnlinkedItem = {
+  proof_type: string
+  title: string
+  safe_summary: string
+  safe_location: string | null
+  corroborates: string
+  limitation: string
+}
+
+/**
+ * The recruiter-safe public Skill Report for one skill of a PUBLISHED passport.
+ * `status` is a closed qualitative label — never a numeric score.
+ */
+export type PublicSkillReport = {
+  skill: string
+  skill_slug: string
+  status: string
+  category: string
+  synthesis_summary: string
+  source_coverage: Record<string, boolean>
+  linked_proof_chains: PublicSkillReportChain[]
+  synthesis: PublicSkillSynthesisResult[]
+  unlinked_supporting_evidence: {
+    items: PublicSkillReportUnlinkedItem[]
+    count: number
+    more_count: number
+  }
+  limitations: string[]
+  generated_at: string
+}
+
+/** The public Skill Report route for a passport slug + skill slug. */
+export function publicSkillReportPath(passportSlug: string, skillSlug: string): string {
+  return `/p/${encodeURIComponent(passportSlug)}/skills/${encodeURIComponent(skillSlug)}`
+}
+
+/**
+ * Fetch one skill's recruiter-safe public Skill Report. No auth required.
+ * Accepts a canonical skill name or a URL slug; 404 (unknown slug, unpublished
+ * passport, or skill with no proof) resolves to `null` for the safe empty state.
+ */
+export async function getPublicSkillReport(
+  slug: string,
+  skill: string,
+): Promise<PublicSkillReport | null> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/public/p/${encodeURIComponent(slug)}/skills/${encodeURIComponent(skill)}`,
+    { headers: { "Content-Type": "application/json" }, cache: "no-store" },
+  )
+
+  if (response.status === 404) {
+    return null
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to load skill report (HTTP ${response.status}).`)
+  }
+
+  return response.json()
+}

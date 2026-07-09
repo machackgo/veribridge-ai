@@ -49,10 +49,12 @@ from app.services.passport_attachment_intelligence import (
     suggested_attachments_for_project,
 )
 from app.services.proof_attachment_intelligence import classify_vault_attachments
+from app.services.proof_synthesis_agent_service import synthesize_skill_report
 from app.services.public_report_safety_service import (
     PublicReportUnsafeError,
     enforce_public_safe,
     public_safe_skill_name,
+    public_safe_skill_report,
 )
 from app.services.skill_normalization import skill_slug
 from app.services.safe_public_url import is_safe_public_url
@@ -61,6 +63,7 @@ from app.services.vbr_public_project_report import (
     _scrub_public_report,
 )
 from app.services.student_proof_vault_service import (
+    collect_skill_report,
     collect_skill_summaries,
     collect_vault_items,
 )
@@ -1875,4 +1878,61 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         logger.warning("[VBR] Public Work Passport failed the unsafe-field scan; refusing to serve.")
         raise _not_found()
 
+    return public
+
+
+def build_public_skill_report(
+    db: Any, pipeline_db: Any, slug: str, skill: str
+) -> dict[str, Any]:
+    """Resolve a published passport by ``slug`` and return ONE skill's public report.
+
+    The recruiter-facing drilldown behind a public passport skill row. Fail-closed
+    at every step:
+
+    * 404 unless an *active* (published) passport with this slug exists — a skill
+      report can never be read for an unpublished/unknown passport.
+    * 404 when the requested skill has no proof at all for this candidate, so the
+      route cannot be used to probe arbitrary skill pages.
+    * The internal skill report is built with ``synthesize=False`` plus the
+      deterministic-only synthesis pass — an anonymous request never resolves or
+      calls an LLM provider (this module never calls an LLM).
+    * The response is the centralized :func:`public_safe_skill_report` whitelist
+      projection (which itself runs ``enforce_public_safe``), so private source
+      ids, storage paths, snippets, owner routes, and raw payloads are
+      structurally absent — a questionable payload 404s rather than serves.
+    """
+    if not slug or not skill:
+        raise _not_found()
+
+    passport_row = _get_passport_by_slug(db, slug)
+    if passport_row is None or not passport_row.get("is_published"):
+        raise _not_found()
+
+    owner_id = str(passport_row.get("user_id") or "")
+
+    report = collect_skill_report(db, pipeline_db, owner_id, skill, synthesize=False)
+    report.update(synthesize_skill_report(report, use_llm=False))
+
+    # A skill with zero proof does not exist for this candidate — same generic
+    # 404 as a bad slug, so nothing can be inferred from the difference.
+    overview = report.get("overview") or {}
+    if not int(overview.get("proof_count") or 0):
+        raise _not_found()
+
+    try:
+        public = public_safe_skill_report(report)
+    except PublicReportUnsafeError:
+        logger.warning(
+            "[VBR] Public skill report failed the unsafe-field scan; refusing to serve."
+        )
+        raise _not_found()
+
+    # Safe header context on top of the centralized projection: the canonical
+    # slug (derived, never echoed), the closed qualitative status label, and the
+    # scrubbed category — all label-only, never counts/scores/ids.
+    public["skill_slug"] = skill_slug(public.get("skill") or skill)
+    raw_status = report.get("status")
+    public["status"] = raw_status if raw_status in _STATUS_ORDER else "Supporting evidence"
+    public["category"] = public_safe_skill_name(report.get("category")) or "Other"
+    public["generated_at"] = _now()
     return public

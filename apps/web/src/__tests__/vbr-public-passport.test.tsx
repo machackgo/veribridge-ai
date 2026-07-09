@@ -112,8 +112,13 @@ describe("PublicPassportView", () => {
     const detail = await screen.findByTestId("public-skill-detail")
     const ref = screen.getByTestId("public-skill-project-ref")
     expect(ref).toHaveTextContent("Skill Evidence Tracker")
-    // The only outbound link is the public report path — never an internal id.
-    expect(detail.querySelector("a")).toHaveAttribute("href", "/vbr/report/tok-abc")
+    // Outbound links are public routes only: the published report path and the
+    // public skill report on the same slug — never an internal id.
+    expect(ref.querySelector("a")).toHaveAttribute("href", "/vbr/report/tok-abc")
+    expect(detail.querySelector('[data-testid="public-skill-report-link"]')).toHaveAttribute(
+      "href",
+      "/p/slug123/skills/python",
+    )
     expect(detail.textContent).not.toContain("project_id")
   })
 
@@ -369,6 +374,77 @@ describe("PublicPassportView", () => {
     // Qualitative labels render instead.
     expect(screen.getByText("Demonstrated")).toBeInTheDocument()
     expect(screen.getByText("Partially demonstrated")).toBeInTheDocument()
+  })
+})
+
+// ── Recruiter link-review MVP ─────────────────────────────────────────────────
+
+describe("PublicPassportView — recruiter link-review MVP", () => {
+  it("renders the recruiter trust framing with the honest non-certification line", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const framing = screen.getByTestId("recruiter-trust-framing")
+    expect(framing).toHaveTextContent(
+      "This Passport summarizes public-safe proof submitted by the candidate.",
+    )
+    expect(framing).toHaveTextContent("not an employment certification or background check")
+    expect(framing).toHaveTextContent(
+      "Inspect the linked evidence before making hiring decisions.",
+    )
+  })
+
+  it("renders the recruiter review checklist", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const checklist = screen.getByTestId("recruiter-review-checklist")
+    expect(checklist).toHaveTextContent("GitHub / code evidence")
+    expect(checklist).toHaveTextContent("website / runtime evidence")
+    expect(checklist).toHaveTextContent("project defense explanation")
+    expect(checklist).toHaveTextContent("Review the limitations")
+  })
+
+  it("links top skills to their public skill report on the same slug", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    // React (no drilldown detail) shows its report link inline.
+    expect(screen.getByTestId("public-skill-report-link")).toHaveAttribute(
+      "href",
+      "/p/slug123/skills/react",
+    )
+
+    // Python (has detail) shows its report link inside the expanded drilldown.
+    fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
+    const links = await screen.findAllByTestId("public-skill-report-link")
+    expect(links.map((a) => a.getAttribute("href"))).toContain("/p/slug123/skills/python")
+  })
+
+  it("shows the recruiter CTA with the exact copy and request-vbr link", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const cta = screen.getByTestId("recruiter-cta")
+    expect(cta).toHaveTextContent("Want candidates to send proof-backed reports?")
+    expect(cta).toHaveTextContent(
+      "Ask applicants to generate a VeriBridge Verified Build Report for one project.",
+    )
+    expect(screen.getByTestId("recruiter-cta-request-vbr")).toHaveAttribute(
+      "href",
+      "/recruiters/request-vbr",
+    )
+    expect(screen.getByTestId("recruiter-cta-request-vbr")).toHaveTextContent(
+      "Request a VBR from your candidates",
+    )
   })
 })
 

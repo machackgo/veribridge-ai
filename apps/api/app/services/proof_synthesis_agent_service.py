@@ -48,7 +48,10 @@ from app.services.github_python_evidence_focus import (
     safe_selection_reason,
 )
 from app.services.github_skill_evidence_service import is_ml_skill
-from app.services.llm_proof_synthesis_service import synthesize_linked_chains_bounded
+from app.services.llm_proof_synthesis_service import (
+    synthesize_chain,
+    synthesize_linked_chains_bounded,
+)
 from app.services.evidence_normalization_service import (
     SOURCE_DEFENSE,
     SOURCE_DOCUMENT,
@@ -709,7 +712,7 @@ def _synthesis_summary(skill: str, chains: list[dict[str, Any]], coverage: dict[
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-def synthesize_skill_report(report: dict[str, Any]) -> dict[str, Any]:
+def synthesize_skill_report(report: dict[str, Any], *, use_llm: bool = True) -> dict[str, Any]:
     """Synthesize an already-built Skill Report dict into connected proof chains.
 
     Pure function over the safe :func:`collect_skill_report` output. Enriches each
@@ -717,6 +720,11 @@ def synthesize_skill_report(report: dict[str, Any]) -> dict[str, Any]:
     synthesis sub-report (``proof_chains`` / ``unlinked_supporting_evidence`` /
     ``synthesis_summary`` / ``source_coverage``). Called by ``collect_skill_report``
     to embed these fields; also reachable directly via :func:`build_skill_proof_synthesis`.
+
+    ``use_llm=False`` forces the Step-4 synthesis claims to the deterministic
+    rule-based path (never resolving/calling any LLM provider). Used by the
+    public, unauthenticated Skill Report surface so an anonymous request can
+    never trigger a paid provider call.
     """
     skill = str(report.get("skill") or "")
     # Enrich EVERY chain (attached + the standalone pseudo-chain) so each carries a
@@ -753,7 +761,15 @@ def synthesize_skill_report(report: dict[str, Any]) -> dict[str, Any]:
     # backward compatible. Uses the bounded-concurrency orchestrator so the
     # configured LLM_SYNTHESIS_MAX_CONCURRENCY is honoured, while staying safe to
     # call from this synchronous service (deterministic order + per-chain fallback).
-    llm_synthesis = synthesize_linked_chains_bounded(linked_chains)
+    # ``use_llm=False`` (public/anonymous surfaces) skips provider resolution
+    # entirely: every chain gets the same safe deterministic synthesis, run
+    # sequentially (no concurrency machinery needed without a provider).
+    if use_llm:
+        llm_synthesis = synthesize_linked_chains_bounded(linked_chains)
+    else:
+        llm_synthesis = [
+            synthesize_chain(chain, force_deterministic=True) for chain in linked_chains
+        ]
 
     return {
         "synthesis_summary": summary,
