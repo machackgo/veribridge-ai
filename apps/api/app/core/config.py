@@ -57,10 +57,12 @@ class Settings(BaseSettings):
     )
 
     # ── Auth ──────────────────────────────────────────────────────
-    # SUPABASE_JWT_SECRET signs all Supabase Auth JWTs with HS256.
-    # Find it at: Supabase dashboard → Settings → API → JWT Settings → JWT Secret.
-    # Required for token verification in production.
-    # When absent (dev only), falls back to DEMO_USER_ID.
+    # SUPABASE_JWT_SECRET is the LEGACY HS256 signing secret (Supabase
+    # dashboard → Settings → API → JWT Settings → JWT Secret). Projects on the
+    # newer asymmetric "JWT signing keys" (ES256/RS256) don't need it — those
+    # tokens are verified against the public JWKS derived from SUPABASE_URL
+    # (see ``supabase_jwks_url``). A token that can't be verified by either
+    # scheme always fails closed with 401.
     supabase_jwt_secret: SecretStr = Field(
         default=SecretStr(""), alias="SUPABASE_JWT_SECRET"
     )
@@ -72,6 +74,25 @@ class Settings(BaseSettings):
     demo_user_id: str = Field(
         default="00000000-0000-0000-0000-000000000001",
         alias="DEMO_USER_ID",
+    )
+
+    # SECURITY: the DEMO_USER_ID fallback impersonates a *real*, data-bearing
+    # user. It must NEVER be reachable by an unauthenticated caller in normal
+    # operation, or every logged-out/failed-auth request silently reads (and
+    # can write) that user's private proof data — a cross-tenant data leak.
+    #
+    # Therefore the fallback is OFF by default and only ever applies when:
+    #   • ENVIRONMENT != "production", AND
+    #   • ENABLE_DEMO_USER_FALLBACK=true is explicitly set, AND
+    #   • the request carries NO Authorization header at all.
+    #
+    # A *present* token that fails verification (bad signature, expired,
+    # missing SUPABASE_JWT_SECRET) always yields 401 — it is never silently
+    # downgraded to the demo user. Enable this only for throwaway local curl /
+    # Swagger poking, ideally pointing DEMO_USER_ID at a disposable account.
+    enable_demo_user_fallback: bool = Field(
+        default=False,
+        alias="ENABLE_DEMO_USER_FALLBACK",
     )
 
     # ── Database (direct Postgres connection) ────────────────────
@@ -128,6 +149,20 @@ class Settings(BaseSettings):
     supabase_passport_avatar_bucket: str = Field(
         default="",
         alias="SUPABASE_PASSPORT_AVATAR_BUCKET",
+    )
+
+    # ── Proof artifact retention storage ──────────────────────────
+    # Name of the PRIVATE Supabase Storage bucket for retained original proof
+    # artifacts (document originals, video proof originals/frames, website
+    # replay videos — see migration 056). Paths are server-side only; access
+    # flows through /api/v1/proofs/artifacts/* gated routes. When empty,
+    # artifact retention is disabled: uploads that would retain bytes degrade
+    # honestly (documents fall back to verified-excerpts-only; video proof
+    # upload returns 503).
+    # Example: proof-artifacts
+    supabase_proof_artifact_bucket: str = Field(
+        default="",
+        alias="SUPABASE_PROOF_ARTIFACT_BUCKET",
     )
 
     # ── AI Domain Reviewer ────────────────────────────────────────
@@ -516,9 +551,20 @@ class Settings(BaseSettings):
         return urlparse(self.supabase_url).netloc if self.supabase_url else ""
 
     @property
+    def supabase_jwks_url(self) -> str:
+        """The project's public JWKS endpoint for asymmetric (ES256/RS256)
+        Supabase Auth tokens. Empty when SUPABASE_URL is not configured."""
+        if not self.supabase_url:
+            return ""
+        return f"{self.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+
+    @property
     def auth_configured(self) -> bool:
-        """True when JWT verification is possible (secret is present)."""
-        return bool(self.supabase_jwt_secret.get_secret_value())
+        """True when JWT verification is possible — either the legacy HS256
+        secret is present or a JWKS URL can be derived for asymmetric keys."""
+        return bool(
+            self.supabase_jwt_secret.get_secret_value() or self.supabase_jwks_url
+        )
 
     @property
     def anthropic_configured(self) -> bool:
