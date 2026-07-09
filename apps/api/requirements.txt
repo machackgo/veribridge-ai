@@ -14,6 +14,14 @@ scikit-learn==1.6.0
 pypdf>=4.0.0
 python-docx>=1.1.0
 
+# ── Optional: Apple Wallet pass signing ───────────────────────────────────────
+# Required only when APPLE_WALLET_ENABLED=true (signed .pkpass generation uses
+# a PKCS#7 detached signature). Everything else — pass.json building, the dev
+# preview endpoint, and all tests — works without it; a missing package returns
+# a clear "not configured" error instead of crashing.
+#   pip install "cryptography>=42.0.0"
+# cryptography>=42.0.0
+
 # ── Optional: Video Keyframe Extraction ───────────────────────────────────────
 # Required only when students upload recorded workflow videos for keyframe analysis.
 # The backend degrades gracefully to not_available when neither is installed.

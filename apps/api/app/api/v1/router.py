@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     ai_domain_review,
+    apple_wallet_pass,
     beam_links,
     skill_evidence_pipelines,
     admin_quality_review,
@@ -116,6 +117,11 @@ api_router.include_router(
     beam_links.public_router,
     prefix="/public/beam",
     tags=["beam-links-public"],
+)
+api_router.include_router(
+    apple_wallet_pass.router,
+    prefix="/student/vbr/wallet/apple",
+    tags=["apple-wallet-pass"],
 )
 api_router.include_router(
     vbr_public_report.router,
