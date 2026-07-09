@@ -31,6 +31,16 @@ htmlcov/
 .env.*
 !.env.example
 
+# Certificates / signing material (Apple Wallet Pass Type ID, etc.)
+# NEVER commit private keys or certificates — keep them outside the repo
+# or in these ignored directories.
+*.p12
+*.pem
+*.cer
+*.pfx
+certs/
+secrets/
+
 # Supabase local state
 .supabase/
 

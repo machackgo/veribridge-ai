@@ -203,3 +203,163 @@ pushes). **This MVP intentionally ships without it.** Consequences:
   scores. The builder refuses to emit a pass that trips its safety scan.
 - The key password lives in `APPLE_WALLET_KEY_PASSWORD` as a `SecretStr` and
   is never logged or echoed in error responses.
+- The repo `.gitignore` blocks `*.p12`, `*.pem`, `*.cer`, `*.pfx`, `certs/`
+  and `secrets/` as a safety net — but the primary rule stands: keep signing
+  material outside the repo tree entirely.
+
+---
+
+## 9. Local quickstart (Mac, once the Apple material exists)
+
+### 9.1 Store the PEM files outside the repo
+
+```bash
+mkdir -p ~/veribridge-secrets/apple-wallet
+chmod 700 ~/veribridge-secrets ~/veribridge-secrets/apple-wallet
+# put pass-cert.pem, pass-key.pem, wwdr-g4.pem (from §2) in there
+chmod 600 ~/veribridge-secrets/apple-wallet/*.pem
+```
+
+### 9.2 Local `.env` values (`apps/api/.env` — never committed)
+
+```bash
+APPLE_WALLET_ENABLED=true
+APPLE_PASS_TYPE_IDENTIFIER=pass.com.<your-domain>.veribridge.passport   # exactly as registered
+APPLE_TEAM_IDENTIFIER=<your 10-char Team ID>
+APPLE_WALLET_ORGANIZATION_NAME=VeriBridge AI
+APPLE_WALLET_CERT_PATH=/Users/<you>/veribridge-secrets/apple-wallet/pass-cert.pem
+APPLE_WALLET_KEY_PATH=/Users/<you>/veribridge-secrets/apple-wallet/pass-key.pem
+APPLE_WALLET_WWDR_CERT_PATH=/Users/<you>/veribridge-secrets/apple-wallet/wwdr-g4.pem
+APPLE_WALLET_KEY_PASSWORD=<passphrase you set in §2.2, or empty if -nodes>
+```
+
+### 9.3 Run and verify readiness
+
+```bash
+# Backend
+cd apps/api && python -m uvicorn app.main:app --reload --port 8000
+
+# Frontend
+cd apps/web && npx next dev --webpack -p 3000
+```
+
+Then, logged in, `GET /api/v1/student/vbr/wallet/apple/availability` should
+return `"enabled": true` with all three booleans true. Open
+`http://localhost:3000/beam` — **Add to Apple Wallet** appears only when
+readiness is fully green; clicking it downloads the signed `.pkpass`.
+
+Sanity checks with the flag in each state:
+
+| State | Expected |
+| --- | --- |
+| `APPLE_WALLET_ENABLED=false` | No button on `/beam`; `.pkpass` endpoint → 404 `apple_wallet_not_enabled` |
+| Enabled, certs missing | No button (readiness `enabled: false`); `.pkpass` endpoint → 503 `apple_wallet_not_configured` |
+| Enabled + certs valid | Button appears; `.pkpass` downloads and opens in Wallet |
+
+---
+
+## 10. iPhone test flow
+
+An iPhone cannot reach `localhost` on your Mac, and the pass **QR bakes in an
+absolute `PUBLIC_APP_URL`-based `/b/{code}` URL** — so both the app URL the
+phone browses to *and* the URL inside the pass must be phone-reachable.
+
+### 10.1 Same-Wi-Fi via the Mac's LAN IP (simplest)
+
+```bash
+ipconfig getifaddr en0        # e.g. 192.168.1.23
+```
+
+Backend `.env` (`apps/api/.env`):
+
+```bash
+PUBLIC_APP_URL=http://192.168.1.23:3000     # QR inside the pass uses this
+FRONTEND_URL=http://192.168.1.23:3000
+CORS_ALLOWED_ORIGINS=http://localhost:3000,http://192.168.1.23:3000
+```
+
+Frontend `.env.local` (`apps/web/.env.local`):
+
+```bash
+NEXT_PUBLIC_API_URL=http://192.168.1.23:8000
+```
+
+Restart both servers after changing env (Next.js inlines `NEXT_PUBLIC_*` at
+build/dev-start time). Bind them to all interfaces if needed
+(`uvicorn --host 0.0.0.0`, `next dev -H 0.0.0.0`), and allow incoming
+connections in macOS firewall settings.
+
+> HTTP (not HTTPS) is fine for this flow: Wallet accepts a `.pkpass` handed to
+> Safari over HTTP, and the pass's trust comes from its signature, not the
+> transport. If Safari on iOS refuses plain-HTTP fetches in your setup, use a
+> tunnel (§10.2).
+
+### 10.2 Tunnel (works from any network, gives HTTPS)
+
+`ngrok http 3000` + `ngrok http 8000` (or `cloudflared tunnel --url …`), then
+point `PUBLIC_APP_URL`/`NEXT_PUBLIC_API_URL`/`CORS_ALLOWED_ORIGINS` at the
+tunnel URLs the same way. Remember the QR is a **snapshot**: a pass downloaded
+while `PUBLIC_APP_URL` was a temporary tunnel URL keeps that QR forever —
+re-download the pass after the URL changes.
+
+### 10.3 On the phone
+
+1. Safari → `http://<mac-ip>:3000/beam` → log in.
+2. Tap **Add to Apple Wallet**. Safari recognizes
+   `application/vnd.apple.pkpass` and opens the pass preview sheet.
+3. Tap **Add**. The pass lands in Wallet.
+4. Scan the QR on the pass (second device, or long-press the barcode) →
+   it must open `/b/{code}` → redirect to the public Passport `/p/{slug}`.
+5. Revoke/rotate the Beam link in the app → scanning the same pass QR must now
+   show the generic "inactive" answer. Re-download the pass to pick up the new
+   code (same `serialNumber`, so it replaces in place).
+
+---
+
+## 11. Debugging: Wallet silently rejects the pass
+
+Safari shows "Sorry, your Pass cannot be installed…" (or nothing happens).
+Work down this list — grab the pass first:
+
+```bash
+curl -s -H "Authorization: Bearer <token>" -D - \
+  http://localhost:8000/api/v1/student/vbr/wallet/apple/pass.pkpass -o test.pkpass
+```
+
+1. **Response headers** — `Content-Type: application/vnd.apple.pkpass`,
+   body non-empty, not an error JSON.
+2. **ZIP layout** — `unzip -l test.pkpass` must show `pass.json`,
+   `manifest.json`, `signature`, `icon.png` **at the root** (no folder
+   nesting).
+3. **pass.json** — `unzip -p test.pkpass pass.json | python3 -m json.tool`:
+   valid JSON, `formatVersion: 1`, and `passTypeIdentifier` /
+   `teamIdentifier` **exactly** match the Apple portal values.
+4. **Manifest hashes** — every bundled file's SHA-1 must match:
+   `unzip -p test.pkpass pass.json | shasum` vs the entry in
+   `unzip -p test.pkpass manifest.json`.
+5. **Signature validity** (detached PKCS#7 over manifest.json):
+   ```bash
+   unzip -o test.pkpass -d /tmp/pass && cd /tmp/pass
+   openssl smime -verify -inform DER -in signature -content manifest.json -noverify
+   # expect: Verification successful
+   ```
+6. **Certificate identity** — the signing cert's UID must equal the pass's
+   `passTypeIdentifier` and its OU your Team ID:
+   ```bash
+   openssl pkcs7 -inform DER -in signature -print_certs -noout
+   openssl x509 -in pass-cert.pem -noout -subject -issuer -dates
+   ```
+7. **Cert ↔ key pairing** — moduli must match:
+   ```bash
+   openssl x509 -in pass-cert.pem -noout -modulus | openssl md5
+   openssl rsa  -in pass-key.pem  -noout -modulus | openssl md5   # add -passin if encrypted
+   ```
+8. **WWDR chain generation** — the pass cert's **issuer** (step 6 output)
+   names which WWDR CA (G4 etc.) signed it; the bundled WWDR PEM must be that
+   same generation. A G-series mismatch is the most common silent rejection.
+9. **Expiry/revocation** — `-dates` in step 6; also check the cert's status in
+   the Apple Developer portal.
+10. **iPhone Console logs** — connect the iPhone, open **Console.app** on the
+    Mac, filter process `PassKit` / `passd`, then re-attempt the add. Apple
+    logs the concrete rejection reason there (invalid signature, unknown pass
+    type, manifest mismatch, …).
