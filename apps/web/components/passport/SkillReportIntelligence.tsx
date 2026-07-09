@@ -250,9 +250,9 @@ export function ProjectContextEvidenceList({
         to {skill} and is not counted as direct skill evidence.
       </p>
       <EvidenceTierSection kind="project">
-        {rows.map(({ chain, contextSources }) => (
+        {rows.map(({ chain, contextSources }, i) => (
           <div
-            key={chain.project_id ?? chain.project_title}
+            key={`project-context-${chain.project_id ?? chain.project_title}-${contextSources.join("|")}-${i}`}
             data-testid="project-context-row"
             data-project={chain.project_id ?? ""}
             style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "4px 0" }}
@@ -449,7 +449,7 @@ export function SkillProofMatrix({
   }
   const hasVaultRow = Object.values(vaultRowStates).some((s) => s !== "absent")
 
-  const projectRows = directChains.map((chain) => {
+  const projectRows = directChains.map((chain, i) => {
     const direct = new Set(canonicalSources(chain.sources))
     const attached = context ? new Set(chainAttachedSources(chain, context)) : null
     const unmappedTypes = context
@@ -462,7 +462,8 @@ export function SkillProofMatrix({
       else if (attached?.has(source)) states[source] = "context"
       else states[source] = "absent"
     }
-    return { key: chain.project_id ?? chain.project_title, title: chain.project_title, states }
+    const projectKey = chain.project_id ?? chain.project_title
+    return { key: `matrix-project-${projectKey}-${chain.project_title}-${i}`, projectKey, title: chain.project_title, states }
   })
 
   if (projectRows.length === 0 && !hasVaultRow) return null
@@ -516,7 +517,7 @@ export function SkillProofMatrix({
           </thead>
           <tbody>
             {projectRows.map((row) => (
-              <tr key={row.key} data-testid="matrix-project-row" data-project={row.key}>
+              <tr key={row.key} data-testid="matrix-project-row" data-project={row.projectKey}>
                 <th
                   scope="row"
                   style={{ ...cellStyle, textAlign: "left", fontWeight: 600, color: TOKEN.ink, whiteSpace: "normal" }}
