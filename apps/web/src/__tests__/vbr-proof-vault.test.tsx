@@ -541,10 +541,11 @@ describe("Skill Report page (separate route)", () => {
     // Evidence basis chips render from the closed vocabulary.
     const chips = screen.getAllByTestId("website-evidence-chip").map((c) => c.textContent)
     expect(chips).toEqual(["Route observed", "Visual frame", "Workflow navigation", "Output / result visible"])
-    // Frames exist but are private → permission-gated status, never a link.
-    expect(screen.getByTestId("website-screenshot-status")).toHaveTextContent(
-      "available with candidate permission",
-    )
+    // Frames exist and this is the OWNER surface → the captured-frames access
+    // button renders (frames stream through the authorized proxy on demand);
+    // never a raw frame link, never a storage URL.
+    expect(screen.getByTestId("website-frames-view-button")).toHaveTextContent("View captured frames")
+    expect(screen.queryByTestId("website-screenshot-status")).not.toBeInTheDocument()
     // The open-website link renders only the safe public URL.
     expect(screen.getByTestId("evidence-public-link")).toHaveAttribute("href", "https://demo.example.com")
     expect(screen.getByTestId("evidence-public-link")).toHaveTextContent("Open live website →")
@@ -717,10 +718,9 @@ describe("Skill Report page (separate route)", () => {
     expect(screen.getByTestId("website-deployment-recommended")).toHaveTextContent(
       "Deployment recommended for direct recruiter verification",
     )
-    // Frames still exist → permission-gated replay status is honest.
-    expect(screen.getByTestId("website-screenshot-status")).toHaveTextContent(
-      "available with candidate permission",
-    )
+    // Frames still exist → the OWNER gets real captured-frames access (the
+    // honest recorded-workflow evidence for a local/private runtime).
+    expect(screen.getByTestId("website-frames-view-button")).toHaveTextContent("View captured frames")
   })
 
   it("groups safe visual/OCR/DOM findings under a Visual and page analysis heading", async () => {
@@ -805,11 +805,13 @@ describe("Skill Report page (separate route)", () => {
     render(<SkillReportPageView skillSlug="machine-learning" />)
 
     expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
-    // Unsafe preview URL → falls back to the permission-gated status; unsafe
-    // open URL → no link at all.
-    expect(screen.getByTestId("website-screenshot-status")).toBeInTheDocument()
+    // Unsafe preview URL → never rendered as a link (the owner keeps only the
+    // proxied captured-frames access); unsafe open URL → no link at all.
+    expect(screen.getByTestId("website-frames-view-button")).toBeInTheDocument()
     expect(screen.queryByText("View evidence frame →")).not.toBeInTheDocument()
     expect(screen.queryByTestId("evidence-public-link")).not.toBeInTheDocument()
+    expect(document.body.innerHTML).not.toContain("storage.internal")
+    expect(document.body.innerHTML).not.toContain("SECRET")
   })
 
   it("shows direct Frontend evidence on the card for a React report", async () => {

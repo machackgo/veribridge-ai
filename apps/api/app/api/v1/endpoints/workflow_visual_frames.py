@@ -350,6 +350,102 @@ def get_visual_frames_status(
     }
 
 
+# ── Owner-safe captured-frame listing ──────────────────────────────────────────
+
+
+class SafeVisualFrameDescriptor(BaseModel):
+    """One owner-safe captured-frame locator.
+
+    Carries ONLY what the owner's UI needs to render a frame via the
+    visibility-gated thumbnail proxy (``GET /api/v1/proof/frame-thumbnail/{frame_id}``):
+    the frame id, its capture trigger, a timestamp, and whether a thumbnail is
+    stored. Never storage paths, raw bytes, OCR text, or provider JSON.
+    """
+
+    frame_id: str
+    frame_type: str
+    timestamp_ms: int | None = None
+    timestamp_label: str | None = None
+    has_thumbnail: bool = False
+
+
+class SessionVisualFramesResponse(BaseModel):
+    session_id: str
+    frame_count: int
+    frames: list[SafeVisualFrameDescriptor]
+
+
+# Upper bound on returned frame descriptors — captured frames per session are
+# already throttled at ingest, this is a defensive response cap.
+_MAX_LISTED_FRAMES = 40
+
+
+@router.get(
+    "/{session_id}/workflow/visual-frames",
+    response_model=SessionVisualFramesResponse,
+    summary="List the owner's captured evidence frames for a session (safe locators only)",
+    description=(
+        "Owner-only listing of the frames VeriBridge captured during this proof "
+        "session (video keyframes and trigger screenshots), so the owner's Skill "
+        "Report / Proof Vault can render them through the visibility-gated "
+        "thumbnail proxy.\n\n"
+        "**Privacy**: results are filtered to the authenticated caller's own "
+        "frames — another user's session id returns an empty list, exactly like "
+        "a session with no frames (no existence leak). The response carries only "
+        "frame ids, capture triggers, and timestamps — never storage paths, raw "
+        "frame bytes, OCR text, or visual-reasoning JSON."
+    ),
+)
+def list_session_visual_frames(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> SessionVisualFramesResponse:
+    try:
+        resp = (
+            db.table("workflow_visual_frame_evidence")
+            .select("id, frame_type, timestamp_ms, frame_thumbnail_storage_path")
+            .eq("user_id", user_id)
+            .eq("proof_session_id", session_id)
+            .order("timestamp_ms", desc=False)
+            .limit(_MAX_LISTED_FRAMES)
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+    except Exception as exc:
+        logger.warning("[VisualFramesList] Frame lookup failed for session %s: %s", session_id, exc)
+        rows = []
+
+    frames: list[SafeVisualFrameDescriptor] = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("id"):
+            continue
+        ts_ms = row.get("timestamp_ms")
+        label = None
+        if ts_ms is not None:
+            try:
+                total_s = int(ts_ms) // 1000
+                label = f"{total_s // 60}:{total_s % 60:02d}"
+            except (TypeError, ValueError):
+                label = None
+        frames.append(
+            SafeVisualFrameDescriptor(
+                frame_id=str(row["id"]),
+                frame_type=str(row.get("frame_type") or "screenshot"),
+                timestamp_ms=int(ts_ms) if isinstance(ts_ms, (int, float)) else None,
+                timestamp_label=label,
+                # Presence flag ONLY — the storage path itself never leaves the server.
+                has_thumbnail=bool(row.get("frame_thumbnail_storage_path")),
+            )
+        )
+
+    return SessionVisualFramesResponse(
+        session_id=session_id,
+        frame_count=len(frames),
+        frames=frames,
+    )
+
+
 # ── Video upload endpoint ──────────────────────────────────────────────────────
 
 _ALLOWED_CONTENT_TYPES: frozenset[str] = frozenset({

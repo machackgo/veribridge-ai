@@ -418,6 +418,59 @@ export async function getVBRSessionTranscript(
   return res.json()
 }
 
+// ─── Original Proof Access — owner-safe captured-frame artifacts ─────────────
+
+/**
+ * One owner-safe captured-frame locator for a Website Proof session. Carries
+ * only what the UI needs to render the frame through the visibility-gated
+ * thumbnail proxy — never storage paths, raw bytes, OCR text, or provider JSON.
+ */
+export type SafeVisualFrameDescriptor = {
+  frame_id: string
+  frame_type: string
+  timestamp_ms?: number | null
+  timestamp_label?: string | null
+  has_thumbnail: boolean
+}
+
+export type SessionVisualFramesResponse = {
+  session_id: string
+  frame_count: number
+  frames: SafeVisualFrameDescriptor[]
+}
+
+/**
+ * Owner-only listing of the frames VeriBridge captured during a Website Proof
+ * session. The backend scopes the query to the authenticated caller, so a
+ * foreign session id returns an empty list (indistinguishable from "no frames").
+ */
+export async function listWebsiteProofFrames(sessionId: string): Promise<SessionVisualFramesResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/workflow/visual-frames`
+  )
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load captured frames (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/**
+ * Fetch one captured frame's thumbnail through the authorized, visibility-gated
+ * proxy and return a local object URL for an <img> element. The signed storage
+ * location never reaches the DOM — only the streamed bytes. Returns null on any
+ * failure (the caller shows an honest "frames could not be loaded" note).
+ * Callers must revoke the returned URL (URL.revokeObjectURL) when done.
+ */
+export async function fetchFrameThumbnailObjectUrl(frameId: string): Promise<string | null> {
+  try {
+    const res = await fetchAPI(`/api/v1/proof/frame-thumbnail/${encodeURIComponent(frameId)}`)
+    if (!res.ok) return null
+    const blob = await res.blob()
+    if (!blob || blob.size === 0) return null
+    return URL.createObjectURL(blob)
+  } catch {
+    return null
+  }
+}
+
 // ─── Project Defense (Phase 1 — individual project defense) ────────────────
 
 export type ProjectDefenseAttachedProofsRequest = {

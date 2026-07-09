@@ -2,6 +2,7 @@
 
 import { isSafePublicUrl, type WebsiteEvidenceCard } from "@/lib/vbr-api"
 
+import { WebsiteFramesGallery } from "./OriginalProofAccess"
 import { Badge, Mono, TOKEN } from "./shared"
 
 /**
@@ -26,9 +27,15 @@ import { Badge, Mono, TOKEN } from "./shared"
 export function WebsiteRuntimeInspectionCard({
   card,
   fallbackUrl,
+  sessionId,
+  ownerSurface = false,
 }: {
   card: WebsiteEvidenceCard
   fallbackUrl?: string | null
+  /** The website proof session id — enables the owner captured-frames gallery. */
+  sessionId?: string | null
+  /** True ONLY on the private owner surface; public projections fail closed. */
+  ownerSurface?: boolean
 }) {
   const openUrl = card.open_website_url ?? card.target_url_safe ?? fallbackUrl
   const frameUrl =
@@ -275,12 +282,21 @@ export function WebsiteRuntimeInspectionCard({
               {card.observed_behavior_summary}
             </p>
           )}
-          {card.screenshot_available &&
+          {/* Captured frames: the OWNER sees the real frame gallery (streamed
+              through the authorized thumbnail proxy — no storage paths/signed
+              URLs in the DOM); every other surface keeps the honest
+              permission-gated status line. Frames were captured exactly when a
+              visual/OCR summary exists (`screenshot_available`). */}
+          {card.screenshot_available && ownerSurface && sessionId ? (
+            <WebsiteFramesGallery sessionId={sessionId} />
+          ) : (
+            card.screenshot_available &&
             (frameUrl ? null : (
               <span data-testid="website-screenshot-status" style={{ fontSize: 11, color: TOKEN.muted }}>
                 🖼 Evidence frame available with candidate permission
               </span>
-            ))}
+            ))
+          )}
         </Section>
       )}
 
