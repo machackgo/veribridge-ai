@@ -603,16 +603,19 @@ export function ProofInspectActions({ directChains }: { directChains: SkillRepor
     <div data-testid="skill-report-actions" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <SectionHeading>Inspect evidence</SectionHeading>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {projects.map((chain) => (
-          <Link
-            key={chain.project_id}
-            href={`/student/vbr/projects/${encodeURIComponent(chain.project_id!)}/report`}
-            data-testid="skill-report-project-report-link"
-            style={linkStyle}
-          >
-            Open project report — {chain.project_title} →
-          </Link>
-        ))}
+        {projects.map((chain) => {
+          const href = `/student/vbr/projects/${encodeURIComponent(chain.project_id!)}/report`
+          return (
+            <Link
+              key={`project-report-${chain.project_id}-${href}`}
+              href={href}
+              data-testid="skill-report-project-report-link"
+              style={linkStyle}
+            >
+              Open project report — {chain.project_title} →
+            </Link>
+          )
+        })}
         <Link href="/student/vbr/passport/vault" data-testid="skill-report-vault-link" style={linkStyle}>
           Review Proof Vault →
         </Link>
