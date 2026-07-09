@@ -7,9 +7,36 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user_id, get_db
 from app.main import app
+from app.services.transcription_service import TranscriptionResult, TranscriptSegment
 
 USER_ID = "00000000-0000-0000-0000-000000000042"
 OTHER_USER_ID = "00000000-0000-0000-0000-000000000099"
+
+_SKELETON_SEGMENT_TEXTS = [
+    "Candidate introduced the project and repository.",
+    "Candidate explained a key implementation decision.",
+]
+
+
+def _fake_transcribe_audio(
+    _file_bytes: bytes, _filename: str, content_type: str | None = None
+) -> TranscriptionResult:
+    """Deterministic stand-in for a configured transcription provider.
+
+    Tests upload fake webm bytes, so the real local_whisper/ffmpeg path cannot
+    decode them. This mirrors test_vbr_transcription.py's provider stand-in so
+    the suite exercises the post-transcription pipeline without real ffmpeg,
+    while production keeps its real (fail-closed) transcription behaviour.
+    """
+    return TranscriptionResult(
+        transcript_text=" ".join(_SKELETON_SEGMENT_TEXTS),
+        provider_used="openai",
+        language="en",
+        transcript_segments=[
+            TranscriptSegment(start_time=0.0, end_time=8.0, text=_SKELETON_SEGMENT_TEXTS[0]),
+            TranscriptSegment(start_time=8.0, end_time=20.0, text=_SKELETON_SEGMENT_TEXTS[1]),
+        ],
+    )
 
 
 def _fake_run_ffmpeg_concat(_manifest_path, output_path) -> None:
@@ -34,6 +61,9 @@ def client(mem_store: dict, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     )
     monkeypatch.setattr(
         "app.services.vbr_keyframes.run_ffmpeg_frame_extraction", _fake_run_ffmpeg_frame_extraction
+    )
+    monkeypatch.setattr(
+        "app.services.transcription_service.transcribe_audio", _fake_transcribe_audio
     )
     app.dependency_overrides[get_current_user_id] = lambda: USER_ID
     app.dependency_overrides[get_db] = lambda: mem_store
