@@ -27,7 +27,9 @@ from app.api.v1.endpoints import (
     permissions,
     project_defense_analysis,
     project_defense_artifact_sync,
+    proof_artifacts,
     proof_versioning,
+    video_proofs,
     admin_user_roles,
     recruiter_candidate_comparisons,
     public_work_passport,
@@ -366,4 +368,14 @@ api_router.include_router(
     debug.router,
     prefix="/debug",
     tags=["debug"],
+)
+api_router.include_router(
+    proof_artifacts.router,
+    prefix="/proofs",
+    tags=["proof-artifacts"],
+)
+api_router.include_router(
+    video_proofs.router,
+    prefix="/proofs/video",
+    tags=["video-proofs"],
 )

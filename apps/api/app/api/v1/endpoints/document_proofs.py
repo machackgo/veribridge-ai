@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 
 from app.api.deps import get_current_user_id, get_db
 from app.schemas.document_proof import DocumentProofResponse, DocumentProofTextSubmit
+from app.services import proof_artifact_service
 from app.services.optional_evidence_service import (
     OptionalEvidencePersistError,
     OptionalEvidenceService,
@@ -22,6 +23,13 @@ from app.services.optional_evidence_service import (
 
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
 _STANDALONE_SOURCE_TYPES = ("document", "certificate_transcript")
+
+_DOCUMENT_MIME_BY_EXT = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+}
 
 router = APIRouter()
 
@@ -101,6 +109,9 @@ async def upload_document_proof(
     claimed_skills: str | None = Form(default=None),
     description: str | None = Form(default=None),
     source_type: str = Form(default="document"),
+    # Explicit, student-controlled recruiter-share consent for the ORIGINAL
+    # file. Default closed: the retained original stays owner-only.
+    share_with_recruiters: bool = Form(default=False),
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> DocumentProofResponse:
@@ -132,6 +143,16 @@ async def upload_document_proof(
         )
 
     skills = _clean_skills((claimed_skills or "").split(",")) if claimed_skills else []
+    extra_metadata: dict[str, Any] = {
+        "title": title or filename,
+        "claimed_skills": skills,
+        "description": description,
+    }
+    if share_with_recruiters:
+        # The dedicated download-consent field the vault's document gating reads
+        # (see _DOWNLOAD_CONSENT_FIELDS in student_proof_vault_service) — an
+        # actual boolean True, recorded only on explicit opt-in.
+        extra_metadata["recruiter_shareable"] = True
     try:
         row = OptionalEvidenceService(db).submit_file(
             user_id=user_id,
@@ -139,16 +160,35 @@ async def upload_document_proof(
             file_bytes=content,
             filename=filename,
             source_type=source_type,  # type: ignore[arg-type]
-            extra_metadata={
-                "title": title or filename,
-                "claimed_skills": skills,
-                "description": description,
-            },
+            extra_metadata=extra_metadata,
             strict=True,
         )
     except OptionalEvidencePersistError as exc:
         raise _persist_error() from exc
-    return _to_response(row, user_id)
+
+    # ── Retain the ORIGINAL file as a gated proof artifact (migration 056) ────
+    # Best-effort and honest: when retention storage is not configured the
+    # submission stays verified-excerpts-only (original_retained=False) — the
+    # analysis above is unaffected either way. Consent maps to the access
+    # policy: shared → public_safe (served to recruiters via the gated
+    # artifact routes), otherwise owner-only.
+    artifact = proof_artifact_service.register_artifact_with_bytes(
+        db,
+        owner_user_id=user_id,
+        proof_type="document",
+        artifact_type="document_original",
+        data=content,
+        file_name=filename,
+        mime_type=file.content_type or _DOCUMENT_MIME_BY_EXT.get(ext, "application/octet-stream"),
+        proof_id=str(row.get("id") or ""),
+        access_policy="public_safe" if share_with_recruiters else "owner_only",
+    )
+
+    response = _to_response(row, user_id)
+    if artifact is not None:
+        response.original_retained = True
+        response.original_artifact_id = str(artifact["id"])
+    return response
 
 
 @router.get(

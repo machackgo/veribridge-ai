@@ -1273,20 +1273,42 @@ class TestDevFallbackPersistence:
 
 class TestDevAuthFallbackEndpoints:
     """Verify that all pipeline endpoints work without an Authorization header
-    in non-production mode (DEMO_USER_ID fallback active).
+    when the dev DEMO_USER_ID fallback is EXPLICITLY enabled in non-production.
 
-    Requirement: seed / list / visibility PATCH must work in local dev even
-    when the browser has no Supabase session token.
+    SECURITY: the no-token fallback is off by default (see
+    ``settings.enable_demo_user_fallback``); an unauthenticated request must
+    never silently resolve to the real demo user. These tests opt in via the
+    flag to exercise the supported local-dev convenience path.
     """
 
     @pytest.fixture()
-    def no_auth_client(self) -> TestClient:
+    def no_auth_client(self, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         """TestClient with real auth dependency (no get_current_user_id override)
-        but in-memory DB so no real Supabase calls are made."""
+        but in-memory DB so no real Supabase calls are made. The dev demo
+        fallback is explicitly enabled for this fixture."""
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "environment", "development")
+        monkeypatch.setattr(settings, "enable_demo_user_fallback", True)
         mem: dict = {}
         app.dependency_overrides[get_db] = lambda: mem
         yield TestClient(app)
         app.dependency_overrides.clear()
+
+    def test_seed_without_auth_and_fallback_disabled_is_401(self, monkeypatch: pytest.MonkeyPatch):
+        """Secure default: no Authorization header AND fallback disabled → 401,
+        never a silent DEMO_USER_ID session."""
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "environment", "development")
+        monkeypatch.setattr(settings, "enable_demo_user_fallback", False)
+        mem: dict = {}
+        app.dependency_overrides[get_db] = lambda: mem
+        try:
+            r = TestClient(app).post("/api/v1/student/skill-pipelines/seed-mock")
+            assert r.status_code == 401, r.text
+        finally:
+            app.dependency_overrides.clear()
 
     def test_seed_without_auth_header_succeeds(self, no_auth_client: TestClient):
         """POST seed-mock without Authorization header → 200 in dev (DEMO_USER_ID fallback)."""

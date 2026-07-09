@@ -34,3 +34,10 @@ class DocumentProofResponse(BaseModel):
     analysis_json: dict[str, Any] = Field(default_factory=dict)
     evidence_objects: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str | None = None
+    # ── Artifact retention (migration 056) ────────────────────────────────────
+    # Whether the ORIGINAL uploaded file was retained as a gated proof artifact,
+    # and its opaque artifact id for the authorized view/download routes —
+    # never a storage path or signed URL. False/None when retention storage is
+    # not configured (verified-excerpts-only remains the honest state).
+    original_retained: bool = False
+    original_artifact_id: str | None = None

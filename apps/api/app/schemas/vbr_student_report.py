@@ -711,6 +711,14 @@ class DocumentProofInspectionCard(BaseModel):
     # is attached to a VBR project.
     is_public_safe: bool = False
     is_attached_to_project: bool = False
+    # ── Artifact retention (migration 056) ────────────────────────────────────
+    # Whether the ORIGINAL uploaded file is retained as a gated proof artifact.
+    # ``document_artifact_id`` is the opaque artifact id for the authorized
+    # view/download routes (/api/v1/proofs/artifacts/{id}/…) — NEVER a storage
+    # path or signed URL; access is still enforced server-side per request, so
+    # a non-owner holding the id of a private artifact gets an indistinct 404.
+    document_retained: bool = False
+    document_artifact_id: str | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -753,6 +761,9 @@ class SkillReportDocumentCorrelation(BaseModel):
     # it supports the SELECTED skill) — the recruiter-facing Document Proof
     # inspection card. ``None`` on legacy payloads built before this field existed.
     inspection_card: DocumentProofInspectionCard | None = None
+    # Whether the ORIGINAL uploaded file is retained as a gated proof artifact
+    # (see DocumentProofInspectionCard.document_retained for the access detail).
+    document_retained: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -849,6 +860,58 @@ class GitHubEvidenceAssessment(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class SkillReportVideoProofSkillSupport(BaseModel):
+    """One claimed skill on a Video Proof and its honest evidential basis.
+
+    ``basis`` is a closed set: ``mentioned_in_narration`` (the skill name
+    literally appears in the transcript) or ``claimed_only``. ``verified`` is
+    ALWAYS false — a demo video never verifies a skill by itself."""
+
+    skill: str = ""
+    basis: str = "claimed_only"
+    verified: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+class SkillReportVideoProofCard(BaseModel):
+    """One first-class Video Proof (uploaded/recorded demo video) in a Skill Report.
+
+    A safe projection of a ``video_proofs`` row (migration 057): availability
+    flags + the deterministic analysis summary. It never carries storage paths,
+    signed URLs, raw transcript text, or frame bytes — playback/transcript/frames
+    load lazily through the gated artifact / video-proof routes using the opaque
+    ids here (access re-checked server-side per request).
+
+    Epistemics: ``proof_strength_label`` and ``limitations`` state verbatim what
+    a demo video can and cannot prove; ``needs_review`` defaults true and
+    ``skills_supported`` entries are never verified."""
+
+    proof_id: str = ""
+    title: str = ""
+    source_kind: str = "uploaded_demo"
+    source_kind_label: str = "Demo video"
+    duration_label: str | None = None
+    # Availability flags — derived ONLY from genuinely retained/extracted data.
+    replay_available: bool = False
+    transcript_available: bool = False
+    frames_available: bool = False
+    segment_count: int = 0
+    frame_count: int = 0
+    # Opaque artifact id for gated playback (never a path / signed URL).
+    original_artifact_id: str | None = None
+    # Deterministic analysis (facts only — see video_proof_service).
+    demo_summary: str = ""
+    proof_strength_label: str = ""
+    skills_supported: list[SkillReportVideoProofSkillSupport] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    corroborates_with: list[str] = Field(default_factory=list)
+    needs_review: bool = True
+    public_safe: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
 class SkillReportProjectChain(BaseModel):
     """One project's connected proof chain for a skill — artifacts + corroboration.
 
@@ -874,6 +937,12 @@ class SkillReportProjectChain(BaseModel):
     document_more_count: int = 0
     defense_evidence: list[SkillReportEvidenceItem] = Field(default_factory=list)
     video_evidence: list[SkillReportEvidenceItem] = Field(default_factory=list)
+    # First-class Video Proofs (uploaded/recorded demo videos, migration 057)
+    # attached to this chain's project(s) and claiming this report's skill.
+    # Distinct from ``video_evidence`` (timestamped moments inside a Project
+    # Defense recording) — these are standalone demo videos with their own
+    # retention + honest deterministic analysis.
+    video_proofs: list[SkillReportVideoProofCard] = Field(default_factory=list)
     # Project Defense + Video evidence collapsed into ONE grouped section so the
     # chain never renders many repeated "the candidate explained their work"
     # cards. ``None`` when the chain has no defense/video evidence.
@@ -1006,6 +1075,9 @@ class SkillReportStandaloneEvidence(BaseModel):
     document_more_count: int = 0
     defense: list[SkillReportEvidenceItem] = Field(default_factory=list)
     video: list[SkillReportEvidenceItem] = Field(default_factory=list)
+    # First-class Video Proofs claiming this skill that are not attached to any
+    # chain project (or whose project has no chain in this report).
+    video_proofs: list[SkillReportVideoProofCard] = Field(default_factory=list)
     skill_graph: list[SkillReportEvidenceItem] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
@@ -1282,6 +1354,8 @@ __all__ = [
     "SkillProofSynthesisStatement",
     "SkillProofSynthesisUnlinkedItem",
     "SkillProofSynthesisUnlinked",
+    "SkillReportVideoProofSkillSupport",
+    "SkillReportVideoProofCard",
     "SkillReportProjectChain",
     "SkillReportStandaloneEvidence",
     "SkillReportOverview",

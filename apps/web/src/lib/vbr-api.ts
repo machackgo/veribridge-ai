@@ -471,6 +471,81 @@ export async function fetchFrameThumbnailObjectUrl(frameId: string): Promise<str
   }
 }
 
+// ─── Retained proof artifacts + first-class Video Proofs ─────────────────────
+
+/**
+ * Stream one RETAINED proof artifact (document original, video proof original,
+ * extracted frame, …) through the access-gated artifact route and return a
+ * local object URL. The backend re-checks the caller's access per request —
+ * owner-only artifacts 404 for anyone else — and no storage path or signed URL
+ * ever reaches the DOM. Returns null on any failure (callers show an honest
+ * unavailable note, never a broken player/frame). Callers must revoke the
+ * returned URL when done.
+ */
+export async function fetchProofArtifactObjectUrl(artifactId: string): Promise<string | null> {
+  try {
+    const res = await fetchAPI(`/api/v1/proofs/artifacts/${encodeURIComponent(artifactId)}/view`)
+    if (!res.ok) return null
+    const blob = await res.blob()
+    if (!blob || blob.size === 0) return null
+    return URL.createObjectURL(blob)
+  } catch {
+    return null
+  }
+}
+
+export type VideoProofTranscriptSegment = {
+  seq: number
+  start_s: number
+  end_s: number
+  text: string
+  speaker?: string | null
+}
+
+export type VideoProofTranscriptResponse = {
+  video_proof_id: string
+  transcript_status: string
+  segment_count: number
+  segments: VideoProofTranscriptSegment[]
+}
+
+/** Timestamped narration transcript for a Video Proof (owner, or anyone once shared). */
+export async function getVideoProofTranscript(proofId: string): Promise<VideoProofTranscriptResponse> {
+  const res = await fetchAPI(`/api/v1/proofs/video/${encodeURIComponent(proofId)}/transcript`)
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load video transcript (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/**
+ * One safe extracted-frame locator for a Video Proof. Frame bytes stream via
+ * the gated artifact route (`fetchProofArtifactObjectUrl(frame_artifact_id)`).
+ * OCR / activity fields are populated only by a real CV pipeline (future) —
+ * they are honestly null until then.
+ */
+export type VideoProofFrameDescriptor = {
+  frame_id: string
+  timestamp_s?: number | null
+  timestamp_label?: string | null
+  frame_artifact_id?: string | null
+  ocr_text?: string | null
+  activity_summary?: string | null
+  relevance_to_skill?: string | null
+}
+
+export type VideoProofFramesResponse = {
+  video_proof_id: string
+  frames_status: string
+  frame_count: number
+  frames: VideoProofFrameDescriptor[]
+}
+
+/** Safe extracted-frame descriptors for a Video Proof (owner, or anyone once shared). */
+export async function listVideoProofFrames(proofId: string): Promise<VideoProofFramesResponse> {
+  const res = await fetchAPI(`/api/v1/proofs/video/${encodeURIComponent(proofId)}/frames`)
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load video frames (HTTP ${res.status}).`))
+  return res.json()
+}
+
 // ─── Project Defense (Phase 1 — individual project defense) ────────────────
 
 export type ProjectDefenseAttachedProofsRequest = {
@@ -1250,6 +1325,15 @@ export type DocumentProofInspectionCard = {
   document_open_url?: string | null
   is_public_safe: boolean
   is_attached_to_project: boolean
+  /**
+   * Whether the ORIGINAL uploaded file is retained as a gated proof artifact
+   * (migration 056). `document_artifact_id` is the opaque artifact id for the
+   * authorized view/download routes — never a storage path or signed URL; the
+   * backend re-checks access per request, so the id is inert for anyone the
+   * policy does not admit. Absent on legacy payloads (not retained).
+   */
+  document_retained?: boolean
+  document_artifact_id?: string | null
 }
 
 export type SkillReportDocumentCorrelation = {
@@ -1280,6 +1364,8 @@ export type SkillReportDocumentCorrelation = {
    * it supports the SELECTED skill). Absent on legacy payloads built before it.
    */
   inspection_card?: DocumentProofInspectionCard | null
+  /** Whether the ORIGINAL uploaded file is retained as a gated proof artifact. */
+  document_retained?: boolean
 }
 
 /** One evidence-cited synthesis statement (Proof Synthesis Agent). */
@@ -1288,6 +1374,43 @@ export type SkillProofSynthesisStatement = {
   source: string
   /** The real evidence ids this statement was built from (never fabricated). */
   evidence_ids: string[]
+}
+
+/** One claimed skill on a Video Proof and its honest evidential basis. */
+export type SkillReportVideoProofSkillSupport = {
+  skill: string
+  /** "mentioned_in_narration" (skill name appears in the transcript) or "claimed_only". */
+  basis: string
+  /** ALWAYS false — a demo video never verifies a skill by itself. */
+  verified: boolean
+}
+
+/**
+ * One first-class Video Proof (uploaded/recorded demo video) in a Skill Report.
+ * Availability flags are derived ONLY from genuinely retained/extracted data;
+ * playback/transcript/frames load lazily through the gated proof routes using
+ * the opaque ids here — never storage paths or signed URLs.
+ */
+export type SkillReportVideoProofCard = {
+  proof_id: string
+  title: string
+  source_kind: string
+  source_kind_label: string
+  duration_label?: string | null
+  replay_available: boolean
+  transcript_available: boolean
+  frames_available: boolean
+  segment_count: number
+  frame_count: number
+  /** Opaque artifact id for gated playback (never a path / signed URL). */
+  original_artifact_id?: string | null
+  demo_summary: string
+  proof_strength_label: string
+  skills_supported: SkillReportVideoProofSkillSupport[]
+  limitations: string[]
+  corroborates_with: string[]
+  needs_review: boolean
+  public_safe: boolean
 }
 
 /** One project's connected proof chain for a skill — artifacts + corroboration. */
@@ -1310,6 +1433,13 @@ export type SkillReportProjectChain = {
   document_more_count: number
   defense_evidence: SkillReportEvidenceItem[]
   video_evidence: SkillReportEvidenceItem[]
+  /**
+   * First-class Video Proofs (uploaded/recorded demo videos) attached to this
+   * chain's project(s) and claiming this report's skill. Distinct from
+   * `video_evidence` (timestamped moments inside a Project Defense recording).
+   * Absent on older payloads — treat as `[]`.
+   */
+  video_proofs?: SkillReportVideoProofCard[]
   /**
    * Project Defense inspection cards for THIS chain, scoped to the report's
    * skill (owner view). Explanation / corroboration evidence only; untargeted
@@ -1542,6 +1672,11 @@ export type SkillReportStandaloneEvidence = {
   document_more_count: number
   defense: SkillReportEvidenceItem[]
   video: SkillReportEvidenceItem[]
+  /**
+   * First-class Video Proofs claiming this skill that are not attached to any
+   * chain project. Absent on older payloads — treat as `[]`.
+   */
+  video_proofs?: SkillReportVideoProofCard[]
   skill_graph: SkillReportEvidenceItem[]
 }
 

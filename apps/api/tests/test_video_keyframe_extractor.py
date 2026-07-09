@@ -393,6 +393,7 @@ def test_video_upload_endpoint_returns_video_analysis_status():
     """The /workflow/video endpoint returns video_analysis_status in the response."""
     from fastapi.testclient import TestClient
     from app.main import app
+    from app.api.deps import get_current_user_id, get_db
 
     client = TestClient(app)
 
@@ -415,6 +416,11 @@ def test_video_upload_endpoint_returns_video_analysis_status():
 
     def _fake_get_user():
         return "00000000-0000-0000-0000-000000000001"
+
+    # Authenticate explicitly instead of relying on the (now gated) dev
+    # no-token fallback: register the identity/db overrides this test defines.
+    app.dependency_overrides[get_current_user_id] = _fake_get_user
+    app.dependency_overrides[get_db] = _fake_get_db
 
     # Patch extractor and visual analysis to avoid real cv2/DB calls
     with (
@@ -442,6 +448,8 @@ def test_video_upload_endpoint_returns_video_analysis_status():
             files={"video": ("recording.webm", io.BytesIO(b"fake_video"), "video/webm")},
         )
 
+    app.dependency_overrides.clear()
+
     assert response.status_code == 202, response.text
     body = response.json()
     assert "video_analysis_status" in body
@@ -458,13 +466,19 @@ def test_video_upload_endpoint_rejects_unsupported_content_type():
     """Endpoint returns 415 for content types that are not video formats."""
     from fastapi.testclient import TestClient
     from app.main import app
+    from app.api.deps import get_current_user_id
 
     client = TestClient(app)
+    # Authenticate explicitly so we exercise the media-type check, not auth.
+    app.dependency_overrides[get_current_user_id] = lambda: "00000000-0000-0000-0000-000000000001"
 
-    response = client.post(
-        "/api/v1/student/extension-proof/sessions/test-session/workflow/video",
-        files={"video": ("clip.txt", io.BytesIO(b"not a video"), "text/plain")},
-    )
+    try:
+        response = client.post(
+            "/api/v1/student/extension-proof/sessions/test-session/workflow/video",
+            files={"video": ("clip.txt", io.BytesIO(b"not a video"), "text/plain")},
+        )
+    finally:
+        app.dependency_overrides.clear()
 
     # 415 Unsupported Media Type
     assert response.status_code == 415, response.text

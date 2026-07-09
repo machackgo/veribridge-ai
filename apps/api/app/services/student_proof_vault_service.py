@@ -1871,6 +1871,17 @@ _DOC_ACCESS_NOTE_SHARED_NOT_RETAINED = (
     "The candidate marked this document shareable, but the original file is not retained after "
     "analysis — only verified excerpts and locators are stored, so there is no file to download."
 )
+# Artifact-retention states (migration 056). These OVERRIDE the not-retained
+# notes above ONLY when a retained document_original artifact genuinely exists
+# for the submission — the legacy copy stays for older, unretained documents.
+_DOC_ACCESS_NOTE_RETAINED_SHARED = (
+    "The candidate shared the original document — it can be viewed or downloaded through "
+    "VeriBridge's access-gated document routes."
+)
+_DOC_ACCESS_NOTE_RETAINED_PRIVATE = (
+    "The original document is retained privately in the candidate's vault and has not been "
+    "shared for download. Recruiters see verified excerpts and locators only."
+)
 
 # ── Skill-specific detail extraction ─────────────────────────────────────────
 #
@@ -2248,6 +2259,147 @@ def _doc_corroborates_label(*, has_github: bool, has_website: bool, has_defense:
     if has_defense:
         return "Skill explanation"
     return "Project architecture"
+
+
+def _apply_document_retention(db: Any, chains: list[dict[str, Any]]) -> None:
+    """Patch document correlations/cards with GENUINE artifact-retention state.
+
+    For every document correlation in every chain, look up whether a retained
+    ``document_original`` / ``document_redacted`` artifact (migration 056)
+    exists for the submission and patch, in place:
+
+      * ``document_retained`` on the correlation and its inspection card;
+      * the opaque ``document_artifact_id`` (never a storage path/signed URL —
+        the artifact routes re-check access per request, so the id is inert for
+        anyone the policy does not admit);
+      * when the student's download consent is ALSO on, the gated
+        view/download route URLs + the "retained & shared" access notes;
+      * when retained but NOT shared, the honest "retained privately" note.
+
+    Documents with no retained artifact keep the legacy not-retained copy
+    untouched — this pass only ever upgrades state that genuinely exists.
+    """
+    from app.services import proof_artifact_service
+
+    cache: dict[str, dict[str, Any] | None] = {}
+    for chain in chains:
+        for corr in chain.get("document_correlations") or []:
+            source_id = str(corr.get("source_id") or "")
+            if not source_id:
+                continue
+            if source_id not in cache:
+                rows = proof_artifact_service.list_artifacts_for_proof(
+                    db, proof_type="document", proof_id=source_id
+                )
+                originals = [
+                    r
+                    for r in rows
+                    if r.get("artifact_type") in ("document_original", "document_redacted")
+                ]
+                cache[source_id] = originals[-1] if originals else None
+            artifact = cache[source_id]
+            corr["document_retained"] = artifact is not None
+            card = corr.get("inspection_card")
+            if not isinstance(card, dict):
+                continue
+            card["document_retained"] = artifact is not None
+            if artifact is None:
+                continue
+            artifact_id = str(artifact.get("id"))
+            card["document_artifact_id"] = artifact_id
+            if card.get("can_download_document"):
+                card["document_download_url"] = f"/api/v1/proofs/artifacts/{artifact_id}/download"
+                card["document_open_url"] = f"/api/v1/proofs/artifacts/{artifact_id}/view"
+                card["document_access_label"] = card.get("document_access_label") or "Download document"
+                card["access_note"] = _DOC_INSPECTION_ACCESS_AVAILABLE
+                card["document_access_note"] = _DOC_ACCESS_NOTE_RETAINED_SHARED
+                corr["document_access_note"] = _DOC_ACCESS_NOTE_RETAINED_SHARED
+            else:
+                card["document_access_note"] = _DOC_ACCESS_NOTE_RETAINED_PRIVATE
+                corr["document_access_note"] = _DOC_ACCESS_NOTE_RETAINED_PRIVATE
+
+
+def _video_proof_cards_for_skill(
+    db: Any, user_id: str, skill: str
+) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
+    """Safe Video Proof cards (migration 057) claiming ``skill``, by project.
+
+    Returns ``(cards_by_project_id, standalone_cards)``. A video proof matches
+    when the report's skill appears among its student-claimed skills or the
+    deterministic analysis' ``skills_supported`` names (slug comparison).
+    Every availability flag is derived from genuinely retained/extracted data —
+    ``replay_available`` requires the original artifact row to still be
+    retained, transcript/frames require completed extraction stages. Nothing
+    here carries storage paths, signed URLs, raw transcript text, or frames.
+    """
+    from app.services import proof_artifact_service, video_proof_service
+
+    target_slug = skill_slug(skill)
+    by_project: dict[str, list[dict[str, Any]]] = {}
+    standalone: list[dict[str, Any]] = []
+
+    for proof in video_proof_service.list_video_proofs_for_user(db, user_id):
+        analysis = proof.get("analysis") if isinstance(proof.get("analysis"), dict) else {}
+        supported_raw = [
+            s for s in (analysis.get("skills_supported") or []) if isinstance(s, dict)
+        ]
+        skill_names = [str(s) for s in (proof.get("claimed_skills") or [])] + [
+            str(s.get("skill") or "") for s in supported_raw
+        ]
+        if not any(skill_slug(name) == target_slug for name in skill_names if name.strip()):
+            continue
+
+        proof_id = str(proof.get("id") or "")
+        original_artifact_id = proof.get("original_artifact_id")
+        replay_available = False
+        if original_artifact_id:
+            artifact = proof_artifact_service.get_artifact(db, str(original_artifact_id))
+            replay_available = bool(artifact and artifact.get("retained"))
+
+        segment_count = len(video_proof_service.list_transcript_segments(db, proof_id))
+        frame_count = len(video_proof_service.list_frames(db, proof_id))
+        transcript_available = proof.get("transcript_status") == "completed" and segment_count > 0
+        frames_available = proof.get("frames_status") == "completed" and frame_count > 0
+
+        card = {
+            "proof_id": proof_id,
+            "title": str(proof.get("title") or "Demo video"),
+            "source_kind": str(proof.get("source_kind") or "uploaded_demo"),
+            "source_kind_label": video_proof_service.SOURCE_KIND_LABELS.get(
+                str(proof.get("source_kind")), "Demo video"
+            ),
+            "duration_label": video_proof_service._duration_label(proof.get("duration_seconds")),
+            "replay_available": replay_available,
+            "transcript_available": transcript_available,
+            "frames_available": frames_available,
+            "segment_count": segment_count,
+            "frame_count": frame_count,
+            "original_artifact_id": str(original_artifact_id) if original_artifact_id else None,
+            "demo_summary": str(analysis.get("demo_summary") or ""),
+            "proof_strength_label": str(analysis.get("proof_strength_label") or ""),
+            "skills_supported": [
+                {
+                    "skill": str(s.get("skill") or ""),
+                    "basis": str(s.get("basis") or "claimed_only"),
+                    # A demo video never verifies a skill by itself.
+                    "verified": False,
+                }
+                for s in supported_raw
+            ],
+            "limitations": [str(x) for x in (analysis.get("limitations") or [])]
+            or list(video_proof_service.VIDEO_PROOF_LIMITATIONS),
+            "corroborates_with": [str(x) for x in (analysis.get("corroborates_with") or [])],
+            "needs_review": bool(proof.get("needs_review", True)),
+            "public_safe": bool(proof.get("public_safe", False)),
+        }
+
+        project_id = str(proof.get("project_id") or "").strip()
+        if project_id:
+            by_project.setdefault(project_id, []).append(card)
+        else:
+            standalone.append(card)
+
+    return by_project, standalone
 
 
 def _doc_correlation(
@@ -3456,6 +3608,68 @@ def collect_skill_report(
                         ),
                         has_document=bool(chain.get("document_correlations")),
                     )
+
+    # ── Artifact retention + first-class Video Proofs (migrations 056/057) ────
+    # Patch every chain's document correlations with genuine retained-original
+    # state (view/download only when a retained artifact truly exists), then
+    # attach the safe Video Proof cards claiming this skill: to their project's
+    # chain when it exists in this report, else to the standalone bucket. A
+    # proof id is attached at most once even across grouped/collapsed chains.
+    _apply_document_retention(db, projects)
+    video_by_project, standalone_video_proofs = _video_proof_cards_for_skill(db, user_id, canon)
+    seen_video_proof_ids: set[str] = set()
+    for chain in projects:
+        chain_video_pids: set[str] = set()
+        for key in ("grouped_project_ids", "collapsed_project_ids"):
+            chain_video_pids |= {str(p) for p in (chain.get(key) or [])}
+        if chain.get("project_id"):
+            chain_video_pids.add(str(chain["project_id"]))
+        chain_cards: list[dict[str, Any]] = []
+        for pid in sorted(chain_video_pids):
+            for card in video_by_project.get(pid, []):
+                if card["proof_id"] in seen_video_proof_ids:
+                    continue
+                seen_video_proof_ids.add(card["proof_id"])
+                chain_cards.append(card)
+        chain["video_proofs"] = chain_cards
+    # Video proofs whose project has no chain in this report stay honest
+    # standalone evidence rather than being dropped.
+    unchained_video_cards = [
+        card
+        for cards in video_by_project.values()
+        for card in cards
+        if card["proof_id"] not in seen_video_proof_ids
+    ]
+    standalone_evidence["video_proofs"] = standalone_video_proofs + unchained_video_cards
+    # Mirror the standalone cards onto the vault-bucket chain (project_id None)
+    # so the chains UI renders them alongside the other standalone proofs. When
+    # video proofs are the ONLY standalone evidence for this skill, the vault
+    # bucket did not exist yet — create it so the proof still renders honestly.
+    if standalone_evidence["video_proofs"] and not any(
+        c.get("project_id") is None for c in projects
+    ):
+        projects.append(
+            {
+                "project_id": None,
+                "project_title": "Student Proof Vault (not attached to a VBR project)",
+                "attached": False,
+                "attached_status": _UNATTACHED_NOTE,
+                "sources": [],
+                "evidence_chain_summary": (
+                    "Standalone proofs that support this skill but are not attached to a VBR project."
+                ),
+                "github_evidence": [],
+                "website_evidence": [],
+                "document_correlations": [],
+                "document_more_count": 0,
+                "defense_evidence": [],
+                "video_evidence": [],
+                "limitations": [_UNATTACHED_NOTE],
+            }
+        )
+    for chain in projects:
+        if chain.get("project_id") is None:
+            chain["video_proofs"] = standalone_evidence["video_proofs"]
 
     # ── Overview + gaps ──────────────────────────────────────────────────────
     proof_source_counts: dict[str, int] = {}
