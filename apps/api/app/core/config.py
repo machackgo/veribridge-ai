@@ -358,6 +358,59 @@ class Settings(BaseSettings):
         alias="LOCAL_WHISPER_LANGUAGE",
     )
 
+    # ── Apple Wallet Passport Pass ────────────────────────────────────────────
+    # "Add to Apple Wallet" for the Work Passport (Beam handoff surface).
+    #
+    # APPLE_WALLET_ENABLED is the master feature flag. Default false: no wallet
+    # endpoints activate, no frontend button renders, and nothing in the product
+    # claims Apple Wallet support. Flip to true ONLY after the Apple Developer
+    # setup in docs/apple-wallet-pass-setup.md is complete.
+    #
+    # The pass QR always encodes the existing revocable Beam short link
+    # (/b/{code}) — the pass is a carrier for that link, never a new share URL.
+    #
+    # Certificate/key values are FILE PATHS (or mounted secret refs), never the
+    # certificate material itself. Nothing here is ever committed:
+    #   APPLE_WALLET_CERT_PATH       — Pass Type ID signing certificate (PEM)
+    #   APPLE_WALLET_KEY_PATH        — Pass Type ID private key (PEM)
+    #   APPLE_WALLET_WWDR_CERT_PATH  — Apple WWDR G4 intermediate cert (PEM)
+    #   APPLE_WALLET_KEY_PASSWORD    — password for the private key, if encrypted
+    apple_wallet_enabled: bool = Field(
+        default=False,
+        alias="APPLE_WALLET_ENABLED",
+    )
+    # Pass Type identifier registered in the Apple Developer portal,
+    # e.g. "pass.com.veribridgeai.passport". Empty → not configured.
+    apple_pass_type_identifier: str = Field(
+        default="",
+        alias="APPLE_PASS_TYPE_IDENTIFIER",
+    )
+    # 10-character Apple Developer Team ID (Membership page). Empty → not configured.
+    apple_team_identifier: str = Field(
+        default="",
+        alias="APPLE_TEAM_IDENTIFIER",
+    )
+    apple_wallet_organization_name: str = Field(
+        default="VeriBridge AI",
+        alias="APPLE_WALLET_ORGANIZATION_NAME",
+    )
+    apple_wallet_cert_path: str = Field(
+        default="",
+        alias="APPLE_WALLET_CERT_PATH",
+    )
+    apple_wallet_key_path: str = Field(
+        default="",
+        alias="APPLE_WALLET_KEY_PATH",
+    )
+    apple_wallet_wwdr_cert_path: str = Field(
+        default="",
+        alias="APPLE_WALLET_WWDR_CERT_PATH",
+    )
+    apple_wallet_key_password: SecretStr = Field(
+        default=SecretStr(""),
+        alias="APPLE_WALLET_KEY_PASSWORD",
+    )
+
     # ── LLM Proof Synthesis Layer (Step 4) ───────────────────────────────────
     # Provider-agnostic, recruiter-readable synthesis of already-linked proof
     # chains.  Anthropic is NEVER required: the default is fully disabled and the
@@ -519,6 +572,24 @@ class Settings(BaseSettings):
     def auth_configured(self) -> bool:
         """True when JWT verification is possible (secret is present)."""
         return bool(self.supabase_jwt_secret.get_secret_value())
+
+    @property
+    def apple_wallet_identifiers_configured(self) -> bool:
+        """True when both Apple identifiers needed inside pass.json are set."""
+        return bool(
+            self.apple_pass_type_identifier.strip()
+            and self.apple_team_identifier.strip()
+        )
+
+    @property
+    def apple_wallet_signing_paths_configured(self) -> bool:
+        """True when all three signing-material paths are set (presence only —
+        the pass generator verifies the files actually exist at signing time)."""
+        return bool(
+            self.apple_wallet_cert_path.strip()
+            and self.apple_wallet_key_path.strip()
+            and self.apple_wallet_wwdr_cert_path.strip()
+        )
 
     @property
     def anthropic_configured(self) -> bool:

@@ -3,6 +3,8 @@
 import { useEffect, useState, type CSSProperties } from "react"
 
 import {
+  downloadAppleWalletPass,
+  getAppleWalletAvailability,
   getOrCreateBeamLink,
   getPrivateWorkPassport,
   getWorkPassportStatus,
@@ -55,15 +57,33 @@ export function BeamView() {
   const [offline, setOffline] = useState(false)
   const [copied, setCopied] = useState(false)
   const [shareNote, setShareNote] = useState<string | null>(null)
+  // Apple Wallet is opt-in and honest: the button renders ONLY when the
+  // backend confirms it can issue a real signed pass (feature flag on +
+  // identifiers + certificates present). Default false; any doubt = hidden.
+  const [walletEnabled, setWalletEnabled] = useState(false)
+  const [walletBusy, setWalletBusy] = useState(false)
 
   const load = () => {
     setLoading(true)
     setError(null)
     setOffline(false)
     setLinkFallback(false)
+    setWalletEnabled(false)
     Promise.all([getPrivateWorkPassport(), getWorkPassportStatus()])
       .then(async ([passport, status]) => {
         const built = buildBeamCardModel(passport, status)
+        if (built.isPublished) {
+          // Fail-closed readiness check: a wallet pass only exists for a
+          // published passport, same as the Beam link. The helper already
+          // never throws, but a wallet-readiness problem must NEVER take the
+          // Beam Card down with it — so this is belt-and-braces guarded too.
+          try {
+            const availability = await getAppleWalletAvailability()
+            setWalletEnabled(availability.enabled)
+          } catch {
+            setWalletEnabled(false)
+          }
+        }
         let short: string | null = null
         if (built.isPublished) {
           try {
@@ -140,6 +160,32 @@ export function BeamView() {
     }
     await copyLink()
     setShareNote("Sharing isn’t available here — link copied instead.")
+  }
+
+  // Fetch the REAL signed .pkpass (owner-auth, so a plain link can't carry the
+  // token) and hand it to the browser — Safari opens it straight into Wallet.
+  // The pass QR is the same revocable /b/{code} short link as the card QR.
+  const addToAppleWallet = async () => {
+    if (walletBusy) return
+    setShareNote(null)
+    setWalletBusy(true)
+    try {
+      const blob = await downloadAppleWalletPass()
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement("a")
+      anchor.href = url
+      anchor.download = "veribridge-work-passport.pkpass"
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(url)
+    } catch (err: unknown) {
+      setShareNote(
+        err instanceof Error ? err.message : "Apple Wallet pass is unavailable right now.",
+      )
+    } finally {
+      setWalletBusy(false)
+    }
   }
 
   return (
@@ -262,6 +308,25 @@ export function BeamView() {
             <a data-testid="beam-open-public" href={publicUrl} target="_blank" rel="noreferrer" style={actionBtn}>
               Open public Passport ↗
             </a>
+            {/* Rendered ONLY when the backend confirmed it can issue a real
+                signed pass — never a decorative/fake wallet button. */}
+            {walletEnabled && (
+              <button
+                type="button"
+                data-testid="beam-add-to-apple-wallet"
+                onClick={addToAppleWallet}
+                disabled={walletBusy}
+                style={{
+                  ...actionBtn,
+                  background: "#000000",
+                  color: "#ffffff",
+                  borderColor: "#000000",
+                  opacity: walletBusy ? 0.7 : 1,
+                }}
+              >
+                 Add to Apple Wallet
+              </button>
+            )}
           </div>
           {copied && (
             <p data-testid="beam-copy-toast" role="status" style={noteStyle}>

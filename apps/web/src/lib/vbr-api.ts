@@ -2585,6 +2585,71 @@ export async function revokeBeamLink(linkId: string): Promise<BeamLink> {
   return res.json()
 }
 
+// ── Apple Wallet Passport Pass ────────────────────────────────────────────────
+
+/**
+ * Owner-only Apple Wallet readiness. `enabled` is the ONE flag the UI obeys —
+ * it is true only when the backend feature flag is on AND the Apple pass
+ * identifiers are configured AND the signing certificates are actually present,
+ * i.e. only when the `.pkpass` endpoint can produce a REAL signed pass. The
+ * granular booleans exist for diagnostics only; no paths or secrets ever ride
+ * on this response.
+ */
+export type AppleWalletAvailability = {
+  enabled: boolean
+  feature_flag: boolean
+  identifiers_configured: boolean
+  signing_ready: boolean
+}
+
+/** The gated signed-pass endpoint (owner auth; served only when configured). */
+export const APPLE_WALLET_PKPASS_PATH = "/api/v1/student/vbr/wallet/apple/pass.pkpass"
+
+/**
+ * Ask the backend whether it can issue a real signed Apple Wallet pass.
+ * FAIL-CLOSED: any error (network, auth, old backend without the endpoint)
+ * reports disabled — the UI must never show an "Add to Apple Wallet" button
+ * it cannot honor.
+ */
+export async function getAppleWalletAvailability(): Promise<AppleWalletAvailability> {
+  const disabled: AppleWalletAvailability = {
+    enabled: false,
+    feature_flag: false,
+    identifiers_configured: false,
+    signing_ready: false,
+  }
+  try {
+    const res = await fetchAPI("/api/v1/student/vbr/wallet/apple/availability")
+    if (!res.ok) return disabled
+    const data: unknown = await res.json()
+    const record = (typeof data === "object" && data !== null ? data : {}) as Record<string, unknown>
+    return {
+      enabled: record.enabled === true,
+      feature_flag: record.feature_flag === true,
+      identifiers_configured: record.identifiers_configured === true,
+      signing_ready: record.signing_ready === true,
+    }
+  } catch {
+    return disabled
+  }
+}
+
+/**
+ * Download the signed `.pkpass` bundle (authenticated — the endpoint is
+ * owner-only, so a plain <a href> cannot carry the bearer token). The caller
+ * hands the blob to the browser; Safari opens it straight into Wallet via its
+ * `application/vnd.apple.pkpass` content type.
+ */
+export async function downloadAppleWalletPass(): Promise<Blob> {
+  const res = await fetchAPI(APPLE_WALLET_PKPASS_PATH)
+  if (!res.ok) {
+    throw new Error(
+      await parseErrorMessage(res, `Apple Wallet pass is unavailable right now (HTTP ${res.status}).`),
+    )
+  }
+  return res.blob()
+}
+
 // ── Passport Card profile photo ───────────────────────────────────────────────
 
 /** Image types accepted for the Passport Card profile photo. */
