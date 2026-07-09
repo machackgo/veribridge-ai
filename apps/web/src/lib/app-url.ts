@@ -30,3 +30,17 @@ export function publicPassportCardUrl(slug: string): string {
   const path = `/card/${encodeURIComponent(slug)}`
   return base ? `${base}${path}` : path
 }
+
+/**
+ * Absolute Beam short URL for a minted code (`{app}/b/{code}`) — the ONE value
+ * the Beam Card QR / copy / share carry (Phase 2). The `/b/{code}` route asks
+ * the backend resolver where to go at scan time, which is what makes every
+ * handed-out QR revocable and rotatable after the fact. Same origin rules as
+ * every public link: configured `NEXT_PUBLIC_APP_URL` in production, browser
+ * origin in local dev — never a hardcoded host.
+ */
+export function beamShortUrl(code: string): string {
+  const base = publicAppUrl()
+  const path = `/b/${encodeURIComponent(code)}`
+  return base ? `${base}${path}` : path
+}

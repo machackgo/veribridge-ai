@@ -2531,6 +2531,60 @@ export async function unpublishWorkPassport(): Promise<WorkPassportStatus> {
   return res.json()
 }
 
+// ── Beam links (dynamic revocable short QR) ───────────────────────────────────
+
+/**
+ * Owner view of one Beam short link. `short_path` (`/b/{code}`) is what the
+ * Beam Card QR encodes (made absolute with the app origin client-side);
+ * `public_passport_path` is where the code currently resolves. Rotating or
+ * revoking the link invalidates every previously shared copy of the QR at
+ * scan time — the code itself carries no identity and no internal ids.
+ */
+export type BeamLink = {
+  id: string
+  code: string
+  status: "active" | "revoked" | "expired" | string
+  short_path: string
+  public_passport_path: string
+  event_tag: string | null
+  expires_at: string | null
+  revoked_at: string | null
+  created_at: string | null
+}
+
+/**
+ * Get the caller's active Beam link, minting one if none exists (idempotent —
+ * the same code is reused until the owner rotates/revokes it). Requires a
+ * PUBLISHED passport; the backend rejects unpublished passports with a clear
+ * error rather than ever minting a link to a private surface.
+ */
+export async function getOrCreateBeamLink(eventTag?: string): Promise<BeamLink> {
+  const res = await fetchAPI("/api/v1/student/vbr/beam/links", {
+    method: "POST",
+    body: JSON.stringify(eventTag ? { event_tag: eventTag } : {}),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to prepare your Beam link (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Rotate a Beam link: the old code dies immediately, a new one is minted. */
+export async function rotateBeamLink(linkId: string): Promise<BeamLink> {
+  const res = await fetchAPI(`/api/v1/student/vbr/beam/links/${encodeURIComponent(linkId)}/rotate`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to rotate your Beam link (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Revoke a Beam link: every shared copy of the QR goes inactive. Idempotent. */
+export async function revokeBeamLink(linkId: string): Promise<BeamLink> {
+  const res = await fetchAPI(`/api/v1/student/vbr/beam/links/${encodeURIComponent(linkId)}/revoke`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to revoke your Beam link (HTTP ${res.status}).`))
+  return res.json()
+}
+
 // ── Passport Card profile photo ───────────────────────────────────────────────
 
 /** Image types accepted for the Passport Card profile photo. */

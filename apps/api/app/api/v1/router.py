@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     ai_domain_review,
+    beam_links,
     skill_evidence_pipelines,
     admin_quality_review,
     admin_notifications,
@@ -105,6 +106,16 @@ api_router.include_router(
     vbr_work_passport.public_router,
     prefix="/public",
     tags=["vbr-work-passport"],
+)
+api_router.include_router(
+    beam_links.student_router,
+    prefix="/student/vbr/beam",
+    tags=["beam-links"],
+)
+api_router.include_router(
+    beam_links.public_router,
+    prefix="/public/beam",
+    tags=["beam-links-public"],
 )
 api_router.include_router(
     vbr_public_report.router,

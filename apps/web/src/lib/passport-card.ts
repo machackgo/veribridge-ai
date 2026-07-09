@@ -58,7 +58,7 @@ const STATUS_RANK: Record<string, number> = {
   "Needs review": 5,
   "Not assessed": 9,
 }
-function statusRank(status: string): number {
+export function statusRank(status: string): number {
   return STATUS_RANK[status] ?? 4
 }
 
