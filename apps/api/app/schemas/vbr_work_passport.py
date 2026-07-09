@@ -15,6 +15,8 @@ Three surfaces:
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from app.schemas.vbr_student_report import (
@@ -599,6 +601,37 @@ class PublicWorkPassportResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PublicSkillReportResponse(BaseModel):
+    """Recruiter-safe public Skill Report for one skill of a PUBLISHED passport.
+
+    The whole payload is the centralized ``public_safe_skill_report`` whitelist
+    projection (run through ``enforce_public_safe``), so it structurally carries
+    no private source ids, storage paths, signed URLs, snippets, owner routes,
+    counts-as-scores, or raw provider payloads. The chain / synthesis members are
+    the already-projected safe dict shapes (mirroring how the owner
+    ``SkillReportResponse`` types its Step-3/4 fields), never the internal
+    objects. ``status`` is a closed qualitative label — never a numeric score.
+    """
+
+    skill: str
+    skill_slug: str = ""
+    status: str = "Supporting evidence"
+    category: str = "Other"
+    synthesis_summary: str = ""
+    # Boolean coverage across evidence surfaces — never counts or scores.
+    source_coverage: dict[str, bool] = Field(default_factory=dict)
+    # Public-safe linked proof chains (``public_safe_linked_chain`` shape).
+    linked_proof_chains: list[dict[str, Any]] = Field(default_factory=list)
+    # Public-safe synthesis results (``public_safe_synthesis_result`` shape).
+    synthesis: list[dict[str, Any]] = Field(default_factory=list)
+    # Capped, safe supporting proofs that join no chain.
+    unlinked_supporting_evidence: dict[str, Any] = Field(default_factory=dict)
+    limitations: list[str] = Field(default_factory=list)
+    generated_at: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
 __all__ = [
     "PublishPassportRequest",
     "WorkPassportStatusResponse",
@@ -624,4 +657,5 @@ __all__ = [
     "PublicPassportProject",
     "PrivateWorkPassportResponse",
     "PublicWorkPassportResponse",
+    "PublicSkillReportResponse",
 ]

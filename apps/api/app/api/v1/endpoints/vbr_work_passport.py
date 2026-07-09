@@ -8,7 +8,8 @@ service-role client):
   ``POST   /api/v1/student/vbr/passport/unpublish``— hide the public passport
 
 Public (no auth, requires an actively published passport):
-  ``GET    /api/v1/public/p/{public_slug}``        — recruiter-safe profile
+  ``GET    /api/v1/public/p/{public_slug}``                 — recruiter-safe profile
+  ``GET    /api/v1/public/p/{public_slug}/skills/{skill}``  — recruiter-safe skill report
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from app.schemas.vbr_student_report import SkillReportResponse
 from app.schemas.vbr_work_passport import (
     PassportPhotoResponse,
     PrivateWorkPassportResponse,
+    PublicSkillReportResponse,
     PublicWorkPassportResponse,
     PublishPassportRequest,
     WorkPassportStatusResponse,
@@ -47,6 +49,7 @@ from app.services.student_proof_vault_service import collect_skill_report
 from app.services.vbr_work_passport_service import (
     build_private_passport,
     build_public_passport,
+    build_public_skill_report,
     get_passport_status,
     publish_passport,
     unpublish_passport,
@@ -231,3 +234,23 @@ def get_public_passport_route(
     pipeline_db: Any = Depends(get_pipeline_db),
 ) -> PublicWorkPassportResponse:
     return PublicWorkPassportResponse(**build_public_passport(db, pipeline_db, public_slug))
+
+
+@public_router.get(
+    "/p/{public_slug}/skills/{skill}",
+    response_model=PublicSkillReportResponse,
+    summary="Get one skill's recruiter-safe public Skill Report (no auth required)",
+)
+def get_public_skill_report_route(
+    public_slug: str,
+    skill: str,
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> PublicSkillReportResponse:
+    """Public drilldown behind a passport skill row. ``skill`` accepts either a
+    canonical name or a URL slug. Fail-closed: unpublished/unknown passports,
+    skills with no proof, and payloads that trip the public unsafe-field scan all
+    return the same generic 404. Deterministic — never calls an LLM provider."""
+    return PublicSkillReportResponse(
+        **build_public_skill_report(db, pipeline_db, public_slug, skill)
+    )

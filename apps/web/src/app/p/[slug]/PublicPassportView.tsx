@@ -6,6 +6,7 @@ import {
   getPublicWorkPassportBySlug,
   matrixTraceLabel,
   proofChainFromSources,
+  publicSkillReportPath,
   PROOF_CHAIN_STEPS,
   type PublicPassportProject,
   type PublicPassportSkill,
@@ -24,6 +25,11 @@ import {
 } from "../../../../components/passport/shared"
 import { EvidenceTraceList } from "../../../../components/passport/EvidenceTrace"
 import { ProjectDefenseInspectionSection } from "../../../../components/passport/ProjectDefenseInspectionCard"
+import { RecruiterCta } from "../../../../components/passport/RecruiterCta"
+import {
+  RecruiterReviewChecklist,
+  RecruiterTrustFraming,
+} from "../../../../components/passport/RecruiterTrustFraming"
 
 const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   Demonstrated: "emerald",
@@ -48,7 +54,7 @@ function publicSkillAnchor(skillOrSlug: string): string {
   return `public-skill-${fallbackSkillSlug(skillOrSlug)}`
 }
 
-function SkillChip({ skill }: { skill: PublicPassportSkill }) {
+function SkillChip({ skill, passportSlug }: { skill: PublicPassportSkill; passportSlug: string }) {
   const [open, setOpen] = useState(false)
   const traces = skill.evidence_traces ?? []
   const strongest = skill.strongest_project ?? null
@@ -98,7 +104,17 @@ function SkillChip({ skill }: { skill: PublicPassportSkill }) {
           {headerInner}
         </button>
       ) : (
-        <div style={headerStyle}>{headerInner}</div>
+        <>
+          <div style={headerStyle}>{headerInner}</div>
+          {/* No inline drilldown — the public Skill Report is still reachable. */}
+          <a
+            data-testid="public-skill-report-link"
+            href={publicSkillReportPath(passportSlug, fallbackSkillSlug(skill.skill))}
+            style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+          >
+            Open the full public skill report →
+          </a>
+        </>
       )}
 
       {open && hasDetail && (
@@ -123,6 +139,16 @@ function SkillChip({ skill }: { skill: PublicPassportSkill }) {
               ))}
             </div>
           )}
+
+          {/* Public Skill Report drilldown — the recruiter-safe evidence
+              argument for THIS skill, on the same public passport slug. */}
+          <a
+            data-testid="public-skill-report-link"
+            href={publicSkillReportPath(passportSlug, fallbackSkillSlug(skill.skill))}
+            style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+          >
+            Open the full public skill report →
+          </a>
 
           {/* Skill → Project: where this skill is most strongly evidenced —
               published report link only, never a private route or id. */}
@@ -438,6 +464,9 @@ export function PublicPassportView({ slug }: { slug: string }) {
         )}
       </div>
 
+      {/* Recruiter trust framing — what this Passport is, and what it is NOT */}
+      <RecruiterTrustFraming />
+
       {/* Evidence graph at a glance + evidence source counts */}
       {sourceCounts.length > 0 && (
         <Card>
@@ -490,7 +519,7 @@ export function PublicPassportView({ slug }: { slug: string }) {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {passport.top_skills.map((skill) => (
-              <SkillChip key={skill.skill} skill={skill} />
+              <SkillChip key={skill.skill} skill={skill} passportSlug={slug} />
             ))}
           </div>
         )}
@@ -508,6 +537,9 @@ export function PublicPassportView({ slug }: { slug: string }) {
         </ul>
       </Card>
 
+      {/* Recruiter review checklist — how to actually inspect this evidence */}
+      <RecruiterReviewChecklist />
+
       {/* Verification note */}
       {passport.verification_note && (
         <p style={{ fontSize: 11, color: TOKEN.muted, lineHeight: 1.6, textAlign: "center", margin: 0 }}>
@@ -516,28 +548,9 @@ export function PublicPassportView({ slug }: { slug: string }) {
       )}
 
       {/* Recruiter CTA */}
-      <Card>
-        <div data-testid="public-passport-cta" style={{ textAlign: "center", display: "flex", flexDirection: "column", gap: 10, padding: "8px 0" }}>
-          <h2 style={{ fontSize: 16, color: TOKEN.ink, margin: 0 }}>Hiring? Verify what candidates actually built.</h2>
-          <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-            Request an evidence-backed Verified Build Report from your candidates, or learn how VeriBridge works.
-          </p>
-          <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
-            <a
-              href="/recruiters"
-              style={{ padding: "8px 14px", borderRadius: 8, background: TOKEN.indigo, color: "#fff", fontSize: 13, fontWeight: 600, textDecoration: "none" }}
-            >
-              Request a VBR from your candidates
-            </a>
-            <a
-              href="/recruiters"
-              style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${TOKEN.line}`, background: "#fff", color: TOKEN.inkSoft, fontSize: 13, fontWeight: 600, textDecoration: "none" }}
-            >
-              See how VeriBridge works
-            </a>
-          </div>
-        </div>
-      </Card>
+      <div data-testid="public-passport-cta">
+        <RecruiterCta />
+      </div>
     </div>
   )
 }
