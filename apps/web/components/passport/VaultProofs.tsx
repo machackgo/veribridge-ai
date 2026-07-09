@@ -31,6 +31,12 @@ import { DocumentProofInspectionCard } from "./DocumentProofInspectionCard"
 import { ProjectDefenseInspectionSection } from "./ProjectDefenseInspectionCard"
 import { EvidenceRelationshipBadge, EvidenceTierSection } from "./ProofRelationshipGuide"
 import {
+  ChainOriginalProofAccess,
+  DefenseTranscriptViewer,
+  OriginalProofAccess,
+  RecruiterVerificationAccessSummary,
+} from "./OriginalProofAccess"
+import {
   EvidenceLimitations,
   ProjectContextEvidenceList,
   ProofInspectActions,
@@ -420,7 +426,13 @@ function GitHubEvidence({ item, ghLocation }: { item: SkillReportEvidenceItem; g
 
 
 /** One rich evidence item rendering the concrete stored fields for its source. */
-function SkillEvidenceItem({ item }: { item: SkillReportEvidenceItem }) {
+function SkillEvidenceItem({
+  item,
+  ownerSurface = false,
+}: {
+  item: SkillReportEvidenceItem
+  ownerSurface?: boolean
+}) {
   const isGitHub = item.proof_type === "GitHub Proof"
   const isWebsite = item.proof_type === "Website Proof"
   const isDocument = item.proof_type === "Document Proof"
@@ -476,7 +488,12 @@ function SkillEvidenceItem({ item }: { item: SkillReportEvidenceItem }) {
           Evidence Card (closed vocabularies + basis chips + honest screenshot
           status); legacy payloads without a card keep the prior summary rows. */}
       {isWebsite && item.website_evidence_card && (
-        <WebsiteRuntimeInspectionCard card={item.website_evidence_card} fallbackUrl={item.public_url} />
+        <WebsiteRuntimeInspectionCard
+          card={item.website_evidence_card}
+          fallbackUrl={item.public_url}
+          sessionId={item.source_id}
+          ownerSurface={ownerSurface}
+        />
       )}
       {isWebsite && !item.website_evidence_card && (
         <>
@@ -584,6 +601,23 @@ function SkillEvidenceItem({ item }: { item: SkillReportEvidenceItem }) {
               ⏱ {item.timestamp_label}
             </Mono>
           )}
+          {/* Original proof access (owner only): the timestamps / excerpts above
+              are transcript-derived, so a transcript genuinely exists — offer
+              the candidate's own full explanation. Fails closed on public
+              surfaces and when no transcript-derived content is present. */}
+          {ownerSurface &&
+            item.source_id &&
+            Boolean(item.answer_excerpt || item.question_text || item.timestamp_label) && (
+              <OriginalProofAccess
+                state="transcript_available"
+                caption="Transcript shows the candidate's own explanation, captured by VeriBridge during the recorded defense session."
+              >
+                <DefenseTranscriptViewer
+                  sessionId={item.source_id}
+                  citedTimestampLabels={[item.timestamp_label]}
+                />
+              </OriginalProofAccess>
+            )}
         </>
       )}
 
@@ -610,17 +644,19 @@ function SkillReportSection({
   testId,
   title,
   items,
+  ownerSurface = false,
 }: {
   testId: string
   title: string
   items: SkillReportEvidenceItem[]
+  ownerSurface?: boolean
 }) {
   if (!items || items.length === 0) return null
   return (
     <div data-testid={testId} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>{title}</h4>
       {items.map((item) => (
-        <SkillEvidenceItem key={`${item.proof_type}-${item.source_id}`} item={item} />
+        <SkillEvidenceItem key={`${item.proof_type}-${item.source_id}`} item={item} ownerSurface={ownerSurface} />
       ))}
     </div>
   )
@@ -1015,7 +1051,13 @@ function ChainSourceRelationships({ sources }: { sources: string[] }) {
 }
 
 /** One project's connected proof chain: artifacts + corroborating documents. */
-function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
+function ProjectChainCard({
+  chain,
+  ownerSurface = false,
+}: {
+  chain: SkillReportProjectChain
+  ownerSurface?: boolean
+}) {
   const evidenceResolver = buildChainEvidenceResolver(chain)
   return (
     <div
@@ -1115,13 +1157,28 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
           {chain.website_connection_note}
         </p>
       )}
-      <SkillReportSection testId="chain-website" title="Runtime / website behavior" items={chain.website_evidence} />
+      <SkillReportSection
+        testId="chain-website"
+        title="Runtime / website behavior"
+        items={chain.website_evidence}
+        ownerSurface={ownerSurface}
+      />
       {chain.defense_group && chain.defense_group.grouped_count > 0 ? (
         <DefenseGroupSection group={chain.defense_group} />
       ) : (
         <>
-          <SkillReportSection testId="chain-defense" title="Defense / video explanation" items={chain.defense_evidence} />
-          <SkillReportSection testId="chain-video" title="Video evidence" items={chain.video_evidence} />
+          <SkillReportSection
+            testId="chain-defense"
+            title="Defense / video explanation"
+            items={chain.defense_evidence}
+            ownerSurface={ownerSurface}
+          />
+          <SkillReportSection
+            testId="chain-video"
+            title="Video evidence"
+            items={chain.video_evidence}
+            ownerSurface={ownerSurface}
+          />
         </>
       )}
       {/* First-class Project Defense inspection: per-question explanation /
@@ -1132,6 +1189,11 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
         items={chain.document_correlations}
         moreCount={chain.document_more_count}
       />
+      {/* Original proof access — after the explanation/evidence, before the
+          limitations: can the recruiter reach the ORIGINAL source, how, and —
+          honestly — why not. Owner-only artifacts (captured frames, full
+          transcript) render only on the private surface. */}
+      <ChainOriginalProofAccess chain={chain} ownerSurface={ownerSurface} />
       {chain.limitations.length > 0 && (
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: TOKEN.muted }}>
           {chain.limitations.map((l, i) => (
@@ -1817,6 +1879,11 @@ export function SkillReportView({
           plus the standing "only direct evidence counts" rule. */}
       <SkillEvidenceThesis report={report} directChains={attachedChains} />
 
+      {/* B1 — Recruiter verification access: one honest line per proof source
+          stating whether (and how) the recruiter can reach the ORIGINAL
+          evidence. Derived only from actual availability — never invented. */}
+      <RecruiterVerificationAccessSummary report={report} />
+
       {/* C — Direct skill evidence: the connected proof chains. The skill, the
           project that supports it, and the code / runtime / document / defense
           evidence that corroborates the same claim. The ONLY tier counted for
@@ -1834,7 +1901,7 @@ export function SkillReportView({
           <EvidenceTierSection kind="skill" testid="skill-report-direct">
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {attachedChains.map((chain, i) => (
-                <ProjectChainCard key={`${chain.project_id ?? "p"}-${i}`} chain={chain} />
+                <ProjectChainCard key={`${chain.project_id ?? "p"}-${i}`} chain={chain} ownerSurface={!publicSafe} />
               ))}
             </div>
           </EvidenceTierSection>
@@ -1918,7 +1985,7 @@ export function SkillReportView({
           <EvidenceTierSection kind="vault">
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {vaultChains.map((chain, i) => (
-                <ProjectChainCard key={`v-${chain.project_id ?? "p"}-${i}`} chain={chain} />
+                <ProjectChainCard key={`v-${chain.project_id ?? "p"}-${i}`} chain={chain} ownerSurface={!publicSafe} />
               ))}
               {hasStandalone && (
                 <div data-testid="skill-report-standalone" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1927,7 +1994,12 @@ export function SkillReportView({
                   ) : (
                     <SkillReportSection testId="skill-report-github" title="GitHub evidence" items={std.github} />
                   )}
-                  <SkillReportSection testId="skill-report-website" title="Website evidence" items={std.website} />
+                  <SkillReportSection
+                    testId="skill-report-website"
+                    title="Website evidence"
+                    items={std.website}
+                    ownerSurface={!publicSafe}
+                  />
                   <DocumentCorrelations
                     testId="skill-report-documents"
                     items={std.documents}
