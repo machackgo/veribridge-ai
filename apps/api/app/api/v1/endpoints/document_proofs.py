@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, get_provisioned_user_id
 from app.schemas.document_proof import DocumentProofResponse, DocumentProofTextSubmit
 from app.services import proof_artifact_service
 from app.services.optional_evidence_service import (
@@ -75,7 +75,8 @@ def _to_response(row: dict[str, Any], user_id: str) -> DocumentProofResponse:
 )
 def submit_document_proof(
     body: DocumentProofTextSubmit,
-    user_id: str = Depends(get_current_user_id),
+    # First-write flow: a fresh user's submission FKs public.users — provision.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> DocumentProofResponse:
     try:
@@ -112,7 +113,8 @@ async def upload_document_proof(
     # Explicit, student-controlled recruiter-share consent for the ORIGINAL
     # file. Default closed: the retained original stays owner-only.
     share_with_recruiters: bool = Form(default=False),
-    user_id: str = Depends(get_current_user_id),
+    # First-write flow: a fresh user's upload FKs public.users — provision.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> DocumentProofResponse:
     filename = file.filename or "upload"

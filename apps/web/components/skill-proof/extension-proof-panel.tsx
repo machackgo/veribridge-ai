@@ -54,6 +54,7 @@ import {
   type DiscoveredEvidenceItem,
   type DiscoveredEvidenceType,
   syncWebsiteProofToSkillGraph,
+  publishRecorderAuthToExtension,
 } from "@/lib/api"
 import { VerificationReviewSection, type WebsiteProofReviewSnapshot } from "./verification-review-section"
 import { SequenceAnalysisPanel } from "./sequence-analysis-panel"
@@ -7521,6 +7522,21 @@ export function ExtensionProofPanel({
     return () => window.removeEventListener("message", handleExtensionStateMessage)
   }, [session?.id])
 
+  // Hand the signed-in user's Supabase access token to the recorder extension
+  // while this panel is open. The extension records on the external target site
+  // and uploads directly to the backend with Authorization: Bearer — it cannot
+  // read the app's Supabase session itself, so without this it would upload
+  // anonymously and hit the backend's fail-closed 401 ("Provide a Bearer
+  // token"). Delivered same-origin only (never to the target site) and refreshed
+  // on an interval so a longer recording keeps a non-expired token.
+  useEffect(() => {
+    void publishRecorderAuthToExtension()
+    const intervalId = window.setInterval(() => {
+      void publishRecorderAuthToExtension()
+    }, 45_000)
+    return () => window.clearInterval(intervalId)
+  }, [])
+
   useEffect(() => {
     if (!session) return
     if ((["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status)) {
@@ -8138,6 +8154,10 @@ export function ExtensionProofPanel({
       const updated = await startExtensionProofSession(session.id)
       setSession(updated)
       transitionWebsiteProofProgress({ type: "recording_started" })
+
+      // Refresh the recorder extension's token immediately before opening the
+      // target site so its uploads for this session carry a current Bearer.
+      await publishRecorderAuthToExtension()
 
       const targetUrl = form.websiteUrl.trim()
       const targetWindowFeatures = local ? undefined : "noopener,noreferrer"

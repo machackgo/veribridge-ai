@@ -342,48 +342,16 @@ class GitHubProofService:
     def _ensure_user_row(self, user_id: str, email: str | None) -> None:
         """Provision the authenticated caller's own ``public.users`` row.
 
-        Scoped strictly to the caller: keyed by their real ``sub`` and, when
-        available, their real email from the verified JWT. No fallback/default
-        user, no cross-tenant access — this only self-provisions the row the
-        caller's own writes foreign-key against. A no-op when the row already
-        exists (e.g. created by a Supabase ``handle_new_user`` trigger).
+        Delegates to the central :mod:`app.services.user_provisioning_service`
+        helper shared by every first-write student flow. Scoped strictly to the
+        caller — no fallback/default user, no cross-tenant access — and a no-op
+        when the row already exists.
         """
-        resolved_email = (email or "").strip() or f"{user_id}@users.noreply.veribridge.local"
-        if isinstance(self._client, dict):
-            users = self._client.setdefault(_USERS, {})
-            if user_id not in users:
-                users[user_id] = {
-                    "id": user_id,
-                    "email": resolved_email,
-                    "role": "student",
-                    "status": "active",
-                }
-            return
-        try:
-            existing = (
-                self._client.table(_USERS).select("id").eq("id", user_id).limit(1).execute()
-            )
-        except Exception as exc:
-            raise _classify_db_error(exc, "GET", _USERS) from exc
-        if getattr(existing, "data", None):
-            return
-        try:
-            self._client.table(_USERS).insert(
-                {"id": user_id, "email": resolved_email, "role": "student", "status": "active"}
-            ).execute()
-        except Exception as exc:
-            # A concurrent request (or a DB trigger) may have created the row
-            # between the select and the insert. Re-check by id and only
-            # surface the error if the row genuinely still does not exist.
-            try:
-                recheck = (
-                    self._client.table(_USERS).select("id").eq("id", user_id).limit(1).execute()
-                )
-            except Exception:
-                recheck = None
-            if getattr(recheck, "data", None):
-                return
-            raise _classify_db_error(exc, "INSERT", _USERS) from exc
+        from app.services.user_provisioning_service import (
+            ensure_public_user_for_auth_user,
+        )
+
+        ensure_public_user_for_auth_user(self._client, user_id, email)
 
     def _save(self, row: dict[str, Any]) -> dict[str, Any]:
         if isinstance(self._client, dict):

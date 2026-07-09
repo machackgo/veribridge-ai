@@ -141,6 +141,57 @@ export async function fetchAPI(
   return res
 }
 
+// ── Recorder extension auth handoff ───────────────────────────────────────────
+// The browser recorder extension records on an EXTERNAL target website, then
+// uploads workflow frames / video / evidence directly to the backend, attaching
+// `Authorization: Bearer <token>`. It has no access to the Supabase session (it
+// runs in its own privileged context, not the app's page), so the authenticated
+// app must hand it the signed-in user's short-lived access token.
+//
+// SECURITY: the token is delivered ONLY via a same-origin `window.postMessage`
+// (targetOrigin pinned to the app's own origin). The extension's content script
+// picks it up on the VeriBridge app tab and stores it in extension-private
+// storage; it is NEVER posted to, or readable by, the external target website
+// being recorded, and never travels in a URL/query param. This keeps every
+// recorder upload owner-scoped without weakening the backend's fail-closed auth.
+
+/** postMessage `type` the recorder extension listens for to receive the token. */
+export const RECORDER_AUTH_MESSAGE_TYPE = "VERIBRIDGE_SET_RECORDER_AUTH"
+/** postMessage `source` tag identifying the authenticated app as the sender. */
+export const RECORDER_AUTH_MESSAGE_SOURCE = "veribridge-app"
+
+/**
+ * Publish the current Supabase access token (and API base) to the recorder
+ * extension over a same-origin window message.
+ *
+ * Returns `true` when a token was published, `false` when signed out or
+ * off-browser. Never throws: if the bridge is unavailable the recorder simply
+ * falls back to its popup's manual token field, and a missing/expired token
+ * still surfaces the backend's safe 401 rather than recording anonymously.
+ */
+export async function publishRecorderAuthToExtension(): Promise<boolean> {
+  if (typeof window === "undefined") return false
+  try {
+    const supabase = createSupabaseBrowserClient()
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    const accessToken = session?.access_token
+    if (!accessToken) return false
+    window.postMessage(
+      {
+        source: RECORDER_AUTH_MESSAGE_SOURCE,
+        type: RECORDER_AUTH_MESSAGE_TYPE,
+        payload: { authToken: accessToken, apiUrl: API_BASE },
+      },
+      window.location.origin
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
 export async function getStudentProfile(): Promise<unknown | null> {
   const res = await fetchAPI("/api/v1/student/profile")
   if (res.status === 404) return null

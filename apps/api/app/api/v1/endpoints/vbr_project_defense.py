@@ -19,7 +19,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_current_user_id, get_db, get_pipeline_db
+from app.api.deps import (
+    get_current_user_id,
+    get_db,
+    get_pipeline_db,
+    get_provisioned_user_id,
+)
 from app.api.v1.endpoints.vbr_projects import (
     _advance_project_status,
     _to_project_response,
@@ -186,7 +191,9 @@ def attach_project_defense_proofs_route(
 )
 def create_project_defense_route(
     body: ProjectDefenseCreateRequest,
-    user_id: str = Depends(get_current_user_id),
+    # First-write flow: inserts a vbr_projects row (FKs public.users) and does
+    # not require any pre-existing owned proof — provision fresh users.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
     pipeline_db: Any = Depends(get_pipeline_db),
 ) -> ProjectDefenseCreateResponse:

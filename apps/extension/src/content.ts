@@ -132,6 +132,31 @@ function isVeriBridgeInternal(): boolean {
   return hostname.endsWith("veribridge.ai")
 }
 
+/**
+ * Returns true when the current page is a trusted VeriBridge *app* origin that
+ * is allowed to hand the recorder its auth token.
+ *
+ * Broader than `isVeriBridgeInternal` (which only guards a few dashboard paths):
+ * it recognizes every authenticated app route, including the Website Proof
+ * studio at `/student/proofs/website`. We ONLY accept the auth-token handoff on
+ * these origins so an external target website being recorded can never inject a
+ * token into — or read one from — the extension.
+ */
+function isVeriBridgeAppOrigin(): boolean {
+  const { hostname, pathname } = location
+  if (hostname.endsWith("veribridge.ai")) return true
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return (
+      pathname.startsWith("/student") ||
+      pathname.startsWith("/dashboard") ||
+      pathname.startsWith("/passport") ||
+      pathname.startsWith("/admin") ||
+      pathname.startsWith("/vbr")
+    )
+  }
+  return false
+}
+
 /** Collect a safe snapshot of current non-sensitive form input values. */
 function getInputSnapshot(): Record<string, string> {
   const out: Record<string, string> = {}
@@ -920,6 +945,34 @@ function detectSessionFromUrl(): void {
 }
 
 detectSessionFromUrl()
+
+// ── Recorder auth handoff (app origin only) ─────────────────────────────────────
+// The authenticated VeriBridge app posts the signed-in user's Supabase access
+// token here via a same-origin window message. We relay it to the background so
+// the recorder attaches Authorization: Bearer on its direct-to-backend uploads.
+//
+// SECURITY: only wired up on trusted VeriBridge app origins, and each message is
+// validated to be same-window + same-origin and tagged by the app. The external
+// target website being recorded is a different origin — it never receives the
+// token (postMessage is origin-pinned) and cannot forge this handoff here.
+if (isVeriBridgeAppOrigin()) {
+  window.addEventListener("message", (event: MessageEvent) => {
+    if (event.source !== window) return
+    if (event.origin !== location.origin) return
+    const data = event.data as
+      | { source?: string; type?: string; payload?: { authToken?: unknown; apiUrl?: unknown } }
+      | null
+    if (!data || data.source !== "veribridge-app") return
+    if (data.type !== "VERIBRIDGE_SET_RECORDER_AUTH") return
+    const authToken = data.payload?.authToken
+    if (typeof authToken !== "string" || !authToken) return
+    const apiUrl = typeof data.payload?.apiUrl === "string" ? data.payload.apiUrl : undefined
+    void safeSendMessage({
+      type: "SET_RECORDER_AUTH",
+      payload: { authToken, apiUrl },
+    })
+  })
+}
 
 // On init, check if recording is already active (handles page navigation during a session).
 void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {

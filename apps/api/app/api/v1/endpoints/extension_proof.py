@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, get_provisioned_user_id
 from app.db.supabase import SupabaseError
 from app.schemas.extension_proof import (
     ExtensionProofCompleteResponse,
@@ -35,7 +35,9 @@ router = APIRouter()
 )
 def create_session(
     body: ExtensionProofSessionCreate,
-    user_id: str = Depends(get_current_user_id),
+    # First write of the Website Proof flow: provision the fresh caller's own
+    # public.users row so the session insert never hits a 23503 FK violation.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> ExtensionProofSessionResponse:
     try:

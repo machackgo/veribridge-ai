@@ -665,11 +665,6 @@ export async function uploadDocumentProof(
     source_type?: DocumentProofSourceType
   },
 ): Promise<DocumentProofResponse> {
-  const supabase = (await import("@/lib/supabase/client")).createSupabaseBrowserClient()
-  const { data: { session } } = await supabase.auth.getSession()
-  const headers: Record<string, string> = {}
-  if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`
-
   const form = new FormData()
   form.append("file", file)
   if (meta?.title) form.append("title", meta.title)
@@ -677,10 +672,12 @@ export async function uploadDocumentProof(
   if (meta?.description) form.append("description", meta.description)
   if (meta?.source_type) form.append("source_type", meta.source_type)
 
-  const res = await fetch(`${API_BASE_URL}${API}/student/document-proofs/upload`, {
+  // fetchAPI attaches the Supabase Bearer token, never sends this private
+  // student call anonymously (signed out → local 401 with a clear message),
+  // and leaves Content-Type to the browser for FormData bodies.
+  const res = await fetchAPI(`${API}/student/document-proofs/upload`, {
     method: "POST",
     body: form,
-    headers,
   })
   if (!res.ok) {
     let message = `Upload failed (HTTP ${res.status}).`

@@ -238,6 +238,13 @@ async function uploadVideo(blob: Blob): Promise<void> {
         reason = (typeof d === "string" ? d : d?.message) ?? reason
       } catch { /* keep HTTP status */ }
       reason = reason.slice(0, 200)
+      if (resp.status === 401) {
+        // Backend failed closed on a missing/expired token. Point the user at
+        // the recovery path instead of the raw backend auth message.
+        reason =
+          "Recording isn't signed in. Open the VeriBridge Website Proof page " +
+          "while signed in, then restart the recording from there."
+      }
 
       uploadError = reason
       isUploading = false

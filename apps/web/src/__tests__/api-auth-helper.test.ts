@@ -21,7 +21,13 @@ vi.mock("@/lib/supabase/client", () => ({
   }),
 }))
 
-import { AUTH_SESSION_MISSING_CODE, fetchAPI } from "@/lib/api"
+import {
+  AUTH_SESSION_MISSING_CODE,
+  fetchAPI,
+  publishRecorderAuthToExtension,
+  RECORDER_AUTH_MESSAGE_SOURCE,
+  RECORDER_AUTH_MESSAGE_TYPE,
+} from "@/lib/api"
 
 const fetchMock = vi.fn()
 
@@ -137,5 +143,37 @@ describe("fetchAPI", () => {
     expect(refreshSession).not.toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(res.status).toBe(401)
+  })
+})
+
+describe("publishRecorderAuthToExtension", () => {
+  it("posts the signed-in access token to same-origin listeners only", async () => {
+    getSession.mockResolvedValue(sessionOf("recorder-token"))
+    const postMessage = vi.fn()
+    vi.spyOn(window, "postMessage").mockImplementation(postMessage as never)
+
+    const published = await publishRecorderAuthToExtension()
+
+    expect(published).toBe(true)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const [message, targetOrigin] = postMessage.mock.calls[0]
+    expect(message.source).toBe(RECORDER_AUTH_MESSAGE_SOURCE)
+    expect(message.type).toBe(RECORDER_AUTH_MESSAGE_TYPE)
+    expect(message.payload.authToken).toBe("recorder-token")
+    // Origin-pinned: never broadcast with "*", so the external target site the
+    // recorder is visiting can never receive the token.
+    expect(targetOrigin).toBe(window.location.origin)
+    expect(targetOrigin).not.toBe("*")
+  })
+
+  it("publishes nothing when the user is signed out", async () => {
+    getSession.mockResolvedValue(sessionOf(null))
+    const postMessage = vi.fn()
+    vi.spyOn(window, "postMessage").mockImplementation(postMessage as never)
+
+    const published = await publishRecorderAuthToExtension()
+
+    expect(published).toBe(false)
+    expect(postMessage).not.toHaveBeenCalled()
   })
 })

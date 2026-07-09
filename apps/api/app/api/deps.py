@@ -216,6 +216,56 @@ def get_current_user_identity(
     return AuthenticatedUser(id=user_id, email=email)
 
 
+def get_provisioned_user_id(
+    identity: AuthenticatedUser = Depends(get_current_user_identity),
+    db: Any = Depends(get_db),
+) -> str:
+    """Authenticated user id, with the caller's ``public.users`` row guaranteed.
+
+    Drop-in replacement for :func:`get_current_user_id` on FIRST-WRITE student
+    endpoints (proof submissions, session creates, profile writes, …): a fresh
+    Supabase signup has an ``auth.users`` row but no ``public.users`` row, and
+    every student-owned table FKs against ``public.users(id)``, so the first
+    write would otherwise 500 on a 23503 FK violation.
+
+    Authentication is inherited unchanged from ``get_current_user_id`` (via
+    ``get_current_user_identity``): missing/invalid/expired tokens still fail
+    closed with 401 BEFORE any provisioning happens — this never creates rows
+    for unauthenticated callers, never falls back to a default/demo user, and
+    only ever touches the verified caller's own row.
+
+    Tests that override ``get_current_user_id`` keep working: this dependency
+    resolves the id through it, then provisions into the (usually dict-mode)
+    ``get_db`` override.
+    """
+    from app.db.supabase import SupabaseError, SupabaseFKError
+    from app.services.user_provisioning_service import ensure_public_user_for_auth_user
+
+    try:
+        return ensure_public_user_for_auth_user(db, identity.id, identity.email)
+    except SupabaseFKError:
+        # public.users(id) itself FKs auth.users(id) in some deployments; a
+        # missing parent means the auth account is not visible to the DB yet.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "account_not_ready",
+                "message": "Your account is still being set up. Please try again in a moment.",
+            },
+        )
+    except SupabaseError:
+        logger.error(
+            "User provisioning failed for %s (database unavailable)", identity.id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "account_provisioning_unavailable",
+                "message": "Your account could not be verified right now. Please try again.",
+            },
+        )
+
+
 def get_optional_user_id(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
 ) -> Optional[str]:

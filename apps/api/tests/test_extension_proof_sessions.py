@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.api.deps import get_current_user_id, get_db
+from app.core.config import settings
 from app.schemas.extension_proof import (
     ExtensionProofSessionCreate,
     ExtensionProofUploadRequest,
@@ -206,6 +207,49 @@ class TestGetExtensionProofSession:
         )
         assert response.status_code == 404
         app.dependency_overrides.clear()
+
+
+class TestExtensionProofAuthGate:
+    """The recorder extension uploads workflow evidence to these endpoints with
+    an ``Authorization: Bearer`` header carrying the signed-in user's Supabase
+    token (handed to it same-origin by the authenticated app). The endpoints
+    must therefore fail closed: a missing or invalid token is a 401, never an
+    anonymous/downgraded recording. Here we exercise the REAL
+    ``get_current_user_id`` dependency (not overridden) — only ``get_db`` is
+    stubbed so dependency resolution never reaches a live Supabase client.
+    """
+
+    def test_create_without_token_returns_401(
+        self, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "enable_demo_user_fallback", False)
+        app.dependency_overrides[get_db] = lambda: mem_store
+        try:
+            client = TestClient(app)
+            res = client.post(
+                "/api/v1/student/extension-proof/sessions", json=VALID_POST_BODY
+            )
+            assert res.status_code == 401
+            assert res.json()["detail"]["code"] == "unauthorized"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_create_with_invalid_token_returns_401(
+        self, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "enable_demo_user_fallback", False)
+        app.dependency_overrides[get_db] = lambda: mem_store
+        try:
+            client = TestClient(app)
+            res = client.post(
+                "/api/v1/student/extension-proof/sessions",
+                json=VALID_POST_BODY,
+                headers={"Authorization": "Bearer not-a-real-jwt"},
+            )
+            assert res.status_code == 401
+            assert res.json()["detail"]["code"] in {"invalid_token", "token_expired"}
+        finally:
+            app.dependency_overrides.clear()
 
 
 # ── POST /{session_id}/start ──────────────────────────────────────────────────

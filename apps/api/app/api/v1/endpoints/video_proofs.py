@@ -25,7 +25,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_current_user_id, get_db, get_optional_user_id
+from app.api.deps import (
+    get_current_user_id,
+    get_db,
+    get_optional_user_id,
+    get_provisioned_user_id,
+)
 from app.core.config import settings
 from app.services import video_proof_service as videos
 
@@ -138,7 +143,8 @@ async def upload_video_proof(
     source_kind: str = Form(default="uploaded_demo"),
     claimed_skills: str | None = Form(default=None),
     project_id: str | None = Form(default=None),
-    user_id: str = Depends(get_current_user_id),
+    # First-write flow: a fresh user's video proof FKs public.users — provision.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> VideoProofResponse:
     filename = file.filename or "demo-video"

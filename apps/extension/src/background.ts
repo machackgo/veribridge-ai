@@ -222,13 +222,24 @@ function persistWebsiteProofUploadState(uploadState: WebsiteProofUploadState): v
 // On service-worker startup, check whether a recording was active before the SW
 // was killed.  If so, restore the core fields so VISIBLE_EVIDENCE_EVENT messages
 // are accepted again and re-broadcast START_CAPTURING to all open tabs.
-void chrome.storage.local.get(_SW_STATE_KEY).then((data) => {
-  const rs = (data as Record<string, unknown>)[_SW_STATE_KEY] as PersistedRecordingState | undefined
+void chrome.storage.local.get([_SW_STATE_KEY, "authToken", "apiUrl"]).then((data) => {
+  const stored = data as Record<string, unknown>
+  // Restore the app-handed recorder auth (SET_RECORDER_AUTH persists these
+  // top-level keys) so a session started AFTER an MV3 service-worker restart
+  // still uploads with Authorization: Bearer instead of anonymously 401ing.
+  // The in-recording snapshot below takes precedence when one exists.
+  if (typeof stored.authToken === "string" && stored.authToken) {
+    state.authToken = stored.authToken
+  }
+  if (typeof stored.apiUrl === "string" && stored.apiUrl) {
+    state.apiUrl = stored.apiUrl.replace(/\/$/, "")
+  }
+  const rs = stored[_SW_STATE_KEY] as PersistedRecordingState | undefined
   if (!rs?.sessionId) return
   dbgVE("service-worker restarted — restoring recording state for session:", rs.sessionId)
   state.sessionId    = rs.sessionId
-  state.apiUrl       = (rs.apiUrl || "http://localhost:8000").replace(/\/$/, "")
-  state.authToken    = rs.authToken || ""
+  state.apiUrl       = (rs.apiUrl || state.apiUrl || "http://localhost:8000").replace(/\/$/, "")
+  state.authToken    = rs.authToken || state.authToken || ""
   state.isRecording  = true
   state.startedAt    = rs.startedAt
   state.originalTabId = rs.originalTabId ?? null
@@ -487,6 +498,33 @@ chrome.runtime.onMessage.addListener(
         sendResponse(publicState())
         break
 
+      case "SET_RECORDER_AUTH": {
+        // The authenticated VeriBridge app (relayed by the content script on its
+        // own origin) hands us the signed-in user's Supabase access token so the
+        // recorder's direct-to-backend uploads carry Authorization: Bearer. We
+        // keep it in privileged state/storage; it never reaches the target site.
+        // TODO(security): replace the raw Supabase access token with a
+        // short-lived, recorder-scoped upload token minted by the backend
+        // (audience-limited to the session's upload endpoints).
+        const { authToken, apiUrl } = (msg.payload ?? {}) as {
+          authToken?: string
+          apiUrl?: string
+        }
+        if (typeof authToken === "string" && authToken) {
+          state.authToken = authToken
+          const persist: Record<string, string> = { authToken }
+          if (typeof apiUrl === "string" && apiUrl) {
+            state.apiUrl = apiUrl.replace(/\/$/, "")
+            persist.apiUrl = state.apiUrl
+          }
+          void chrome.storage.local.set(persist)
+          // Keep a token refreshed mid-recording durable across SW restarts.
+          if (state.isRecording) persistRecordingState()
+        }
+        sendResponse({ ok: true })
+        break
+      }
+
       case "START_RECORDING": {
         const { sessionId, apiUrl, authToken, claimedSkills } = msg.payload as {
           sessionId: string
@@ -495,8 +533,11 @@ chrome.runtime.onMessage.addListener(
           claimedSkills?: string[]
         }
         state.sessionId = sessionId
-        state.apiUrl = (apiUrl || "http://localhost:8000").replace(/\/$/, "")
-        state.authToken = authToken
+        state.apiUrl = (apiUrl || state.apiUrl || "http://localhost:8000").replace(/\/$/, "")
+        // Prefer an explicit token from the popup, but fall back to a token the
+        // authenticated app already handed us via SET_RECORDER_AUTH so the
+        // automatic Website Proof flow records with a Bearer without a paste.
+        state.authToken = authToken || state.authToken
         state.isRecording = true
         state.events = []
         state.visibleEvidenceEvents = []
@@ -1069,6 +1110,15 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
           ?? rawBody.slice(0, 120)
           ?? errorMsg
       } catch { /* keep HTTP status string */ }
+
+      if (resp.status === 401) {
+        // The backend correctly failed closed: the recorder had no (or an
+        // expired) token. Give the user the actionable recovery path instead
+        // of the raw backend auth message.
+        errorMsg =
+          "Recording isn't signed in. Open the VeriBridge Website Proof page " +
+          "while signed in, then restart the recording from there."
+      }
 
       state.status = "upload_failed"
       state.statusMessage = `Upload failed: ${errorMsg}`
