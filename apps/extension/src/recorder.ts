@@ -198,12 +198,24 @@ async function uploadVideo(blob: Blob): Promise<void> {
   const sessionId = currentSessionId
   const apiUrl    = currentApiUrl
   const authToken = currentAuthToken
+  const missingAuthMessage =
+    "Recording isn't signed in. Open the VeriBridge Website Proof page while signed in, then restart the recording from there."
 
   if (!sessionId) {
     uploadError = "No session ID — cannot upload video"
     isUploading = false
     updateDurationBadge()
     setMsg(`Upload skipped: ${uploadError}`, "warn")
+    notifyBackground(false, uploadError, 0)
+    return
+  }
+
+  if (!authToken) {
+    uploadError = missingAuthMessage
+    isUploading = false
+    uploadDone = false
+    updateDurationBadge()
+    setMsg(`Video upload failed: ${uploadError}`, "err")
     notifyBackground(false, uploadError, 0)
     return
   }
@@ -241,9 +253,7 @@ async function uploadVideo(blob: Blob): Promise<void> {
       if (resp.status === 401) {
         // Backend failed closed on a missing/expired token. Point the user at
         // the recovery path instead of the raw backend auth message.
-        reason =
-          "Recording isn't signed in. Open the VeriBridge Website Proof page " +
-          "while signed in, then restart the recording from there."
+        reason = missingAuthMessage
       }
 
       uploadError = reason

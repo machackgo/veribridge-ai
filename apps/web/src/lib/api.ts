@@ -159,6 +159,7 @@ export async function fetchAPI(
 export const RECORDER_AUTH_MESSAGE_TYPE = "VERIBRIDGE_SET_RECORDER_AUTH"
 /** postMessage `source` tag identifying the authenticated app as the sender. */
 export const RECORDER_AUTH_MESSAGE_SOURCE = "veribridge-app"
+const RECORDER_AUTH_PUBLISH_DELAYS_MS = [0, 250, 750, 1500] as const
 
 /**
  * Publish the current Supabase access token (and API base) to the recorder
@@ -178,14 +179,16 @@ export async function publishRecorderAuthToExtension(): Promise<boolean> {
     } = await supabase.auth.getSession()
     const accessToken = session?.access_token
     if (!accessToken) return false
-    window.postMessage(
-      {
-        source: RECORDER_AUTH_MESSAGE_SOURCE,
-        type: RECORDER_AUTH_MESSAGE_TYPE,
-        payload: { authToken: accessToken, apiUrl: API_BASE },
-      },
-      window.location.origin
-    )
+    const message = {
+      source: RECORDER_AUTH_MESSAGE_SOURCE,
+      type: RECORDER_AUTH_MESSAGE_TYPE,
+      payload: { authToken: accessToken, apiUrl: API_BASE },
+    }
+    for (const delayMs of RECORDER_AUTH_PUBLISH_DELAYS_MS) {
+      window.setTimeout(() => {
+        window.postMessage(message, window.location.origin)
+      }, delayMs)
+    }
     return true
   } catch {
     return false

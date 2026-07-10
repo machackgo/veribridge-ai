@@ -10,7 +10,7 @@
  *   • a backend 401 token_expired triggers one session refresh + retry.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const getSession = vi.fn()
 const refreshSession = vi.fn()
@@ -47,6 +47,10 @@ beforeEach(() => {
   refreshSession.mockReset()
   fetchMock.mockReset()
   vi.stubGlobal("fetch", fetchMock)
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe("fetchAPI", () => {
@@ -148,30 +152,35 @@ describe("fetchAPI", () => {
 
 describe("publishRecorderAuthToExtension", () => {
   it("posts the signed-in access token to same-origin listeners only", async () => {
+    vi.useFakeTimers()
     getSession.mockResolvedValue(sessionOf("recorder-token"))
     const postMessage = vi.fn()
     vi.spyOn(window, "postMessage").mockImplementation(postMessage as never)
 
     const published = await publishRecorderAuthToExtension()
+    await vi.runAllTimersAsync()
 
     expect(published).toBe(true)
-    expect(postMessage).toHaveBeenCalledTimes(1)
-    const [message, targetOrigin] = postMessage.mock.calls[0]
-    expect(message.source).toBe(RECORDER_AUTH_MESSAGE_SOURCE)
-    expect(message.type).toBe(RECORDER_AUTH_MESSAGE_TYPE)
-    expect(message.payload.authToken).toBe("recorder-token")
-    // Origin-pinned: never broadcast with "*", so the external target site the
-    // recorder is visiting can never receive the token.
-    expect(targetOrigin).toBe(window.location.origin)
-    expect(targetOrigin).not.toBe("*")
+    expect(postMessage).toHaveBeenCalledTimes(4)
+    for (const [message, targetOrigin] of postMessage.mock.calls) {
+      expect(message.source).toBe(RECORDER_AUTH_MESSAGE_SOURCE)
+      expect(message.type).toBe(RECORDER_AUTH_MESSAGE_TYPE)
+      expect(message.payload.authToken).toBe("recorder-token")
+      // Origin-pinned: never broadcast with "*", so the external target site the
+      // recorder is visiting can never receive the token.
+      expect(targetOrigin).toBe(window.location.origin)
+      expect(targetOrigin).not.toBe("*")
+    }
   })
 
   it("publishes nothing when the user is signed out", async () => {
+    vi.useFakeTimers()
     getSession.mockResolvedValue(sessionOf(null))
     const postMessage = vi.fn()
     vi.spyOn(window, "postMessage").mockImplementation(postMessage as never)
 
     const published = await publishRecorderAuthToExtension()
+    await vi.runAllTimersAsync()
 
     expect(published).toBe(false)
     expect(postMessage).not.toHaveBeenCalled()

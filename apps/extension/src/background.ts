@@ -171,6 +171,8 @@ const state: InternalState = {
 // Lets the service worker restore recording context after Chrome kills it.
 const _SW_STATE_KEY = "vb_sw_recording"
 const WEBSITE_PROOF_UPLOAD_STATE_KEY = "websiteProofUploadState"
+const MISSING_RECORDER_AUTH_MESSAGE =
+  "Recording isn't signed in. Open the VeriBridge Website Proof page while signed in, then restart the recording from there."
 
 interface PersistedRecordingState {
   sessionId: string
@@ -369,6 +371,11 @@ async function sendVisualFrames(): Promise<void> {
       "[VisualFrame] sendVisualFrames skip — session=%s frames=%d",
       state.sessionId || "(none)", state.visualFrames.length,
     )
+    return
+  }
+  if (!state.authToken) {
+    dbgVE("[VisualFrame] upload skipped — missing recorder auth token")
+    console.warn("VeriBridge: visual frame upload skipped because recorder auth is missing. Restart from the VeriBridge app.")
     return
   }
 
@@ -949,6 +956,7 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
  */
 async function pushLiveSnapshot(): Promise<void> {
   if (!state.sessionId || !state.isRecording) return
+  if (!state.authToken) return
 
   const events = state.visibleEvidenceEvents
   const allText = events.flatMap(e => e.visible_text_blocks).join(" ")
@@ -997,6 +1005,11 @@ async function sendVisibleEvidence(): Promise<void> {
       "events:", state.visibleEvidenceEvents.length)
     return
   }
+  if (!state.authToken) {
+    dbgVE("sendVisibleEvidence: upload skipped — missing recorder auth token")
+    console.warn("VeriBridge: visible evidence upload skipped because recorder auth is missing. Restart from the VeriBridge app.")
+    return
+  }
   const events = [...state.visibleEvidenceEvents]          // snapshot — don't hold the reference
   const url = `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/workflow/visible-evidence`
   const headers: Record<string, string> = { "Content-Type": "application/json" }
@@ -1039,6 +1052,21 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
   if (!state.sessionId) {
     const err = "No session ID. Enter a session ID in the extension popup."
     return { ok: false, error: err }
+  }
+  if (!state.authToken) {
+    state.status = "upload_failed"
+    state.statusMessage = `Upload failed: ${MISSING_RECORDER_AUTH_MESSAGE}`
+    state.lastUploadError = MISSING_RECORDER_AUTH_MESSAGE
+    persistWebsiteProofUploadState({
+      status: "upload_failed",
+      sessionId: state.sessionId,
+      startedAt: new Date().toISOString(),
+      lastEvent: "upload_failed",
+      statusMessage: state.statusMessage,
+      lastUploadError: MISSING_RECORDER_AUTH_MESSAGE,
+    })
+    broadcastStateUpdate()
+    return { ok: false, error: MISSING_RECORDER_AUTH_MESSAGE }
   }
 
   state.status = "uploading"
@@ -1112,12 +1140,10 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
       } catch { /* keep HTTP status string */ }
 
       if (resp.status === 401) {
-        // The backend correctly failed closed: the recorder had no (or an
-        // expired) token. Give the user the actionable recovery path instead
-        // of the raw backend auth message.
-        errorMsg =
-          "Recording isn't signed in. Open the VeriBridge Website Proof page " +
-          "while signed in, then restart the recording from there."
+        // The backend correctly failed closed: the recorder had an expired or
+        // invalid token. Give the user the actionable recovery path instead of
+        // the raw backend auth message.
+        errorMsg = MISSING_RECORDER_AUTH_MESSAGE
       }
 
       state.status = "upload_failed"
