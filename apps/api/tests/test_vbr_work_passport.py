@@ -119,6 +119,104 @@ _SUBSTANTIVE_DEFENSE_TRANSCRIPT = (
 )
 
 
+def test_website_save_endpoint_uses_shared_finalizer_and_reports_already_saved(
+    client: TestClient, mem_store: dict
+) -> None:
+    created = _create_project_defense(client, claimed_skills=["React"]).json()
+    project_id = created["project"]["id"]
+    proof_id = str(uuid4())
+    mem_store.setdefault("extension_proof_sessions", {})[proof_id] = {
+        "id": proof_id,
+        "user_id": USER_ID,
+        "skill_evidence_id": str(uuid4()),
+        "status": "completed",
+        "website_url": "https://wikitok.io/",
+        "claimed_skills": ["React"],
+        "proof_objective": "Demonstrate the WikiTok feed workflow",
+        "metadata": {},
+        "created_at": "2026-07-14T10:00:00+00:00",
+        "updated_at": "2026-07-14T10:10:00+00:00",
+    }
+    analysis_id = str(uuid4())
+    mem_store.setdefault("workflow_analysis_results", {})[analysis_id] = {
+        "id": analysis_id,
+        "user_id": USER_ID,
+        "proof_session_id": proof_id,
+        "target_website": "https://wikitok.io/",
+        "supported_skills": ["React"],
+        "workflow_confidence": "high",
+        "evidence_strength_score": 80,
+        "created_at": "2026-07-14T10:10:00+00:00",
+    }
+    artifact_id = str(uuid4())
+    mem_store.setdefault("proof_artifacts", {})[artifact_id] = {
+        "id": artifact_id,
+        "owner_user_id": USER_ID,
+        "proof_type": "website",
+        "artifact_type": "website_replay_video",
+        "proof_id": proof_id,
+        "project_id": None,
+        "retained": True,
+    }
+    body = {"proof_type": "website", "proof_id": proof_id, "project_id": project_id}
+
+    first = client.post("/api/v1/student/vbr/passport/proofs/finalize", json=body)
+    second = client.post("/api/v1/student/vbr/passport/proofs/finalize", json=body)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["already_finalized"] is False
+    assert second.json()["already_finalized"] is True
+    assert first.json()["finalized_at"] == second.json()["finalized_at"]
+    assert len(mem_store["proof_project_relationships"]) == 1
+    assert len(mem_store["vbr_claim_evidence_links"]) == 1
+
+
+def test_website_save_endpoint_denies_foreign_session_and_project_without_writes(
+    client: TestClient, mem_store: dict
+) -> None:
+    created = _create_project_defense(client, claimed_skills=["React"]).json()
+    owned_project_id = created["project"]["id"]
+    foreign_project_id = str(uuid4())
+    foreign_proof_id = str(uuid4())
+    mem_store.setdefault("vbr_projects", {})[foreign_project_id] = {
+        "id": foreign_project_id,
+        "user_id": OTHER_USER_ID,
+        "title": "Foreign project",
+        "metadata": {"claimed_skills": ["React"]},
+    }
+    mem_store.setdefault("extension_proof_sessions", {})[foreign_proof_id] = {
+        "id": foreign_proof_id,
+        "user_id": OTHER_USER_ID,
+        "skill_evidence_id": str(uuid4()),
+        "status": "completed",
+        "website_url": "https://foreign.example/",
+        "metadata": {},
+    }
+
+    foreign_project = client.post(
+        "/api/v1/student/vbr/passport/proofs/finalize",
+        json={
+            "proof_type": "website",
+            "proof_id": "owned-proof-not-needed-for-owner-check",
+            "project_id": foreign_project_id,
+        },
+    )
+    foreign_session = client.post(
+        "/api/v1/student/vbr/passport/proofs/finalize",
+        json={
+            "proof_type": "website",
+            "proof_id": foreign_proof_id,
+            "project_id": owned_project_id,
+        },
+    )
+
+    assert foreign_project.status_code == 404
+    assert foreign_session.status_code == 404
+    assert not mem_store.get("proof_project_relationships")
+    assert not mem_store.get("vbr_claim_evidence_links")
+
+
 def _make_full_project(client: TestClient, mem_store: dict) -> str:
     github_proof_id = _seed_github_proof(mem_store)
     document_id = _seed_document_evidence(mem_store)

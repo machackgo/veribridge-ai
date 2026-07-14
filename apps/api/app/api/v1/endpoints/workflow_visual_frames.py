@@ -56,6 +56,11 @@ from app.services.visual_reasoning_service import (
 )
 from app.services.keyframe_storage_service import KeyframeStorageService
 from app.services.proof_target_resolver import resolve_target_url, resolve_target_domain
+from app.services.extension_proof_service import (
+    ExtensionProofSessionNotFoundError,
+    ExtensionProofSessionService,
+)
+from app.services import proof_artifact_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -125,6 +130,22 @@ class VideoUploadResponse(BaseModel):
     frames_queued_for_visual_analysis: int
     limitations: list[str]
     message: str
+    replay_retained: bool = False
+    replay_artifact_id: str | None = None
+
+
+def _require_owned_session(db: Any, user_id: str, session_id: str):
+    """Fail closed before any side evidence read/write for a Website Proof."""
+    try:
+        return ExtensionProofSessionService(db).require_owned_session(user_id, session_id)
+    except ExtensionProofSessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "extension_proof_session_not_found",
+                "message": "Website Proof session not found.",
+            },
+        ) from exc
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -147,6 +168,7 @@ def submit_visual_frames(
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> VisualFrameBatchResponse:
+    _require_owned_session(db, user_id, session_id)
     logger.info(
         "[VisualFrames] session=%s user=%s frames=%d",
         session_id, user_id, len(body.frames),
@@ -251,6 +273,7 @@ def get_visual_frames_status(
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> dict[str, Any]:
+    _require_owned_session(db, user_id, session_id)
     svc = WorkflowVisualAnalysisService(db)
     provider_status = svc.get_provider_status()
     visual_obs = svc.get_visual_observations(user_id, session_id)
@@ -401,6 +424,7 @@ def list_session_visual_frames(
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> SessionVisualFramesResponse:
+    _require_owned_session(db, user_id, session_id)
     try:
         resp = (
             db.table("workflow_visual_frame_evidence")
@@ -474,9 +498,10 @@ _VALID_FRAME_TYPES: frozenset[str] = frozenset({
         "Accepts a browser-recorded workflow video (WebM, MP4, etc.), extracts "
         "evenly-spaced keyframes in-memory, and stores each frame as a visual "
         "evidence record for downstream visual analysis.\n\n"
-        "**Privacy**: raw video bytes are never persisted.  Only extracted JPEG "
-        "keyframes are stored privately as workflow_visual_frame_evidence records.  "
-        "No frame paths or storage URLs are returned in the response.\n\n"
+        "**Privacy**: the original recording is retained once in the private, "
+        "owner-gated proof artifact store so replay and canonical finalization use "
+        "the same evidence. Extracted JPEG keyframes remain private. No storage "
+        "path or storage URL is returned in the response.\n\n"
         "**Fallback**: if cv2 and ffmpeg are both unavailable, the endpoint returns "
         "video_analysis_status='not_available' without crashing.  "
         "DOM evidence continues to work."
@@ -491,6 +516,7 @@ async def upload_workflow_video(
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> VideoUploadResponse:
+    owned_session = _require_owned_session(db, user_id, session_id)
     logger.info(
         "[WorkflowVideo] session=%s user=%s filename=%r content_type=%r",
         session_id, user_id, video.filename, video.content_type,
@@ -526,6 +552,53 @@ async def upload_workflow_video(
     )
 
     public = result.to_public_dict()
+    replay_artifact: dict[str, Any] | None = None
+    existing_replays = [
+        row
+        for row in proof_artifact_service.list_artifacts_for_proof(
+            db,
+            proof_type="website",
+            proof_id=session_id,
+            artifact_type="website_replay_video",
+            retained_only=True,
+        )
+        if str(row.get("owner_user_id") or "") == str(user_id)
+    ]
+    if existing_replays:
+        # Duplicate recorder delivery is idempotent: the first retained replay
+        # remains the exact canonical artifact for this proof session.
+        replay_artifact = existing_replays[-1]
+    elif result.video_analysis_status not in {"limit_exceeded", "unsupported_format"}:
+        replay_artifact = proof_artifact_service.register_artifact_with_bytes(
+            db,
+            owner_user_id=user_id,
+            proof_type="website",
+            artifact_type="website_replay_video",
+            data=raw,
+            file_name=filename_val,
+            mime_type=mime_type,
+            proof_id=session_id,
+            project_id=(
+                owned_session.get("project_id")
+                or (
+                    owned_session.get("metadata", {}).get("project_id")
+                    if isinstance(owned_session.get("metadata"), dict)
+                    else None
+                )
+            ),
+            access_policy="owner_only",
+            duration_seconds=(result.duration_ms / 1000) if result.duration_ms is not None else None,
+        )
+    if replay_artifact is None:
+        logger.error(
+            "[WebsiteProofRecorder] event=replay_retention_failed session_id=%s state=recording error_code=replay_storage_unavailable",
+            session_id,
+        )
+    else:
+        logger.info(
+            "[WebsiteProofRecorder] event=replay_retained session_id=%s state=recording",
+            session_id,
+        )
     frames_stored   = 0
     queued_for_analysis = 0
 
@@ -907,6 +980,8 @@ async def upload_workflow_video(
         frames_queued_for_visual_analysis=queued_for_analysis,
         limitations=public.get("limitations", []),
         message=message,
+        replay_retained=replay_artifact is not None,
+        replay_artifact_id=str(replay_artifact.get("id")) if replay_artifact else None,
     )
 
 
@@ -945,6 +1020,7 @@ def debug_visual_reasoning_frames(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Debug endpoint not available in production.",
         )
+    _require_owned_session(db, user_id, session_id)
 
     try:
         resp = (

@@ -284,7 +284,16 @@ class TestVideoUploadEndpoint:
             _extracted_frames=[(0, b"jpg1"), (1000, b"jpg2"), (2000, b"jpg3")],
         )
 
-        app.dependency_overrides[_deps.get_db] = lambda: {}
+        store = {
+            _SESSION_TABLE: {
+                "test-sess": {
+                    "id": "test-sess",
+                    "user_id": "user-1",
+                    "status": "recording",
+                }
+            }
+        }
+        app.dependency_overrides[_deps.get_db] = lambda: store
         app.dependency_overrides[_deps.get_current_user_id] = lambda: "user-1"
 
         client = TestClient(app)
@@ -339,7 +348,16 @@ class TestVideoUploadEndpoint:
             _extracted_frames=[],
         )
 
-        app.dependency_overrides[_deps.get_db] = lambda: {}
+        store = {
+            _SESSION_TABLE: {
+                "test-sess": {
+                    "id": "test-sess",
+                    "user_id": "user-1",
+                    "status": "recording",
+                }
+            }
+        }
+        app.dependency_overrides[_deps.get_db] = lambda: store
         app.dependency_overrides[_deps.get_current_user_id] = lambda: "user-1"
         client = TestClient(app)
 

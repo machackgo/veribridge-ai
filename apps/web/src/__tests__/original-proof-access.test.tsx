@@ -21,6 +21,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 
 import { SkillReportView } from "../../components/passport/VaultProofs"
 import {
+  DocumentOriginalAccessActions,
   deriveChainAccessRows,
   deriveVerificationAccessRows,
   deriveVideoProofAccessRow,
@@ -29,6 +30,7 @@ import type {
   SkillReport,
   SkillReportProjectChain,
   SkillReportVideoProofCard,
+  VBRReportDocumentOriginalAccess,
   WebsiteEvidenceCard,
 } from "@/lib/vbr-api"
 
@@ -923,5 +925,98 @@ describe("Video Proof original access", () => {
     expect(screen.queryByTestId("video-proof-play-button")).not.toBeInTheDocument()
     expect(screen.queryByTestId("video-proof-transcript-button")).not.toBeInTheDocument()
     expect(screen.queryByTestId("video-proof-frames-button")).not.toBeInTheDocument()
+  })
+})
+
+// ── Private-report retained-original document actions ─────────────────────────
+
+describe("DocumentOriginalAccessActions (private student report)", () => {
+  const retained: VBRReportDocumentOriginalAccess = {
+    available: true,
+    artifact_id: "art-doc-1",
+    file_name: "VeriBridge-AI.docx",
+    mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    size_bytes: 245760,
+    page_count: 7,
+    open_path: "/api/v1/proofs/artifacts/art-doc-1/view",
+    download_path: "/api/v1/proofs/artifacts/art-doc-1/download",
+    note: null,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("renders owner Open + Download actions for a retained original, with no raw route in the DOM", () => {
+    render(<DocumentOriginalAccessActions access={retained} />)
+
+    expect(screen.getByTestId("document-original-view-button")).toBeInTheDocument()
+    expect(screen.getByTestId("document-original-download-button")).toBeInTheDocument()
+    expect(screen.getByTestId("document-original-filename").textContent).toContain("VeriBridge-AI.docx")
+    // No storage path, signed URL, or even the gated API route leaks into the DOM.
+    expect(document.body.innerHTML).not.toContain("/api/v1/proofs/artifacts/")
+    expect(document.body.innerHTML).not.toContain("storage")
+    expect(document.body.innerHTML).not.toContain("signed")
+  })
+
+  it("downloads through the gated artifact route under the ORIGINAL filename", async () => {
+    vi.mocked(fetchProofArtifactObjectUrl).mockResolvedValue("blob:doc-object-url")
+    const captured: { href: string; download: string }[] = []
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        captured.push({ href: this.href, download: this.download })
+      })
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {})
+
+    render(<DocumentOriginalAccessActions access={retained} />)
+    fireEvent.click(screen.getByTestId("document-original-download-button"))
+    await screen.findByText("Download original")
+
+    expect(fetchProofArtifactObjectUrl).toHaveBeenCalledWith("art-doc-1")
+    expect(captured).toHaveLength(1)
+    expect(captured[0].download).toBe("VeriBridge-AI.docx")
+    expect(captured[0].href).toContain("blob:")
+
+    clickSpy.mockRestore()
+    revokeSpy.mockRestore()
+  })
+
+  it("shows the honest download-unavailable note when the gated fetch fails", async () => {
+    vi.mocked(fetchProofArtifactObjectUrl).mockResolvedValue(null)
+
+    render(<DocumentOriginalAccessActions access={retained} />)
+    fireEvent.click(screen.getByTestId("document-original-download-button"))
+
+    expect(await screen.findByTestId("document-original-download-unavailable")).toBeInTheDocument()
+  })
+
+  it("renders the honest not-retained note (no dead buttons) when the original was never kept", () => {
+    render(
+      <DocumentOriginalAccessActions
+        access={{
+          available: false,
+          artifact_id: null,
+          file_name: null,
+          mime_type: null,
+          size_bytes: null,
+          page_count: null,
+          open_path: null,
+          download_path: null,
+          note: "The original document file was not retained — only verified excerpts and locators are stored, so there is no file to open or download.",
+        }}
+      />,
+    )
+
+    expect(screen.getByTestId("document-original-not-retained").textContent).toContain("not retained")
+    expect(screen.queryByTestId("document-original-view-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("document-original-download-button")).not.toBeInTheDocument()
+  })
+
+  it("renders NOTHING when the descriptor is absent (public projection stripped it)", () => {
+    const { container } = render(<DocumentOriginalAccessActions access={null} />)
+    expect(container.innerHTML).toBe("")
+    expect(screen.queryByTestId("document-original-view-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("document-original-not-retained")).not.toBeInTheDocument()
   })
 })

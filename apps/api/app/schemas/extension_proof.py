@@ -20,6 +20,11 @@ ExtensionProofSessionStatus = Literal[
 
 class ExtensionProofSessionCreate(BaseModel):
     skill_evidence_id: str = Field(..., min_length=1)
+    # Explicit project context is the canonical path for a countable Website
+    # Proof. The route verifies ownership before the service persists the link.
+    # Older clients may omit it; those proofs remain vault-only/suggested and are
+    # never silently attached from skill-name overlap.
+    project_id: str | None = Field(default=None, min_length=1, max_length=128)
     parent_proof_session_id: str | None = None
     followup_target_skill: str | None = Field(default=None, max_length=200)
     followup_objective: str | None = Field(default=None, max_length=1000)
@@ -44,6 +49,17 @@ class ExtensionProofSessionResponse(BaseModel):
     id: str
     user_id: str
     skill_evidence_id: str
+    project_id: str | None = None
+    project_relationship_state: str = "vault_only"
+    website_url: str | None = None
+    github_url: str | None = None
+    claimed_skills: list[str] = Field(default_factory=list)
+    proof_objective: str | None = None
+    # Set only after the completed proof has crossed the shared canonical
+    # finalization boundary.  This is deliberately distinct from merely
+    # selecting a project while creating the recording session.
+    finalized_at: str | None = None
+    finalized_project_id: str | None = None
     status: ExtensionProofSessionStatus
     started_at: str | None = None
     proof_upload_id: str | None = None

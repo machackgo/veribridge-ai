@@ -41,11 +41,13 @@ try:
         describe_grade,
         docstring_and_comment_lines,
         focus_python_range,
+        focus_python_symbol,
         grade_evidence,
         is_strong_grade,
     )
 except Exception:  # pragma: no cover - standalone fallback
     focus_python_range = None  # type: ignore
+    focus_python_symbol = None  # type: ignore
     is_strong_grade = None  # type: ignore
     grade_evidence = None  # type: ignore
     classify_code_role = None  # type: ignore
@@ -107,6 +109,12 @@ class EvidenceCandidate:
     # Block-level PURPOSE of the focused window (finer than the role): what this
     # exact block appears to do, from a closed safe vocabulary. A label only.
     code_block_purpose_key: str | None = None
+    # Symbol identity of the containing function/method/class (AST-derived) and
+    # the ANALYZED context window when it differs from the cited target lines.
+    symbol_name: str | None = None
+    symbol_type: str | None = None
+    context_start_line: int | None = None
+    context_end_line: int | None = None
 
 
 @dataclass
@@ -644,9 +652,11 @@ def select_high_signal_ranges(
     # existing conservative heuristics below — only Python is AST-gated.)
     if is_python:
         try:
-            ast.parse(content)
+            parsed_tree = ast.parse(content)
         except (SyntaxError, ValueError):
             return []
+    else:
+        parsed_tree = None
 
     # Lines that are docstrings / bare string prose / comments must never become
     # high-signal anchors — a keyword sitting inside a module or function docstring
@@ -657,6 +667,17 @@ def select_high_signal_ranges(
             prose_lines = docstring_and_comment_lines(content)
         except Exception:  # pragma: no cover - defensive
             prose_lines = set()
+
+    # Lines inside ANY import statement — including every continuation line of a
+    # parenthesized multi-line ``from x import (…)`` — are dependency names, not
+    # implementation. Anchoring on ``accuracy_score,`` inside an import produced
+    # fragment windows that read as metric calls; import spans are excluded from
+    # anchoring outright.
+    if is_python and parsed_tree is not None:
+        for node in ast.walk(parsed_tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                end = getattr(node, "end_lineno", None) or node.lineno
+                prose_lines.update(range(node.lineno, end + 1))
 
     # Score each line
     anchor_lines: list[tuple[int, int, str]] = []
@@ -1292,9 +1313,16 @@ class PortfolioScanner:
         evidence_quality_grade: str | None = None
         code_role_key: str | None = None
         code_block_purpose_key: str | None = None
+        symbol_name: str | None = None
+        symbol_type: str | None = None
         if content is not None:
             window = content.splitlines()[line_start - 1 : line_end]
             code_snippet = "\n".join(window) or None
+            if file_path.lower().endswith(".py") and focus_python_symbol is not None:
+                try:
+                    symbol_name, symbol_type = focus_python_symbol(content, line_start)
+                except Exception:  # pragma: no cover - defensive
+                    symbol_name = symbol_type = None
             if grade_evidence is not None:
                 evidence_quality_grade = grade_evidence(
                     file_path=file_path,
@@ -1357,6 +1385,8 @@ class PortfolioScanner:
             focused_reason=detection_reason,
             code_role_key=code_role_key,
             code_block_purpose_key=code_block_purpose_key,
+            symbol_name=symbol_name,
+            symbol_type=symbol_type,
         )
 
 
@@ -1431,6 +1461,10 @@ def import_candidates(
                             focused_start_line=candidate.focused_start_line,
                             focused_end_line=candidate.focused_end_line,
                             focused_reason=candidate.focused_reason,
+                            symbol_name=candidate.symbol_name,
+                            symbol_type=candidate.symbol_type,
+                            context_start_line=candidate.context_start_line,
+                            context_end_line=candidate.context_end_line,
                         )
                         _stamp_server_provenance(
                             supabase_client, user_id, evidence_id, provenance
@@ -1498,6 +1532,10 @@ def import_candidates(
                     focused_start_line=candidate.focused_start_line,
                     focused_end_line=candidate.focused_end_line,
                     focused_reason=candidate.focused_reason,
+                    symbol_name=candidate.symbol_name,
+                    symbol_type=candidate.symbol_type,
+                    context_start_line=candidate.context_start_line,
+                    context_end_line=candidate.context_end_line,
                 )
                 _stamp_server_provenance(supabase_client, user_id, evidence.id, provenance)
 

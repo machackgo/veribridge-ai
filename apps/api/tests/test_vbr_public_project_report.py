@@ -248,6 +248,53 @@ def test_public_report_shows_safe_document_reference_only(
     assert "Final Year Project Report" in raw
 
 
+def test_public_report_never_exposes_original_document_access(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Even when the original document file IS retained (owner-only artifact),
+    the recruiter-safe public report exposes NO raw-document action: no
+    original_document descriptor on the document summaries, no document_original
+    descriptor on the evidence traces, no artifact id, and no gated
+    view/download route anywhere in the payload."""
+    from app.services import proof_artifact_service as artifacts
+
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "snippet": "trained a model", "page_number": 4}
+        ],
+    )
+    artifact = artifacts.register_artifact_with_bytes(
+        mem_store,
+        owner_user_id=USER_ID,
+        proof_type="document",
+        artifact_type="document_original",
+        data=b"docx-bytes",
+        file_name="VeriBridge-AI.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        proof_id=document_id,
+        access_policy="owner_only",
+    )
+    assert artifact is not None
+
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    token = _publish(client, created["project"]["id"]).json()["public_token"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, token).json()
+
+    for document in body.get("documents") or []:
+        assert not document.get("original_document")
+    for trace in body.get("evidence_traces") or []:
+        assert not trace.get("document_original")
+    raw = json.dumps(body)
+    assert artifact["id"] not in raw
+    assert "/artifacts/" not in raw
+    assert "VeriBridge-AI.docx" not in raw
+
+
 def test_invalid_token_returns_404(client: TestClient) -> None:
     assert _get_public(client, "definitely-not-a-real-token").status_code == 404
 
@@ -985,9 +1032,24 @@ def test_public_report_fail_closed_on_local_path_value(
     client: TestClient, mem_store: dict, monkeypatch
 ) -> None:
     """A local ``/Users/…`` path lurking in a non-scrubbed position fails closed."""
-    report = _minimal_report(documents=[{"title": "Doc", "local_path": "/Users/me/secret.pdf"}])
+    report = _minimal_report(
+        skill_evidence=[{"skill": "Python", "local_path": "/Users/me/secret.pdf"}]
+    )
     response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
     assert response.status_code == 404, response.text
+
+
+def test_public_report_document_projection_drops_unexpected_private_fields(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """The documents allowlist projection keeps ONLY title/source_type/status —
+    an unexpected private field (e.g. a stray local path) on a document summary
+    is stripped before the response, never served."""
+    report = _minimal_report(documents=[{"title": "Doc", "local_path": "/Users/me/secret.pdf"}])
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    assert "/Users/me/secret.pdf" not in response.text
+    assert "local_path" not in response.text
 
 
 def test_public_report_scrubs_email_in_free_text(

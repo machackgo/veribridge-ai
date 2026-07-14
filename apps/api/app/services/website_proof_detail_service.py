@@ -79,6 +79,62 @@ def _safe_steps(observed: dict[str, Any], demonstrated_actions: Any, domain: str
     return out
 
 
+def _format_offset(value: Any, *, milliseconds: bool = False) -> str | None:
+    try:
+        seconds = float(value) / (1000.0 if milliseconds else 1.0)
+    except (TypeError, ValueError):
+        return None
+    if seconds < 0 or seconds > 24 * 60 * 60:
+        return None
+    whole = int(seconds)
+    return f"{whole // 60:02d}:{whole % 60:02d}"
+
+
+def _safe_timeline(observed: dict[str, Any], domain: str) -> list[dict[str, str | None]]:
+    """Timestamped, bounded workflow events when the analyzer stored offsets.
+
+    No offset is estimated. A label-only step remains useful timeline context
+    with ``timestamp_label=None`` but cannot become a video-moment citation.
+    """
+    steps = observed.get("steps") if isinstance(observed, dict) else None
+    out: list[dict[str, str | None]] = []
+    seen: set[tuple[str | None, str]] = set()
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+        raw_label = step.get("label") or step.get("action") or step.get("description")
+        clean, quality = _sanitize_text_segments(str(raw_label or ""), domain)
+        clean = _truncate(clean, 160).strip()
+        if not clean or quality == "noisy":
+            continue
+        timestamp = None
+        for key in ("timestamp_label", "time_label"):
+            value = str(step.get(key) or "").strip()
+            if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", value):
+                timestamp = value
+                break
+        if timestamp is None:
+            for key in ("timestamp_ms", "offset_ms", "ts_ms"):
+                if step.get(key) is not None:
+                    timestamp = _format_offset(step.get(key), milliseconds=True)
+                    if timestamp:
+                        break
+        if timestamp is None:
+            for key in ("timestamp_s", "offset_s", "time_s"):
+                if step.get(key) is not None:
+                    timestamp = _format_offset(step.get(key))
+                    if timestamp:
+                        break
+        identity = (timestamp, clean.lower())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        out.append({"timestamp_label": timestamp, "description": clean})
+        if len(out) >= 10:
+            break
+    return out
+
+
 def _safe_ocr_summary(wf: dict[str, Any], domain: str) -> str | None:
     ocr = _coerce_dict(wf.get("frame_ocr_evidence_summary"))
     if not ocr.get("has_ocr_evidence"):
@@ -267,6 +323,43 @@ def _load_workflow(db: Any, user_id: str, proof_session_id: str) -> dict[str, An
         return None
 
 
+def _retained_artifacts(db: Any, user_id: str, proof_session_id: str) -> dict[str, Any]:
+    """Safe retained Website artifact descriptor for one owned proof.
+
+    Only inert artifact ids and owner-gated application routes leave this
+    function. Storage buckets/paths and signed URLs never do. Historical proofs
+    with no artifact row return an honest not-retained descriptor.
+    """
+    try:
+        from app.services import proof_artifact_service
+
+        rows = [
+            row
+            for row in proof_artifact_service.list_artifacts_for_proof(
+                db, proof_type="website", proof_id=proof_session_id
+            )
+            if str(row.get("owner_user_id") or "") == str(user_id)
+            and row.get("retained")
+        ]
+    except Exception:  # pragma: no cover - artifact hydration is additive
+        rows = []
+    replays = [r for r in rows if r.get("artifact_type") == "website_replay_video"]
+    frames = [r for r in rows if r.get("artifact_type") == "website_frame"]
+    replay = replays[-1] if replays else None
+    return {
+        "recording_available": replay is not None,
+        "availability": "retained" if replay is not None else "not_retained",
+        "artifact_id": str(replay.get("id")) if replay else None,
+        "replay_path": (
+            f"/api/v1/proofs/website/{proof_session_id}/replay" if replay else None
+        ),
+        "duration_seconds": replay.get("duration_seconds") if replay else None,
+        "mime_type": replay.get("mime_type") if replay else None,
+        "frame_count": len(frames),
+        "analysis_path": f"/student/proofs/website?session={proof_session_id}",
+    }
+
+
 def get_website_proof_detail(db: Any, user_id: str, proof_session_id: str) -> dict[str, Any] | None:
     """Return safe rich Website Proof summaries for one session, or ``None``.
 
@@ -300,15 +393,17 @@ def get_website_proof_detail(db: Any, user_id: str, proof_session_id: str) -> di
     # Date precision only — a full timestamp is provenance metadata the report
     # does not need.
     observed_at = str(wf.get("created_at") or "").strip()[:10] or None
+    observed = _coerce_dict(wf.get("observed_demonstration"))
 
     return {
         "workflow_summary": workflow_summary,
         "observed_at": observed_at,
         "workflow_steps": _safe_steps(
-            _coerce_dict(wf.get("observed_demonstration")),
+            observed,
             wf.get("demonstrated_actions"),
             domain,
         ),
+        "workflow_timeline": _safe_timeline(observed, domain),
         "dom_summary": _safe_dom_summary(wf, domain) if wf else None,
         "ocr_summary": _safe_ocr_summary(wf, domain) if wf else None,
         "visual_summary": _safe_visual_summary(wf, domain) if wf else None,
@@ -320,4 +415,5 @@ def get_website_proof_detail(db: Any, user_id: str, proof_session_id: str) -> di
         "page_context": _safe_page_context(wf) if wf else None,
         "extra_signals": _safe_extra_signals(wf, domain) if wf else [],
         "live_check": live,
+        "retained_artifacts": _retained_artifacts(db, user_id, str(proof_session_id)),
     }

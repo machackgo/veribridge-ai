@@ -47,6 +47,13 @@ class GitHubProofSubmissionResponse(BaseModel):
     last_analyzed_at: datetime | str | None = None
     created_at: datetime | str
     updated_at: datetime | str
+    # Canonical project relationship — a read-only projection of the SAME rows
+    # the Passport / report attachment index reads (normalized 058 rows plus the
+    # projects' legacy attached-proof metadata). Stays "vault_only" until the
+    # owner explicitly finalizes this proof against an owned project.
+    project_id: str | None = None
+    project_title: str | None = None
+    project_relationship_state: str = "vault_only"
 
 
 class GitHubProofPublicResponse(BaseModel):

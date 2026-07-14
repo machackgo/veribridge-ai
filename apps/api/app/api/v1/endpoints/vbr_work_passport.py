@@ -24,6 +24,11 @@ from app.schemas.proof_reanalysis import (
     ProofReanalysisRequestBody,
     ProofReanalysisResultResponse,
 )
+from app.schemas.canonical_evidence import (
+    ProofFinalizationResponse,
+    ProjectRelationshipConfirmRequest,
+    ProjectRelationshipDescriptor,
+)
 from app.schemas.vbr_student_report import SkillReportResponse
 from app.schemas.vbr_work_passport import (
     PassportPhotoResponse,
@@ -46,6 +51,14 @@ from app.services.proof_reanalysis_service import (
     reanalyze_student_proofs,
 )
 from app.services.student_proof_vault_service import collect_skill_report
+from app.services.canonical_evidence_service import (
+    CanonicalEvidenceConflictError,
+    CanonicalEvidenceNotFoundError,
+    CanonicalEvidencePersistenceError,
+    CanonicalEvidencePreconditionError,
+    confirm_project_relationship,
+    finalize_proof_evidence,
+)
 from app.services.vbr_work_passport_service import (
     build_private_passport,
     build_public_passport,
@@ -70,6 +83,101 @@ def get_private_passport_route(
     pipeline_db: Any = Depends(get_pipeline_db),
 ) -> PrivateWorkPassportResponse:
     return PrivateWorkPassportResponse(**build_private_passport(db, pipeline_db, user_id))
+
+
+@student_router.post(
+    "/passport/proof-relationships/confirm",
+    response_model=ProjectRelationshipDescriptor,
+    summary="Confirm an owned proof belongs to an owned project",
+)
+def confirm_proof_project_relationship_route(
+    body: ProjectRelationshipConfirmRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> ProjectRelationshipDescriptor:
+    try:
+        result = confirm_project_relationship(
+            db,
+            user_id=user_id,
+            proof_type=body.proof_type,
+            proof_id=body.proof_id,
+            project_id=body.project_id,
+        )
+    except CanonicalEvidenceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "proof_or_project_not_found", "message": "Proof or project not found."},
+        ) from exc
+    except CanonicalEvidenceConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "proof_relationship_conflict", "message": str(exc)},
+        ) from exc
+    except CanonicalEvidencePreconditionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "proof_relationship_precondition", "message": str(exc)},
+        ) from exc
+    except CanonicalEvidencePersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "proof_relationship_unavailable", "message": str(exc)},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "unsupported_proof_relationship", "message": str(exc)},
+        ) from exc
+    return ProjectRelationshipDescriptor(**result)
+
+
+@student_router.post(
+    "/passport/proofs/finalize",
+    response_model=ProofFinalizationResponse,
+    summary="Finalize an owned proof against an owned project",
+)
+def finalize_proof_route(
+    body: ProjectRelationshipConfirmRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> ProofFinalizationResponse:
+    """The single authenticated API boundary for canonical proof finalization."""
+    try:
+        result = finalize_proof_evidence(
+            db,
+            user_id=user_id,
+            proof_type=body.proof_type,
+            proof_id=body.proof_id,
+            project_id=body.project_id,
+            pipeline_db=pipeline_db,
+        )
+    except CanonicalEvidenceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "proof_or_project_not_found", "message": "Proof or project not found."},
+        ) from exc
+    except CanonicalEvidenceConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "proof_relationship_conflict", "message": str(exc)},
+        ) from exc
+    except CanonicalEvidencePreconditionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "proof_finalization_precondition", "message": str(exc)},
+        ) from exc
+    except CanonicalEvidencePersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "proof_finalization_unavailable", "message": str(exc)},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "unsupported_proof_type", "message": str(exc)},
+        ) from exc
+    return ProofFinalizationResponse(**result)
 
 
 @student_router.get(

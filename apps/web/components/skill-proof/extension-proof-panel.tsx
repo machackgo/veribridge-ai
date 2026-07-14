@@ -1,10 +1,10 @@
 "use client"
 
-import { useRouter } from "next/navigation"
 import React, { useEffect, useMemo, useReducer, useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   createExtensionProofSession,
+  listExtensionProofSessions,
   createSkillEvidence,
   getExtensionProofSession,
   getLiveWebsiteCheck,
@@ -53,19 +53,40 @@ import {
   type WebsiteEvidenceDiscoveryResponse,
   type DiscoveredEvidenceItem,
   type DiscoveredEvidenceType,
-  syncWebsiteProofToSkillGraph,
-  publishRecorderAuthToExtension,
+  initializeWebsiteProofRecorder,
+  openWebsiteProofTarget,
+  startWebsiteProofRecording,
+  recorderFailureMessage,
+  refreshWebsiteProofRecorderSessionAuth,
+  type RecorderHandshakeFailure,
 } from "@/lib/api"
+import {
+  finalizeWebsiteProof,
+  listVBRProjects,
+  type ProofFinalizationResult,
+  type VBRProjectResponse,
+} from "@/lib/vbr-api"
 import { VerificationReviewSection, type WebsiteProofReviewSnapshot } from "./verification-review-section"
 import { SequenceAnalysisPanel } from "./sequence-analysis-panel"
 import type {
   ObservedDemonstration,
   DemonstrationStep,
 } from "@/lib/api"
+import {
+  createWebsiteProofLifecycle,
+  websiteProofLifecycleReducer,
+  type WebsiteProofLifecycleEvent,
+} from "@/lib/website-proof-lifecycle"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type PanelStep = "form" | "session_active"
+export type WebsiteProofEntryState =
+  | "NEW"
+  | "ACTIVE"
+  | "COMPLETED"
+  | "SAVED"
+  | "FAILED_RETRYABLE"
 type OptionalDocumentUiStatus = "not_added" | "processing" | "analyzed" | "failed"
 type FinalSourceScore = { score: number | null; status: string; notes?: string }
 
@@ -88,6 +109,7 @@ const ACTIVE_EXTENSION_PROOF_SESSION_KEY = "vb_active_extension_proof_session"
 export type ActiveExtensionProofSessionDraft = {
   sessionId: string
   form: FormState
+  configRevision?: number
   savedAt: string
 }
 
@@ -105,6 +127,9 @@ function normalizeActiveExtensionProofDraft(value: unknown): ActiveExtensionProo
       skillName: typeof form.skillName === "string" ? form.skillName : "",
       proofObjective: typeof form.proofObjective === "string" ? form.proofObjective : "",
     },
+    configRevision: Number.isSafeInteger(candidate.configRevision) && Number(candidate.configRevision) >= 0
+      ? Number(candidate.configRevision)
+      : 0,
     savedAt: typeof candidate.savedAt === "string" ? candidate.savedAt : new Date().toISOString(),
   }
 }
@@ -131,11 +156,39 @@ export function hasActiveExtensionProofSession(): boolean {
   return loadActiveExtensionProofSession() !== null
 }
 
-export function clearActiveExtensionProofSession(): void {
+export function clearActiveExtensionProofSession(sessionId?: string): void {
   try {
     if (typeof window === "undefined") return
+    if (sessionId) {
+      const active = loadActiveExtensionProofSession()
+      if (!active || active.sessionId !== sessionId) return
+    }
     localStorage.removeItem(ACTIVE_EXTENSION_PROOF_SESSION_KEY)
   } catch { /* localStorage unavailable */ }
+}
+
+const RESUMABLE_EXTENSION_PROOF_STATUSES: ReadonlySet<ExtensionProofSessionStatus> = new Set([
+  "created",
+  "waiting_for_extension",
+  "recording",
+  "uploaded_pending_analysis",
+  "analyzing",
+])
+
+export function isResumableExtensionProofSession(
+  session: Pick<ExtensionProofSessionResponse, "status">,
+): boolean {
+  return RESUMABLE_EXTENSION_PROOF_STATUSES.has(session.status)
+}
+
+export function websiteProofEntryState(
+  session: ExtensionProofSessionResponse | null,
+): WebsiteProofEntryState {
+  if (!session) return "NEW"
+  if (isResumableExtensionProofSession(session)) return "ACTIVE"
+  if (session.status === "completed" && session.finalized_at) return "SAVED"
+  if (session.status === "completed") return "COMPLETED"
+  return "FAILED_RETRYABLE"
 }
 
 export type UrlType =
@@ -7183,28 +7236,46 @@ function EvidenceDiscoveryResults({ discovery }: { discovery: WebsiteEvidenceDis
 export function ExtensionProofPanel({
   onBack,
   onSessionComplete,
+  requestedSessionId = null,
+  historyMode = false,
 }: {
   onBack: () => void
   onSessionComplete?: () => void
+  requestedSessionId?: string | null
+  historyMode?: boolean
 }) {
-  const router = useRouter()
   const [step, setStep]                 = useState<PanelStep>("form")
   const [form, setForm]                 = useState<FormState>(initialWebsiteProofForm)
+  const [availableProjects, setAvailableProjects] = useState<VBRProjectResponse[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState("")
+  const [projectLoadError, setProjectLoadError] = useState<string | null>(null)
+  const [historySessions, setHistorySessions] = useState<ExtensionProofSessionResponse[] | null>(null)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [resumeCandidate, setResumeCandidate] = useState<{
+    session: ExtensionProofSessionResponse
+    draft: ActiveExtensionProofSessionDraft
+  } | null>(null)
   const [session, setSession]           = useState<ExtensionProofSessionResponse | null>(null)
   const [error, setError]               = useState<string | null>(null)
   const [creating, setCreating]         = useState(false)
   const [starting, setStarting]         = useState(false)
+  const [recorderLifecycle, dispatchRecorderLifecycle] = useReducer(
+    websiteProofLifecycleReducer,
+    undefined,
+    createWebsiteProofLifecycle,
+  )
+  const [recorderConfigRevision, setRecorderConfigRevision] = useState(0)
+  const [recorderReady, setRecorderReady] = useState(false)
+  const [recorderDiagnosticCode, setRecorderDiagnosticCode] = useState<string | null>(null)
   const [pollingActive, setPoll]        = useState(false)
   const [extensionUploadState, setExtensionUploadState] = useState<ExtensionUploadBridgeState | null>(null)
   const [workflowAnalysis, setWorkflowAnalysis] = useState<WorkflowAnalysisResponse | null>(null)
   const [analyzing, setAnalyzing]       = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
   const [analyzeTimedOut, setAnalyzeTimedOut] = useState(false)
-  const [profileSyncState, setProfileSyncState] = useState<"idle" | "syncing" | "error">("idle")
-  const [profileSyncError, setProfileSyncError] = useState<string | null>(null)
-  const [pendingCompletedAction, setPendingCompletedAction] = useState<
-    "new-website" | "proof-studio" | "dashboard" | null
-  >(null)
+  const [saveState, setSaveState] = useState<"not_saved" | "saving" | "saved" | "already_saved" | "error">("not_saved")
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [saveResult, setSaveResult] = useState<ProofFinalizationResult | null>(null)
   const [websiteProofProgressLifecycle, dispatchWebsiteProofProgress] = useReducer(
     websiteProofProgressReducer,
     "idle" as WebsiteProofProgressLifecycle,
@@ -7213,6 +7284,7 @@ export function ExtensionProofPanel({
   const [websiteProofProgressLastEvent, setWebsiteProofProgressLastEvent] = useState("init")
   const workflowProgressLifecycleStartedAtRef = useRef(Date.now())
   const previousWorkflowProgressLifecycleRef = useRef<WebsiteProofProgressLifecycle>("idle")
+  const explicitSessionIdRef = useRef<string | null>(null)
 
   function transitionWebsiteProofProgress(event: WebsiteProofProgressEvent): void {
     if (
@@ -7225,6 +7297,48 @@ export function ExtensionProofPanel({
     dispatchWebsiteProofProgress(event)
   }
 
+  function transitionRecorderLifecycle(event: WebsiteProofLifecycleEvent, errorCode?: string | null): void {
+    dispatchRecorderLifecycle({ event, error_code: errorCode })
+  }
+
+  // Load the student's owned projects once. Choosing one creates the strongest,
+  // explicit proof→project edge; leaving it blank deliberately creates a
+  // vault-only proof that reports cannot count until attached later.
+  useEffect(() => {
+    let cancelled = false
+    void listVBRProjects()
+      .then((projects) => {
+        if (cancelled) return
+        setAvailableProjects(projects)
+        const requested = new URL(window.location.href).searchParams.get("project")
+        if (requested && projects.some((p) => p.id === requested)) {
+          setSelectedProjectId(requested)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setProjectLoadError("Projects could not be loaded. This proof will remain vault-only unless you attach it later.")
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    if (!historyMode) return
+    let cancelled = false
+    setHistorySessions(null)
+    setHistoryError(null)
+    void listExtensionProofSessions()
+      .then((sessions) => {
+        if (!cancelled) setHistorySessions(sessions)
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setHistoryError(err instanceof Error ? err.message : "Previous Website Proofs could not be loaded.")
+          setHistorySessions([])
+        }
+      })
+    return () => { cancelled = true }
+  }, [historyMode])
+
   // Follow-up recording intent (from sessionStorage, set by Record Follow-up button)
   const [followupIntent, setFollowupIntent] = useState<{
     parentSessionId: string
@@ -7233,14 +7347,19 @@ export function ExtensionProofPanel({
   } | null>(null)
   const followUpMode = followupIntent !== null
 
-  function resetWebsiteProofForm() {
-    clearActiveExtensionProofSession()
+  function resetWebsiteProofForm({ clearDraft = true }: { clearDraft?: boolean } = {}) {
+    if (clearDraft) clearActiveExtensionProofSession()
     setForm(initialWebsiteProofForm)
+    setSelectedProjectId("")
     setStep("form")
     setSession(null)
     setError(null)
     setCreating(false)
     setStarting(false)
+    transitionRecorderLifecycle("RESET")
+    setRecorderConfigRevision(0)
+    setRecorderReady(false)
+    setRecorderDiagnosticCode(null)
     setPoll(false)
     setExtensionUploadState(null)
     setWorkflowAnalysis(null)
@@ -7265,13 +7384,18 @@ export function ExtensionProofPanel({
     setDiscovery(null)
     setDiscovering(false)
     setDiscoveryError(null)
+    setResumeCandidate(null)
+    setSaveState("not_saved")
+    setSaveError(null)
+    setSaveResult(null)
   }
 
   function resetAndBack() {
-    resetWebsiteProofForm()
+    // Navigating away is not an abandonment action. Keep an unfinished draft
+    // available for the explicit Resume choice on the next landing visit.
+    resetWebsiteProofForm({ clearDraft: false })
     setFollowupIntent(null)
     clearFollowUpProofDraft()
-    setPendingCompletedAction(null)
     onBack()
   }
 
@@ -7283,71 +7407,61 @@ export function ExtensionProofPanel({
     clearFollowUpProofDraft()
   }
 
-  // Sync the completed proof session into the profile/Skill Graph before
-  // leaving the flow. Non-blocking: if the sync fails, the user can retry
-  // or continue without saving rather than getting stuck on this screen.
-  async function handleDone() {
-    if (!session || session.status !== "completed") {
-      resetAndBack()
-      return
+  function handleResumeCandidate() {
+    if (!resumeCandidate) return
+    const restored = resumeCandidate.session
+    setForm({ ...initialWebsiteProofForm, ...resumeCandidate.draft.form })
+    setSession(restored)
+    setRecorderConfigRevision(resumeCandidate.draft.configRevision ?? 0)
+    setRecorderReady(false)
+    if (restored.project_id) setSelectedProjectId(restored.project_id)
+    setStep("session_active")
+    setResumeCandidate(null)
+    if (restored.status === "recording") {
+      transitionRecorderLifecycle("RESTORE_RECORDING")
+      transitionWebsiteProofProgress({ type: "recording_started" })
+    } else if (restored.status === "uploaded_pending_analysis") {
+      transitionRecorderLifecycle("RESTORE_PROCESSING")
+      transitionWebsiteProofProgress({ type: "upload_succeeded" })
+    } else if (restored.status === "analyzing") {
+      transitionRecorderLifecycle("RESTORE_PROCESSING")
+      transitionWebsiteProofProgress({ type: "analysis_request_started" })
+    } else {
+      transitionRecorderLifecycle("RESTORE_CREATED")
     }
-    const sessionId = session.id
-    // Clear the persisted session up front so a failed sync can't leave this
-    // completed session to be restored on the next visit to the page.
-    clearActiveExtensionProofSession()
-    setProfileSyncState("syncing")
-    setProfileSyncError(null)
-    try {
-      await syncWebsiteProofToSkillGraph(sessionId)
-      setProfileSyncState("idle")
-      resetWebsiteProofForm()
-      setFollowupIntent(null)
-      clearFollowUpProofDraft()
-      router.push("/dashboard/profile")
-    } catch (err) {
-      setProfileSyncState("error")
-      setProfileSyncError(err instanceof Error ? err.message : "Could not save this proof to your profile.")
-    }
+    if (POLLING_STATUSES.includes(restored.status)) setPoll(true)
   }
 
-  // Shared by every "What's next?" exit on a completed session, so leaving
-  // the flow or starting another proof can never bypass the Skill Graph
-  // sync for the proof that was just completed.
-  async function handleCompleteAndThen(next: "new-website" | "proof-studio" | "dashboard") {
-    if (!session || session.status !== "completed") {
-      if (next === "new-website") {
-        handleStartNew()
-      } else if (next === "proof-studio") {
-        resetAndBack()
-      } else {
-        router.push("/dashboard/profile")
-      }
+  async function handleSaveProof() {
+    if (!session || session.status !== "completed") return
+    if (!selectedProjectId) {
+      setSaveState("error")
+      setSaveError("Select the project this Website Proof belongs to before saving.")
       return
     }
-    const sessionId = session.id
-    setPendingCompletedAction(next)
-    // Clear the persisted session up front so a failed sync can't leave this
-    // completed session to be restored on the next visit to the page.
-    clearActiveExtensionProofSession()
-    setProfileSyncState("syncing")
-    setProfileSyncError(null)
+    setSaveState("saving")
+    setSaveError(null)
+    transitionRecorderLifecycle("SAVE_REQUESTED")
     try {
-      await syncWebsiteProofToSkillGraph(sessionId)
-      setProfileSyncState("idle")
-      resetWebsiteProofForm()
-      setFollowupIntent(null)
-      clearFollowUpProofDraft()
-      setPendingCompletedAction(null)
-      if (next === "proof-studio") {
-        onBack()
-      } else if (next === "dashboard") {
-        router.push("/dashboard/profile")
-      }
-      // "new-website": resetWebsiteProofForm() already leaves a blank form
-      // on this page, so there's nothing further to navigate to.
+      const result = await finalizeWebsiteProof({
+        proof_id: session.id,
+        project_id: selectedProjectId,
+      })
+      setSaveResult(result)
+      setSaveState(result.already_finalized ? "already_saved" : "saved")
+      transitionRecorderLifecycle("SAVE_COMPLETED")
+      setSession((current) => current ? {
+        ...current,
+        project_id: result.project_id,
+        project_relationship_state: result.project_relationship.state,
+        finalized_at: result.finalized_at ?? current.finalized_at ?? new Date().toISOString(),
+        finalized_project_id: result.project_id,
+      } : current)
+      clearActiveExtensionProofSession(session.id)
     } catch (err) {
-      setProfileSyncState("error")
-      setProfileSyncError(err instanceof Error ? err.message : "Could not save this proof to your profile.")
+      transitionRecorderLifecycle("RETRYABLE_FAILURE", "finalization_failed")
+      setSaveState("error")
+      setSaveError(err instanceof Error ? err.message : "This Website Proof could not be saved safely.")
     }
   }
 
@@ -7411,27 +7525,83 @@ export function ExtensionProofPanel({
   const local = isLocal(urlType)
 
   useEffect(() => {
-    if (followUpMode) return
+    if (followUpMode || historyMode) return
     try {
       if (sessionStorage.getItem(FOLLOWUP_INTENT_KEY_FE)) return
     } catch { /* sessionStorage unavailable */ }
-    const draft = loadActiveExtensionProofSession()
-    if (!draft) return
     let cancelled = false
-    setForm({ ...initialWebsiteProofForm, ...draft.form })
+
+    if (!requestedSessionId) {
+      // The bare landing route is always NEW.  A stored unfinished session is
+      // offered as a choice below; it never replaces the blank form.
+      if (explicitSessionIdRef.current) {
+        resetWebsiteProofForm({ clearDraft: false })
+        explicitSessionIdRef.current = null
+      } else {
+        setStep("form")
+        setSession(null)
+        setResumeCandidate(null)
+        setError(null)
+      }
+      const draft = loadActiveExtensionProofSession()
+      if (!draft) {
+        return () => { cancelled = true }
+      }
+      void getExtensionProofSession(draft.sessionId)
+        .then((restored) => {
+          if (cancelled) return
+          if (isResumableExtensionProofSession(restored)) {
+            setResumeCandidate({ session: restored, draft })
+          } else {
+            // Completed/expired records remain in backend history; only the
+            // stale "active" pointer is removed.
+            clearActiveExtensionProofSession(restored.id)
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            clearActiveExtensionProofSession(draft.sessionId)
+          }
+        })
+      return () => { cancelled = true }
+    }
+
+    explicitSessionIdRef.current = requestedSessionId
+    setResumeCandidate(null)
+    setError(null)
     setStep("session_active")
-    void getExtensionProofSession(draft.sessionId)
+    void getExtensionProofSession(requestedSessionId)
       .then((restored) => {
         if (cancelled) return
         setSession(restored)
-        if (restored.status === "recording") {
+        const activeDraft = loadActiveExtensionProofSession()
+        if (activeDraft?.sessionId === restored.id) {
+          setRecorderConfigRevision(activeDraft.configRevision ?? 0)
+        }
+        if (restored.project_id) setSelectedProjectId(restored.project_id)
+        setForm({
+          websiteUrl: restored.website_url ?? "",
+          githubUrl: restored.github_url ?? "",
+          skillName: (restored.claimed_skills ?? []).join(", "),
+          proofObjective: restored.proof_objective ?? "",
+        })
+        setSaveState(restored.finalized_at ? "already_saved" : "not_saved")
+        if (restored.finalized_at) {
+          transitionRecorderLifecycle("RESTORE_SAVED")
+        } else if (restored.status === "recording") {
+          transitionRecorderLifecycle("RESTORE_RECORDING")
           transitionWebsiteProofProgress({ type: "recording_started" })
         } else if (restored.status === "uploaded_pending_analysis") {
+          transitionRecorderLifecycle("RESTORE_PROCESSING")
           transitionWebsiteProofProgress({ type: "upload_succeeded" })
         } else if (restored.status === "analyzing") {
+          transitionRecorderLifecycle("RESTORE_PROCESSING")
           transitionWebsiteProofProgress({ type: "analysis_request_started" })
         } else if (restored.status === "completed") {
+          transitionRecorderLifecycle("RESTORE_ANALYSIS_COMPLETE")
           transitionWebsiteProofProgress({ type: "workflow_report_exists" })
+        } else {
+          transitionRecorderLifecycle("RESTORE_CREATED")
         }
         if (POLLING_STATUSES.includes(restored.status)) {
           setPoll(true)
@@ -7439,19 +7609,24 @@ export function ExtensionProofPanel({
       })
       .catch(() => {
         if (!cancelled) {
-          clearActiveExtensionProofSession()
           setSession(null)
           setStep("form")
+          setError("This Website Proof was not found or is not available to this account.")
         }
       })
     return () => { cancelled = true }
-  }, [followUpMode])
+  }, [followUpMode, historyMode, requestedSessionId])
 
   useEffect(() => {
     if (!session) return
+    if (!isResumableExtensionProofSession(session)) {
+      clearActiveExtensionProofSession(session.id)
+      return
+    }
     saveActiveExtensionProofSession({
       sessionId: session.id,
       form,
+      configRevision: recorderConfigRevision,
       savedAt: new Date().toISOString(),
     })
   }, [
@@ -7461,6 +7636,7 @@ export function ExtensionProofPanel({
     form.githubUrl,
     form.skillName,
     form.proofObjective,
+    recorderConfigRevision,
   ])
 
   useEffect(() => {
@@ -7493,6 +7669,7 @@ export function ExtensionProofPanel({
           isRecording: payload.isRecording,
         })
         transitionWebsiteProofProgress({ type: "upload_started" })
+        transitionRecorderLifecycle("UPLOAD_STARTED")
         return
       }
       if (data.type !== "VERIBRIDGE_EXTENSION_STATE") return
@@ -7509,33 +7686,37 @@ export function ExtensionProofPanel({
           console.info("[WebsiteProofProgress] upload started event received")
         }
         transitionWebsiteProofProgress({ type: "upload_started" })
+        transitionRecorderLifecycle("UPLOAD_STARTED")
+      } else if (payload.status === "stopped") {
+        transitionRecorderLifecycle("STOP_REQUESTED")
       } else if (payload.status === "uploaded") {
         if (process.env.NODE_ENV === "development") {
           console.info("[WebsiteProofProgress] upload success event received")
         }
         transitionWebsiteProofProgress({ type: "upload_succeeded" })
+        transitionRecorderLifecycle("UPLOAD_ACCEPTED")
       } else if (payload.status === "upload_failed") {
         transitionWebsiteProofProgress({ type: "upload_failed" })
+        transitionRecorderLifecycle("RETRYABLE_FAILURE", "evidence_upload_failed")
       }
     }
     window.addEventListener("message", handleExtensionStateMessage)
     return () => window.removeEventListener("message", handleExtensionStateMessage)
   }, [session?.id])
 
-  // Hand the signed-in user's Supabase access token to the recorder extension
-  // while this panel is open. The extension records on the external target site
-  // and uploads directly to the backend with Authorization: Bearer — it cannot
-  // read the app's Supabase session itself, so without this it would upload
-  // anonymously and hit the backend's fail-closed 401 ("Provide a Bearer
-  // token"). Delivered same-origin only (never to the target site) and refreshed
-  // on an interval so a longer recording keeps a non-expired token.
+  // Auth renewal is always bound to the exact acknowledged session + revision.
+  // It can replace the expiring credential but cannot reset metadata, API base,
+  // lifecycle state, or whichever fresh session is authoritative.
   useEffect(() => {
-    void publishRecorderAuthToExtension()
+    if (!session?.id || recorderConfigRevision < 1) return
+    const refresh = () => {
+      void refreshWebsiteProofRecorderSessionAuth(session.id, recorderConfigRevision)
+    }
     const intervalId = window.setInterval(() => {
-      void publishRecorderAuthToExtension()
+      refresh()
     }, 45_000)
     return () => window.clearInterval(intervalId)
-  }, [])
+  }, [session?.id, recorderConfigRevision])
 
   useEffect(() => {
     if (!session) return
@@ -7715,6 +7896,8 @@ export function ExtensionProofPanel({
         const updated = await getExtensionProofSession(session.id)
         setSession(updated)
         if (updated.status === "completed") {
+          transitionRecorderLifecycle("ANALYSIS_COMPLETED")
+          transitionRecorderLifecycle("SAVE_READY")
           setPoll(false)
           onSessionComplete?.()
         } else if (updated.status === "expired") {
@@ -7922,6 +8105,8 @@ export function ExtensionProofPanel({
       analyzeTimeoutRef.current = null
       setWorkflowAnalysis(result)
       transitionWebsiteProofProgress({ type: "workflow_report_exists" })
+      transitionRecorderLifecycle("ANALYSIS_COMPLETED")
+      transitionRecorderLifecycle("SAVE_READY")
       setPoll(false)
       const updated = await getExtensionProofSession(session.id)
       if (!cancelled) setSession(updated)
@@ -8083,6 +8268,7 @@ export function ExtensionProofPanel({
     }
 
     setCreating(true)
+    transitionRecorderLifecycle("CREATE_REQUESTED")
     try {
       const evidence = await createSkillEvidence({
         skill_name:           form.skillName.trim(),
@@ -8098,6 +8284,7 @@ export function ExtensionProofPanel({
       })
       const intentForCreate = followupIntent
       const sess = await createExtensionProofSession(evidence.id, {
+        project_id: selectedProjectId || undefined,
         ...(intentForCreate ? {
           parent_proof_session_id: intentForCreate.parentSessionId || undefined,
           followup_target_skill:   intentForCreate.skill || undefined,
@@ -8112,14 +8299,20 @@ export function ExtensionProofPanel({
       setFollowupIntent(null)
       clearFollowUpProofDraft()
       setSession(sess)
+      setRecorderConfigRevision(0)
+      setRecorderReady(false)
+      setRecorderDiagnosticCode(null)
+      transitionRecorderLifecycle("SESSION_CREATED")
       transitionWebsiteProofProgress({ type: "session_created" })
       setStep("session_active")
       saveActiveExtensionProofSession({
         sessionId: sess.id,
         form,
+        configRevision: 0,
         savedAt: new Date().toISOString(),
       })
     } catch (err) {
+      transitionRecorderLifecycle("RETRYABLE_FAILURE", "session_creation_failed")
       setError(err instanceof Error ? err.message : "Failed to create proof session.")
     } finally {
       setCreating(false)
@@ -8150,41 +8343,150 @@ export function ExtensionProofPanel({
     if (!session) return
     setStarting(true)
     setError(null)
+    setRecorderReady(false)
+    setRecorderDiagnosticCode(null)
     try {
+      if (recorderLifecycle.state === "FAILED_RETRYABLE") {
+        transitionRecorderLifecycle("RETRY_INITIALIZATION")
+      } else if (recorderLifecycle.state === "NEW") {
+        transitionRecorderLifecycle("RESTORE_CREATED")
+      }
+      transitionRecorderLifecycle("INITIALIZATION_REQUESTED")
+      const nextRevision = recorderConfigRevision + 1
+      setRecorderConfigRevision(nextRevision)
+      saveActiveExtensionProofSession({
+        sessionId: session.id,
+        form,
+        configRevision: nextRevision,
+        savedAt: new Date().toISOString(),
+      })
+
+      const initialized = await initializeWebsiteProofRecorder({
+        config_revision: nextRevision,
+        session_id: session.id,
+        owner_user_id: session.user_id,
+        project_id: selectedProjectId || session.project_id || null,
+        website_url: form.websiteUrl.trim(),
+        repository_url: form.githubUrl.trim() || null,
+        claimed_skills: parseSkills(),
+        proof_objective: form.proofObjective.trim(),
+        created_at: session.created_at,
+      })
+      if (!initialized.ok) {
+        transitionRecorderLifecycle("RETRYABLE_FAILURE", initialized.error_code)
+        setRecorderDiagnosticCode(initialized.diagnostic_code)
+        setError(recorderFailureMessage(initialized))
+        return
+      }
+      transitionRecorderLifecycle("EXTENSION_ACKNOWLEDGED")
+
+      transitionRecorderLifecycle("TARGET_OPEN_REQUESTED")
+      const targetResult = await openWebsiteProofTarget(initialized.config)
+      if ("ok" in targetResult && targetResult.ok === false) {
+        const targetFailure = targetResult as RecorderHandshakeFailure
+        transitionRecorderLifecycle("RETRYABLE_FAILURE", targetFailure.error_code)
+        setRecorderDiagnosticCode(targetFailure.diagnostic_code)
+        setError(recorderFailureMessage(targetFailure))
+        return
+      }
+      transitionRecorderLifecycle("TARGET_ACKNOWLEDGED")
+      setRecorderReady(true)
+
+      // Capture starts only after the exact target attachment ACK. The
+      // extension's start ACK is also matched before the backend enters its
+      // idempotent recording state.
+      const recorderStarted = await startWebsiteProofRecording(initialized.config)
+      if ("ok" in recorderStarted && recorderStarted.ok === false) {
+        const startFailure = recorderStarted as RecorderHandshakeFailure
+        transitionRecorderLifecycle("RETRYABLE_FAILURE", startFailure.error_code)
+        setRecorderDiagnosticCode(startFailure.diagnostic_code)
+        setError(recorderFailureMessage(startFailure))
+        return
+      }
       const updated = await startExtensionProofSession(session.id)
       setSession(updated)
+      transitionRecorderLifecycle("RECORDING_STARTED")
       transitionWebsiteProofProgress({ type: "recording_started" })
-
-      // Refresh the recorder extension's token immediately before opening the
-      // target site so its uploads for this session carry a current Bearer.
-      await publishRecorderAuthToExtension()
-
-      const targetUrl = form.websiteUrl.trim()
-      const targetWindowFeatures = local ? undefined : "noopener,noreferrer"
-      try {
-        const url = new URL(targetUrl)
-        url.searchParams.set("veribridge_session_id", session.id)
-        if (targetWindowFeatures) {
-          window.open(url.toString(), "_blank", targetWindowFeatures)
-        } else {
-          window.open(url.toString(), "_blank")
-        }
-      } catch {
-        const sep = targetUrl.includes("?") ? "&" : "?"
-        const url = `${targetUrl}${sep}veribridge_session_id=${encodeURIComponent(session.id)}`
-        if (targetWindowFeatures) {
-          window.open(url, "_blank", targetWindowFeatures)
-        } else {
-          window.open(url, "_blank")
-        }
-      }
-
       setPoll(true)
     } catch (err) {
+      transitionRecorderLifecycle("RETRYABLE_FAILURE", "recorder_start_failed")
       setError(err instanceof Error ? err.message : "Failed to start proof session.")
     } finally {
       setStarting(false)
     }
+  }
+
+  // ── Render: owned history ────────────────────────────────────────────────
+
+  if (historyMode) {
+    const projectTitle = (projectId?: string | null) =>
+      availableProjects.find((project) => project.id === projectId)?.title ??
+      (projectId ? "Linked project" : "Proof Vault only")
+
+    return (
+      <div data-testid="website-proof-history" style={{ display: "grid", gap: 16 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18, color: "var(--ink)" }}>Previous Website Proofs</h2>
+          <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6 }}>
+            Open a specific proof to review its replay, analysis, privacy result, checklist, and saved status.
+          </p>
+        </div>
+
+        {historyError && (
+          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "10px 12px", fontSize: 12 }}>
+            {historyError}
+          </div>
+        )}
+
+        {historySessions === null ? (
+          <p style={{ fontSize: 13, color: "var(--muted)" }}>Loading previous Website Proofs…</p>
+        ) : historySessions.length === 0 ? (
+          <div style={{ border: "1px solid var(--line)", borderRadius: 12, padding: 16, color: "var(--ink-2)", fontSize: 13 }}>
+            No Website Proof sessions yet.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {historySessions.map((item) => (
+              <div
+                key={item.id}
+                data-testid="website-proof-history-row"
+                data-session-id={item.id}
+                style={{ border: "1px solid var(--line)", borderRadius: 12, padding: "13px 14px", display: "grid", gap: 8 }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)", overflowWrap: "anywhere" }}>
+                    {item.website_url || "Website URL unavailable"}
+                  </div>
+                  <StatusBadge status={item.status} />
+                </div>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11, color: "var(--muted)" }}>
+                  <span>{item.created_at ? new Date(item.created_at).toLocaleString() : "Date unavailable"}</span>
+                  <span>Project: {projectTitle(item.project_id)}</span>
+                  {item.finalized_at && <span style={{ color: "#166534", fontWeight: 700 }}>Saved</span>}
+                </div>
+                <div>
+                  <a
+                    href={`/student/proofs/website?session=${encodeURIComponent(item.id)}`}
+                    style={{ display: "inline-flex", border: "1px solid var(--line-2)", borderRadius: 8, padding: "7px 11px", color: "var(--ink)", textDecoration: "none", fontSize: 12, fontWeight: 700 }}
+                  >
+                    Open proof
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div>
+          <a
+            href="/student/proofs/website"
+            style={{ display: "inline-flex", border: "1px solid var(--line-2)", borderRadius: 9, padding: "8px 13px", color: "var(--ink-2)", textDecoration: "none", fontSize: 13, fontWeight: 600 }}
+          >
+            ← Create a new Website Proof
+          </a>
+        </div>
+      </div>
+    )
   }
 
   // ── Render: form ─────────────────────────────────────────────────────────
@@ -8193,7 +8495,34 @@ export function ExtensionProofPanel({
     const showLocalWarning = form.websiteUrl.trim() !== "" && local
 
     return (
-      <div style={{ display: "grid", gap: 18 }}>
+      <div data-entry-state="NEW" style={{ display: "grid", gap: 18 }}>
+        {resumeCandidate && (
+          <div data-testid="unfinished-website-proof" style={{ border: "1px solid #fcd34d", borderRadius: 12, background: "#fffbeb", padding: "13px 14px", display: "grid", gap: 9 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#92400e" }}>You have an unfinished Website Proof.</div>
+              <p style={{ margin: "4px 0 0", fontSize: 12, color: "#78350f", lineHeight: 1.55, overflowWrap: "anywhere" }}>
+                {resumeCandidate.session.website_url || resumeCandidate.draft.form.websiteUrl || "Website URL unavailable"}
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={handleResumeCandidate}
+                style={{ border: "1px solid #d97706", background: "#d97706", color: "#fff", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                onClick={handleStartNew}
+                style={{ border: "1px solid #d97706", background: "transparent", color: "#92400e", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+              >
+                Start new proof
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Follow-up intent banner */}
         {followUpMode && followupIntent && (
           <div style={{ border: "1px solid #c4b5fd", borderRadius: 12, background: "#f5f3ff", padding: "12px 14px" }}>
@@ -8255,6 +8584,29 @@ export function ExtensionProofPanel({
         )}
 
         <div style={{ display: "grid", gap: 12 }}>
+          {/* Explicit project relationship — canonical evidence architecture. */}
+          <div style={{ display: "grid", gap: 4 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
+              Project relationship
+            </label>
+            <select
+              data-testid="website-proof-project-select"
+              value={selectedProjectId}
+              onChange={(e) => setSelectedProjectId(e.target.value)}
+              style={inp}
+              disabled={creating}
+            >
+              <option value="">Proof Vault only — do not count in project reports</option>
+              {availableProjects.map((project) => (
+                <option key={project.id} value={project.id}>{project.title}</option>
+              ))}
+            </select>
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>
+              Select the project this recording demonstrates. This explicit link is required before the proof can support that project or its skills.
+            </span>
+            {projectLoadError && <span role="note" style={{ fontSize: 11, color: "#92400e" }}>{projectLoadError}</span>}
+          </div>
+
           {/* Website URL */}
           <div style={{ display: "grid", gap: 4 }}>
             <label style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
@@ -8375,15 +8727,23 @@ export function ExtensionProofPanel({
         )}
 
         {/* Footer */}
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-          <button
-            type="button"
-            onClick={resetAndBack}
-            disabled={creating}
-            style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: creating ? "not-allowed" : "pointer" }}
-          >
-            ← Back to AI Proof Builder
-          </button>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={resetAndBack}
+              disabled={creating}
+              style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: creating ? "not-allowed" : "pointer" }}
+            >
+              ← Back to AI Proof Builder
+            </button>
+            <a
+              href="/student/proofs/website?history=1"
+              style={{ display: "inline-flex", alignItems: "center", border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, textDecoration: "none" }}
+            >
+              View previous proofs
+            </a>
+          </div>
           <button
             type="button"
             onClick={() => void handleCreate()}
@@ -8403,11 +8763,7 @@ export function ExtensionProofPanel({
               cursor: creating || !privacyAcknowledged || form.skillName.length > SKILL_NAME_MAX ? "not-allowed" : "pointer",
             }}
           >
-            {creating
-              ? "Creating session…"
-              : local
-              ? "Create Local Workflow Proof Session"
-              : "Create Website Proof Session"}
+            {creating ? "Creating session…" : "Start proof"}
           </button>
         </div>
       </div>
@@ -8420,6 +8776,13 @@ export function ExtensionProofPanel({
     const hasStarted = (["recording", "uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status)
     const isCompleted = session.status === "completed"
     const isExpired   = session.status === "expired"
+    const entryState = websiteProofEntryState(session)
+    const isSaved = entryState === "SAVED" || saveState === "saved" || saveState === "already_saved"
+    const savedProjectId = saveResult?.project_id || session.finalized_project_id || session.project_id || selectedProjectId
+    const savedProjectTitle =
+      saveResult?.project_relationship.project_title ||
+      availableProjects.find((project) => project.id === savedProjectId)?.title ||
+      "Selected project"
     const workflowProgressOverridesRecordingUi = doesWorkflowProgressOverrideRecordingUi(websiteProofProgressLifecycle)
 
     const sectionTitle = local ? "Local Workflow Evidence" : "Website Workflow Evidence"
@@ -8436,7 +8799,7 @@ export function ExtensionProofPanel({
     ]
 
     return (
-      <div style={{ display: "grid", gap: 18 }}>
+      <div data-entry-state={entryState} style={{ display: "grid", gap: 18 }}>
         {/* Section title */}
         <div style={{ display: "grid", gap: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -8469,11 +8832,23 @@ export function ExtensionProofPanel({
                 </span>
               </div>
             ))}
+            <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+              <span style={{ fontSize: 11, color: "var(--muted)", minWidth: 70, flexShrink: 0 }}>Recorder</span>
+              <span style={{ fontSize: 12, color: recorderReady ? "#166534" : "var(--ink)", fontWeight: recorderReady ? 700 : 500 }}>
+                {recorderReady ? "Recorder ready" : recorderLifecycle.state.replaceAll("_", " ")}
+              </span>
+            </div>
           </div>
         </div>
 
         {/* Session stepper */}
         <SessionStepper status={session.status} />
+
+        {recorderReady && (
+          <div data-testid="website-proof-recorder-ready" role="status" style={{ border: "1px solid #86efac", background: "#f0fdf4", color: "#166534", borderRadius: 10, padding: "9px 12px", fontSize: 12, fontWeight: 700 }}>
+            Recorder ready — the target tab is attached to this session and you can begin recording.
+          </div>
+        )}
 
         {/* Live Proof Coach removed — live feedback runs locally in extension only */}
 
@@ -8511,7 +8886,7 @@ export function ExtensionProofPanel({
               fontFamily: "monospace",
             }}
           >
-            Progress lifecycle: {websiteProofProgressLifecycle}; Last event: {websiteProofProgressLastEvent}
+            Recorder lifecycle: {recorderLifecycle.state}; Recorder event: {recorderLifecycle.last_event}; Revision: {recorderConfigRevision}; Diagnostic: {recorderDiagnosticCode ?? "none"}; Progress lifecycle: {websiteProofProgressLifecycle}; Last event: {websiteProofProgressLastEvent}
           </div>
         )}
 
@@ -8826,31 +9201,6 @@ export function ExtensionProofPanel({
           </div>
         )}
 
-        {/* Profile sync failure — non-blocking, offers retry or skip */}
-        {profileSyncState === "error" && (
-          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 10, padding: "10px 14px", display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 12, color: "#991b1b" }}>
-              Couldn&apos;t save this proof to your profile{profileSyncError ? `: ${profileSyncError}` : "."} Your evidence is still saved — you can retry or continue without updating your profile.
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                type="button"
-                onClick={() => void (pendingCompletedAction ? handleCompleteAndThen(pendingCompletedAction) : handleDone())}
-                style={{ border: "1px solid #dc2626", background: "transparent", color: "#991b1b", borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
-              >
-                Retry
-              </button>
-              <button
-                type="button"
-                onClick={resetAndBack}
-                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
-              >
-                Continue without saving
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Actions */}
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           {!isCompleted && (
@@ -8864,68 +9214,146 @@ export function ExtensionProofPanel({
           )}
 
           {!hasStarted && !isExpired && (
-            <button
-              type="button"
-              onClick={() => void handleStart()}
-              disabled={starting}
-              style={{ border: "1px solid transparent", background: starting ? "var(--bg-2)" : "#065f46", color: starting ? "var(--muted)" : "#fff", borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: starting ? "not-allowed" : "pointer" }}
-            >
-              {starting ? "Opening…" : "▶  Start Proof Demo"}
-            </button>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {recorderLifecycle.state === "FAILED_RETRYABLE" && (
+                <button
+                  type="button"
+                  onClick={handleStartNew}
+                  disabled={starting}
+                  style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: starting ? "not-allowed" : "pointer" }}
+                >
+                  Start a new session
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleStart()}
+                disabled={starting}
+                style={{ border: "1px solid transparent", background: starting ? "var(--bg-2)" : "#065f46", color: starting ? "var(--muted)" : "#fff", borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: starting ? "not-allowed" : "pointer" }}
+              >
+                {starting ? "Initializing recorder…" : recorderLifecycle.state === "FAILED_RETRYABLE" ? "Retry recorder initialization" : "▶  Start Proof Demo"}
+              </button>
+            </div>
           )}
 
           {isExpired && (
-            <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button
                 type="button"
                 onClick={handleStartNew}
-                disabled={profileSyncState === "syncing"}
-                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "10px 20px", fontWeight: 600, fontSize: 14, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
+                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "10px 20px", fontWeight: 600, fontSize: 14, cursor: "pointer" }}
               >
                 Start new Website Proof
               </button>
-              <button
-                type="button"
-                onClick={() => void handleDone()}
-                disabled={profileSyncState === "syncing"}
-                style={{ border: "1px solid var(--ink)", background: profileSyncState === "syncing" ? "var(--bg-2)" : "var(--ink)", color: profileSyncState === "syncing" ? "var(--muted)" : "#fff", borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
+              <a
+                href="/student/proofs/website?history=1"
+                style={{ display: "inline-flex", alignItems: "center", border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "10px 20px", fontWeight: 600, fontSize: 14, textDecoration: "none" }}
               >
-                {profileSyncState === "syncing" ? "Saving to profile…" : "Done"}
-              </button>
+                View previous proofs
+              </a>
             </div>
           )}
         </div>
 
-        {/* What's next — shown once the proof is complete */}
-        {isCompleted && profileSyncState !== "error" && (
+        {isCompleted && (
           <div style={{ border: "1px solid var(--line)", borderRadius: 12, background: "var(--bg-2)", padding: "14px 16px", display: "grid", gap: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink)" }}>What&apos;s next?</div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button
                 type="button"
-                onClick={() => void handleCompleteAndThen("new-website")}
-                disabled={profileSyncState === "syncing"}
-                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
+                onClick={handleStartNew}
+                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
               >
-                {profileSyncState === "syncing" && pendingCompletedAction === "new-website" ? "Saving to profile…" : "Save & add another Website Proof"}
+                Start a new Website Proof
               </button>
               <button
                 type="button"
-                onClick={() => void handleCompleteAndThen("proof-studio")}
-                disabled={profileSyncState === "syncing"}
-                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
+                onClick={resetAndBack}
+                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
               >
-                {profileSyncState === "syncing" && pendingCompletedAction === "proof-studio" ? "Saving to profile…" : "Save & add another type of proof"}
+                Return to Proof Studio
               </button>
-              <button
-                type="button"
-                onClick={() => void handleCompleteAndThen("dashboard")}
-                disabled={profileSyncState === "syncing"}
-                style={{ border: "1px solid var(--ink)", background: profileSyncState === "syncing" ? "var(--bg-2)" : "var(--ink)", color: profileSyncState === "syncing" ? "var(--muted)" : "#fff", borderRadius: 10, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
+              <a
+                href="/student/proofs/website?history=1"
+                style={{ display: "inline-flex", alignItems: "center", border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 16px", fontWeight: 600, fontSize: 13, textDecoration: "none" }}
               >
-                {profileSyncState === "syncing" && pendingCompletedAction === "dashboard" ? "Saving to profile…" : "Finish & go to dashboard"}
-              </button>
+                View previous proofs
+              </a>
             </div>
+          </div>
+        )}
+
+        {/* Canonical finalization is intentionally the final result panel. */}
+        {isCompleted && (
+          <div data-testid="website-proof-finalization" style={{ border: `1px solid ${isSaved ? "#86efac" : "var(--line)"}`, borderRadius: 14, background: isSaved ? "#f0fdf4" : "var(--paper)", padding: "18px", display: "grid", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: isSaved ? "#166534" : "var(--ink)" }}>
+                {isSaved ? "Saved" : "Save this proof"}
+              </div>
+              <p style={{ margin: "5px 0 0", fontSize: 12, color: isSaved ? "#166534" : "var(--ink-2)", lineHeight: 1.6 }}>
+                Attach this completed Website Proof to a project so it appears in your Work Passport and reports.
+              </p>
+            </div>
+
+            {!isSaved && (
+              <div style={{ display: "grid", gap: 5 }}>
+                <label htmlFor="website-proof-save-project" style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
+                  Project
+                </label>
+                <select
+                  id="website-proof-save-project"
+                  data-testid="website-proof-save-project-select"
+                  value={selectedProjectId}
+                  onChange={(event) => {
+                    setSelectedProjectId(event.target.value)
+                    setSaveError(null)
+                    if (saveState === "error") setSaveState("not_saved")
+                  }}
+                  disabled={saveState === "saving"}
+                  style={inp}
+                >
+                  <option value="">Select a project</option>
+                  {availableProjects.map((project) => (
+                    <option key={project.id} value={project.id}>{project.title}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {saveError && (
+              <div role="alert" style={{ border: "1px solid #fecaca", borderRadius: 9, background: "#fef2f2", color: "#991b1b", padding: "8px 10px", fontSize: 12 }}>
+                {saveError}
+              </div>
+            )}
+
+            {!isSaved && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => void handleSaveProof()}
+                  disabled={saveState === "saving"}
+                  style={{ border: "1px solid var(--ink)", background: saveState === "saving" ? "var(--bg-2)" : "var(--ink)", color: saveState === "saving" ? "var(--muted)" : "#fff", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 14, cursor: saveState === "saving" ? "not-allowed" : "pointer" }}
+                >
+                  {saveState === "saving" ? "Saving…" : "Save this proof"}
+                </button>
+              </div>
+            )}
+
+            {isSaved && savedProjectId && (
+              <div style={{ display: "grid", gap: 10 }}>
+                <div data-testid="website-proof-saved-project" style={{ fontSize: 13, fontWeight: 700, color: "#166534" }}>
+                  Saved to project: {savedProjectTitle}
+                </div>
+                {saveState === "already_saved" && (
+                  <div style={{ fontSize: 11, color: "#166534" }}>Already saved — no duplicate evidence was created.</div>
+                )}
+                <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
+                  <a href="/student/vbr/passport" style={{ color: "#166534", fontSize: 12, fontWeight: 700 }}>View in Passport</a>
+                  <a href={`/student/vbr/projects/${encodeURIComponent(savedProjectId)}/report`} style={{ color: "#166534", fontSize: 12, fontWeight: 700 }}>View Project Report</a>
+                  <a href="/student/vbr/passport/vault" style={{ color: "#166534", fontSize: 12, fontWeight: 700 }}>View Proof Vault</a>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

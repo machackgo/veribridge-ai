@@ -43,6 +43,7 @@ import {
   type SkillReport,
   type SkillReportProjectChain,
   type SkillReportVideoProofCard,
+  type VBRReportDocumentOriginalAccess,
   type VBRTranscriptSegment,
   type VideoProofFrameDescriptor,
   type VideoProofTranscriptSegment,
@@ -441,6 +442,119 @@ export function DocumentOriginalViewer({ artifactId }: { artifactId: string }) {
     >
       {phase === "loading" ? "Opening document…" : "View original document"}
     </button>
+  )
+}
+
+/**
+ * Downloads a RETAINED original document through the access-gated artifact
+ * route with the ORIGINAL filename. Bytes stream through the caller's session
+ * into a local object URL that a temporary anchor saves under `fileName` — no
+ * storage path or signed URL ever reaches the DOM, and the backend re-checks
+ * ownership per request (strangers get an indistinct 404). Fails soft to an
+ * honest note — never a broken link.
+ */
+export function DocumentOriginalDownloadButton({
+  artifactId,
+  fileName,
+}: {
+  artifactId: string
+  fileName?: string | null
+}) {
+  const [phase, setPhase] = useState<"idle" | "loading" | "done" | "error">("idle")
+
+  const download = async () => {
+    setPhase("loading")
+    const objectUrl = await fetchProofArtifactObjectUrl(artifactId)
+    if (!objectUrl) {
+      setPhase("error")
+      return
+    }
+    const anchor = document.createElement("a")
+    anchor.href = objectUrl
+    anchor.download = fileName || "document"
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    // Give the browser a beat to start the save before releasing the blob.
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 2000)
+    setPhase("done")
+  }
+
+  if (phase === "error") {
+    return (
+      <span
+        data-testid="document-original-download-unavailable"
+        style={{ fontSize: 11, color: TOKEN.muted, fontStyle: "italic" }}
+      >
+        The original document could not be downloaded right now.
+      </span>
+    )
+  }
+  return (
+    <button
+      type="button"
+      data-testid="document-original-download-button"
+      onClick={download}
+      disabled={phase === "loading"}
+      style={{ ..._ACTION_BUTTON_STYLE, opacity: phase === "loading" ? 0.6 : 1 }}
+    >
+      {phase === "loading" ? "Preparing download…" : "Download original"}
+    </button>
+  )
+}
+
+/** Human file-size label for the retained-original metadata line. */
+function fmtBytes(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`
+  return `${size} B`
+}
+
+/**
+ * Owner-only Open/Download actions for one document's RETAINED original file,
+ * driven entirely by the private report's `original_document` descriptor:
+ *
+ *   • descriptor absent (public projection stripped it) → renders nothing —
+ *     a recruiter surface can never grow a raw-document action;
+ *   • `available === false` → the honest not-retained note (older uploads /
+ *     retention storage unavailable) — never a dead button;
+ *   • available → "View original document" + "Download original" (original
+ *     filename), both streamed through the access-gated artifact route that
+ *     re-checks ownership on every request.
+ */
+export function DocumentOriginalAccessActions({
+  access,
+}: {
+  access?: VBRReportDocumentOriginalAccess | null
+}) {
+  if (!access) return null
+  if (!access.available || !access.artifact_id) {
+    return (
+      <span
+        data-testid="document-original-not-retained"
+        style={{ fontSize: 11, color: TOKEN.muted, fontStyle: "italic" }}
+      >
+        {access.note ||
+          "The original document file was not retained — only verified excerpts and locators are stored."}
+      </span>
+    )
+  }
+  return (
+    <div
+      data-testid="document-original-actions"
+      style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+    >
+      <DocumentOriginalViewer artifactId={access.artifact_id} />
+      <DocumentOriginalDownloadButton artifactId={access.artifact_id} fileName={access.file_name} />
+      {access.file_name && (
+        <Mono data-testid="document-original-filename" style={{ fontSize: 10, color: TOKEN.muted }}>
+          {access.file_name}
+          {typeof access.size_bytes === "number" && access.size_bytes > 0
+            ? ` · ${fmtBytes(access.size_bytes)}`
+            : ""}
+        </Mono>
+      )}
+    </div>
   )
 }
 

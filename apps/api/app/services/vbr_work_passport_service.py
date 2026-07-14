@@ -1377,6 +1377,18 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     ]
     groups = _group_project_pairs(pairs)
 
+    # RAW ``vbr_projects`` row id → the grouped project's REPRESENTATIVE id (the
+    # single card it collapses into on this passport). Vault proofs are attached to
+    # raw rows (one per Project Defense attempt), so this map lets us resolve a
+    # vault skill's raw ``project_ids`` to the deduplicated projects that actually
+    # appear on the passport — a truthful connected-project set, never inflated by
+    # duplicate attempts.
+    raw_to_grouped: dict[str, str] = {}
+    for group in groups:
+        representative_id = str(group[0][0]["id"])
+        for member_project, _ in group:
+            raw_to_grouped[str(member_project["id"])] = representative_id
+
     project_summaries: list[dict[str, Any]] = []
     # Project-level-only Website Proof context (Diagnosis-C helper): attached
     # Website Proofs that did NOT map to any skill. Deduped per (project, focus)
@@ -1539,6 +1551,21 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     vault_items = collect_vault_items(db, pipeline_db, str(user_id))
     vault_skill_summaries = collect_skill_summaries(db, pipeline_db, str(user_id), items=vault_items)
     vault_unattached_count = sum(1 for item in vault_items if not item.get("is_attached_to_project"))
+
+    # Resolve each vault skill's RAW attached project ids to the deduplicated,
+    # on-passport representative projects. This gives the Skills Evidence Map a
+    # truthful connected-project set for a skill whose proof lives in the vault
+    # (never the inflated raw-attempt ``project_count``), and lets it distinguish
+    # "attached to a real project (not yet skill-mapped)" from purely-vault proof.
+    grouped_title_by_id = {p["project_id"]: p["project_title"] for p in project_summaries}
+    for summary in vault_skill_summaries:
+        seen: list[str] = []
+        for raw_pid in summary.get("project_ids") or []:
+            grouped = raw_to_grouped.get(str(raw_pid))
+            if grouped and grouped in grouped_title_by_id and grouped not in seen:
+                seen.append(grouped)
+        summary["connected_project_ids"] = seen
+        summary["connected_project_titles"] = [grouped_title_by_id[g] for g in seen]
 
     # Vault-only (standalone) proof-type sources per skill: the proof types that
     # exist for a skill in the vault but are NOT attached to any project. Kept

@@ -512,6 +512,26 @@ def _public_website_proofs(proofs: list[dict[str, Any]]) -> tuple[list[dict[str,
     return safe, omitted
 
 
+def _public_documents(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Allowlist projection of the report's document summaries.
+
+    The private report's per-document ``original_document`` descriptor (the
+    owner-only opaque artifact id + access-gated view/download routes) never
+    reaches recruiters: the public surface keeps title/type/status plus the safe
+    excerpts and locators already carried by the evidence traces — no raw
+    document, no download action.
+    """
+    return [
+        {
+            "title": doc.get("title"),
+            "source_type": doc.get("source_type"),
+            "status": doc.get("status"),
+        }
+        for doc in documents
+        if isinstance(doc, dict)
+    ]
+
+
 def _public_evidence_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Re-gate each evidence trace's direct link before it reaches recruiters.
 
@@ -548,6 +568,9 @@ def _public_evidence_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]
             row["location_detail"] = (
                 "The matched passage is retained privately; only the document reference is shown."
             )
+        # The owner-only retained-original access descriptor never reaches the
+        # public surface — recruiters keep excerpts/locators, no download action.
+        row["document_original"] = None
         safe.append(row)
     return safe
 
@@ -722,7 +745,7 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         "claimed_skills": list(report.get("claimed_skills") or []),
         "evidence_package": report.get("evidence_package") or {},
         "github_proof": _public_github_proof(report.get("github_proof")),
-        "documents": list(report.get("documents") or []),
+        "documents": _public_documents(report.get("documents") or []),
         "website_proofs": website_proofs,
         "project_defense_analysis": defense_analysis,
         "defense_answer_evidence": defense_answer_evidence,

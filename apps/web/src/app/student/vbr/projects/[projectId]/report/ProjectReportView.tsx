@@ -40,6 +40,9 @@ import {
   TOKEN,
   type BadgeTone,
 } from "../../../../../../../components/passport/shared"
+import { useAuthorizedMediaUrl } from "../../../../../../../components/passport/AuthorizedReplayVideo"
+import { ClaimEvidenceMapSection } from "../../../../../../../components/passport/ClaimEvidenceMapSection"
+import { DocumentOriginalAccessActions } from "../../../../../../../components/passport/OriginalProofAccess"
 import { EvidenceTraceList } from "../../../../../../../components/passport/EvidenceTrace"
 import { VaultSkillLinkList } from "../../../../../../../components/passport/VaultProofs"
 import { ProjectDefenseInspectionSection } from "../../../../../../../components/passport/ProjectDefenseInspectionCard"
@@ -55,6 +58,47 @@ const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   "Evidence observed": "emerald",
   "Needs review": "rose",
   "Not assessed": "slate",
+}
+
+/**
+ * Retained website walkthrough replay inside the Website Behavior Evidence
+ * card. The replay path is the owner-gated canonical API route from the report
+ * payload — it is streamed with the caller's session (the backend re-checks
+ * access per request; strangers get 404) and played from a local object URL.
+ */
+function WebsiteReplayBlock({ replayPath, analysisPath }: { replayPath?: string | null; analysisPath?: string | null }) {
+  const src = useAuthorizedMediaUrl(replayPath ?? null)
+  if (!replayPath && !analysisPath) return null
+  return (
+    <div data-testid="website-replay" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {replayPath && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <Badge tone="emerald">Recording retained</Badge>
+            <span style={{ fontSize: 11, color: TOKEN.muted }}>
+              Owner-only replay of the recorded walkthrough — access is re-checked on every request.
+            </span>
+          </div>
+          <video
+            data-testid="website-replay-video"
+            controls
+            preload="none"
+            src={src ?? undefined}
+            style={{ width: "100%", maxHeight: 280, borderRadius: 8, background: "#000" }}
+          />
+        </>
+      )}
+      {analysisPath && (
+        <Link
+          data-testid="website-analysis-link"
+          href={analysisPath}
+          style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none", alignSelf: "flex-start" }}
+        >
+          Open full Website analysis →
+        </Link>
+      )}
+    </div>
+  )
 }
 
 const SKILL_STATUS_TONE = QUALITATIVE_LABEL_TONE
@@ -625,6 +669,16 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
         )}
       </Card>
 
+      {/* Canonical claim→evidence map — the backend-synthesized argument for
+          each skill claim (citations, identity checks, corroboration, mismatch
+          and pending states). Rendered verbatim; absent on legacy payloads. */}
+      {report.claim_evidence_map && report.claim_evidence_map.claims.length > 0 && (
+        <Card id="claim-evidence-map" style={ANCHOR_OFFSET}>
+          <CardHeader title="Claim-to-Evidence Map" eyebrow="What exactly proves each claim" icon="🧭" />
+          <ClaimEvidenceMapSection map={report.claim_evidence_map} />
+        </Card>
+      )}
+
       {/* Attached proof not yet skill-mapped — real analyzed proof with no exact
           skill row. Secondary strip; jumps into the proof sections below. */}
       <RealUnmappedProofStrip entries={report.real_unmapped_proof_context ?? []} />
@@ -671,12 +725,20 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
               Document Proof
             </Mono>
             {report.documents.length > 0 ? (
-              <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+              <ul style={{ margin: "4px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
                 {report.documents.map((doc, i) => (
                   <li key={i} style={{ fontSize: 12, color: TOKEN.inkSoft }}>
                     {doc.title}
                     {doc.source_type ? ` (${doc.source_type})` : ""}
                     {doc.status ? ` — ${doc.status}` : ""}
+                    {/* Owner-only retained-original access: Open/Download when the
+                        original file is retained, the honest not-retained note
+                        otherwise. Absent on public surfaces (backend strips it). */}
+                    {doc.original_document && (
+                      <div style={{ marginTop: 4 }}>
+                        <DocumentOriginalAccessActions access={doc.original_document} />
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -773,6 +835,12 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
                           </li>
                         ))}
                       </ul>
+                    )}
+                    {ev.website_replay_available && (
+                      <WebsiteReplayBlock replayPath={ev.website_replay_path} analysisPath={ev.website_analysis_path} />
+                    )}
+                    {!ev.website_replay_available && ev.website_analysis_path && (
+                      <WebsiteReplayBlock analysisPath={ev.website_analysis_path} />
                     )}
                     {ev.skill_mapping_available ? (
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

@@ -31,27 +31,12 @@ const detectedBanner    = el("detectedBanner")
 const videoStatusEl     = el("videoStatus")
 const liveCoachEl       = el("liveCoach")
 
-// ── Restore persisted inputs ───────────────────────────────────────────────────
-chrome.storage.local.get(["sessionId", "apiUrl", "authToken", "currentSessionId", "claimedSkills"], (data) => {
-  const preFill = (data.currentSessionId as string | undefined) ?? (data.sessionId as string | undefined) ?? ""
-  if (preFill) sessionIdInput.value = preFill
-  apiUrlInput.value = (data.apiUrl as string | undefined) ?? "http://localhost:8000"
-  if (data.authToken) authTokenInput.value = data.authToken as string
-  if (data.claimedSkills) claimedSkillsInput.value = data.claimedSkills as string
-})
-
-sessionIdInput.addEventListener("input", () => {
-  void chrome.storage.local.set({ sessionId: sessionIdInput.value })
-})
-apiUrlInput.addEventListener("input", () => {
-  void chrome.storage.local.set({ apiUrl: apiUrlInput.value })
-})
-authTokenInput.addEventListener("input", () => {
-  void chrome.storage.local.set({ authToken: authTokenInput.value })
-})
-claimedSkillsInput.addEventListener("input", () => {
-  void chrome.storage.local.set({ claimedSkills: claimedSkillsInput.value })
-})
+// Session/API/skills are read-only projections of the single background config.
+// The popup never maintains a second editable launch configuration.
+sessionIdInput.readOnly = true
+apiUrlInput.readOnly = true
+authTokenInput.readOnly = true
+claimedSkillsInput.readOnly = true
 
 // ── Status dot class mapping ───────────────────────────────────────────────────
 const DOT_CLASS: Record<RecordingStatus, string> = {
@@ -86,9 +71,10 @@ function applyState(state: ExtensionState): void {
   eventCountEl.textContent =
     state.eventCount > 0 ? `${state.eventCount} event(s) captured` : ""
 
-  if (state.sessionId && !sessionIdInput.value.trim()) {
-    sessionIdInput.value = state.sessionId
-  }
+  sessionIdInput.value = state.sessionId ?? ""
+  apiUrlInput.value = state.apiUrl || ""
+  authTokenInput.value = state.authConfigured ? "configured" : ""
+  claimedSkillsInput.value = (state.claimedSkills ?? []).join(", ")
 
   detectedBanner.style.display = state.status === "ready" ? "" : "none"
 
@@ -98,6 +84,7 @@ function applyState(state: ExtensionState): void {
   btnSend.disabled =
     state.isRecording ||
     state.status === "uploading" ||
+    state.videoUploadStatus === "uploading" ||
     !["stopped", "upload_failed", "error"].includes(state.status)
 
   // "Recorder Tab" button — primary action when stream active, fallback when not
@@ -212,21 +199,18 @@ window.addEventListener("unload", () => clearInterval(poll))
 
 btnStart.addEventListener("click", () => {
   const sessionId = sessionIdInput.value.trim()
-  const apiUrl = apiUrlInput.value.trim() || "http://localhost:8000"
-  const authToken = authTokenInput.value.trim()
-  const claimedSkillsRaw = claimedSkillsInput.value.trim()
-  const claimedSkills = claimedSkillsRaw
-    ? claimedSkillsRaw.split(/[,;]+/).map(s => s.trim()).filter(Boolean)
-    : []
 
   if (!sessionId) {
-    statusText.textContent = "Enter a session ID first."
+    statusText.textContent = "Open this proof from the VeriBridge Website Proof page first."
     return
   }
 
   chrome.runtime.sendMessage(
-    { type: "START_RECORDING", payload: { sessionId, apiUrl, authToken, claimedSkills } },
-    () => refreshState()
+    { type: "START_RECORDING", payload: { sessionId } },
+    (response: { ok?: boolean; error?: string }) => {
+      if (!response?.ok && response?.error) statusText.textContent = response.error
+      refreshState()
+    }
   )
 })
 

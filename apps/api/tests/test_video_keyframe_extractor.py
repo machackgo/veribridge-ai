@@ -409,13 +409,22 @@ def test_video_upload_endpoint_returns_video_analysis_status():
         _extracted_frames=[(0, b"j1"), (500, b"j2")],
     )
 
-    mock_db = {}
+    owner_id = "00000000-0000-0000-0000-000000000001"
+    mock_db = {
+        "extension_proof_sessions": {
+            "test-session": {
+                "id": "test-session",
+                "user_id": owner_id,
+                "status": "recording",
+            }
+        }
+    }
 
     def _fake_get_db():
         return mock_db
 
     def _fake_get_user():
-        return "00000000-0000-0000-0000-000000000001"
+        return owner_id
 
     # Authenticate explicitly instead of relying on the (now gated) dev
     # no-token fallback: register the identity/db overrides this test defines.
@@ -447,6 +456,10 @@ def test_video_upload_endpoint_returns_video_analysis_status():
             "/api/v1/student/extension-proof/sessions/test-session/workflow/video",
             files={"video": ("recording.webm", io.BytesIO(b"fake_video"), "video/webm")},
         )
+        duplicate_response = client.post(
+            "/api/v1/student/extension-proof/sessions/test-session/workflow/video",
+            files={"video": ("recording.webm", io.BytesIO(b"fake_video"), "video/webm")},
+        )
 
     app.dependency_overrides.clear()
 
@@ -455,6 +468,14 @@ def test_video_upload_endpoint_returns_video_analysis_status():
     assert "video_analysis_status" in body
     assert body["video_analysis_status"] == VIDEO_STATUS_ANALYZED
     assert "keyframe_count" in body
+    assert body["replay_retained"] is True
+    assert duplicate_response.status_code == 202
+    assert duplicate_response.json()["replay_artifact_id"] == body["replay_artifact_id"]
+    artifacts = list(mock_db["proof_artifacts"].values())
+    assert len(artifacts) == 1
+    assert artifacts[0]["artifact_type"] == "website_replay_video"
+    assert artifacts[0]["owner_user_id"] == owner_id
+    assert list(mock_db["_proof_artifact_objects"].values()) == [b"fake_video"]
     # Private fields must not appear in the response
     assert "_extracted_frames" not in body
     assert "frame_storage_path" not in body
@@ -466,11 +487,21 @@ def test_video_upload_endpoint_rejects_unsupported_content_type():
     """Endpoint returns 415 for content types that are not video formats."""
     from fastapi.testclient import TestClient
     from app.main import app
-    from app.api.deps import get_current_user_id
+    from app.api.deps import get_current_user_id, get_db
 
     client = TestClient(app)
     # Authenticate explicitly so we exercise the media-type check, not auth.
-    app.dependency_overrides[get_current_user_id] = lambda: "00000000-0000-0000-0000-000000000001"
+    owner_id = "00000000-0000-0000-0000-000000000001"
+    app.dependency_overrides[get_current_user_id] = lambda: owner_id
+    app.dependency_overrides[get_db] = lambda: {
+        "extension_proof_sessions": {
+            "test-session": {
+                "id": "test-session",
+                "user_id": owner_id,
+                "status": "recording",
+            }
+        }
+    }
 
     try:
         response = client.post(

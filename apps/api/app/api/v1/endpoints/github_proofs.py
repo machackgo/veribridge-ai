@@ -21,6 +21,66 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _github_relationships(db: Any, user_id: str) -> dict[str, dict[str, Any]]:
+    """github_proof_id → canonical relationship, from the SAME sources the
+    Passport/report attachment index reads: normalized 058 rows first, then the
+    projects' ``attached_proofs.github_proof`` metadata. Owner-scoped;
+    best-effort (a pre-058 database simply yields metadata-only results)."""
+    out: dict[str, dict[str, Any]] = {}
+    projects: dict[str, str] = {}
+    try:
+        if isinstance(db, dict):
+            project_rows = [
+                row for row in db.get("vbr_projects", {}).values()
+                if str(row.get("user_id") or "") == str(user_id)
+            ]
+        else:
+            resp = db.table("vbr_projects").select("id,title,metadata").eq("user_id", user_id).execute()
+            project_rows = list(getattr(resp, "data", []) or [])
+        for project in project_rows:
+            pid = str(project.get("id") or "")
+            projects[pid] = str(project.get("title") or "Project")
+            attached = ((project.get("metadata") or {}).get("attached_proofs") or {})
+            github_summary = attached.get("github_proof")
+            proof_id = str((github_summary or {}).get("github_proof_id") or "")
+            if proof_id and proof_id not in out:
+                out[proof_id] = {
+                    "project_id": pid,
+                    "project_title": projects[pid],
+                    "state": "directly_linked",
+                }
+    except Exception:
+        pass
+    try:
+        if isinstance(db, dict):
+            relation_rows = [
+                row for row in db.get("proof_project_relationships", {}).values()
+                if str(row.get("owner_user_id") or "") == str(user_id)
+                and row.get("proof_type") == "github"
+            ]
+        else:
+            resp = (
+                db.table("proof_project_relationships")
+                .select("proof_id,project_id,relationship_state")
+                .eq("owner_user_id", user_id)
+                .eq("proof_type", "github")
+                .execute()
+            )
+            relation_rows = list(getattr(resp, "data", []) or [])
+        for relation in relation_rows:
+            proof_id = str(relation.get("proof_id") or "")
+            pid = str(relation.get("project_id") or "")
+            if proof_id and relation.get("relationship_state") == "directly_linked" and pid in projects:
+                out[proof_id] = {
+                    "project_id": pid,
+                    "project_title": projects[pid],
+                    "state": "directly_linked",
+                }
+    except Exception:
+        pass
+    return out
+
+
 @router.post(
     "",
     response_model=GitHubProofSubmissionResponse,
@@ -97,7 +157,15 @@ def list_github_proofs(
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> list[GitHubProofSubmissionResponse]:
-    return GitHubProofService(db).list_github_proofs(user_id, proof_session_id)
+    proofs = GitHubProofService(db).list_github_proofs(user_id, proof_session_id)
+    relationships = _github_relationships(db, user_id)
+    for proof in proofs:
+        relationship = relationships.get(str(proof.id))
+        if relationship:
+            proof.project_id = relationship["project_id"]
+            proof.project_title = relationship["project_title"]
+            proof.project_relationship_state = relationship["state"]
+    return proofs
 
 
 @router.get(

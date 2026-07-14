@@ -7,14 +7,17 @@
  * stays a clean Projects ↔ Skills identity graph: Proof Attachment
  * Intelligence (suggested attachments, projects to strengthen, skills with
  * unattached evidence), the full Skill Intelligence dashboard, and the
- * Attached / Suggested / Unattached evidence overview. Owner-only, review-only
- * — nothing here mutates or attaches anything, and none of it ever appears on
- * the public Passport.
+ * Attached / Suggested / Unattached evidence overview. Owner-only; the one
+ * mutation here is an explicit, confirmed Website Proof→project attachment via
+ * the canonical relationship endpoint. Nothing here appears on the public
+ * Passport.
  */
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import {
+  confirmProofProjectRelationship,
+  confirmWebsiteProofProjectRelationship,
   fallbackSkillSlug,
   getPrivateWorkPassport,
   skillReportPath,
@@ -62,7 +65,61 @@ const MAX_RENDERED_SUGGESTIONS = 6
 
 /** One suggested-attachment card: proof → likely project, why, basis chips,
  *  honest limitation, and non-destructive review actions only. */
-function SuggestionCard({ suggestion }: { suggestion: ProofAttachmentSuggestion }) {
+function relationshipLabel(state?: string): string {
+  if (!state) return "Vault only"
+  return state.replaceAll("_", " ").replace(/^./, (value) => value.toUpperCase())
+}
+
+function SuggestionCard({
+  suggestion,
+  passport,
+  onAttached,
+}: {
+  suggestion: ProofAttachmentSuggestion
+  passport: PrivateWorkPassport
+  onAttached: (message: string) => Promise<void>
+}) {
+  const [selectedProjectId, setSelectedProjectId] = useState("")
+  const [confirmed, setConfirmed] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const selectedProject = passport.projects.find((project) => project.project_id === selectedProjectId)
+  // Explicit attachment needs ONE exact owned proof id. Website, Document and
+  // GitHub proofs all flow through the SAME shared finalization boundary;
+  // remaining types keep their existing attach flows for now.
+  const ATTACHABLE: Record<string, string> = {
+    "Website Proof": "website",
+    "Document Proof": "document",
+    "GitHub Proof": "github",
+  }
+  const attachProofType = ATTACHABLE[suggestion.proof_type]
+  const canAttach = Boolean(attachProofType) && Boolean(suggestion.proof_id)
+
+  const attach = async () => {
+    if (!canAttach || !suggestion.proof_id || !selectedProject || !confirmed) return
+    setSubmitting(true)
+    setAttachError(null)
+    try {
+      if (attachProofType === "website") {
+        await confirmWebsiteProofProjectRelationship({
+          proof_id: suggestion.proof_id,
+          project_id: selectedProject.project_id,
+        })
+      } else {
+        await confirmProofProjectRelationship({
+          proof_type: attachProofType,
+          proof_id: suggestion.proof_id,
+          project_id: selectedProject.project_id,
+        })
+      }
+      await onAttached(`${suggestion.proof_type} attached to ${selectedProject.project_title}.`)
+    } catch (err) {
+      setAttachError(err instanceof Error ? err.message : `Failed to attach ${suggestion.proof_type}.`)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
     <div
       data-testid="attachment-suggestion"
@@ -127,6 +184,79 @@ function SuggestionCard({ suggestion }: { suggestion: ProofAttachmentSuggestion 
         </p>
       )}
 
+      <p data-testid="suggestion-relationship-state" style={{ fontSize: 11, color: TOKEN.inkSoft, margin: 0 }}>
+        <strong>Current relationship:</strong> {relationshipLabel(suggestion.relationship_state)} · not counted
+      </p>
+
+      {canAttach && (
+        <div
+          data-testid="website-attachment-control"
+          style={{ display: "flex", flexDirection: "column", gap: 8, padding: 10, borderRadius: 8, background: TOKEN.bg }}
+        >
+          <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: TOKEN.inkSoft }}>
+            Attach this exact {suggestion.proof_type} to
+            <select
+              data-testid="website-attachment-project-select"
+              value={selectedProjectId}
+              disabled={submitting}
+              onChange={(event) => {
+                setSelectedProjectId(event.target.value)
+                setConfirmed(false)
+                setAttachError(null)
+              }}
+              style={{ padding: "7px 8px", border: `1px solid ${TOKEN.line}`, borderRadius: 7, background: "#fff" }}
+            >
+              <option value="">Select one of your projects…</option>
+              {passport.projects.map((project) => (
+                <option key={project.project_id} value={project.project_id}>
+                  {project.project_title}{project.repo_full_name ? ` · ${project.repo_full_name}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selectedProject && (
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 7, fontSize: 11, color: TOKEN.inkSoft, lineHeight: 1.45 }}>
+              <input
+                data-testid="website-attachment-confirmation"
+                type="checkbox"
+                checked={confirmed}
+                disabled={submitting}
+                onChange={(event) => setConfirmed(event.target.checked)}
+              />
+              {attachProofType === "website"
+                ? <>I confirm this replay demonstrates {selectedProject.project_title}. This will make it count as that project&apos;s runtime evidence.</>
+                : attachProofType === "github"
+                  ? <>I confirm this repository belongs to {selectedProject.project_title}. Analyzed code evidence will count for that project&apos;s skills — this does not by itself claim I authored the code.</>
+                  : <>I confirm this document belongs to {selectedProject.project_title}. Only its exactly-cited evidence (pages, tables, diagrams, code blocks) will count for that project&apos;s skills.</>}
+            </label>
+          )}
+          <button
+            type="button"
+            data-testid="confirm-website-attachment"
+            disabled={!selectedProject || !confirmed || submitting}
+            onClick={attach}
+            style={{
+              alignSelf: "flex-start",
+              padding: "7px 11px",
+              border: "none",
+              borderRadius: 7,
+              background: !selectedProject || !confirmed || submitting ? "#cbd5e1" : TOKEN.indigo,
+              color: "#fff",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: !selectedProject || !confirmed || submitting ? "not-allowed" : "pointer",
+            }}
+          >
+            {submitting ? "Attaching…" : "Confirm project attachment"}
+          </button>
+          {attachError && (
+            <p data-testid="website-attachment-error" role="alert" style={{ margin: 0, fontSize: 11, color: TOKEN.rose }}>
+              {attachError}
+            </p>
+          )}
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <span data-testid="suggestion-action-label" style={{ fontSize: 12, fontWeight: 600, color: TOKEN.inkSoft }}>
           {suggestion.action_label}
@@ -179,7 +309,13 @@ function dedupeSuggestions(suggestions: ProofAttachmentSuggestion[]): ProofAttac
  * per-project suggestions — and the skills whose evidence is still unattached.
  * Review-only — nothing here mutates or attaches anything.
  */
-function ProofAttachmentIntelligenceCard({ passport }: { passport: PrivateWorkPassport }) {
+function ProofAttachmentIntelligenceCard({
+  passport,
+  onAttached,
+}: {
+  passport: PrivateWorkPassport
+  onAttached: (message: string) => Promise<void>
+}) {
   const summary = passport.unattached_proof_summary
   const suggestions = dedupeSuggestions(summary?.suggestions ?? [])
   const unattachedCount = summary?.unattached_count ?? passport.vault_unattached_count ?? 0
@@ -214,7 +350,12 @@ function ProofAttachmentIntelligenceCard({ passport }: { passport: PrivateWorkPa
               Suggested attachments
             </Mono>
             {suggestions.slice(0, MAX_RENDERED_SUGGESTIONS).map((s) => (
-              <SuggestionCard key={s.suggestion_id_safe} suggestion={s} />
+              <SuggestionCard
+                key={s.suggestion_id_safe}
+                suggestion={s}
+                passport={passport}
+                onAttached={onAttached}
+              />
             ))}
             {moreSuggestions > 0 && (
               <span data-testid="suggestions-more" style={{ fontSize: 11, color: TOKEN.muted }}>
@@ -413,11 +554,12 @@ export function ProofVaultView() {
   const [passport, setPassport] = useState<PrivateWorkPassport | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const load = () => {
     setLoading(true)
     setError(null)
-    getPrivateWorkPassport()
+    return getPrivateWorkPassport()
       .then(setPassport)
       .catch((err: unknown) => setError(err instanceof Error ? err.message : "Failed to load Proof Vault."))
       .finally(() => setLoading(false))
@@ -443,11 +585,26 @@ export function ProofVaultView() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {/* 1 — Vault overview: counts + next actions */}
+      {notice && (
+        <div
+          data-testid="website-attachment-success"
+          role="status"
+          style={{ padding: "10px 12px", border: "1px solid #86efac", borderRadius: 8, background: "#f0fdf4", color: "#166534", fontSize: 12 }}
+        >
+          {notice}
+        </div>
+      )}
       <VaultOverviewCard passport={passport} />
 
       {/* 2 — Proof Attachment Intelligence: suggested attachments, projects to
           strengthen, skills with unattached evidence (owner-only, review-only). */}
-      <ProofAttachmentIntelligenceCard passport={passport} />
+      <ProofAttachmentIntelligenceCard
+        passport={passport}
+        onAttached={async (message) => {
+          setNotice(message)
+          await load()
+        }}
+      />
 
       {/* 3 — Skill Intelligence: every proof grouped by canonical skill into
           COMPACT cards; the full stored evidence for one skill loads lazily on

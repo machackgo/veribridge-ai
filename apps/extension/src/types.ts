@@ -76,7 +76,10 @@ export type RecordingStatus =
 export interface ExtensionState {
   sessionId: string
   apiUrl: string
-  authToken: string
+  authConfigured: boolean
+  configRevision: number | null
+  claimedSkills: string[]
+  targetWebsiteUrl: string | null
   isRecording: boolean
   eventCount: number
   startedAt: string | null
@@ -107,4 +110,9 @@ export interface ExtensionState {
   recorderTabStreamActive: boolean
   // ── Live Coach state (computed from accumulated visible evidence events) ──────
   liveCoach: LiveCoachState | null
+}
+
+/** Available only to the extension-owned recorder.html page. */
+export interface RecorderPrivateState extends ExtensionState {
+  authToken: string
 }

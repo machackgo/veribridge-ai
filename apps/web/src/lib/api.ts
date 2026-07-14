@@ -1,13 +1,9 @@
 "use client"
 
 import { createSupabaseBrowserClient } from "@/lib/supabase/client"
+import { PUBLIC_API_BASE } from "@/lib/api-base"
 
-// Prefer NEXT_PUBLIC_API_URL (production domain, e.g. https://api.veribridgeai.com);
-// fall back to the legacy NEXT_PUBLIC_API_BASE_URL, then to local dev.
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ??
-  process.env.NEXT_PUBLIC_API_BASE_URL ??
-  "http://localhost:8000"
+const API_BASE = PUBLIC_API_BASE
 
 /**
  * Resolve the public web app origin used for absolute, shareable links
@@ -141,59 +137,18 @@ export async function fetchAPI(
   return res
 }
 
-// ── Recorder extension auth handoff ───────────────────────────────────────────
-// The browser recorder extension records on an EXTERNAL target website, then
-// uploads workflow frames / video / evidence directly to the backend, attaching
-// `Authorization: Bearer <token>`. It has no access to the Supabase session (it
-// runs in its own privileged context, not the app's page), so the authenticated
-// app must hand it the signed-in user's short-lived access token.
-//
-// SECURITY: the token is delivered ONLY via a same-origin `window.postMessage`
-// (targetOrigin pinned to the app's own origin). The extension's content script
-// picks it up on the VeriBridge app tab and stores it in extension-private
-// storage; it is NEVER posted to, or readable by, the external target website
-// being recorded, and never travels in a URL/query param. This keeps every
-// recorder upload owner-scoped without weakening the backend's fail-closed auth.
-
-/** postMessage `type` the recorder extension listens for to receive the token. */
-export const RECORDER_AUTH_MESSAGE_TYPE = "VERIBRIDGE_SET_RECORDER_AUTH"
-/** postMessage `source` tag identifying the authenticated app as the sender. */
-export const RECORDER_AUTH_MESSAGE_SOURCE = "veribridge-app"
-const RECORDER_AUTH_PUBLISH_DELAYS_MS = [0, 250, 750, 1500] as const
-
-/**
- * Publish the current Supabase access token (and API base) to the recorder
- * extension over a same-origin window message.
- *
- * Returns `true` when a token was published, `false` when signed out or
- * off-browser. Never throws: if the bridge is unavailable the recorder simply
- * falls back to its popup's manual token field, and a missing/expired token
- * still surfaces the backend's safe 401 rather than recording anonymously.
- */
-export async function publishRecorderAuthToExtension(): Promise<boolean> {
-  if (typeof window === "undefined") return false
-  try {
-    const supabase = createSupabaseBrowserClient()
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
-    const accessToken = session?.access_token
-    if (!accessToken) return false
-    const message = {
-      source: RECORDER_AUTH_MESSAGE_SOURCE,
-      type: RECORDER_AUTH_MESSAGE_TYPE,
-      payload: { authToken: accessToken, apiUrl: API_BASE },
-    }
-    for (const delayMs of RECORDER_AUTH_PUBLISH_DELAYS_MS) {
-      window.setTimeout(() => {
-        window.postMessage(message, window.location.origin)
-      }, delayMs)
-    }
-    return true
-  } catch {
-    return false
-  }
-}
+export {
+  initializeWebsiteProofRecorder,
+  openWebsiteProofTarget,
+  startWebsiteProofRecording,
+  recorderFailureMessage,
+  refreshWebsiteProofRecorderSessionAuth,
+} from "@/lib/website-proof-recorder"
+export type {
+  RecorderHandshakeFailure,
+  RecorderHandshakeResult,
+  RecorderSessionInput,
+} from "@/lib/website-proof-recorder"
 
 export async function getStudentProfile(): Promise<unknown | null> {
   const res = await fetchAPI("/api/v1/student/profile")
@@ -1055,6 +1010,14 @@ export type ExtensionProofSessionResponse = {
   id: string
   user_id: string
   skill_evidence_id: string
+  project_id?: string | null
+  project_relationship_state?: string
+  website_url?: string | null
+  github_url?: string | null
+  claimed_skills?: string[]
+  proof_objective?: string | null
+  finalized_at?: string | null
+  finalized_project_id?: string | null
   status: ExtensionProofSessionStatus
   started_at: string | null
   proof_upload_id: string | null
@@ -1065,9 +1028,16 @@ export type ExtensionProofSessionResponse = {
   privacy_scan_summary?: string | null
 }
 
+export async function listExtensionProofSessions(): Promise<ExtensionProofSessionResponse[]> {
+  const res = await fetchAPI("/api/v1/student/extension-proof/sessions")
+  if (!res.ok) throw new Error(`List sessions failed (HTTP ${res.status}).`)
+  return res.json()
+}
+
 export async function createExtensionProofSession(
   skillEvidenceId: string,
   opts?: {
+    project_id?: string
     parent_proof_session_id?: string
     followup_target_skill?: string
     followup_objective?: string
@@ -1079,6 +1049,7 @@ export async function createExtensionProofSession(
   }
 ): Promise<ExtensionProofSessionResponse> {
   const body: Record<string, unknown> = { skill_evidence_id: skillEvidenceId }
+  if (opts?.project_id) body.project_id = opts.project_id
   if (opts?.parent_proof_session_id) body.parent_proof_session_id = opts.parent_proof_session_id
   if (opts?.followup_target_skill) body.followup_target_skill = opts.followup_target_skill
   if (opts?.followup_objective) body.followup_objective = opts.followup_objective

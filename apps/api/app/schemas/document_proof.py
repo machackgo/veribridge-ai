@@ -41,3 +41,11 @@ class DocumentProofResponse(BaseModel):
     # not configured (verified-excerpts-only remains the honest state).
     original_retained: bool = False
     original_artifact_id: str | None = None
+    # ── Canonical project relationship (migration 058 + attach metadata) ──────
+    # The document's REAL relationship state — the same canonical rows the
+    # Passport and reports read. The UI must render attachment status from
+    # these fields only, never from a display title, so "shown under a project"
+    # and "attached to a project" can never diverge again.
+    project_id: str | None = None
+    project_title: str | None = None
+    project_relationship_state: str = "vault_only"

@@ -9,6 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // Individual tests override these with mockResolvedValueOnce / mockRejectedValueOnce.
 vi.mock("@/lib/api", () => ({
   getReviewStatus: vi.fn().mockResolvedValue(null),
+  initializeWebsiteProofRecorder: vi.fn(),
+  openWebsiteProofTarget: vi.fn(),
+  refreshWebsiteProofRecorderSessionAuth: vi.fn().mockResolvedValue(true),
   submitForAiReview: vi.fn().mockResolvedValue({
     id: "mock-review-id",
     proof_session_id: "s1",

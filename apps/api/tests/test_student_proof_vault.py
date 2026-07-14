@@ -340,6 +340,64 @@ def test_private_passport_uses_compact_skill_summaries(mem_store: dict, pipeline
     assert any("not attached to any vbr project" in lim.lower() for lim in passport["limitations"])
 
 
+# ── Canonical relationship enrichment (skill-evidence-map-fix) ────────────────
+
+
+def test_vault_summary_flags_skill_graph_only_skill_as_unretained(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A skill supported ONLY by the derived Skill-Graph signal has no retained,
+    # inspectable proof — it must be flagged so the map never shows it as evidence.
+    _seed_skill_pipeline(pipeline_db, skill_name="Kubernetes", support_status="strongly_supported")
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID)
+    k = next(s for s in summaries if s["skill"] == "Kubernetes")
+    assert k["has_retained_proof"] is False
+    assert set(k["proof_source_counts"]) == {"Skill Graph"}
+    assert k["connected_project_ids"] == []
+
+
+def test_vault_summary_marks_github_backed_skill_as_retained(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    _seed_github_proof(mem_store, detected_skills=["Python"])
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert py["has_retained_proof"] is True
+
+
+def test_private_passport_resolves_connected_projects_for_attached_vault_skill(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A GitHub proof detecting "Docker" is ATTACHED to a real VBR project. The
+    # vault summary must resolve its raw attachment to the grouped, on-passport
+    # project (the honest connected-project set), and flag retained proof.
+    gh_id = _seed_github_proof(
+        mem_store,
+        detected_skills=["Docker"],
+        submitted_skill_claims=["Docker"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {"skill": "Docker", "file_path": "Dockerfile", "line_start": 1, "line_end": 5}
+            ]
+        },
+    )
+    pid = _seed_project(
+        mem_store,
+        title="Boston Smart Accident Risk Rerouting",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": gh_id}},
+    )
+
+    passport = build_private_passport(mem_store, pipeline_db, USER_ID)
+    docker = next(s for s in passport["vault_skill_summaries"] if s["skill"] == "Docker")
+    assert docker["has_retained_proof"] is True
+    # The raw attachment resolves to the single grouped project on the passport.
+    assert docker["connected_project_ids"] == [pid]
+    assert docker["connected_project_titles"] == ["Boston Smart Accident Risk Rerouting"]
+
+
 # ── Layer 2: full Skill Report for one selected skill ─────────────────────────
 
 
@@ -1696,11 +1754,17 @@ def _item(proof_type: str, *, pid: str | None, grade: str | None = None) -> dict
 def test_coherent_chain_true_for_impl_body_plus_corroboration_same_project() -> None:
     """A single attached project with a SKILL-RELEVANT GitHub implementation body
     AND a defense (>= 2 distinct sources) is a coherent chain → eligible for
-    Demonstrated. The body must prove the selected skill's own work (here: an
-    authoritative grade-time ML signal for a Machine Learning report) — a bare
-    implementation_body grade with no skill relevance no longer qualifies."""
+    Demonstrated. The body must prove the selected skill's own work through a
+    CONCRETE resolved purpose (here the adapter-stored ``model_training`` purpose
+    from the trusted excerpt) — a bare implementation_body grade, or a grade-time
+    ML signal on an unresolved purpose, no longer qualifies."""
     items = [
-        _ml_github_item(pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY, ml_signal=True),
+        _purpose_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            purpose_key="model_training",
+            ml_signal=True,
+        ),
         _item("Project Defense", pid="proj-a"),
     ]
     assert _has_coherent_impl_chain(items, skill="Machine Learning") is True
@@ -1751,7 +1815,12 @@ def test_skill_status_coherent_ml_chain_is_demonstrated() -> None:
     """A single coherent project (skill-relevant implementation body + defense)
     reads Demonstrated — the known-skill happy path stays intact."""
     items = [
-        _ml_github_item(pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY, ml_signal=True),
+        _purpose_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            purpose_key="model_training",
+            ml_signal=True,
+        ),
         _item("Project Defense", pid="proj-a"),
     ]
     status = _skill_status(
@@ -1934,14 +2003,18 @@ def test_coherent_chain_relevance_blocks_even_when_grade_survives() -> None:
     assert _has_coherent_impl_chain(items, skill="Machine Learning") is False
 
 
-def test_coherent_chain_ml_signal_row_without_snippet_stays_demonstrated() -> None:
-    """A canonical ML row whose raw snippet is not re-exposed at read time (purpose
-    unknown) but whose grade-time verdict proved executable ML stays a coherent
-    implementation chain for Machine Learning."""
+def test_coherent_chain_unresolved_purpose_never_demonstrates_even_with_ml_signal() -> None:
+    """COUNTABILITY CONTRACT: a row whose purpose cannot be resolved (no snippet,
+    no stored purpose key) can never anchor a coherent implementation chain —
+    the grade-time ML verdict alone no longer stands in for a concrete purpose.
+    "Purpose unknown + Demonstrated" must be impossible."""
     items = [
         _purpose_github_item(pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY, ml_signal=True),
         _item("Project Defense", pid="proj-a"),
     ]
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is False
+    # The same chain WITH a concrete adapter-stored purpose is coherent again.
+    items[0]["code_block_purpose_key"] = "prediction_inference"
     assert _has_coherent_impl_chain(items, skill="Machine Learning") is True
 
 

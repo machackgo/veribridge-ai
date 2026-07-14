@@ -270,8 +270,9 @@ class ProofAttachmentSuggestion(BaseModel):
     Connects an *unattached* proof group to the project it likely belongs to,
     with the deterministic evidence-basis chips that produced the match, an
     honest hedged reason, a closed qualitative confidence label, and an explicit
-    limitation. Never carries a raw source id, raw evidence, or a numeric
-    confidence — and never appears on the public projection.
+    limitation. Website suggestions may carry the exact owner-only proof and
+    project ids required by the explicit confirmation endpoint; they never
+    appear on the public projection and never include raw evidence.
     """
 
     suggestion_id_safe: str = ""
@@ -282,6 +283,10 @@ class ProofAttachmentSuggestion(BaseModel):
     likely_project_title: str = ""
     # Owner-only project-report route (private passport surface only).
     likely_project_ref_safe: str | None = None
+    # Owner-only identifiers used only by the explicit Website attachment UI.
+    proof_id: str | None = None
+    likely_project_id: str | None = None
+    relationship_state: str = "vault_only"
     likely_skill_names: list[str] = Field(default_factory=list)
     suggestion_reason: str = ""
     evidence_basis_chips: list[str] = Field(default_factory=list)

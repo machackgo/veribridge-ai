@@ -1275,6 +1275,21 @@ class WorkflowVisualAnalysisService:
             row["visible_evidence_event_id"] = visible_evidence_event_id
 
         try:
+            if frame_sha256:
+                existing = (
+                    self._db.table(_TABLE)
+                    .select("id")
+                    .eq("user_id", user_id)
+                    .eq("proof_session_id", session_id)
+                    .eq("frame_sha256", frame_sha256)
+                    .eq("frame_type", frame_type)
+                    .eq("timestamp_ms", timestamp_ms)
+                    .limit(1)
+                    .execute()
+                )
+                existing_rows = getattr(existing, "data", None) or []
+                if existing_rows:
+                    return str(existing_rows[0]["id"])
             self._db.table(_TABLE).insert(row).execute()
         except Exception as exc:
             logger.warning("[VisualAnalysis] Failed to store frame record: %s", exc)

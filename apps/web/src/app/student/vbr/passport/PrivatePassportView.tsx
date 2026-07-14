@@ -32,7 +32,7 @@ import {
   TOKEN,
   type BadgeTone,
 } from "../../../../../components/passport/shared"
-import { buildPassportGraph, type PassportSkillNode } from "./passport-graph"
+import { buildPassportGraph, type PassportSkillNode, type SkillRelationship } from "./passport-graph"
 import {
   EvidenceRelationshipBadge,
   EvidenceTierSection,
@@ -75,6 +75,17 @@ const SKILL_STATUS_TONE: Record<string, BadgeTone> = {
   "Needs review": "rose",
   "Not assessed": "slate",
 }
+
+// Canonical skill→evidence relationship labels — the recruiter-facing vocabulary
+// shared by the relationship badge and the Relationship-type filter.
+const RELATIONSHIP_LABEL: Record<SkillRelationship, string> = {
+  direct: "Direct skill evidence",
+  attached: "Attached · not skill-mapped",
+  vault: "Vault-only",
+  suggested: "Suggested",
+}
+// Default map order: strongest relationship first.
+const RELATIONSHIP_ORDER: SkillRelationship[] = ["direct", "attached", "vault", "suggested"]
 
 const CHAIN_LABEL_TONE: Record<string, BadgeTone> = {
   "Strong chain": "emerald",
@@ -676,10 +687,26 @@ function SkillCard({
           <span style={{ fontSize: 15, fontWeight: 700, color: TOKEN.ink }}>{node.name}</span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
             <span style={{ fontSize: 11, color: TOKEN.muted }}>Overall status:</span>
-            <Badge tone={SKILL_STATUS_TONE[node.status] ?? "slate"}>{node.status}</Badge>
+            {/* A skill with no retained proof is a bare suggestion — never let its
+                backend status read as observed/demonstrated evidence. */}
+            <span data-testid="skill-overall-status">
+              <Badge tone={node.hasRetainedProof ? SKILL_STATUS_TONE[node.status] ?? "slate" : "slate"}>
+                {node.hasRetainedProof ? node.status : "Suggested — no retained proof"}
+              </Badge>
+            </span>
+          </span>
+          <span
+            data-testid="skill-relationship-badge"
+            data-relationship={node.relationship}
+            style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3, color: TOKEN.muted }}
+          >
+            {RELATIONSHIP_LABEL[node.relationship]}
           </span>
           <span data-testid="skill-project-count" style={{ fontSize: 11, color: TOKEN.muted }}>
             Connected projects: {node.projectCount}
+          </span>
+          <span data-testid="skill-proof-source-count" style={{ fontSize: 11, color: TOKEN.muted }}>
+            Proof sources: {node.proofSourceCount}
           </span>
         </div>
 
@@ -772,10 +799,101 @@ function SkillEvidenceNav({
   if (focusProjectId) rows = rows.filter((r) => r.projectId === focusProjectId)
   if (roleProjectIds) rows = rows.filter((r) => roleProjectIds.includes(r.projectId))
   if (proofFilter) rows = rows.filter((r) => r.evidenceSources.includes(proofFilter))
+  let suggestions = node.suggestedProjects
+  if (focusProjectId) suggestions = suggestions.filter((s) => s.projectId === focusProjectId)
+  if (roleProjectIds) suggestions = suggestions.filter((s) => roleProjectIds.includes(s.projectId))
+  if (proofFilter) suggestions = suggestions.filter((s) => s.proofType === proofFilter)
 
-  // No attached project demonstrates this skill yet — its evidence lives only in
-  // the vault. Never front a project-report CTA for loose vault evidence.
+  if (rows.length === 0 && suggestions.length > 0) {
+    return (
+      <div data-testid="skill-suggested-projects" style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+        <EvidenceTierSection kind="unmapped">
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <Badge tone="amber">Suggested project match — not counted</Badge>
+            <span style={{ fontSize: 11, color: TOKEN.muted }}>
+              Review and confirm before this proof can support a project or skill claim.
+            </span>
+          </div>
+          {suggestions.map((suggestion) => (
+            <div key={`${suggestion.projectId}:${suggestion.proofType}`} data-testid="skill-suggested-project" data-project-id={suggestion.projectId} style={{ display: "flex", flexDirection: "column", gap: 3, paddingTop: 4 }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: TOKEN.ink }}>{suggestion.projectTitle}</span>
+                <Badge tone="slate">{suggestion.proofType}</Badge>
+                <Badge tone="amber">{suggestion.confidenceLabel}</Badge>
+              </div>
+              <span style={{ fontSize: 11, color: TOKEN.muted }}>{suggestion.reason}</span>
+              <Link href="/student/vbr/passport/vault" style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}>
+                Review in Proof Vault →
+              </Link>
+            </div>
+          ))}
+        </EvidenceTierSection>
+      </div>
+    )
+  }
+
+  // No project DIRECTLY maps this skill. Render the honest non-direct tier for
+  // this skill's relationship — never a direct project-report CTA:
+  //   • attached  — its proof IS attached to a real project, just not mapped to
+  //                 this skill ("attached, not skill-mapped"); link to the project.
+  //   • vault     — retained proof lives only in the Proof Vault.
+  //   • suggested — no retained proof at all (an AI/Skill-Graph suggestion).
   if (allRows.length === 0) {
+    if (node.relationship === "attached" && node.attachedProjects.length > 0) {
+      return (
+        <div
+          data-testid="skill-attached-not-mapped"
+          style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12, lineHeight: 1.5 }}
+        >
+          <EvidenceTierSection kind="unmapped">
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <EvidenceRelationshipBadge kind="unmapped" />
+              <p style={{ margin: 0, color: TOKEN.muted, fontWeight: 600 }}>
+                Attached to a project, but not yet mapped to this skill — shown as project-level proof, not counted as direct skill evidence.
+              </p>
+            </div>
+            {node.vaultOnlySources.length > 0 && (
+              <ProofTypeChips sources={node.vaultOnlySources} testid="skill-attached-not-mapped-chips" chipTestid="skill-attached-not-mapped-chip" />
+            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              {node.attachedProjects.map((p) => (
+                <Link
+                  key={p.projectId}
+                  href={`/student/vbr/projects/${p.projectId}/report`}
+                  data-testid="skill-attached-project-link"
+                  data-project-id={p.projectId}
+                  style={{ fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+                >
+                  Open {p.projectTitle} report →
+                </Link>
+              ))}
+            </div>
+          </EvidenceTierSection>
+        </div>
+      )
+    }
+    if (node.relationship === "suggested") {
+      return (
+        <div
+          data-testid="skill-suggested"
+          style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12, lineHeight: 1.5 }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <Badge tone="slate">Suggested · no retained proof</Badge>
+            <p style={{ margin: 0, color: TOKEN.muted, fontWeight: 600 }}>
+              AI-suggested from your skill graph — no retained proof source is attached yet, so it is not counted as evidence.
+            </p>
+          </div>
+          <Link
+            href="/student/vbr/passport/vault"
+            data-testid="skill-suggested-open-vault"
+            style={{ fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+          >
+            Add proof in your Proof Vault →
+          </Link>
+        </div>
+      )
+    }
     return (
       <div
         data-testid="skill-vault-only"
@@ -1515,17 +1633,41 @@ function PassportGraphExplorer({
   const setRoleAreaFilter = onSelectRoleAreaId ?? setInternalRoleAreaFilter
   const [projectFilter, setProjectFilter] = useState<string | null>(null)
   const [proofFilter, setProofFilter] = useState<string | null>(null)
+  // Relationship type, evidence status, and evidence source facets — all derived
+  // from real evidence (below), never hard-coded.
+  const [relationshipFilter, setRelationshipFilter] = useState<SkillRelationship | null>(null)
+  const [statusFilter, setStatusFilter] = useState<string | null>(null)
+  const [sourceFilter, setSourceFilter] = useState<string | null>(null)
   const [search, setSearch] = useState("")
 
   const query = search.trim().toLowerCase()
-  const hasFilter = Boolean(roleAreaFilter || skillFilter || projectFilter || proofFilter || query)
+  const hasFilter = Boolean(
+    roleAreaFilter || skillFilter || projectFilter || proofFilter || relationshipFilter || statusFilter || sourceFilter || query,
+  )
   const clearFilters = () => {
     setRoleAreaFilter(null)
     setSkillFilter(null)
     setProjectFilter(null)
     setProofFilter(null)
+    setRelationshipFilter(null)
+    setStatusFilter(null)
+    setSourceFilter(null)
     setSearch("")
   }
+  // Facet OPTIONS come only from evidence actually present in this passport.
+  // Relationship options in canonical strength order; status options ordered by
+  // the qualitative ladder; evidence-source options reuse the proof-type set (the
+  // recruiter-facing source of a skill's proof). A skill has an evidence source
+  // when that source backs it directly OR sits in its vault-only tier.
+  const relationshipOptions = RELATIONSHIP_ORDER.filter((rel) => graph.skills.some((s) => s.relationship === rel))
+  const statusOptions = useMemo(() => {
+    const present = new Set(graph.skills.filter((s) => s.hasRetainedProof).map((s) => s.status))
+    const ordered = ["Demonstrated", "Partially demonstrated", "Evidence observed", "Supporting evidence", "Needs review", "Not assessed"]
+    return ordered.filter((st) => present.has(st))
+  }, [graph])
+  const sourceOptions = graph.proofTypeOptions
+  const skillHasSource = (node: PassportSkillNode, source: string) =>
+    node.proofTypes.includes(source) || node.vaultOnlySources.includes(source)
   // Card clicks stay in sync with the dropdowns (toggle the matching filter).
   const toggleSkill = (key: string) => setSkillFilter(skillFilter === key ? null : key)
   const toggleProject = (id: string) => setProjectFilter((c) => (c === id ? null : id))
@@ -1615,17 +1757,37 @@ function PassportGraphExplorer({
     if (proofFilter) rows = rows.filter((r) => r.evidenceSources.includes(proofFilter))
     return rows
   }
+  const effectiveSuggestions = (node: PassportSkillNode) => {
+    let rows = node.suggestedProjects
+    if (roleAreaFilter) rows = rows.filter((r) => roleRowKeys.has(`${node.key}::${r.projectId}`))
+    if (projectFilter) rows = rows.filter((r) => r.projectId === projectFilter)
+    if (proofFilter) rows = rows.filter((r) => r.proofType === proofFilter)
+    return rows
+  }
   const matchesSearch = (node: PassportSkillNode) =>
     !query ||
     node.name.toLowerCase().includes(query) ||
-    node.projectEvidence.some((r) => r.projectTitle.toLowerCase().includes(query))
+    node.projectEvidence.some((r) => r.projectTitle.toLowerCase().includes(query)) ||
+    node.suggestedProjects.some((r) => r.projectTitle.toLowerCase().includes(query))
 
+  // Bare AI suggestions (no retained proof) are hidden from the default evidence
+  // map — they are only shown when the reader explicitly asks for them via the
+  // Relationship = Suggested filter (or selects that exact skill).
+  const suggestedSkills = graph.skills.filter((s) => s.relationship === "suggested")
   const visibleSkills = graph.skills.filter((node) => {
     if (skillFilter && node.key !== skillFilter) return false
+    // Hide suggestions unless the reader explicitly focuses this skill or filters
+    // to the Suggested relationship.
+    if (node.relationship === "suggested" && relationshipFilter !== "suggested" && skillFilter !== node.key) return false
+    if (relationshipFilter && node.relationship !== relationshipFilter) return false
+    if (statusFilter && node.status !== statusFilter) return false
+    if (sourceFilter && !skillHasSource(node, sourceFilter)) return false
     if (!matchesSearch(node)) return false
     // Role-area / project / proof filters require a surviving row; skill / search
     // alone keep vault-only skills (which have no project rows) visible.
-    if (roleAreaFilter || projectFilter || proofFilter) return effectiveRows(node).length > 0
+    if (roleAreaFilter || projectFilter || proofFilter) {
+      return effectiveRows(node).length > 0 || effectiveSuggestions(node).length > 0
+    }
     return true
   })
 
@@ -1633,9 +1795,10 @@ function PassportGraphExplorer({
   const skillProjectIds = skillFilter ? new Set(graph.skillProjects.get(skillFilter) ?? []) : null
   const proofProjectIds = proofFilter
     ? new Set(
-        graph.skills.flatMap((s) =>
-          s.projectEvidence.filter((r) => r.evidenceSources.includes(proofFilter)).map((r) => r.projectId),
-        ),
+        graph.skills.flatMap((s) => [
+          ...s.projectEvidence.filter((r) => r.evidenceSources.includes(proofFilter)).map((r) => r.projectId),
+          ...s.suggestedProjects.filter((r) => r.proofType === proofFilter).map((r) => r.projectId),
+        ]),
       )
     : null
   const visibleProjects = passport.projects.filter((p) => {
@@ -1825,6 +1988,63 @@ function PassportGraphExplorer({
             </label>
           )}
 
+          {relationshipOptions.length > 0 && (
+            <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              <span style={controlLabelStyle}>Relationship</span>
+              <select
+                data-testid="passport-relationship-filter"
+                value={relationshipFilter ?? ""}
+                onChange={(e) => setRelationshipFilter((e.target.value || null) as SkillRelationship | null)}
+                style={selectStyle}
+              >
+                <option value="">All relationships</option>
+                {relationshipOptions.map((rel) => (
+                  <option key={rel} value={rel}>
+                    {RELATIONSHIP_LABEL[rel]} — {graph.skills.filter((s) => s.relationship === rel).length}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {statusOptions.length > 0 && (
+            <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              <span style={controlLabelStyle}>Evidence status</span>
+              <select
+                data-testid="passport-status-filter"
+                value={statusFilter ?? ""}
+                onChange={(e) => setStatusFilter(e.target.value || null)}
+                style={selectStyle}
+              >
+                <option value="">All statuses</option>
+                {statusOptions.map((st) => (
+                  <option key={st} value={st}>
+                    {st}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {sourceOptions.length > 0 && (
+            <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              <span style={controlLabelStyle}>Evidence source</span>
+              <select
+                data-testid="passport-source-filter"
+                value={sourceFilter ?? ""}
+                onChange={(e) => setSourceFilter(e.target.value || null)}
+                style={selectStyle}
+              >
+                <option value="">All sources</option>
+                {sourceOptions.map((label) => (
+                  <option key={label} value={label}>
+                    {label} — {graph.skills.filter((s) => skillHasSource(s, label)).length}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <label style={{ display: "flex", flexDirection: "column", gap: 3, flex: "1 1 200px", minWidth: 180 }}>
             <span style={controlLabelStyle}>Search</span>
             <input
@@ -1837,6 +2057,46 @@ function PassportGraphExplorer({
             />
           </label>
         </div>
+
+        {/* Active-filter chips — one removable chip per active filter, plus the
+            live result count. Facet values are real evidence, so a chip always
+            names a filter the candidate actually has. */}
+        {hasFilter && (
+          <div
+            data-testid="active-filter-chips"
+            style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", paddingTop: 8, borderTop: `1px solid ${TOKEN.line}` }}
+          >
+            <span data-testid="filter-result-count" style={{ fontSize: 11, fontWeight: 700, color: TOKEN.inkSoft }}>
+              {visibleSkills.length} of {graph.skills.length} skills
+            </span>
+            {[
+              roleAggregate ? { key: "role", label: `Role: ${roleAggregate.label}`, clear: () => { setRoleAreaFilter(null); setSkillFilter(null) } } : null,
+              skillNode ? { key: "skill", label: `Skill: ${skillNode.name}`, clear: () => setSkillFilter(null) } : null,
+              projectSummary ? { key: "project", label: `Project: ${projectSummary.project_title || "Untitled"}`, clear: () => setProjectFilter(null) } : null,
+              proofFilter ? { key: "proof", label: `Proof: ${proofFilter}`, clear: () => setProofFilter(null) } : null,
+              relationshipFilter ? { key: "relationship", label: `Relationship: ${RELATIONSHIP_LABEL[relationshipFilter]}`, clear: () => setRelationshipFilter(null) } : null,
+              statusFilter ? { key: "status", label: `Status: ${statusFilter}`, clear: () => setStatusFilter(null) } : null,
+              sourceFilter ? { key: "source", label: `Source: ${sourceFilter}`, clear: () => setSourceFilter(null) } : null,
+              query ? { key: "search", label: `Search: "${search.trim()}"`, clear: () => setSearch("") } : null,
+            ]
+              .filter((c): c is { key: string; label: string; clear: () => void } => c !== null)
+              .map((chip) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  data-testid="active-filter-chip"
+                  data-filter={chip.key}
+                  onClick={chip.clear}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 8px", fontSize: 11, fontWeight: 600,
+                    border: `1px solid ${TOKEN.line}`, borderRadius: 999, background: TOKEN.paper, color: TOKEN.inkSoft, cursor: "pointer",
+                  }}
+                >
+                  {chip.label} <span aria-hidden style={{ fontSize: 13, lineHeight: 1 }}>×</span>
+                </button>
+              ))}
+          </div>
+        )}
 
         {/* Selected-filter summaries carry role/skill/project/proof CONTEXT, not
             just a bare name (requirements #3–#5). */}
@@ -1909,6 +2169,21 @@ function PassportGraphExplorer({
       {/* PRIMARY — the skill-first evidence map. */}
       <div data-testid="passport-skills-panel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <h3 style={panelHeading}>{skillsHeading}</h3>
+        {/* Bare AI suggestions (no retained proof) are kept OUT of the evidence
+            map by default; offer a one-click way to review them honestly. */}
+        {suggestedSkills.length > 0 && relationshipFilter !== "suggested" && (
+          <p data-testid="suggested-skills-note" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+            {suggestedSkills.length} AI-suggested {suggestedSkills.length === 1 ? "skill is" : "skills are"} hidden — no retained proof yet.{" "}
+            <button
+              type="button"
+              data-testid="show-suggested-skills"
+              onClick={() => setRelationshipFilter("suggested")}
+              style={{ background: "none", border: "none", padding: 0, color: TOKEN.indigo, fontWeight: 600, cursor: "pointer", font: "inherit" }}
+            >
+              Review suggestions
+            </button>
+          </p>
+        )}
         {graph.skills.length === 0 ? (
           <Card>
             <p data-testid="skills-panel-empty" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>

@@ -116,9 +116,20 @@ PROOF_DEFENSE = "Project Defense"
 PROOF_VIDEO = "Video Evidence"
 PROOF_SKILL_GRAPH = "Skill Graph"
 
+# First-class, RETAINED proof types — a real artifact a recruiter can inspect.
+# The derived "Skill Graph" pipeline signal is deliberately excluded: a skill
+# supported ONLY by Skill Graph is an AI suggestion with no retained proof and
+# must never render as demonstrated/observed evidence.
+_RETAINED_PROOF_TYPES = frozenset(
+    {PROOF_GITHUB, PROOF_DOCUMENT, PROOF_WEBSITE, PROOF_DEFENSE, PROOF_VIDEO}
+)
+
 _PROJECTS_TABLE = "vbr_projects"
 _DOCUMENTS_TABLE = "optional_evidence_submissions"
 _WORKFLOW_TABLE = "workflow_analysis_results"
+_EXTENSION_SESSIONS_TABLE = "extension_proof_sessions"
+_PROOF_ARTIFACTS_TABLE = "proof_artifacts"
+_PROOF_PROJECT_RELATIONSHIPS_TABLE = "proof_project_relationships"
 _SESSIONS_TABLE = "vbr_verification_sessions"
 _PIPELINES_TABLE = "skill_evidence_pipelines"
 # Canonical, precise GitHub code evidence persisted by the older, stronger
@@ -226,7 +237,10 @@ def _build_attachment_index(db: Any, user_id: str) -> dict[tuple[str, str], list
         if project_id not in index[(table, sid)]:
             index[(table, sid)].append(project_id)
 
-    for project in _rows_for_user(db, _PROJECTS_TABLE, user_id):
+    owned_projects = _rows_for_user(db, _PROJECTS_TABLE, user_id)
+    owned_project_ids = {str(p.get("id") or "") for p in owned_projects}
+
+    for project in owned_projects:
         project_id = str(project.get("id") or "")
         if not project_id:
             continue
@@ -250,6 +264,48 @@ def _build_attachment_index(db: Any, user_id: str) -> dict[tuple[str, str], list
         for pid in attached.get("skill_pipeline_ids") or []:
             _add(_PIPELINES_TABLE, pid, project_id)
 
+    # Canonical explicit Website Proof links. New sessions persist this edge in
+    # metadata even before migration 058 is deployed; a top-level project_id is
+    # also accepted for forward compatibility. Ownership is checked against the
+    # already owner-scoped project set — a foreign/stale id can never attach.
+    for session in _rows_for_user(db, _EXTENSION_SESSIONS_TABLE, user_id):
+        metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
+        pid = str(session.get("project_id") or metadata.get("project_id") or "")
+        if pid in owned_project_ids:
+            _add(_WORKFLOW_TABLE, session.get("id"), pid)
+
+    # A retained artifact can carry the canonical project id even when its
+    # historical proof-session row did not. This is a deterministic source link,
+    # not a title/skill inference.
+    for artifact in _rows_for_user(
+        db, _PROOF_ARTIFACTS_TABLE, user_id, user_key="owner_user_id"
+    ):
+        if artifact.get("proof_type") != "website":
+            continue
+        pid = str(artifact.get("project_id") or "")
+        if pid in owned_project_ids:
+            _add(_WORKFLOW_TABLE, artifact.get("proof_id"), pid)
+
+    # Normalized relationship rows (migration 058). Only directly-linked rows
+    # are countable. Suggested, mismatched, vault-only and legacy-unresolved rows
+    # intentionally stay out of the attachment index.
+    relation_table_by_proof_type = {
+        "website": _WORKFLOW_TABLE,
+        "document": _DOCUMENTS_TABLE,
+        "github": _GITHUB_PROOFS_TABLE,
+    }
+    for relation in _rows_for_user(
+        db,
+        _PROOF_PROJECT_RELATIONSHIPS_TABLE,
+        user_id,
+        user_key="owner_user_id",
+    ):
+        table = relation_table_by_proof_type.get(str(relation.get("proof_type") or ""))
+        if table and relation.get("relationship_state") == "directly_linked":
+            pid = str(relation.get("project_id") or "")
+            if pid in owned_project_ids:
+                _add(table, relation.get("proof_id"), pid)
+
     return index
 
 
@@ -269,6 +325,15 @@ _LOCATOR_KEYS = (
     "page_number",
     "section_label",
     "citation",
+    # Source-native document BLOCK locators (block-aware extraction): the exact
+    # typed block (table / chart / architecture_diagram / code_block / …), its
+    # block index, bounded table cells, an honest visual description, and the
+    # nearby caption. Never raw file bytes or storage paths.
+    "block_type",
+    "block_index",
+    "table_cells",
+    "visual_description",
+    "nearby_caption",
     # Safe document context: a figure/diagram/table reference label (never the
     # raw image/text) and whether the student explicitly allowed full-document
     # recruiter download. ``full_document_available`` is a plain bool — it never
@@ -309,10 +374,27 @@ _LOCATOR_KEYS = (
     # Grade-time ML verdict from the trusted provenance body (tri-state bool / None).
     # Drives read-time ML semantic validation without ever re-exposing the snippet.
     "ml_executable_signal",
+    # Symbol identity + ANALYZED context window from trusted provenance (safe
+    # names/line numbers only). ``context_*`` may be wider than the cited target
+    # lines; the citation itself is never rewritten.
+    "symbol_type",
+    "context_start_line",
+    "context_end_line",
+    "analysis_version",
     "evidence_kind",
     "has_precise_line_evidence",
     "github_line_url",
     "repo_url",
+    # Website proof relationship + retained replay descriptors. These are safe
+    # owner-only route/label fields; never storage paths or signed URLs.
+    "project_hint",
+    "project_relationship_state",
+    "website_replay_available",
+    "website_replay_path",
+    "website_artifact_id",
+    "website_replay_duration_seconds",
+    "website_replay_mime_type",
+    "website_analysis_path",
     # Canonical (old Profile & Proof engine) GitHub fields — the precise
     # ``selection_reason`` ("API endpoint decorator") + optional subskill /
     # system-graph node that the PortfolioScanner stored on ``skill_evidence``.
@@ -485,6 +567,11 @@ def _canonical_github_items(
                     "skill_relevance_label": ev.skill_relevance_label,
                     "skill_relevance_summary": ev.skill_relevance_summary,
                     "ml_executable_signal": ev.ml_executable_signal,
+                    "function_name": ev.symbol_name,
+                    "symbol_type": ev.symbol_type,
+                    "context_start_line": ev.context_start_line,
+                    "context_end_line": ev.context_end_line,
+                    "analysis_version": ev.analysis_version,
                     "evidence_kind": ev.evidence_kind,
                     "selection_reason": ev.selection_reason,
                     "subskill_name": ev.subskill_name,
@@ -758,13 +845,41 @@ def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list
 
         for key in order:
             objs = grouped[key]
-            primary = objs[0]
+            # Prefer the object with the strongest source-native locator: an
+            # exact page, a typed block (table/chart/diagram/code/…), or a real
+            # section heading — over a bare keyword match. Deterministic order
+            # is preserved within each tier.
+            def _locator_rank(obj: dict[str, Any]) -> int:
+                from app.services.canonical_evidence_service import (
+                    document_evidence_object_has_locator,
+                )
+
+                if obj.get("page_number") is not None:
+                    return 0
+                if str(obj.get("block_type") or "").strip().lower() not in ("", "paragraph", "heading"):
+                    return 1
+                if document_evidence_object_has_locator(obj):
+                    return 2
+                return 3
+
+            primary = min(objs, key=_locator_rank)
             skill = str(primary.get("skill_name") or "").strip()
             page = primary.get("page_number")
-            section = _trace_text(str(primary.get("section_label") or ""), 80) or None
+            raw_section = str(primary.get("section_label") or "").strip()
+            # Default paragraph styles ("Normal", "Body Text") are layout names,
+            # not real section locators — never surface them as citations.
+            if raw_section.lower() in ("normal", "body text", "default", "default paragraph font"):
+                raw_section = ""
+            section = _trace_text(raw_section, 80) or None
+            block_type = str(primary.get("block_type") or "").strip().lower() or None
+            block_label = block_type.replace("_", " ").title() if block_type and block_type != "paragraph" else None
             snippet = _trace_text(_scrub_score_fragments(str(primary.get("snippet") or "")), 200) or None
             if isinstance(page, int) or (isinstance(page, str) and page.isdigit()):
-                location = f"Page {page}" + (f" · {section}" if section else "")
+                location = f"Page {page}" + (f" · {block_label or section}" if (block_label or section) else "")
+            elif block_label and section:
+                location = f"{section} · {block_label}"
+            elif block_label:
+                location = block_label
             elif section:
                 location = section
             else:
@@ -825,6 +940,22 @@ def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list
                         "figure_reference": figure_reference,
                         "full_document_available": full_download_allowed,
                         "detail_snippets": detail_snippets,
+                        # Source-native block locator (block-aware extraction).
+                        "block_type": block_type,
+                        "block_index": primary.get("block_index"),
+                        "table_cells": [
+                            [str(cell)[:80] for cell in row][:6]
+                            for row in (primary.get("table_cells") or [])[:8]
+                            if isinstance(row, list)
+                        ],
+                        "visual_description": _trace_text(
+                            str(primary.get("visual_description") or ""), 200
+                        )
+                        or None,
+                        "nearby_caption": _trace_text(
+                            str(primary.get("nearby_caption") or ""), 200
+                        )
+                        or None,
                     },
                 )
             )
@@ -851,6 +982,34 @@ def _collect_documents(db: Any, user_id: str, attach: dict[tuple[str, str], list
 
 def _collect_website(db: Any, user_id: str, attach: dict[tuple[str, str], list[str]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    owned_projects = _rows_for_user(db, _PROJECTS_TABLE, user_id)
+    sessions = {
+        str(row.get("id") or ""): row
+        for row in _rows_for_user(db, _EXTENSION_SESSIONS_TABLE, user_id)
+        if row.get("id")
+    }
+    relationships: dict[str, list[dict[str, Any]]] = {}
+    for rel in _rows_for_user(
+        db,
+        _PROOF_PROJECT_RELATIONSHIPS_TABLE,
+        user_id,
+        user_key="owner_user_id",
+    ):
+        if rel.get("proof_type") == "website" and rel.get("proof_id"):
+            relationships.setdefault(str(rel["proof_id"]), []).append(rel)
+
+    replay_by_session: dict[str, dict[str, Any]] = {}
+    for artifact in _rows_for_user(
+        db, _PROOF_ARTIFACTS_TABLE, user_id, user_key="owner_user_id"
+    ):
+        if (
+            artifact.get("proof_type") == "website"
+            and artifact.get("artifact_type") == "website_replay_video"
+            and artifact.get("retained")
+            and artifact.get("proof_id")
+        ):
+            replay_by_session[str(artifact["proof_id"])] = artifact
+
     seen_sessions: set[str] = set()
     for row in _rows_for_user(db, _WORKFLOW_TABLE, user_id):
         session_id = str(row.get("proof_session_id") or "")
@@ -858,6 +1017,67 @@ def _collect_website(db: Any, user_id: str, attach: dict[tuple[str, str], list[s
             continue
         seen_sessions.add(session_id)
         attached = attach.get((_WORKFLOW_TABLE, session_id), [])
+        session = sessions.get(session_id) or {}
+        metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
+        explicit_project_id = session.get("project_id") or metadata.get("project_id")
+        relationship_rows = relationships.get(session_id) or []
+        relationship_state = (
+            "directly_linked"
+            if attached
+            else next(
+                (
+                    str(rel.get("relationship_state"))
+                    for rel in relationship_rows
+                    if rel.get("relationship_state")
+                ),
+                "vault_only" if session else "legacy_unresolved",
+            )
+        )
+        # Safe strong suggestion signals only. A user-entered proof objective can
+        # suggest an exact project-title match, and an explicit repository URL can
+        # suggest an exact repo match. Neither becomes countable without a direct
+        # link/user confirmation.
+        project_hint = " ".join(
+            str(value or "").strip()
+            for value in (
+                session.get("title"),
+                session.get("proof_objective"),
+                metadata.get("project_title"),
+            )
+            if str(value or "").strip()
+        )[:500]
+        # Cross-project conflict gate: an attached recording whose explicit
+        # objective/title or repository uniquely identifies ANOTHER owned
+        # project is mismatched, not attached. It remains visible through the
+        # non-counting suggestion/vault path and can be repaired by confirmation.
+        hint_norm = _norm(project_hint)
+        github_norm = str(session.get("github_url") or "").lower().rstrip("/")
+        conflicting_project_ids: list[str] = []
+        for owned in owned_projects:
+            owned_id = str(owned.get("id") or "")
+            title_norm = _norm(owned.get("title"))
+            title_match = bool(
+                title_norm
+                and len(title_norm.replace(" ", "")) >= 8
+                and title_norm in hint_norm
+            )
+            repo_match = bool(
+                github_norm
+                and github_norm
+                in {
+                    str(owned.get("repo_url") or "").lower().rstrip("/"),
+                    (
+                        "https://github.com/" + str(owned.get("repo_full_name") or "").lower()
+                    ).rstrip("/"),
+                }
+            )
+            if owned_id and (title_match or repo_match):
+                conflicting_project_ids.append(owned_id)
+        unique_conflicts = set(conflicting_project_ids) - set(attached)
+        if attached and len(set(conflicting_project_ids)) == 1 and unique_conflicts:
+            attached = []
+            relationship_state = "mismatched_project"
+        replay = replay_by_session.get(session_id)
         target = str(row.get("target_website") or "")
         public_safe = is_safe_public_url(target)
         confidence = str(row.get("workflow_confidence") or "insufficient")
@@ -874,8 +1094,24 @@ def _collect_website(db: Any, user_id: str, attach: dict[tuple[str, str], list[s
             _trace_text(_scrub_score_fragments(str(row.get("workflow_summary") or row.get("recruiter_summary") or "")))
             or f"A working deployment was inspected ({strength}; workflow confidence: {confidence})."
         )
-        location = _safe_domain(target) if public_safe else "deployment"
+        location = _safe_domain(target) if public_safe else "Local/private recording"
         title = target if public_safe else "Website Proof"
+        website_locators = {
+            "public_url": target if public_safe else None,
+            "repo_url": session.get("github_url"),
+            "project_hint": project_hint or None,
+            "project_relationship_state": relationship_state,
+            "website_replay_available": bool(replay),
+            "website_replay_path": (
+                f"/api/v1/proofs/website/{session_id}/replay" if replay else None
+            ),
+            "website_artifact_id": str(replay.get("id")) if replay else None,
+            "website_replay_duration_seconds": (
+                replay.get("duration_seconds") if replay else None
+            ),
+            "website_replay_mime_type": replay.get("mime_type") if replay else None,
+            "website_analysis_path": f"/student/proofs/website?session={session_id}",
+        }
 
         if not supported:
             items.append(
@@ -890,6 +1126,7 @@ def _collect_website(db: Any, user_id: str, attach: dict[tuple[str, str], list[s
                     public_safe=public_safe,
                     limitation=_WEBSITE_LIMITATION,
                     attached_project_ids=attached,
+                    locators=website_locators,
                 )
             )
             continue
@@ -907,7 +1144,7 @@ def _collect_website(db: Any, user_id: str, attach: dict[tuple[str, str], list[s
                     public_safe=public_safe,
                     limitation=_WEBSITE_LIMITATION,
                     attached_project_ids=attached,
-                    locators={"public_url": target if public_safe else None},
+                    locators=website_locators,
                 )
             )
     return items
@@ -1545,6 +1782,18 @@ def collect_skill_summaries(
                 "project_ids": group["project_ids"],
                 "project_titles": project_titles,
                 "project_count": len(group["project_ids"]),
+                # Grouped/on-passport relationship is resolved by the passport
+                # builder (it owns the duplicate-attempt grouping); default empty
+                # so the Skill Report endpoint, which also emits summaries, stays
+                # honest without that context.
+                "connected_project_ids": [],
+                "connected_project_titles": [],
+                # A skill backed only by the derived Skill-Graph signal has no
+                # retained, inspectable proof — flag it so it is never shown as
+                # established evidence.
+                "has_retained_proof": any(
+                    pt in _RETAINED_PROOF_TYPES for pt in proof_types
+                ),
                 "proof_source_counts": group["proof_source_counts"],
                 "proof_count": total,
                 "attached_count": attached,
@@ -1625,10 +1874,23 @@ def _report_item(
         "skill_relevance_label": item.get("skill_relevance_label"),
         "skill_relevance_summary": item.get("skill_relevance_summary"),
         "ml_executable_signal": item.get("ml_executable_signal"),
+        # Symbol identity + analyzed-context window (trusted provenance only).
+        "symbol_type": item.get("symbol_type"),
+        "context_start_line": item.get("context_start_line"),
+        "context_end_line": item.get("context_end_line"),
+        "analysis_version": item.get("analysis_version"),
         "evidence_kind": item.get("evidence_kind"),
         "has_precise_line_evidence": item.get("has_precise_line_evidence"),
         "github_line_url": item.get("github_line_url"),
         "repo_url": item.get("repo_url"),
+        "project_hint": item.get("project_hint"),
+        "project_relationship_state": item.get("project_relationship_state"),
+        "website_replay_available": bool(item.get("website_replay_available")),
+        "website_replay_path": item.get("website_replay_path"),
+        "website_artifact_id": item.get("website_artifact_id"),
+        "website_replay_duration_seconds": item.get("website_replay_duration_seconds"),
+        "website_replay_mime_type": item.get("website_replay_mime_type"),
+        "website_analysis_path": item.get("website_analysis_path"),
         # Canonical (old Profile & Proof) GitHub fields.
         "selection_reason": item.get("selection_reason"),
         "subskill_name": item.get("subskill_name"),
@@ -1638,12 +1900,19 @@ def _report_item(
         "citation": item.get("citation"),
         "figure_reference": item.get("figure_reference"),
         "full_document_available": bool(item.get("full_document_available")),
+        # Source-native document block locator (block-aware extraction).
+        "block_type": item.get("block_type"),
+        "block_index": item.get("block_index"),
+        "table_cells": item.get("table_cells") or [],
+        "visual_description": item.get("visual_description"),
+        "nearby_caption": item.get("nearby_caption"),
         "question_text": item.get("question_text"),
         "answer_excerpt": item.get("answer_excerpt"),
         "timestamp_label": item.get("timestamp_label"),
         # Website-only hydrated fields (None for every other proof type).
         "workflow_summary": None,
         "workflow_steps": [],
+        "workflow_timeline": [],
         "dom_summary": None,
         "ocr_summary": None,
         "visual_summary": None,
@@ -1737,10 +2006,23 @@ def _report_item(
     if hydrated:
         row["workflow_summary"] = hydrated.get("workflow_summary")
         row["workflow_steps"] = list(hydrated.get("workflow_steps") or [])
+        row["workflow_timeline"] = list(hydrated.get("workflow_timeline") or [])
         row["dom_summary"] = hydrated.get("dom_summary")
         row["ocr_summary"] = hydrated.get("ocr_summary")
         row["visual_summary"] = hydrated.get("visual_summary")
         row["live_check"] = hydrated.get("live_check")
+        retained = (
+            hydrated.get("retained_artifacts")
+            if isinstance(hydrated.get("retained_artifacts"), dict)
+            else {}
+        )
+        if retained:
+            row["website_replay_available"] = bool(retained.get("recording_available"))
+            row["website_replay_path"] = retained.get("replay_path")
+            row["website_artifact_id"] = retained.get("artifact_id")
+            row["website_replay_duration_seconds"] = retained.get("duration_seconds")
+            row["website_replay_mime_type"] = retained.get("mime_type")
+            row["website_analysis_path"] = retained.get("analysis_path")
     if item["proof_type"] == PROOF_WEBSITE:
         # Website semantic proof: classify WHAT the recorded page demonstrably
         # showed from the already-safe summaries (never raw DOM/OCR/provider
@@ -2442,6 +2724,14 @@ def _doc_correlation(
         "citation": item.get("citation"),
         # Safe figure/diagram/table reference label (never the raw figure).
         "figure_reference": item.get("figure_reference"),
+        # Source-native block locator from block-aware extraction (None on
+        # pre-block documents; the synthesis layer then classifies from the
+        # explicit reference label or fails closed).
+        "block_type": item.get("block_type"),
+        "block_index": item.get("block_index"),
+        "table_cells": item.get("table_cells") or [],
+        "visual_description": item.get("visual_description"),
+        "nearby_caption": item.get("nearby_caption"),
         "safe_snippet": item.get("safe_snippet"),
         "corroborates": corroborates,
         "correlation_confidence": confidence
@@ -3240,6 +3530,45 @@ def _derived_website_items_for_skill(
     return derived
 
 
+def _log_skill_evidence_discovery_diagnostics(report: dict[str, Any], *, user_id: str) -> None:
+    """Development-only evidence-discovery trace for one skill report: which
+    owned proof chains were found, what counted, and why the rest was excluded.
+    IDs, counts, and closed-vocabulary states only — never tokens, URLs,
+    transcripts, or file contents."""
+    from app.core.config import get_settings
+
+    try:
+        if get_settings().environment.strip().lower() == "production":
+            return
+    except Exception:  # pragma: no cover - settings failure must never break reports
+        return
+    cem = report.get("claim_evidence_map") if isinstance(report.get("claim_evidence_map"), dict) else {}
+    citations = [c for c in (cem.get("citations") or []) if isinstance(c, dict)]
+    excluded_reasons: dict[str, int] = {}
+    for citation in citations:
+        if citation.get("counted_as_direct_evidence"):
+            continue
+        reason = str(
+            citation.get("identity_state")
+            or ("analysis_pending" if citation.get("analysis_pending") else "")
+            or citation.get("evidence_status")
+            or "context_only"
+        )
+        excluded_reasons[reason] = excluded_reasons.get(reason, 0) + 1
+    logger.info(
+        "skill-evidence-discovery user=%s skill=%s status=%s projects=%s proof_sources=%s "
+        "cem_citations=%d cem_counted=%d excluded_reasons=%s",
+        user_id,
+        report.get("skill_slug"),
+        report.get("status"),
+        [str(chain.get("project_id") or "standalone") for chain in (report.get("projects") or [])],
+        report.get("source_counts"),
+        len(citations),
+        sum(1 for c in citations if c.get("counted_as_direct_evidence")),
+        excluded_reasons,
+    )
+
+
 def collect_skill_report(
     db: Any, pipeline_db: Any, user_id: str, skill_name: str, *, synthesize: bool = True
 ) -> dict[str, Any]:
@@ -3740,6 +4069,16 @@ def collect_skill_report(
         "gaps": gaps,
         "generated_at": "",
     }
+
+    # Canonical claim→evidence map — the ONE deterministic claim/citation/
+    # relation/corroboration model shared with the Project Report (see
+    # claim_evidence_synthesis_service). Built from the chains above, so it
+    # inherits every honesty rule already applied (grade validation, skill
+    # relevance, retention) and adds identity validation + corroboration rules.
+    from app.services.claim_evidence_synthesis_service import build_skill_claim_evidence_map
+
+    report["claim_evidence_map"] = build_skill_claim_evidence_map(report, project_meta=meta)
+    _log_skill_evidence_discovery_diagnostics(report, user_id=str(user_id))
 
     # Proof Synthesis Agent — connect the per-source evidence above into
     # recruiter-verifiable proof chains (confidence tier, evidence-cited synthesis

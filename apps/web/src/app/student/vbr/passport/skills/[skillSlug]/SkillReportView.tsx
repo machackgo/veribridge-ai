@@ -17,6 +17,7 @@ import {
 } from "../../../../../../../components/passport/shared"
 import { SkillReportView as SkillReportBody } from "../../../../../../../components/passport/VaultProofs"
 import { buildSkillReportIntelligenceContext } from "../../../../../../../components/passport/SkillReportIntelligence"
+import { ClaimEvidenceMapSection } from "../../../../../../../components/passport/ClaimEvidenceMapSection"
 
 /**
  * The SEPARATE private Skill Report page (route:
@@ -74,6 +75,13 @@ export function SkillReportPageView({ skillSlug }: { skillSlug: string }) {
           <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>{report.category}</p>
         </div>
       </Card>
+      {/* Canonical claim→evidence map — rendered verbatim from the backend
+          synthesis; absent on legacy payloads (the section renders nothing). */}
+      {report.claim_evidence_map && report.claim_evidence_map.claims.length > 0 && (
+        <Card>
+          <ClaimEvidenceMapSection map={report.claim_evidence_map} />
+        </Card>
+      )}
       <Card>
         <SkillReportBody report={report} context={context} />
       </Card>

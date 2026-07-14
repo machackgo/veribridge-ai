@@ -306,8 +306,19 @@ def test_report_includes_github_document_website_summaries(client: TestClient, m
     assert "analysis_snapshot" not in github_proof
 
     documents = body["documents"]
-    assert documents == [{"title": "Final Year Project Report", "source_type": "document", "status": "analyzed"}]
+    assert len(documents) == 1
+    assert documents[0]["title"] == "Final Year Project Report"
+    assert documents[0]["source_type"] == "document"
+    assert documents[0]["status"] == "analyzed"
     assert "document_evidence_id" not in documents[0]
+    # Owner-only retained-original access: honest not-retained state when no
+    # document_original artifact exists (this seeded document was never retained).
+    original = documents[0]["original_document"]
+    assert original["available"] is False
+    assert original["artifact_id"] is None
+    assert original["open_path"] is None
+    assert original["download_path"] is None
+    assert "not retained" in original["note"]
 
     website_proofs = body["website_proofs"]
     assert website_proofs == [
@@ -324,6 +335,67 @@ def test_report_includes_github_document_website_summaries(client: TestClient, m
     # Website proof attached now, but not video/analysis yet.
     assert "Website proof not attached." not in body["limitations"]
     assert "No document proof attached." not in body["limitations"]
+
+
+def test_report_document_original_access_when_retained(client: TestClient, mem_store: dict) -> None:
+    """When the original document file IS retained, the private report carries the
+    owner-only access descriptor: opaque artifact id + the access-gated
+    view/download API routes + the original filename — never a storage path,
+    bucket, or signed URL. The document evidence traces carry the same
+    descriptor so the owner can open the original from the trace too."""
+    from app.services import proof_artifact_service as artifacts
+
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Python", "snippet": "training loop", "page_number": 2}],
+    )
+    artifact = artifacts.register_artifact_with_bytes(
+        mem_store,
+        owner_user_id=USER_ID,
+        proof_type="document",
+        artifact_type="document_original",
+        data=b"docx-bytes",
+        file_name="VeriBridge-AI.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        proof_id=document_id,
+        access_policy="owner_only",
+        page_count=7,
+    )
+    assert artifact is not None
+
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    response = _get_report(client, created["project"]["id"])
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    original = body["documents"][0]["original_document"]
+    assert original["available"] is True
+    assert original["artifact_id"] == artifact["id"]
+    assert original["file_name"] == artifact["file_name"]
+    assert original["mime_type"] == artifact["mime_type"]
+    assert original["page_count"] == 7
+    assert original["open_path"] == f"/api/v1/proofs/artifacts/{artifact['id']}/view"
+    assert original["download_path"] == f"/api/v1/proofs/artifacts/{artifact['id']}/download"
+    assert original["note"] is None
+
+    # The document evidence traces carry the same owner-only descriptor.
+    document_traces = [
+        t for t in body["evidence_traces"] if t["source_type"] == "Document Proof"
+    ]
+    assert document_traces
+    assert all(
+        (t["document_original"] or {}).get("artifact_id") == artifact["id"]
+        for t in document_traces
+    )
+
+    # No storage path, bucket, or signed URL anywhere in the private report.
+    raw = json.dumps(body).lower()
+    assert "storage_path" not in raw
+    assert "bucket" not in raw
+    assert "signed" not in raw
+    assert str(artifact.get("storage_path") or "@@none@@").lower() not in raw
 
 
 def test_report_skill_matrix_maps_skills_to_evidence_sources(client: TestClient, mem_store: dict) -> None:
@@ -2808,3 +2880,55 @@ def test_defense_mapped_to_claimed_skill_creates_no_duplicate_defense_context(
         "Project Defense" in row["supporting_sources"] for row in body["skill_evidence"]
     )
     assert _unmapped_of(body, "Project Defense") == []
+
+
+# ── Development evidence-discovery diagnostics ────────────────────────────────
+
+
+def test_report_emits_dev_evidence_discovery_diagnostics(caplog) -> None:
+    """In development the report build logs a safe evidence-discovery trace:
+    owner/project IDs, per-source counts, and exclusion reasons — never tokens,
+    storage paths, or transcript/file contents."""
+    import logging
+
+    import app.services.vbr_student_report as report_mod
+
+    project = {"id": str(uuid4()), "title": "P", "metadata": {"claimed_skills": ["Python"]}}
+    with caplog.at_level(logging.INFO, logger="app.services.vbr_student_report"):
+        report_mod.build_student_vbr_report({}, {}, project, USER_ID)
+    lines = [r.getMessage() for r in caplog.records if "evidence-discovery" in r.getMessage()]
+    assert lines, "expected an evidence-discovery diagnostic line in development"
+    line = lines[-1]
+    assert f"user={USER_ID}" in line
+    assert f"project={project['id']}" in line
+    assert "cem_citations=" in line and "excluded_reasons=" in line
+    assert "Bearer" not in line and "token" not in line.lower()
+
+
+def test_evidence_discovery_diagnostics_silent_in_production(caplog, monkeypatch) -> None:
+    import logging
+
+    import app.services.vbr_student_report as report_mod
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    project = {"id": str(uuid4()), "title": "P", "metadata": {"claimed_skills": ["Python"]}}
+    with caplog.at_level(logging.INFO, logger="app.services.vbr_student_report"):
+        report_mod.build_student_vbr_report({}, {}, project, USER_ID)
+    assert not [r for r in caplog.records if "evidence-discovery" in r.getMessage()]
+
+
+def test_skill_report_emits_dev_evidence_discovery_diagnostics(caplog) -> None:
+    import logging
+
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    with caplog.at_level(logging.INFO, logger="app.services.student_proof_vault_service"):
+        collect_skill_report({}, {}, USER_ID, "Python", synthesize=False)
+    lines = [
+        r.getMessage() for r in caplog.records if "skill-evidence-discovery" in r.getMessage()
+    ]
+    assert lines, "expected a skill-evidence-discovery diagnostic line in development"
+    assert f"user={USER_ID}" in lines[-1]
+    assert "excluded_reasons=" in lines[-1]

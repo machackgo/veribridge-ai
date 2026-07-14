@@ -50,8 +50,73 @@ def _persist_error() -> HTTPException:
     )
 
 
-def _to_response(row: dict[str, Any], user_id: str) -> DocumentProofResponse:
+def _document_relationships(db: Any, user_id: str) -> dict[str, dict[str, Any]]:
+    """document_evidence_id → canonical relationship, from the SAME sources the
+    Passport/report attachment index reads: normalized 058 rows first, then the
+    projects' ``attached_proofs.documents`` metadata. Owner-scoped; best-effort
+    (a pre-058 database simply yields metadata-only results)."""
+    out: dict[str, dict[str, Any]] = {}
+    projects: dict[str, str] = {}
+    try:
+        if isinstance(db, dict):
+            project_rows = [
+                row for row in db.get("vbr_projects", {}).values()
+                if str(row.get("user_id") or "") == str(user_id)
+            ]
+        else:
+            resp = db.table("vbr_projects").select("id,title,metadata").eq("user_id", user_id).execute()
+            project_rows = list(getattr(resp, "data", []) or [])
+        for project in project_rows:
+            pid = str(project.get("id") or "")
+            projects[pid] = str(project.get("title") or "Project")
+            attached = ((project.get("metadata") or {}).get("attached_proofs") or {})
+            for doc in attached.get("documents") or []:
+                doc_id = str((doc or {}).get("document_evidence_id") or "")
+                if doc_id and doc_id not in out:
+                    out[doc_id] = {
+                        "project_id": pid,
+                        "project_title": projects[pid],
+                        "state": "directly_linked",
+                    }
+    except Exception:
+        pass
+    try:
+        if isinstance(db, dict):
+            relation_rows = [
+                row for row in db.get("proof_project_relationships", {}).values()
+                if str(row.get("owner_user_id") or "") == str(user_id)
+                and row.get("proof_type") == "document"
+            ]
+        else:
+            resp = (
+                db.table("proof_project_relationships")
+                .select("proof_id,project_id,relationship_state")
+                .eq("owner_user_id", user_id)
+                .eq("proof_type", "document")
+                .execute()
+            )
+            relation_rows = list(getattr(resp, "data", []) or [])
+        for relation in relation_rows:
+            doc_id = str(relation.get("proof_id") or "")
+            pid = str(relation.get("project_id") or "")
+            if doc_id and relation.get("relationship_state") == "directly_linked" and pid in projects:
+                out[doc_id] = {
+                    "project_id": pid,
+                    "project_title": projects[pid],
+                    "state": "directly_linked",
+                }
+    except Exception:
+        pass
+    return out
+
+
+def _to_response(
+    row: dict[str, Any],
+    user_id: str,
+    relationships: dict[str, dict[str, Any]] | None = None,
+) -> DocumentProofResponse:
     analysis_json = row.get("analysis_json") or {}
+    relationship = (relationships or {}).get(str(row.get("id") or "")) or {}
     return DocumentProofResponse(
         id=str(row.get("id") or ""),
         user_id=str(row.get("user_id") or user_id),
@@ -64,6 +129,9 @@ def _to_response(row: dict[str, Any], user_id: str) -> DocumentProofResponse:
         analysis_json=analysis_json,
         evidence_objects=row.get("evidence_objects") or [],
         created_at=str(row.get("created_at")) if row.get("created_at") else None,
+        project_id=relationship.get("project_id"),
+        project_title=relationship.get("project_title"),
+        project_relationship_state=str(relationship.get("state") or "vault_only"),
     )
 
 
@@ -205,4 +273,35 @@ def list_document_proofs(
     rows = OptionalEvidenceService(db).list_standalone_for_user(
         user_id=user_id, source_types=_STANDALONE_SOURCE_TYPES
     )
-    return [_to_response(row, user_id) for row in rows]
+    relationships = _document_relationships(db, user_id)
+    return [_to_response(row, user_id, relationships) for row in rows]
+
+
+@router.post(
+    "/{evidence_id}/reextract-blocks",
+    response_model=DocumentProofResponse,
+    summary="Re-extract block-typed evidence from the retained original document",
+)
+def reextract_document_blocks(
+    evidence_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> DocumentProofResponse:
+    """Deterministic, additive block re-extraction (tables / charts / diagrams /
+    code blocks / metrics with section+block locators) from the retained
+    original. Idempotent; the original analysis is preserved. 404 when the
+    submission is not owned; unchanged when no retained original exists."""
+    service = OptionalEvidenceService(db)
+    try:
+        row = service.reextract_blocks_from_retained_original(
+            user_id=user_id, evidence_id=evidence_id
+        )
+    except OptionalEvidencePersistError as exc:
+        raise _persist_error() from exc
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "document_not_found", "message": "Document proof not found."},
+        )
+    relationships = _document_relationships(db, user_id)
+    return _to_response(row, user_id, relationships)

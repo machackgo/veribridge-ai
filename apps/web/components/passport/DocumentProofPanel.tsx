@@ -11,6 +11,7 @@ import {
   type DocumentProofSourceType,
 } from "@/lib/passport-api"
 import { readReturnToFromLocation } from "./safe-return"
+import { ProofProjectAttachPanel } from "./ProofProjectAttachPanel"
 import {
   Badge,
   Btn,
@@ -34,10 +35,12 @@ function DocumentProofCard({
   proof,
   syncStatus,
   onSync,
+  onAttached,
 }: {
   proof: DocumentProofResponse
   syncStatus?: SyncStatus
   onSync: (id: string) => void
+  onAttached: () => void
 }) {
   const items = evidenceItems(proof)
   const skills = Array.from(
@@ -57,6 +60,15 @@ function DocumentProofCard({
             <Badge tone={proof.source_type === "certificate_transcript" ? "purple" : "slate"}>
               {proof.source_type === "certificate_transcript" ? "Certificate / Transcript" : "Document"}
             </Badge>
+            {/* Canonical relationship state — the SAME rows the Passport and
+                reports read; a display title can never fake attachment. */}
+            <span data-testid="document-relationship-state" data-state={proof.project_relationship_state ?? "vault_only"}>
+              {proof.project_relationship_state === "directly_linked" && proof.project_title ? (
+                <Badge tone="emerald">Attached to {proof.project_title}</Badge>
+              ) : (
+                <Badge tone="amber">Needs project attachment — not counted in project reports</Badge>
+              )}
+            </span>
           </div>
 
           {proof.filename && (
@@ -116,24 +128,43 @@ function DocumentProofCard({
             </p>
           )}
 
-          {/* Save to Skill Graph */}
+          {/* Save skill suggestions (pipeline sync). Honest wording: this NEVER
+              attaches the document to a project or makes it report-countable —
+              only the explicit project attachment (canonical relationship) does. */}
           {proof.status === "analyzed" && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
               {(!syncStatus || syncStatus === "error") && (
                 <Btn size="sm" variant="primary" onClick={() => onSync(proof.id)}>
-                  Save to Skill Graph
+                  Save skill suggestions
                 </Btn>
               )}
               {syncStatus === "syncing" && (
-                <Mono style={{ fontSize: 11, color: TOKEN.muted }}>Saving to Skill Graph…</Mono>
+                <Mono style={{ fontSize: 11, color: TOKEN.muted }}>Saving skill suggestions…</Mono>
               )}
               {syncStatus === "saved" && (
-                <Mono style={{ fontSize: 11, color: TOKEN.emerald }}>✓ Saved to Skill Graph</Mono>
+                <Mono style={{ fontSize: 11, color: TOKEN.emerald }}>
+                  ✓ Skill suggestions saved — attach this document to a project for it to count in reports.
+                </Mono>
               )}
               {syncStatus === "error" && (
-                <Mono style={{ fontSize: 11, color: TOKEN.rose }}>Couldn&apos;t save to Skill Graph.</Mono>
+                <Mono style={{ fontSize: 11, color: TOKEN.rose }}>Couldn&apos;t save skill suggestions.</Mono>
               )}
             </div>
+          )}
+
+          {/* Explicit project attachment — the shared canonical finalization
+              flow (existing project / create new / keep vault-only). Shown for
+              analyzed documents so a Document-only project can appear in the
+              Work Passport without any Website Proof. */}
+          {proof.status === "analyzed" && (
+            <ProofProjectAttachPanel
+              proofType="document"
+              proofId={proof.id}
+              relationshipState={proof.project_relationship_state}
+              attachedProjectTitle={proof.project_title}
+              defaultProjectTitle={proof.title || ""}
+              onAttached={onAttached}
+            />
           )}
 
           {proof.created_at && (
@@ -412,7 +443,7 @@ export function DocumentProofPanel() {
       {proofs.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {proofs.map((p) => (
-            <DocumentProofCard key={p.id} proof={p} syncStatus={syncState[p.id]} onSync={runSync} />
+            <DocumentProofCard key={p.id} proof={p} syncStatus={syncState[p.id]} onSync={runSync} onAttached={load} />
           ))}
         </div>
       )}

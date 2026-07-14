@@ -20,12 +20,9 @@
  *    the link was killed).
  */
 
-// Prefer NEXT_PUBLIC_API_URL (production domain, e.g. https://api.veribridgeai.com);
-// fall back to the legacy NEXT_PUBLIC_API_BASE_URL, then to local dev.
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ??
-  process.env.NEXT_PUBLIC_API_BASE_URL ??
-  "http://localhost:8000"
+import { PUBLIC_API_BASE } from "./api-base"
+
+const API_BASE = PUBLIC_API_BASE
 
 /** Shape of a minted beam code: URL-safe base64, 12–64 chars, nothing else. */
 export const BEAM_CODE_PATTERN = /^[A-Za-z0-9_-]{12,64}$/

@@ -6,7 +6,8 @@ Records project workflow evidence for skill verification.
 
 ```bash
 cd apps/extension
-npm install
+npm ci
+npm test           # recorder contract + background lifecycle
 npm run build      # one-off build → dist/
 npm run dev        # rebuild on file change
 npm run typecheck  # TypeScript check only
@@ -17,21 +18,29 @@ npm run typecheck  # TypeScript check only
 1. `npm run build` to produce `dist/`
 2. Open `chrome://extensions`
 3. Enable **Developer mode** (top-right toggle)
-4. Click **Load unpacked** and select the `apps/extension` folder
-5. The **VeriBridge** extension icon appears in your toolbar
+4. Remove or disable historical VeriBridge unpacked copies.
+5. Click **Load unpacked** and select this worktree's `apps/extension` folder
+   (the folder containing `manifest.json`, not `dist/`).
+6. For an already-loaded copy, click **Reload** and then refresh the Website Proof page.
+7. The **VeriBridge** extension icon appears in your toolbar.
+
+The expected manifest/build version is `0.2.0` with recorder schema `1`. The
+generated service worker and content script are under `apps/extension/dist/`.
 
 ## Usage
 
-1. Create a proof session from the VeriBridge dashboard
-2. Copy the **Session ID** shown on the session card
-3. Click the VeriBridge toolbar icon
-4. Paste the Session ID
-5. (Advanced) Set Backend API URL if not using the default `http://localhost:8000`
-6. (Advanced) Paste your Auth Token if the API requires authentication
-7. Click **Start Recording** — navigate and interact with your project
-8. Click **Stop Recording** when done
-9. Optionally add a final note describing what you demonstrated
-10. Click **Send Proof** to upload the captured events to the session
+1. Create a Website Proof session from the authenticated VeriBridge page.
+2. Click **Start Proof Demo**. The page confirms config, target readiness, and
+   recording start for that exact session/revision.
+3. In the automatically opened Recorder tab, start screen capture.
+4. Demonstrate the target workflow, then stop screen capture and wait for the
+   replay upload to succeed.
+5. Stop recording and optionally add a final note in the extension popup.
+6. Click **Send Proof**. Sending remains blocked until replay retention succeeds.
+
+Session ID, API base, auth, project, URL, objective, and claimed skills are
+read-only projections of the single acknowledged background configuration.
+They are never manually pasted into the popup.
 
 ## Privacy
 
@@ -68,7 +77,7 @@ Payload shape:
   "workflow_events": [...],
   "screenshots": [],
   "browser_metadata": { "userAgent": "...", "language": "...", "platform": "..." },
-  "extension_version": "0.1.0",
+  "extension_version": "0.2.0",
   "started_at": "2024-01-01T00:00:00.000Z",
   "stopped_at": "2024-01-01T00:05:00.000Z",
   "student_final_note": "Demonstrated the dashboard analytics feature"

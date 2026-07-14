@@ -23,7 +23,7 @@
 //   (GPU overlay compositor bypasses the normal tab pixel pipeline).
 //   getDisplayMedia at OS level captures what is actually displayed on screen.
 
-import type { ExtensionState } from "./types"
+import type { RecorderPrivateState } from "./types"
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 /** Maximum recording duration in ms (5 minutes) after which capture auto-stops. */
@@ -55,7 +55,7 @@ let autoStopTimer: ReturnType<typeof setTimeout> | null = null
 
 let isRecordingActive = false   // background recording is active
 let currentSessionId = ""
-let currentApiUrl = "http://localhost:8000"
+let currentApiUrl = ""
 let currentAuthToken = ""
 
 let isUploading = false
@@ -137,11 +137,11 @@ function updateDurationBadge(): void {
   }
 }
 
-function applyRecordingState(state: ExtensionState): void {
+function applyRecordingState(state: RecorderPrivateState): void {
   const wasRecording = isRecordingActive
   isRecordingActive  = state.isRecording
   currentSessionId   = state.sessionId ?? ""
-  currentApiUrl      = (state.apiUrl || "http://localhost:8000").replace(/\/$/, "")
+  currentApiUrl      = (state.apiUrl || "").replace(/\/$/, "")
   currentAuthToken   = state.authToken ?? ""
 
   if (state.isRecording) {
@@ -210,6 +210,15 @@ async function uploadVideo(blob: Blob): Promise<void> {
     return
   }
 
+  if (!apiUrl) {
+    uploadError = "No API base is configured for this Website Proof session"
+    isUploading = false
+    updateDurationBadge()
+    setMsg(`Upload skipped: ${uploadError}`, "warn")
+    notifyBackground(false, uploadError, 0)
+    return
+  }
+
   if (!authToken) {
     uploadError = missingAuthMessage
     isUploading = false
@@ -228,6 +237,8 @@ async function uploadVideo(blob: Blob): Promise<void> {
     notifyBackground(false, uploadError, 0)
     return
   }
+
+  notifyUploadStarted()
 
   const ext  = videoMimeType.includes("mp4") ? "mp4" : "webm"
   const form = new FormData()
@@ -268,17 +279,31 @@ async function uploadVideo(blob: Blob): Promise<void> {
     // Parse success response for keyframe count
     let keyframeCount = 0
     let uploadMsg = "Video uploaded."
+    let replayRetained = false
     try {
       const parsed = JSON.parse(bodyText) as {
         keyframe_count?: number
         video_analysis_status?: string
         message?: string
+        replay_retained?: boolean
       }
+      replayRetained = parsed.replay_retained === true
       keyframeCount = parsed?.keyframe_count ?? 0
       const status  = parsed?.video_analysis_status ?? "unknown"
       const kfStr   = keyframeCount > 0 ? `${keyframeCount} keyframe(s) extracted.` : "Keyframe extraction pending."
       uploadMsg = `✓ Video uploaded (${status}). ${kfStr}`
     } catch { /* keep default */ }
+
+    if (!replayRetained) {
+      const reason = "The recording could not be retained for replay. Retry the upload before sending proof."
+      uploadError = reason
+      isUploading = false
+      uploadDone = false
+      updateDurationBadge()
+      setMsg(`Video upload failed: ${reason}`, "err")
+      notifyBackground(false, reason, 0)
+      return
+    }
 
     uploadDone  = true
     isUploading = false
@@ -328,6 +353,16 @@ function notifyBackground(ok: boolean, error: string | null, keyframeCount: numb
       () => { if (chrome.runtime.lastError) { /* ignore */ } },
     )
   } catch { /* context may be gone */ }
+}
+
+function notifyUploadStarted(): void {
+  if (contextInvalidated) return
+  try {
+    chrome.runtime.sendMessage(
+      { type: "RECORDER_VIDEO_UPLOAD_STARTED" },
+      () => { if (chrome.runtime.lastError) { /* ignore */ } },
+    )
+  } catch { /* extension context may be gone */ }
 }
 
 // ── MediaRecorder lifecycle ───────────────────────────────────────────────────
@@ -468,7 +503,7 @@ btnStop.addEventListener("click",  stopCapture)
 function safeSendGet(): void {
   if (contextInvalidated) return
   try {
-    chrome.runtime.sendMessage({ type: "GET_STATE" }, (resp: ExtensionState) => {
+    chrome.runtime.sendMessage({ type: "GET_RECORDER_PRIVATE_STATE" }, (resp: RecorderPrivateState) => {
       if (chrome.runtime.lastError) {
         const m = chrome.runtime.lastError.message ?? ""
         if (m.includes("Extension context invalidated")) contextInvalidated = true

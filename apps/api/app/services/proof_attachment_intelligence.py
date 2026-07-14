@@ -401,6 +401,10 @@ def _group_display_identity(group: dict[str, Any]) -> str:
         return str(group.get("ident") or "")
     if proof_type == _PROOF_WEBSITE and group.get("domain"):
         return f"domain:{group['domain']}"
+    if proof_type == _PROOF_WEBSITE and group.get("repo_id"):
+        return f"repo:{group['repo_id']}"
+    if proof_type == _PROOF_WEBSITE and group.get("text_norm"):
+        return f"hint:{group['text_norm']}"
     title = _norm(group.get("title"))
     if title:
         return f"title:{title}"

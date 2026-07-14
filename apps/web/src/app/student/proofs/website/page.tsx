@@ -1,12 +1,15 @@
 "use client"
 
-import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { Suspense, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { ExtensionProofPanel } from "../../../../../components/skill-proof/extension-proof-panel"
 import { readReturnToFromLocation } from "../../../../../components/passport/safe-return"
 
-export default function WebsiteProofPage() {
+function WebsiteProofPageInner() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const requestedSessionId = searchParams.get("session")
+  const historyMode = searchParams.get("history") === "1"
   // When sent here from another proof-studio flow (e.g. Project Defense) with a
   // safe internal returnTo, the Back action returns there instead of the studio.
   const [returnTo] = useState<string | null>(() => readReturnToFromLocation())
@@ -22,14 +25,29 @@ export default function WebsiteProofPage() {
           marginBottom: 12,
         }}
       >
-        Website / Live App Proof
+        {requestedSessionId ? "Website Proof result" : historyMode ? "Website Proof history" : "Create Website Proof"}
       </h1>
       <p style={{ fontSize: 15, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 32, opacity: 0.85 }}>
-        Capture evidence from a deployed app or live website so VeriBridge can verify real functionality,
-        UI behavior, and workflow proof.
+        {requestedSessionId
+          ? "Review this specific Website Proof session, including its retained replay, analysis, privacy result, and verification."
+          : historyMode
+            ? "Review your Website Proof history without replacing the fresh proof entry state."
+            : "Record a fresh walkthrough of a deployed website or local application."}
       </p>
 
-      <ExtensionProofPanel onBack={() => router.push(returnTo ?? "/student/vbr")} />
+      <ExtensionProofPanel
+        onBack={() => router.push(returnTo ?? "/student/vbr")}
+        requestedSessionId={requestedSessionId}
+        historyMode={historyMode}
+      />
     </div>
+  )
+}
+
+export default function WebsiteProofPage() {
+  return (
+    <Suspense>
+      <WebsiteProofPageInner />
+    </Suspense>
   )
 }

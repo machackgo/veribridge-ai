@@ -27,6 +27,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get(
+    "",
+    response_model=list[ExtensionProofSessionResponse],
+    summary="List the current student's Website Proof sessions",
+)
+def list_sessions(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> list[ExtensionProofSessionResponse]:
+    try:
+        return ExtensionProofSessionService(db).list_sessions(user_id)
+    except SupabaseError as exc:
+        raise _database_unavailable(exc) from exc
+    except Exception as exc:
+        logger.exception("GET /student/extension-proof/sessions: unexpected error")
+        raise _database_unavailable(exc) from exc
+
+
 @router.post(
     "",
     response_model=ExtensionProofSessionResponse,
@@ -41,7 +59,18 @@ def create_session(
     db: Any = Depends(get_db),
 ) -> ExtensionProofSessionResponse:
     try:
+        if body.project_id:
+            # get_db is service-role scoped, so ownership must be checked
+            # explicitly before an external project id can become evidence.
+            from app.api.v1.endpoints.vbr_projects import get_owned_vbr_project_or_404
+
+            get_owned_vbr_project_or_404(db, body.project_id, user_id)
         return ExtensionProofSessionService(db).create_session(user_id, body)
+    except HTTPException:
+        # Preserve the ownership-safe 404 from the project lookup. Converting it
+        # to a database 503 would hide the actual validation result and make a
+        # foreign project relationship indistinguishable from an outage.
+        raise
     except SupabaseError as exc:
         raise _database_unavailable(exc) from exc
     except Exception as exc:

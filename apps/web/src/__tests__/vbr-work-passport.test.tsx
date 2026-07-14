@@ -25,6 +25,8 @@ vi.mock("@/lib/vbr-api", async (importActual) => ({
   publishWorkPassport: vi.fn(),
   unpublishWorkPassport: vi.fn(),
   publishVBRProjectReport: vi.fn(),
+  confirmWebsiteProofProjectRelationship: vi.fn(),
+  confirmProofProjectRelationship: vi.fn(),
 }))
 
 import {
@@ -33,6 +35,8 @@ import {
   publishWorkPassport,
   unpublishWorkPassport,
   publishVBRProjectReport,
+  confirmWebsiteProofProjectRelationship,
+  confirmProofProjectRelationship,
 } from "@/lib/vbr-api"
 
 function makePassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
@@ -94,6 +98,8 @@ beforeEach(() => {
   vi.mocked(publishWorkPassport).mockReset()
   vi.mocked(unpublishWorkPassport).mockReset()
   vi.mocked(publishVBRProjectReport).mockReset()
+  vi.mocked(confirmWebsiteProofProjectRelationship).mockReset()
+  vi.mocked(confirmProofProjectRelationship).mockReset()
 })
 
 describe("PrivatePassportView", () => {
@@ -1465,6 +1471,105 @@ describe("PrivatePassportView — Proof Attachment Intelligence moved to Proof V
       "href",
       "/student/vbr/projects/proj-1/report",
     )
+  })
+
+  it("requires explicit owned-project selection and confirmation before attaching one exact Website Proof", async () => {
+    const initial = makeIntelligencePassport()
+    initial.unattached_proof_summary!.suggestions[0] = {
+      ...initial.unattached_proof_summary!.suggestions[0],
+      proof_id: "fe658e5c-f8c5-47b8-8ff5-2c3a135b09b5",
+      likely_project_id: "proj-1",
+      relationship_state: "vault_only",
+    }
+    const refreshed = makeIntelligencePassport({
+      unattached_proof_summary: {
+        unattached_count: 2,
+        suggestion_count: 0,
+        unmatched_count: 2,
+        suggestions: [],
+      },
+    })
+    vi.mocked(getPrivateWorkPassport)
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(refreshed)
+    vi.mocked(confirmWebsiteProofProjectRelationship).mockResolvedValue({
+      state: "directly_linked",
+      project_id: "proj-1",
+      project_title: "Skill Evidence Tracker",
+      match_method: "user_confirmation",
+      counted: true,
+      confirmed_by_user: true,
+      reasons: ["The student confirmed this Website Proof belongs to the selected project."],
+      action_label: null,
+    })
+
+    render(<ProofVaultView />)
+
+    const control = await screen.findByTestId("website-attachment-control")
+    expect(within(control).getByTestId("confirm-website-attachment")).toBeDisabled()
+    fireEvent.change(within(control).getByTestId("website-attachment-project-select"), {
+      target: { value: "proj-1" },
+    })
+    expect(within(control).getByTestId("confirm-website-attachment")).toBeDisabled()
+    fireEvent.click(within(control).getByTestId("website-attachment-confirmation"))
+    fireEvent.click(within(control).getByTestId("confirm-website-attachment"))
+
+    await waitFor(() =>
+      expect(confirmWebsiteProofProjectRelationship).toHaveBeenCalledWith({
+        proof_id: "fe658e5c-f8c5-47b8-8ff5-2c3a135b09b5",
+        project_id: "proj-1",
+      }),
+    )
+    expect(await screen.findByTestId("website-attachment-success")).toHaveTextContent(
+      "Website Proof attached to Skill Evidence Tracker.",
+    )
+    expect(getPrivateWorkPassport).toHaveBeenCalledTimes(2)
+  })
+
+  it("attaches one exact Document Proof through the shared finalization endpoint", async () => {
+    const initial = makeIntelligencePassport()
+    initial.unattached_proof_summary!.suggestions[0] = {
+      ...initial.unattached_proof_summary!.suggestions[0],
+      proof_type: "Document Proof",
+      proof_title: "VeriBridge Rich Document Proof Test",
+      proof_id: "cb738b3e-73db-4e40-b359-f907106bb997",
+      likely_project_title: "Skill Evidence Tracker",
+      relationship_state: "vault_only",
+    }
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(initial)
+    vi.mocked(confirmProofProjectRelationship).mockResolvedValue({
+      state: "directly_linked",
+      project_id: "proj-1",
+      project_title: "Skill Evidence Tracker",
+      match_method: "user_confirmation",
+      counted: true,
+      confirmed_by_user: true,
+      reasons: ["The student confirmed this document belongs to the selected project."],
+      action_label: null,
+    })
+
+    render(<ProofVaultView />)
+
+    const control = await screen.findByTestId("website-attachment-control")
+    fireEvent.change(within(control).getByTestId("website-attachment-project-select"), {
+      target: { value: "proj-1" },
+    })
+    // Document-specific honest consent copy: only exactly-cited evidence counts.
+    expect(within(control).getByText(/only its exactly-cited evidence/i)).toBeInTheDocument()
+    fireEvent.click(within(control).getByTestId("website-attachment-confirmation"))
+    fireEvent.click(within(control).getByTestId("confirm-website-attachment"))
+
+    await waitFor(() =>
+      expect(confirmProofProjectRelationship).toHaveBeenCalledWith({
+        proof_type: "document",
+        proof_id: "cb738b3e-73db-4e40-b359-f907106bb997",
+        project_id: "proj-1",
+      }),
+    )
+    expect(await screen.findByTestId("website-attachment-success")).toHaveTextContent(
+      "Document Proof attached to Skill Evidence Tracker.",
+    )
+    expect(confirmWebsiteProofProjectRelationship).not.toHaveBeenCalled()
   })
 })
 
@@ -4441,5 +4546,446 @@ describe("PrivatePassportView — Proof Relationship UX consistency", () => {
       .getAllByTestId("skill-project-evidence-row")
       .find((r) => r.getAttribute("data-project-id") === "proj-tm")!
     expect(rowChipSources(teachable)).toEqual(["Website Proof", "Document Proof", "Project Defense", "Video Evidence"])
+  })
+})
+
+// ── Skills Evidence Map wiring regressions (skill-evidence-map-fix) ────────────
+//
+// Root cause proved against the real dev user (836d5bc3): the Proof Vault summary
+// carries a `project_count` that counts duplicate-attempt `vbr_projects` rows
+// (e.g. 24 rows for 2 real projects), and the map used to fold it into the
+// connected-project count — so a skill with ZERO resolvable project edges rendered
+// "Connected projects: 24" while showing no project rows. At the same time, a
+// skill whose evidence lived only in the vault (GitHub / Document proof, no
+// VBR-report skill_evidence row) rendered an EMPTY "vault-only" tier, hiding the
+// real proof source. These lock both defects closed.
+describe("buildPassportGraph — vault project-count honesty + vault proof visibility", () => {
+  it("never inflates connected projects from the vault summary's raw project_count", () => {
+    // Docker lives only in the Proof Vault: no report skill_evidence row and no
+    // project top_skill. Its vault summary claims 24 projects (duplicate rows).
+    const p = makeGraphPassport({
+      skills: [],
+      vault_skill_summaries: [
+        makeVaultSummary({
+          skill: "Docker",
+          skill_slug: "docker",
+          project_count: 24,
+          project_ids: [],
+          project_titles: [],
+          proof_source_counts: { "GitHub Proof": 14, "Document Proof": 1, "Skill Graph": 1 },
+          proof_count: 16,
+          attached_count: 3,
+          unattached_count: 13,
+        }),
+      ],
+    })
+
+    const graph = buildPassportGraph(p)
+    const docker = graph.skills.find((s) => s.name === "Docker")!
+
+    // Honest: no resolvable project edge → zero connected projects (never 24).
+    expect(docker.projectIds).toEqual([])
+    expect(docker.projectCount).toBe(0)
+    // …but its real proof source is NOT invisible — the vault's GitHub + Document
+    // proof surfaces as vault-only chips (the non-proof "Skill Graph" is dropped).
+    expect(docker.vaultOnlySources).toEqual(["GitHub Proof", "Document Proof"])
+    expect(docker.proofSourceCount).toBe(2)
+  })
+
+  it("keeps the honest grouped project_count for a skill with real project edges", () => {
+    // A report skill with one resolvable edge whose vault summary over-reports 21
+    // duplicate-attempt rows must still read one connected project.
+    const base = makePassport().projects[0]
+    const p = makePassport({
+      skills: [
+        {
+          skill: "FastAPI",
+          status: "Partially demonstrated",
+          evidence_chip_count: 1,
+          project_count: 1,
+          evidence_sources: ["GitHub Proof", "Document Proof"],
+          projects: [
+            {
+              project_title: "Boston Smart Accident Risk Rerouting",
+              project_id: "proj-boston",
+              skill_status: "Partially demonstrated",
+              evidence_sources: ["GitHub Proof", "Document Proof"],
+              supporting_proof_types: ["GitHub Proof", "Document Proof"],
+              report_is_public: false,
+              public_report_path: null,
+            },
+          ],
+          evidence_chips: [],
+          notes: "",
+          limitations: [],
+        },
+      ],
+      projects: [
+        { ...base, project_id: "proj-boston", project_title: "Boston Smart Accident Risk Rerouting", claimed_skills: ["FastAPI"], top_skills: [{ skill: "FastAPI", status: "Partially demonstrated", skill_slug: "fastapi", supporting_proof_types: ["GitHub Proof", "Document Proof"] }] },
+      ],
+      vault_skill_summaries: [
+        makeVaultSummary({ skill: "FastAPI", skill_slug: "fastapi", project_count: 21, project_ids: [], proof_source_counts: { "GitHub Proof": 2 } }),
+      ],
+    })
+
+    const graph = buildPassportGraph(p)
+    const fastapi = graph.skills.find((s) => s.name === "FastAPI")!
+
+    expect(fastapi.projectIds).toEqual(["proj-boston"])
+    expect(fastapi.projectCount).toBe(1) // never the vault's 21
+  })
+
+  it("does not synthesize vault-only chips for a skill that already has an attached project edge", () => {
+    // A skill with a real project edge shows its proof on the project row; the
+    // vault summary's proof types must NOT be re-labelled vault-only for it.
+    const base = makePassport().projects[0]
+    const p = makePassport({
+      skills: [
+        {
+          skill: "Python",
+          status: "Demonstrated",
+          evidence_chip_count: 1,
+          project_count: 1,
+          evidence_sources: ["GitHub Proof"],
+          projects: [
+            {
+              project_title: "Boston Smart Accident Risk Rerouting",
+              project_id: "proj-boston",
+              skill_status: "Demonstrated",
+              evidence_sources: ["GitHub Proof"],
+              supporting_proof_types: ["GitHub Proof"],
+              report_is_public: false,
+              public_report_path: null,
+            },
+          ],
+          evidence_chips: [],
+          notes: "",
+          limitations: [],
+          // No backend-computed unattached vault sources for this skill.
+        },
+      ],
+      projects: [
+        { ...base, project_id: "proj-boston", project_title: "Boston Smart Accident Risk Rerouting", claimed_skills: ["Python"], top_skills: [{ skill: "Python", status: "Demonstrated", skill_slug: "python", supporting_proof_types: ["GitHub Proof"] }] },
+      ],
+      vault_skill_summaries: [
+        makeVaultSummary({ skill: "Python", skill_slug: "python", project_count: 24, project_ids: [], proof_source_counts: { "GitHub Proof": 5, "Website Proof": 1 } }),
+      ],
+    })
+
+    const graph = buildPassportGraph(p)
+    const python = graph.skills.find((s) => s.name === "Python")!
+
+    // Proof shows on the attached project row, not as a synthesized vault tier.
+    expect(python.vaultOnlySources).toEqual([])
+    expect(python.projectCount).toBe(1)
+  })
+
+  it("offers a proof type in the Proof Type dropdown when only a vault-only skill has it", () => {
+    // Regression: a candidate with GitHub/Document proof that lives only in the
+    // vault must still be able to filter by those proof types.
+    const p = makeGraphPassport({
+      skills: [],
+      evidence_source_counts: {},
+      projects: [],
+      vault_skill_summaries: [
+        makeVaultSummary({
+          skill: "Technical Documentation",
+          skill_slug: "technical-documentation",
+          project_count: 24,
+          project_ids: [],
+          proof_source_counts: { "Document Proof": 14, "Skill Graph": 1 },
+        }),
+      ],
+    })
+
+    const graph = buildPassportGraph(p)
+    expect(graph.proofTypeOptions).toContain("Document Proof")
+  })
+
+  it("renders a purely-vault skill with 0 connected projects AND its real proof chips", async () => {
+    const p = makeGraphPassport({
+      skills: [],
+      projects: [],
+      evidence_source_counts: {},
+      vault_skill_summaries: [
+        makeVaultSummary({
+          skill: "Docker",
+          skill_slug: "docker",
+          project_count: 24,
+          project_ids: [],
+          project_titles: [],
+          proof_source_counts: { "GitHub Proof": 14, "Document Proof": 1, "Skill Graph": 1 },
+        }),
+      ],
+    })
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const docker = mapSkillCard("Docker")
+    // Honest count — never the vault summary's inflated 24.
+    expect(within(docker).getByTestId("skill-project-count")).toHaveTextContent("Connected projects: 0")
+    // The real GitHub + Document proof is visible (previously an empty row).
+    const vault = within(docker).getByTestId("skill-vault-only")
+    const chips = within(vault)
+      .getAllByTestId("skill-vault-only-chip")
+      .map((c) => c.getAttribute("data-source"))
+    expect(chips).toEqual(["GitHub Proof", "Document Proof"])
+  })
+})
+
+describe("canonical Website Proof project suggestions", () => {
+  it("Website Proof filter shows the suggested VeriBridge project and isolates Boston", async () => {
+    const base = makePassport().projects[0]
+    const p = makeGraphPassport({
+      skills: [],
+      projects: [
+        { ...base, project_id: "proj-veribridge", project_title: "VeriBridge", repo_full_name: "veribridge/veribridge", claimed_skills: ["React"], evidence_sources: [] },
+        { ...base, project_id: "proj-boston", project_title: "Boston Smart Accident Risk Routing", repo_full_name: "demo/boston", claimed_skills: ["React"], evidence_sources: [] },
+      ],
+      evidence_source_counts: { "Website Proof": 1 },
+      vault_skill_summaries: [
+        makeVaultSummary({
+          skill: "React",
+          skill_slug: "react",
+          project_ids: [],
+          project_titles: [],
+          project_count: 0,
+          connected_project_ids: [],
+          has_retained_proof: true,
+          proof_source_counts: { "Website Proof": 1 },
+        }),
+      ],
+      unattached_proof_summary: {
+        unattached_count: 1,
+        suggestion_count: 1,
+        unmatched_count: 0,
+        suggestions: [{
+          suggestion_id_safe: "suggest-veribridge",
+          proof_type: "Website Proof",
+          proof_title: "Website Proof",
+          proof_count: 1,
+          likely_project_title: "VeriBridge",
+          likely_project_ref_safe: "/student/vbr/projects/proj-veribridge/report",
+          likely_skill_names: ["React"],
+          suggestion_reason: "The proof objective names the VeriBridge project.",
+          evidence_basis_chips: ["Matching project title"],
+          confidence_label: "Likely match",
+          attachment_status: "Not attached to a VBR project",
+          limitation: "Suggested match only — review before attaching.",
+          action_label: "Review and attach proof",
+        }],
+      },
+    })
+    const graph = buildPassportGraph(p)
+    const react = graph.skills.find((skill) => skill.name === "React")!
+    expect(react.projectIds).toEqual([])
+    expect(react.projectCount).toBe(0)
+    expect(react.suggestedProjects).toEqual([
+      expect.objectContaining({ projectId: "proj-veribridge", proofType: "Website Proof" }),
+    ])
+
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+    render(<PrivatePassportView />)
+    await screen.findAllByTestId("passport-project-card")
+    fireEvent.change(screen.getByTestId("passport-proof-filter"), { target: { value: "Website Proof" } })
+    const cards = screen.getAllByTestId("passport-project-card")
+    expect(cards).toHaveLength(1)
+    expect(cards[0]).toHaveTextContent("VeriBridge")
+    expect(cards[0]).not.toHaveTextContent("Boston Smart Accident Risk Routing")
+    expect(screen.getByTestId("skill-suggested-projects")).toHaveTextContent("not counted")
+  })
+})
+
+// ── Canonical relationship model + suggested skills + evidence filters ─────────
+describe("buildPassportGraph — canonical relationship model", () => {
+  it("classifies a vault skill attached to a real project as 'attached' (not vault-only)", () => {
+    const p = makeGraphPassport({
+      skills: [],
+      vault_skill_summaries: [
+        makeVaultSummary({
+          skill: "Docker",
+          skill_slug: "docker",
+          project_count: 24,
+          project_ids: ["raw-a", "raw-b"],
+          connected_project_ids: ["proj-1"],
+          connected_project_titles: ["Skill Evidence Tracker"],
+          has_retained_proof: true,
+          proof_source_counts: { "GitHub Proof": 14, "Document Proof": 1 },
+        }),
+      ],
+    })
+
+    const graph = buildPassportGraph(p)
+    const docker = graph.skills.find((s) => s.name === "Docker")!
+
+    expect(docker.relationship).toBe("attached")
+    expect(docker.attachedProjects).toEqual([{ projectId: "proj-1", projectTitle: "Skill Evidence Tracker" }])
+    // Counted as ONE connected project (the grouped representative), never 24.
+    expect(docker.projectCount).toBe(1)
+    expect(docker.hasRetainedProof).toBe(true)
+  })
+
+  it("classifies a Skill-Graph-only skill as 'suggested' with no retained proof", () => {
+    const p = makeGraphPassport({
+      skills: [],
+      projects: [],
+      vault_skill_summaries: [
+        makeVaultSummary({
+          skill: "AI / Machine Learning",
+          skill_slug: "ai-machine-learning",
+          project_count: 0,
+          project_ids: [],
+          connected_project_ids: [],
+          has_retained_proof: false,
+          proof_source_counts: { "Skill Graph": 1 },
+        }),
+      ],
+    })
+
+    const graph = buildPassportGraph(p)
+    const s = graph.skills.find((x) => x.name === "AI / Machine Learning")!
+
+    expect(s.relationship).toBe("suggested")
+    expect(s.hasRetainedProof).toBe(false)
+    expect(s.proofSourceCount).toBe(0)
+    expect(s.projectCount).toBe(0)
+  })
+
+  it("keeps a direct report skill as 'direct' even when a vault summary also lists it", () => {
+    const p = makeGraphPassport({
+      vault_skill_summaries: [
+        makeVaultSummary({ skill: "Python", skill_slug: "python", connected_project_ids: ["proj-1"], has_retained_proof: true }),
+      ],
+    })
+    const graph = buildPassportGraph(p)
+    const python = graph.skills.find((s) => s.name === "Python")!
+    expect(python.relationship).toBe("direct")
+    expect(python.attachedProjects).toEqual([])
+  })
+})
+
+// Mixed passport: one DIRECT (Python), one ATTACHED-not-mapped (Docker), one
+// SUGGESTED (AI / ML). Drives the suggested-hiding + relationship/status/source
+// filters + active chips.
+function makeMixedRelationshipPassport(overrides: Partial<PrivateWorkPassport> = {}): PrivateWorkPassport {
+  return makeGraphPassport({
+    vault_skill_summaries: [
+      makeVaultSummary({ skill: "Python", skill_slug: "python", connected_project_ids: ["proj-1"], has_retained_proof: true, proof_source_counts: { "GitHub Proof": 2 } }),
+      makeVaultSummary({
+        skill: "Docker",
+        skill_slug: "docker",
+        status: "Evidence observed",
+        project_count: 24,
+        project_ids: ["raw-a"],
+        connected_project_ids: ["proj-1"],
+        connected_project_titles: ["Skill Evidence Tracker"],
+        has_retained_proof: true,
+        proof_source_counts: { "Document Proof": 3 },
+      }),
+      makeVaultSummary({
+        skill: "AI / Machine Learning",
+        skill_slug: "ai-machine-learning",
+        status: "Supporting evidence",
+        project_count: 0,
+        project_ids: [],
+        connected_project_ids: [],
+        has_retained_proof: false,
+        proof_source_counts: { "Skill Graph": 1 },
+      }),
+    ],
+    ...overrides,
+  })
+}
+
+const selectFilter = (testid: string, value: string) =>
+  fireEvent.change(screen.getByTestId(testid), { target: { value } })
+
+describe("PrivatePassportView — suggested-skill hiding + evidence filters", () => {
+  beforeEach(() => {
+    const p = makeMixedRelationshipPassport()
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
+    vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
+  })
+
+  it("hides suggested skills by default and reveals them on demand", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    // Direct + attached shown; the bare suggestion is hidden.
+    expect(querySkillCard("Python")).toBeDefined()
+    expect(querySkillCard("Docker")).toBeDefined()
+    expect(querySkillCard("AI / Machine Learning")).toBeUndefined()
+
+    // An honest note offers to review the hidden suggestion.
+    const note = screen.getByTestId("suggested-skills-note")
+    expect(note).toHaveTextContent("1 AI-suggested skill is hidden")
+    fireEvent.click(screen.getByTestId("show-suggested-skills"))
+
+    // Now only the suggestion shows, and it is NOT dressed up as observed evidence.
+    expect(querySkillCard("AI / Machine Learning")).toBeDefined()
+    const s = skillCard("AI / Machine Learning")
+    expect(within(s).getByTestId("skill-overall-status")).toHaveTextContent("Suggested — no retained proof")
+    expect(within(s).getByTestId("skill-overall-status")).not.toHaveTextContent("Evidence observed")
+    expect(within(s).getByTestId("skill-suggested")).toBeInTheDocument()
+  })
+
+  it("renders the attached-not-skill-mapped tier with a real project link", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    const docker = skillCard("Docker")
+    expect(within(docker).getByTestId("skill-relationship-badge")).toHaveAttribute("data-relationship", "attached")
+    expect(within(docker).getByTestId("skill-project-count")).toHaveTextContent("Connected projects: 1")
+    const tier = within(docker).getByTestId("skill-attached-not-mapped")
+    expect(within(tier).getByTestId("skill-attached-project-link")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-1/report",
+    )
+    // Its proof is visible but never presented as direct skill evidence.
+    expect(within(docker).queryByTestId("skill-project-evidence-row")).not.toBeInTheDocument()
+  })
+
+  it("filters by relationship type", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    selectFilter("passport-relationship-filter", "attached")
+    expect(querySkillCard("Docker")).toBeDefined()
+    expect(querySkillCard("Python")).toBeUndefined()
+    expect(screen.getByTestId("filter-result-count")).toHaveTextContent("1 of")
+  })
+
+  it("filters by evidence status", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    selectFilter("passport-status-filter", "Evidence observed")
+    expect(querySkillCard("Docker")).toBeDefined() // Docker is "Evidence observed"
+    expect(querySkillCard("Python")).toBeUndefined() // Python is "Demonstrated"
+  })
+
+  it("filters by evidence source", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    selectFilter("passport-source-filter", "Document Proof")
+    expect(querySkillCard("Docker")).toBeDefined() // Docker proof is Document
+    expect(querySkillCard("Python")).toBeUndefined() // Python proof is GitHub
+  })
+
+  it("shows removable active-filter chips and clears them", async () => {
+    render(<PrivatePassportView />)
+    await screen.findByTestId("passport-graph-explorer")
+
+    selectFilter("passport-relationship-filter", "attached")
+    const chip = screen.getByTestId("active-filter-chips")
+    expect(within(chip).getByText(/Relationship: Attached/)).toBeInTheDocument()
+    // Removing the chip restores the unfiltered map.
+    fireEvent.click(within(chip).getAllByTestId("active-filter-chip").find((c) => c.getAttribute("data-filter") === "relationship")!)
+    expect(querySkillCard("Python")).toBeDefined()
   })
 })

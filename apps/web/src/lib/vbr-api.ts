@@ -1,13 +1,11 @@
 "use client"
 
 import { fetchAPI } from "@/lib/api"
+import { PUBLIC_API_BASE } from "@/lib/api-base"
 
 // Prefer NEXT_PUBLIC_API_URL (production domain, e.g. https://api.veribridgeai.com);
 // fall back to the legacy NEXT_PUBLIC_API_BASE_URL, then to local dev.
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ??
-  process.env.NEXT_PUBLIC_API_BASE_URL ??
-  "http://localhost:8000"
+const API_BASE = PUBLIC_API_BASE
 
 /**
  * Client for the Verified Build Report (VBR) session recording endpoints.
@@ -231,6 +229,25 @@ export async function getVBRProject(projectId: string): Promise<VBRProjectRespon
 export async function listVBRProjects(): Promise<VBRProjectResponse[]> {
   const res = await fetchAPI("/api/v1/student/vbr/projects")
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load projects (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/**
+ * Explicitly create a new owned VBR project. Used by the shared proof→project
+ * attach flow when the student chooses "create a new project" — the canonical
+ * project row is persisted FIRST, then the proof is finalized against it. The
+ * client never creates a project implicitly from proof metadata.
+ */
+export async function createVBRProject(input: {
+  title: string
+  repo_url: string
+  deployed_url?: string | null
+}): Promise<VBRProjectResponse> {
+  const res = await fetchAPI("/api/v1/student/vbr/projects", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to create project (HTTP ${res.status}).`))
   return res.json()
 }
 
@@ -794,10 +811,33 @@ export type VBRReportGitHubProofSummary = {
   repo_is_public?: boolean
 }
 
+/**
+ * Owner-only access descriptor for the RETAINED original document file.
+ * Present ONLY on the private student report (the public builder strips it).
+ * Carries the opaque artifact id plus the access-gated view/download API
+ * routes — the backend re-checks ownership on every request, so the descriptor
+ * is inert for anyone but the owner. Never a storage path, bucket, or signed
+ * URL. `available === false` is the honest not-retained state, explained by
+ * `note`.
+ */
+export type VBRReportDocumentOriginalAccess = {
+  available: boolean
+  artifact_id: string | null
+  file_name: string | null
+  mime_type: string | null
+  size_bytes: number | null
+  page_count: number | null
+  open_path: string | null
+  download_path: string | null
+  note: string | null
+}
+
 export type VBRReportDocumentSummary = {
   title: string
   source_type: string | null
   status: string | null
+  /** Owner-only retained-original access (private report only; absent/null on public surfaces). */
+  original_document?: VBRReportDocumentOriginalAccess | null
 }
 
 export type VBRReportWebsiteProofSummary = {
@@ -832,6 +872,15 @@ export type WebsiteProofSkillRelevance = {
  */
 export type WebsiteProofSkillEvidence = {
   target_website: string
+  website_replay_available?: boolean
+  website_replay_path?: string | null
+  website_artifact_id?: string | null
+  website_analysis_path?: string | null
+  website_timeline?: { timestamp_label?: string | null; description: string }[]
+  project_relationship_state?: string
+  project_identity_state?: string
+  project_identity_reasons?: string[]
+  counted_for_project?: boolean
   behavior_claim: string
   website_purpose_key: string
   website_purpose_label: string
@@ -860,6 +909,7 @@ export type VBRReportEvidencePackageSummary = {
   github_proof_attached: boolean
   documents_count: number
   website_proofs_count: number
+  website_proofs_excluded_count?: number
   project_defense_completed: boolean
   video_defense_recorded: boolean
   video_evidence_chip_count: number
@@ -922,6 +972,15 @@ export type EvidenceTrace = {
   timestamp?: string | null
   /** Human timestamp label for video traces (e.g. "02:14"). */
   timestamp_label?: string | null
+  website_replay_available?: boolean
+  website_replay_path?: string | null
+  website_artifact_id?: string | null
+  website_replay_duration_seconds?: number | null
+  website_replay_mime_type?: string | null
+  website_analysis_path?: string | null
+  website_timeline?: { timestamp_label?: string | null; description: string }[]
+  /** Owner-only retained-original document access (private report only; null on public surfaces). */
+  document_original?: VBRReportDocumentOriginalAccess | null
   limitation: string
   is_publicly_openable: boolean
   private_evidence_note?: string | null
@@ -998,6 +1057,14 @@ export type VaultProofItem = {
   has_precise_line_evidence?: boolean | null
   github_line_url?: string | null
   repo_url?: string | null
+  project_hint?: string | null
+  project_relationship_state?: string | null
+  website_replay_available?: boolean
+  website_replay_path?: string | null
+  website_artifact_id?: string | null
+  website_replay_duration_seconds?: number | null
+  website_replay_mime_type?: string | null
+  website_analysis_path?: string | null
   page_number?: number | null
   section_label?: string | null
   citation?: string | null
@@ -1043,6 +1110,15 @@ export type VaultSkillSummary = {
   project_ids: string[]
   project_titles: string[]
   project_count: number
+  /** Grouped, on-passport project ids the skill's vault proof is attached to
+   *  (duplicate-attempt raw rows resolved to their representative project). The
+   *  honest connected-project set — never the inflated raw `project_count`. */
+  connected_project_ids?: string[]
+  connected_project_titles?: string[]
+  /** True when a retained, inspectable proof source (GitHub / Document / Website /
+   *  Project Defense / Video) backs this skill — false when it is only a derived
+   *  Skill-Graph/AI signal (a bare suggestion). */
+  has_retained_proof?: boolean
   proof_source_counts: Record<string, number>
   proof_count: number
   attached_count: number
@@ -1120,6 +1196,14 @@ export type SkillReportEvidenceItem = {
   has_precise_line_evidence?: boolean | null
   github_line_url?: string | null
   repo_url?: string | null
+  project_hint?: string | null
+  project_relationship_state?: string | null
+  website_replay_available?: boolean
+  website_replay_path?: string | null
+  website_artifact_id?: string | null
+  website_replay_duration_seconds?: number | null
+  website_replay_mime_type?: string | null
+  website_analysis_path?: string | null
   // Canonical (old GitHub Profile & Proof engine) fields — precise
   // selection_reason ("API endpoint decorator") + optional subskill / graph node.
   selection_reason?: string | null
@@ -1133,6 +1217,7 @@ export type SkillReportEvidenceItem = {
   timestamp_label?: string | null
   workflow_summary?: string | null
   workflow_steps: string[]
+  workflow_timeline?: { timestamp_label?: string | null; description: string }[]
   dom_summary?: string | null
   ocr_summary?: string | null
   visual_summary?: string | null
@@ -1694,6 +1779,258 @@ export type SkillReportOverview = {
 }
 
 /** Layer 2 — the full, recruiter-verifiable evidence for one selected skill. */
+// ── Canonical claim→evidence contracts (see api app/schemas/canonical_evidence.py)
+// The backend synthesizes ALL relationships (tiers, identity, corroboration);
+// the frontend only renders these structures — it never re-infers them.
+
+export type CanonicalAccessDescriptor = {
+  kind: string
+  label: string
+  available: boolean
+  action_label?: string | null
+  /** Set ONLY for genuinely public targets (GitHub line link, live site). */
+  url?: string | null
+  requires_owner_permission?: boolean
+  note?: string | null
+}
+
+export type CanonicalVideoDescriptor = {
+  proof_type: string
+  recording_available: boolean
+  availability: "retained" | "not_retained" | "pending" | string
+  duration_label?: string | null
+  mime_type?: string | null
+  transcript_available: boolean
+  poster_available?: boolean
+  timeline_events: { timestamp_label?: string | null; description: string }[]
+  cited_segments: { start_label?: string | null; end_label?: string | null; description: string }[]
+  access?: CanonicalAccessDescriptor | null
+  limitations: string[]
+}
+
+export type CanonicalDocumentAccess = {
+  retained: boolean
+  excerpts_only: boolean
+  open_available: boolean
+  download_available: boolean
+  publication_state: string
+  original_filename?: string | null
+  mime_type?: string | null
+  limitations: string[]
+}
+
+export type CanonicalProjectRelationship = {
+  state: "directly_linked" | "suggested_match" | "mismatched_project" | "vault_only" | "legacy_unresolved" | string
+  project_id?: string | null
+  project_title?: string | null
+  match_method: string
+  counted: boolean
+  confirmed_by_user: boolean
+  reasons: string[]
+  action_label?: string | null
+}
+
+export type ProofFinalizationResult = {
+  proof_id: string
+  proof_type: string
+  project_id: string
+  project_relationship: CanonicalProjectRelationship
+  evidence_item_count: number
+  supported_skill_count: number
+  unsupported_skill_count: number
+  claim_link_count: number
+  artifact_ids: string[]
+  report_eligibility: string
+  warnings: string[]
+  failure_category?: string | null
+  already_finalized: boolean
+  finalized_at?: string | null
+}
+
+export type CanonicalDocumentBlock = {
+  document_id?: string | null
+  document_title: string
+  page_number?: number | null
+  block_type: string
+  bounding_box?: number[] | null
+  extracted_text?: string | null
+  table_cells: string[][]
+  visual_description?: string | null
+  nearby_caption?: string | null
+  extraction_confidence: string
+  model_limitation?: string | null
+  preview_url?: string | null
+  open_page_url?: string | null
+}
+
+export type CanonicalProjectFeature = {
+  id: string
+  project_id?: string | null
+  title: string
+  description: string
+  feature_type: string
+  related_skills: string[]
+  repo_paths: string[]
+  routes: string[]
+  runtime_workflows: string[]
+  document_sections: string[]
+  defense_question_ids: string[]
+}
+
+/**
+ * Honest per-bucket proof-SOURCE counts (distinct proof types, never raw
+ * citation rows). Only direct + corroborating contribute to a supported-proof
+ * count; every other bucket renders visibly but is never counted.
+ */
+export type CanonicalSourceCounts = {
+  direct: number
+  corroborating: number
+  context_only: number
+  pending: number
+  vault_only: number
+  unsupported: number
+  direct_sources: string[]
+  corroborating_sources: string[]
+  context_only_sources: string[]
+  pending_sources: string[]
+  vault_only_sources: string[]
+  unsupported_sources: string[]
+}
+
+export type CanonicalSkillClaim = {
+  id: string
+  project_id?: string | null
+  skill_id: string
+  skill_name: string
+  claim_text: string
+  claim_scope: string
+  feature_ids: string[]
+  /** Closed qualitative ladder — never a numeric score. */
+  qualitative_status: string
+  strongest_evidence_tier: string
+  /** Honest per-bucket source counts for THIS claim. */
+  source_counts?: CanonicalSourceCounts
+  limitations: string[]
+}
+
+export type CanonicalEvidenceCitation = {
+  evidence_id: string
+  proof_type: string
+  project_id?: string | null
+  skill_id?: string | null
+  claim_id?: string | null
+  feature_id?: string | null
+  source_title: string
+  citation_type?: string
+  source_proof_id?: string | null
+  source_artifact_id?: string | null
+  source_locator?: string | null
+  file_path?: string | null
+  symbol_name?: string | null
+  start_line?: number | null
+  end_line?: number | null
+  /** Analyzed context window (trusted provenance) when wider than the target
+   *  lines — rendered as "Analyzed context"; the target citation above is
+   *  never rewritten to pretend the wider window was the target. */
+  context_start_line?: number | null
+  context_end_line?: number | null
+  /** Analyzer version that produced the stored classification. */
+  analysis_version?: string | null
+  commit_sha?: string | null
+  code_excerpt?: string | null
+  timestamp_start_label?: string | null
+  timestamp_end_label?: string | null
+  transcript_excerpt?: string | null
+  question_text?: string | null
+  page_number?: number | null
+  section_title?: string | null
+  figure_or_table?: string | null
+  observed_action?: string | null
+  observed_output?: string | null
+  route_or_page?: string | null
+  explanation: string
+  relevance: string
+  strength: string
+  github_tier?: string | null
+  identity_state?: "matched_direct" | "possible_match_review" | "project_context" | "mismatched" | "unrelated" | null
+  identity_reasons: string[]
+  /** THE flag: mismatched / context / pending citations render but never count. */
+  counted_as_direct_evidence: boolean
+  /** Weak/repo-level context deduplicated into the map-level grouped section. */
+  grouped_context?: boolean
+  /** Video citation folded into the SAME defense recording's citation — a
+   *  citation layer, never an independent proof source. */
+  duplicate_of_evidence_id?: string | null
+  project_relationship?: CanonicalProjectRelationship | null
+  evidence_status?: string
+  evidence_quality?: string
+  privacy_state?: string
+  publication_state?: string
+  analysis_pending?: boolean
+  access?: CanonicalAccessDescriptor | null
+  actions?: CanonicalAccessDescriptor[]
+  video?: CanonicalVideoDescriptor | null
+  document_access?: CanonicalDocumentAccess | null
+  document_block?: CanonicalDocumentBlock | null
+  limitations: string[]
+}
+
+export type CanonicalEvidenceRelation = {
+  source_evidence_id: string
+  target_evidence_id?: string | null
+  relation_type: string
+  claim_id?: string | null
+  feature_id?: string | null
+  reason: string
+  confidence_label: string
+}
+
+export type CanonicalCorroborationGroup = {
+  group_id: string
+  claim_id: string
+  feature_id?: string | null
+  evidence_ids: string[]
+  sources: string[]
+  alignment_reason: string
+  independent_sources: boolean
+  unique_contributions: string[]
+  limitations: string[]
+}
+
+export type CanonicalContradiction = {
+  contradiction_id: string
+  kind: string
+  claim_id?: string | null
+  evidence_ids: string[]
+  description: string
+  recommended_action: string
+}
+
+export type CanonicalEvidenceGap = {
+  claim_id?: string | null
+  proof_type?: string | null
+  description: string
+  recommended_action: string
+}
+
+export type ClaimEvidenceMap = {
+  schema_version: number
+  scope: "skill_report" | "project_report" | string
+  skill_name?: string | null
+  project_id?: string | null
+  claims: CanonicalSkillClaim[]
+  features: CanonicalProjectFeature[]
+  citations: CanonicalEvidenceCitation[]
+  relations: CanonicalEvidenceRelation[]
+  corroborations: CanonicalCorroborationGroup[]
+  contradictions: CanonicalContradiction[]
+  gaps: CanonicalEvidenceGap[]
+  /** Map-level union of the per-claim source buckets. */
+  source_counts?: CanonicalSourceCounts
+  recruiter_actions: string[]
+  limitations: string[]
+}
+
 export type SkillReport = {
   skill: string
   skill_slug: string
@@ -1737,6 +2074,11 @@ export type SkillReport = {
   skill_graph: SkillReportEvidenceItem[]
   gaps: string[]
   generated_at: string
+  /**
+   * Canonical claim→evidence map (deterministic backend synthesis; shared
+   * contract with the Project Report). Absent/null on legacy payloads.
+   */
+  claim_evidence_map?: ClaimEvidenceMap | null
 }
 
 /**
@@ -1857,6 +2199,12 @@ export type VBRStudentProjectReportResponse = {
 
   limitations: string[]
   next_actions: string[]
+
+  /**
+   * Canonical claim→evidence map (deterministic backend synthesis; shared
+   * contract with the Skill Report). Absent/null on legacy payloads.
+   */
+  claim_evidence_map?: ClaimEvidenceMap | null
 
   preview_only: boolean
   public_recruiter_sharing_enabled: boolean
@@ -2363,6 +2711,10 @@ export type ProofAttachmentSuggestion = {
   likely_project_title: string
   /** Owner-only project-report route (absent when the project id is unknown). */
   likely_project_ref_safe?: string | null
+  /** Owner-only exact ids for explicit Website Proof confirmation. */
+  proof_id?: string | null
+  likely_project_id?: string | null
+  relationship_state?: string
   likely_skill_names: string[]
   suggestion_reason: string
   evidence_basis_chips: string[]
@@ -2662,6 +3014,66 @@ export type PublicWorkPassport = {
 export async function getPrivateWorkPassport(): Promise<PrivateWorkPassport> {
   const res = await fetchAPI("/api/v1/student/vbr/passport")
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load passport (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/**
+ * Confirm that an owned Website Proof belongs to an owned project.
+ *
+ * This is the only client mutation that upgrades a vault-only/suggested
+ * relationship to countable evidence. The API re-checks ownership for both
+ * records and records user-confirmation provenance; the client never infers or
+ * writes a relationship from a title/skill match.
+ */
+export async function confirmWebsiteProofProjectRelationship(input: {
+  proof_id: string
+  project_id: string
+}): Promise<CanonicalProjectRelationship> {
+  return confirmProofProjectRelationship({ proof_type: "website", ...input })
+}
+
+/**
+ * Confirm that ANY owned proof (website / document / github / project_defense /
+ * video) belongs to an owned project — the shared finalization boundary. The
+ * API re-checks ownership of both records, persists the canonical relationship
+ * + claim links, and records user-confirmation provenance. The client never
+ * infers or writes a relationship from a title/skill match.
+ */
+export async function confirmProofProjectRelationship(input: {
+  proof_type: string
+  proof_id: string
+  project_id: string
+}): Promise<CanonicalProjectRelationship> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/proof-relationships/confirm", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) {
+    throw new Error(
+      await parseErrorMessage(res, `Failed to attach proof (HTTP ${res.status}).`),
+    )
+  }
+  return res.json()
+}
+
+/**
+ * Finalize a completed Website Proof through the shared canonical evidence
+ * service.  The server re-checks proof/project ownership, retained replay,
+ * analysis identity, project conflicts, and idempotency on every call.
+ */
+export async function finalizeWebsiteProof(input: {
+  proof_id: string
+  project_id: string
+}): Promise<ProofFinalizationResult> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/proofs/finalize", {
+    method: "POST",
+    body: JSON.stringify({ proof_type: "website", ...input }),
+  })
+  if (!res.ok) {
+    throw new Error(
+      await parseErrorMessage(res, `Failed to save Website Proof (HTTP ${res.status}).`),
+    )
+  }
   return res.json()
 }
 

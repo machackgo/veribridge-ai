@@ -302,6 +302,20 @@ def test_upload_response_hides_storage_paths(monkeypatch):
     # Mock extractor + visual analysis service + storage
     mock_db = MagicMock()
     mock_db.storage = _make_storage_mock()
+    owned_session_response = MagicMock()
+    owned_session_response.data = {
+        "id": SESSION_ID,
+        "user_id": DEMO_USER_ID,
+        "status": "recording",
+    }
+    (
+        mock_db.table.return_value
+        .select.return_value
+        .eq.return_value
+        .eq.return_value
+        .maybe_single.return_value
+        .execute
+    ).return_value = owned_session_response
     mock_db.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock()
     mock_db.table.return_value.insert.return_value.execute.return_value = MagicMock()
     app.dependency_overrides[get_db] = lambda: mock_db

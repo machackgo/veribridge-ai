@@ -24,10 +24,21 @@ vi.mock("@/lib/supabase/client", () => ({
 import {
   AUTH_SESSION_MISSING_CODE,
   fetchAPI,
-  publishRecorderAuthToExtension,
-  RECORDER_AUTH_MESSAGE_SOURCE,
-  RECORDER_AUTH_MESSAGE_TYPE,
+  initializeWebsiteProofRecorder,
+  openWebsiteProofTarget,
+  startWebsiteProofRecording,
 } from "@/lib/api"
+import {
+  RECORDER_INIT_ACK,
+  RECORDER_INIT_REQUEST,
+  RECORDER_START_ACK,
+  RECORDER_START_REQUEST,
+  RECORDER_TARGET_OPEN_REQUEST,
+  RECORDER_TARGET_READY,
+  WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+  WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+  type WebsiteProofRecorderConfig,
+} from "../../../../packages/shared/websiteProofRecorderContract"
 
 const fetchMock = vi.fn()
 
@@ -51,6 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 describe("fetchAPI", () => {
@@ -150,39 +162,269 @@ describe("fetchAPI", () => {
   })
 })
 
-describe("publishRecorderAuthToExtension", () => {
-  it("posts the signed-in access token to same-origin listeners only", async () => {
-    vi.useFakeTimers()
-    getSession.mockResolvedValue(sessionOf("recorder-token"))
-    const postMessage = vi.fn()
+describe("initializeWebsiteProofRecorder", () => {
+  const recorderInput = {
+    config_revision: 1,
+    session_id: "session-new-wikitok",
+    owner_user_id: "user-1",
+    project_id: "project-1",
+    website_url: "https://wikitok.io/",
+    repository_url: "https://github.com/IsaacGemal/wikitok",
+    claimed_skills: ["React", " TypeScript "],
+    proof_objective: "Demonstrate five articles and change language",
+    created_at: "2026-07-14T05:04:43Z",
+  }
+
+  it("waits for the exact versioned ACK and keeps secrets out of URLs", async () => {
+    getSession.mockResolvedValue({
+      data: { session: { access_token: "recorder-token", user: { id: "user-1" }, expires_at: 1_900_000_000 } },
+    })
+    const postMessage = vi.fn((message: { type?: string; payload?: { request_id?: string; config?: Record<string, unknown> } }, _targetOrigin?: string) => {
+      if (message.type !== RECORDER_INIT_REQUEST || !message.payload?.request_id) return
+      const config = message.payload.config as { session_id: string; config_revision: number; api_base_url: string }
+      window.dispatchEvent(new MessageEvent("message", {
+        data: {
+          source: "veribridge-extension",
+          type: RECORDER_INIT_ACK,
+          payload: {
+            request_id: message.payload.request_id,
+            session_id: config.session_id,
+            config_revision: config.config_revision,
+            api_base_url: config.api_base_url,
+            schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+            build_version: WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+            extension_id: "extension-id",
+            ready: true,
+          },
+        },
+        origin: window.location.origin,
+        source: window,
+      }))
+    })
     vi.spyOn(window, "postMessage").mockImplementation(postMessage as never)
 
-    const published = await publishRecorderAuthToExtension()
-    await vi.runAllTimersAsync()
+    const result = await initializeWebsiteProofRecorder(recorderInput)
 
-    expect(published).toBe(true)
-    expect(postMessage).toHaveBeenCalledTimes(4)
-    for (const [message, targetOrigin] of postMessage.mock.calls) {
-      expect(message.source).toBe(RECORDER_AUTH_MESSAGE_SOURCE)
-      expect(message.type).toBe(RECORDER_AUTH_MESSAGE_TYPE)
-      expect(message.payload.authToken).toBe("recorder-token")
-      // Origin-pinned: never broadcast with "*", so the external target site the
-      // recorder is visiting can never receive the token.
-      expect(targetOrigin).toBe(window.location.origin)
-      expect(targetOrigin).not.toBe("*")
-    }
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.config.api_base_url).toBe("http://localhost:8128")
+    expect(result.config.claimed_skills).toEqual(["React", "TypeScript"])
+    expect(result.config.website_url).not.toContain("recorder-token")
+    expect(result.config.repository_url).not.toContain("recorder-token")
+    expect(postMessage.mock.calls[0][1]).toBe(window.location.origin)
   })
 
-  it("publishes nothing when the user is signed out", async () => {
-    vi.useFakeTimers()
+  it("fails specifically when authentication is unavailable", async () => {
     getSession.mockResolvedValue(sessionOf(null))
     const postMessage = vi.fn()
     vi.spyOn(window, "postMessage").mockImplementation(postMessage as never)
 
-    const published = await publishRecorderAuthToExtension()
-    await vi.runAllTimersAsync()
+    const result = await initializeWebsiteProofRecorder(recorderInput)
 
-    expect(published).toBe(false)
+    expect(result).toMatchObject({ ok: false, error_code: "authentication_unavailable" })
     expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it("retries a sleeping worker and succeeds on the second delivery", async () => {
+    vi.useFakeTimers()
+    getSession.mockResolvedValue({
+      data: { session: { access_token: "recorder-token", user: { id: "user-1" }, expires_at: 1_900_000_000 } },
+    })
+    let initDeliveries = 0
+    vi.spyOn(window, "postMessage").mockImplementation(((message: {
+      type?: string
+      payload?: { request_id?: string; config?: Record<string, unknown> }
+    }) => {
+      if (message.type !== RECORDER_INIT_REQUEST || !message.payload?.request_id) return
+      initDeliveries += 1
+      if (initDeliveries !== 2) return
+      const cfg = message.payload.config as { session_id: string; config_revision: number; api_base_url: string }
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "veribridge-extension", type: RECORDER_INIT_ACK, payload: {
+          request_id: message.payload.request_id,
+          session_id: cfg.session_id,
+          config_revision: cfg.config_revision,
+          api_base_url: cfg.api_base_url,
+          schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+          build_version: WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+          extension_id: "extension-id",
+          ready: true,
+        } },
+        origin: window.location.origin,
+        source: window,
+      }))
+    }) as never)
+
+    const pending = initializeWebsiteProofRecorder(recorderInput)
+    await vi.advanceTimersByTimeAsync(300)
+    const result = await pending
+
+    expect(result.ok).toBe(true)
+    expect(initDeliveries).toBe(2)
+  })
+
+  it("returns extension_not_detected when no extension message arrives", async () => {
+    vi.useFakeTimers()
+    getSession.mockResolvedValue({
+      data: { session: { access_token: "recorder-token", user: { id: "user-1" }, expires_at: 1_900_000_000 } },
+    })
+    vi.spyOn(window, "postMessage").mockImplementation(() => undefined)
+
+    const pending = initializeWebsiteProofRecorder(recorderInput)
+    await vi.advanceTimersByTimeAsync(7_100)
+
+    await expect(pending).resolves.toMatchObject({ ok: false, error_code: "extension_not_detected" })
+  })
+
+  it("identifies a legacy extension build distinctly", async () => {
+    vi.useFakeTimers()
+    getSession.mockResolvedValue({
+      data: { session: { access_token: "recorder-token", user: { id: "user-1" }, expires_at: 1_900_000_000 } },
+    })
+    vi.spyOn(window, "postMessage").mockImplementation(((message: { type?: string }) => {
+      if (message.type !== "VERIBRIDGE_SET_RECORDER_AUTH") return
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "veribridge-extension", type: "VERIBRIDGE_RECORDER_AUTH_APPLIED", payload: {} },
+        origin: window.location.origin,
+        source: window,
+      }))
+    }) as never)
+
+    const pending = initializeWebsiteProofRecorder(recorderInput)
+    await vi.advanceTimersByTimeAsync(2_100)
+
+    await expect(pending).resolves.toMatchObject({ ok: false, error_code: "extension_version_incompatible" })
+  })
+
+  it("rejects an ACK from the wrong session", async () => {
+    getSession.mockResolvedValue({
+      data: { session: { access_token: "recorder-token", user: { id: "user-1" }, expires_at: 1_900_000_000 } },
+    })
+    vi.spyOn(window, "postMessage").mockImplementation(((message: {
+      type?: string
+      payload?: { request_id?: string; config?: Record<string, unknown> }
+    }) => {
+      if (message.type !== RECORDER_INIT_REQUEST || !message.payload?.request_id) return
+      const cfg = message.payload.config as { config_revision: number; api_base_url: string }
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "veribridge-extension", type: RECORDER_INIT_ACK, payload: {
+          request_id: message.payload.request_id,
+          session_id: "session-historical",
+          config_revision: cfg.config_revision,
+          api_base_url: cfg.api_base_url,
+          schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+          build_version: WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+          extension_id: "extension-id",
+          ready: true,
+        } },
+        origin: window.location.origin,
+        source: window,
+      }))
+    }) as never)
+
+    await expect(initializeWebsiteProofRecorder(recorderInput)).resolves
+      .toMatchObject({ ok: false, error_code: "session_mismatch" })
+  })
+})
+
+describe("target and recording acknowledgements", () => {
+  const config: WebsiteProofRecorderConfig = {
+    schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+    config_revision: 4,
+    session_id: "session-new-wikitok",
+    owner_user_id: "user-1",
+    api_base_url: "http://localhost:8128",
+    auth: { mechanism: "bearer", access_token: "private-token", expires_at: null },
+    project_id: "project-1",
+    website_url: "https://wikitok.io/",
+    repository_url: "https://github.com/IsaacGemal/wikitok",
+    claimed_skills: ["React", "TypeScript"],
+    proof_objective: "Demonstrate the WikiTok feed and language workflow",
+    created_at: "2026-07-14T05:04:43.000Z",
+    expires_at: null,
+  }
+
+  it("waits for exact target readiness with API base and skills preserved", async () => {
+    vi.spyOn(window, "postMessage").mockImplementation(((message: {
+      type?: string
+      payload?: { request_id?: string }
+    }) => {
+      if (message.type !== RECORDER_TARGET_OPEN_REQUEST || !message.payload?.request_id) return
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "veribridge-extension", type: RECORDER_TARGET_READY, payload: {
+          request_id: message.payload.request_id,
+          session_id: config.session_id,
+          config_revision: config.config_revision,
+          api_base_url: config.api_base_url,
+          claimed_skills: config.claimed_skills,
+          target_tab_id: 42,
+          target_url: "https://wikitok.io/",
+          ready: true,
+        } },
+        origin: window.location.origin,
+        source: window,
+      }))
+    }) as never)
+
+    await expect(openWebsiteProofTarget(config)).resolves.toMatchObject({
+      session_id: config.session_id,
+      config_revision: config.config_revision,
+      api_base_url: "http://localhost:8128",
+      claimed_skills: ["React", "TypeScript"],
+      ready: true,
+    })
+  })
+
+  it("rejects target readiness from another origin", async () => {
+    vi.spyOn(window, "postMessage").mockImplementation(((message: {
+      type?: string
+      payload?: { request_id?: string }
+    }) => {
+      if (message.type !== RECORDER_TARGET_OPEN_REQUEST || !message.payload?.request_id) return
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "veribridge-extension", type: RECORDER_TARGET_READY, payload: {
+          request_id: message.payload.request_id,
+          session_id: config.session_id,
+          config_revision: config.config_revision,
+          api_base_url: config.api_base_url,
+          claimed_skills: config.claimed_skills,
+          target_tab_id: 9,
+          target_url: "https://example.com/",
+          ready: true,
+        } },
+        origin: window.location.origin,
+        source: window,
+      }))
+    }) as never)
+
+    await expect(openWebsiteProofTarget(config)).resolves
+      .toMatchObject({ ok: false, error_code: "target_url_mismatch" })
+  })
+
+  it("requires an exact recording-start ACK", async () => {
+    vi.spyOn(window, "postMessage").mockImplementation(((message: {
+      type?: string
+      payload?: { request_id?: string }
+    }) => {
+      if (message.type !== RECORDER_START_REQUEST || !message.payload?.request_id) return
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "veribridge-extension", type: RECORDER_START_ACK, payload: {
+          request_id: message.payload.request_id,
+          session_id: config.session_id,
+          config_revision: config.config_revision,
+          started_at: "2026-07-14T12:00:00Z",
+          idempotent: false,
+          ready: true,
+        } },
+        origin: window.location.origin,
+        source: window,
+      }))
+    }) as never)
+
+    await expect(startWebsiteProofRecording(config)).resolves.toMatchObject({
+      session_id: config.session_id,
+      config_revision: config.config_revision,
+      ready: true,
+    })
   })
 })

@@ -2,15 +2,27 @@
 // Never collects cookies, localStorage, sessionStorage, or password values.
 
 import type { VisibleEvidenceEvent, FileUploadMeta, LiveCoachState } from "./types"
+import {
+  RECORDER_AUTH_REFRESH_REQUEST,
+  RECORDER_AUTH_REFRESH_ACK,
+  RECORDER_INIT_ACK,
+  RECORDER_INIT_NACK,
+  RECORDER_INIT_REQUEST,
+  RECORDER_START_ACK,
+  RECORDER_START_REQUEST,
+  RECORDER_TARGET_OPEN_ACK,
+  RECORDER_TARGET_OPEN_REQUEST,
+  RECORDER_TARGET_READY,
+} from "../../../packages/shared/websiteProofRecorderContract"
 
 // ── Debug flag — set to false to silence visible evidence logs in production ──
-const DEBUG_VISIBLE_EVIDENCE = true
+const DEBUG_VISIBLE_EVIDENCE = false
 
 function dbgVE(...args: unknown[]): void {
   if (DEBUG_VISIBLE_EVIDENCE) console.log("[VisibleEvidence]", ...args)
 }
 
-dbgVE("content script loaded on", location.href)
+dbgVE("content script loaded on", redactSensitiveQueryParams(location.href))
 
 // ── Sensitive field detection ──────────────────────────────────────────────────
 
@@ -299,6 +311,12 @@ interface WebsiteProofUploadStorageState {
 }
 
 const WEBSITE_PROOF_UPLOAD_STATE_KEY = "websiteProofUploadState"
+
+interface RecorderBridgeResponse {
+  ok?: boolean
+  error_code?: string
+  [key: string]: unknown
+}
 
 function publishExtensionState(s: StateSnapshot): void {
   try {
@@ -825,7 +843,7 @@ function startCapture(): void {
   recordingStartMs = Date.now()
 
   dbgVE("recording active", true, "| session_id (from URL):", new URLSearchParams(location.search).get("veribridge_session_id") ?? "(not in URL)")
-  dbgVE("starting capture on", location.href)
+  dbgVE("starting capture on", redactSensitiveQueryParams(location.href))
 
   emit({ type: "page_visit", timestamp: nowIso(), page_url: safePageUrl(), page_title: document.title })
   document.addEventListener("click", handleClick, { capture: true, passive: true })
@@ -895,7 +913,7 @@ function stopCapture(): void {
   stopVbDashboardPoll()
 }
 
-chrome.runtime.onMessage.addListener((msg: { type: string; payload?: Partial<StateSnapshot> }) => {
+chrome.runtime.onMessage.addListener((msg: { type: string; payload?: unknown }) => {
   if (msg.type === "START_CAPTURING") {
     void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
       if (!s?.isRecording) return
@@ -916,7 +934,7 @@ chrome.runtime.onMessage.addListener((msg: { type: string; payload?: Partial<Sta
     stopCapture()
     refreshBar()
   } else if (msg.type === "PROOF_UPLOAD_STARTED") {
-    publishProofUploadStarted(msg.payload ?? {})
+    publishProofUploadStarted((msg.payload ?? {}) as Partial<StateSnapshot>)
     // Also (re-)start dashboard poll so the modal catches the uploading state even
     // if the bar is not visible on this page (e.g. the dashboard tab itself).
     startVbDashboardPoll()
@@ -924,6 +942,12 @@ chrome.runtime.onMessage.addListener((msg: { type: string; payload?: Partial<Sta
     void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
       if (s) publishExtensionState(s)
     })
+  } else if (msg.type === "RECORDER_TARGET_READY" && isVeriBridgeAppOrigin()) {
+    window.postMessage({
+      source: "veribridge-extension",
+      type: RECORDER_TARGET_READY,
+      payload: msg.payload ?? {},
+    }, window.location.origin)
   }
 })
 
@@ -946,6 +970,25 @@ function detectSessionFromUrl(): void {
 
 detectSessionFromUrl()
 
+// Every external page content script offers a readiness attachment. The
+// background accepts it only from the exact tab it opened for the current
+// session/revision, so historical tabs and unrelated pages are harmless.
+if (!isVeriBridgeAppOrigin()) {
+  const targetReadyRetryMs = [0, 250, 750, 1500, 3000] as const
+  for (const delayMs of targetReadyRetryMs) {
+    window.setTimeout(() => {
+      void safeSendMessage<RecorderBridgeResponse>({
+        type: "RECORDER_TARGET_CONTENT_READY",
+        payload: {
+          page_url: safePageUrl(),
+          page_title: document.title,
+          detected_at: nowIso(),
+        },
+      })
+    }, delayMs)
+  }
+}
+
 // ── Recorder auth handoff (app origin only) ─────────────────────────────────────
 // The authenticated VeriBridge app posts the signed-in user's Supabase access
 // token here via a same-origin window message. We relay it to the background so
@@ -960,16 +1003,38 @@ if (isVeriBridgeAppOrigin()) {
     if (event.source !== window) return
     if (event.origin !== location.origin) return
     const data = event.data as
-      | { source?: string; type?: string; payload?: { authToken?: unknown; apiUrl?: unknown } }
+      | {
+          source?: string
+          type?: string
+          payload?: Record<string, unknown>
+        }
       | null
     if (!data || data.source !== "veribridge-app") return
-    if (data.type !== "VERIBRIDGE_SET_RECORDER_AUTH") return
-    const authToken = data.payload?.authToken
-    if (typeof authToken !== "string" || !authToken) return
-    const apiUrl = typeof data.payload?.apiUrl === "string" ? data.payload.apiUrl : undefined
-    void safeSendMessage({
-      type: "SET_RECORDER_AUTH",
-      payload: { authToken, apiUrl },
+    if (
+      data.type !== RECORDER_INIT_REQUEST &&
+      data.type !== RECORDER_AUTH_REFRESH_REQUEST &&
+      data.type !== RECORDER_TARGET_OPEN_REQUEST &&
+      data.type !== RECORDER_START_REQUEST
+    ) return
+    void safeSendMessage<RecorderBridgeResponse>({
+      type: data.type,
+      payload: data.payload ?? {},
+    }).then((response) => {
+      if (!response) return
+      const responseType = data.type === RECORDER_INIT_REQUEST
+        ? (response.ok ? RECORDER_INIT_ACK : RECORDER_INIT_NACK)
+        : data.type === RECORDER_TARGET_OPEN_REQUEST
+          ? (response.ok ? RECORDER_TARGET_OPEN_ACK : RECORDER_INIT_NACK)
+          : data.type === RECORDER_START_REQUEST
+            ? (response.ok ? RECORDER_START_ACK : RECORDER_INIT_NACK)
+          : (response.ok ? RECORDER_AUTH_REFRESH_ACK : RECORDER_INIT_NACK)
+      // The background response is an allowlisted safe ACK/NACK and never
+      // includes the auth credential from the request config.
+      window.postMessage({
+        source: "veribridge-extension",
+        type: responseType,
+        payload: response,
+      }, window.location.origin)
     })
   })
 }
@@ -993,7 +1058,7 @@ void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
 // going through a full recording session.
 ;(window as unknown as Record<string, unknown>).__VERIBRIDGE_CAPTURE_VISIBLE_EVIDENCE_TEST__ =
   function (): void {
-    dbgVE("manual test hook triggered on", location.href)
+    dbgVE("manual test hook triggered on", redactSensitiveQueryParams(location.href))
     if (!capturing) {
       // Temporarily enable capturing so captureSnapshot proceeds
       capturing = true
